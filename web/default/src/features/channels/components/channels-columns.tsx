@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Fingerprint,
   ListOrdered,
   Shuffle,
   SlidersHorizontal,
@@ -46,12 +47,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   formatCurrencyFromUSD,
   formatQuotaWithCurrency,
   getCurrencyLabel,
 } from '@/lib/currency'
-import { toIntlLocale } from '@/i18n/languages'
 import { formatTimestampToDate } from '@/lib/format'
 import { truncateText } from '@/lib/utils'
 
@@ -715,12 +716,15 @@ export function useChannelsColumns(
           const channel = row.original as Channel
           const isMultiKey = isMultiKeyChannel(channel)
           const multiKeyMode = channel.channel_info?.multi_key_mode ?? 'random'
-          const MultiKeyModeIcon =
-            multiKeyMode === 'random' ? Shuffle : ListOrdered
-          const multiKeyTooltip =
-            multiKeyMode === 'random'
-              ? t('Multi-key: Random rotation')
-              : t('Multi-key: Polling rotation')
+          let MultiKeyModeIcon = ListOrdered
+          let multiKeyTooltip = t('Multi-key: Polling rotation')
+          if (multiKeyMode === 'random') {
+            MultiKeyModeIcon = Shuffle
+            multiKeyTooltip = t('Multi-key: Random rotation')
+          } else if (multiKeyMode === 'affinity') {
+            MultiKeyModeIcon = Fingerprint
+            multiKeyTooltip = t('Multi-key: Token affinity')
+          }
 
           const ionetMeta = parseIonetMeta(channel.other_info)
           const isIonet = ionetMeta?.source === 'ionet'

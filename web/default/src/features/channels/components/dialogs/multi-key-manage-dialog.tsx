@@ -235,6 +235,13 @@ export function MultiKeyManageDialog({
 
   if (!currentRow) return null
 
+  let multiKeyModeLabel = t('Polling')
+  if (currentRow.channel_info?.multi_key_mode === 'random') {
+    multiKeyModeLabel = t('Random')
+  } else if (currentRow.channel_info?.multi_key_mode === 'affinity') {
+    multiKeyModeLabel = t('Token Affinity')
+  }
+
   return (
     <>
       <Dialog
@@ -250,11 +257,7 @@ export function MultiKeyManageDialog({
             />
             {currentRow.channel_info?.multi_key_mode && (
               <StatusBadge
-                label={
-                  currentRow.channel_info.multi_key_mode === 'random'
-                    ? t('Random')
-                    : t('Polling')
-                }
+                label={multiKeyModeLabel}
                 variant='neutral'
                 copyable={false}
               />

@@ -3169,6 +3169,10 @@ export function ChannelMutateDrawer({
                                               value: 'polling',
                                               label: t('Polling'),
                                             },
+                                            {
+                                              value: 'affinity',
+                                              label: t('Token Affinity'),
+                                            },
                                           ]}
                                           onValueChange={field.onChange}
                                           value={field.value}
@@ -3188,21 +3192,28 @@ export function ChannelMutateDrawer({
                                               <SelectItem value='polling'>
                                                 {t('Polling')}
                                               </SelectItem>
+                                              <SelectItem value='affinity'>
+                                                {t('Token Affinity')}
+                                              </SelectItem>
                                             </SelectGroup>
                                           </SelectContent>
                                         </Select>
                                         <FormDescription>
-                                          {multiKeyType === 'polling' ? (
+                                          {multiKeyType === 'polling' && (
                                             <span className='text-warning'>
                                               {t(
                                                 'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
                                               )}
                                             </span>
-                                          ) : (
+                                          )}
+                                          {multiKeyType === 'affinity' &&
+                                            t(
+                                              'Keep each API token on a stable upstream key to preserve provider-side caches'
+                                            )}
+                                          {multiKeyType === 'random' &&
                                             t(
                                               'Randomly select a key from the pool for each request'
-                                            )
-                                          )}
+                                            )}
                                         </FormDescription>
                                         <FormMessage />
                                       </FormItem>
