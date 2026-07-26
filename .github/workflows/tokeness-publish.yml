@@ -1,0 +1,92 @@
+name: Tokeness Publish GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable image tag; must match VERSION
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: tokeness-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY_IMAGE: ghcr.io/l1i1/new-api
+
+jobs:
+  test-and-publish:
+    name: Test and publish linux/amd64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate and set release version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if ! printf '%s' "$RELEASE_VERSION" | grep -Eq '^v[0-9A-Za-z._-]+-tokeness-[0-9A-Za-z._-]+$'; then
+            echo "::error::Version must be an immutable Tokeness tag, for example v1.0.0-rc.21-tokeness-affinity.3"
+            exit 1
+          fi
+          printf '%s\n' "$RELEASE_VERSION" > VERSION
+          echo "Publishing commit $GITHUB_SHA as $RELEASE_VERSION"
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run release regression tests
+        run: go test ./model ./middleware ./relay/...
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.tokeness
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY_IMAGE }}:${{ inputs.version }}
+            ${{ env.REGISTRY_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          cache-from: type=gha,scope=tokeness-amd64
+          cache-to: type=gha,mode=max,scope=tokeness-amd64
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish summary
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Published image"
+            echo
+            echo '```text'
+            echo "${REGISTRY_IMAGE}:${RELEASE_VERSION}"
+            echo "${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

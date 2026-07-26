@@ -1,0 +1,95 @@
+name: Tokeness Upstream Sync
+
+on:
+  schedule:
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: tokeness-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  propose-sync:
+    name: Propose upstream sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Tokeness mainline
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: tokeness/main
+          fetch-depth: 0
+
+      - name: Merge upstream into a candidate branch
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add upstream https://github.com/QuantumNous/new-api.git
+          git fetch --no-tags upstream '+refs/heads/main:refs/remotes/upstream/main'
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          BRANCH="sync/upstream-${UPSTREAM_SHA:0:12}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git switch -c "$BRANCH"
+          git merge --no-edit upstream/main
+          git push --set-upstream origin "$BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open review PR
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_BRANCH: ${{ steps.sync.outputs.branch }}
+        run: |
+          if [ "$(gh pr list --base tokeness/main --head "$SYNC_BRANCH" --state open --json number --jq 'length')" -gt 0 ]; then
+            exit 0
+          fi
+
+          cat > "$RUNNER_TEMP/pr-body.md" <<'EOF'
+          # ⚠️ 提交说明 / PR Notice
+          > [!IMPORTANT]
+          >
+          > - This synchronization PR was prepared by GitHub Actions and must be reviewed and verified by a maintainer before merge.
+
+          ## 📝 变更描述 / Description
+          Merge the latest official upstream changes into the Tokeness mainline as a review candidate. This PR never publishes an image or deploys production.
+
+          ## 🚀 变更类型 / Type of change
+          - [ ] 🐛 Bug 修复 (Bug fix)
+          - [ ] ✨ 新功能 (New feature)
+          - [x] ⚡ 性能优化 / 重构 (Refactor)
+          - [ ] 📝 文档更新 (Documentation)
+
+          ## 🔗 关联任务 / Related Issue
+          - Scheduled upstream maintenance; no issue.
+
+          ## ✅ 提交前检查项 / Checklist
+          - [ ] **人工确认:** A maintainer has reviewed the upstream diff and conflict resolution.
+          - [x] **非重复提交:** The workflow checked for an existing open synchronization PR.
+          - [x] **Bug fix 说明:** This is not submitted as a bug fix.
+          - [ ] **变更理解:** A maintainer understands the upstream changes and Tokeness impact.
+          - [ ] **范围聚焦:** A maintainer confirmed the PR contains only the intended upstream sync.
+          - [ ] **本地验证:** Tokeness regression tests and image build have passed after the merge.
+          - [x] **安全合规:** The workflow does not copy credentials into the branch or PR body.
+
+          ## 📸 运行证明 / Proof of Work
+          AI-assisted automation created this candidate. Merge only after CI and maintainer validation pass.
+          EOF
+
+          gh pr create \
+            --base tokeness/main \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync official upstream" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
