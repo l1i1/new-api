@@ -131,6 +131,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 		if len(data) > 0 {
+			var streamResp struct {
+				Usage *dto.Usage `json:"usage"`
+			}
+			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && service.ValidUsage(streamResp.Usage) {
+				usage = streamResp.Usage
+				containStreamUsage = true
+			}
+
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
 				secondLastStreamData = lastStreamData

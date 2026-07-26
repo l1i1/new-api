@@ -35,6 +35,34 @@ func streamResponseXAI2OpenAI(xAIResp *dto.ChatCompletionsStreamResponse, usage 
 	return openAIResp
 }
 
+func normalizeXAIUsage(usage *dto.Usage) {
+	if usage == nil {
+		return
+	}
+	if usage.PromptTokens < 0 {
+		usage.PromptTokens = 0
+	}
+	if usage.TotalTokens < usage.PromptTokens {
+		usage.TotalTokens = usage.PromptTokens
+	}
+
+	usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
+	if usage.CompletionTokenDetails.ReasoningTokens < 0 {
+		usage.CompletionTokenDetails.ReasoningTokens = 0
+	}
+	if usage.CompletionTokenDetails.ReasoningTokens > usage.CompletionTokens {
+		usage.CompletionTokenDetails.ReasoningTokens = usage.CompletionTokens
+	}
+	usage.CompletionTokenDetails.TextTokens = usage.CompletionTokens - usage.CompletionTokenDetails.ReasoningTokens
+
+	if usage.PromptTokensDetails.CachedTokens < 0 {
+		usage.PromptTokensDetails.CachedTokens = 0
+	}
+	if usage.PromptTokensDetails.CachedTokens > usage.PromptTokens {
+		usage.PromptTokensDetails.CachedTokens = usage.PromptTokens
+	}
+}
+
 func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	usage := &dto.Usage{}
 	var responseTextBuilder strings.Builder
@@ -54,9 +82,8 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// 把 xAI 的usage转换为 OpenAI 的usage
 		if xAIResp.Usage != nil {
 			containStreamUsage = true
-			usage.PromptTokens = xAIResp.Usage.PromptTokens
-			usage.TotalTokens = xAIResp.Usage.TotalTokens
-			usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
+			usage = xAIResp.Usage
+			normalizeXAIUsage(usage)
 		}
 
 		openaiResponse := streamResponseXAI2OpenAI(xAIResp, usage)
@@ -90,8 +117,7 @@ func xAIHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if xaiResponse.Usage != nil {
-		xaiResponse.Usage.CompletionTokens = xaiResponse.Usage.TotalTokens - xaiResponse.Usage.PromptTokens
-		xaiResponse.Usage.CompletionTokenDetails.TextTokens = xaiResponse.Usage.CompletionTokens - xaiResponse.Usage.CompletionTokenDetails.ReasoningTokens
+		normalizeXAIUsage(xaiResponse.Usage)
 	}
 
 	// new body
