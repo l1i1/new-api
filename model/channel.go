@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -196,7 +198,7 @@ func (channel *Channel) GetKeys() []string {
 	return keys
 }
 
-func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
+func (channel *Channel) GetNextEnabledKey(affinityValues ...int) (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
@@ -276,10 +278,33 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		}
 		// Fallback – should not happen, but return first enabled key
 		return keys[enabledIdx[0]], enabledIdx[0], nil
+	case constant.MultiKeyModeAffinity:
+		if len(affinityValues) == 0 || affinityValues[0] <= 0 {
+			return keys[enabledIdx[0]], enabledIdx[0], nil
+		}
+		selectedIdx := selectAffinityKeyIndex(keys, enabledIdx, affinityValues[0])
+		return keys[selectedIdx], selectedIdx, nil
 	default:
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	}
+}
+
+func selectAffinityKeyIndex(keys []string, enabledIdx []int, affinityValue int) int {
+	selectedIdx := enabledIdx[0]
+	var selectedScore uint64
+	for position, index := range enabledIdx {
+		hash := fnv.New64a()
+		_, _ = hash.Write([]byte(strconv.Itoa(affinityValue)))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(keys[index]))
+		score := hash.Sum64()
+		if position == 0 || score > selectedScore {
+			selectedIdx = index
+			selectedScore = score
+		}
+	}
+	return selectedIdx
 }
 
 func (channel *Channel) SaveChannelInfo() error {

@@ -601,6 +601,18 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if addChannelRequest.Mode == "multi_to_single" {
+		if addChannelRequest.MultiKeyMode == "" {
+			addChannelRequest.MultiKeyMode = constant.MultiKeyModeRandom
+		}
+		if !addChannelRequest.MultiKeyMode.IsValid() {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "multi_key_mode must be random, polling, or affinity",
+			})
+			return
+		}
+	}
 
 	// 使用统一的校验函数
 	if err := validateChannel(addChannelRequest.Channel, true); err != nil {
@@ -933,6 +945,14 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	clearChannelReadOnlyFields(&channel, requestData)
+	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" &&
+		!constant.MultiKeyMode(*channel.MultiKeyMode).IsValid() {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "multi_key_mode must be random, polling, or affinity",
+		})
+		return
+	}
 
 	// 使用统一的校验函数
 	if err := validateChannel(&channel.Channel, false); err != nil {

@@ -151,6 +151,52 @@ func TestUpdateChannelRejectsStatusField(t *testing.T) {
 	assert.False(t, response.Success)
 }
 
+func TestAddChannelRejectsInvalidMultiKeyMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/channel/",
+		bytes.NewBufferString(`{"mode":"multi_to_single","multi_key_mode":"typo","channel":{}}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	AddChannel(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.False(t, response.Success)
+	assert.Contains(t, response.Message, "multi_key_mode")
+}
+
+func TestUpdateChannelRejectsInvalidMultiKeyMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/channel/",
+		bytes.NewBufferString(`{"id":1,"multi_key_mode":"typo"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateChannel(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.False(t, response.Success)
+	assert.Contains(t, response.Message, "multi_key_mode")
+}
+
 func TestChannelStatusValidation(t *testing.T) {
 	assert.True(t, isManageableChannelStatus(common.ChannelStatusEnabled))
 	assert.True(t, isManageableChannelStatus(common.ChannelStatusManuallyDisabled))
