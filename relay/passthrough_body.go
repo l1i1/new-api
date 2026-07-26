@@ -1,0 +1,43 @@
+package relay
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"io"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/gin-gonic/gin"
+)
+
+func getPassThroughRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = storage.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	info.UpstreamRequestBodySize = storage.Size()
+	if common.DebugEnabled {
+		hash := sha256.New()
+		if _, err = io.Copy(hash, storage); err != nil {
+			return nil, err
+		}
+		logger.LogDebug(
+			c,
+			"pass-through request body: sha256=%s length=%d model=%s node=%s",
+			fmt.Sprintf("%x", hash.Sum(nil)),
+			storage.Size(),
+			info.OriginModelName,
+			common.NodeName,
+		)
+		if _, err = storage.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+
+	return common.ReaderOnly(storage), nil
+}
