@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+headers=''
+body=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -D)
+      headers="$2"
+      shift 2
+      ;;
+    -o)
+      body="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+printf 'HTTP/2 401\r\nX-New-Api-Version: v-test-new\r\n\r\n' > "$headers"
+printf '{"error":"unauthorized"}\n' > "$body"
+printf '401'

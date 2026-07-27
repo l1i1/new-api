@@ -22,18 +22,25 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Switch } from '@/components/ui/switch'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { resetPlanSubscriptions } from '../../api'
 import { useSubscriptions } from '../subscriptions-provider'
 
 export function ResetSubscriptionsDialog() {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const { open, setOpen, currentRow, triggerRefresh } = useSubscriptions()
   const [advanceResetTime, setAdvanceResetTime] = useState(true)
   const [resetting, setResetting] = useState(false)
   const isOpen = open === 'reset-subscriptions'
   const plan = currentRow?.plan
-  const planLabel = plan?.title || (plan?.id ? `#${plan.id}` : '-')
+  let planLabel = plan?.id ? `#${plan.id}` : '-'
+  if (plan?.title) {
+    planLabel = resolveTntContent(
+      plan.title,
+      i18n.resolvedLanguage || i18n.language
+    )
+  }
 
   useEffect(() => {
     if (isOpen) setAdvanceResetTime(true)

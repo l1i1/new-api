@@ -312,6 +312,7 @@ export const STATIC_I18N_KEYS = [
   'Received',
   'Payment initiated',
   'Payment page opened',
+  'Do not close the payment page after paying. Wait to be redirected back automatically.',
 
   // Upstream model updates
   'Upstream Model Updates',

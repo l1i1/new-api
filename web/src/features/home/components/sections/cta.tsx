@@ -31,48 +31,40 @@ interface CTAProps {
 export function CTA(props: CTAProps) {
   const { t } = useTranslation()
 
-  if (props.isAuthenticated) {
-    return null
-  }
-
   return (
-    <section className='relative z-10 overflow-hidden px-6 py-24 md:py-32'>
-      {/* Gradient mesh background */}
-      <div
-        aria-hidden
-        className='absolute inset-0 -z-10 opacity-20 dark:opacity-[0.08]'
-        style={{
-          background: [
-            'radial-gradient(ellipse 50% 50% at 30% 50%, oklch(0.7 0.15 250 / 70%) 0%, transparent 70%)',
-            'radial-gradient(ellipse 40% 40% at 70% 40%, oklch(0.65 0.12 200 / 50%) 0%, transparent 70%)',
-          ].join(', '),
-        }}
-      />
-
+    <section className='relative z-10 px-6 py-20 md:py-24'>
       <AnimateInView
-        className='mx-auto max-w-2xl text-center'
-        animation='scale-in'
+        className='mx-auto flex max-w-6xl flex-col justify-between gap-8 md:flex-row md:items-end'
+        animation='fade-up'
       >
-        <h2 className='text-2xl leading-tight font-bold tracking-tight md:text-4xl'>
-          {t('Ready to simplify')}
-          <br />
-          <span className='bg-gradient-to-r from-blue-400 via-violet-400 to-purple-500 bg-clip-text text-transparent'>
-            {t('your AI integration?')}
-          </span>
-        </h2>
-        <p className='text-muted-foreground/80 mx-auto mt-5 max-w-md text-sm leading-relaxed md:text-base'>
-          {t(
-            'Deploy your own gateway and start routing requests through your configured upstream services.'
-          )}
-        </p>
-        <div className='mt-8 flex items-center justify-center gap-3'>
-          <Button className='group rounded-lg' render={<Link to='/sign-up' />}>
-            {t('Get Started')}
-            <ArrowRight className='ml-1 size-3.5 transition-transform duration-200 group-hover:translate-x-0.5' />
+        <div className='max-w-2xl'>
+          <p className='text-primary text-xs font-semibold'>
+            {t('home.cta.eyebrow')}
+          </p>
+          <h2 className='mt-2 text-2xl font-bold md:text-3xl'>
+            {t('home.cta.title')}
+          </h2>
+          <p className='text-muted-foreground mt-3 max-w-xl text-sm leading-relaxed md:text-base'>
+            {t('home.cta.copy')}
+          </p>
+        </div>
+
+        <div className='flex shrink-0 flex-wrap gap-3'>
+          <Button
+            className='group h-11 rounded-lg px-5'
+            render={
+              <Link to={props.isAuthenticated ? '/dashboard' : '/sign-up'} />
+            }
+          >
+            {props.isAuthenticated ? t('Go to Dashboard') : t('Get Started')}
+            <ArrowRight
+              className='size-4 transition-transform duration-200 group-hover:translate-x-0.5'
+              aria-hidden='true'
+            />
           </Button>
           <Button
             variant='outline'
-            className='border-border/50 hover:border-border hover:bg-muted/50 rounded-lg'
+            className='h-11 rounded-lg px-5'
             render={<Link to='/pricing' />}
           >
             {t('View Pricing')}

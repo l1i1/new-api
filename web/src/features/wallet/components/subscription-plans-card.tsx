@@ -57,6 +57,7 @@ import type {
   UserSubscriptionRecord,
 } from '@/features/subscriptions/types'
 import { formatQuota } from '@/lib/format'
+import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
 
 import type { PaymentMethod, TopupInfo } from '../types'
@@ -98,7 +99,8 @@ export function SubscriptionPlansCard({
   userQuota,
   onPurchaseSuccess,
 }: SubscriptionPlansCardProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
 
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [activeSubscriptions, setActiveSubscriptions] = useState<
@@ -215,11 +217,14 @@ export function SubscriptionPlansCard({
     const map = new Map<number, string>()
     for (const p of plans) {
       if (p?.plan?.id) {
-        map.set(p.plan.id, p.plan.title || '')
+        map.set(
+          p.plan.id,
+          resolveTntContent(p.plan.title || '', contentLanguage)
+        )
       }
     }
     return map
-  }, [plans])
+  }, [contentLanguage, plans])
 
   const getRemainingDays = (sub: UserSubscriptionRecord) => {
     const endTime = sub?.subscription?.end_time || 0
@@ -533,6 +538,14 @@ export function SubscriptionPlansCard({
               const limit = Number(plan.max_purchase_per_user || 0)
               const count = planPurchaseCountMap.get(plan.id) || 0
               const reached = limit > 0 && count >= limit
+              const planTitle = resolveTntContent(
+                plan.title || '',
+                contentLanguage
+              )
+              const planSubtitle = resolveTntContent(
+                plan.subtitle || '',
+                contentLanguage
+              )
 
               const benefits = [
                 `${t('Validity Period')}: ${formatDuration(plan, t)}`,
@@ -558,11 +571,11 @@ export function SubscriptionPlansCard({
                     <div className='mb-2 flex items-start justify-between gap-3'>
                       <div className='min-w-0'>
                         <h4 className='truncate font-semibold'>
-                          {plan.title || t('Subscription Plans')}
+                          {planTitle || t('Subscription Plans')}
                         </h4>
-                        {plan.subtitle && (
+                        {planSubtitle && (
                           <p className='text-muted-foreground truncate text-xs'>
-                            {plan.subtitle}
+                            {planSubtitle}
                           </p>
                         )}
                       </div>

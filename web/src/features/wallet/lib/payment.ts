@@ -93,6 +93,18 @@ export function isWaffoPancakePayment(paymentType: string): boolean {
   return paymentType === PAYMENT_TYPES.WAFFO_PANCAKE
 }
 
+/**
+ * Check whether payment uses the generic EPay form flow.
+ */
+export function isStandardEpayPayment(paymentType: string): boolean {
+  return (
+    paymentType !== PAYMENT_TYPES.STRIPE &&
+    paymentType !== PAYMENT_TYPES.CREEM &&
+    paymentType !== PAYMENT_TYPES.WAFFO &&
+    paymentType !== PAYMENT_TYPES.WAFFO_PANCAKE
+  )
+}
+
 export interface PaymentProcessors {
   regular: (topupAmount: number, paymentType: string) => Promise<boolean>
   waffo: (topupAmount: number, payMethodIndex: number) => Promise<boolean>

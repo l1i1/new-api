@@ -27,9 +27,10 @@ import { useSubscriptionsColumns } from './subscriptions-columns'
 import { useSubscriptions } from './subscriptions-provider'
 
 export function SubscriptionsTable() {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const columns = useSubscriptionsColumns()
   const { refreshTrigger } = useSubscriptions()
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin-subscription-plans', refreshTrigger],
@@ -40,7 +41,12 @@ export function SubscriptionsTable() {
     placeholderData: (prev) => prev,
   })
 
-  const plans = useMemo(() => data || [], [data])
+  // TanStack caches localized accessor values on each row. Rebuild the row
+  // model when the active content language changes, preserving raw plan data.
+  const plans = useMemo(
+    () => (contentLanguage && data ? [...data] : []),
+    [contentLanguage, data]
+  )
 
   const { table } = useDataTable({
     data: plans,

@@ -22,6 +22,7 @@ import { describe, test } from 'node:test'
 import { PAYMENT_TYPES } from '../constants'
 import {
   dispatchSelectedPayment,
+  isStandardEpayPayment,
   isStripePayment,
   isWaffoPayment,
   isWaffoPancakePayment,
@@ -34,6 +35,16 @@ describe('payment type classification', () => {
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE), true)
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO), false)
     assert.equal(isStripePayment(PAYMENT_TYPES.STRIPE), true)
+  })
+
+  test('identifies generic payment methods as the standard EPay flow', () => {
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.ALIPAY), true)
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.WECHAT), true)
+    assert.equal(isStandardEpayPayment('custom-epay'), true)
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.STRIPE), false)
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.CREEM), false)
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.WAFFO), false)
+    assert.equal(isStandardEpayPayment(PAYMENT_TYPES.WAFFO_PANCAKE), false)
   })
 })
 

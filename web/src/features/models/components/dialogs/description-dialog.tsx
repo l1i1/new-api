@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 type DescriptionDialogProps = {
   open: boolean
@@ -34,7 +35,11 @@ export function DescriptionDialog({
   modelName,
   description,
 }: DescriptionDialogProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const localizedDescription = resolveTntContent(
+    description,
+    i18n.resolvedLanguage || i18n.language
+  )
   return (
     <Dialog
       open={open}
@@ -48,7 +53,7 @@ export function DescriptionDialog({
       <ScrollArea className='max-h-96'>
         <div className='space-y-2 pr-4'>
           <p className='text-foreground text-sm leading-relaxed break-words whitespace-pre-wrap'>
-            {description}
+            {localizedDescription}
           </p>
         </div>
       </ScrollArea>

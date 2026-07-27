@@ -62,6 +62,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import {
   createPlan,
@@ -92,7 +93,8 @@ export function SubscriptionsMutateDrawer({
   onOpenChange,
   currentRow,
 }: Props) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
   const isEdit = !!currentRow?.plan?.id
   const { triggerRefresh } = useSubscriptions()
   const { meta: currencyMeta } = getCurrencyDisplay()
@@ -789,7 +791,7 @@ export function SubscriptionsMutateDrawer({
                   // Raw-ID fallback for IDs not yet in the catalog.
                   const items = pancakeProducts.map((p) => ({
                     value: p.id,
-                    label: `${p.name} (${p.id})`,
+                    label: `${resolveTntContent(p.name, contentLanguage)} (${p.id})`,
                   }))
                   if (
                     field.value &&

@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import type { LegalDocumentResponse } from './types'
 
@@ -42,7 +43,7 @@ export function LegalDocument({
   fetchDocument,
   emptyMessage,
 }: LegalDocumentProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const { data, isLoading } = useQuery({
     queryKey: [queryKey],
     queryFn: fetchDocument,
@@ -50,9 +51,10 @@ export function LegalDocument({
   })
 
   const rawContent = data?.data?.trim() ?? ''
-  const hasContent = rawContent.length > 0
-  const isUrl = hasContent && isHttpUrl(rawContent)
-  const contentIsHtml = hasContent && isLikelyHtml(rawContent)
+  const content = resolveTntContent(rawContent, i18n.language).trim()
+  const hasContent = content.length > 0
+  const isUrl = hasContent && isHttpUrl(content)
+  const contentIsHtml = hasContent && isLikelyHtml(content)
   const success = data?.success ?? false
 
   if (isLoading) {
@@ -106,11 +108,7 @@ export function LegalDocument({
               </p>
               <Button
                 render={
-                  <a
-                    href={rawContent}
-                    target='_blank'
-                    rel='noopener noreferrer'
-                  />
+                  <a href={content} target='_blank' rel='noopener noreferrer' />
                 }
               >
                 {t('View document')}
@@ -125,7 +123,7 @@ export function LegalDocument({
   return (
     <PublicLayout showMainContainer={!contentIsHtml}>
       {contentIsHtml ? (
-        <RichContent mode='html' htmlVariant='isolated' content={rawContent} />
+        <RichContent mode='html' htmlVariant='isolated' content={content} />
       ) : (
         <div className='mx-auto max-w-4xl space-y-6 py-12'>
           <div className='space-y-2'>
@@ -134,7 +132,7 @@ export function LegalDocument({
 
           <RichContent
             mode='markdown'
-            content={rawContent}
+            content={content}
             className='prose-neutral dark:prose-invert max-w-none'
           />
         </div>

@@ -24,6 +24,7 @@ import { PublicLayout } from '@/components/layout'
 import { RichContent } from '@/components/rich-content'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isHttpUrl, isLikelyHtml } from '@/lib/content-format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { getAboutContent } from './api'
 
@@ -113,16 +114,17 @@ function EmptyAboutState() {
 }
 
 export function About() {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const { data, isLoading } = useQuery({
     queryKey: ['about-content'],
     queryFn: getAboutContent,
   })
 
   const rawContent = data?.data?.trim() ?? ''
-  const hasContent = rawContent.length > 0
-  const isUrl = hasContent && isHttpUrl(rawContent)
-  const contentIsHtml = hasContent && isLikelyHtml(rawContent)
+  const content = resolveTntContent(rawContent, i18n.language).trim()
+  const hasContent = content.length > 0
+  const isUrl = hasContent && isHttpUrl(content)
+  const contentIsHtml = hasContent && isLikelyHtml(content)
 
   if (isLoading) {
     return (
@@ -149,7 +151,7 @@ export function About() {
     return (
       <PublicLayout showMainContainer={false}>
         <iframe
-          src={rawContent}
+          src={content}
           className='h-[calc(100vh-3.5rem)] w-full border-0'
           title={t('About')}
           sandbox='allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts'
@@ -164,7 +166,7 @@ export function About() {
         <RichContent
           mode='html'
           htmlVariant='isolated'
-          content={rawContent}
+          content={content}
           className='prose-neutral dark:prose-invert max-w-none'
         />
       </PublicLayout>
@@ -176,7 +178,7 @@ export function About() {
       <div className='mx-auto max-w-6xl px-4 py-8'>
         <RichContent
           mode='markdown'
-          content={rawContent}
+          content={content}
           className='prose-neutral dark:prose-invert max-w-none'
         />
       </div>
