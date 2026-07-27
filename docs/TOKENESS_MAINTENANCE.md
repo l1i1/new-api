@@ -30,7 +30,7 @@ The publish workflow emits both a human-readable version tag and a commit tag, b
 ghcr.io/l1i1/new-api@sha256:<digest>
 ```
 
-Tokeness builds only the new UI. `Dockerfile.tokeness` copies that bundle to both embedded theme paths for compatibility with the existing Go embed contract; it does not build or maintain the Classic frontend.
+Tokeness builds only the canonical `web` UI. Upstream retired the Classic frontend and the Go embed contract now reads `web/dist`, so `Dockerfile.tokeness` builds and embeds that single bundle directly.
 
 ## Production Rollout
 
