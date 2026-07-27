@@ -21,6 +21,7 @@
 
 # Shell scripts
 *.sh text eol=lf
+deployment/tokeness/tests/fake-bin/* text eol=lf
 
 # Binary files
 *.png binary

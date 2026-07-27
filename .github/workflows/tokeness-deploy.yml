@@ -1,0 +1,98 @@
+name: Tokeness Production Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Verify the fleet or deploy a reviewed GHCR digest
+        required: true
+        default: verify
+        type: choice
+        options:
+          - verify
+          - deploy
+      image_digest:
+        description: Required for deploy; sha256:<64 hex> from Tokeness Publish GHCR
+        required: false
+        type: string
+      confirmation:
+        description: Enter deploy-production when operation=deploy
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: tokeness-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    name: ${{ inputs.operation == 'deploy' && 'Staged production rollout' || 'Production fleet verification' }}
+    if: github.repository == 'l1i1/new-api' && github.ref == 'refs/heads/tokeness/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: tokeness-production
+    steps:
+      - name: Check out Tokeness mainline
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: tokeness/main
+          fetch-depth: 1
+
+      - name: Validate deployment request
+        env:
+          OPERATION: ${{ inputs.operation }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$OPERATION" = deploy ]; then
+            if [ "$CONFIRMATION" != deploy-production ]; then
+              echo "::error::Deploy requires confirmation=deploy-production"
+              exit 1
+            fi
+            DIGEST=${IMAGE_DIGEST#sha256:}
+            if ! printf '%s' "$DIGEST" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::image_digest must be sha256:<64 lowercase hex>"
+              exit 1
+            fi
+          fi
+          jq -e . deployment/tokeness/nodes.json >/dev/null
+          bash -n deployment/tokeness/remote-command.sh
+          bash -n deployment/tokeness/rollout.sh
+          bash deployment/tokeness/tests/rollout-test.sh
+
+      - name: Install restricted deployment identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.TOKENESS_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.TOKENESS_SSH_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::tokeness-production deployment secrets are not configured"
+            exit 1
+          fi
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/tokeness-deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/tokeness-deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Confirm image digest exists in GHCR
+        if: inputs.operation == 'deploy'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          DIGEST=${IMAGE_DIGEST#sha256:}
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools inspect "ghcr.io/l1i1/new-api@sha256:$DIGEST" >/dev/null
+
+      - name: Run staged rollout
+        env:
+          TOKENESS_SSH_KEY_PATH: ${{ github.workspace }}/.tokeness-deploy-key
+          OPERATION: ${{ inputs.operation }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          install -m 0600 "$HOME/.ssh/tokeness-deploy" "$TOKENESS_SSH_KEY_PATH"
+          bash deployment/tokeness/rollout.sh "$OPERATION" "$IMAGE_DIGEST"
