@@ -19,6 +19,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-printf 'HTTP/2 401\r\nX-New-Api-Version: v-test-new\r\n\r\n' > "$headers"
+version='v-test-new'
+if [[ "${TOKENESS_TEST_CDN_FAILURE:-0}" -eq 1 ]]; then
+  version='v-test-old'
+fi
+
+printf 'HTTP/2 401\r\nX-New-Api-Version: %s\r\n\r\n' "$version" > "$headers"
 printf '{"error":"unauthorized"}\n' > "$body"
 printf '401'

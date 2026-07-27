@@ -112,6 +112,29 @@ compose_timed() {
   esac
 }
 
+commit_case="$test_root/successful-commit"
+prepare_case "$commit_case"
+export TEST_TARGET_FINAL_HEALTH=healthy
+commit_output="$(deploy_release "$NEW_IMAGE")"
+unset TEST_TARGET_FINAL_HEALTH
+[[ "$(read_release_image)" == "$NEW_IMAGE" ]] || fail_test "successful deploy did not commit the target selection"
+[[ "$(<"$commit_case/runtime-image")" == "$NEW_IMAGE" ]] || fail_test "successful deploy did not start the target runtime"
+[[ "$(<"$commit_case/compose.log")" == $'pull\nup' ]] || fail_test "successful deploy did not pull and recreate exactly once"
+grep -q $'TOKENESS_RESULT\t.*\trunning\thealthy\t' <<< "$commit_output" ||
+  fail_test "successful deploy did not emit a healthy result"
+
+idempotent_case="$test_root/idempotent-target"
+prepare_case "$idempotent_case"
+printf 'NEW_API_IMAGE=%s\n' "$NEW_IMAGE" > "$RELEASE_ENV"
+printf '%s\n' "$NEW_IMAGE" > "$idempotent_case/runtime-image"
+printf 'healthy\n' > "$idempotent_case/health"
+idempotent_output="$(deploy_release "$NEW_IMAGE")"
+[[ ! -s "$idempotent_case/compose.log" ]] || fail_test "same-digest deploy unnecessarily invoked Compose"
+grep -q 'target image is already selected and healthy' <<< "$idempotent_output" ||
+  fail_test "same-digest deploy did not report the idempotent path"
+grep -q $'TOKENESS_RESULT\t.*\trunning\thealthy\t' <<< "$idempotent_output" ||
+  fail_test "same-digest deploy did not emit the current healthy result"
+
 successful_case="$test_root/successful-rollback"
 prepare_case "$successful_case"
 set +e

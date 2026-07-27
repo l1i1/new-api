@@ -110,7 +110,8 @@ The application does not retain indefinite compatibility with the legacy tag.
   malformed input, HTML/Markdown payloads, and idempotence.
 - Component and integration tests cover reactive language switching, resolved
   URL/HTML classification, announcement previews, footer HTML, localized
-  subscription sorting, and wallet EPay behavior.
+  subscription sorting, wallet EPay behavior, and the mobile public-header
+  language control.
 - Pure logic contract tests cover chat preset labels, model-group descriptions,
   and API key group filtering. Their component wiring is covered by browser
   acceptance rather than these helper tests.
@@ -122,8 +123,10 @@ The application does not retain indefinite compatibility with the legacy tag.
   `<html lang>` must always contain a valid BCP-47 language tag.
 - Leaving the home route must restore both the document title and
   `meta[name="title"]` to the configured system name.
-- `bun run typecheck`, affected tests, lint, format check, i18n sync check, and
-  production build pass.
+- `bun run typecheck`, affected tests, changed-file lint and format checks,
+  i18n sync check, and the production build pass. Whole-repository lint,
+  format, and copyright checks still report pre-existing upstream baseline
+  issues outside this change set.
 - Browser checks cover desktop/mobile, light/dark, authenticated/anonymous home,
   all dynamic content surfaces, wallet payment confirmation, language switching
   without a reload, and removal of scripts and event-handler attributes from

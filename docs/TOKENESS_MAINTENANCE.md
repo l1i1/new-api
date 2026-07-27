@@ -50,7 +50,11 @@ Both the selected rollback image and requested target must be trusted
 selected image, runtime image, container state, health (or the local status
 endpoint when no Docker healthcheck exists), and application version. SSH,
 Docker, Compose, and readiness operations have hard deadlines; an interrupted
-or ambiguous node is verified and included in idempotent rollback.
+or ambiguous node is included in idempotent rollback. Rollback reconciliation
+waits for any still-running remote transaction lock to clear, repeatedly
+verifies the selected image, and restores the preflight digest within a bounded
+20-minute node budget. The workflow reserves enough total runtime for the
+worst-case forward rollout and reverse-order fleet rollback.
 
 The GitHub `tokeness-production` Environment contains only:
 

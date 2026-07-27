@@ -33,7 +33,7 @@ jobs:
     name: ${{ inputs.operation == 'deploy' && 'Staged production rollout' || 'Production fleet verification' }}
     if: github.repository == 'l1i1/new-api' && github.ref == 'refs/heads/tokeness/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     environment: tokeness-production
     steps:
       - name: Check out Tokeness mainline

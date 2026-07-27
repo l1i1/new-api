@@ -18,8 +18,8 @@ run_rollout() {
   local case_dir="$1"
   shift
   mkdir -p "$case_dir/state" "$case_dir/bin"
-  cp "$TEST_DIR/fake-bin/ssh" "$TEST_DIR/fake-bin/curl" "$case_dir/bin/"
-  chmod 0700 "$case_dir/bin/ssh" "$case_dir/bin/curl"
+  cp "$TEST_DIR/fake-bin/ssh" "$TEST_DIR/fake-bin/curl" "$TEST_DIR/fake-bin/sleep" "$case_dir/bin/"
+  chmod 0700 "$case_dir/bin/ssh" "$case_dir/bin/curl" "$case_dir/bin/sleep"
   touch "$case_dir/key" "$case_dir/commands.log"
   chmod 0600 "$case_dir/key"
   env PATH="$case_dir/bin:$PATH" \
@@ -58,6 +58,7 @@ assert_commands "$disconnect_case/commands.log" \
   '103.214.68.250|verify' \
   "103.214.68.250|deploy $OLD_IMAGE" \
   '103.214.68.250|verify' \
+  '156.246.94.70|verify' \
   "156.246.94.70|deploy $OLD_IMAGE"
 
 noop_case="$test_root/noop"
@@ -72,8 +73,7 @@ assert_commands "$noop_case/commands.log" \
   '149.13.91.236|verify' \
   '216.73.158.156|verify' \
   "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
-  '156.246.94.70|verify' \
-  "156.246.94.70|deploy $OLD_IMAGE"
+  '156.246.94.70|verify'
 
 mutable_case="$test_root/mutable"
 if run_rollout "$mutable_case" TOKENESS_TEST_MUTABLE_HOST=156.246.94.70; then
@@ -93,5 +93,62 @@ assert_commands "$unhealthy_case/commands.log" \
   "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
   '156.246.94.70|verify' \
   "156.246.94.70|deploy $OLD_IMAGE"
+
+success_case="$test_root/success"
+run_rollout "$success_case"
+assert_commands "$success_case/commands.log" \
+  '156.246.94.70|verify' \
+  '103.214.68.250|verify' \
+  '149.13.91.236|verify' \
+  '216.73.158.156|verify' \
+  "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "103.214.68.250|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "149.13.91.236|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "216.73.158.156|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST"
+for host in 156.246.94.70 103.214.68.250 149.13.91.236 216.73.158.156; do
+  [[ "$(<"$success_case/state/$host")" == "ghcr.io/l1i1/new-api@$NEW_DIGEST" ]] ||
+    fail "successful rollout did not commit the target on $host"
+done
+
+cdn_failure_case="$test_root/cdn-failure"
+if run_rollout "$cdn_failure_case" TOKENESS_TEST_CDN_FAILURE=1; then
+  fail "CDN failure rollout unexpectedly succeeded"
+fi
+assert_commands "$cdn_failure_case/commands.log" \
+  '156.246.94.70|verify' \
+  '103.214.68.250|verify' \
+  '149.13.91.236|verify' \
+  '216.73.158.156|verify' \
+  "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "103.214.68.250|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "149.13.91.236|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "216.73.158.156|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  '216.73.158.156|verify' \
+  "216.73.158.156|deploy $OLD_IMAGE" \
+  '149.13.91.236|verify' \
+  "149.13.91.236|deploy $OLD_IMAGE" \
+  '103.214.68.250|verify' \
+  "103.214.68.250|deploy $OLD_IMAGE" \
+  '156.246.94.70|verify' \
+  "156.246.94.70|deploy $OLD_IMAGE"
+
+lock_case="$test_root/lock-reconcile"
+if run_rollout "$lock_case" \
+  TOKENESS_TEST_MODE=lock-after-apply \
+  TOKENESS_TEST_FAIL_HOST=156.246.94.70; then
+  fail "lock contention rollout unexpectedly succeeded"
+fi
+assert_commands "$lock_case/commands.log" \
+  '156.246.94.70|verify' \
+  '103.214.68.250|verify' \
+  '149.13.91.236|verify' \
+  '216.73.158.156|verify' \
+  "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  '156.246.94.70|verify' \
+  "156.246.94.70|deploy $OLD_IMAGE" \
+  '156.246.94.70|verify' \
+  "156.246.94.70|deploy $OLD_IMAGE"
+[[ "$(<"$lock_case/state/156.246.94.70")" == "$OLD_IMAGE" ]] ||
+  fail "lock reconciliation did not restore the preflight image"
 
 printf 'rollout transaction tests passed\n'

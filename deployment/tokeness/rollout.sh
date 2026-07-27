@@ -8,6 +8,8 @@ readonly INPUT_DIGEST="${2:-}"
 readonly SSH_KEY_PATH="${TOKENESS_SSH_KEY_PATH:-$HOME/.ssh/tokeness-deploy}"
 readonly NODE_VERIFY_TIMEOUT_SECONDS=300
 readonly NODE_DEPLOY_TIMEOUT_SECONDS=960
+readonly NODE_RECONCILE_TIMEOUT_SECONDS=1200
+readonly NODE_RECONCILE_RETRY_SECONDS=15
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -76,7 +78,8 @@ parse_result() {
 }
 
 run_node() {
-  local node="$1" command="$2" expected_image="${3:-}" host port user output timeout_seconds
+  local node="$1" command="$2" expected_image="${3:-}" timeout_override="${4:-}"
+  local host port user output timeout_seconds
   host="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .host' "$NODES_FILE")"
   port="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .port' "$NODES_FILE")"
   user="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .user' "$NODES_FILE")"
@@ -84,6 +87,7 @@ run_node() {
     fail "invalid SSH metadata for $node"
   timeout_seconds="$NODE_VERIFY_TIMEOUT_SECONDS"
   [[ "$command" != deploy\ * ]] || timeout_seconds="$NODE_DEPLOY_TIMEOUT_SECONDS"
+  [[ -z "$timeout_override" ]] || timeout_seconds="$timeout_override"
 
   log "$node: $command"
   if ! output="$(timeout --signal=TERM --kill-after=15s "${timeout_seconds}s" \
@@ -96,6 +100,40 @@ run_node() {
     log "ERROR: $node returned an invalid deployment result"
     return 1
   fi
+}
+
+reconcile_node_image() {
+  local node="$1" desired_image="$2" deadline remaining attempt_timeout
+  deadline=$((SECONDS + NODE_RECONCILE_TIMEOUT_SECONDS))
+
+  while ((SECONDS < deadline)); do
+    remaining=$((deadline - SECONDS))
+    attempt_timeout="$NODE_VERIFY_TIMEOUT_SECONDS"
+    ((remaining >= attempt_timeout)) || attempt_timeout="$remaining"
+    if run_node "$node" verify '' "$attempt_timeout"; then
+      if [[ "$PARSED_SELECTED" == "$desired_image" ]]; then
+        return 0
+      fi
+
+      log "$node: reconciling $PARSED_SELECTED to $desired_image"
+    else
+      log "$node: verification is busy or unhealthy; attempting an idempotent restore"
+    fi
+
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || break
+    attempt_timeout="$NODE_DEPLOY_TIMEOUT_SECONDS"
+    ((remaining >= attempt_timeout)) || attempt_timeout="$remaining"
+    if run_node "$node" "deploy $desired_image" "$desired_image" "$attempt_timeout"; then
+      return 0
+    fi
+
+    ((SECONDS < deadline)) || break
+    log "$node: state is still busy or uncertain; retrying reconciliation"
+    sleep "$NODE_RECONCILE_RETRY_SECONDS"
+  done
+
+  return 1
 }
 
 append_summary_row() {
@@ -139,10 +177,8 @@ rollback_completed() {
   for ((index=${#completed_nodes[@]} - 1; index>=0; index--)); do
     node="${completed_nodes[$index]}"
     previous="${previous_images[$node]}"
-    if run_node "$node" "deploy $previous" "$previous"; then
+    if reconcile_node_image "$node" "$previous"; then
       log "$node: rollback healthy"
-    elif run_node "$node" verify && [[ "$PARSED_SELECTED" == "$previous" ]]; then
-      log "$node: rollback response was interrupted, but verify confirmed the previous image"
     else
       log "ERROR: $node rollback failed and requires manual recovery"
       rollback_failed=1
@@ -214,18 +250,7 @@ for node in "${node_names[@]}"; do
   # triggers an idempotent restore of its preflight digest.
   completed_nodes+=("$node")
   if ! run_node "$node" "deploy $target_image" "$target_image"; then
-    log "$node: deployment result is uncertain; verifying current state before rollback"
-    if run_node "$node" verify; then
-      if [[ "$PARSED_SELECTED" == "$target_image" ]]; then
-        log "$node: verify confirms the target image was applied; rollback is required"
-      elif [[ "$PARSED_SELECTED" == "${previous_images[$node]}" ]]; then
-        log "$node: verify confirms the previous image is still active; rollback remains idempotent"
-      else
-        log "ERROR: $node is running unexpected image $PARSED_SELECTED"
-      fi
-    else
-      log "ERROR: $node state remains unknown; rollback will still target the preflight digest"
-    fi
+    log "$node: deployment result is uncertain; fleet rollback will reconcile after any remote lock clears"
     fail "$node deployment failed; fleet rollback will run"
   fi
   role="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .role' "$NODES_FILE")"
