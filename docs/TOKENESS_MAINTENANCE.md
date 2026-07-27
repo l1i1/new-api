@@ -45,6 +45,17 @@ The `Tokeness Production Deploy` workflow is the only automated production rollo
 
 If any node or CDN validation fails, the workflow redeploys the prior digest to every node changed by that run in reverse order. Node-local deployment also restores its previous image when pull, start, or health verification fails.
 
+Both the selected rollback image and requested target must be trusted
+`ghcr.io/l1i1/new-api@sha256:<digest>` references. Final success rechecks the
+selected image, runtime image, container state, health (or the local status
+endpoint when no Docker healthcheck exists), and application version. SSH,
+Docker, Compose, and readiness operations have hard deadlines; an interrupted
+or ambiguous node is included in idempotent rollback. Rollback reconciliation
+waits for any still-running remote transaction lock to clear, repeatedly
+verifies the selected image, and restores the preflight digest within a bounded
+20-minute node budget. The workflow reserves enough total runtime for the
+worst-case forward rollout and reverse-order fleet rollback.
+
 The GitHub `tokeness-production` Environment contains only:
 
 - `TOKENESS_DEPLOY_SSH_KEY`: a dedicated SSH private key.

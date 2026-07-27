@@ -17,10 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { isHttpUrl } from '@/lib/content-format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { getHomePageContent } from '../api'
 import type { HomePageContentResult } from '../types'
@@ -32,7 +34,8 @@ const STORAGE_KEY = 'home_page_content'
  * Supports both Markdown/HTML content and iframe URLs
  */
 export function useHomePageContent(): HomePageContentResult {
-  const [content, setContent] = useState<string>('')
+  const { i18n } = useTranslation()
+  const [rawContent, setRawContent] = useState<string>('')
   const [isLoaded, setIsLoaded] = useState(false)
 
   useEffect(() => {
@@ -42,7 +45,7 @@ export function useHomePageContent(): HomePageContentResult {
       // Load from localStorage first for immediate display
       const cached = localStorage.getItem(STORAGE_KEY)
       if (cached && mounted) {
-        setContent(cached)
+        setRawContent(cached)
       }
 
       try {
@@ -52,11 +55,11 @@ export function useHomePageContent(): HomePageContentResult {
         if (!mounted) return
 
         if (success && data) {
-          setContent(data)
+          setRawContent(data)
           localStorage.setItem(STORAGE_KEY, data)
         } else {
           // Clear content if API returns empty
-          setContent('')
+          setRawContent('')
           localStorage.removeItem(STORAGE_KEY)
         }
       } catch (error) {
@@ -78,6 +81,10 @@ export function useHomePageContent(): HomePageContentResult {
     }
   }, [])
 
+  const content = useMemo(
+    () => resolveTntContent(rawContent, i18n.language),
+    [i18n.language, rawContent]
+  )
   const isUrl = isHttpUrl(content)
 
   return { content, isLoaded, isUrl }

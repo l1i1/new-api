@@ -6,6 +6,10 @@ readonly NODES_FILE="$SCRIPT_DIR/nodes.json"
 readonly OPERATION="${1:-verify}"
 readonly INPUT_DIGEST="${2:-}"
 readonly SSH_KEY_PATH="${TOKENESS_SSH_KEY_PATH:-$HOME/.ssh/tokeness-deploy}"
+readonly NODE_VERIFY_TIMEOUT_SECONDS=300
+readonly NODE_DEPLOY_TIMEOUT_SECONDS=960
+readonly NODE_RECONCILE_TIMEOUT_SECONDS=1200
+readonly NODE_RECONCILE_RETRY_SECONDS=15
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -19,6 +23,7 @@ fail() {
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v ssh >/dev/null 2>&1 || fail "ssh is required"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
+command -v timeout >/dev/null 2>&1 || fail "timeout is required"
 [[ -r "$NODES_FILE" ]] || fail "missing $NODES_FILE"
 [[ -r "$SSH_KEY_PATH" ]] || fail "missing SSH key at $SSH_KEY_PATH"
 [[ "$OPERATION" == "verify" || "$OPERATION" == "deploy" ]] || fail "operation must be verify or deploy"
@@ -58,12 +63,14 @@ ROLLBACK_ARMED=0
 ROLLOUT_SUCCEEDED=0
 
 parse_result() {
-  local output="$1" line marker selected runtime state health started version
+  local output="$1" expected_image="${2:-}" line marker selected runtime state health started version
   line="$(grep '^TOKENESS_RESULT' <<< "$output" | tail -n 1)"
   [[ -n "$line" ]] || return 1
   IFS=$'\t' read -r marker selected runtime state health started version <<< "$line"
   [[ "$marker" == "TOKENESS_RESULT" && -n "$selected" && "$selected" == "$runtime" ]] || return 1
+  [[ -z "$expected_image" || "$selected" == "$expected_image" ]] || return 1
   [[ "$state" == "running" && -n "$version" ]] || return 1
+  [[ "$health" == "healthy" || "$health" == "none" ]] || return 1
   PARSED_SELECTED="$selected"
   PARSED_VERSION="$version"
   PARSED_STARTED="$started"
@@ -71,23 +78,62 @@ parse_result() {
 }
 
 run_node() {
-  local node="$1" command="$2" host port user output
+  local node="$1" command="$2" expected_image="${3:-}" timeout_override="${4:-}"
+  local host port user output timeout_seconds
   host="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .host' "$NODES_FILE")"
   port="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .port' "$NODES_FILE")"
   user="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .user' "$NODES_FILE")"
   [[ "$host" =~ ^[0-9A-Fa-f:.]+$ && "$port" =~ ^[0-9]+$ && "$user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] ||
     fail "invalid SSH metadata for $node"
+  timeout_seconds="$NODE_VERIFY_TIMEOUT_SECONDS"
+  [[ "$command" != deploy\ * ]] || timeout_seconds="$NODE_DEPLOY_TIMEOUT_SECONDS"
+  [[ -z "$timeout_override" ]] || timeout_seconds="$timeout_override"
 
   log "$node: $command"
-  if ! output="$(ssh "${ssh_args[@]}" -p "$port" "$user@$host" -- "$command" 2>&1)"; then
+  if ! output="$(timeout --signal=TERM --kill-after=15s "${timeout_seconds}s" \
+    ssh "${ssh_args[@]}" -p "$port" "$user@$host" -- "$command" 2>&1)"; then
     printf '%s\n' "$output"
     return 1
   fi
   printf '%s\n' "$output"
-  if ! parse_result "$output"; then
+  if ! parse_result "$output" "$expected_image"; then
     log "ERROR: $node returned an invalid deployment result"
     return 1
   fi
+}
+
+reconcile_node_image() {
+  local node="$1" desired_image="$2" deadline remaining attempt_timeout
+  deadline=$((SECONDS + NODE_RECONCILE_TIMEOUT_SECONDS))
+
+  while ((SECONDS < deadline)); do
+    remaining=$((deadline - SECONDS))
+    attempt_timeout="$NODE_VERIFY_TIMEOUT_SECONDS"
+    ((remaining >= attempt_timeout)) || attempt_timeout="$remaining"
+    if run_node "$node" verify '' "$attempt_timeout"; then
+      if [[ "$PARSED_SELECTED" == "$desired_image" ]]; then
+        return 0
+      fi
+
+      log "$node: reconciling $PARSED_SELECTED to $desired_image"
+    else
+      log "$node: verification is busy or unhealthy; attempting an idempotent restore"
+    fi
+
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || break
+    attempt_timeout="$NODE_DEPLOY_TIMEOUT_SECONDS"
+    ((remaining >= attempt_timeout)) || attempt_timeout="$remaining"
+    if run_node "$node" "deploy $desired_image" "$desired_image" "$attempt_timeout"; then
+      return 0
+    fi
+
+    ((SECONDS < deadline)) || break
+    log "$node: state is still busy or uncertain; retrying reconciliation"
+    sleep "$NODE_RECONCILE_RETRY_SECONDS"
+  done
+
+  return 1
 }
 
 append_summary_row() {
@@ -125,25 +171,28 @@ verify_public_routes() {
 }
 
 rollback_completed() {
-  local index node previous
+  local index node previous rollback_failed=0
   [[ "${#completed_nodes[@]}" -gt 0 ]] || return 0
   log "rolling back ${#completed_nodes[@]} updated node(s)"
   for ((index=${#completed_nodes[@]} - 1; index>=0; index--)); do
     node="${completed_nodes[$index]}"
     previous="${previous_images[$node]}"
-    if run_node "$node" "deploy $previous"; then
+    if reconcile_node_image "$node" "$previous"; then
       log "$node: rollback healthy"
     else
       log "ERROR: $node rollback failed and requires manual recovery"
+      rollback_failed=1
     fi
   done
+  return "$rollback_failed"
 }
 
 handle_exit() {
   local exit_code=$?
   trap - EXIT HUP INT TERM
+  set +e
   if [[ "$OPERATION" == "deploy" && "$ROLLBACK_ARMED" -eq 1 && "$ROLLOUT_SUCCEEDED" -eq 0 ]]; then
-    rollback_completed
+    rollback_completed || true
   fi
   exit "$exit_code"
 }
@@ -200,7 +249,8 @@ for node in "${node_names[@]}"; do
   # Include the current node before SSH so an ambiguous connection loss still
   # triggers an idempotent restore of its preflight digest.
   completed_nodes+=("$node")
-  if ! run_node "$node" "deploy $target_image"; then
+  if ! run_node "$node" "deploy $target_image" "$target_image"; then
+    log "$node: deployment result is uncertain; fleet rollback will reconcile after any remote lock clears"
     fail "$node deployment failed; fleet rollback will run"
   fi
   role="$(jq -r --arg node "$node" '.nodes[] | select(.name == $node) | .role' "$NODES_FILE")"

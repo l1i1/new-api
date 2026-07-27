@@ -33,7 +33,7 @@ jobs:
     name: ${{ inputs.operation == 'deploy' && 'Staged production rollout' || 'Production fleet verification' }}
     if: github.repository == 'l1i1/new-api' && github.ref == 'refs/heads/tokeness/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     environment: tokeness-production
     steps:
       - name: Check out Tokeness mainline
@@ -62,7 +62,9 @@ jobs:
           jq -e . deployment/tokeness/nodes.json >/dev/null
           bash -n deployment/tokeness/remote-command.sh
           bash -n deployment/tokeness/rollout.sh
-          bash deployment/tokeness/tests/rollout-test.sh
+          for test_script in deployment/tokeness/tests/*-test.sh; do
+            bash "$test_script"
+          done
 
       - name: Install restricted deployment identity
         env:

@@ -28,6 +28,7 @@ import {
 } from '@/features/dashboard/lib/api-info'
 import type { ApiInfoItem, PingStatus } from '@/features/dashboard/types'
 import { getBgColorClass } from '@/lib/colors'
+import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
 
 interface ApiInfoItemProps {
@@ -37,9 +38,13 @@ interface ApiInfoItemProps {
 }
 
 export function ApiInfoItemComponent(props: ApiInfoItemProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const item = props.item
   const status = props.status
+  const description = resolveTntContent(
+    item.description,
+    i18n.resolvedLanguage || i18n.language
+  )
 
   return (
     <div className='group hover:bg-muted/40 flex items-center justify-between gap-2 px-3 py-2.5 transition-colors sm:gap-3 sm:px-5 sm:py-3'>
@@ -57,7 +62,7 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
               {item.route}
             </span>
             <span className='text-muted-foreground/60 hidden truncate text-xs md:inline'>
-              {item.description}
+              {description}
             </span>
           </div>
           <span className='text-muted-foreground/40 truncate font-mono text-xs'>

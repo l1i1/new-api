@@ -63,6 +63,12 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
 
 import {
+  filterModelGroupOptions,
+  localizeModelGroupDescriptions,
+  modelGroupMatchesSearch,
+  type GroupOption,
+} from './model-group-selector/group-localization'
+import {
   modelGroupSelectorLayoutClasses,
   scrollSelectedOptionIntoView,
 } from './model-group-selector/layout'
@@ -71,14 +77,6 @@ interface ModelOption {
   label: string
   value: string
   category?: string
-  description?: string
-}
-
-interface GroupOption {
-  label: string
-  value: string
-  ratio?: number
-  desc?: string
   description?: string
 }
 
@@ -371,13 +369,17 @@ ModelSelector.displayName = 'ModelSelector'
  */
 export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
   ({ selectedGroup, groups, onGroupChange, className, disabled = false }) => {
-    const { t } = useTranslation()
+    const { i18n, t } = useTranslation()
     const [open, setOpen] = useState(false)
     const isMobile = useIsMobile()
+    const localizedGroups = useMemo(
+      () => localizeModelGroupDescriptions(groups, i18n.language),
+      [groups, i18n.language]
+    )
 
     const currentGroup = useMemo(
-      () => groups.find((g) => g.value === selectedGroup),
-      [groups, selectedGroup]
+      () => localizedGroups.find((g) => g.value === selectedGroup),
+      [localizedGroups, selectedGroup]
     )
 
     const handleGroupChange = useCallback(
@@ -397,19 +399,8 @@ export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
             : 'rounded-lg'
         )}
         filter={(value, search) => {
-          const group = groups.find((g) => g.value === value)
-          if (!group || !search) return 1
-
-          const searchTerm = search.toLowerCase()
-          const searchableFields = [
-            group.label,
-            group.description || '',
-            group.value,
-          ]
-            .join(' ')
-            .toLowerCase()
-
-          return searchableFields.includes(searchTerm) ? 1 : 0
+          const group = localizedGroups.find((g) => g.value === value)
+          return group && modelGroupMatchesSearch(group, search) ? 1 : 0
         }}
       >
         <CommandInput placeholder={t('Search groups...')} className='h-9' />
@@ -421,7 +412,7 @@ export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
             <div className='text-muted-foreground px-2 py-1 text-[10px] font-medium'>
               {t('Model Group')}
             </div>
-            {groups.map((group) => (
+            {localizedGroups.map((group) => (
               <CommandItem
                 key={group.value}
                 value={group.value}
@@ -472,6 +463,7 @@ export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
             triggerClassName={className}
             isDisabled={disabled}
             aria-expanded={open}
+            title={currentGroup?.desc || currentGroup?.description}
           />
         </DrawerTrigger>
         <DrawerContent className='max-h-[80vh]'>
@@ -480,7 +472,7 @@ export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
           </DrawerHeader>
           <div className='max-h-[calc(80vh-100px)] overflow-y-auto px-4 pb-6'>
             <div className='space-y-2'>
-              {groups.map((group) => (
+              {localizedGroups.map((group) => (
                 <Button
                   key={group.value}
                   variant='outline'
@@ -536,6 +528,7 @@ export const GroupSelector: React.FC<GroupSelectorProps> = React.memo(
               triggerClassName={className}
               isDisabled={disabled}
               aria-expanded={open}
+              title={currentGroup?.desc || currentGroup?.description}
             />
           }
         />
@@ -584,21 +577,25 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
   className,
   disabled = false,
 }) => {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const isMobile = useIsMobile()
   const groupScrollContainerRef = useRef<HTMLDivElement | null>(null)
   const selectedGroupOptionRef = useRef<HTMLButtonElement | null>(null)
   const selectedModelOptionRef = useRef<HTMLDivElement | null>(null)
+  const localizedGroups = useMemo(
+    () => localizeModelGroupDescriptions(groups, i18n.language),
+    [groups, i18n.language]
+  )
 
   const currentModel = useMemo(
     () => models.find((model) => model.value === selectedModel),
     [models, selectedModel]
   )
   const currentGroup = useMemo(
-    () => groups.find((group) => group.value === selectedGroup),
-    [groups, selectedGroup]
+    () => localizedGroups.find((group) => group.value === selectedGroup),
+    [localizedGroups, selectedGroup]
   )
   const filteredModels = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -619,6 +616,10 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
       return searchableText.includes(query)
     })
   }, [models, searchQuery])
+  const filteredGroups = useMemo(
+    () => filterModelGroupOptions(localizedGroups, searchQuery),
+    [localizedGroups, searchQuery]
+  )
 
   const handleModelChange = useCallback(
     (value: string) => {
@@ -670,6 +671,7 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
       disabled={disabled}
       role='combobox'
       size='sm'
+      title={currentGroup?.desc || currentGroup?.description}
       variant='outline'
     >
       <CpuIcon className='text-muted-foreground size-4 shrink-0' />
@@ -700,35 +702,42 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
         )}
         ref={groupScrollContainerRef}
       >
-        {groups.map((group) => {
-          const isSelected = selectedGroup === group.value
+        {filteredGroups.length === 0 ? (
+          <div className='text-muted-foreground px-2.5 py-2 text-[11px] leading-4'>
+            {t('No group found.')}
+          </div>
+        ) : (
+          filteredGroups.map((group) => {
+            const isSelected = selectedGroup === group.value
 
-          return (
-            <button
-              className={cn(
-                'flex min-w-0 items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-[12px] leading-4 transition-colors',
-                isSelected
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-              )}
-              disabled={disabled}
-              key={group.value}
-              onClick={() => handleGroupChange(group.value)}
-              ref={isSelected ? selectedGroupOptionRef : undefined}
-              type='button'
-            >
-              <span className='min-w-0 truncate font-medium'>
-                {group.label}
-              </span>
-              <Check
+            return (
+              <button
                 className={cn(
-                  'size-3.5 shrink-0',
-                  isSelected ? 'opacity-100' : 'opacity-0'
+                  'flex min-w-0 items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-[12px] leading-4 transition-colors',
+                  isSelected
+                    ? 'bg-primary/10 text-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                 )}
-              />
-            </button>
-          )
-        })}
+                disabled={disabled}
+                key={group.value}
+                onClick={() => handleGroupChange(group.value)}
+                ref={isSelected ? selectedGroupOptionRef : undefined}
+                title={group.desc || group.description}
+                type='button'
+              >
+                <span className='min-w-0 truncate font-medium'>
+                  {group.label}
+                </span>
+                <Check
+                  className={cn(
+                    'size-3.5 shrink-0',
+                    isSelected ? 'opacity-100' : 'opacity-0'
+                  )}
+                />
+              </button>
+            )
+          })
+        )}
       </div>
     </div>
   )

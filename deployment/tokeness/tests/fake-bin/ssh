@@ -12,19 +12,57 @@ command="${*: -1}"
 printf '%s|%s\n' "$host" "$command" >> "$TOKENESS_TEST_LOG"
 
 readonly OLD_IMAGE='ghcr.io/l1i1/new-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-selected="$OLD_IMAGE"
-version='v-test-old'
+readonly MUTABLE_IMAGE='ghcr.io/l1i1/new-api:legacy'
+state_file="$TOKENESS_TEST_STATE_DIR/$host"
+lock_file="$TOKENESS_TEST_STATE_DIR/$host.lock"
+if [[ ! -f "$state_file" ]]; then
+  printf '%s\n' "$OLD_IMAGE" > "$state_file"
+fi
 
-if [[ "$command" == deploy\ * ]]; then
-  selected="${command#deploy }"
-  if [[ "$selected" != "$OLD_IMAGE" ]]; then
-    version='v-test-new'
+if [[ -f "$lock_file" ]]; then
+  lock_attempts="$(<"$lock_file")"
+  if [[ "$lock_attempts" -gt 0 ]]; then
+    printf '%s\n' "$((lock_attempts - 1))" > "$lock_file"
+    printf 'another New API deployment is running\n' >&2
+    exit 1
+  fi
+  rm -f "$lock_file"
+fi
+
+selected="$(<"$state_file")"
+version='v-test-old'
+health='healthy'
+
+if [[ "$command" == verify && "$host" == "${TOKENESS_TEST_MUTABLE_HOST:-}" ]]; then
+  selected="$MUTABLE_IMAGE"
+elif [[ "$command" == deploy\ * ]]; then
+  requested="${command#deploy }"
+  if [[ "$host" == "${TOKENESS_TEST_FAIL_HOST:-}" && "${TOKENESS_TEST_MODE:-}" == 'noop-result' && "$requested" != "$OLD_IMAGE" ]]; then
+    selected="$(<"$state_file")"
+  else
+    selected="$requested"
+    printf '%s\n' "$selected" > "$state_file"
   fi
 fi
 
-if [[ "$host" == "${TOKENESS_TEST_FAIL_HOST:-}" && "$selected" != "$OLD_IMAGE" ]]; then
-  exit 255
+if [[ "$selected" != "$OLD_IMAGE" && "$selected" != "$MUTABLE_IMAGE" ]]; then
+  version='v-test-new'
+fi
+if [[ "$selected" != "$OLD_IMAGE" && \
+  "${TOKENESS_TEST_UNHEALTHY_TARGET:-0}" -eq 1 ]]; then
+  health='unhealthy'
 fi
 
-printf 'TOKENESS_RESULT\t%s\t%s\trunning\thealthy\t2026-07-27T00:00:00Z\t%s\n' \
-  "$selected" "$selected" "$version"
+if [[ "$host" == "${TOKENESS_TEST_FAIL_HOST:-}" && "$command" == deploy\ * ]]; then
+  if [[ "${TOKENESS_TEST_MODE:-}" == 'lock-after-apply' && "$selected" != "$OLD_IMAGE" ]]; then
+    printf '2\n' > "$lock_file"
+    exit 255
+  fi
+  if [[ "${TOKENESS_TEST_MODE:-}" == 'disconnect-both' || \
+    ("${TOKENESS_TEST_MODE:-}" == 'disconnect-after-apply' && "$selected" != "$OLD_IMAGE") ]]; then
+    exit 255
+  fi
+fi
+
+printf 'TOKENESS_RESULT\t%s\t%s\trunning\t%s\t2026-07-27T00:00:00Z\t%s\n' \
+  "$selected" "$selected" "$health" "$version"

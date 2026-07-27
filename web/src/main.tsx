@@ -118,6 +118,9 @@ if (!rootElement) {
   try {
     if (typeof window === 'undefined' || typeof document === 'undefined') return
     const apply = (name: string) => {
+      // The home route owns localized SEO metadata and updates it on language
+      // changes. Avoid racing that route with the asynchronous status refresh.
+      if (window.location.pathname === '/') return
       document.title = name
       const metaTitle = document.querySelector(
         'meta[name="title"]'

@@ -16,7 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useTranslation } from 'react-i18next'
+
 import { Button } from '@/components/ui/button'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { useModels } from './models-provider'
 
@@ -29,7 +32,12 @@ export function DescriptionCell({
   modelName,
   description,
 }: DescriptionCellProps) {
+  const { i18n } = useTranslation()
   const { setOpen, setDescriptionData } = useModels()
+  const localizedDescription = resolveTntContent(
+    description,
+    i18n.resolvedLanguage || i18n.language
+  )
 
   if (!description) {
     return <span className='text-muted-foreground text-xs'>-</span>
@@ -47,7 +55,7 @@ export function DescriptionCell({
         onClick={handleClick}
         className='text-muted-foreground hover:text-foreground block h-auto w-full cursor-pointer overflow-hidden p-0 text-left text-sm text-ellipsis whitespace-nowrap no-underline'
       >
-        {description}
+        {localizedDescription}
       </Button>
     </div>
   )

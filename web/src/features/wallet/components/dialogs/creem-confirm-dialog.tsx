@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { formatNumber } from '@/lib/format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { formatCreemPrice } from '../../lib/format'
 import type { CreemProduct } from '../../types'
@@ -41,7 +42,7 @@ export function CreemConfirmDialog({
   product,
   processing,
 }: CreemConfirmDialogProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
 
   if (!product) return null
 
@@ -74,7 +75,12 @@ export function CreemConfirmDialog({
       <div className='space-y-3 py-3 sm:space-y-4 sm:py-4'>
         <div className='flex items-center justify-between'>
           <span className='text-muted-foreground'>{t('Product')}</span>
-          <span className='font-medium'>{product.name}</span>
+          <span className='font-medium'>
+            {resolveTntContent(
+              product.name,
+              i18n.resolvedLanguage || i18n.language
+            )}
+          </span>
         </div>
         <div className='flex items-center justify-between'>
           <span className='text-muted-foreground'>{t('Price')}</span>

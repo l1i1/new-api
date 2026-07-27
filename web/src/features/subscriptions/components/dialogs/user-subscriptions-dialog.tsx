@@ -56,6 +56,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { formatQuota } from '@/lib/format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import {
   getAdminPlans,
@@ -111,7 +112,8 @@ function SubscriptionStatusBadge(props: {
 }
 
 export function UserSubscriptionsDialog(props: Props) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [plans, setPlans] = useState<PlanRecord[]>([])
@@ -131,10 +133,15 @@ export function UserSubscriptionsDialog(props: Props) {
   const planTitleMap = useMemo(() => {
     const map = new Map<number, string>()
     plans.forEach((p) => {
-      if (p.plan.id) map.set(p.plan.id, p.plan.title || `#${p.plan.id}`)
+      if (p.plan.id) {
+        map.set(
+          p.plan.id,
+          resolveTntContent(p.plan.title || `#${p.plan.id}`, contentLanguage)
+        )
+      }
     })
     return map
-  }, [plans])
+  }, [contentLanguage, plans])
 
   const loadData = useCallback(async () => {
     if (!props.user?.id) return
@@ -251,7 +258,7 @@ export function UserSubscriptionsDialog(props: Props) {
                   value: String(p.plan.id),
                   label: (
                     <>
-                      {p.plan.title}($
+                      {resolveTntContent(p.plan.title, contentLanguage)}($
                       {Number(p.plan.price_amount || 0).toFixed(2)})
                     </>
                   ),
@@ -266,7 +273,7 @@ export function UserSubscriptionsDialog(props: Props) {
                   <SelectGroup>
                     {plans.map((p) => (
                       <SelectItem key={p.plan.id} value={String(p.plan.id)}>
-                        {p.plan.title} ($
+                        {resolveTntContent(p.plan.title, contentLanguage)} ($
                         {Number(p.plan.price_amount || 0).toFixed(2)})
                       </SelectItem>
                     ))}

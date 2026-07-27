@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -25,13 +25,15 @@ import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
 import { formatQuota } from '@/lib/format'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { formatDuration, formatResetPeriod } from '../lib'
 import type { PlanRecord } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 
 export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
 
   return useMemo(
     (): ColumnDef<PlanRecord>[] => [
@@ -44,18 +46,23 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
         size: 60,
       },
       {
-        accessorFn: (row) => row.plan.title,
+        accessorFn: (row) => resolveTntContent(row.plan.title, contentLanguage),
         id: 'title',
         header: t('Plan'),
         meta: { mobileTitle: true },
         cell: ({ row }) => {
           const plan = row.original.plan
+          const planTitle = resolveTntContent(plan.title, contentLanguage)
+          const planSubtitle = resolveTntContent(
+            plan.subtitle || '',
+            contentLanguage
+          )
           return (
             <div className='max-w-full min-w-0'>
-              <div className='truncate font-medium'>{plan.title}</div>
-              {plan.subtitle && (
+              <div className='truncate font-medium'>{planTitle}</div>
+              {planSubtitle && (
                 <div className='text-muted-foreground truncate text-xs'>
-                  {plan.subtitle}
+                  {planSubtitle}
                 </div>
               )}
             </div>
@@ -200,6 +207,6 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
         meta: { pinned: 'right' as const },
       },
     ],
-    [t]
+    [contentLanguage, t]
   )
 }

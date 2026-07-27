@@ -37,12 +37,13 @@ import {
 } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
-export type ApiKeyGroupOption = {
-  value: string
-  label: string
-  desc?: string
-  ratio?: number | string
-}
+import {
+  filterApiKeyGroupOptions,
+  localizeApiKeyGroupDescriptions,
+  type ApiKeyGroupOption,
+} from './api-key-group-options'
+
+export type { ApiKeyGroupOption } from './api-key-group-options'
 
 type ApiKeyGroupComboboxProps = {
   options: ApiKeyGroupOption[]
@@ -103,25 +104,21 @@ export function ApiKeyGroupCombobox({
   placeholder,
   disabled,
 }: ApiKeyGroupComboboxProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [searchValue, setSearchValue] = useState('')
-  const selectedOption = options.find((option) => option.value === value)
+  const localizedOptions = useMemo(
+    () => localizeApiKeyGroupDescriptions(options, i18n.language),
+    [i18n.language, options]
+  )
+  const selectedOption = localizedOptions.find(
+    (option) => option.value === value
+  )
 
-  const filteredOptions = useMemo(() => {
-    const search = searchValue.trim().toLowerCase()
-    if (!search) return options
-
-    return options.filter((option) => {
-      const ratioText = String(option.ratio ?? '').toLowerCase()
-      return (
-        option.value.toLowerCase().includes(search) ||
-        option.label.toLowerCase().includes(search) ||
-        option.desc?.toLowerCase().includes(search) ||
-        ratioText.includes(search)
-      )
-    })
-  }, [options, searchValue])
+  const filteredOptions = useMemo(
+    () => filterApiKeyGroupOptions(localizedOptions, searchValue),
+    [localizedOptions, searchValue]
+  )
 
   const handleSelect = (selectedValue: string) => {
     onValueChange(selectedValue)

@@ -27,6 +27,7 @@ import { getPreviewText } from '@/features/dashboard/lib'
 import type { AnnouncementItem } from '@/features/dashboard/types'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
+import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
 
 import { PanelWrapper } from '../ui/panel-wrapper'
@@ -46,7 +47,7 @@ const AnnouncementStatusDot = memo(function AnnouncementStatusDot(props: {
 })
 
 export function AnnouncementsPanel() {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const { items: list, loading } = useAnnouncements()
   const [selectedAnnouncement, setSelectedAnnouncement] =
     useState<AnnouncementItem | null>(null)
@@ -78,6 +79,10 @@ export function AnnouncementsPanel() {
         <div>
           {list.map((item: AnnouncementItem, idx: number) => {
             const key = item.id ?? `announcement-${idx}`
+            const content = resolveTntContent(
+              item.content,
+              i18n.resolvedLanguage || i18n.language
+            )
             return (
               <button
                 key={key}
@@ -92,7 +97,7 @@ export function AnnouncementsPanel() {
                   <AnnouncementStatusDot type={item.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-1'>
                     <p className='line-clamp-1 text-sm font-medium'>
-                      {getPreviewText(item.content)}
+                      {getPreviewText(content)}
                     </p>
                     <div className='flex items-center justify-between'>
                       {item.publishDate && (

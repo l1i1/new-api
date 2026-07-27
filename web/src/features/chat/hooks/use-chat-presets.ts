@@ -17,9 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { SystemStatus } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import {
   type ChatPreset,
@@ -64,18 +66,29 @@ function extractChats(status: SystemStatus | null): RawChatConfig {
   return (raw as RawChatConfig) ?? getStoredStatusChats()
 }
 
+export function localizeChatPresetLabels(
+  presets: ChatPreset[],
+  language?: string
+): ChatPreset[] {
+  return presets.map((preset) => {
+    const name = resolveTntContent(preset.name, language)
+    return name === preset.name ? preset : { ...preset, name }
+  })
+}
+
 export function useChatPresets(): {
   chatPresets: ChatPreset[]
   serverAddress: string
 } {
+  const { i18n } = useTranslation()
   const { status } = useStatus()
 
   const serverAddress = useMemo(() => extractServerAddress(status), [status])
 
   const chatPresets = useMemo(() => {
     const raw = extractChats(status)
-    return parseChatConfig(raw)
-  }, [status])
+    return localizeChatPresetLabels(parseChatConfig(raw), i18n.language)
+  }, [i18n.language, status])
 
   return {
     chatPresets,
