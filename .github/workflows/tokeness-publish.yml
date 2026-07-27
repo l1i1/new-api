@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: tokeness-publish-${{ github.ref }}
+  group: tokeness-publish
   cancel-in-progress: false
 
 env:
@@ -22,10 +22,15 @@ env:
 jobs:
   test-and-publish:
     name: Test and publish linux/amd64
+    if: github.repository == 'l1i1/new-api' && github.ref == 'refs/heads/tokeness/main'
     runs-on: ubuntu-latest
+    environment: tokeness-release
     steps:
-      - name: Check out
+      - name: Check out Tokeness mainline
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: tokeness/main
+          fetch-depth: 1
 
       - name: Validate and set release version
         env:
@@ -56,6 +61,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reject an existing release tag
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set +e
+          INSPECT_OUTPUT=$(docker buildx imagetools inspect \
+            "${REGISTRY_IMAGE}:${RELEASE_VERSION}" 2>&1)
+          INSPECT_STATUS=$?
+          set -e
+
+          if [ "$INSPECT_STATUS" -eq 0 ]; then
+            echo "::error::Image tag ${REGISTRY_IMAGE}:${RELEASE_VERSION} already exists"
+            exit 1
+          fi
+          if printf '%s' "$INSPECT_OUTPUT" | grep -Eiq 'manifest unknown|not found'; then
+            echo "Release tag is available"
+            exit 0
+          fi
+
+          echo "::error::Could not establish whether the release tag exists"
+          exit "$INSPECT_STATUS"
 
       - name: Build and publish immutable image
         id: build

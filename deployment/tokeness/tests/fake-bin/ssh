@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+host=''
+for argument in "$@"; do
+  if [[ "$argument" == root@* ]]; then
+    host="${argument#root@}"
+  fi
+done
+command="${*: -1}"
+
+printf '%s|%s\n' "$host" "$command" >> "$TOKENESS_TEST_LOG"
+
+readonly OLD_IMAGE='ghcr.io/l1i1/new-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+selected="$OLD_IMAGE"
+version='v-test-old'
+
+if [[ "$command" == deploy\ * ]]; then
+  selected="${command#deploy }"
+  if [[ "$selected" != "$OLD_IMAGE" ]]; then
+    version='v-test-new'
+  fi
+fi
+
+if [[ "$host" == "${TOKENESS_TEST_FAIL_HOST:-}" && "$selected" != "$OLD_IMAGE" ]]; then
+  exit 255
+fi
+
+printf 'TOKENESS_RESULT\t%s\t%s\trunning\thealthy\t2026-07-27T00:00:00Z\t%s\n' \
+  "$selected" "$selected" "$version"

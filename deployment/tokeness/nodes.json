@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "registry_image": "ghcr.io/l1i1/new-api",
+  "nodes": [
+    {
+      "name": "JP-N2",
+      "host": "156.246.94.70",
+      "port": 12956,
+      "user": "root",
+      "role": "canary"
+    },
+    {
+      "name": "EV-JP",
+      "host": "103.214.68.250",
+      "port": 22,
+      "user": "root",
+      "role": "replica"
+    },
+    {
+      "name": "JP-M",
+      "host": "149.13.91.236",
+      "port": 29134,
+      "user": "root",
+      "role": "primary"
+    },
+    {
+      "name": "EV-JP2",
+      "host": "216.73.158.156",
+      "port": 22,
+      "user": "root",
+      "role": "cdn-origin"
+    }
+  ],
+  "public_endpoints": [
+    "https://n.tokeness.io",
+    "https://n.tokeness.cn"
+  ]
+}

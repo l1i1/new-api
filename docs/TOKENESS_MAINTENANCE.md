@@ -34,6 +34,30 @@ Tokeness builds only the canonical `web` UI. Upstream retired the Classic fronte
 
 ## Production Rollout
 
-Use a staged rollout and verify the version, container health, local status endpoint, and prompt-cache regression suite after each step. Deploy non-origin replicas first and the CDN origin last. Keep the previous digest available for rollback.
+The `Tokeness Production Deploy` workflow is the only automated production rollout path. It accepts either `verify` or `deploy`:
+
+1. Run `verify` after provisioning or whenever node drift is suspected.
+2. For a release, copy the immutable digest from `Tokeness Publish GHCR`.
+3. Run `deploy`, enter that digest, and set confirmation to `deploy-production`.
+4. The workflow verifies all nodes first, then deploys `JP-N2`, `EV-JP`, `JP-M`, and finally the `EV-JP2` CDN origin.
+5. Every node must report the selected digest, runtime digest, running state, health, start time, and application version.
+6. After the origin changes, the workflow probes `/v1/models` through the public CDN domains and requires their `X-New-Api-Version` header to match EV-JP2.
+
+If any node or CDN validation fails, the workflow redeploys the prior digest to every node changed by that run in reverse order. Node-local deployment also restores its previous image when pull, start, or health verification fails.
+
+The GitHub `tokeness-production` Environment contains only:
+
+- `TOKENESS_DEPLOY_SSH_KEY`: a dedicated SSH private key.
+- `TOKENESS_SSH_KNOWN_HOSTS`: pinned host keys for all four nodes.
+
+The public key must be installed on each node with a forced command and SSH restrictions:
+
+```text
+restrict,command="/usr/local/sbin/tokeness-new-api-deploy" ssh-ed25519 ... tokeness-gha-deploy
+```
+
+Install `deployment/tokeness/remote-command.sh` as `/usr/local/sbin/tokeness-new-api-deploy`, owned by root and mode `0755`. The forced command permits only `verify` and `deploy ghcr.io/l1i1/new-api@sha256:<digest>`; it does not provide a general-purpose production shell.
+
+Use a staged rollout and verify the version, container health, local status endpoint, and prompt-cache regression suite after deployment. The workflow performs deployment and routing checks; authenticated prompt-cache probes remain a separate release acceptance test so production API keys are not exposed to the deployment job.
 
 Production hosts must not run periodic `docker compose pull && docker compose up -d`. Scheduled automation belongs in the upstream candidate workflow; production changes require an explicit reviewed digest.
