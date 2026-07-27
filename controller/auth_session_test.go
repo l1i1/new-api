@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -65,6 +67,94 @@ func TestAuthLogoutRejectsRefreshCookieSessionMismatch(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, model.UserSessionStatusActive, stored.Status)
 	}
+}
+
+func TestRefreshAuthMigratesLegacyDashboardCookie(t *testing.T) {
+	previousDB := model.DB
+	previousRedis := common.RedisEnabled
+	previousSecret := common.SessionSecret
+	previousSecure := common.SessionCookieSecure
+	previousActiveLimit := common.UserSessionActiveLimit
+	previousIssuanceLimit := common.UserSessionIssuanceLimit
+	previousIssuanceWindow := common.UserSessionIssuanceWindowSeconds
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}))
+	model.DB = db
+	common.RedisEnabled = false
+	common.SessionSecret = "legacy-session-migration-test-secret"
+	common.SessionCookieSecure = false
+	common.UserSessionActiveLimit = 50
+	common.UserSessionIssuanceLimit = 50
+	common.UserSessionIssuanceWindowSeconds = int64(common.DefaultUserSessionIssuanceWindowSeconds)
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.RedisEnabled = previousRedis
+		common.SessionSecret = previousSecret
+		common.SessionCookieSecure = previousSecure
+		common.UserSessionActiveLimit = previousActiveLimit
+		common.UserSessionIssuanceLimit = previousIssuanceLimit
+		common.UserSessionIssuanceWindowSeconds = previousIssuanceWindow
+	})
+
+	user := &model.User{
+		Username: "legacy-cookie-user", Password: "unused", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(user).Error)
+
+	router := gin.New()
+	router.Use(middleware.LegacyDashboardSession())
+	router.GET("/seed", func(c *gin.Context) {
+		value, ok := middleware.LegacyDashboardSessionValue(c, "id")
+		assert.False(t, ok)
+		assert.Nil(t, value)
+		// The migration must support the integer representation emitted by the
+		// old gin-contrib/sessions cookie store.
+		sessions.Default(c).Set("id", user.Id)
+		require.NoError(t, sessions.Default(c).Save())
+		c.Status(http.StatusNoContent)
+	})
+	router.POST("/api/user/auth/refresh", RefreshAuth)
+
+	seedRequest := httptest.NewRequest(http.MethodGet, "/seed", nil)
+	seedResponse := httptest.NewRecorder()
+	router.ServeHTTP(seedResponse, seedRequest)
+	seedCookies := seedResponse.Result().Cookies()
+	require.Len(t, seedCookies, 1)
+
+	refreshRequest := httptest.NewRequest(http.MethodPost, "/api/user/auth/refresh", nil)
+	refreshRequest.AddCookie(seedCookies[0])
+	refreshResponse := httptest.NewRecorder()
+	router.ServeHTTP(refreshResponse, refreshRequest)
+
+	assert.Equal(t, http.StatusOK, refreshResponse.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			AccessToken string `json:"access_token"`
+			Session     struct {
+				SID string `json:"sid"`
+			} `json:"session"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(refreshResponse.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.NotEmpty(t, response.Data.AccessToken)
+	assert.NotEmpty(t, response.Data.Session.SID)
+	var session model.UserSession
+	require.NoError(t, db.Where("sid = ?", response.Data.Session.SID).First(&session).Error)
+	assert.Equal(t, user.Id, session.UserID)
+	assert.Equal(t, "legacy-cookie", session.LoginMethod)
+	refreshCookies := refreshResponse.Result().Cookies()
+	require.Condition(t, func() bool {
+		for _, cookie := range refreshCookies {
+			if cookie.Name == service.RefreshCookieName {
+				return cookie.Value != ""
+			}
+		}
+		return false
+	})
 }
 
 func TestWriteAuthSessionErrorMapsSessionGrowthLimits(t *testing.T) {

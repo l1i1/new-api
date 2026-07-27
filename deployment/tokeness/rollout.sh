@@ -33,7 +33,8 @@ jq -e '
   (.registry_image | type == "string") and
   (.nodes | type == "array" and length == 4) and
   ([.nodes[].name] | unique | length == 4) and
-  (.public_endpoints | type == "array" and length > 0)
+  (.public_endpoints | type == "array" and length > 0) and
+  (.web_endpoints | type == "array" and length > 0)
 ' "$NODES_FILE" >/dev/null || fail "invalid nodes.json"
 
 registry_image="$(jq -r '.registry_image' "$NODES_FILE")"
@@ -160,8 +161,39 @@ verify_public_endpoint() {
   log "$endpoint: CDN route healthy version=$actual_version status=$status"
 }
 
+verify_web_endpoint() {
+  local endpoint="$1" expected_version="$2" path="$3" headers body status actual_version probe_url
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  probe_url="${endpoint%/}${path}"
+  status="$(curl -sS --connect-timeout 15 --max-time 45 \
+    -H 'Cache-Control: no-cache' -D "$headers" -o "$body" -w '%{http_code}' "$probe_url")" || {
+      rm -f "$headers" "$body"
+      return 1
+    }
+  actual_version="$(awk -F ': *' 'tolower($1) == "x-new-api-version" {gsub(/\r/, "", $2); print $2}' "$headers" | tail -n 1)"
+  if [[ "$path" == "/api/status" ]]; then
+    grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$body" || {
+      rm -f "$headers" "$body"
+      return 1
+    }
+  fi
+  rm -f "$headers" "$body"
+  [[ "$status" == "200" ]] || return 1
+  [[ "$actual_version" == "$expected_version" ]] || return 1
+  log "$endpoint$path: dashboard route healthy version=$actual_version status=$status"
+}
+
 verify_public_routes() {
-  local expected_version="$1" endpoint
+  local expected_version="$1" endpoint path
+  while IFS= read -r endpoint; do
+    for path in / /api/status; do
+      if ! verify_web_endpoint "$endpoint" "$expected_version" "$path"; then
+        log "ERROR: $endpoint$path did not expose the expected dashboard version $expected_version"
+        return 1
+      fi
+    done
+  done < <(jq -r '.web_endpoints[]' "$NODES_FILE")
   while IFS= read -r endpoint; do
     if ! verify_public_endpoint "$endpoint" "$expected_version"; then
       log "ERROR: $endpoint did not expose expected version $expected_version through the CDN"

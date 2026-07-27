@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -18,6 +20,18 @@ func RefreshAuth(c *gin.Context) {
 	setAuthNoStore(c)
 	rawRefreshToken, err := c.Cookie(service.RefreshCookieName)
 	if err != nil || rawRefreshToken == "" {
+		if rawRefreshToken == "" {
+			bundle, user, found, migrationErr := migrateLegacyDashboardSession(c)
+			if found {
+				if migrationErr != nil {
+					service.ClearRefreshCookie(c)
+					writeAuthSessionError(c, migrationErr)
+					return
+				}
+				writeAuthBundle(c, bundle, user)
+				return
+			}
+		}
 		service.ClearRefreshCookie(c)
 		writeAuthSessionError(c, service.ErrRefreshTokenInvalid)
 		return
@@ -30,6 +44,10 @@ func RefreshAuth(c *gin.Context) {
 		writeAuthSessionError(c, err)
 		return
 	}
+	writeAuthBundle(c, bundle, user)
+}
+
+func writeAuthBundle(c *gin.Context, bundle *service.AuthBundle, user *model.User) {
 	service.WriteRefreshCookie(c, bundle.RefreshToken)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -42,6 +60,64 @@ func RefreshAuth(c *gin.Context) {
 			"session":           bundle.Session,
 		},
 	})
+}
+
+// migrateLegacyDashboardSession bridges the signed cookie used before the
+// stateless dashboard auth release. It runs only when the new refresh cookie
+// is absent, and it validates the user against the database before issuing a
+// new server-side session.
+func migrateLegacyDashboardSession(c *gin.Context) (*service.AuthBundle, *model.User, bool, error) {
+	value, present := middleware.LegacyDashboardSessionValue(c, "id")
+	if !present {
+		return nil, nil, false, nil
+	}
+
+	userID, ok := legacyDashboardUserID(value)
+	if !ok || userID <= 0 {
+		middleware.ClearLegacyDashboardSession(c)
+		return nil, nil, true, service.ErrLoginSessionRevoked
+	}
+	user, err := model.GetUserById(userID, false)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	if user.Status != common.UserStatusEnabled {
+		middleware.ClearLegacyDashboardSession(c)
+		return nil, nil, true, service.ErrLoginSessionRevoked
+	}
+
+	bundle, err := service.CreateLoginSession(
+		user.Id,
+		"legacy-cookie",
+		c.ClientIP(),
+		c.Request.UserAgent(),
+	)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	return bundle, user, true, nil
+}
+
+func legacyDashboardUserID(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		if typed > int64(^uint(0)>>1) || typed < -int64(^uint(0)>>1)-1 {
+			return 0, false
+		}
+		return int(typed), true
+	case float64:
+		if typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func AuthLogout(c *gin.Context) {
@@ -78,11 +154,13 @@ func AuthLogout(c *gin.Context) {
 				"message": "",
 				"data":    gin.H{"revoked_sid": identity.SessionID, "cookie_cleared": cookieCleared},
 			})
+			middleware.ClearLegacyDashboardSession(c)
 			return
 		}
 	}
 	if cookieErr != nil || rawRefreshToken == "" {
 		service.ClearRefreshCookie(c)
+		middleware.ClearLegacyDashboardSession(c)
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 		return
 	}
@@ -91,6 +169,7 @@ func AuthLogout(c *gin.Context) {
 		return
 	}
 	service.ClearRefreshCookie(c)
+	middleware.ClearLegacyDashboardSession(c)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 

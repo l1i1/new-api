@@ -41,7 +41,7 @@ The `Tokeness Production Deploy` workflow is the only automated production rollo
 3. Run `deploy`, enter that digest, and set confirmation to `deploy-production`.
 4. The workflow verifies all nodes first, then deploys `JP-N2`, `EV-JP`, `JP-M`, and finally the `EV-JP2` CDN origin.
 5. Every node must report the selected digest, runtime digest, running state, health, start time, and application version.
-6. After the origin changes, the workflow probes `/v1/models` through the public CDN domains and requires their `X-New-Api-Version` header to match EV-JP2.
+6. After the origin changes, the workflow probes the dashboard root and `/api/status` through the main web origin, then probes `/v1/models` through each public API CDN domain. Every response must expose the expected `X-New-Api-Version` header where applicable.
 
 If any node or CDN validation fails, the workflow redeploys the prior digest to every node changed by that run in reverse order. Node-local deployment also restores its previous image when pull, start, or health verification fails.
 
@@ -72,3 +72,28 @@ Install `deployment/tokeness/remote-command.sh` as `/usr/local/sbin/tokeness-new
 Use a staged rollout and verify the version, container health, local status endpoint, and prompt-cache regression suite after deployment. The workflow performs deployment and routing checks; authenticated prompt-cache probes remain a separate release acceptance test so production API keys are not exposed to the deployment job.
 
 Production hosts must not run periodic `docker compose pull && docker compose up -d`. Scheduled automation belongs in the upstream candidate workflow; production changes require an explicit reviewed digest.
+
+## CDN Client IP and Authentication Compatibility
+
+The dashboard and relay are behind two different CDN products. The EV-JP2
+OpenResty origin uses `real_ip_header X-Forwarded-For` only after loading the
+published Cloudflare and Tencent EdgeOne CIDRs from
+`nodes/servers/configs/ev-jp2/nginx/cdn-real-ip.conf`. The generated include
+must be refreshed with `sync-cdn-real-ip.ps1` when either provider changes its
+network list. Never configure a wildcard trusted-proxy range or trust an
+arbitrary client-supplied forwarding header. The resulting address is passed
+to New API, so rate limits and audit logs are keyed by the real client rather
+than the shared CDN egress address.
+
+New API's stateless dashboard authentication retains the signed legacy `session`
+cookie as a migration input. When a browser has no new refresh cookie but still
+has a valid legacy cookie, `/api/user/auth/refresh` issues a new server-side
+session and access token. This one-time bridge prevents an image upgrade from
+logging out every existing browser. Invalid, disabled, or expired legacy state
+is never converted into a new session.
+
+The production rollout must remain on the previous digest until both the CDN
+real-IP configuration and the legacy-session migration tests pass. A release is
+not accepted when a repeated anonymous login probe returns 429, when the
+dashboard root is unavailable, or when a legacy signed session cannot be
+migrated through `/api/user/auth/refresh`.

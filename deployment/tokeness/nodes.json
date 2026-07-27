@@ -34,5 +34,8 @@
   "public_endpoints": [
     "https://n.tokeness.io",
     "https://n.tokeness.cn"
+  ],
+  "web_endpoints": [
+    "https://tokeness.io"
   ]
 }

@@ -184,6 +184,7 @@ func main() {
 	server.Use(middleware.Version())
 	server.Use(middleware.I18n())
 	middleware.SetUpLogger(server)
+	server.Use(middleware.LegacyDashboardSession())
 	InjectUmamiAnalytics()
 	InjectGoogleAnalytics()
 
