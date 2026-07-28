@@ -107,6 +107,7 @@ const models: PricingModel[] = [
     model_ratio: 1,
     completion_ratio: 1,
     enable_groups: ['default'],
+    localized_tags: 'Free',
   },
 ]
 
@@ -258,6 +259,45 @@ describe('pricing vendor localization', () => {
 
     await act(async () => i18n.changeLanguage('zh'))
     assert.equal(container.textContent, '阿里云|智谱')
+
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  test('renders localized model tags without exposing tnt markup', async () => {
+    await i18n.changeLanguage('en')
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <PricingSidebar
+            quotaTypeFilter='all'
+            endpointTypeFilter='all'
+            vendorFilter='all'
+            groupFilter='all'
+            tagFilter='all'
+            onQuotaTypeChange={() => undefined}
+            onEndpointTypeChange={() => undefined}
+            onVendorChange={() => undefined}
+            onGroupChange={() => undefined}
+            onTagChange={() => undefined}
+            vendors={vendors}
+            groups={[]}
+            tags={['free']}
+            models={models}
+            hasActiveFilters={false}
+            onClearFilters={() => undefined}
+          />
+        </I18nextProvider>
+      )
+    })
+
+    assert.ok(container.textContent?.includes('free'))
+    assert.equal(container.textContent?.includes('<tnt'), false)
+    assert.equal(container.textContent?.includes('免费'), false)
 
     await act(async () => root.unmount())
     container.remove()

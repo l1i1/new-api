@@ -105,14 +105,19 @@ describe('usePricingData vendor localization', () => {
     }) as typeof api.get
     await i18n.changeLanguage('en')
 
-    const observedNames: string[] = []
+    const observedValues: string[] = []
     function Probe() {
       const { models } = usePricingData()
       const name = models[0]?.vendor_localized_name
+      const tags = models[0]?.localized_tags
       useEffect(() => {
-        if (name) observedNames.push(name)
-      }, [name])
-      return <span>{name}</span>
+        if (name && tags) observedValues.push(`${name}|${tags}`)
+      }, [name, tags])
+      return (
+        <span>
+          {name}|{tags}
+        </span>
+      )
     }
 
     const container = document.createElement('div')
@@ -136,6 +141,7 @@ describe('usePricingData vendor localization', () => {
           model_ratio: 1,
           completion_ratio: 1,
           enable_groups: ['default'],
+          tags: '<tnt l="zh">免费</tnt><tnt l="en">Free</tnt>',
         },
       ],
       vendors: [
@@ -160,15 +166,15 @@ describe('usePricingData vendor localization', () => {
         </QueryClientProvider>
       )
     })
-    await waitForText('Alibaba')
-    assert.equal(container.textContent, 'Alibaba')
+    await waitForText('Alibaba|Free')
+    assert.equal(container.textContent, 'Alibaba|Free')
 
     await act(async () => {
       await i18n.changeLanguage('zh')
     })
-    await waitForText('阿里巴巴')
-    assert.equal(container.textContent, '阿里巴巴')
-    assert.deepEqual(observedNames, ['Alibaba', '阿里巴巴'])
+    await waitForText('阿里巴巴|免费')
+    assert.equal(container.textContent, '阿里巴巴|免费')
+    assert.deepEqual(observedValues, ['Alibaba|Free', '阿里巴巴|免费'])
 
     await act(async () => root.unmount())
     queryClient.clear()

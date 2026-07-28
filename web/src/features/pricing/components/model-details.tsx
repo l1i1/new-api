@@ -450,7 +450,7 @@ function ModelBackendProviderSection(props: { model: PricingModel }) {
   const model = props.model
   const groups = normalizeCatalogItems(model.enable_groups)
   const endpoints = normalizeCatalogItems(model.supported_endpoint_types)
-  const tags = parseTags(model.tags)
+  const tags = parseTags(model.localized_tags)
   const cells: React.ReactNode[] = []
 
   if (model.vendor_name) {

@@ -354,10 +354,10 @@ export function usePricingColumns(
 
     // Tags column
     {
-      accessorKey: 'tags',
+      accessorKey: 'localized_tags',
       header: t('Tags'),
       cell: ({ row }) => {
-        const tags = parseTags(row.original.tags)
+        const tags = parseTags(row.original.localized_tags)
         return (
           <BadgeListCell
             items={tags.map((tag) => (

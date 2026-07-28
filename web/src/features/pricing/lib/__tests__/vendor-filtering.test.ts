@@ -20,7 +20,12 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
 import type { PricingModel } from '../../types'
-import { filterBySearch, filterByVendor } from '../filters'
+import {
+  extractAllTags,
+  filterBySearch,
+  filterByTag,
+  filterByVendor,
+} from '../filters'
 
 const vendorName = '阿里巴巴'
 const model: PricingModel = {
@@ -30,6 +35,8 @@ const model: PricingModel = {
   vendor_name: vendorName,
   vendor_display_name: '<tnt l="zh">阿里巴巴</tnt><tnt l="en">Alibaba</tnt>',
   vendor_localized_name: 'Alibaba',
+  tags: '<tnt l="zh">免费</tnt><tnt l="en">Free</tnt>',
+  localized_tags: 'Free',
   quota_type: 0,
   model_ratio: 1,
   completion_ratio: 1,
@@ -47,6 +54,15 @@ describe('pricing vendor filtering', () => {
     assert.deepEqual(filterBySearch([chineseModel], 'Alibaba'), [])
     assert.deepEqual(filterBySearch([chineseModel], '<tnt'), [])
     assert.deepEqual(filterBySearch([chineseModel], 'l="en"'), [])
+  })
+
+  test('uses only localized model tags for search and tag filtering', () => {
+    assert.deepEqual(filterBySearch([model], 'Free'), [model])
+    assert.deepEqual(filterBySearch([model], '免费'), [])
+    assert.deepEqual(filterBySearch([model], '<tnt'), [])
+    assert.deepEqual(filterByTag([model], 'free'), [model])
+    assert.deepEqual(filterByTag([model], '免费'), [])
+    assert.deepEqual(extractAllTags([model]), ['free'])
   })
 
   test('keeps vendor filtering bound to the canonical name', () => {

@@ -43,7 +43,7 @@ export function filterBySearch(
     (m) =>
       m.model_name?.toLowerCase().includes(lowerQuery) ||
       m.description?.toLowerCase().includes(lowerQuery) ||
-      m.tags?.toLowerCase().includes(lowerQuery) ||
+      m.localized_tags?.toLowerCase().includes(lowerQuery) ||
       m.vendor_localized_name?.toLowerCase().includes(lowerQuery)
   )
 }
@@ -176,7 +176,7 @@ export function extractAllTags(models: PricingModel[]): string[] {
 
   models.forEach((model) => {
     if (model.tags) {
-      const tags = parseTags(model.tags)
+      const tags = parseTags(model.localized_tags)
       tags.forEach((tag) => {
         tagSet.add(tag.toLowerCase())
       })
@@ -197,8 +197,8 @@ export function filterByTag(
 
   const tagLower = tag.toLowerCase()
   return models.filter((m) => {
-    if (!m.tags) return false
-    const modelTags = parseTags(m.tags).map((t) => t.toLowerCase())
+    if (!m.localized_tags) return false
+    const modelTags = parseTags(m.localized_tags).map((t) => t.toLowerCase())
     return modelTags.includes(tagLower)
   })
 }

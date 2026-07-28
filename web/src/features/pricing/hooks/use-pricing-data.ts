@@ -21,6 +21,7 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
+import { resolveTntContent } from '@/lib/tnt-content'
 
 import { getPricing } from '../api'
 import { localizePricingVendorName } from '../lib/vendor-localization'
@@ -69,6 +70,7 @@ export function usePricingData() {
           : undefined,
         vendor_icon: vendor?.icon,
         vendor_description: vendor?.description,
+        localized_tags: resolveTntContent(model.tags || '', language),
         group_ratio: data.group_ratio,
       }
     })

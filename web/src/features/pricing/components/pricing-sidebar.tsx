@@ -226,7 +226,7 @@ export function PricingSidebar(props: PricingSidebarProps) {
       value: tag,
       label: tag,
       count: countBy(props.models, (model) =>
-        parseTags(model.tags)
+        parseTags(model.localized_tags)
           .map((item) => item.toLowerCase())
           .includes(tag.toLowerCase())
       ),
