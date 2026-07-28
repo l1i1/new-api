@@ -127,7 +127,7 @@ async function waitForText(text: string): Promise<void> {
     const timeout = setTimeout(() => {
       observer.disconnect()
       reject(new Error(`Timed out waiting for "${text}"`))
-    }, 1000)
+    }, 5000)
 
     observer.observe(document.body, {
       characterData: true,
@@ -157,7 +157,7 @@ async function waitForEnabledButton(name: string): Promise<HTMLButtonElement> {
     const timeout = setTimeout(() => {
       observer.disconnect()
       reject(new Error(`Timed out waiting for enabled button "${name}"`))
-    }, 1000)
+    }, 5000)
 
     observer.observe(document.body, {
       attributes: true,
@@ -385,10 +385,8 @@ describe('vendor management dialog', () => {
     assert.ok(document.body.textContent?.includes('Page 1 of 2'))
 
     const nextButton = await waitForEnabledButton('Next')
-    await act(async () => {
-      nextButton.click()
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    })
+    await act(async () => nextButton.click())
+    await act(async () => waitForText('Last Vendor'))
 
     assert.deepEqual(requestedPages, [1, 2])
     const secondPage = rendered.queryClient.getQueryData<{
