@@ -68,7 +68,7 @@ Object.defineProperty(globalThis, 'matchMedia', {
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
-const { QueryClient, QueryClientProvider } =
+const { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
@@ -127,7 +127,7 @@ async function waitForText(text: string): Promise<void> {
     const timeout = setTimeout(() => {
       observer.disconnect()
       reject(new Error(`Timed out waiting for "${text}"`))
-    }, 5000)
+    }, 1000)
 
     observer.observe(document.body, {
       characterData: true,
@@ -157,7 +157,7 @@ async function waitForEnabledButton(name: string): Promise<HTMLButtonElement> {
     const timeout = setTimeout(() => {
       observer.disconnect()
       reject(new Error(`Timed out waiting for enabled button "${name}"`))
-    }, 5000)
+    }, 1000)
 
     observer.observe(document.body, {
       attributes: true,
@@ -174,19 +174,20 @@ async function renderVendorManagement(options: {
   onCreateVendor: () => void
   onEditVendor: (vendor: Vendor) => void
   initialVendors?: Vendor[]
+  initialVendorTotal?: number
 }) {
   const container = document.createElement('div')
   document.body.append(container)
   const root = createRoot(container)
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
   if (options.initialVendors) {
     queryClient.setQueryData(['vendors', 'list', { p: 1, page_size: 100 }], {
       success: true,
       data: {
         items: options.initialVendors,
-        total: options.initialVendors.length,
+        total: options.initialVendorTotal ?? options.initialVendors.length,
         page: 1,
         page_size: 100,
       },
@@ -237,6 +238,7 @@ async function renderVendorMutate(currentVendor: Vendor) {
 
 describe('vendor management dialog', () => {
   afterEach(() => {
+    notifyManager.setScheduler(defaultScheduler)
     api.get = originalApiGet
     api.put = originalApiPut
     document.body.replaceChildren()
@@ -273,7 +275,7 @@ describe('vendor management dialog', () => {
       )
     })
 
-    await act(async () => waitForText('Manage Vendors'))
+    await waitForText('Manage Vendors')
     const manageButton = findControl('Manage Vendors')
     await act(async () => manageButton.click())
 
@@ -341,6 +343,7 @@ describe('vendor management dialog', () => {
   })
 
   test('loads vendors beyond the first backend page', async () => {
+    notifyManager.setScheduler((callback) => callback())
     const firstVendor: Vendor = {
       id: 1,
       name: 'First Vendor',
@@ -356,6 +359,10 @@ describe('vendor management dialog', () => {
       updated_time: 1,
     }
     const requestedPages: number[] = []
+    let resolveSecondPage: ((response: object) => void) | undefined
+    const secondPageResponse = new Promise<object>((resolve) => {
+      resolveSecondPage = resolve
+    })
     api.get = (async (
       _url: string,
       config?: { params?: { p?: number; page_size?: number } }
@@ -363,35 +370,42 @@ describe('vendor management dialog', () => {
       const page = config?.params?.p ?? 1
       assert.equal(config?.params?.page_size, 100)
       requestedPages.push(page)
-      return {
-        data: {
-          success: true,
-          data: {
-            items: page === 1 ? [firstVendor] : [lastVendor],
-            total: 101,
-            page,
-            page_size: 100,
-          },
-        },
-      }
+      return secondPageResponse
     }) as typeof api.get
 
     const rendered = await renderVendorManagement({
       onCreateVendor: () => undefined,
       onEditVendor: () => undefined,
+      initialVendors: [firstVendor],
+      initialVendorTotal: 101,
     })
+    const secondPageKey = ['vendors', 'list', { p: 2, page_size: 100 }]
 
-    await act(async () => waitForText('First Vendor'))
+    assert.ok(document.body.textContent?.includes('First Vendor'))
     assert.ok(document.body.textContent?.includes('Page 1 of 2'))
 
     const nextButton = await waitForEnabledButton('Next')
     await act(async () => nextButton.click())
-    await act(async () => waitForText('Last Vendor'))
+    await act(async () => {
+      assert.deepEqual(requestedPages, [2])
+      assert.ok(resolveSecondPage)
+      resolveSecondPage({
+        data: {
+          success: true,
+          data: {
+            items: [lastVendor],
+            total: 101,
+            page: 2,
+            page_size: 100,
+          },
+        },
+      })
+    })
+    assert.ok(document.body.textContent?.includes('Last Vendor'))
 
-    assert.deepEqual(requestedPages, [1, 2])
     const secondPage = rendered.queryClient.getQueryData<{
       data?: { items?: Vendor[] }
-    }>(['vendors', 'list', { p: 2, page_size: 100 }])
+    }>(secondPageKey)
     assert.deepEqual(secondPage?.data?.items, [lastVendor])
 
     await act(async () => {
