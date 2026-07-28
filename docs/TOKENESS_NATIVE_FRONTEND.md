@@ -78,6 +78,11 @@ tokens, model icon package, and motion utilities. Do not copy the historical
 inline HTML, inline provider SVGs, global radius override, or DOM lifecycle
 code.
 
+The historical production value `<home-tokeness/>` is a legacy injector
+sentinel, not administrator-authored HTML. Back it up and clear it from
+`HomePageContent` before removing the injector. Do not add permanent client-side
+handling for that sentinel or weaken the custom HTML/Markdown/URL contract.
+
 ## Wallet Decisions
 
 - Continue to display the server-calculated payment amount. Do not reconstruct
@@ -90,6 +95,14 @@ code.
   handling, and transfer-to-balance action. The historical 20% first-top-up
   statement and hidden transfer action are not supported by current backend
   behavior.
+
+## Theme Defaults
+
+- New clients default to the `sunset-glow` color preset and the explicit
+  `none` radius selection.
+- Existing valid theme cookies remain authoritative. Changing the defaults must
+  not overwrite a user's persisted preset or radius.
+- Resetting theme customization returns to `sunset-glow` and `none`.
 
 ## Data Migration
 
@@ -147,3 +160,8 @@ legacy tags. Remove only the `newapi-webdist` CSS/JavaScript injection and
 `/static` CDN rewrites after the migrated content passes fixed-node and public
 CDN checks. Retain the previous image digest, Nginx backup, and data backup until
 public verification completes.
+
+For the `<home-tokeness/>` sentinel, verify its exact value, back up the option,
+and clear it transactionally before removing the injector from the shared
+Tokeness HTML sub-filter. Preserve the title, metadata, favicon, analytics, and
+language-aware HTML replacements.

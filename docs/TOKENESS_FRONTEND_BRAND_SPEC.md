@@ -39,8 +39,10 @@
   to API paths, keys, and protocol examples.
 - Spacing: existing Tailwind spacing scale with a 4px base; section rhythm must
   match the current public layout.
-- Radius: use the runtime `--radius` system. Cards stay at the existing small or
-  medium radius and must respect user customization.
+- Radius: use the runtime `--radius` system. The Tokeness default is the
+  explicit square `none` setting, while user customization remains authoritative.
+- Preset: the Tokeness default color preset is `sunset-glow`; existing user
+  cookies remain authoritative.
 - Shadows: existing border-first, low-elevation treatment; no decorative glow.
 - Motion: existing short fade/translate utilities and state transitions. Honor
   `prefers-reduced-motion` and do not add scroll-jacking.

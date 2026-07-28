@@ -25,45 +25,23 @@ import {
   useState,
 } from 'react'
 
-import { getCookie, removeCookie, setCookie } from '@/lib/cookies'
+import { removeCookie, setCookie } from '@/lib/cookies'
 import {
-  CONTENT_LAYOUT_VALUES,
   type ContentLayout,
   DEFAULT_THEME_CUSTOMIZATION,
-  resolveThemeFont,
   THEME_COOKIE_KEYS,
-  THEME_FONT_VALUES,
-  THEME_PRESET_VALUES,
-  THEME_RADIUS_VALUES,
-  THEME_SCALE_VALUES,
   type ThemeCustomization,
   type ThemeFont,
   type ThemePreset,
   type ThemeRadius,
   type ThemeScale,
 } from '@/lib/theme-customization'
+import {
+  applyThemeCustomizationToDom,
+  readThemeCustomization,
+} from '@/lib/theme-customization-storage'
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
-
-function readCookie<T extends string>(
-  name: string,
-  allowed: ReadonlySet<T>,
-  fallback: T
-): T {
-  const value = getCookie(name)
-  return value && allowed.has(value as T) ? (value as T) : fallback
-}
-
-function applyAttribute(name: string, value: string | null) {
-  if (typeof document === 'undefined') return
-  const body = document.body
-  if (!body) return
-  if (value === null) {
-    body.removeAttribute(name)
-  } else {
-    body.setAttribute(name, value)
-  }
-}
 
 type ThemeCustomizationContextType = {
   defaults: ThemeCustomization
@@ -97,78 +75,28 @@ const ThemeCustomizationContext =
 export function ThemeCustomizationProvider(props: {
   children: React.ReactNode
 }) {
-  const [preset, _setPreset] = useState<ThemePreset>(() =>
-    readCookie<ThemePreset>(
-      THEME_COOKIE_KEYS.preset,
-      THEME_PRESET_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.preset
-    )
+  const initialCustomization = useMemo(readThemeCustomization, [])
+  const [preset, _setPreset] = useState<ThemePreset>(
+    initialCustomization.preset
   )
-  const [font, _setFont] = useState<ThemeFont>(() =>
-    readCookie<ThemeFont>(
-      THEME_COOKIE_KEYS.font,
-      THEME_FONT_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.font
-    )
+  const [font, _setFont] = useState<ThemeFont>(initialCustomization.font)
+  const [radius, _setRadius] = useState<ThemeRadius>(
+    initialCustomization.radius
   )
-  const [radius, _setRadius] = useState<ThemeRadius>(() =>
-    readCookie<ThemeRadius>(
-      THEME_COOKIE_KEYS.radius,
-      THEME_RADIUS_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.radius
-    )
-  )
-  const [scale, _setScale] = useState<ThemeScale>(() =>
-    readCookie<ThemeScale>(
-      THEME_COOKIE_KEYS.scale,
-      THEME_SCALE_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.scale
-    )
-  )
-  const [contentLayout, _setContentLayout] = useState<ContentLayout>(() =>
-    readCookie<ContentLayout>(
-      THEME_COOKIE_KEYS.contentLayout,
-      CONTENT_LAYOUT_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.contentLayout
-    )
+  const [scale, _setScale] = useState<ThemeScale>(initialCustomization.scale)
+  const [contentLayout, _setContentLayout] = useState<ContentLayout>(
+    initialCustomization.contentLayout
   )
 
-  // Mirror state to the <body> via data-* attributes so theme-presets.css can
-  // override CSS variables at the right cascade layer.
   useEffect(() => {
-    applyAttribute(
-      'data-theme-preset',
-      preset === DEFAULT_THEME_CUSTOMIZATION.preset ? null : preset
-    )
-  }, [preset])
-
-  // Font is the one axis where we resolve before writing the attribute:
-  // the persisted preference may be `default`, but CSS works in terms of
-  // the concrete `sans`/`serif` choice that should drive the cascade.
-  // Resolving here (instead of in CSS via `:not()` selectors) keeps the
-  // stylesheet to one simple `[data-theme-font='serif']` selector and lets
-  // future presets opt into typography via `PRESET_DEFAULT_FONT` alone.
-  useEffect(() => {
-    applyAttribute('data-theme-font', resolveThemeFont(font, preset))
-  }, [font, preset])
-
-  useEffect(() => {
-    applyAttribute(
-      'data-theme-radius',
-      radius === DEFAULT_THEME_CUSTOMIZATION.radius ? null : radius
-    )
-  }, [radius])
-
-  useEffect(() => {
-    applyAttribute(
-      'data-theme-scale',
-      scale === DEFAULT_THEME_CUSTOMIZATION.scale ? null : scale
-    )
-  }, [scale])
-
-  useEffect(() => {
-    applyAttribute('data-theme-content-layout', contentLayout)
-  }, [contentLayout])
+    applyThemeCustomizationToDom({
+      preset,
+      font,
+      radius,
+      scale,
+      contentLayout,
+    })
+  }, [contentLayout, font, preset, radius, scale])
 
   const setPreset = useCallback((value: ThemePreset) => {
     _setPreset(value)
