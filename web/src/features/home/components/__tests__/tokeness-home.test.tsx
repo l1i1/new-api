@@ -29,6 +29,10 @@ import {
 import { Window } from 'happy-dom'
 
 import en from '@/i18n/locales/en.json'
+import ja from '@/i18n/locales/ja.json'
+import ru from '@/i18n/locales/ru.json'
+import vi from '@/i18n/locales/vi.json'
+import zhTW from '@/i18n/locales/zh-TW.json'
 import zh from '@/i18n/locales/zh.json'
 
 const domWindow = new Window({ url: 'https://tokeness.test/' })
@@ -81,7 +85,7 @@ const i18n = createInstance()
 await i18n.use(initReactI18next).init({
   lng: 'en',
   fallbackLng: 'en',
-  resources: { en, zh },
+  resources: { en, ja, ru, vi, zh, zhTW },
 })
 
 const reactTestGlobals = globalThis as typeof globalThis & {
@@ -193,6 +197,22 @@ describe('Tokeness legacy home', () => {
     rendered.container.remove()
   })
 
+  test('pins the three provider icons that changed in newer icon releases', async () => {
+    await changeLanguage('en')
+    const rendered = await renderHome()
+
+    for (const provider of ['openai', 'gemini', 'qwen']) {
+      assert.ok(
+        rendered.container.querySelector(
+          `[data-home-provider-icon="legacy-${provider}"]`
+        )
+      )
+    }
+
+    await act(async () => rendered.root.unmount())
+    rendered.container.remove()
+  })
+
   test('uses only the Tokeness footer and retains linked New API attribution', async () => {
     await changeLanguage('zh')
     const rendered = await renderHome()
@@ -233,6 +253,30 @@ describe('Tokeness legacy home', () => {
     })
     assert.match(rendered.container.textContent ?? '', /一个入口，所有模型/)
     assert.match(rendered.container.textContent ?? '', /基于 New API 开发/)
+
+    await act(async () => rendered.root.unmount())
+    rendered.container.remove()
+  })
+
+  test('preserves the legacy Chinese normalization and compact fallback copy', async () => {
+    await changeLanguage('zhTW')
+    const rendered = await renderHome()
+
+    assert.match(rendered.container.textContent ?? '', /一个入口，所有模型/)
+    assert.doesNotMatch(
+      rendered.container.textContent ?? '',
+      /一個入口，所有模型/
+    )
+
+    await changeLanguage('ru')
+    assert.match(
+      rendered.container.textContent ?? '',
+      /Create a Key and set allowed models and quota limits\./
+    )
+    assert.doesNotMatch(
+      rendered.container.textContent ?? '',
+      /Create a Key, set which models it can use and the quota limit\./
+    )
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()
