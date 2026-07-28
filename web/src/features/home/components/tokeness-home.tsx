@@ -21,15 +21,12 @@ import {
   Claude,
   Cohere,
   DeepSeek,
-  Gemini,
   Grok,
   Hunyuan,
   Midjourney,
   Minimax,
   Moonshot,
-  OpenAI,
   Qingyan,
-  Qwen,
   Spark,
   Suno,
   Volcengine,
@@ -41,6 +38,12 @@ import {
 import { Link } from '@tanstack/react-router'
 import type { ComponentType, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
+
+import {
+  LegacyGeminiIcon,
+  LegacyOpenAIIcon,
+  LegacyQwenIcon,
+} from './legacy-provider-icons'
 
 import './tokeness-home.css'
 
@@ -54,20 +57,20 @@ interface Provider {
 
 const PROVIDERS: Provider[] = [
   { id: 'moonshot', name: 'MoonshotAI', icon: Moonshot },
-  { id: 'openai', name: 'OpenAI', icon: OpenAI },
+  { id: 'openai', name: 'OpenAI', icon: LegacyOpenAIIcon },
   { id: 'xai', name: 'Grok', icon: XAI },
   { id: 'zhipu', name: 'Zhipu', icon: Zhipu.Color },
   { id: 'volcengine', name: 'Volcengine', icon: Volcengine.Color },
   { id: 'cohere', name: 'Cohere', icon: Cohere.Color },
   { id: 'claude', name: 'Claude', icon: Claude.Color },
-  { id: 'gemini', name: 'Gemini', icon: Gemini.Color },
+  { id: 'gemini', name: 'Gemini', icon: LegacyGeminiIcon },
   { id: 'suno', name: 'Suno', icon: Suno },
   { id: 'minimax', name: 'Minimax', icon: Minimax.Color },
   { id: 'wenxin', name: 'Wenxin', icon: Wenxin.Color },
   { id: 'spark', name: 'Spark', icon: Spark.Color },
   { id: 'qingyan', name: 'Qingyan', icon: Qingyan.Color },
   { id: 'deepseek', name: 'DeepSeek', icon: DeepSeek.Color },
-  { id: 'qwen', name: 'Qwen', icon: Qwen.Color },
+  { id: 'qwen', name: 'Qwen', icon: LegacyQwenIcon },
   { id: 'midjourney', name: 'Midjourney', icon: Midjourney },
   { id: 'grok', name: 'Grok', icon: Grok },
   { id: 'azure-ai', name: 'AzureAI', icon: AzureAI.Color },

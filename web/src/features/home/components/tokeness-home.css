@@ -123,7 +123,7 @@ For commercial licensing, please contact support@quantumnous.com
   content: '';
 }
 
-.tokeness-home__hero-title {
+.tokeness-home .tokeness-home__hero-title {
   max-width: 12ch;
   margin: 0;
   font-size: clamp(40px, 4vw, 56px);
@@ -683,7 +683,7 @@ For commercial licensing, please contact support@quantumnous.com
     padding: 26px 18px 24px;
   }
 
-  .tokeness-home__hero-title {
+  .tokeness-home .tokeness-home__hero-title {
     font-size: 32px;
   }
 
