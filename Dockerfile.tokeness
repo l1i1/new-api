@@ -17,6 +17,7 @@ ENV GOEXPERIMENT=greenteagc
 
 WORKDIR /build
 COPY go.mod go.sum ./
+COPY relaykit/go.mod relaykit/go.sum ./relaykit/
 RUN go mod download
 COPY . .
 COPY --from=web-builder /build/web/dist ./web/dist
