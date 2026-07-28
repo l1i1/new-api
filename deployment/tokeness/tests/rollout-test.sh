@@ -132,6 +132,28 @@ assert_commands "$cdn_failure_case/commands.log" \
   '156.246.94.70|verify' \
   "156.246.94.70|deploy $OLD_IMAGE"
 
+web_failure_case="$test_root/web-failure"
+if run_rollout "$web_failure_case" TOKENESS_TEST_WEB_FAILURE=1; then
+  fail "dashboard web failure rollout unexpectedly succeeded"
+fi
+assert_commands "$web_failure_case/commands.log" \
+  '156.246.94.70|verify' \
+  '103.214.68.250|verify' \
+  '149.13.91.236|verify' \
+  '216.73.158.156|verify' \
+  "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "103.214.68.250|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "149.13.91.236|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  "216.73.158.156|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
+  '216.73.158.156|verify' \
+  "216.73.158.156|deploy $OLD_IMAGE" \
+  '149.13.91.236|verify' \
+  "149.13.91.236|deploy $OLD_IMAGE" \
+  '103.214.68.250|verify' \
+  "103.214.68.250|deploy $OLD_IMAGE" \
+  '156.246.94.70|verify' \
+  "156.246.94.70|deploy $OLD_IMAGE"
+
 lock_case="$test_root/lock-reconcile"
 if run_rollout "$lock_case" \
   TOKENESS_TEST_MODE=lock-after-apply \

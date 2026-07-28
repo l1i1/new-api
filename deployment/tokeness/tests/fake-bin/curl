@@ -24,6 +24,17 @@ if [[ "${TOKENESS_TEST_CDN_FAILURE:-0}" -eq 1 ]]; then
   version='v-test-old'
 fi
 
-printf 'HTTP/2 401\r\nX-New-Api-Version: %s\r\n\r\n' "$version" > "$headers"
-printf '{"error":"unauthorized"}\n' > "$body"
-printf '401'
+url="${*: -1}"
+status='401'
+response='{"error":"unauthorized"}'
+if [[ "$url" != */v1/models* ]]; then
+  status='200'
+  response='{"success":true,"data":{"version":"v-test-new"}}'
+fi
+if [[ "${TOKENESS_TEST_WEB_FAILURE:-0}" -eq 1 && "$url" != */v1/models* ]]; then
+  status='503'
+  response='{"success":false}'
+fi
+printf 'HTTP/2 %s\r\nX-New-Api-Version: %s\r\n\r\n' "$status" "$version" > "$headers"
+printf '%s\n' "$response" > "$body"
+printf '%s' "$status"
