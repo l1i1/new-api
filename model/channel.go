@@ -13,9 +13,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -884,11 +884,21 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 }
 
 func UpdateChannelUsedQuota(id int, quota int) {
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeChannelUsedQuota, id, quota)
-		return
-	}
 	updateChannelUsedQuota(id, quota)
+}
+
+func ResetChannelUsedQuota(id int) (*Channel, error) {
+	var channel Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).Where("id = ?", id).First(&channel).Error; err != nil {
+			return err
+		}
+		return tx.Model(&Channel{}).Where("id = ?", id).Update("used_quota", 0).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &channel, nil
 }
 
 func updateChannelUsedQuota(id int, quota int) {
@@ -978,6 +988,9 @@ func (channel *Channel) ValidateSettings() error {
 	}
 	if _, err := common.ParseProxyURLStrict(channelParams.Proxy); err != nil {
 		return fmt.Errorf("invalid channel proxy: %w", err)
+	}
+	if err := channelParams.ValidateHTTPTransport(); err != nil {
+		return err
 	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {

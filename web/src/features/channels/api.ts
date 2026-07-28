@@ -154,6 +154,23 @@ export async function updateChannelStatus(
   return res.data
 }
 
+export type ResetChannelUsedQuotaResponse = {
+  success: boolean
+  message?: string
+  data?: { previous_used_quota: number }
+}
+
+export async function resetChannelUsedQuota(
+  id: number
+): Promise<ResetChannelUsedQuotaResponse> {
+  const res = await api.post(
+    `/api/channel/${id}/used_quota/reset`,
+    undefined,
+    channelActionConfig()
+  )
+  return res.data
+}
+
 /**
  * Batch update channel enabled/disabled status.
  */

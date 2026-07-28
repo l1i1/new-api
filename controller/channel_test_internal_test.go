@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -54,6 +55,80 @@ func TestValidateChannelProxy(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestValidateChannelRequiresNewAPIBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL *string
+		wantErr bool
+	}{
+		{name: "missing", wantErr: true},
+		{name: "blank", baseURL: common.GetPointer("  "), wantErr: true},
+		{name: "configured", baseURL: common.GetPointer("https://new-api.example")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &model.Channel{
+				Type:    constant.ChannelTypeNewAPI,
+				BaseURL: test.baseURL,
+			}
+
+			err := validateChannel(channel, false)
+
+			if test.wantErr {
+				require.ErrorContains(t, err, "New API channel base URL cannot be empty")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestNewAPIChannelRegistration(t *testing.T) {
+	apiType, ok := common.ChannelType2APIType(constant.ChannelTypeNewAPI)
+
+	require.True(t, ok)
+	assert.Equal(t, constant.APITypeNewAPI, apiType)
+	assert.Equal(t, "New API", constant.GetChannelTypeName(constant.ChannelTypeNewAPI))
+	require.Greater(t, len(constant.ChannelBaseURLs), constant.ChannelTypeNewAPI)
+	assert.Empty(t, constant.ChannelBaseURLs[constant.ChannelTypeNewAPI])
+}
+
+func TestResponsesCompactAPITypeSupport(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiType int
+		want    bool
+	}{
+		{name: "OpenAI", apiType: constant.APITypeOpenAI, want: true},
+		{name: "Codex", apiType: constant.APITypeCodex, want: true},
+		{name: "Advanced Custom", apiType: constant.APITypeAdvancedCustom, want: true},
+		{name: "Sub2API", apiType: constant.APITypeSub2API, want: true},
+		{name: "New API", apiType: constant.APITypeNewAPI, want: true},
+		{name: "Anthropic", apiType: constant.APITypeAnthropic, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, common.IsResponsesCompactAPIType(test.apiType))
+		})
+	}
+}
+
+func TestMultiprotocolGatewayEndpointTypes(t *testing.T) {
+	want := []constant.EndpointType{
+		constant.EndpointTypeOpenAI,
+		constant.EndpointTypeOpenAIResponse,
+		constant.EndpointTypeOpenAIResponseCompact,
+		constant.EndpointTypeAnthropic,
+		constant.EndpointTypeGemini,
+		constant.EndpointTypeOpenAIAlphaSearch,
+	}
+
+	assert.Equal(t, want, common.GetEndpointTypesByChannelType(constant.ChannelTypeNewAPI, "gpt-5"))
+	assert.Equal(t, want, common.GetEndpointTypesByChannelType(constant.ChannelTypeSub2API, "gpt-5"))
 }
 
 func TestCopyChannelRejectsInvalidLegacyProxySettings(t *testing.T) {
@@ -141,6 +216,49 @@ func TestDeleteChannelBatchReportsAndAuditsActualDeletedCount(t *testing.T) {
 	}
 	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditData))
 	assert.Equal(t, float64(1), auditData.Operation.Params["count"])
+}
+
+func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	channel := &model.Channel{Name: "quota channel", Key: "test-key", UsedQuota: 9876}
+	require.NoError(t, db.Create(channel).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(channel.Id)}}
+	ctx.Set("id", 1)
+	ctx.Set("username", "admin")
+	ctx.Set("role", common.RoleAdminUser)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/1/used_quota/reset", nil)
+
+	ResetChannelUsedQuota(ctx)
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			PreviousUsedQuota int64 `json:"previous_used_quota"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.Equal(t, int64(9876), response.Data.PreviousUsedQuota)
+
+	var refreshed model.Channel
+	require.NoError(t, db.First(&refreshed, channel.Id).Error)
+	assert.Zero(t, refreshed.UsedQuota)
+
+	var auditLog model.Log
+	require.NoError(t, db.Order("id desc").First(&auditLog).Error)
+	var auditData struct {
+		Operation struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		} `json:"op"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditData))
+	assert.Equal(t, "channel.used_quota_reset", auditData.Operation.Action)
+	assert.Equal(t, float64(9876), auditData.Operation.Params["previous_used_quota"])
 }
 
 func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
