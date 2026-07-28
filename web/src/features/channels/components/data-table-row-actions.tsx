@@ -32,6 +32,7 @@ import {
   Key,
   Trash2,
   RefreshCw,
+  RotateCcw,
   Loader2,
 } from 'lucide-react'
 import { useContext, useState } from 'react'
@@ -72,6 +73,7 @@ import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
+import { ChannelUsedQuotaResetDialog } from './dialogs/channel-used-quota-reset-dialog'
 
 interface DataTableRowActionsProps {
   row: Row<Channel>
@@ -85,6 +87,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [resetQuotaConfirmOpen, setResetQuotaConfirmOpen] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isTogglingStatus, setIsTogglingStatus] = useState(false)
 
@@ -94,6 +97,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
+  )
+  const canOperate = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.OPERATE
   )
 
   const handleEdit = () => {
@@ -362,6 +370,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             </DropdownMenuItem>
           )}
 
+          <DropdownMenuItem
+            disabled={!canOperate}
+            onSelect={(e) => {
+              e.preventDefault()
+              if (!canOperate) return
+              setResetQuotaConfirmOpen(true)
+            }}
+          >
+            {t('Reset used quota')}
+            <DropdownMenuShortcut>
+              <RotateCcw size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+
           <DropdownMenuSeparator />
 
           {/* Delete */}
@@ -381,6 +403,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ChannelUsedQuotaResetDialog
+        channel={channel}
+        open={resetQuotaConfirmOpen}
+        onOpenChange={setResetQuotaConfirmOpen}
+        canOperate={canOperate}
+      />
 
       <ConfirmDialog
         open={deleteConfirmOpen}

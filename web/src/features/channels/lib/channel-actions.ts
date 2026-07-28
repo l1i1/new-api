@@ -39,6 +39,7 @@ import {
   testAllChannels,
   updateAllChannelsBalance,
   updateChannelBalance,
+  resetChannelUsedQuota,
 } from '../api'
 import { CHANNEL_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import type { ChannelTestResponse, CopyChannelParams } from '../types'
@@ -197,6 +198,33 @@ export async function handleDeleteChannel(
   } catch {
     toast.error(i18next.t(ERROR_MESSAGES.DELETE_FAILED))
   }
+}
+
+export async function handleResetChannelUsedQuota(
+  id: number,
+  queryClient?: QueryClient,
+  onSuccess?: () => void
+): Promise<boolean> {
+  try {
+    const response = await resetChannelUsedQuota(id)
+    if (response.success) {
+      toast.success(i18next.t('Used quota reset successfully'))
+      queryClient?.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+      onSuccess?.()
+      return true
+    } else {
+      toast.error(response.message || i18next.t('Failed to reset used quota'))
+    }
+  } catch (error: unknown) {
+    const requestError = error as {
+      response?: { data?: { message?: string } }
+    }
+    toast.error(
+      requestError.response?.data?.message ||
+        i18next.t('Failed to reset used quota')
+    )
+  }
+  return false
 }
 
 /**

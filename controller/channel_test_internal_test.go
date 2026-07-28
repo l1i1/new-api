@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -141,6 +142,49 @@ func TestDeleteChannelBatchReportsAndAuditsActualDeletedCount(t *testing.T) {
 	}
 	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditData))
 	assert.Equal(t, float64(1), auditData.Operation.Params["count"])
+}
+
+func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	channel := &model.Channel{Name: "quota channel", Key: "test-key", UsedQuota: 9876}
+	require.NoError(t, db.Create(channel).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(channel.Id)}}
+	ctx.Set("id", 1)
+	ctx.Set("username", "admin")
+	ctx.Set("role", common.RoleAdminUser)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/1/used_quota/reset", nil)
+
+	ResetChannelUsedQuota(ctx)
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			PreviousUsedQuota int64 `json:"previous_used_quota"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.Equal(t, int64(9876), response.Data.PreviousUsedQuota)
+
+	var refreshed model.Channel
+	require.NoError(t, db.First(&refreshed, channel.Id).Error)
+	assert.Zero(t, refreshed.UsedQuota)
+
+	var auditLog model.Log
+	require.NoError(t, db.Order("id desc").First(&auditLog).Error)
+	var auditData struct {
+		Operation struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		} `json:"op"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditData))
+	assert.Equal(t, "channel.used_quota_reset", auditData.Operation.Action)
+	assert.Equal(t, float64(9876), auditData.Operation.Params["previous_used_quota"])
 }
 
 func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
