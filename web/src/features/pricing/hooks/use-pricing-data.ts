@@ -18,13 +18,17 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
 
 import { getPricing } from '../api'
+import { localizePricingVendorName } from '../lib/vendor-localization'
 
 export function usePricingData() {
+  const { i18n } = useTranslation()
   const { status } = useStatus()
+  const language = i18n.resolvedLanguage || i18n.language
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['pricing'],
@@ -55,12 +59,20 @@ export function usePricingData() {
         ...model,
         key: model.model_name,
         vendor_name: vendor?.name,
+        vendor_display_name: vendor?.display_name,
+        vendor_localized_name: vendor
+          ? localizePricingVendorName(
+              vendor.name,
+              vendor.display_name,
+              language
+            )
+          : undefined,
         vendor_icon: vendor?.icon,
         vendor_description: vendor?.description,
         group_ratio: data.group_ratio,
       }
     })
-  }, [data])
+  }, [data, language])
 
   return {
     models,

@@ -38,6 +38,7 @@ import {
   getQuotaTypeLabels,
 } from '../constants'
 import { parseTags } from '../lib/filters'
+import { localizePricingVendorName } from '../lib/vendor-localization'
 import type { PricingModel, PricingVendor } from '../types'
 
 type FilterOption = {
@@ -157,9 +158,10 @@ function FilterSection(props: FilterSectionProps) {
 }
 
 export function PricingSidebar(props: PricingSidebarProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const quotaTypeLabels = getQuotaTypeLabels(t)
   const endpointTypeLabels = getEndpointTypeLabels(t)
+  const language = i18n.resolvedLanguage || i18n.language
 
   const vendorOptions: FilterOption[] = [
     {
@@ -170,7 +172,11 @@ export function PricingSidebar(props: PricingSidebarProps) {
     ...props.vendors
       .map((vendor) => ({
         value: vendor.name,
-        label: vendor.name,
+        label: localizePricingVendorName(
+          vendor.name,
+          vendor.display_name,
+          language
+        ),
         count: countBy(
           props.models,
           (model) => model.vendor_name === vendor.name

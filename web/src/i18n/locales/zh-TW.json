@@ -3157,6 +3157,7 @@
     "Optional callback override. Leave blank to use server address": "可選的Callback覆蓋。留空以使用伺服器地址",
     "Optional icon identifier for the login button": "登入按鈕的可選圖標標識符",
     "Optional JSON policy to restrict access based on user info fields": "可選的 JSON 政策，用於基於用戶資訊欄位限制存取",
+    "Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.": "在定價頁面顯示的可選本地化名稱。留空則使用唯一供應商名稱。",
     "Optional minimum recharge amount for this method.": "此方法的可選最低儲值金額。",
     "Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as": "計算儲值定價時使用的每個用戶分組可選乘數。請提供一個 JSON 物件，例如",
     "Optional notes about this channel": "關於此渠道的可選備註",

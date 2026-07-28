@@ -3157,6 +3157,7 @@
     "Optional callback override. Leave blank to use server address": "Optional callback override. Leave blank to use server address",
     "Optional icon identifier for the login button": "Optional icon identifier for the login button",
     "Optional JSON policy to restrict access based on user info fields": "Optional JSON policy to restrict access based on user info fields",
+    "Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.": "Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.",
     "Optional minimum recharge amount for this method.": "Optional minimum recharge amount for this method.",
     "Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as": "Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as",
     "Optional notes about this channel": "Optional notes about this channel",

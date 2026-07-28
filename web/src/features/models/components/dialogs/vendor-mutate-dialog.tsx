@@ -64,6 +64,7 @@ export function VendorMutateDialog({
     resolver: zodResolver(vendorFormSchema),
     defaultValues: {
       name: '',
+      display_name: '',
       description: '',
       icon: '',
       status: 1,
@@ -76,13 +77,15 @@ export function VendorMutateDialog({
       form.reset({
         id: currentVendor.id,
         name: currentVendor.name,
+        display_name: currentVendor.display_name || '',
         description: currentVendor.description || '',
         icon: currentVendor.icon || '',
-        status: currentVendor.status || 1,
+        status: currentVendor.status ?? 1,
       })
     } else if (open && !isEdit) {
       form.reset({
         name: '',
+        display_name: '',
         description: '',
         icon: '',
         status: 1,
@@ -93,26 +96,30 @@ export function VendorMutateDialog({
   const onSubmit = async (values: Record<string, unknown>) => {
     setIsSaving(true)
     try {
-      const response = isEdit
-        ? await updateVendor({ ...values, id: currentVendor!.id })
+      const vendorId = currentVendor?.id
+      const response = vendorId
+        ? await updateVendor({ ...values, id: vendorId })
         : await createVendor(values)
 
       if (response.success) {
         toast.success(
-          isEdit ? 'Vendor updated successfully' : 'Vendor created successfully'
+          isEdit ? t('Updated successfully') : t('Create succeeded')
         )
         queryClient.invalidateQueries({ queryKey: vendorsQueryKeys.lists() })
         queryClient.invalidateQueries({ queryKey: modelsQueryKeys.lists() })
+        queryClient.invalidateQueries({ queryKey: ['pricing'] })
         onOpenChange(false)
       } else {
-        toast.error(response.message || 'Operation failed')
+        toast.error(response.message || t('Operation failed'))
       }
     } catch (error: unknown) {
-      toast.error((error as Error)?.message || 'Operation failed')
+      toast.error((error as Error)?.message || t('Operation failed'))
     } finally {
       setIsSaving(false)
     }
   }
+
+  const submitLabel = isEdit ? t('Update') : t('Create')
 
   return (
     <Dialog
@@ -146,7 +153,7 @@ export function VendorMutateDialog({
             {isSaving ? (
               <Loader2 className='mr-2 h-4 w-4 animate-spin' />
             ) : null}
-            {isSaving ? t('Saving...') : isEdit ? t('Update') : t('Create')}
+            {isSaving ? t('Saving...') : submitLabel}
           </Button>
         </>
       }
@@ -171,6 +178,29 @@ export function VendorMutateDialog({
                 </FormControl>
                 <FormDescription>
                   {t('The unique name for this vendor')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='display_name'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Display Name')}</FormLabel>
+                <FormControl>
+                  <Textarea
+                    placeholder='<tnt l="zh">阿里巴巴</tnt><tnt l="en">Alibaba</tnt>'
+                    rows={2}
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.'
+                  )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>

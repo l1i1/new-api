@@ -16,15 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-// ----------------------------------------------------------------------------
-// Pricing Lib Exports
-// ----------------------------------------------------------------------------
+import { resolveTntContent } from '@/lib/tnt-content'
 
-export * from './filters'
-export * from './price'
-export * from './model-helpers'
-export * from './billing-expr'
-export * from './tier-expr'
-export * from './mock-stats'
-export * from './seed'
-export * from './vendor-localization'
+export function localizePricingVendorName(
+  vendorName: string,
+  vendorDisplayName?: string,
+  language?: string
+): string {
+  const displayName = resolveTntContent(
+    vendorDisplayName || '',
+    language
+  ).trim()
+  return displayName || vendorName
+}

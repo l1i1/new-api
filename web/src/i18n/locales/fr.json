@@ -3157,6 +3157,7 @@
     "Optional callback override. Leave blank to use server address": "Remplacement optionnel du callback. Laisser vide pour utiliser l'adresse du serveur",
     "Optional icon identifier for the login button": "Identifiant d'icône optionnel pour le bouton de connexion",
     "Optional JSON policy to restrict access based on user info fields": "Politique JSON optionnelle pour restreindre l'accès en fonction des champs d'informations utilisateur",
+    "Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.": "Nom localisé optionnel affiché sur les pages de tarification. Laissez vide pour utiliser le nom unique du fournisseur.",
     "Optional minimum recharge amount for this method.": "Montant minimum de recharge optionnel pour cette méthode.",
     "Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as": "Multiplicateur optionnel par groupe d'utilisateurs utilisé lors du calcul des prix de recharge. Fournissez un objet JSON tel que",
     "Optional notes about this channel": "Notes optionnelles sur ce canal",
