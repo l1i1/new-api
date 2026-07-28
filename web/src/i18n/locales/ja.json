@@ -3157,6 +3157,7 @@
     "Optional callback override. Leave blank to use server address": "オプションのコールバック上書き。サーバーアドレスを使用するには空欄のままにします",
     "Optional icon identifier for the login button": "ログインボタン用のオプションのアイコン識別子",
     "Optional JSON policy to restrict access based on user info fields": "ユーザー情報フィールドに基づいてアクセスを制限するためのオプションのJSONポリシー",
+    "Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.": "料金ページに表示する任意のローカライズ名です。空欄の場合は一意のベンダー名を使用します。",
     "Optional minimum recharge amount for this method.": "この方法のオプションの最小チャージ額。",
     "Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as": "チャージ料金を計算する際に使用されるユーザーグループごとのオプションの乗数。次のようなJSONオブジェクトを提供してください",
     "Optional notes about this channel": "このチャネルに関するオプションのノート",

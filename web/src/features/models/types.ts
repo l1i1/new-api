@@ -60,6 +60,7 @@ export interface Model {
 export interface Vendor {
   id: number
   name: string
+  display_name?: string
   description?: string
   icon?: string
   status: number
@@ -248,6 +249,7 @@ export type ModelFormValues = z.infer<typeof modelFormSchema>
 export const vendorFormSchema = z.object({
   id: z.number().optional(),
   name: z.string().min(1, 'Vendor name is required'),
+  display_name: z.string().default(''),
   description: z.string().default(''),
   icon: z.string().default(''),
   status: z.number().default(1),

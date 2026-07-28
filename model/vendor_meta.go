@@ -15,6 +15,7 @@ import (
 type Vendor struct {
 	Id          int            `json:"id"`
 	Name        string         `json:"name" gorm:"size:128;not null;uniqueIndex:uk_vendor_name_delete_at,priority:1"`
+	DisplayName string         `json:"display_name,omitempty" gorm:"type:text"`
 	Description string         `json:"description,omitempty" gorm:"type:text"`
 	Icon        string         `json:"icon,omitempty" gorm:"type:varchar(128)"`
 	Status      int            `json:"status" gorm:"default:1"`
@@ -44,7 +45,27 @@ func IsVendorNameDuplicated(id int, name string) (bool, error) {
 // Update 更新供应商记录
 func (v *Vendor) Update() error {
 	v.UpdatedTime = common.GetTimestamp()
-	return DB.Save(v).Error
+	result := DB.Model(&Vendor{}).Where("id = ?", v.Id).Updates(map[string]interface{}{
+		"name":         v.Name,
+		"display_name": v.DisplayName,
+		"description":  v.Description,
+		"icon":         v.Icon,
+		"status":       v.Status,
+		"updated_time": v.UpdatedTime,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		var count int64
+		if err := DB.Model(&Vendor{}).Where("id = ?", v.Id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return gorm.ErrRecordNotFound
+		}
+	}
+	return nil
 }
 
 // Delete 软删除供应商
@@ -74,7 +95,7 @@ func SearchVendors(keyword string, offset int, limit int) ([]*Vendor, int64, err
 	db := DB.Model(&Vendor{})
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		db = db.Where("name LIKE ? OR description LIKE ?", like, like)
+		db = db.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?", like, like, like)
 	}
 	var total int64
 	if err := db.Count(&total).Error; err != nil {

@@ -41,6 +41,7 @@ type Pricing struct {
 type PricingVendor struct {
 	ID          int    `json:"id"`
 	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
 }
@@ -50,7 +51,7 @@ var (
 	vendorsList          []PricingVendor
 	supportedEndpointMap map[string]common.EndpointInfo
 	lastGetPricingTime   time.Time
-	updatePricingLock    sync.Mutex
+	updatePricingLock    sync.RWMutex
 
 	// 缓存映射：模型名 -> 启用分组 / 计费类型
 	modelEnableGroups     = make(map[string][]string)
@@ -64,17 +65,51 @@ var (
 )
 
 func GetPricing() []Pricing {
-	if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-		updatePricingLock.Lock()
-		defer updatePricingLock.Unlock()
-		// Double check after acquiring the lock
-		if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-			modelSupportEndpointsLock.Lock()
-			defer modelSupportEndpointsLock.Unlock()
-			updatePricing()
-		}
+	updatePricingLock.RLock()
+	if !pricingCacheStale() {
+		pricing := clonePricing(pricingMap)
+		updatePricingLock.RUnlock()
+		return pricing
 	}
-	return pricingMap
+	updatePricingLock.RUnlock()
+
+	updatePricingLock.Lock()
+	defer updatePricingLock.Unlock()
+	// Double check after acquiring the lock.
+	if pricingCacheStale() {
+		updatePricingWithEndpointLock()
+	}
+	return clonePricing(pricingMap)
+}
+
+func pricingCacheStale() bool {
+	return time.Since(lastGetPricingTime) > time.Minute || len(pricingMap) == 0
+}
+
+func clonePricing(source []Pricing) []Pricing {
+	if source == nil {
+		return nil
+	}
+	cloned := make([]Pricing, len(source))
+	for i, item := range source {
+		cloned[i] = item
+		cloned[i].EnableGroup = append([]string(nil), item.EnableGroup...)
+		cloned[i].SupportedEndpointTypes = append([]constant.EndpointType(nil), item.SupportedEndpointTypes...)
+		cloned[i].CacheRatio = cloneFloat64(item.CacheRatio)
+		cloned[i].CreateCacheRatio = cloneFloat64(item.CreateCacheRatio)
+		cloned[i].ImageRatio = cloneFloat64(item.ImageRatio)
+		cloned[i].AudioRatio = cloneFloat64(item.AudioRatio)
+		cloned[i].AudioCompletionRatio = cloneFloat64(item.AudioCompletionRatio)
+	}
+	return cloned
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func InvalidatePricingCache() {
@@ -88,11 +123,20 @@ func InvalidatePricingCache() {
 
 // GetVendors 返回当前定价接口使用到的供应商信息
 func GetVendors() []PricingVendor {
-	if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
-		// 保证先刷新一次
-		GetPricing()
+	updatePricingLock.RLock()
+	if !pricingCacheStale() {
+		vendors := append([]PricingVendor(nil), vendorsList...)
+		updatePricingLock.RUnlock()
+		return vendors
 	}
-	return vendorsList
+	updatePricingLock.RUnlock()
+
+	updatePricingLock.Lock()
+	defer updatePricingLock.Unlock()
+	if pricingCacheStale() {
+		updatePricingWithEndpointLock()
+	}
+	return append([]PricingVendor(nil), vendorsList...)
 }
 
 func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
@@ -102,7 +146,7 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 	modelSupportEndpointsLock.RLock()
 	defer modelSupportEndpointsLock.RUnlock()
 	if endpoints, ok := modelSupportEndpointTypes[model]; ok {
-		return endpoints
+		return append([]constant.EndpointType(nil), endpoints...)
 	}
 	return make([]constant.EndpointType, 0)
 }
@@ -175,6 +219,15 @@ func appendPricingEndpoint(endpoints []string, endpoint string) []string {
 		return endpoints
 	}
 	return append(endpoints, endpoint)
+}
+
+// updatePricingWithEndpointLock requires updatePricingLock to be held and
+// preserves the global lock order: pricing cache before endpoint metadata.
+// Callers holding modelSupportEndpointsLock must never acquire updatePricingLock.
+func updatePricingWithEndpointLock() {
+	modelSupportEndpointsLock.Lock()
+	defer modelSupportEndpointsLock.Unlock()
+	updatePricing()
 }
 
 func updatePricing() {
@@ -253,6 +306,7 @@ func updatePricing() {
 		vendorsList = append(vendorsList, PricingVendor{
 			ID:          v.Id,
 			Name:        v.Name,
+			DisplayName: v.DisplayName,
 			Description: v.Description,
 			Icon:        v.Icon,
 		})
@@ -419,7 +473,7 @@ func updatePricing() {
 	modelEnableGroups = make(map[string][]string)
 	modelQuotaTypeMap = make(map[string]int)
 	for _, p := range pricingMap {
-		modelEnableGroups[p.ModelName] = p.EnableGroup
+		modelEnableGroups[p.ModelName] = append([]string(nil), p.EnableGroup...)
 		modelQuotaTypeMap[p.ModelName] = p.QuotaType
 	}
 	modelEnableGroupsLock.Unlock()
@@ -429,5 +483,11 @@ func updatePricing() {
 
 // GetSupportedEndpointMap 返回全局端点到路径的映射
 func GetSupportedEndpointMap() map[string]common.EndpointInfo {
-	return supportedEndpointMap
+	updatePricingLock.RLock()
+	defer updatePricingLock.RUnlock()
+	cloned := make(map[string]common.EndpointInfo, len(supportedEndpointMap))
+	for endpoint, info := range supportedEndpointMap {
+		cloned[endpoint] = info
+	}
+	return cloned
 }

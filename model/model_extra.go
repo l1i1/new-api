@@ -14,7 +14,7 @@ func GetModelEnableGroups(modelName string) []string {
 	if !ok {
 		return make([]string, 0)
 	}
-	return groups
+	return append([]string(nil), groups...)
 }
 
 // GetModelQuotaTypes 返回指定模型的计费类型集合（来自缓存）

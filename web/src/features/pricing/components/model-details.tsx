@@ -70,6 +70,7 @@ import {
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import { localizePricingVendorName } from '../lib/vendor-localization'
 import type {
   ModelCapability,
   PriceType,
@@ -445,17 +446,23 @@ function ModelBackendSignalsSection(props: { model: PricingModel }) {
 }
 
 function ModelBackendProviderSection(props: { model: PricingModel }) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const model = props.model
   const groups = normalizeCatalogItems(model.enable_groups)
   const endpoints = normalizeCatalogItems(model.supported_endpoint_types)
-  const tags = parseTags(model.tags)
+  const tags = parseTags(model.localized_tags)
   const cells: React.ReactNode[] = []
 
   if (model.vendor_name) {
     cells.push(
       <CatalogInfoCell key='provider' label={t('Provider')}>
-        <CatalogTextValue>{model.vendor_name}</CatalogTextValue>
+        <CatalogTextValue>
+          {localizePricingVendorName(
+            model.vendor_name,
+            model.vendor_display_name,
+            i18n.resolvedLanguage || i18n.language
+          )}
+        </CatalogTextValue>
       </CatalogInfoCell>
     )
   }
@@ -533,6 +540,13 @@ function ModelHeader(props: { model: PricingModel }) {
     model.description || model.vendor_description || '',
     i18n.resolvedLanguage || i18n.language
   )
+  const vendorName = model.vendor_name
+    ? localizePricingVendorName(
+        model.vendor_name,
+        model.vendor_display_name,
+        i18n.resolvedLanguage || i18n.language
+      )
+    : ''
 
   return (
     <header className='pb-4'>
@@ -551,8 +565,8 @@ function ModelHeader(props: { model: PricingModel }) {
         />
       </div>
       <div className='mt-1 flex flex-wrap items-center gap-1.5 text-xs'>
-        {model.vendor_name && (
-          <span className='text-muted-foreground'>{model.vendor_name}</span>
+        {vendorName && (
+          <span className='text-muted-foreground'>{vendorName}</span>
         )}
         <span className='text-muted-foreground/30'>·</span>
         <ModelBillingModeBadge model={model} />

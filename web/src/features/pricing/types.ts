@@ -23,6 +23,7 @@ For commercial licensing, please contact support@quantumnous.com
 export type PricingVendor = {
   id: number
   name: string
+  display_name?: string
   icon?: string
   description?: string
 }
@@ -34,8 +35,11 @@ export type PricingModel = {
   icon?: string
   vendor_id?: number
   vendor_name?: string
+  vendor_display_name?: string
+  vendor_localized_name?: string
   vendor_icon?: string
   vendor_description?: string
+  localized_tags?: string
   quota_type: number
   model_ratio: number
   completion_ratio: number

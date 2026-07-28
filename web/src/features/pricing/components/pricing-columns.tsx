@@ -40,6 +40,7 @@ import {
   formatRequestPrice,
   stripTrailingZeros,
 } from '../lib/price'
+import { localizePricingVendorName } from '../lib/vendor-localization'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 
@@ -58,7 +59,7 @@ export interface PricingColumnsOptions {
 export function usePricingColumns(
   options: PricingColumnsOptions = {}
 ): ColumnDef<PricingModel>[] {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const {
     tokenUnit = DEFAULT_TOKEN_UNIT,
     priceRate = 1,
@@ -68,6 +69,7 @@ export function usePricingColumns(
   } = options
 
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
+  const language = i18n.resolvedLanguage || i18n.language
 
   return [
     // Model column
@@ -317,8 +319,12 @@ export function usePricingColumns(
 
     // Vendor column
     {
-      accessorKey: 'vendor_name',
-      header: t('Vendor'),
+      id: 'vendor',
+      accessorFn: (model) => model.vendor_localized_name || model.vendor_name,
+      meta: { label: t('Vendor') },
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('Vendor')} />
+      ),
       cell: ({ row }) => {
         const model = row.original
         if (!model.vendor_name) {
@@ -331,7 +337,11 @@ export function usePricingColumns(
           <BadgeCell className='gap-1.5'>
             {vendorIcon}
             <StatusBadge
-              label={model.vendor_name}
+              label={localizePricingVendorName(
+                model.vendor_name,
+                model.vendor_display_name,
+                language
+              )}
               autoColor={model.vendor_name}
               size='sm'
               copyable={false}
@@ -340,15 +350,14 @@ export function usePricingColumns(
         )
       },
       size: 130,
-      enableSorting: false,
     },
 
     // Tags column
     {
-      accessorKey: 'tags',
+      accessorKey: 'localized_tags',
       header: t('Tags'),
       cell: ({ row }) => {
-        const tags = parseTags(row.original.tags)
+        const tags = parseTags(row.original.localized_tags)
         return (
           <BadgeListCell
             items={tags.map((tag) => (

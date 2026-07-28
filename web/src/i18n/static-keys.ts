@@ -71,6 +71,7 @@ export const STATIC_I18N_KEYS = [
   'Sort',
   'All',
   'All Vendors',
+  'Optional localized name shown on pricing pages. Leave empty to use the unique vendor name.',
   'All Groups',
   'All Tags',
   'More...',

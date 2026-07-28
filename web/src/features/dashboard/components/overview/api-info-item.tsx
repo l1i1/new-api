@@ -41,10 +41,9 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
   const { i18n, t } = useTranslation()
   const item = props.item
   const status = props.status
-  const description = resolveTntContent(
-    item.description,
-    i18n.resolvedLanguage || i18n.language
-  )
+  const contentLanguage = i18n.resolvedLanguage || i18n.language
+  const route = resolveTntContent(item.route, contentLanguage)
+  const description = resolveTntContent(item.description, contentLanguage)
 
   return (
     <div className='group hover:bg-muted/40 flex items-center justify-between gap-2 px-3 py-2.5 transition-colors sm:gap-3 sm:px-5 sm:py-3'>
@@ -58,9 +57,7 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
 
         <div className='flex min-w-0 flex-1 flex-col gap-0.5'>
           <div className='flex items-baseline gap-2'>
-            <span className='font-mono text-sm font-semibold'>
-              {item.route}
-            </span>
+            <span className='font-mono text-sm font-semibold'>{route}</span>
             <span className='text-muted-foreground/60 hidden truncate text-xs md:inline'>
               {description}
             </span>
