@@ -1,0 +1,713 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+.tokeness-home {
+  --tokeness-home-background: var(--background, #f7f6f2);
+  --tokeness-home-foreground: var(--foreground, #151515);
+  --tokeness-home-card: var(--card, #fff);
+  --tokeness-home-card-foreground: var(--card-foreground, #151515);
+  --tokeness-home-primary: #d7192a;
+  --tokeness-home-primary-foreground: #fff;
+  --tokeness-home-secondary: var(--secondary, #ededeb);
+  --tokeness-home-secondary-foreground: var(--secondary-foreground, #151515);
+  --tokeness-home-muted-foreground: var(--muted-foreground, #5a5a56);
+  --tokeness-home-border: var(--border, #d8d6cf);
+  --tokeness-home-gridline: rgb(21 21 21 / 7%);
+  --tokeness-home-rule: #151515;
+  --tokeness-home-surface: linear-gradient(
+    var(--tokeness-home-card),
+    var(--tokeness-home-card)
+  );
+
+  max-width: 1260px;
+  margin: 0 auto;
+  padding: 28px 34px 88px;
+  color: var(--tokeness-home-foreground);
+  background:
+    linear-gradient(var(--tokeness-home-gridline) 1px, transparent 1px) 0 0 /
+      100% 76px,
+    linear-gradient(90deg, var(--tokeness-home-gridline) 1px, transparent 1px) 0
+      0 / 96px 100%,
+    var(--tokeness-home-background);
+}
+
+:is(.dark, [data-theme='dark']) .tokeness-home {
+  --tokeness-home-background: var(--background, #0b0f14);
+  --tokeness-home-foreground: var(--foreground, #f5f7fb);
+  --tokeness-home-card: var(--card, #14181d);
+  --tokeness-home-card-foreground: var(--card-foreground, #f5f7fb);
+  --tokeness-home-secondary: var(--secondary, #1b2028);
+  --tokeness-home-secondary-foreground: var(--secondary-foreground, #eef1f5);
+  --tokeness-home-muted-foreground: var(--muted-foreground, #aab3bf);
+  --tokeness-home-border: var(--border, #24303c);
+  --tokeness-home-gridline: rgb(255 255 255 / 4.5%);
+  --tokeness-home-rule: #f5f7fb;
+  --tokeness-home-surface: linear-gradient(
+    rgb(19 22 28 / 92%),
+    rgb(19 22 28 / 92%)
+  );
+}
+
+.tokeness-home__shell {
+  display: grid;
+  gap: 30px;
+}
+
+.tokeness-home__top-spacer {
+  height: 44px;
+}
+
+.tokeness-home__hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.36fr) minmax(350px, 0.64fr);
+  gap: 26px;
+  align-items: stretch;
+}
+
+.tokeness-home__hero-main,
+.tokeness-home__hero-side,
+.tokeness-home__block,
+.tokeness-home__band {
+  border: 1px solid var(--tokeness-home-border);
+  border-radius: 2px;
+  color: var(--tokeness-home-card-foreground);
+  background: var(--tokeness-home-surface), var(--tokeness-home-card);
+}
+
+.tokeness-home__hero-main {
+  position: relative;
+  overflow: hidden;
+  padding: 40px 34px 34px;
+  border-top: 4px solid var(--tokeness-home-rule);
+}
+
+.tokeness-home__hero-main::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background: var(--tokeness-home-primary);
+  content: '';
+}
+
+.tokeness-home__system-mark {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+  color: var(--tokeness-home-primary);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tokeness-home__system-mark::after {
+  height: 1px;
+  flex: 1;
+  background: var(--tokeness-home-border);
+  content: '';
+}
+
+.tokeness-home__hero-title {
+  max-width: 12ch;
+  margin: 0;
+  font-size: clamp(40px, 4vw, 56px);
+  line-height: 1.06;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+
+.tokeness-home__hero-copy {
+  max-width: 42rem;
+  margin: 18px 0 0;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 16px;
+  line-height: 1.88;
+  text-wrap: pretty;
+}
+
+.tokeness-home__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.tokeness-home__button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  border-radius: 2px;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+
+.tokeness-home__button:hover {
+  transform: translateY(-1px);
+}
+
+.tokeness-home__button:focus-visible {
+  outline: 2px solid var(--tokeness-home-primary);
+  outline-offset: 2px;
+}
+
+.tokeness-home__footer-link:focus-visible {
+  outline: 2px solid var(--tokeness-home-primary);
+  outline-offset: 3px;
+}
+
+.tokeness-home__button--primary {
+  color: var(--tokeness-home-primary-foreground);
+  background: var(--tokeness-home-primary);
+}
+
+.tokeness-home__button--secondary {
+  border: 1px solid var(--tokeness-home-border);
+  color: var(--tokeness-home-secondary-foreground);
+  background: var(--tokeness-home-secondary);
+}
+
+.tokeness-home__hero-side {
+  display: grid;
+  gap: 20px;
+  padding: 30px 28px 28px;
+}
+
+.tokeness-home .tokeness-home__side-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.tokeness-home__side-title::before {
+  width: 18px;
+  height: 10px;
+  background: var(--tokeness-home-primary);
+  content: '';
+}
+
+.tokeness-home__steps {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--tokeness-home-border);
+  list-style: none;
+}
+
+.tokeness-home__step {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--tokeness-home-border);
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.tokeness-home__step-number {
+  display: inline-flex;
+  width: 32px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  color: var(--tokeness-home-primary-foreground);
+  background: var(--tokeness-home-primary);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.tokeness-home__capabilities {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid var(--tokeness-home-border);
+  border-top: 4px solid var(--tokeness-home-rule);
+  background: var(--tokeness-home-card);
+}
+
+.tokeness-home__capability {
+  position: relative;
+  display: grid;
+  min-height: 168px;
+  align-content: start;
+  gap: 16px;
+  padding: 24px 20px 22px;
+  border-right: 1px solid var(--tokeness-home-border);
+}
+
+.tokeness-home__capability:last-child {
+  border-right: 0;
+}
+
+.tokeness-home__capability::before {
+  display: block;
+  color: var(--tokeness-home-primary);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  content: attr(data-index);
+}
+
+.tokeness-home .tokeness-home__capability strong {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+
+.tokeness-home__capability span {
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 13px;
+  line-height: 1.72;
+  text-wrap: pretty;
+}
+
+.tokeness-home__band {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 0;
+  align-items: stretch;
+  padding: 0;
+}
+
+.tokeness-home__band-text {
+  padding: 30px 32px;
+  border-right: 1px solid var(--tokeness-home-border);
+}
+
+.tokeness-home__band-label {
+  color: var(--tokeness-home-primary);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tokeness-home .tokeness-home__band-title {
+  margin: 8px 0 0;
+  font-size: 22px;
+  line-height: 1.22;
+  font-weight: 900;
+  text-wrap: balance;
+}
+
+.tokeness-home__band-copy {
+  margin: 12px 0 0;
+  color: var(--tokeness-home-muted-foreground);
+  line-height: 1.9;
+  text-wrap: pretty;
+}
+
+.tokeness-home__band-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+}
+
+.tokeness-home__stat {
+  display: grid;
+  align-content: center;
+  padding: 30px 22px;
+  border-left: 1px solid var(--tokeness-home-border);
+}
+
+.tokeness-home__stat b {
+  display: block;
+  color: var(--tokeness-home-foreground);
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.tokeness-home__stat span {
+  display: block;
+  margin-top: 6px;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tokeness-home__block {
+  display: grid;
+  gap: 18px;
+  padding: 28px 28px 26px;
+}
+
+.tokeness-home__supplier {
+  gap: 20px;
+  padding: 34px 28px 32px;
+  border: 0;
+  background: transparent;
+}
+
+.tokeness-home .tokeness-home__supplier-label {
+  margin: 4px 0 0;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: clamp(18px, 2vw, 24px);
+  line-height: 1.3;
+  font-weight: 300;
+  text-align: center;
+}
+
+.tokeness-home__provider-matrix {
+  display: flex;
+  max-width: 1120px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px 16px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.tokeness-home__provider-tile {
+  display: flex;
+  width: 48px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  color: var(--tokeness-home-foreground);
+}
+
+.tokeness-home__provider-tile svg {
+  display: block;
+  width: 40px;
+  height: 40px;
+}
+
+.tokeness-home__provider-more {
+  display: flex;
+  width: 48px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  color: var(--tokeness-home-foreground);
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.tokeness-home__footer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+
+.tokeness-home .tokeness-home__block-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.tokeness-home__list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tokeness-home__list-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-top: 1px solid var(--tokeness-home-border);
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.tokeness-home__list-item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.tokeness-home__list-item i {
+  min-width: 34px;
+  color: var(--tokeness-home-primary);
+  font-style: normal;
+  font-weight: 900;
+  text-align: center;
+}
+
+.tokeness-home__spec-table {
+  display: grid;
+  margin: 0;
+  border: 1px solid var(--tokeness-home-border);
+  background: var(--tokeness-home-card);
+}
+
+.tokeness-home__spec-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--tokeness-home-border);
+}
+
+.tokeness-home__spec-row:last-child {
+  border-bottom: 0;
+}
+
+.tokeness-home__spec-row dt {
+  align-self: start;
+  padding-left: 16px;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tokeness-home__spec-row dd {
+  margin: 0;
+  padding-right: 16px;
+  font-size: 14px;
+  line-height: 1.78;
+  font-weight: 700;
+}
+
+.tokeness-home__site-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: end;
+  padding: 24px 0 0;
+  border-top: 1px solid var(--tokeness-home-border);
+}
+
+.tokeness-home__site-footer-main {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.tokeness-home__footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--tokeness-home-foreground);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tokeness-home__footer-brand::before {
+  width: 22px;
+  height: 10px;
+  background: var(--tokeness-home-primary);
+  content: '';
+}
+
+.tokeness-home__footer-copy {
+  max-width: 48rem;
+  margin: 0;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 13px;
+  line-height: 1.8;
+  text-wrap: pretty;
+}
+
+.tokeness-home__copyright {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tokeness-home__copyright .tokeness-home__footer-link {
+  font-size: inherit;
+}
+
+.tokeness-home__footer-nav,
+.tokeness-home__footer-legal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.tokeness-home__footer-link {
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: color 180ms ease;
+}
+
+.tokeness-home__footer-link:hover {
+  color: var(--tokeness-home-primary);
+}
+
+.tokeness-home__footer-right {
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+}
+
+.tokeness-home__footer-legal {
+  justify-content: flex-end;
+}
+
+.tokeness-home__footer-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.tokeness-home__footer-badge img {
+  display: block;
+  width: 150px;
+  height: auto;
+}
+
+@media (max-width: 980px) {
+  .tokeness-home__hero,
+  .tokeness-home__band,
+  .tokeness-home__footer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tokeness-home__capabilities {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tokeness-home__capability:nth-child(2) {
+    border-right: 0;
+  }
+
+  .tokeness-home__capability:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--tokeness-home-border);
+  }
+
+  .tokeness-home__band-text {
+    border-right: 0;
+    border-bottom: 1px solid var(--tokeness-home-border);
+  }
+}
+
+@media (max-width: 720px) {
+  .tokeness-home {
+    padding: 22px 18px 64px;
+  }
+
+  .tokeness-home__capabilities,
+  .tokeness-home__band-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .tokeness-home__capability {
+    border-right: 0;
+    border-bottom: 1px solid var(--tokeness-home-border);
+  }
+
+  .tokeness-home__capability:last-child {
+    border-bottom: 0;
+  }
+
+  .tokeness-home__provider-matrix {
+    gap: 12px 14px;
+  }
+
+  .tokeness-home__spec-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .tokeness-home__spec-row dd {
+    padding: 0 16px;
+  }
+
+  .tokeness-home__site-footer {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .tokeness-home__footer-right {
+    justify-items: start;
+  }
+
+  .tokeness-home__footer-legal {
+    justify-content: flex-start;
+  }
+
+  .tokeness-home__footer-badge {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .tokeness-home__top-spacer {
+    height: 24px;
+  }
+
+  .tokeness-home__hero-main {
+    padding: 26px 18px 24px;
+  }
+
+  .tokeness-home__hero-title {
+    font-size: 32px;
+  }
+
+  .tokeness-home__actions {
+    display: grid;
+  }
+
+  .tokeness-home__button {
+    width: 100%;
+  }
+
+  .tokeness-home__provider-tile {
+    width: 40px;
+    height: 40px;
+  }
+
+  .tokeness-home__provider-tile svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .tokeness-home__provider-more {
+    width: 40px;
+    height: 40px;
+    font-size: 24px;
+  }
+}

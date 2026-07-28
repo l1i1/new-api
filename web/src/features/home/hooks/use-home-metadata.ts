@@ -19,30 +19,73 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
+const HOME_METADATA = [
+  {
+    selector: 'meta[name="title"]',
+    attribute: 'name',
+    attributeValue: 'title',
+    contentKey: 'title',
+  },
+  {
+    selector: 'meta[name="description"]',
+    attribute: 'name',
+    attributeValue: 'description',
+    contentKey: 'description',
+  },
+  {
+    selector: 'meta[name="keywords"]',
+    attribute: 'name',
+    attributeValue: 'keywords',
+    contentKey: 'keywords',
+  },
+  {
+    selector: 'meta[property="og:title"]',
+    attribute: 'property',
+    attributeValue: 'og:title',
+    contentKey: 'title',
+  },
+  {
+    selector: 'meta[property="og:description"]',
+    attribute: 'property',
+    attributeValue: 'og:description',
+    contentKey: 'description',
+  },
+  {
+    selector: 'meta[name="twitter:title"]',
+    attribute: 'name',
+    attributeValue: 'twitter:title',
+    contentKey: 'title',
+  },
+  {
+    selector: 'meta[name="twitter:description"]',
+    attribute: 'name',
+    attributeValue: 'twitter:description',
+    contentKey: 'description',
+  },
+] as const
+
 export function useHomeMetadata(systemName?: string) {
   const { i18n, t } = useTranslation()
 
   useEffect(() => {
     const previousTitle = document.title
-    const metadata = [
-      { name: 'title', content: t('home.meta.title') },
-      { name: 'description', content: t('home.meta.description') },
-      { name: 'keywords', content: t('home.meta.keywords') },
-    ]
-    const previousMetadata = metadata.map((item) => {
-      const existing = document.querySelector<HTMLMetaElement>(
-        `meta[name="${item.name}"]`
-      )
+    const values = {
+      title: t('home.meta.title'),
+      description: t('home.meta.description'),
+      keywords: t('home.meta.keywords'),
+    }
+    const previousMetadata = HOME_METADATA.map((item) => {
+      const existing = document.querySelector<HTMLMetaElement>(item.selector)
       const element = existing ?? document.createElement('meta')
 
       if (!existing) {
-        element.name = item.name
+        element.setAttribute(item.attribute, item.attributeValue)
         document.head.append(element)
       }
 
       const previousContent = element.content
-      element.content = item.content
-      return { element, previousContent, created: !existing }
+      element.content = values[item.contentKey]
+      return { definition: item, element, previousContent, created: !existing }
     })
 
     document.title = t('home.meta.title')
@@ -52,7 +95,10 @@ export function useHomeMetadata(systemName?: string) {
       for (const item of previousMetadata) {
         if (item.created) {
           item.element.remove()
-        } else if (item.element.name === 'title' && systemName) {
+        } else if (
+          item.definition.selector === 'meta[name="title"]' &&
+          systemName
+        ) {
           item.element.content = systemName
         } else {
           item.element.content = item.previousContent

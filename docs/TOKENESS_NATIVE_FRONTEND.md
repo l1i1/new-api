@@ -63,25 +63,38 @@ remain raw. Only human-readable labels and descriptions are localized.
 
 ## Native Home Page
 
-The default home page keeps the existing React feature structure and replaces
-generic copy with the Tokeness content hierarchy from the historical production
-page:
+The legacy Tokeness implementation in
+`tools/nginx-dev-proxy/repo-newapi-webdist/static/custom/js/home.js` is the
+visual and content source of truth for the native home page. Native migration
+replaces the injection mechanism, not the design. The React implementation
+must preserve:
 
-1. One entry for all models
-2. Three-step integration flow
-3. Key, quota, routing, and usage controls
-4. Traceable request path and compatible output
-5. Provider coverage and clear calls to dashboard/pricing
+- the 1260 px grid-backed canvas and sharp 2 px / 0 px geometry;
+- the split hero with its integration-steps rail;
+- the four-cell capability matrix;
+- the `30+ providers / 1 gateway / 3 layers` system band;
+- the provider icon wall in its reviewed order;
+- the routing list, compatibility specification table, Tokeness footer, legal
+  links, contact link, LM Speed verification badge, and linked New API project
+  attribution beside the Tokeness copyright;
+- the legacy six-language copy and responsive collapse behavior at 980 px,
+  720 px, and 520 px.
 
-Use the existing public header, footer, routing, status configuration, theme
-tokens, model icon package, and motion utilities. Do not copy the historical
-inline HTML, inline provider SVGs, global radius override, or DOM lifecycle
-code.
+The implementation may replace inline SVG markup with the already-installed
+`@lobehub/icons` components and must use React/i18next instead of DOM mutation,
+global observers, or injected styles. Those substitutions must not alter the
+visible information architecture. The home route renders this Tokeness footer
+instead of appending the generic public footer a second time.
 
 The historical production value `<home-tokeness/>` is a legacy injector
 sentinel, not administrator-authored HTML. Back it up and clear it from
 `HomePageContent` before removing the injector. Do not add permanent client-side
 handling for that sentinel or weaken the custom HTML/Markdown/URL contract.
+
+Acceptance requires desktop and 390 px browser screenshots. At both sizes the
+page must have no horizontal overflow, hidden sections, clipped text, or
+unreachable navigation. A generic replacement landing page does not satisfy
+the migration even if it contains equivalent product claims.
 
 ## Wallet Decisions
 

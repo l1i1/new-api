@@ -114,6 +114,11 @@ const BRAND_AND_LITERAL_KEYS = new Set([
   'whsec_xxx',
 ])
 
+const INTENTIONALLY_ENGLISH_HOME_KEYS = new Set([
+  'home.legacy.hero.kicker',
+  'home.legacy.system.label',
+])
+
 function isPlainObject(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
@@ -197,9 +202,16 @@ function reorderLikeBase(
   return target === undefined ? (fill ?? base) : target
 }
 
-function isLikelyUntranslated({ locale, baseValue, value }) {
+function isLikelyUntranslated({ key, locale, baseValue, value }) {
   if (typeof value !== 'string' || typeof baseValue !== 'string') return false
   if (value !== baseValue) return false
+
+  if (
+    INTENTIONALLY_ENGLISH_HOME_KEYS.has(key) ||
+    (['ja', 'ru', 'vi'].includes(locale) && key.startsWith('home.legacy.'))
+  ) {
+    return false
+  }
 
   // Skip short tokens / acronyms / ids
   const s = baseValue.trim()
@@ -229,8 +241,9 @@ function isLikelyUntranslated({ locale, baseValue, value }) {
   if (locale === 'ru') return true
 
   // For fr/vi: still useful but noisier; keep it conservative.
-  if (locale === 'fr' || locale === 'vi')
+  if (locale === 'fr' || locale === 'vi') {
     return /\b(the|and|or|to|with|please)\b/i.test(s)
+  }
 
   return false
 }
@@ -299,7 +312,7 @@ async function main() {
       for (const k of Object.keys(compareTrans)) {
         const baseValue = compareTrans[k]
         const value = trans[k]
-        if (isLikelyUntranslated({ locale, baseValue, value })) {
+        if (isLikelyUntranslated({ key: k, locale, baseValue, value })) {
           untranslated[k] = value
         }
       }
