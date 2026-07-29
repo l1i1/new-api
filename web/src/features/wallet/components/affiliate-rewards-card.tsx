@@ -75,7 +75,7 @@ export function AffiliateRewardsCard({
             </h3>
             <p className='text-muted-foreground text-xs'>
               {t(
-                'Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.'
+                'When a new user registers through your referral link, the configured referral reward is credited automatically.'
               )}
             </p>
           </div>

@@ -101,13 +101,32 @@ the migration even if it contains equivalent product claims.
 - Continue to display the server-calculated payment amount. Do not reconstruct
   it from `amount * exchangeRate`; server calculation includes group ratios,
   discounts, and payment-specific rules.
+- Present the custom amount row as the reviewed three-part relationship:
+  amount input, the configured base price multiplier, and the server-calculated
+  payable amount. The multiplier is explanatory only; it must never replace the
+  payable amount returned by the backend.
 - Format payment amounts with the existing local-currency formatter.
 - For the standard EPay flow, render an explicit localized reminder to keep the
   payment page open until it redirects back. Keep the payable amount visible.
+- For non-EPay flows, omit the `You Pay` row from the confirmation dialog. Those
+  providers present and settle their payable amount in their own checkout.
 - Keep the native affiliate explanation, all three statistics, compliance
-  handling, and transfer-to-balance action. The historical 20% first-top-up
-  statement and hidden transfer action are not supported by current backend
-  behavior.
+  handling, and transfer-to-balance action. Explain that the configured reward
+  is credited when a referred user registers. The historical 20% first-top-up
+  statement is not supported by current backend behavior and must not be shown.
+
+## Home Metadata
+
+- The localized title, description, and keywords from the historical Tokeness
+  home are the canonical SEO copy for `zh`, `en`, `fr`, `ru`, `ja`, and `vi`.
+  `zh-TW` intentionally uses the reviewed Chinese home metadata, matching the
+  legacy home contract.
+- The home route owns `document.title`, primary metadata, Open Graph title and
+  description, and Twitter title and description while mounted, then restores
+  the previous route metadata on navigation.
+- `web/index.html` carries the English Tokeness values as the crawler and
+  no-JavaScript fallback. It must not ship the upstream `New API` defaults as
+  the page title or SEO copy, while its generator attribution remains present.
 
 ## Theme Defaults
 
