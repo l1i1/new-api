@@ -72,6 +72,12 @@ await i18n.use(initReactI18next).init({
         'You save': 'You save',
       },
     },
+    zh: {
+      translation: {
+        Save: '保存',
+        'You save': '节省',
+      },
+    },
   },
 })
 
@@ -147,11 +153,18 @@ describe('wallet payment surfaces', () => {
         onRedemptionCodeChange={() => undefined}
         onRedeem={() => undefined}
         redeeming={false}
+        priceRatio={7}
       />
     )
 
     assert.equal(rendered.container.textContent?.includes('You save'), true)
     assert.equal(rendered.container.textContent?.includes('<tnt'), false)
+    assert.equal(rendered.container.textContent?.includes('×7 CNY ='), true)
+    assert.match(
+      rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
+        ?.textContent ?? '',
+      /8/
+    )
 
     const paymentButton = rendered.container.querySelector(
       'button[aria-label="Alipay"]'
@@ -163,7 +176,7 @@ describe('wallet payment surfaces', () => {
     await unmountComponent(rendered)
   })
 
-  test('shows the redirect warning only for standard EPay methods', async () => {
+  test('shows the payable row and redirect warning only for standard EPay methods', async () => {
     const warning =
       'Do not close the payment page after paying. Wait to be redirected back automatically.'
     const rendered = await renderComponent(
@@ -180,6 +193,7 @@ describe('wallet payment surfaces', () => {
     )
 
     assert.equal(document.body.textContent?.includes(warning), true)
+    assert.equal(document.body.textContent?.includes('You Pay'), true)
 
     await act(async () => {
       rendered.root.render(
@@ -199,7 +213,95 @@ describe('wallet payment surfaces', () => {
     })
 
     assert.equal(document.body.textContent?.includes(warning), false)
+    assert.equal(document.body.textContent?.includes('You Pay'), false)
+
+    await act(async () => {
+      rendered.root.render(
+        <I18nextProvider i18n={i18n}>
+          <PaymentConfirmDialog
+            open
+            onOpenChange={() => undefined}
+            onConfirm={() => undefined}
+            topupAmount={10}
+            paymentAmount={8}
+            paymentMethod={{ name: 'Waffo', type: 'waffo' }}
+            calculating={false}
+            processing={false}
+          />
+        </I18nextProvider>
+      )
+    })
+
+    assert.equal(document.body.textContent?.includes(warning), false)
+    assert.equal(document.body.textContent?.includes('You Pay'), false)
+
+    for (const paymentMethod of [
+      { name: 'Waffo Pancake', type: 'waffo_pancake' },
+      { name: 'Creem', type: 'creem' },
+    ]) {
+      await act(async () => {
+        rendered.root.render(
+          <I18nextProvider i18n={i18n}>
+            <PaymentConfirmDialog
+              open
+              onOpenChange={() => undefined}
+              onConfirm={() => undefined}
+              topupAmount={10}
+              paymentAmount={8}
+              paymentMethod={paymentMethod}
+              calculating={false}
+              processing={false}
+            />
+          </I18nextProvider>
+        )
+      })
+
+      assert.equal(document.body.textContent?.includes(warning), false)
+      assert.equal(document.body.textContent?.includes('You Pay'), false)
+    }
 
     await unmountComponent(rendered)
+  })
+
+  test('uses the Chinese multiplier form without calculating the payable amount locally', async () => {
+    await act(async () => {
+      await i18n.changeLanguage('zh')
+    })
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={topupInfo}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={61.5}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+        priceRatio={7}
+      />
+    )
+
+    assert.equal(rendered.container.textContent?.includes('×¥7='), true)
+    assert.match(
+      rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
+        ?.textContent ?? '',
+      /61\.5/
+    )
+    assert.doesNotMatch(
+      rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
+        ?.textContent ?? '',
+      /70/
+    )
+
+    await unmountComponent(rendered)
+    await act(async () => {
+      await i18n.changeLanguage('en')
+    })
   })
 })

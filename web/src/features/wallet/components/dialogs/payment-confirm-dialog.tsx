@@ -103,25 +103,27 @@ export function PaymentConfirmDialog({
             </span>
           </div>
 
-          <div className='flex items-center justify-between'>
-            <span className='text-muted-foreground text-sm'>
-              {t('You Pay')}
-            </span>
-            {calculating ? (
-              <Skeleton className='h-6 w-24' />
-            ) : (
-              <div className='flex items-baseline gap-2'>
-                <span className='text-2xl font-semibold'>
-                  {formatLocalCurrencyAmount(paymentAmount)}
-                </span>
-                {hasDiscount && (
-                  <span className='text-muted-foreground text-sm line-through'>
-                    {formatLocalCurrencyAmount(originalAmount)}
+          {isStandardEpay && (
+            <div className='flex items-center justify-between'>
+              <span className='text-muted-foreground text-sm'>
+                {t('You Pay')}
+              </span>
+              {calculating ? (
+                <Skeleton className='h-6 w-24' />
+              ) : (
+                <div className='flex items-baseline gap-2'>
+                  <span className='text-2xl font-semibold'>
+                    {formatLocalCurrencyAmount(paymentAmount)}
                   </span>
-                )}
-              </div>
-            )}
-          </div>
+                  {hasDiscount && (
+                    <span className='text-muted-foreground text-sm line-through'>
+                      {formatLocalCurrencyAmount(originalAmount)}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {hasDiscount && !calculating && (
             <div className='bg-muted/50 rounded-lg p-3'>

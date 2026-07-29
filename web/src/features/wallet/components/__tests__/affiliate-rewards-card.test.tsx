@@ -104,8 +104,9 @@ describe('affiliate rewards card', () => {
 
     assert.match(
       container.textContent ?? '',
-      /Earn rewards when users join through your referral link\. Transfer accumulated rewards to your balance anytime\./
+      /When a new user registers through your referral link, the configured referral reward is credited automatically\./
     )
+    assert.doesNotMatch(container.textContent ?? '', /20%/)
     assert.match(container.textContent ?? '', /Pending/)
     assert.match(container.textContent ?? '', /Total Earned/)
     assert.match(container.textContent ?? '', /Invites/)

@@ -144,6 +144,10 @@ export function RechargeFormCard({
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
+  const formattedPriceRatio = priceRatio.toLocaleString('zh-CN')
+  const multiplierLabel = contentLanguage.toLowerCase().startsWith('zh')
+    ? `×¥${formattedPriceRatio}=`
+    : `×${formattedPriceRatio} CNY =`
 
   if (loading) {
     return (
@@ -290,7 +294,7 @@ export function RechargeFormCard({
                 >
                   {t('Custom Amount')}
                 </Label>
-                <div className='grid grid-cols-[minmax(0,1fr)_minmax(110px,0.55fr)] gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center'>
+                <div className='grid grid-cols-[minmax(0,1fr)_auto_minmax(110px,0.55fr)] items-center gap-2'>
                   <Input
                     id='topup-amount'
                     type='number'
@@ -300,6 +304,12 @@ export function RechargeFormCard({
                     placeholder={`Minimum ${minTopup}`}
                     className='h-9 text-base sm:h-10 sm:text-lg'
                   />
+                  <span
+                    className='text-foreground flex min-h-9 items-center justify-center px-0.5 text-xs font-semibold whitespace-nowrap sm:text-sm'
+                    aria-label={multiplierLabel}
+                  >
+                    {multiplierLabel}
+                  </span>
                   <div className='bg-muted/30 flex min-h-9 items-center justify-between gap-2 rounded-md border px-3 lg:min-w-52'>
                     <span className='text-muted-foreground truncate text-xs'>
                       {t('Amount to pay:')}
@@ -307,7 +317,10 @@ export function RechargeFormCard({
                     {calculating ? (
                       <Skeleton className='h-5 w-16' />
                     ) : (
-                      <span className='text-sm font-semibold'>
+                      <span
+                        className='text-sm font-semibold'
+                        data-testid='wallet-payment-amount'
+                      >
                         {formatLocalCurrencyAmount(paymentAmount)}
                       </span>
                     )}

@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { after, describe, test } from 'node:test'
 
 import {
@@ -29,6 +30,7 @@ import {
 import { Window } from 'happy-dom'
 
 import en from '@/i18n/locales/en.json'
+import fr from '@/i18n/locales/fr.json'
 import ja from '@/i18n/locales/ja.json'
 import ru from '@/i18n/locales/ru.json'
 import vi from '@/i18n/locales/vi.json'
@@ -85,7 +87,7 @@ const i18n = createInstance()
 await i18n.use(initReactI18next).init({
   lng: 'en',
   fallbackLng: 'en',
-  resources: { en, ja, ru, vi, zh, zhTW },
+  resources: { en, fr, ja, ru, vi, zh, zhTW },
 })
 
 const reactTestGlobals = globalThis as typeof globalThis & {
@@ -293,6 +295,10 @@ describe('Tokeness legacy home', () => {
     openGraphTitle.setAttribute('property', 'og:title')
     openGraphTitle.content = 'Previous Open Graph title'
     document.head.append(openGraphTitle)
+    const openGraphDescription = document.createElement('meta')
+    openGraphDescription.setAttribute('property', 'og:description')
+    openGraphDescription.content = 'Previous Open Graph description'
+    document.head.append(openGraphDescription)
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -319,8 +325,74 @@ describe('Tokeness legacy home', () => {
       en.translation['home.meta.description']
     )
 
-    await changeLanguage('zh')
-    assert.equal(openGraphTitle.content, zh.translation['home.meta.title'])
+    const expectedMetadata = {
+      en: {
+        title: 'Tokeness - One Entry, All Models | AI API',
+        description:
+          'Tokeness gives developers one entry to every major AI model. Use one OpenAI-compatible key for GPT, Claude, DeepSeek and more, with quota control, routing management, usage audit and privacy-preserving relay.',
+        keywords:
+          'AI API Gateway, LLM API, GPT API, Claude API, OpenAI compatible API, AI API proxy, Tokeness, AI API Hub',
+      },
+      fr: {
+        title: 'Tokeness - Une entree, tous les modeles | AI API',
+        description:
+          "Tokeness offre aux developpeurs une entree unique vers tous les grands modeles IA. Une seule cle compatible OpenAI donne acces a GPT, Claude, DeepSeek et plus, avec controle des quotas, routage, audit d'usage et relais respectueux de la confidentialite.",
+        keywords:
+          'AI API Gateway, API IA, LLM API, GPT API, Claude API, API compatible OpenAI, Tokeness',
+      },
+      ru: {
+        title: 'Tokeness - Один вход, все модели | AI API',
+        description:
+          'Tokeness дает разработчикам один вход ко всем основным AI-моделям. Один OpenAI-совместимый ключ подключает GPT, Claude, DeepSeek и другие модели с контролем квот, управлением маршрутизацией, аудитом расходов и приватным транзитом данных.',
+        keywords:
+          'AI API Gateway, LLM API, GPT API, Claude API, OpenAI compatible API, Tokeness',
+      },
+      ja: {
+        title: 'Tokeness - 一つの入口、すべてのモデル | AI API',
+        description:
+          'Tokeness は開発者向けに、主要な AI モデルへ接続する一つの入口を提供します。OpenAI 互換の一つの Key で GPT、Claude、DeepSeek などを利用でき、クォータ管理、ルーティング、利用監査、プライバシーを守る中継に対応します。',
+        keywords:
+          'AI API Gateway, LLM API, GPT API, Claude API, OpenAI compatible API, Tokeness',
+      },
+      vi: {
+        title: 'Tokeness - Mot loi vao, tat ca mo hinh | AI API',
+        description:
+          'Tokeness cho nha phat trien mot loi vao den tat ca mo hinh AI pho bien. Mot key tuong thich OpenAI ket noi GPT, Claude, DeepSeek va nhieu mo hinh khac, kem quan ly quota, dieu phoi tuyen, kiem toan su dung va relay bao ve rieng tu.',
+        keywords:
+          'AI API Gateway, LLM API, GPT API, Claude API, OpenAI compatible API, Tokeness',
+      },
+      zh: {
+        title: 'Tokeness - 一个入口，所有模型 | AI API',
+        description:
+          'Tokeness 提供一个入口接入所有主流 AI 模型。一个 Key 连通 GPT、Claude、DeepSeek 等模型，兼容 OpenAI 接口，支持额度控制、路由管理、消费审计和隐私中转，开发接入更简单。',
+        keywords:
+          'AI API Gateway, API 中转站, LLM API, 全模型AI接口, GPT API, Claude API, OpenAI兼容API, AI接口中转, Tokeness, AI API Hub',
+      },
+      zhTW: {
+        title: 'Tokeness - 一个入口，所有模型 | AI API',
+        description:
+          'Tokeness 提供一个入口接入所有主流 AI 模型。一个 Key 连通 GPT、Claude、DeepSeek 等模型，兼容 OpenAI 接口，支持额度控制、路由管理、消费审计和隐私中转，开发接入更简单。',
+        keywords:
+          'AI API Gateway, API 中转站, LLM API, 全模型AI接口, GPT API, Claude API, OpenAI兼容API, AI接口中转, Tokeness, AI API Hub',
+      },
+    } as const
+
+    for (const [language, metadata] of Object.entries(expectedMetadata)) {
+      await changeLanguage(language)
+      assert.equal(document.title, metadata.title)
+      assert.equal(
+        document.querySelector<HTMLMetaElement>('meta[name="title"]')?.content,
+        metadata.title
+      )
+      assert.equal(description.content, metadata.description)
+      assert.equal(openGraphTitle.content, metadata.title)
+      assert.equal(openGraphDescription.content, metadata.description)
+      assert.equal(
+        document.querySelector<HTMLMetaElement>('meta[name="keywords"]')
+          ?.content,
+        metadata.keywords
+      )
+    }
 
     await act(async () => root.unmount())
     container.remove()
@@ -328,6 +400,10 @@ describe('Tokeness legacy home', () => {
     assert.equal(document.title, 'Configured New API')
     assert.equal(description.content, 'Previous description')
     assert.equal(openGraphTitle.content, 'Previous Open Graph title')
+    assert.equal(
+      openGraphDescription.content,
+      'Previous Open Graph description'
+    )
     assert.equal(document.querySelector('meta[name="twitter:title"]'), null)
     assert.equal(
       document.querySelector('meta[name="twitter:description"]'),
@@ -335,5 +411,24 @@ describe('Tokeness legacy home', () => {
     )
     description.remove()
     openGraphTitle.remove()
+    openGraphDescription.remove()
+  })
+
+  test('ships the English Tokeness metadata as the static HTML fallback', () => {
+    const html = readFileSync(
+      new URL('../../../../../index.html', import.meta.url),
+      'utf8'
+    )
+
+    assert.match(
+      html,
+      /<title>Tokeness - One Entry, All Models \| AI API<\/title>/
+    )
+    assert.match(html, /name="keywords"/)
+    assert.match(html, /property="og:title"/)
+    assert.match(html, /property="og:description"/)
+    assert.match(html, /name="twitter:title"/)
+    assert.match(html, /name="twitter:description"/)
+    assert.match(html, /name="generator" content="New API"/)
   })
 })
