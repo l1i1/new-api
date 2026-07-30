@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -149,8 +150,14 @@ func validatedEpayReconciliationURL() (*url.URL, error) {
 		return nil, errors.New("epay reconciliation query URL is not configured")
 	}
 	queryURL, err := url.Parse(rawURL)
-	if err != nil || queryURL.Scheme != "https" || queryURL.Host == "" || queryURL.User != nil || queryURL.RawQuery != "" || queryURL.Fragment != "" {
+	if err != nil || queryURL.Host == "" || queryURL.User != nil || queryURL.RawQuery != "" || queryURL.Fragment != "" {
 		return nil, errors.New("invalid epay reconciliation query URL")
+	}
+	if queryURL.Scheme != "https" {
+		queryIP := net.ParseIP(queryURL.Hostname())
+		if queryURL.Scheme != "http" || queryIP == nil || (!queryIP.IsPrivate() && !queryIP.IsLoopback()) {
+			return nil, errors.New("epay reconciliation query URL must use HTTPS or private-address HTTP")
+		}
 	}
 	if !strings.EqualFold(strings.TrimSpace(queryURL.Path), "/api.php") {
 		return nil, errors.New("epay reconciliation query URL must target /api.php")

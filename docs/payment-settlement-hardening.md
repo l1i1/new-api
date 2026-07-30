@@ -89,11 +89,14 @@ Administrator completion is provider-verified and fail-closed:
   configured store, and match the local external order ID, USD currency, and
   checkout subtotal.
 - EPay verification requires `EPAY_RECONCILIATION_QUERY_URL` to point to a
-  dedicated HTTPS internal `/api.php` origin whose access log does not record
-  query strings. The public payment origin is rejected because the standard
-  `act=order` API carries the merchant key in its query string. Redirects and
-  environment HTTP proxies are disabled, the timeout is five seconds, and the
-  response body is capped at 64 KiB.
+  dedicated internal `/api.php` origin whose access log does not record query
+  strings. HTTPS is required for hostnames and public addresses. Plain HTTP is
+  accepted only when the URL host is a literal private or loopback IP, which
+  supports same-host Docker-to-origin traffic without routing the merchant key
+  through the public CDN. The public payment origin is rejected because the
+  standard `act=order` API carries the merchant key in its query string.
+  Redirects and environment HTTP proxies are disabled, the timeout is five
+  seconds, and the response body is capped at 64 KiB.
 - Providers without a verified query implementation cannot use the generic
   administrator completion endpoint.
 

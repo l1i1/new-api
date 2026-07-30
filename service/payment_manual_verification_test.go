@@ -43,6 +43,19 @@ func TestValidatedEpayReconciliationURLFailsClosed(t *testing.T) {
 	queryURL, err := validatedEpayReconciliationURL()
 	require.NoError(t, err)
 	assert.Equal(t, "epay-internal.example.net", queryURL.Hostname())
+
+	t.Setenv(epayReconciliationQueryURLEnv, "http://10.198.0.167:18080/api.php")
+	queryURL, err = validatedEpayReconciliationURL()
+	require.NoError(t, err)
+	assert.Equal(t, "10.198.0.167", queryURL.Hostname())
+
+	t.Setenv(epayReconciliationQueryURLEnv, "http://epay-internal.example.net/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
+	t.Setenv(epayReconciliationQueryURLEnv, "http://8.8.8.8/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
 }
 
 func TestValidateEpayProviderOrderRequiresPaidMatchingOrder(t *testing.T) {
