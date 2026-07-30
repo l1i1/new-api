@@ -39,6 +39,10 @@ readonly COMPOSE_UP_TIMEOUT_SECONDS=120
 readonly DOCKER_COMMAND_TIMEOUT_SECONDS=10
 readonly STATUS_TIMEOUT_SECONDS=15
 readonly READY_TIMEOUT_SECONDS=120
+readonly EPAY_RECONCILIATION_CONTAINER='epay-reconciliation'
+readonly EPAY_RECONCILIATION_IMAGE='1panel/openresty@sha256:ee8c5117c291c7384a381c32068e1d9a50adc8bf392f9157c42d14bedbbe018b'
+readonly EPAY_RECONCILIATION_IP='172.18.0.250'
+readonly EPAY_RECONCILIATION_URL='http://172.18.0.250:18080/api.php'
 
 run_timed() {
   local seconds="$1"
@@ -80,6 +84,57 @@ status_json() {
   local id="$1"
   run_timed "$STATUS_TIMEOUT_SECONDS" docker exec "$id" \
     wget -q -T 10 -O - http://127.0.0.1:3000/api/status 2>/dev/null || true
+}
+
+verify_epay_reconciliation_sidecar() {
+  local new_api_id="$1" sidecar_id image user state health ip read_only port_bindings cap_drop security_opt probe
+  [[ "$SERVICE_NAME" == 'new-api' ]] || return 0
+
+  sidecar_id="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{.Id}}' "$EPAY_RECONCILIATION_CONTAINER" 2>/dev/null || true)"
+  [[ -n "$sidecar_id" ]] || fail "EPay reconciliation sidecar is not running"
+
+  image="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{.Config.Image}}' "$sidecar_id")"
+  user="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{.Config.User}}' "$sidecar_id")"
+  state="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{.State.Status}}' "$sidecar_id")"
+  health="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$sidecar_id")"
+  ip="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{with index .NetworkSettings.Networks "1panel-network"}}{{.IPAddress}}{{end}}' "$sidecar_id")"
+  read_only="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{.HostConfig.ReadonlyRootfs}}' "$sidecar_id")"
+  port_bindings="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{json .HostConfig.PortBindings}}' "$sidecar_id")"
+  cap_drop="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{range .HostConfig.CapDrop}}{{println .}}{{end}}' "$sidecar_id")"
+  security_opt="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{range .HostConfig.SecurityOpt}}{{println .}}{{end}}' "$sidecar_id")"
+
+  [[ "$image" == "$EPAY_RECONCILIATION_IMAGE" ]] || fail "EPay reconciliation sidecar image is not the reviewed digest"
+  [[ "$user" == '65534:65534' ]] || fail "EPay reconciliation sidecar does not run as the restricted user"
+  [[ "$state" == 'running' ]] || fail "EPay reconciliation sidecar state is $state"
+  [[ "$health" == 'healthy' ]] || fail "EPay reconciliation sidecar health is $health"
+  [[ "$ip" == "$EPAY_RECONCILIATION_IP" ]] || fail "EPay reconciliation sidecar private address is invalid"
+  [[ "$read_only" == 'true' ]] || fail "EPay reconciliation sidecar root filesystem is writable"
+  [[ "$port_bindings" == '{}' || "$port_bindings" == 'null' ]] ||
+    fail "EPay reconciliation sidecar publishes host ports"
+  grep -qx 'ALL' <<< "$cap_drop" || fail "EPay reconciliation sidecar does not drop all capabilities"
+  grep -qx 'no-new-privileges:true' <<< "$security_opt" ||
+    fail "EPay reconciliation sidecar permits privilege escalation"
+  run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' "$new_api_id" |
+    grep -qx "EPAY_RECONCILIATION_QUERY_URL=$EPAY_RECONCILIATION_URL" ||
+    fail "New API does not select the private EPay reconciliation origin"
+
+  probe="$(run_timed "$STATUS_TIMEOUT_SECONDS" docker exec "$new_api_id" \
+    wget -q -T 5 -O - \
+    "$EPAY_RECONCILIATION_URL?act=order&key=healthcheck&out_trade_no=healthcheck&pid=0" \
+    2>/dev/null || true)"
+  grep -Eq '"code"[[:space:]]*:[[:space:]]*-3' <<< "$probe" ||
+    fail "New API cannot complete the private EPay reconciliation health probe"
 }
 
 wait_for_ready() {
@@ -142,6 +197,7 @@ emit_result() {
     fail "container health is $health"
   fi
   [[ -n "$version" ]] || fail "could not read New API version"
+  verify_epay_reconciliation_sidecar "$id"
 
   printf 'TOKENESS_RESULT\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$selected" "$runtime" "$state" "$health" "$started" "$version"

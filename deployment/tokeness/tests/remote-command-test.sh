@@ -40,6 +40,17 @@ prepare_case() {
   printf 'healthy\n' > "$case_dir/health"
   printf '2026-07-27T00:00:00Z\n' > "$case_dir/started-at"
   printf '{"success":true,"data":{"version":"v-test"}}\n' > "$case_dir/status.json"
+  printf 'running\n' > "$case_dir/epay-state"
+  printf 'healthy\n' > "$case_dir/epay-health"
+  printf '%s\n' "$EPAY_RECONCILIATION_IMAGE" > "$case_dir/epay-image"
+  printf '65534:65534\n' > "$case_dir/epay-user"
+  printf '%s\n' "$EPAY_RECONCILIATION_IP" > "$case_dir/epay-ip"
+  printf 'true\n' > "$case_dir/epay-read-only"
+  printf '{}\n' > "$case_dir/epay-port-bindings"
+  printf 'ALL\n' > "$case_dir/epay-cap-drop"
+  printf 'no-new-privileges:true\n' > "$case_dir/epay-security-opt"
+  printf 'EPAY_RECONCILIATION_QUERY_URL=%s\n' "$EPAY_RECONCILIATION_URL" > "$case_dir/new-api-env"
+  printf '{"code":-3}\n' > "$case_dir/epay-probe.json"
   : > "$case_dir/compose.log"
 }
 
@@ -54,6 +65,45 @@ run_timed() {
     return 1
   fi
   if [[ "$1" == docker && "$2" == inspect ]]; then
+    if [[ "${*: -1}" == "$EPAY_RECONCILIATION_CONTAINER" ]]; then
+      printf 'epay-container\n'
+      return 0
+    fi
+    if [[ "${*: -1}" == 'epay-container' ]]; then
+      case "$*" in
+        *'{{.Config.Image}}'*)
+          cat "$DEPLOY_DIR/epay-image"
+          ;;
+        *'{{.Config.User}}'*)
+          cat "$DEPLOY_DIR/epay-user"
+          ;;
+        *'{{.State.Status}}'*)
+          cat "$DEPLOY_DIR/epay-state"
+          ;;
+        *'{{if .State.Health}}'*)
+          cat "$DEPLOY_DIR/epay-health"
+          ;;
+        *'.NetworkSettings.Networks'*)
+          cat "$DEPLOY_DIR/epay-ip"
+          ;;
+        *'{{.HostConfig.ReadonlyRootfs}}'*)
+          cat "$DEPLOY_DIR/epay-read-only"
+          ;;
+        *'{{json .HostConfig.PortBindings}}'*)
+          cat "$DEPLOY_DIR/epay-port-bindings"
+          ;;
+        *'{{range .HostConfig.CapDrop}}'*)
+          cat "$DEPLOY_DIR/epay-cap-drop"
+          ;;
+        *'{{range .HostConfig.SecurityOpt}}'*)
+          cat "$DEPLOY_DIR/epay-security-opt"
+          ;;
+        *)
+          fail_test "unexpected EPay docker inspect format: $*"
+          ;;
+      esac
+      return 0
+    fi
     case "$*" in
       *'{{.Config.Image}}'*)
         cat "$DEPLOY_DIR/runtime-image"
@@ -67,10 +117,17 @@ run_timed() {
       *'{{.State.StartedAt}}'*)
         cat "$DEPLOY_DIR/started-at"
         ;;
+      *'{{range .Config.Env}}'*)
+        cat "$DEPLOY_DIR/new-api-env"
+        ;;
       *)
         fail_test "unexpected docker inspect format: $*"
         ;;
     esac
+    return 0
+  fi
+  if [[ "$1" == docker && "$2" == exec && "$3" == 'new-api-container' ]]; then
+    cat "$DEPLOY_DIR/epay-probe.json"
     return 0
   fi
   fail_test "unexpected timed command after ${seconds}s: $*"
@@ -215,5 +272,36 @@ set -e
 [[ "$(read_release_image)" == "$MUTABLE_IMAGE" ]] || fail_test "mutable previous image was rewritten before rejection"
 grep -q 'trusted immutable image' <<< "$mutable_deploy_output" ||
   fail_test "direct deploy did not identify the mutable previous image"
+
+for epay_case in \
+  'epay-image|1panel/openresty:latest|reviewed digest' \
+  'epay-user|0:0|restricted user' \
+  'epay-state|exited|sidecar state' \
+  'epay-health|unhealthy|sidecar health' \
+  'epay-ip|172.18.0.251|private address' \
+  'epay-read-only|false|root filesystem' \
+  'epay-port-bindings|{"18080/tcp":[{"HostPort":"18080"}]}|publishes host ports' \
+  'epay-cap-drop|NET_RAW|drop all capabilities' \
+  'epay-security-opt|seccomp=unconfined|privilege escalation' \
+  'new-api-env|UNRELATED=true|does not select the private' \
+  'epay-probe.json|{"code":-1}|health probe'; do
+  IFS='|' read -r fixture value expected_error <<< "$epay_case"
+  gate_case="$test_root/gate-$fixture"
+  prepare_case "$gate_case"
+  printf '%s\n' "$value" > "$gate_case/$fixture"
+  set +e
+  gate_output="$(emit_result "$OLD_IMAGE" 2>&1)"
+  gate_status=$?
+  set -e
+  [[ "$gate_status" -ne 0 ]] || fail_test "$fixture sidecar gate unexpectedly succeeded"
+  grep -q "$expected_error" <<< "$gate_output" ||
+    fail_test "$fixture sidecar gate did not report the failed invariant"
+done
+
+replica_case="$test_root/replica-skips-epay"
+prepare_case "$replica_case"
+SERVICE_NAME='new-api-slave'
+printf 'unhealthy\n' > "$replica_case/epay-health"
+emit_result "$OLD_IMAGE" >/dev/null || fail_test "replica verification required the JP-M EPay sidecar"
 
 printf 'remote command transaction tests passed\n'
