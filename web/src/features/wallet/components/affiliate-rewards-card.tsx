@@ -20,116 +20,193 @@ import { Share2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatQuota } from '@/lib/format'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatQuotaAsCny } from '@/lib/currency'
 
-import type { UserWalletData } from '../types'
+import type { InviteTopUpRewardsData, UserWalletData } from '../types'
+import { AffiliateRewardList } from './affiliate-reward-list'
 
 interface AffiliateRewardsCardProps {
   user: UserWalletData | null
   affiliateLink: string
-  onTransfer: () => void
-  complianceConfirmed?: boolean
+  rewards?: InviteTopUpRewardsData
+  loading?: boolean
+  rewardsLoading?: boolean
+  rewardsError?: boolean
+  onRetryRewards?: () => void
+}
+
+interface SummaryMetricProps {
+  label: string
+  value: string
   loading?: boolean
 }
 
-export function AffiliateRewardsCard({
-  user,
-  affiliateLink,
-  onTransfer,
-  complianceConfirmed = true,
-  loading,
-}: AffiliateRewardsCardProps) {
-  const { t } = useTranslation()
-  if (loading) {
+function SummaryMetric(props: SummaryMetricProps) {
+  return (
+    <div className='min-w-0'>
+      <div className='text-muted-foreground truncate text-xs'>
+        {props.label}
+      </div>
+      {props.loading ? (
+        <Skeleton className='mt-1.5 h-6 w-16' />
+      ) : (
+        <div
+          className='mt-0.5 truncate text-lg font-semibold tabular-nums'
+          title={props.value}
+        >
+          {props.value}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function AffiliateRewardsCard(props: AffiliateRewardsCardProps) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+
+  if (props.loading) {
     return (
       <Card data-card-hover='false' className='bg-muted/20 py-0'>
-        <CardContent className='grid gap-4 p-3 sm:p-4 lg:grid-cols-[minmax(220px,1fr)_minmax(220px,0.72fr)_minmax(320px,1.15fr)] lg:items-center'>
-          <div>
-            <Skeleton className='h-5 w-32' />
-            <Skeleton className='mt-2 h-4 w-48' />
+        <CardContent className='p-0'>
+          <div className='grid gap-4 border-b p-3 sm:p-4 lg:grid-cols-[minmax(260px,1fr)_minmax(320px,0.9fr)] lg:items-end'>
+            <div className='flex items-center gap-2.5'>
+              <Skeleton className='size-8' />
+              <div className='space-y-2'>
+                <Skeleton className='h-5 w-32' />
+                <Skeleton className='h-4 w-56 max-w-full' />
+              </div>
+            </div>
+            <Skeleton className='h-9 w-full' />
           </div>
-          <Skeleton className='h-14 rounded-lg' />
-          <Skeleton className='h-10 rounded-lg' />
+          <div className='grid lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
+            <div className='grid grid-cols-2 gap-x-5 gap-y-4 p-3 sm:grid-cols-4 sm:p-4 lg:grid-cols-2 xl:grid-cols-4'>
+              {[0, 1, 2, 3].map((index) => (
+                <div key={index} className='space-y-2'>
+                  <Skeleton className='h-3 w-20' />
+                  <Skeleton className='h-6 w-14' />
+                </div>
+              ))}
+            </div>
+            <AffiliateRewardList items={[]} loading />
+          </div>
         </CardContent>
       </Card>
     )
   }
 
-  const hasRewards = (user?.aff_quota ?? 0) > 0
+  let rewardDescription: string
+  if (props.rewardsLoading) {
+    rewardDescription = t('Loading rewards')
+  } else if (props.rewardsError || props.rewards == null) {
+    rewardDescription = t('Reward data is temporarily unavailable')
+  } else if (!props.rewards.program_enabled) {
+    rewardDescription = t(
+      'First top-up rewards are currently paused. Your referral link remains available.'
+    )
+  } else {
+    const rewardRate = props.rewards.reward_rate_bps / 100
+    const rewardRateLabel = new Intl.NumberFormat(locale, {
+      maximumFractionDigits: 2,
+    }).format(rewardRate)
+    rewardDescription = t(
+      'New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.',
+      { rate: rewardRateLabel }
+    )
+  }
+  const summary = props.rewards?.summary
+  const rewardTotal = formatQuotaAsCny(summary?.total_reward_quota, {
+    compact: true,
+    digitsLarge: 2,
+    digitsSmall: 2,
+    locale,
+  })
+  const rewardDataLoading = props.rewardsLoading && !props.rewardsError
 
   return (
     <Card data-card-hover='false' className='bg-muted/20 py-0'>
-      <CardContent className='grid gap-3 p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(200px,1fr)_minmax(180px,0.65fr)_minmax(280px,1fr)] lg:items-center'>
-        <div className='flex min-w-0 items-center gap-2.5'>
-          <IconBadge tone='chart-3'>
-            <Share2 />
-          </IconBadge>
+      <CardContent className='p-0'>
+        <div className='grid gap-3 border-b p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(260px,1fr)_minmax(320px,0.9fr)] lg:items-end'>
+          <div className='flex min-w-0 items-start gap-2.5'>
+            <IconBadge tone='chart-3'>
+              <Share2 />
+            </IconBadge>
+            <div className='min-w-0'>
+              <h3 className='text-sm font-semibold'>{t('Referral Program')}</h3>
+              <p className='text-muted-foreground mt-0.5 text-xs text-pretty'>
+                {rewardDescription}
+              </p>
+            </div>
+          </div>
+
           <div className='min-w-0'>
-            <h3 className='truncate text-sm font-semibold'>
-              {t('Referral Program')}
-            </h3>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'When a new user registers through your referral link, the configured referral reward is credited automatically.'
-              )}
-            </p>
+            <label
+              htmlFor='wallet-referral-link'
+              className='text-muted-foreground mb-1.5 block text-xs'
+            >
+              {t('Referral link')}
+            </label>
+            <div className='flex min-w-0 items-center gap-2'>
+              <Input
+                id='wallet-referral-link'
+                value={props.affiliateLink}
+                readOnly
+                className='border-muted bg-background/70 h-9 min-w-0 flex-1 font-mono text-xs'
+              />
+              <CopyButton
+                value={props.affiliateLink}
+                variant='outline'
+                className='bg-background size-9 shrink-0'
+                iconClassName='size-4'
+                tooltip={t('Copy referral link')}
+                aria-label={t('Copy referral link')}
+              />
+            </div>
           </div>
         </div>
 
-        <div className='grid grid-cols-3 gap-1.5 text-center'>
-          {[
-            [t('Pending'), formatQuota(user?.aff_quota ?? 0)],
-            [t('Total Earned'), formatQuota(user?.aff_history_quota ?? 0)],
-            [t('Invites'), String(user?.aff_count ?? 0)],
-          ].map(([label, value]) => (
-            <div key={label}>
-              <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
-                {label}
-              </div>
-              <div className='mt-0.5 truncate text-sm font-semibold tabular-nums'>
-                {value}
-              </div>
-            </div>
-          ))}
-        </div>
+        <div className='grid lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'>
+          <section
+            className='grid grid-cols-2 gap-x-5 gap-y-4 p-3 sm:grid-cols-4 sm:p-4 lg:grid-cols-2 xl:grid-cols-4'
+            aria-label={t('Referral reward summary')}
+          >
+            <SummaryMetric
+              label={t('Invites')}
+              value={String(props.user?.aff_count ?? 0)}
+            />
+            <SummaryMetric
+              label={t('Completed first top-ups')}
+              value={
+                props.rewardsError ? '-' : String(summary?.applied_count ?? 0)
+              }
+              loading={rewardDataLoading}
+            />
+            <SummaryMetric
+              label={t('Total earned')}
+              value={props.rewardsError ? '-' : rewardTotal}
+              loading={rewardDataLoading}
+            />
+            <SummaryMetric
+              label={t('Processing')}
+              value={
+                props.rewardsError ? '-' : String(summary?.pending_count ?? 0)
+              }
+              loading={rewardDataLoading}
+            />
+          </section>
 
-        <div className='flex items-center gap-2'>
-          <Input
-            value={affiliateLink}
-            readOnly
-            className='border-muted bg-background/70 h-9 min-w-0 flex-1 font-mono text-xs'
+          <AffiliateRewardList
+            items={props.rewards?.items ?? []}
+            loading={rewardDataLoading}
+            error={props.rewardsError}
+            onRetry={props.onRetryRewards}
           />
-          <CopyButton
-            value={affiliateLink}
-            variant='outline'
-            className='bg-background size-9 shrink-0'
-            iconClassName='size-4'
-            tooltip={t('Copy referral link')}
-            aria-label={t('Copy referral link')}
-          />
-          {hasRewards && (
-            <Button
-              onClick={onTransfer}
-              disabled={!complianceConfirmed}
-              className='h-9 shrink-0 px-3'
-              size='sm'
-            >
-              {t('Transfer to Balance')}
-            </Button>
-          )}
         </div>
-        {!complianceConfirmed ? (
-          <p className='text-muted-foreground text-xs lg:col-span-3'>
-            {t(
-              'Referral reward transfer is disabled until the administrator confirms compliance terms.'
-            )}
-          </p>
-        ) : null}
       </CardContent>
     </Card>
   )

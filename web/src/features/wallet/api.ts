@@ -31,6 +31,7 @@ import type {
   StripePaymentResponse,
   AffiliateCodeResponse,
   AffiliateTransferResponse,
+  InviteTopUpRewardsResponse,
   BillingHistoryResponse,
   CompleteOrderRequest,
   CreemPaymentRequest,
@@ -186,6 +187,23 @@ export async function requestWaffoPancakePayment(
  */
 export async function getAffiliateCode(): Promise<AffiliateCodeResponse> {
   const res = await api.get('/api/user/aff')
+  return res.data
+}
+
+/**
+ * Get the current user's first-top-up reward summary and recent ledger items.
+ */
+export async function getInviteTopUpRewards(
+  page = 1,
+  pageSize = 5
+): Promise<InviteTopUpRewardsResponse> {
+  const params = new URLSearchParams({
+    p: page.toString(),
+    page_size: pageSize.toString(),
+  })
+  const res = await api.get(
+    `/api/user/invite-topup-rewards?${params.toString()}`
+  )
   return res.data
 }
 

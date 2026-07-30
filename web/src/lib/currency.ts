@@ -130,6 +130,13 @@ type DisplayMeta =
       quotaPerUnit: number
     }
 
+const CNY_DISPLAY_META: DisplayMeta = {
+  kind: 'currency',
+  symbol: '¥',
+  currencyCode: 'CNY',
+  exchangeRate: 1,
+}
+
 const DEFAULT_FORMAT_OPTIONS: ResolvedCurrencyFormatOptions = {
   digitsLarge: 2,
   digitsSmall: 4,
@@ -614,4 +621,45 @@ export function formatLocalCurrencyAmount(
   const merged = mergeOptions(options)
 
   return formatCurrencyValue(amount, merged, meta)
+}
+
+/**
+ * Format a system USD amount as CNY regardless of the global quota display.
+ * Wallet top-up amounts use this because Tokeness settles configurable
+ * recharge products in CNY even when balances are displayed in another unit.
+ */
+export function formatCnyFromUSD(
+  amountUSD: number | null | undefined,
+  options?: CurrencyFormatOptions
+): string {
+  if (amountUSD == null || Number.isNaN(amountUSD)) return '-'
+
+  const config = getConfig()
+  const merged = mergeOptions(options)
+  return formatCurrencyValue(
+    amountUSD * config.usdExchangeRate,
+    merged,
+    CNY_DISPLAY_META
+  )
+}
+
+/** Format an amount already calculated in CNY with a fixed renminbi symbol. */
+export function formatCnyAmount(
+  amount: number | null | undefined,
+  options?: CurrencyFormatOptions
+): string {
+  if (amount == null || Number.isNaN(amount)) return '-'
+
+  return formatCurrencyValue(amount, mergeOptions(options), CNY_DISPLAY_META)
+}
+
+/** Format raw quota units as CNY for wallet reward displays. */
+export function formatQuotaAsCny(
+  quota: number | null | undefined,
+  options?: CurrencyFormatOptions
+): string {
+  if (quota == null || Number.isNaN(quota)) return '-'
+
+  const config = getConfig()
+  return formatCnyFromUSD(quota / config.quotaPerUnit, options)
 }

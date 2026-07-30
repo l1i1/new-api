@@ -16,9 +16,10 @@ HTML must no longer depend on CDN-hosted scripts or global DOM/network hooks.
   entire DOM, or identify components by translated display text.
 - Keep administrator editors backed by raw source content. Localization occurs
   only at explicit display boundaries.
-- Existing billing, payment, and affiliate behavior is authoritative. The old
-  injection's fixed-rate recharge formula and first-top-up affiliate promise do
-  not match the current backend and must not be ported.
+- Existing billing and payment behavior is authoritative. The historical
+  client-side recharge formula must not be ported. The historical 20%
+  first-top-up affiliate promise is shown only because the native backend now
+  settles that reward through its database-backed invite reward ledger.
 
 ## Content Localization Contract
 
@@ -110,10 +111,16 @@ the migration even if it contains equivalent product claims.
   payment page open until it redirects back. Keep the payable amount visible.
 - For non-EPay flows, omit the `You Pay` row from the confirmation dialog. Those
   providers present and settle their payable amount in their own checkout.
-- Keep the native affiliate explanation, all three statistics, compliance
-  handling, and transfer-to-balance action. Explain that the configured reward
-  is credited when a referred user registers. The historical 20% first-top-up
-  statement is not supported by current backend behavior and must not be shown.
+- Preserve the historical affiliate promise and referral-link flow, then extend
+  the card with ledger-backed first-top-up completion count, applied reward
+  total, pending count, and recent reward status. Continue to omit the legacy
+  `aff_quota` balance and transfer-to-balance action because native rewards enter
+  ordinary quota directly. Keep the displayed rate synchronized with the native
+  settlement policy documented in `invite-first-topup-reward.md`.
+- Keep the referral surface as one compact card using existing theme tokens and
+  dividers instead of nested cards. Reward amounts are fixed to CNY like other
+  wallet payment surfaces. Loading, empty, and error states must not disable or
+  hide referral-link copying.
 
 ## Home Metadata
 

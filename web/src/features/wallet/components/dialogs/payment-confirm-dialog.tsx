@@ -31,10 +31,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  formatCurrencyFromUSD,
-  formatLocalCurrencyAmount,
-} from '@/lib/currency'
+import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 
 import { DEFAULT_DISCOUNT_RATE } from '../../constants'
@@ -95,7 +92,7 @@ export function PaymentConfirmDialog({
               {t('Topup Amount')}
             </span>
             <span className='text-lg font-semibold'>
-              {formatCurrencyFromUSD(topupAmount, {
+              {formatCnyFromUSD(topupAmount, {
                 digitsLarge: 2,
                 digitsSmall: 2,
                 abbreviate: false,
@@ -113,11 +110,11 @@ export function PaymentConfirmDialog({
               ) : (
                 <div className='flex items-baseline gap-2'>
                   <span className='text-2xl font-semibold'>
-                    {formatLocalCurrencyAmount(paymentAmount)}
+                    {formatCnyAmount(paymentAmount)}
                   </span>
                   {hasDiscount && (
                     <span className='text-muted-foreground text-sm line-through'>
-                      {formatLocalCurrencyAmount(originalAmount)}
+                      {formatCnyAmount(originalAmount)}
                     </span>
                   )}
                 </div>
@@ -130,7 +127,7 @@ export function PaymentConfirmDialog({
               <div className='flex items-center justify-between text-sm'>
                 <span className='text-muted-foreground'>{t('You save')}</span>
                 <span className='font-semibold text-green-600'>
-                  {formatLocalCurrencyAmount(discountAmount)}
+                  {formatCnyAmount(discountAmount)}
                 </span>
               </div>
             </div>
