@@ -28,21 +28,24 @@ reward backfills, and production deployment are outside this change.
 
 ## Product Contract
 
-1. A user registered through an invite link can generate one reward from the
+1. A valid registration through an invite link increments the inviter's
+   `aff_count` immediately; it does not require a top-up and does not create a
+   reward ledger row.
+2. A user registered through an invite link can generate one reward from the
    first successful positive wallet top-up in the user's lifetime.
-2. The invitee registration time and first top-up completion time must both be
+3. The invitee registration time and first top-up completion time must both be
    on or after the configured campaign start.
-3. The inviter receives 20% of the exact quota credited by settlement, rounded
+4. The inviter receives 20% of the exact quota credited by settlement, rounded
    down to a whole quota unit.
-4. The reward is added directly to the inviter's ordinary `quota`, matching the
+5. The reward is added directly to the inviter's ordinary `quota`, matching the
    existing Tokeness Ops behavior. It does not use `aff_quota` and does not
    require a manual transfer.
-5. Missing, disabled, deleted, or self-referencing inviters are not paid.
-6. The wallet shows the historical 20% explanation, invite count, referral
+6. Missing, disabled, deleted, or self-referencing inviters are not paid.
+7. The wallet shows the historical 20% explanation, invite count, referral
    link, ledger-backed first-top-up completion count, applied reward total,
    pending count, and recent reward status. The old `aff_quota` balance and
    transfer action remain hidden.
-7. User-facing reward data never exposes invitee identity, trade numbers,
+8. User-facing reward data never exposes invitee identity, trade numbers,
    payment providers, or the invitee's top-up amount.
 
 ## Configuration
