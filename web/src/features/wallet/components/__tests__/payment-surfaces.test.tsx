@@ -384,7 +384,7 @@ describe('wallet payment surfaces', () => {
     })
   })
 
-  test('uses the Waffo response ratio instead of the generic recharge price', async () => {
+  test('keeps the generic local multiplier for Waffo payments', async () => {
     await act(async () => {
       await i18n.changeLanguage('zh')
     })
@@ -397,8 +397,7 @@ describe('wallet payment surfaces', () => {
         onSelectPreset={() => undefined}
         topupAmount={71}
         onTopupAmountChange={() => undefined}
-        paymentAmount={71}
-        paymentMethodType='waffo'
+        paymentAmount={497}
         calculating={false}
         onPaymentMethodSelect={() => undefined}
         paymentLoading={null}
@@ -410,8 +409,8 @@ describe('wallet payment surfaces', () => {
       />
     )
 
-    assert.equal(rendered.container.textContent?.includes('×¥1='), true)
-    assert.equal(rendered.container.textContent?.includes('×¥7='), false)
+    assert.equal(rendered.container.textContent?.includes('×¥7='), true)
+    assert.equal(rendered.container.textContent?.includes('×¥1='), false)
 
     await unmountComponent(rendered)
     await act(async () => {

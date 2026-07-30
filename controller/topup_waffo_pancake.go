@@ -42,37 +42,46 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		return
 	}
 
-	payMoney := getWaffoPancakePayMoney(req.Amount, group)
-	if payMoney <= 0.01 {
+	localPayMoney, providerPayMoney := getWaffoPancakePaymentAmounts(req.Amount, group)
+	if localPayMoney <= 0.01 || providerPayMoney <= 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "success", "data": fmt.Sprintf("%.2f", payMoney)})
+	// The wallet is priced in local CNY. Pancake receives the converted USD
+	// amount only when the checkout session is created below.
+	c.JSON(http.StatusOK, gin.H{"message": "success", "data": fmt.Sprintf("%.2f", localPayMoney)})
+}
+
+func getWaffoPancakeExchangeRate() float64 {
+	if setting.WaffoPancakeExchangeRate > 0 {
+		return setting.WaffoPancakeExchangeRate
+	}
+	if operation_setting.Price > 0 {
+		return operation_setting.Price
+	}
+	if operation_setting.USDExchangeRate > 0 {
+		return operation_setting.USDExchangeRate
+	}
+	return 1
+}
+
+func getWaffoPancakeLocalPayMoney(amount int64, group string) float64 {
+	return getPayMoney(amount, group)
 }
 
 func getWaffoPancakePayMoney(amount int64, group string) float64 {
-	dAmount := decimal.NewFromInt(amount)
-	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		dAmount = dAmount.Div(decimal.NewFromFloat(common.QuotaPerUnit))
-	}
-
-	topupGroupRatio := common.GetTopupGroupRatio(group)
-	if topupGroupRatio == 0 {
-		topupGroupRatio = 1
-	}
-
-	discount := 1.0
-	if ds, ok := operation_setting.GetPaymentSetting().AmountDiscount[int(amount)]; ok && ds > 0 {
-		discount = ds
-	}
-
-	payMoney := dAmount.
+	localPayMoney := decimal.NewFromFloat(getWaffoPancakeLocalPayMoney(amount, group))
+	return localPayMoney.
+		Div(decimal.NewFromFloat(getWaffoPancakeExchangeRate())).
 		Mul(decimal.NewFromFloat(setting.WaffoPancakeUnitPrice)).
-		Mul(decimal.NewFromFloat(topupGroupRatio)).
-		Mul(decimal.NewFromFloat(discount))
+		InexactFloat64()
+}
 
-	return payMoney.InexactFloat64()
+func getWaffoPancakePaymentAmounts(amount int64, group string) (localCNY, providerUSD float64) {
+	localCNY = getWaffoPancakeLocalPayMoney(amount, group)
+	providerUSD = getWaffoPancakePayMoney(amount, group)
+	return localCNY, providerUSD
 }
 
 func normalizeWaffoPancakeTopUpAmount(amount int64) int64 {
@@ -366,8 +375,8 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		return
 	}
 
-	payMoney := getWaffoPancakePayMoney(req.Amount, group)
-	if payMoney < 0.01 {
+	localPayMoney, providerPayMoney := getWaffoPancakePaymentAmounts(req.Amount, group)
+	if localPayMoney < 0.01 || providerPayMoney < 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
 	}
@@ -376,7 +385,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          normalizeWaffoPancakeTopUpAmount(req.Amount),
-		Money:           payMoney,
+		Money:           providerPayMoney,
 		TradeNo:         tradeNo,
 		PaymentMethod:   model.PaymentMethodWaffoPancake,
 		PaymentProvider: model.PaymentProviderWaffoPancake,
@@ -394,7 +403,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		ProductID:     setting.WaffoPancakeProductID,
 		BuyerIdentity: getWaffoPancakeBuyerIdentity(user),
 		PriceSnapshot: &service.WaffoPancakePriceSnapshot{
-			Amount:      formatWaffoPancakeAmount(payMoney),
+			Amount:      formatWaffoPancakeAmount(providerPayMoney),
 			TaxCategory: "saas",
 		},
 		BuyerEmail:              getWaffoPancakeBuyerEmail(user),
@@ -408,7 +417,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
 		return
 	}
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d money=%.2f", id, tradeNo, session.SessionID, req.Amount, payMoney))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d local_cny=%.2f provider_usd=%.2f", id, tradeNo, session.SessionID, req.Amount, localPayMoney, providerPayMoney))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",

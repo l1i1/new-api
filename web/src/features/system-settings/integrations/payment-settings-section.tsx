@@ -176,6 +176,7 @@ const paymentSchema = z.object({
   WaffoPancakeMerchantID: z.string(),
   WaffoPancakePrivateKey: z.string(),
   WaffoPancakeReturnURL: z.string(),
+  WaffoPancakeExchangeRate: z.coerce.number().min(0),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -457,6 +458,7 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         values.WaffoPancakeReturnURL.trim()
       ),
+      WaffoPancakeExchangeRate: values.WaffoPancakeExchangeRate,
     }
 
     const initial = {
@@ -504,6 +506,7 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         initialRef.current.WaffoPancakeReturnURL.trim()
       ),
+      WaffoPancakeExchangeRate: initialRef.current.WaffoPancakeExchangeRate,
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -701,6 +704,15 @@ export function PaymentSettingsSection({
       updates.push({ key: 'WaffoPayMethods', value: sanitized.WaffoPayMethods })
     }
 
+    if (
+      sanitized.WaffoPancakeExchangeRate !== initial.WaffoPancakeExchangeRate
+    ) {
+      updates.push({
+        key: 'WaffoPancakeExchangeRate',
+        value: sanitized.WaffoPancakeExchangeRate,
+      })
+    }
+
     const hasWaffoPancakeChanges =
       sanitized.WaffoPancakeMerchantID !== initial.WaffoPancakeMerchantID ||
       sanitized.WaffoPancakePrivateKey.length > 0 ||
@@ -794,6 +806,7 @@ export function PaymentSettingsSection({
     WaffoPancakeMerchantID: currentFormValues.WaffoPancakeMerchantID,
     WaffoPancakePrivateKey: currentFormValues.WaffoPancakePrivateKey,
     WaffoPancakeReturnURL: currentFormValues.WaffoPancakeReturnURL,
+    WaffoPancakeExchangeRate: currentFormValues.WaffoPancakeExchangeRate,
   }
 
   return (

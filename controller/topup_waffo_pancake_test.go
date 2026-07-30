@@ -34,6 +34,8 @@ func TestFormatWaffoPancakeAmount_UsesDisplayPriceString(t *testing.T) {
 
 func TestGetWaffoPancakePayMoney(t *testing.T) {
 	originalUnitPrice := setting.WaffoPancakeUnitPrice
+	originalExchangeRate := setting.WaffoPancakeExchangeRate
+	originalPrice := operation_setting.Price
 	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
 	originalDiscounts := make(map[int]float64, len(operation_setting.GetPaymentSetting().AmountDiscount))
 	for k, v := range operation_setting.GetPaymentSetting().AmountDiscount {
@@ -43,12 +45,16 @@ func TestGetWaffoPancakePayMoney(t *testing.T) {
 
 	t.Cleanup(func() {
 		setting.WaffoPancakeUnitPrice = originalUnitPrice
+		setting.WaffoPancakeExchangeRate = originalExchangeRate
+		operation_setting.Price = originalPrice
 		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
 		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
 		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
 	})
 
 	setting.WaffoPancakeUnitPrice = 2.5
+	setting.WaffoPancakeExchangeRate = 7
+	operation_setting.Price = 7
 	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{
 		10:                           0.8,
 		int(common.QuotaPerUnit * 3): 0.5,
@@ -93,6 +99,62 @@ func TestGetWaffoPancakePayMoney(t *testing.T) {
 			require.InDelta(t, tc.expected, actual, 0.000001)
 		})
 	}
+}
+
+func TestGetWaffoPancakePaymentAmountsSeparatesLocalCNYAndProviderUSD(t *testing.T) {
+	originalUnitPrice := setting.WaffoPancakeUnitPrice
+	originalExchangeRate := setting.WaffoPancakeExchangeRate
+	originalPrice := operation_setting.Price
+	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
+	originalDiscounts := operation_setting.GetPaymentSetting().AmountDiscount
+	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
+
+	t.Cleanup(func() {
+		setting.WaffoPancakeUnitPrice = originalUnitPrice
+		setting.WaffoPancakeExchangeRate = originalExchangeRate
+		operation_setting.Price = originalPrice
+		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
+		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
+		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
+	})
+
+	setting.WaffoPancakeUnitPrice = 1
+	setting.WaffoPancakeExchangeRate = 7
+	operation_setting.Price = 7
+	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
+	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{}
+	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":1}`))
+
+	localCNY, providerUSD := getWaffoPancakePaymentAmounts(71, "default")
+	require.InDelta(t, 497, localCNY, 0.000001)
+	require.InDelta(t, 71, providerUSD, 0.000001)
+}
+
+func TestGetWaffoPancakePayMoneyFallsBackToRechargePrice(t *testing.T) {
+	originalUnitPrice := setting.WaffoPancakeUnitPrice
+	originalExchangeRate := setting.WaffoPancakeExchangeRate
+	originalPrice := operation_setting.Price
+	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
+	originalDiscounts := operation_setting.GetPaymentSetting().AmountDiscount
+	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
+
+	t.Cleanup(func() {
+		setting.WaffoPancakeUnitPrice = originalUnitPrice
+		setting.WaffoPancakeExchangeRate = originalExchangeRate
+		operation_setting.Price = originalPrice
+		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
+		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
+		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
+	})
+
+	setting.WaffoPancakeUnitPrice = 1
+	setting.WaffoPancakeExchangeRate = 0
+	operation_setting.Price = 7
+	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
+	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{}
+	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":1}`))
+
+	require.InDelta(t, 71, getWaffoPancakePayMoney(71, "default"), 0.000001)
 }
 
 func TestHandleWaffoPancakeCompletedEvent_RetriesUnresolvedOrder(t *testing.T) {
