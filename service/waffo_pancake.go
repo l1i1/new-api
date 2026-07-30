@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/shopspring/decimal"
 	pancake "github.com/waffo-com/waffo-pancake-sdk-go"
 )
 
@@ -17,7 +18,9 @@ type WaffoPancakePriceSnapshot struct {
 }
 
 // WaffoPancakeCreateSessionParams is the input to CreateWaffoPancakeCheckoutSession.
-// BuyerIdentity must be stable per user (see WaffoPancakeBuyerIdentityFromUserID).
+// BuyerIdentity must be stable per user (see WaffoPancakeBuyerIdentityFromUserID),
+// but it is not a settlement invariant: Pancake may echo the checkout email
+// instead of this value in MerchantProvidedBuyerIdentity.
 // OrderMerchantExternalID = our trade_no; Pancake echoes it back in webhooks.
 type WaffoPancakeCreateSessionParams struct {
 	ProductID               string
@@ -54,14 +57,14 @@ type WaffoPancakeWebhookEvent struct {
 
 type WaffoPancakeWebhookData struct {
 	// OrderID = Pancake ORD_* (logs); OrderMerchantExternalID = our trade_no (lookup).
-	OrderID                       string
-	OrderMerchantExternalID       string
-	BuyerEmail                    string
-	Currency                      string
-	Amount                        string
-	TaxAmount                     string
-	ProductName                   string
-	MerchantProvidedBuyerIdentity string
+	OrderID                 string
+	OrderMerchantExternalID string
+	Currency                string
+	Amount                  string
+	TaxAmount               string
+	Subtotal                string
+	Total                   string
+	ProductName             string
 }
 
 // NormalizedEventType returns the event type or empty string for a nil event.
@@ -152,9 +155,9 @@ func optionalString(s string) *string {
 	return &v
 }
 
-// WaffoPancakeBuyerIdentityFromUserID renders the canonical buyer identity
-// for checkout. Webhook handlers compare against the value rendered here to
-// reject identity mismatches, so both call sites must use this function.
+// WaffoPancakeBuyerIdentityFromUserID renders the stable checkout identity.
+// It is intentionally not used as a settlement invariant because production
+// callbacks may return the buyer's checkout email in that field instead.
 func WaffoPancakeBuyerIdentityFromUserID(userID int) string {
 	return fmt.Sprintf("new-api-user-%d", userID)
 }
@@ -166,13 +169,17 @@ func VerifyConfiguredWaffoPancakeWebhook(payload string, signatureHeader string)
 	if err != nil {
 		return nil, err
 	}
-	identity := ""
-	if evt.Data.MerchantProvidedBuyerIdentity != nil {
-		identity = *evt.Data.MerchantProvidedBuyerIdentity
-	}
 	externalID := ""
 	if evt.Data.OrderMerchantExternalID != nil {
 		externalID = *evt.Data.OrderMerchantExternalID
+	}
+	subtotal := ""
+	if evt.Data.Subtotal != nil {
+		subtotal = *evt.Data.Subtotal
+	}
+	total := ""
+	if evt.Data.Total != nil {
+		total = *evt.Data.Total
 	}
 	return &WaffoPancakeWebhookEvent{
 		ID:        evt.ID,
@@ -182,20 +189,20 @@ func VerifyConfiguredWaffoPancakeWebhook(payload string, signatureHeader string)
 		StoreID:   evt.StoreID,
 		Mode:      string(evt.Mode),
 		Data: WaffoPancakeWebhookData{
-			OrderID:                       evt.Data.OrderID,
-			OrderMerchantExternalID:       externalID,
-			BuyerEmail:                    evt.Data.BuyerEmail,
-			Currency:                      evt.Data.Currency,
-			Amount:                        evt.Data.Amount,
-			TaxAmount:                     evt.Data.TaxAmount,
-			ProductName:                   evt.Data.ProductName,
-			MerchantProvidedBuyerIdentity: identity,
+			OrderID:                 evt.Data.OrderID,
+			OrderMerchantExternalID: externalID,
+			Currency:                evt.Data.Currency,
+			Amount:                  evt.Data.Amount,
+			TaxAmount:               evt.Data.TaxAmount,
+			Subtotal:                subtotal,
+			Total:                   total,
+			ProductName:             evt.Data.ProductName,
 		},
 	}, nil
 }
 
-// ResolveWaffoPancakeTradeNo maps a verified webhook event to a local TopUp
-// trade_no via OrderMerchantExternalID, and rejects buyer-identity mismatches.
+// ResolveWaffoPancakeTradeNo maps a verified completed event to a local TopUp
+// and validates the provider-owned settlement fields against the order snapshot.
 func ResolveWaffoPancakeTradeNo(event *WaffoPancakeWebhookEvent) (string, error) {
 	if event == nil {
 		return "", fmt.Errorf("missing webhook event")
@@ -208,15 +215,8 @@ func ResolveWaffoPancakeTradeNo(event *WaffoPancakeWebhookEvent) (string, error)
 	if topUp == nil || topUp.PaymentProvider != model.PaymentProviderWaffoPancake {
 		return "", fmt.Errorf("waffo pancake order not found for tradeNo=%s", tradeNo)
 	}
-	expectedIdentity := WaffoPancakeBuyerIdentityFromUserID(topUp.UserId)
-	actualIdentity := strings.TrimSpace(event.Data.MerchantProvidedBuyerIdentity)
-	if actualIdentity != expectedIdentity {
-		return "", fmt.Errorf(
-			"waffo pancake buyer identity mismatch for tradeNo=%s: expected=%q actual=%q",
-			tradeNo,
-			expectedIdentity,
-			actualIdentity,
-		)
+	if err := validateWaffoPancakeSettlement(event, topUp.Money); err != nil {
+		return "", fmt.Errorf("invalid Waffo Pancake settlement for tradeNo=%s: %w", tradeNo, err)
 	}
 	return tradeNo, nil
 }
@@ -235,17 +235,56 @@ func ResolveWaffoPancakeSubscriptionTradeNo(event *WaffoPancakeWebhookEvent) (st
 	if order == nil || order.PaymentProvider != model.PaymentProviderWaffoPancake {
 		return "", fmt.Errorf("waffo pancake subscription order not found for tradeNo=%s", tradeNo)
 	}
-	expectedIdentity := WaffoPancakeBuyerIdentityFromUserID(order.UserId)
-	actualIdentity := strings.TrimSpace(event.Data.MerchantProvidedBuyerIdentity)
-	if actualIdentity != expectedIdentity {
-		return "", fmt.Errorf(
-			"waffo pancake buyer identity mismatch for subscription tradeNo=%s: expected=%q actual=%q",
-			tradeNo,
-			expectedIdentity,
-			actualIdentity,
-		)
+	if err := validateWaffoPancakeSettlement(event, order.Money); err != nil {
+		return "", fmt.Errorf("invalid Waffo Pancake subscription settlement for tradeNo=%s: %w", tradeNo, err)
 	}
 	return tradeNo, nil
+}
+
+func validateWaffoPancakeSettlement(event *WaffoPancakeWebhookEvent, expectedMoney float64) error {
+	if event.NormalizedEventType() != "order.completed" {
+		return fmt.Errorf("unexpected event type %q", event.NormalizedEventType())
+	}
+	if !strings.EqualFold(strings.TrimSpace(event.Data.Currency), "USD") {
+		return fmt.Errorf("currency mismatch: expected=USD actual=%q", strings.TrimSpace(event.Data.Currency))
+	}
+	settlementAmount := strings.TrimSpace(event.Data.Subtotal)
+	amountField := "subtotal"
+	if settlementAmount == "" {
+		settlementAmount = strings.TrimSpace(event.Data.Amount)
+		amountField = "amount"
+	}
+	actualAmount, err := decimal.NewFromString(settlementAmount)
+	if err != nil {
+		return fmt.Errorf("invalid %s", amountField)
+	}
+	expectedAmount := decimal.NewFromFloat(expectedMoney).Round(2)
+	if expectedAmount.LessThanOrEqual(decimal.Zero) || actualAmount.LessThanOrEqual(decimal.Zero) {
+		return fmt.Errorf("amount must be positive")
+	}
+	if !actualAmount.Equal(actualAmount.Round(2)) {
+		return fmt.Errorf("amount has unsupported precision")
+	}
+	if !actualAmount.Equal(expectedAmount) {
+		return fmt.Errorf("%s mismatch: expected=%s actual=%s", amountField, expectedAmount.StringFixed(2), actualAmount.String())
+	}
+
+	if strings.TrimSpace(event.Data.Subtotal) != "" &&
+		strings.TrimSpace(event.Data.TaxAmount) != "" &&
+		strings.TrimSpace(event.Data.Total) != "" {
+		taxAmount, err := decimal.NewFromString(strings.TrimSpace(event.Data.TaxAmount))
+		if err != nil || taxAmount.IsNegative() {
+			return fmt.Errorf("invalid tax amount")
+		}
+		total, err := decimal.NewFromString(strings.TrimSpace(event.Data.Total))
+		if err != nil || total.LessThanOrEqual(decimal.Zero) {
+			return fmt.Errorf("invalid total")
+		}
+		if !actualAmount.Add(taxAmount).Equal(total) {
+			return fmt.Errorf("subtotal, tax amount, and total are inconsistent")
+		}
+	}
+	return nil
 }
 
 // Deterministic default names for "+ Create": stable bodies mean stable

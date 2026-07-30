@@ -14,6 +14,11 @@ import (
 
 const redisRateLimitNamespace = "rateLimit:v2"
 
+const (
+	paymentWebhookRateLimitMaxRequests = 300
+	paymentWebhookRateLimitDuration    = int64(60)
+)
+
 // Redis rate limiting intentionally uses a fixed window. The single Lua script
 // makes increment, expiry, and the limit decision atomic, while retaining the
 // simple fixed-window behavior: traffic at a window boundary can burst up to
@@ -169,6 +174,25 @@ func GlobalAPIRateLimit() func(c *gin.Context) {
 		return rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
 	}
 	return defNext
+}
+
+// PaymentWebhookRateLimit keeps provider callbacks out of the shared API
+// bucket while retaining abuse protection per callback path and source IP.
+// Payment providers commonly retry in bursts, so the dedicated allowance is
+// intentionally higher than the interactive API defaults.
+func PaymentWebhookRateLimit(pathMark string) func(c *gin.Context) {
+	mark := "PW:" + pathMark
+	limiter := rateLimitFactory(paymentWebhookRateLimitMaxRequests, paymentWebhookRateLimitDuration, mark)
+	return func(c *gin.Context) {
+		limiter(c)
+		if c.IsAborted() && c.Writer.Status() == http.StatusTooManyRequests {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf(
+				"payment webhook rate limited path_mark=%s client_ip=%s",
+				pathMark,
+				c.ClientIP(),
+			))
+		}
+	}
 }
 
 func CriticalRateLimit() func(c *gin.Context) {
