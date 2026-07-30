@@ -43,6 +43,8 @@ import {
   getPaymentIcon,
   getMinTopupAmount,
   calculatePresetPricing,
+  isWaffoPayment,
+  isWaffoPancakePayment,
 } from '../lib'
 import type {
   PaymentMethod,
@@ -61,6 +63,7 @@ interface RechargeFormCardProps {
   topupAmount: number
   onTopupAmountChange: (amount: number) => void
   paymentAmount: number
+  paymentMethodType?: string
   calculating: boolean
   onPaymentMethodSelect: (method: PaymentMethod) => void
   paymentLoading: string | null
@@ -90,6 +93,7 @@ export function RechargeFormCard({
   topupAmount,
   onTopupAmountChange,
   paymentAmount,
+  paymentMethodType,
   calculating,
   onPaymentMethodSelect,
   paymentLoading,
@@ -141,7 +145,20 @@ export function RechargeFormCard({
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
-  const formattedPriceRatio = priceRatio.toLocaleString('zh-CN')
+  const usesDedicatedPaymentPricing =
+    paymentMethodType !== undefined &&
+    (isWaffoPayment(paymentMethodType) ||
+      isWaffoPancakePayment(paymentMethodType))
+  const effectivePriceRatio =
+    usesDedicatedPaymentPricing &&
+    !calculating &&
+    topupAmount > 0 &&
+    paymentAmount > 0
+      ? paymentAmount / topupAmount
+      : priceRatio
+  const formattedPriceRatio = effectivePriceRatio.toLocaleString('zh-CN', {
+    maximumFractionDigits: 2,
+  })
   const multiplierLabel = contentLanguage.toLowerCase().startsWith('zh')
     ? `×¥${formattedPriceRatio}=`
     : `×${formattedPriceRatio} CNY =`

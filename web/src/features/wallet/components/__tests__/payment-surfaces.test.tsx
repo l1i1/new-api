@@ -383,4 +383,39 @@ describe('wallet payment surfaces', () => {
       await i18n.changeLanguage('en')
     })
   })
+
+  test('uses the Waffo response ratio instead of the generic recharge price', async () => {
+    await act(async () => {
+      await i18n.changeLanguage('zh')
+    })
+
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={topupInfo}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={71}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={71}
+        paymentMethodType='waffo'
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+        priceRatio={7}
+      />
+    )
+
+    assert.equal(rendered.container.textContent?.includes('×¥1='), true)
+    assert.equal(rendered.container.textContent?.includes('×¥7='), false)
+
+    await unmountComponent(rendered)
+    await act(async () => {
+      await i18n.changeLanguage('en')
+    })
+  })
 })
