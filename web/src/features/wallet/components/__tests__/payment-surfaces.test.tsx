@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { after, afterEach, describe, test } from 'node:test'
 
 import { Window } from 'happy-dom'
 
@@ -60,6 +60,11 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
+const { useSystemConfigStore } = await import('@/stores/system-config-store')
+
+const originalCurrencyConfig = {
+  ...useSystemConfigStore.getState().config.currency,
+}
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -131,6 +136,12 @@ const topupInfo: TopupInfo = {
 }
 
 describe('wallet payment surfaces', () => {
+  afterEach(() => {
+    useSystemConfigStore.getState().setConfig({
+      currency: originalCurrencyConfig,
+    })
+  })
+
   after(() => {
     domWindow.close()
   })
@@ -174,6 +185,74 @@ describe('wallet payment surfaces', () => {
     assert.deepEqual(selectedMethods, [epayMethod])
 
     await unmountComponent(rendered)
+  })
+
+  test('keeps add-funds amounts in CNY when the global quota display uses USD', async () => {
+    const currentCurrencyConfig =
+      useSystemConfigStore.getState().config.currency
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...currentCurrencyConfig,
+        quotaDisplayType: 'USD',
+        usdExchangeRate: 7,
+      },
+    })
+
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={topupInfo}
+        presetAmounts={[{ value: 10, discount: 0.8 }]}
+        selectedPreset={10}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={56}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+        priceRatio={7}
+      />
+    )
+
+    const presetButton = [
+      ...rendered.container.querySelectorAll('button'),
+    ].find((button) => button.textContent?.includes('You save'))
+    assert.ok(presetButton)
+    assert.equal(presetButton.textContent?.includes('¥70'), true)
+    assert.equal(presetButton.textContent?.includes('Pay ¥56'), true)
+    assert.equal(presetButton.textContent?.includes('$'), false)
+    assert.equal(
+      rendered.container
+        .querySelector('[data-testid="wallet-payment-amount"]')
+        ?.textContent?.includes('¥56'),
+      true
+    )
+
+    await unmountComponent(rendered)
+
+    const dialog = await renderComponent(
+      <PaymentConfirmDialog
+        open
+        onOpenChange={() => undefined}
+        onConfirm={() => undefined}
+        topupAmount={10}
+        paymentAmount={56}
+        paymentMethod={epayMethod}
+        calculating={false}
+        processing={false}
+        discountRate={0.8}
+      />
+    )
+
+    assert.equal(document.body.textContent?.includes('¥70'), true)
+    assert.equal(document.body.textContent?.includes('¥56'), true)
+    assert.equal(document.body.textContent?.includes('$'), false)
+
+    await unmountComponent(dialog)
   })
 
   test('shows the payable row and redirect warning only for standard EPay methods', async () => {

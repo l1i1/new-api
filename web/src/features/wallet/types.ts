@@ -41,6 +41,7 @@ export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
+export type InviteTopUpRewardsResponse = ApiResponse<InviteTopUpRewardsData>
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
 export type WaffoPaymentResponse = ApiResponse<
   { payment_url?: string } | string
@@ -242,6 +243,33 @@ export interface UserWalletData {
   aff_count: number
   /** User group */
   group: string
+}
+
+export type InviteTopUpRewardStatus = 'pending' | 'applied' | 'skipped'
+
+export interface InviteTopUpRewardSummary {
+  applied_count: number
+  pending_count: number
+  skipped_count: number
+  total_reward_quota: number
+}
+
+export interface InviteTopUpRewardItem {
+  id: number
+  reward_quota: number
+  status: InviteTopUpRewardStatus
+  created_at: number
+  applied_at: number
+}
+
+export interface InviteTopUpRewardsData {
+  program_enabled: boolean
+  reward_rate_bps: number
+  summary: InviteTopUpRewardSummary
+  items: InviteTopUpRewardItem[]
+  page: number
+  page_size: number
+  total: number
 }
 
 /**

@@ -16,15 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-// ============================================================================
-// Wallet Hooks Exports
-// ============================================================================
+import { useQuery } from '@tanstack/react-query'
 
-export * from './use-topup-info'
-export * from './use-payment'
-export * from './use-affiliate'
-export * from './use-invite-topup-rewards'
-export * from './use-redemption'
-export * from './use-creem-payment'
-export * from './use-waffo-payment'
-export * from './use-waffo-pancake-payment'
+import { getInviteTopUpRewards, isApiSuccess } from '../api'
+
+const inviteTopUpRewardsQueryKey = ['wallet', 'invite-topup-rewards'] as const
+
+export function useInviteTopUpRewards() {
+  return useQuery({
+    queryKey: inviteTopUpRewardsQueryKey,
+    queryFn: async () => {
+      const response = await getInviteTopUpRewards()
+      if (!isApiSuccess(response) || !response.data) {
+        throw new Error(response.message || 'Failed to load invite rewards')
+      }
+      return response.data
+    },
+  })
+}

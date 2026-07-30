@@ -1658,6 +1658,93 @@
         ]
       }
     },
+    "/api/user/invite-topup-rewards": {
+      "get": {
+        "summary": "获取首充邀请返利摘要",
+        "deprecated": false,
+        "description": "🔐 需要登录（User权限）。仅返回当前登录用户的邀请返利摘要和脱敏明细。支持 p、page_size 分页参数。",
+        "tags": [
+          "用户管理"
+        ],
+        "parameters": [
+          {
+            "name": "p",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 5
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "program_enabled": { "type": "boolean" },
+                        "reward_rate_bps": { "type": "integer" },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "applied_count": { "type": "integer" },
+                            "pending_count": { "type": "integer" },
+                            "skipped_count": { "type": "integer" },
+                            "total_reward_quota": { "type": "integer" }
+                          }
+                        },
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": { "type": "integer" },
+                              "reward_quota": { "type": "integer" },
+                              "status": { "type": "string", "enum": ["pending", "applied", "skipped"] },
+                              "created_at": { "type": "integer" },
+                              "applied_at": { "type": "integer" }
+                            }
+                          }
+                        },
+                        "page": { "type": "integer" },
+                        "page_size": { "type": "integer" },
+                        "total": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "Combination343": []
+          },
+          {
+            "Combination1243": []
+          }
+        ]
+      }
+    },
     "/api/user/aff_transfer": {
       "post": {
         "summary": "转换邀请额度",

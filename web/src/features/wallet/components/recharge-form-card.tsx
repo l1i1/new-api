@@ -34,10 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import {
-  formatCurrencyFromUSD,
-  formatLocalCurrencyAmount,
-} from '@/lib/currency'
+import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
 
@@ -258,7 +255,7 @@ export function RechargeFormCard({
                         >
                           <div className='flex w-full items-center justify-between'>
                             <div className='text-base font-semibold sm:text-lg'>
-                              {formatCurrencyFromUSD(preset.value, {
+                              {formatCnyFromUSD(preset.value, {
                                 digitsLarge: 2,
                                 digitsSmall: 2,
                                 abbreviate: false,
@@ -271,12 +268,11 @@ export function RechargeFormCard({
                             )}
                           </div>
                           <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
-                            {t('Pay')} {formatLocalCurrencyAmount(actualPrice)}
+                            {t('Pay')} {formatCnyAmount(actualPrice)}
                             {hasDiscount && savedAmount > 0 && (
                               <span className='text-green-600'>
                                 {' '}
-                                • {t('You save')}{' '}
-                                {formatLocalCurrencyAmount(savedAmount)}
+                                • {t('You save')} {formatCnyAmount(savedAmount)}
                               </span>
                             )}
                           </div>
@@ -321,7 +317,7 @@ export function RechargeFormCard({
                         className='text-sm font-semibold'
                         data-testid='wallet-payment-amount'
                       >
-                        {formatLocalCurrencyAmount(paymentAmount)}
+                        {formatCnyAmount(paymentAmount)}
                       </span>
                     )}
                   </div>
