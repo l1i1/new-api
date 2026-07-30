@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -450,11 +451,12 @@ func WaffoPancakeWebhook(c *gin.Context) {
 	}
 
 	signature := c.GetHeader("X-Waffo-Signature")
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 收到请求 path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, string(bodyBytes)))
+	payloadSHA256 := fmt.Sprintf("%x", sha256.Sum256(bodyBytes))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 收到请求 path=%q client_ip=%s payload_sha256=%s payload_bytes=%d", c.Request.RequestURI, c.ClientIP(), payloadSHA256, len(bodyBytes)))
 
 	event, err := service.VerifyConfiguredWaffoPancakeWebhook(string(bodyBytes), signature)
 	if err != nil {
-		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 验签失败 path=%q client_ip=%s signature=%q body=%q error=%q", c.Request.RequestURI, c.ClientIP(), signature, string(bodyBytes), err.Error()))
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 验签失败 path=%q client_ip=%s payload_sha256=%s payload_bytes=%d error=%q", c.Request.RequestURI, c.ClientIP(), payloadSHA256, len(bodyBytes), err.Error()))
 		c.String(http.StatusUnauthorized, "invalid signature")
 		return
 	}
@@ -464,7 +466,7 @@ func WaffoPancakeWebhook(c *gin.Context) {
 			"Waffo Pancake webhook 环境不匹配 expected=%q actual_mode=%q event_id=%s order_id=%s client_ip=%s",
 			expectedEnv, event.Mode, event.ID, event.Data.OrderID, c.ClientIP(),
 		))
-		c.String(http.StatusOK, "OK")
+		c.String(http.StatusConflict, "environment mismatch")
 		return
 	}
 
@@ -473,7 +475,10 @@ func WaffoPancakeWebhook(c *gin.Context) {
 		c.String(http.StatusOK, "OK")
 		return
 	}
+	handleWaffoPancakeCompletedEvent(c, event, bodyBytes)
+}
 
+func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancakeWebhookEvent, bodyBytes []byte) {
 	// Dispatch by trade_no prefix. OrderMerchantExternalID = our trade_no;
 	// OrderID is Pancake's internal ORD_* (logs only).
 	rawTradeNo := strings.TrimSpace(event.Data.OrderMerchantExternalID)
@@ -483,10 +488,10 @@ func WaffoPancakeWebhook(c *gin.Context) {
 		tradeNo, err := service.ResolveWaffoPancakeSubscriptionTradeNo(event)
 		if err != nil {
 			logger.LogError(c.Request.Context(), fmt.Sprintf(
-				"Waffo Pancake webhook 订阅订单解析失败 event_id=%s order_id=%s buyer_identity=%q client_ip=%s error=%q",
-				event.ID, event.Data.OrderID, event.Data.MerchantProvidedBuyerIdentity, c.ClientIP(), err.Error(),
+				"Waffo Pancake webhook 订阅订单解析失败 event_id=%s order_id=%s client_ip=%s error=%q",
+				event.ID, event.Data.OrderID, c.ClientIP(), err.Error(),
 			))
-			c.String(http.StatusOK, "OK")
+			c.String(http.StatusServiceUnavailable, "retry")
 			return
 		}
 		LockOrder(tradeNo)
@@ -503,14 +508,11 @@ func WaffoPancakeWebhook(c *gin.Context) {
 
 	tradeNo, err := service.ResolveWaffoPancakeTradeNo(event)
 	if err != nil {
-		// LogError (not LogWarn): covers order-not-found and buyer-identity
-		// mismatch — both warrant human attention. 200 OK so Waffo doesn't
-		// retry a permanently-unresolvable webhook.
 		logger.LogError(c.Request.Context(), fmt.Sprintf(
-			"Waffo Pancake webhook 订单解析失败 event_id=%s order_id=%s buyer_identity=%q client_ip=%s error=%q",
-			event.ID, event.Data.OrderID, event.Data.MerchantProvidedBuyerIdentity, c.ClientIP(), err.Error(),
+			"Waffo Pancake webhook 订单解析失败 event_id=%s order_id=%s client_ip=%s error=%q",
+			event.ID, event.Data.OrderID, c.ClientIP(), err.Error(),
 		))
-		c.String(http.StatusOK, "OK")
+		c.String(http.StatusServiceUnavailable, "retry")
 		return
 	}
 

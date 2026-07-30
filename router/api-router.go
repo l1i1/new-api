@@ -16,8 +16,21 @@ func SetApiRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
-	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
+
+	// Provider callbacks must not share the interactive API rate-limit bucket.
+	// Register them before GlobalAPIRateLimit and protect each callback path with
+	// its own source-IP bucket instead.
+	apiRouter.POST("/stripe/webhook", middleware.PaymentWebhookRateLimit("stripe"), anonymousRequestBodyLimit, controller.StripeWebhook)
+	apiRouter.POST("/creem/webhook", middleware.PaymentWebhookRateLimit("creem"), anonymousRequestBodyLimit, controller.CreemWebhook)
+	apiRouter.POST("/waffo/webhook", middleware.PaymentWebhookRateLimit("waffo"), anonymousRequestBodyLimit, controller.WaffoWebhook)
+	apiRouter.POST("/waffo-pancake/webhook/:env", middleware.PaymentWebhookRateLimit("waffo_pancake"), anonymousRequestBodyLimit, controller.WaffoPancakeWebhook)
+	apiRouter.POST("/user/epay/notify", middleware.PaymentWebhookRateLimit("epay_topup"), anonymousRequestBodyLimit, controller.EpayNotify)
+	apiRouter.GET("/user/epay/notify", middleware.PaymentWebhookRateLimit("epay_topup"), controller.EpayNotify)
+	apiRouter.POST("/subscription/epay/notify", middleware.PaymentWebhookRateLimit("epay_subscription"), anonymousRequestBodyLimit, controller.SubscriptionEpayNotify)
+	apiRouter.GET("/subscription/epay/notify", middleware.PaymentWebhookRateLimit("epay_subscription"), controller.SubscriptionEpayNotify)
+
+	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
@@ -55,13 +68,6 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/:provider", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.TryUserAuth(), controller.HandleOAuth)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 
-		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)
-		apiRouter.POST("/creem/webhook", anonymousRequestBodyLimit, controller.CreemWebhook)
-		apiRouter.POST("/waffo/webhook", anonymousRequestBodyLimit, controller.WaffoWebhook)
-		// :env separates test vs prod URLs so the operator can register each
-		// in Pancake's matching webhook slot; handler enforces env match.
-		apiRouter.POST("/waffo-pancake/webhook/:env", anonymousRequestBodyLimit, controller.WaffoPancakeWebhook)
-
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UniversalVerify)
 
@@ -75,8 +81,6 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/passkey/login/begin", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginBegin)
 			userRoute.POST("/passkey/login/finish", middleware.CriticalRateLimit(), middleware.DisableCache(), anonymousRequestBodyLimit, controller.PasskeyLoginFinish)
 			//userRoute.POST("/tokenlog", middleware.CriticalRateLimit(), controller.TokenLog)
-			userRoute.POST("/epay/notify", anonymousRequestBodyLimit, controller.EpayNotify)
-			userRoute.GET("/epay/notify", controller.EpayNotify)
 			userRoute.GET("/groups", controller.GetUserGroups)
 
 			selfRoute := userRoute.Group("/")
@@ -184,8 +188,6 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		// Subscription payment callbacks (no auth)
-		apiRouter.POST("/subscription/epay/notify", anonymousRequestBodyLimit, controller.SubscriptionEpayNotify)
-		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/return", controller.SubscriptionEpayReturn)
 		apiRouter.POST("/subscription/epay/return", anonymousRequestBodyLimit, controller.SubscriptionEpayReturn)
 		optionRoute := apiRouter.Group("/option")

@@ -1,10 +1,12 @@
 package model
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -100,6 +102,50 @@ func TestRechargeWaffoPancake_RejectsMismatchedPaymentMethod(t *testing.T) {
 	require.NotNil(t, topUp)
 	assert.Equal(t, common.TopUpStatusPending, topUp.Status)
 	assert.Equal(t, 0, getUserQuotaForPaymentGuardTest(t, 101))
+}
+
+func TestRechargeWaffoPancake_AtomicallyCreditsCacheAndIsIdempotent(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+
+	insertUserForPaymentGuardTest(t, 102, 100)
+	insertTopUpForPaymentGuardTest(t, "waffo-pancake-success", 102, PaymentProviderWaffoPancake)
+	require.NoError(t, common.RDB.HSet(t.Context(), getUserCacheKey(102), "Quota", 100).Err())
+	require.NoError(t, common.RDB.Expire(t.Context(), getUserCacheKey(102), time.Minute).Err())
+
+	expectedCredit := common.QuotaFromDecimal(decimal.NewFromInt(2).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+	require.NoError(t, RechargeWaffoPancake("waffo-pancake-success"))
+	require.NoError(t, RechargeWaffoPancake("waffo-pancake-success"))
+
+	topUp := GetTopUpByTradeNo("waffo-pancake-success")
+	require.NotNil(t, topUp)
+	assert.Equal(t, common.TopUpStatusSuccess, topUp.Status)
+	assert.Positive(t, topUp.CompleteTime)
+	assert.Equal(t, 100+expectedCredit, getUserQuotaForPaymentGuardTest(t, 102))
+
+	cachedQuota, err := common.RDB.HGet(context.Background(), getUserCacheKey(102), "Quota").Int()
+	require.NoError(t, err)
+	assert.Equal(t, 100+expectedCredit, cachedQuota)
+
+	var logCount int64
+	require.NoError(t, DB.Model(&Log{}).Where("user_id = ? AND type = ?", 102, LogTypeTopup).Count(&logCount).Error)
+	assert.EqualValues(t, 1, logCount)
+}
+
+func TestRechargeWaffoPancake_RollsBackOrderWhenUserDoesNotExist(t *testing.T) {
+	truncateTables(t)
+	insertTopUpForPaymentGuardTest(t, "waffo-pancake-missing-user", 9999, PaymentProviderWaffoPancake)
+
+	require.Error(t, RechargeWaffoPancake("waffo-pancake-missing-user"))
+
+	topUp := GetTopUpByTradeNo("waffo-pancake-missing-user")
+	require.NotNil(t, topUp)
+	assert.Equal(t, common.TopUpStatusPending, topUp.Status)
+	assert.Zero(t, topUp.CompleteTime)
+
+	var logCount int64
+	require.NoError(t, DB.Model(&Log{}).Where("user_id = ? AND type = ?", 9999, LogTypeTopup).Count(&logCount).Error)
+	assert.Zero(t, logCount)
 }
 
 func TestUpdatePendingTopUpStatus_RejectsMismatchedPaymentProvider(t *testing.T) {

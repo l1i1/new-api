@@ -334,7 +334,7 @@ func EpayNotify(c *gin.Context) {
 			return r
 		}, map[string]string{})
 	}
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 收到请求 path=%q client_ip=%s method=%s params=%q", c.Request.RequestURI, c.ClientIP(), c.Request.Method, common.GetJsonString(params)))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 收到请求 path=%q client_ip=%s method=%s param_count=%d", c.Request.RequestURI, c.ClientIP(), c.Request.Method, len(params)))
 
 	if len(params) == 0 {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 webhook 参数为空 path=%q client_ip=%s", c.Request.RequestURI, c.ClientIP()))
@@ -351,16 +351,10 @@ func EpayNotify(c *gin.Context) {
 		return
 	}
 	verifyInfo, err := client.Verify(params)
-	if err == nil && verifyInfo.VerifyStatus {
-		logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 验签成功 trade_no=%s callback_type=%s trade_status=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.TradeStatus, c.ClientIP(), common.GetJsonString(verifyInfo)))
-		_, err := c.Writer.Write([]byte("success"))
-		if err != nil {
-			logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 webhook 响应写入失败 trade_no=%s client_ip=%s error=%q", verifyInfo.ServiceTradeNo, c.ClientIP(), err.Error()))
-		}
-	} else {
-		_, err := c.Writer.Write([]byte("fail"))
-		if err != nil {
-			logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 webhook 响应写入失败 path=%q client_ip=%s error=%q", c.Request.RequestURI, c.ClientIP(), err.Error()))
+	if err != nil || !verifyInfo.VerifyStatus {
+		_, writeErr := c.Writer.Write([]byte("fail"))
+		if writeErr != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 webhook 响应写入失败 path=%q client_ip=%s error=%q", c.Request.RequestURI, c.ClientIP(), writeErr.Error()))
 		}
 		if err != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 webhook 验签失败 path=%q client_ip=%s verify_error=%q", c.Request.RequestURI, c.ClientIP(), err.Error()))
@@ -369,45 +363,23 @@ func EpayNotify(c *gin.Context) {
 		}
 		return
 	}
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 验签成功 trade_no=%s callback_type=%s trade_status=%s client_ip=%s", verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.TradeStatus, c.ClientIP()))
 
-	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
-		LockOrder(verifyInfo.ServiceTradeNo)
-		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		topUp := model.GetTopUpByTradeNo(verifyInfo.ServiceTradeNo)
-		if topUp == nil {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 回调订单不存在 trade_no=%s callback_type=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(), common.GetJsonString(verifyInfo)))
-			return
-		}
-		if topUp.PaymentProvider != model.PaymentProviderEpay {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 订单支付网关不匹配 trade_no=%s order_provider=%s callback_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.PaymentProvider, verifyInfo.Type, c.ClientIP()))
-			return
-		}
-		if topUp.Status == common.TopUpStatusPending {
-			if topUp.PaymentMethod != verifyInfo.Type {
-				logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 实际支付方式与订单不同 trade_no=%s order_payment_method=%s actual_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, topUp.PaymentMethod, verifyInfo.Type, c.ClientIP()))
-				topUp.PaymentMethod = verifyInfo.Type
-			}
-			topUp.Status = common.TopUpStatusSuccess
-			err := topUp.Update()
-			if err != nil {
-				logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 更新充值订单失败 trade_no=%s user_id=%d client_ip=%s error=%q topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), err.Error(), common.GetJsonString(topUp)))
-				return
-			}
-			//user, _ := model.GetUserById(topUp.UserId, false)
-			//user.Quota += topUp.Amount * 500000
-			dAmount := decimal.NewFromInt(int64(topUp.Amount))
-			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
-			quotaToAdd := int(dAmount.Mul(dQuotaPerUnit).IntPart())
-			err = model.IncreaseUserQuota(topUp.UserId, quotaToAdd, true)
-			if err != nil {
-				logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 更新用户额度失败 trade_no=%s user_id=%d client_ip=%s quota_to_add=%d error=%q topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), quotaToAdd, err.Error(), common.GetJsonString(topUp)))
-				return
-			}
-			logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 充值成功 trade_no=%s user_id=%d client_ip=%s quota_to_add=%d money=%.2f topup=%q", topUp.TradeNo, topUp.UserId, c.ClientIP(), quotaToAdd, topUp.Money, common.GetJsonString(topUp)))
-			model.RecordTopupLog(topUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quotaToAdd), topUp.Money), c.ClientIP(), topUp.PaymentMethod, "epay")
-		}
-	} else {
+	if verifyInfo.TradeStatus != epay.StatusTradeSuccess {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 webhook 忽略事件 trade_no=%s callback_type=%s trade_status=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.TradeStatus, c.ClientIP(), common.GetJsonString(verifyInfo)))
+		_, _ = c.Writer.Write([]byte("fail"))
+		return
+	}
+
+	if err := model.CompleteEpayTopUp(verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.Money, c.ClientIP()); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 充值结算失败 trade_no=%s callback_type=%s client_ip=%s error=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP(), err.Error()))
+		_, _ = c.Writer.Write([]byte("fail"))
+		return
+	}
+
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("易支付 充值结算成功 trade_no=%s callback_type=%s client_ip=%s", verifyInfo.ServiceTradeNo, verifyInfo.Type, c.ClientIP()))
+	if _, err := c.Writer.Write([]byte("success")); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 webhook 响应写入失败 trade_no=%s client_ip=%s error=%q", verifyInfo.ServiceTradeNo, c.ClientIP(), err.Error()))
 	}
 }
 
@@ -499,13 +471,69 @@ func AdminCompleteTopUp(c *gin.Context) {
 		return
 	}
 
-	// 订单级互斥，防止并发补单
-	LockOrder(req.TradeNo)
-	defer UnlockOrder(req.TradeNo)
-
-	if err := model.ManualCompleteTopUp(req.TradeNo, c.ClientIP()); err != nil {
-		common.ApiError(c, err)
+	topUp := model.GetTopUpByTradeNo(req.TradeNo)
+	if topUp == nil {
+		common.ApiErrorMsg(c, "充值订单不存在")
 		return
 	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		common.ApiSuccess(c, nil)
+		return
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		common.ApiErrorMsg(c, "订单状态不是待支付，无法补单")
+		return
+	}
+
+	verifiedPayment, err := service.VerifyTopUpPayment(c.Request.Context(), topUp)
+	if err != nil {
+		state := service.PaymentVerificationStateOf(err)
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf(
+			"管理员补单供应商核验失败 admin_id=%d trade_no=%s provider=%s state=%s client_ip=%s",
+			c.GetInt("id"), topUp.TradeNo, topUp.PaymentProvider, state, c.ClientIP(),
+		))
+		common.ApiErrorMsg(c, paymentVerificationMessage(state))
+		return
+	}
+
+	switch topUp.PaymentProvider {
+	case model.PaymentProviderEpay:
+		err = model.CompleteEpayTopUp(topUp.TradeNo, verifiedPayment.PaymentMethod, verifiedPayment.PaidAmount, c.ClientIP())
+	case model.PaymentProviderWaffoPancake:
+		err = model.RechargeWaffoPancake(topUp.TradeNo)
+	default:
+		err = fmt.Errorf("unsupported verified payment provider")
+	}
+	if err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf(
+			"管理员补单结算失败 admin_id=%d trade_no=%s provider=%s provider_trade_no=%s client_ip=%s error=%q",
+			c.GetInt("id"), topUp.TradeNo, topUp.PaymentProvider, verifiedPayment.ProviderTradeNo, c.ClientIP(), err.Error(),
+		))
+		common.ApiErrorMsg(c, "供应商已确认付款，但本地结算失败，请稍后重试")
+		return
+	}
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf(
+		"管理员补单核验并结算成功 admin_id=%d trade_no=%s provider=%s provider_trade_no=%s client_ip=%s",
+		c.GetInt("id"), topUp.TradeNo, topUp.PaymentProvider, verifiedPayment.ProviderTradeNo, c.ClientIP(),
+	))
 	common.ApiSuccess(c, nil)
+}
+
+func paymentVerificationMessage(state service.PaymentVerificationState) string {
+	switch state {
+	case service.PaymentVerificationNotPaid:
+		return "供应商订单尚未支付，不能补单"
+	case service.PaymentVerificationNotFound:
+		return "供应商未找到该订单，不能补单"
+	case service.PaymentVerificationRefunded:
+		return "供应商订单已退款，不能补单"
+	case service.PaymentVerificationMismatch:
+		return "供应商订单信息与本地订单不一致，不能补单"
+	case service.PaymentVerificationAmbiguous:
+		return "供应商返回多个成功支付记录，需人工对账"
+	case service.PaymentVerificationUnsupported:
+		return "该支付渠道暂不支持安全补单"
+	default:
+		return "暂时无法向供应商核验订单，请稍后重试"
+	}
 }
