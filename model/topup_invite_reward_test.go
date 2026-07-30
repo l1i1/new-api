@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -503,4 +504,96 @@ func TestInsertWithTxPersistsInviterRelationship(t *testing.T) {
 	var persisted User
 	require.NoError(t, DB.First(&persisted, user.Id).Error)
 	assert.Equal(t, 991, persisted.InviterId)
+}
+
+func TestInviteRegistrationCountIsIndependentFromTopUpAndFixedQuota(t *testing.T) {
+	truncateTables(t)
+
+	previousQuotaForInviter := common.QuotaForInviter
+	previousCompliance := operation_setting.GetPaymentSetting().ComplianceConfirmed
+	previousTermsVersion := operation_setting.GetPaymentSetting().ComplianceTermsVersion
+	t.Cleanup(func() {
+		common.QuotaForInviter = previousQuotaForInviter
+		operation_setting.GetPaymentSetting().ComplianceConfirmed = previousCompliance
+		operation_setting.GetPaymentSetting().ComplianceTermsVersion = previousTermsVersion
+	})
+
+	// Production intentionally keeps the legacy fixed inviter quota at zero.
+	// Registration attribution must still be visible in the wallet, without
+	// creating a first-top-up reward before the invitee has paid.
+	common.QuotaForInviter = 0
+	operation_setting.GetPaymentSetting().ComplianceConfirmed = false
+	operation_setting.GetPaymentSetting().ComplianceTermsVersion = ""
+
+	inviter := User{
+		Username: "invite_registration_inviter",
+		AffCode:  "invite-registration-code",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(&inviter).Error)
+
+	invitee := User{
+		Username: "invite_registration_invitee",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, invitee.Insert(inviter.Id))
+
+	var persisted User
+	require.NoError(t, DB.First(&persisted, inviter.Id).Error)
+	assert.Equal(t, 1, persisted.AffCount)
+	assert.Zero(t, persisted.AffQuota)
+	assert.Equal(t, inviter.Id, invitee.InviterId)
+
+	oauthInvitee := User{
+		Username: "invite_registration_oauth_invitee",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		return oauthInvitee.InsertWithTx(tx, inviter.Id)
+	}))
+	oauthInvitee.FinalizeOAuthUserCreation(inviter.Id)
+
+	require.NoError(t, DB.First(&persisted, inviter.Id).Error)
+	assert.Equal(t, 2, persisted.AffCount)
+	assert.Equal(t, inviter.Id, oauthInvitee.InviterId)
+
+	var rewardCount int64
+	require.NoError(t, DB.Model(&InviteTopUpReward{}).Where("inviter_id = ?", inviter.Id).Count(&rewardCount).Error)
+	assert.Zero(t, rewardCount)
+}
+
+func TestInviteRegistrationKeepsCompliantFixedQuotaReward(t *testing.T) {
+	truncateTables(t)
+
+	previousQuotaForInviter := common.QuotaForInviter
+	previousCompliance := operation_setting.GetPaymentSetting().ComplianceConfirmed
+	previousTermsVersion := operation_setting.GetPaymentSetting().ComplianceTermsVersion
+	t.Cleanup(func() {
+		common.QuotaForInviter = previousQuotaForInviter
+		operation_setting.GetPaymentSetting().ComplianceConfirmed = previousCompliance
+		operation_setting.GetPaymentSetting().ComplianceTermsVersion = previousTermsVersion
+	})
+
+	common.QuotaForInviter = 7
+	operation_setting.GetPaymentSetting().ComplianceConfirmed = true
+	operation_setting.GetPaymentSetting().ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+
+	inviter := User{
+		Username: "invite_fixed_quota_inviter",
+		AffCode:  "invite-fixed-quota-code",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, DB.Create(&inviter).Error)
+
+	invitee := User{
+		Username: "invite_fixed_quota_invitee",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, invitee.Insert(inviter.Id))
+
+	var persisted User
+	require.NoError(t, DB.First(&persisted, inviter.Id).Error)
+	assert.Equal(t, 1, persisted.AffCount)
+	assert.Equal(t, 7, persisted.AffQuota)
+	assert.Equal(t, 7, persisted.AffHistoryQuota)
 }
