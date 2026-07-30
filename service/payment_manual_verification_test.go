@@ -29,7 +29,7 @@ func requireVerificationState(t *testing.T, expected PaymentVerificationState, e
 func TestValidatedEpayReconciliationURLFailsClosed(t *testing.T) {
 	previousPayAddress := operation_setting.PayAddress
 	t.Cleanup(func() { operation_setting.PayAddress = previousPayAddress })
-	operation_setting.PayAddress = "https://pay.example.com"
+	operation_setting.PayAddress = "https://PAY.EXAMPLE.COM./checkout"
 
 	t.Setenv(epayReconciliationQueryURLEnv, "")
 	_, err := validatedEpayReconciliationURL()
@@ -39,10 +39,51 @@ func TestValidatedEpayReconciliationURLFailsClosed(t *testing.T) {
 	_, err = validatedEpayReconciliationURL()
 	require.Error(t, err)
 
+	t.Setenv(epayReconciliationQueryURLEnv, "https://PaY.ExAmPlE.CoM./api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
 	t.Setenv(epayReconciliationQueryURLEnv, "https://epay-internal.example.net/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
+	t.Setenv(epayReconciliationAllowedHostsEnv, "EPAY-INTERNAL.EXAMPLE.NET.")
+	t.Setenv(epayReconciliationQueryURLEnv, "https://epay-internal.example.net./api.php")
 	queryURL, err := validatedEpayReconciliationURL()
 	require.NoError(t, err)
-	assert.Equal(t, "epay-internal.example.net", queryURL.Hostname())
+	assert.Equal(t, "epay-internal.example.net.", queryURL.Hostname())
+
+	t.Setenv(epayReconciliationAllowedHostsEnv, "")
+	t.Setenv(epayReconciliationQueryURLEnv, "http://172.18.0.250/api.php")
+	queryURL, err = validatedEpayReconciliationURL()
+	require.NoError(t, err)
+	assert.Equal(t, "172.18.0.250", queryURL.Hostname())
+
+	t.Setenv(epayReconciliationQueryURLEnv, "http://epay-internal.example.net/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
+	t.Setenv(epayReconciliationQueryURLEnv, "http://8.8.8.8/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
+	t.Setenv(epayReconciliationQueryURLEnv, "https://8.8.8.8/api.php")
+	_, err = validatedEpayReconciliationURL()
+	require.Error(t, err)
+
+	t.Setenv(epayReconciliationAllowedHostsEnv, "8.8.8.8")
+	queryURL, err = validatedEpayReconciliationURL()
+	require.NoError(t, err)
+	assert.Equal(t, "8.8.8.8", queryURL.Hostname())
+}
+
+func TestEpayReconciliationAllowedHostsRequiresExactHostEntries(t *testing.T) {
+	t.Setenv(epayReconciliationAllowedHostsEnv, " internal.example.net. , https://ignored.example.net, ignored.example.net:443, [2001:db8::10] ")
+
+	assert.True(t, epayReconciliationHostAllowed("INTERNAL.EXAMPLE.NET"))
+	assert.True(t, epayReconciliationHostAllowed("2001:db8::10"))
+	assert.False(t, epayReconciliationHostAllowed("sub.internal.example.net"))
+	assert.False(t, epayReconciliationHostAllowed("ignored.example.net"))
 }
 
 func TestValidateEpayProviderOrderRequiresPaidMatchingOrder(t *testing.T) {

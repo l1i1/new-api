@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,7 +21,10 @@ import (
 	pancake "github.com/waffo-com/waffo-pancake-sdk-go"
 )
 
-const epayReconciliationQueryURLEnv = "EPAY_RECONCILIATION_QUERY_URL"
+const (
+	epayReconciliationQueryURLEnv     = "EPAY_RECONCILIATION_QUERY_URL"
+	epayReconciliationAllowedHostsEnv = "EPAY_RECONCILIATION_ALLOWED_HOSTS"
+)
 
 type PaymentVerificationState string
 
@@ -149,17 +153,68 @@ func validatedEpayReconciliationURL() (*url.URL, error) {
 		return nil, errors.New("epay reconciliation query URL is not configured")
 	}
 	queryURL, err := url.Parse(rawURL)
-	if err != nil || queryURL.Scheme != "https" || queryURL.Host == "" || queryURL.User != nil || queryURL.RawQuery != "" || queryURL.Fragment != "" {
+	if err != nil || queryURL.Host == "" || queryURL.User != nil || queryURL.RawQuery != "" || queryURL.Fragment != "" {
 		return nil, errors.New("invalid epay reconciliation query URL")
+	}
+	queryURL.Scheme = strings.ToLower(queryURL.Scheme)
+	queryHost := normalizePaymentOriginHost(queryURL.Hostname())
+	if queryHost == "" {
+		return nil, errors.New("invalid epay reconciliation query host")
 	}
 	if !strings.EqualFold(strings.TrimSpace(queryURL.Path), "/api.php") {
 		return nil, errors.New("epay reconciliation query URL must target /api.php")
 	}
 	publicURL, err := url.Parse(strings.TrimSpace(operation_setting.PayAddress))
-	if err == nil && strings.EqualFold(queryURL.Hostname(), publicURL.Hostname()) {
+	if err != nil || normalizePaymentOriginHost(publicURL.Hostname()) == "" {
+		return nil, errors.New("invalid public payment origin")
+	}
+	if queryHost == normalizePaymentOriginHost(publicURL.Hostname()) {
 		return nil, errors.New("epay reconciliation must not use the public payment origin")
 	}
+
+	queryIP := net.ParseIP(queryHost)
+	isPrivateLiteral := queryIP != nil && (queryIP.IsPrivate() || queryIP.IsLoopback())
+	switch queryURL.Scheme {
+	case "http":
+		if !isPrivateLiteral {
+			return nil, errors.New("epay reconciliation HTTP origin must be a private or loopback IP literal")
+		}
+	case "https":
+		if !isPrivateLiteral && !epayReconciliationHostAllowed(queryHost) {
+			return nil, errors.New("epay reconciliation HTTPS origin is not allowlisted")
+		}
+	default:
+		return nil, errors.New("epay reconciliation query URL must use HTTP or HTTPS")
+	}
 	return queryURL, nil
+}
+
+func normalizePaymentOriginHost(host string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(host), ".")
+	if ip := net.ParseIP(strings.Trim(normalized, "[]")); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(normalized)
+}
+
+func epayReconciliationHostAllowed(host string) bool {
+	host = normalizePaymentOriginHost(host)
+	if host == "" {
+		return false
+	}
+	for _, entry := range strings.Split(os.Getenv(epayReconciliationAllowedHostsEnv), ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || strings.Contains(entry, "://") || strings.ContainsAny(entry, "/?#@") {
+			continue
+		}
+		if net.ParseIP(strings.Trim(entry, "[]")) == nil && strings.Contains(entry, ":") {
+			continue
+		}
+		if normalizePaymentOriginHost(entry) == host {
+			return true
+		}
+	}
+	return false
 }
 
 func validateEpayProviderOrder(topUp *model.TopUp, merchantID int, providerOrder *epayOrderQueryResponse) (*VerifiedTopUpPayment, error) {
