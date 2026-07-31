@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  BusinessAnalysisReport,
   FlowQuotaDataItem,
   QuotaDataItem,
   UptimeGroupResult,
@@ -90,4 +91,15 @@ export async function getUptimeStatus() {
     '/api/uptime/status'
   )
   return res.data
+}
+
+export async function getBusinessAnalysis(params?: {
+  daily_periods?: number
+  weekly_periods?: number
+}): Promise<BusinessAnalysisReport> {
+  const res = await api.get<{
+    success: boolean
+    data: BusinessAnalysisReport
+  }>('/api/tokeness/business-analysis', { params })
+  return res.data.data
 }

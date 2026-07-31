@@ -211,6 +211,109 @@ export interface UserChartsFilters {
 }
 
 // ============================================================================
+// Tokeness business analysis
+// ============================================================================
+
+export interface BusinessAnalysisReport {
+  generated_at: string
+  quota_per_unit: number
+  cny_per_usd: number
+  inventory: BusinessQuotaInventory
+  quota_origin: BusinessQuotaOrigin
+  daily: BusinessFlowBucket[]
+  weekly: BusinessFlowBucket[]
+  totals: BusinessFlowTotals
+  flow_start_timestamp: number
+  flow_end_timestamp: number
+}
+
+export interface BusinessQuotaInventory {
+  users: {
+    total: number
+    enabled: number
+    disabled_or_deleted: number
+  }
+  consumable_enabled_visible: number
+  consumable_enabled_quota_only: number
+  consumable_enabled_aff_only: number
+  net_enabled_visible: number
+  disabled_or_deleted_positive_visible: number
+  all_users_positive_visible: number
+  all_users_net_visible: number
+  positive_enabled_user_count: number
+  positive_disabled_user_count: number
+  negative_enabled_user_count: number
+  negative_enabled_visible: number
+  concentration: {
+    top1: number
+    top5: number
+    top20: number
+  }
+  top20: BusinessBalanceRow[]
+}
+
+export interface BusinessBalanceRow {
+  id: number
+  username: string
+  quota: number
+  aff_quota: number
+  visible: number
+  used_quota: number
+  request_count: number
+}
+
+export interface BusinessQuotaOrigin {
+  options: {
+    quota_for_new_user: number
+    checkin_min_quota: number
+    checkin_max_quota: number
+  }
+  enabled_users: number
+  positive_quota_enabled_users: number
+  positive_quota_enabled_total: number
+  positive_quota_no_topup_users: number
+  positive_quota_no_topup_total: number
+  positive_quota_with_topup_users: number
+  positive_quota_with_topup_total: number
+  enabled_positive_aff_users: number
+  enabled_positive_aff_total: number
+  top_no_topup: BusinessBalanceRow[]
+}
+
+export interface BusinessFlowBucket {
+  label: string
+  start: number
+  end: number
+  topup_orders: number
+  topup_users: number
+  topup_cny: number
+  topup_quota: number
+  consume_quota: number
+  signup_grant_quota: number
+  signup_grant_count: number
+  checkin_quota: number
+  checkin_count: number
+  manual_add_quota: number
+  manual_add_count: number
+  manual_override_increase_quota: number
+  manual_override_increase_count: number
+  non_recharge_increase_quota: number
+  net_after_consume_quota: number
+}
+
+export interface BusinessFlowTotals {
+  topup_cny: number
+  topup_quota: number
+  consume_quota: number
+  signup_grant_quota: number
+  checkin_quota: number
+  manual_add_quota: number
+  manual_override_increase_quota: number
+  non_recharge_increase_quota: number
+  net_after_consume_quota: number
+}
+
+// ============================================================================
 // API Info Types
 // ============================================================================
 

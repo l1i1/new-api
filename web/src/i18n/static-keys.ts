@@ -45,6 +45,20 @@ export const STATIC_I18N_KEYS = [
   'Routing Reliability',
   'Maintenance',
 
+  // Tokeness business analysis dashboard
+  'Business Analysis',
+  'Administrator access is required to view business analysis.',
+  'Failed to load business analysis',
+  'Top-ups',
+  'Consumption',
+  'Non-recharge increase',
+  'Net change',
+  'Operating flow',
+  'Current quota inventory',
+  'Ordinary balance origin',
+  'New-user grant',
+  'No-top-up accounts',
+
   // System info
   'online',
   'stale',

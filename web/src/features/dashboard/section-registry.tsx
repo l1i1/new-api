@@ -45,11 +45,20 @@ const DASHBOARD_SECTIONS = [
     adminOnly: true,
     build: () => null,
   },
+  {
+    id: 'business',
+    titleKey: 'Business Analysis',
+    adminOnly: true,
+    build: () => null,
+  },
 ] as const
 
 export type DashboardSectionId = (typeof DASHBOARD_SECTIONS)[number]['id']
 
-const ADMIN_ONLY_SECTIONS = new Set<string>(['users'])
+export const DASHBOARD_ADMIN_ONLY_SECTIONS = new Set<string>([
+  'users',
+  'business',
+])
 
 const dashboardRegistry = createSectionRegistry<
   DashboardSectionId,
@@ -72,6 +81,6 @@ export function getDashboardSectionNavItems(
   const all = dashboardRegistry.getSectionNavItems(t)
   if (options?.isAdmin) return all
   return all.filter(
-    (_, idx) => !ADMIN_ONLY_SECTIONS.has(DASHBOARD_SECTIONS[idx].id)
+    (_, idx) => !DASHBOARD_ADMIN_ONLY_SECTIONS.has(DASHBOARD_SECTIONS[idx].id)
   )
 }
