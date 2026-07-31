@@ -43,6 +43,8 @@ import {
   type RequestRuleGroup,
   type TierCondition,
 } from '../lib/billing-expr'
+import { formatDynamicUnitPrice } from '../lib/dynamic-price'
+import type { PricingCurrency, TokenUnit } from '../types'
 
 type DynamicPricingBreakdownProps = {
   billingExpr: string | null | undefined
@@ -64,6 +66,11 @@ type DynamicPricingBreakdownProps = {
    * icon header and uses the dialog's small text sizes. Defaults to false.
    */
   compact?: boolean
+  tokenUnit?: TokenUnit
+  showRechargePrice?: boolean
+  priceRate?: number
+  usdExchangeRate?: number
+  displayCurrency?: PricingCurrency
 }
 
 const VAR_LABELS: Record<string, string> = {
@@ -158,6 +165,11 @@ export function DynamicPricingBreakdown({
   matchedTierLabel,
   hideCacheColumns = false,
   compact = false,
+  tokenUnit = 'M',
+  showRechargePrice = false,
+  priceRate = 1,
+  usdExchangeRate = 1,
+  displayCurrency,
 }: DynamicPricingBreakdownProps) {
   const { t } = useTranslation()
   const expr = billingExpr || ''
@@ -191,6 +203,17 @@ export function DynamicPricingBreakdown({
   const normalizedMatchedTierLabel = normalizeTierLabel(
     matchedTierLabel ?? undefined
   )
+
+  const formatPrice = (value: number) => {
+    if (!displayCurrency) return `${symbol}${(value * rate).toFixed(4)}`
+    return formatDynamicUnitPrice(value, {
+      tokenUnit,
+      showRechargePrice,
+      priceRate,
+      usdExchangeRate,
+      displayCurrency,
+    })
+  }
 
   if (!expr) return null
 
@@ -260,7 +283,7 @@ export function DynamicPricingBreakdown({
             {t('Tiered price table')}
           </div>
           <div className='space-y-1.5 sm:hidden'>
-            {tiers.map((tier, i) => {
+            {tiers.map((tier) => {
               const condSummary = formatConditionSummary(tier.conditions, t)
               const isMatched =
                 matchedTierLabel != null &&
@@ -268,7 +291,7 @@ export function DynamicPricingBreakdown({
                 tier.label === matchedTierLabel
               return (
                 <div
-                  key={`tier-mobile-${i}`}
+                  key={`tier-mobile-${tier.label || condSummary}`}
                   className={cn(
                     'rounded-md border p-2',
                     isMatched && 'border-emerald-500/40 bg-emerald-500/10'
@@ -311,9 +334,7 @@ export function DynamicPricingBreakdown({
                               compact ? 'text-xs' : 'text-sm font-semibold'
                             )}
                           >
-                            {value > 0
-                              ? `${symbol}${(value * rate).toFixed(4)}`
-                              : '-'}
+                            {value > 0 ? formatPrice(value) : '-'}
                           </div>
                         </div>
                       )
@@ -332,7 +353,9 @@ export function DynamicPricingBreakdown({
             }
             headerRowClassName='hover:bg-transparent'
             data={tiers}
-            getRowKey={(_tier, index) => `tier-${index}`}
+            getRowKey={(tier) =>
+              `tier-${tier.label || JSON.stringify(tier.conditions)}`
+            }
             getRowClassName={(tier) => {
               const isMatched =
                 normalizedMatchedTierLabel !== '' &&
@@ -401,7 +424,7 @@ export function DynamicPricingBreakdown({
                   )
                   return value > 0 ? (
                     <span className={cn(!compact && 'font-semibold')}>
-                      {`${symbol}${(value * rate).toFixed(4)}`}
+                      {formatPrice(value)}
                     </span>
                   ) : (
                     '-'
@@ -425,9 +448,9 @@ export function DynamicPricingBreakdown({
             {t('Conditional multipliers')}
           </div>
           <ul className='space-y-1.5'>
-            {ruleGroups.map((group, gi) => (
+            {ruleGroups.map((group) => (
               <li
-                key={`group-${gi}`}
+                key={`group-${describeGroup(group, t)}`}
                 className='bg-muted/50 flex items-center justify-between gap-3 rounded-md px-3 py-2'
               >
                 <span

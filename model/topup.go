@@ -19,13 +19,20 @@ type TopUp struct {
 	TradeNo         string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
 	PaymentMethod   string  `json:"payment_method" gorm:"type:varchar(50)"`
 	PaymentProvider string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
-	CreateTime      int64   `json:"create_time"`
-	CompleteTime    int64   `json:"complete_time"`
-	CreditedQuota   int     `json:"credited_quota" gorm:"type:int;not null;default:0"`
-	Status          string  `json:"status"`
+	// PaymentCurrency is the provider's immutable settlement-currency snapshot.
+	// It is for display and audit only; quota and settlement calculations retain
+	// their existing units.
+	PaymentCurrency string `json:"payment_currency" gorm:"type:varchar(8);default:''"`
+	CreateTime      int64  `json:"create_time"`
+	CompleteTime    int64  `json:"complete_time"`
+	CreditedQuota   int    `json:"credited_quota" gorm:"type:int;not null;default:0"`
+	Status          string `json:"status"`
 }
 
 const (
+	PaymentCurrencyCNY = "CNY"
+	PaymentCurrencyUSD = "USD"
+
 	PaymentMethodStripe       = "stripe"
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"

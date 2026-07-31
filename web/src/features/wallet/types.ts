@@ -293,6 +293,8 @@ export interface TopupRecord {
   trade_no: string
   /** Payment method type */
   payment_method: string
+  /** Immutable payment-provider currency snapshot, when available. */
+  payment_currency?: string
   /** Creation timestamp */
   create_time: number
   /** Completion timestamp */

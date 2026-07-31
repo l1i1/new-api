@@ -16,10 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
-
 import { TOKEN_UNIT_DIVISORS } from '../constants'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingCurrency, PricingModel, TokenUnit } from '../types'
 import {
   BILLING_PRICING_VARS,
   parseTiersFromExpr,
@@ -29,12 +27,14 @@ import {
   type ParsedTier,
 } from './billing-expr'
 import { getDisplayGroupRatio } from './model-helpers'
+import { formatPricingCurrencyFromUSD } from './price'
 
 type DynamicPriceOptions = {
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
   priceRate?: number
   usdExchangeRate?: number
+  displayCurrency?: PricingCurrency
   groupRatioMultiplier?: number
 }
 
@@ -100,11 +100,12 @@ export function formatDynamicUnitPrice(
     usdExchangeRate
   )
 
-  return formatBillingCurrencyFromUSD(displayPrice, {
-    digitsLarge: 4,
-    digitsSmall: 6,
-    abbreviate: false,
-  })
+  return formatPricingCurrencyFromUSD(
+    displayPrice,
+    options.displayCurrency ?? 'CNY',
+    usdExchangeRate,
+    { digitsLarge: 4, digitsSmall: 6 }
+  )
 }
 
 export function getDynamicPricingTiers(model: PricingModel): ParsedTier[] {
