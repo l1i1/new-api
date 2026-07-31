@@ -85,8 +85,11 @@ const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { useAuthStore } = await import('@/stores/auth-store')
+const { useCurrencyDisplayStore } =
+  await import('@/stores/currency-display-store')
 const { useSystemConfigStore } = await import('@/stores/system-config-store')
 const { PublicHeader } = await import('../public-header')
+const originalDisplayCurrency = useCurrencyDisplayStore.getState().currency
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -170,11 +173,13 @@ async function renderHeader(showLanguageSwitcher = true) {
 
 describe('public header language controls', () => {
   after(() => {
+    useCurrencyDisplayStore.getState().setCurrency(originalDisplayCurrency)
     domWindow.close()
   })
 
   test('mobile actions expose a working language switcher', async () => {
     useAuthStore.getState().auth.reset()
+    useCurrencyDisplayStore.getState().setCurrency('CNY')
     useSystemConfigStore.getState().setLoading(false)
     await i18n.changeLanguage('en')
     const rendered = await renderHeader()
@@ -185,6 +190,11 @@ describe('public header language controls', () => {
       'Change language'
     )
     assert.ok(languageButton, 'mobile actions must expose language selection')
+    const currencyButton = findButton(
+      menuButton.parentElement ?? rendered.container,
+      'Currency'
+    )
+    assert.ok(currencyButton, 'mobile actions must expose currency selection')
 
     await act(async () => languageButton.click())
     const chineseOption = Array.from(
@@ -194,6 +204,14 @@ describe('public header language controls', () => {
 
     await act(async () => chineseOption.click())
     assert.equal(i18n.language, 'zhCN')
+
+    await act(async () => currencyButton.click())
+    const usdOption = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('$ USD'))
+    assert.ok(usdOption)
+    await act(async () => usdOption.click())
+    assert.equal(useCurrencyDisplayStore.getState().currency, 'USD')
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()
@@ -205,6 +223,7 @@ describe('public header language controls', () => {
     const rendered = await renderHeader(false)
 
     assert.equal(findButton(rendered.container, 'Change language'), null)
+    assert.equal(findButton(rendered.container, 'Currency'), null)
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()

@@ -84,9 +84,6 @@ export function Pricing() {
     clearSearch,
   } = useFilters(models || [])
   const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
-  const setDisplayCurrency = useCurrencyDisplayStore(
-    (state) => state.setCurrency
-  )
 
   const handleModelClick = useCallback((modelName: string) => {
     setSelectedModelName(modelName)
@@ -241,8 +238,6 @@ export function Pricing() {
                 onTokenUnitChange={setTokenUnit}
                 showRechargePrice={showRechargePrice}
                 onRechargePriceChange={setShowRechargePrice}
-                displayCurrency={displayCurrency}
-                onDisplayCurrencyChange={setDisplayCurrency}
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
                 quotaTypeFilter={quotaTypeFilter}
