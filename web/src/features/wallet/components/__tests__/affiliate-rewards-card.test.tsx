@@ -58,6 +58,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
+const { useCurrencyDisplayStore } =
+  await import('@/stores/currency-display-store')
 const { useSystemConfigStore } = await import('@/stores/system-config-store')
 const { AffiliateRewardsCard } = await import('../affiliate-rewards-card')
 
@@ -71,6 +73,7 @@ await i18n.use(initReactI18next).init({
 const originalCurrencyConfig = {
   ...useSystemConfigStore.getState().config.currency,
 }
+const originalDisplayCurrency = useCurrencyDisplayStore.getState().currency
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
 }
@@ -162,6 +165,7 @@ describe('affiliate rewards card', () => {
     useSystemConfigStore.getState().setConfig({
       currency: originalCurrencyConfig,
     })
+    useCurrencyDisplayStore.getState().setCurrency(originalDisplayCurrency)
   })
 
   after(() => {
@@ -169,6 +173,7 @@ describe('affiliate rewards card', () => {
   })
 
   test('shows ledger-backed summary and recent statuses without restoring legacy transfer balances', async () => {
+    useCurrencyDisplayStore.getState().setCurrency('USD')
     useSystemConfigStore.getState().setConfig({
       currency: {
         ...originalCurrencyConfig,
@@ -187,8 +192,8 @@ describe('affiliate rewards card', () => {
     assert.match(text, /Processing/)
     assert.match(text, /Received/)
     assert.match(text, /Not issued/)
-    assert.match(text, /¥10\.5/)
-    assert.match(text, /\+¥7/)
+    assert.match(text, /\$1\.5/)
+    assert.match(text, /\+\$1/)
     assert.doesNotMatch(text, /Transfer to Balance/)
     assert.doesNotMatch(text, /Affiliate quota/)
     assert.equal(rendered.container.querySelectorAll('button').length, 1)

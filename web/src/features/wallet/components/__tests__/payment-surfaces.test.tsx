@@ -60,11 +60,14 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
+const { useCurrencyDisplayStore } =
+  await import('@/stores/currency-display-store')
 const { useSystemConfigStore } = await import('@/stores/system-config-store')
 
 const originalCurrencyConfig = {
   ...useSystemConfigStore.getState().config.currency,
 }
+const originalDisplayCurrency = useCurrencyDisplayStore.getState().currency
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -140,6 +143,7 @@ describe('wallet payment surfaces', () => {
     useSystemConfigStore.getState().setConfig({
       currency: originalCurrencyConfig,
     })
+    useCurrencyDisplayStore.getState().setCurrency(originalDisplayCurrency)
   })
 
   after(() => {
@@ -187,7 +191,7 @@ describe('wallet payment surfaces', () => {
     await unmountComponent(rendered)
   })
 
-  test('keeps add-funds amounts in CNY when the global quota display uses USD', async () => {
+  test('converts add-funds presentation to USD without changing payment values', async () => {
     const currentCurrencyConfig =
       useSystemConfigStore.getState().config.currency
     useSystemConfigStore.getState().setConfig({
@@ -197,6 +201,7 @@ describe('wallet payment surfaces', () => {
         usdExchangeRate: 7,
       },
     })
+    useCurrencyDisplayStore.getState().setCurrency('USD')
 
     const rendered = await renderComponent(
       <RechargeFormCard
@@ -222,13 +227,13 @@ describe('wallet payment surfaces', () => {
       ...rendered.container.querySelectorAll('button'),
     ].find((button) => button.textContent?.includes('You save'))
     assert.ok(presetButton)
-    assert.equal(presetButton.textContent?.includes('¥70'), true)
-    assert.equal(presetButton.textContent?.includes('Pay ¥56'), true)
-    assert.equal(presetButton.textContent?.includes('$'), false)
+    assert.equal(presetButton.textContent?.includes('$10'), true)
+    assert.equal(presetButton.textContent?.includes('Pay $8'), true)
+    assert.equal(presetButton.textContent?.includes('¥'), false)
     assert.equal(
       rendered.container
         .querySelector('[data-testid="wallet-payment-amount"]')
-        ?.textContent?.includes('¥56'),
+        ?.textContent?.includes('$8'),
       true
     )
 
@@ -248,9 +253,9 @@ describe('wallet payment surfaces', () => {
       />
     )
 
-    assert.equal(document.body.textContent?.includes('¥70'), true)
-    assert.equal(document.body.textContent?.includes('¥56'), true)
-    assert.equal(document.body.textContent?.includes('$'), false)
+    assert.equal(document.body.textContent?.includes('$10'), true)
+    assert.equal(document.body.textContent?.includes('$8'), true)
+    assert.equal(document.body.textContent?.includes('¥'), false)
 
     await unmountComponent(dialog)
   })

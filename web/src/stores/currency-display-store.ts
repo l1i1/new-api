@@ -21,6 +21,14 @@ import { persist } from 'zustand/middleware'
 
 export type DisplayCurrency = 'CNY' | 'USD'
 
+export function getDefaultDisplayCurrency(language?: string): DisplayCurrency {
+  const browserLanguage =
+    language ??
+    (typeof navigator === 'undefined' ? undefined : navigator.language)
+
+  return browserLanguage?.toLowerCase().startsWith('zh') ? 'CNY' : 'USD'
+}
+
 interface CurrencyDisplayState {
   currency: DisplayCurrency
   setCurrency: (currency: DisplayCurrency) => void
@@ -35,7 +43,7 @@ interface CurrencyDisplayState {
 export const useCurrencyDisplayStore = create<CurrencyDisplayState>()(
   persist(
     (set) => ({
-      currency: 'CNY',
+      currency: getDefaultDisplayCurrency(),
       setCurrency: (currency) => set({ currency }),
     }),
     { name: 'currency-display-storage' }

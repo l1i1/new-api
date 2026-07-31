@@ -20,6 +20,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CurrencyDisplaySwitcher } from '@/components/currency-display-switcher'
 import { Dialog } from '@/components/dialog'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
@@ -282,7 +283,12 @@ export function PublicHeader(props: PublicHeaderProps) {
                 <div className='bg-border/40 mx-2 h-4 w-px' />
               )}
 
-              {showLanguageSwitcher && <LanguageSwitcher />}
+              {showLanguageSwitcher && (
+                <>
+                  <CurrencyDisplaySwitcher />
+                  <LanguageSwitcher />
+                </>
+              )}
               {showThemeSwitch && <ThemeSwitch />}
               {showNotifications && (
                 <NotificationPopover
@@ -307,7 +313,12 @@ export function PublicHeader(props: PublicHeaderProps) {
 
             {/* Mobile: compact actions + hamburger */}
             <div className='flex items-center gap-2 sm:hidden'>
-              {showLanguageSwitcher && <LanguageSwitcher />}
+              {showLanguageSwitcher && (
+                <>
+                  <CurrencyDisplaySwitcher />
+                  <LanguageSwitcher />
+                </>
+              )}
               {showThemeSwitch && <ThemeSwitch />}
               {showAuthButtons && !loading && isAuthenticated && (
                 <ProfileDropdown />

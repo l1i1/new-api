@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { afterEach, describe, test } from 'node:test'
 
-import { useCurrencyDisplayStore } from '../../stores/currency-display-store'
+import {
+  getDefaultDisplayCurrency,
+  useCurrencyDisplayStore,
+} from '../../stores/currency-display-store'
 import { useSystemConfigStore } from '../../stores/system-config-store'
 import {
   formatBillingCurrencyFromUSD,
@@ -40,6 +43,13 @@ afterEach(() => {
 })
 
 describe('user currency display preference', () => {
+  test('defaults Chinese browsers to CNY and English browsers to USD', () => {
+    assert.equal(getDefaultDisplayCurrency('zh-CN'), 'CNY')
+    assert.equal(getDefaultDisplayCurrency('zh-TW'), 'CNY')
+    assert.equal(getDefaultDisplayCurrency('en-US'), 'USD')
+    assert.equal(getDefaultDisplayCurrency('en-GB'), 'USD')
+  })
+
   test('converts balances, API costs, and CNY recharge previews together', () => {
     useSystemConfigStore.getState().setConfig({
       currency: {
