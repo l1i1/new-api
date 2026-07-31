@@ -37,6 +37,7 @@ import {
 import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import {
   getDiscountLabel,
@@ -111,6 +112,7 @@ export function RechargeFormCard({
   enableWaffoPancakeTopup,
 }: RechargeFormCardProps) {
   const { i18n, t } = useTranslation()
+  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
   const contentLanguage = i18n.resolvedLanguage || i18n.language
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
 
@@ -144,9 +146,12 @@ export function RechargeFormCard({
   const formattedPriceRatio = priceRatio.toLocaleString('zh-CN', {
     maximumFractionDigits: 2,
   })
-  const multiplierLabel = contentLanguage.toLowerCase().startsWith('zh')
-    ? `×¥${formattedPriceRatio}=`
-    : `×${formattedPriceRatio} CNY =`
+  const multiplierLabel =
+    displayCurrency === 'USD'
+      ? '× 1 USD ='
+      : contentLanguage.toLowerCase().startsWith('zh')
+        ? `×¥${formattedPriceRatio}=`
+        : `×${formattedPriceRatio} CNY =`
 
   if (loading) {
     return (

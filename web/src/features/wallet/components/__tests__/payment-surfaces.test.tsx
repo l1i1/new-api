@@ -174,7 +174,7 @@ describe('wallet payment surfaces', () => {
 
     assert.equal(rendered.container.textContent?.includes('You save'), true)
     assert.equal(rendered.container.textContent?.includes('<tnt'), false)
-    assert.equal(rendered.container.textContent?.includes('×7 CNY ='), true)
+    assert.equal(rendered.container.textContent?.includes('× 1 USD ='), true)
     assert.match(
       rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
         ?.textContent ?? '',
@@ -348,6 +348,7 @@ describe('wallet payment surfaces', () => {
   })
 
   test('uses the Chinese multiplier form without calculating the payable amount locally', async () => {
+    useCurrencyDisplayStore.getState().setCurrency('CNY')
     await act(async () => {
       await i18n.changeLanguage('zh')
     })
@@ -390,6 +391,7 @@ describe('wallet payment surfaces', () => {
   })
 
   test('keeps the generic local multiplier for Waffo payments', async () => {
+    useCurrencyDisplayStore.getState().setCurrency('CNY')
     await act(async () => {
       await i18n.changeLanguage('zh')
     })
