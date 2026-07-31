@@ -45,6 +45,7 @@ import type { UsageLog } from '../../data/schema'
 import {
   formatModelName,
   getTieredBillingSummary,
+  getEffectiveBillingRatio,
   hasAnyCacheTokens,
   parseLogOther,
   isViolationFeeLog,
@@ -151,10 +152,11 @@ function buildTypeDetailSegments(
   const segments: DetailSegment[] = []
 
   const priceOpts = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
+  const billingRatio = getEffectiveBillingRatio(other)
   const formatPrice = (price: number) =>
-    `${formatBillingCurrencyFromUSD(price, priceOpts)}/M`
+    `${formatBillingCurrencyFromUSD(price * billingRatio, priceOpts)}/M`
   const formatPriceCompact = (price: number) =>
-    formatBillingCurrencyFromUSD(price, priceOpts)
+    formatBillingCurrencyFromUSD(price * billingRatio, priceOpts)
   const formatPriceList = (prices: string[], showUnit: boolean) => {
     const text = prices.join(' / ')
     return showUnit ? `${text}/M` : text
@@ -218,7 +220,7 @@ function buildTypeDetailSegments(
     const isPerCall = isPerCallBilling(modelPrice)
     if (isPerCall && modelPrice != null) {
       segments.push({
-        text: `${t('Per-call')} · ${formatBillingCurrencyFromUSD(modelPrice, priceOpts)}`,
+        text: `${t('Per-call')} · ${formatBillingCurrencyFromUSD(modelPrice * billingRatio, priceOpts)}`,
       })
     } else if (other.model_ratio != null) {
       const inputPriceUSD = other.model_ratio * 2.0
@@ -253,23 +255,19 @@ function buildTypeDetailSegments(
           })
         }
       }
-    } else {
-      const userGroupRatio = other.user_group_ratio
-      const groupRatio = other.group_ratio
-      const isUserGroup =
-        userGroupRatio != null &&
-        Number.isFinite(userGroupRatio) &&
-        userGroupRatio !== -1
-      const effectiveRatio = isUserGroup ? userGroupRatio : groupRatio
-      const ratioLabel = isUserGroup
-        ? t('User Exclusive Ratio')
-        : t('Group Ratio')
+    }
 
-      if (effectiveRatio != null && Number.isFinite(effectiveRatio)) {
-        segments.push({
-          text: `${ratioLabel} ${formatRatioCompact(effectiveRatio)}x`,
-        })
-      }
+    const userGroupRatio = other.user_group_ratio
+    const isUserGroup =
+      userGroupRatio != null &&
+      Number.isFinite(userGroupRatio) &&
+      userGroupRatio !== -1
+    const groupRatio = other.group_ratio
+    if (isUserGroup || (groupRatio != null && Number.isFinite(groupRatio))) {
+      segments.push({
+        text: `${isUserGroup ? t('User Exclusive Ratio') : t('Group Ratio')} ${formatRatioCompact(billingRatio)}x`,
+        muted: true,
+      })
     }
   }
 
