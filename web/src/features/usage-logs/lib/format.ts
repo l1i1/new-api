@@ -311,6 +311,22 @@ export function hasAnyCacheTokens(
   )
 }
 
+/**
+ * Resolve the multiplier that was applied to a log's base model pricing.
+ * A user-specific group ratio takes precedence over the regular group ratio.
+ */
+export function getEffectiveBillingRatio(
+  other: LogOtherData | null | undefined
+): number {
+  const userRatio = other?.user_group_ratio
+  if (userRatio != null && userRatio !== -1 && Number.isFinite(userRatio)) {
+    return userRatio
+  }
+
+  const groupRatio = other?.group_ratio
+  return groupRatio != null && Number.isFinite(groupRatio) ? groupRatio : 1
+}
+
 export function getTieredBillingSummary(
   other: LogOtherData | null
 ): TieredBillingSummary | null {
