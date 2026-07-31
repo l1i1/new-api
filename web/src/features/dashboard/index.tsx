@@ -113,6 +113,12 @@ const LazyFlowCharts = lazy(() =>
   }))
 )
 
+const LazyBusinessAnalysis = lazy(() =>
+  import('./components/business/business-analysis').then((m) => ({
+    default: m.BusinessAnalysis,
+  }))
+)
+
 function LogStatCardsFallback() {
   return (
     <div className='overflow-hidden rounded-lg border'>
@@ -189,6 +195,9 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   users: {
     titleKey: 'User Analytics',
   },
+  business: {
+    titleKey: 'Business Analysis',
+  },
 }
 
 export function Dashboard() {
@@ -248,7 +257,10 @@ export function Dashboard() {
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          (section !== 'users' || isAdmin) &&
+          (section !== 'business' || isAdmin)
       ),
     [isAdmin]
   )
@@ -263,6 +275,21 @@ export function Dashboard() {
   )
   const showSectionTabs =
     activeSection !== 'overview' && visibleSections.length > 1
+
+  if (activeSection === 'business' && !isAdmin) {
+    return (
+      <SectionPageLayout>
+        <SectionPageLayout.Title>
+          {t('Business Analysis')}
+        </SectionPageLayout.Title>
+        <SectionPageLayout.Content>
+          <div className='text-muted-foreground rounded-lg border p-6 text-sm'>
+            {t('Administrator access is required to view business analysis.')}
+          </div>
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    )
+  }
   const modelActions =
     activeSection === 'models' ? (
       <>
@@ -397,6 +424,13 @@ export function Dashboard() {
                   filters={userChartsFilters}
                   onFiltersChange={setUserChartsFilters}
                 />
+              </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'business' && (
+            <FadeIn>
+              <Suspense fallback={<ModelChartsFallback />}>
+                <LazyBusinessAnalysis />
               </Suspense>
             </FadeIn>
           )}
