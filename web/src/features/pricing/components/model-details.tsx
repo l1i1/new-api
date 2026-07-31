@@ -58,6 +58,7 @@ import {
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { usePricingData } from '../hooks/use-pricing-data'
@@ -74,6 +75,7 @@ import { localizePricingVendorName } from '../lib/vendor-localization'
 import type {
   ModelCapability,
   PriceType,
+  PricingCurrency,
   PricingModel,
   TokenUnit,
 } from '../types'
@@ -590,6 +592,7 @@ function PriceSection(props: {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice: boolean
+  displayCurrency: PricingCurrency
 }) {
   const { t } = useTranslation()
   const isTokenBased = isTokenBasedModel(props.model)
@@ -601,6 +604,7 @@ function PriceSection(props: {
     showRechargePrice: props.showRechargePrice,
     priceRate: props.priceRate,
     usdExchangeRate: props.usdExchangeRate,
+    displayCurrency: props.displayCurrency,
     groupRatioMultiplier: 1,
   })
 
@@ -735,7 +739,8 @@ function PriceSection(props: {
               props.showRechargePrice,
               props.priceRate,
               props.usdExchangeRate,
-              baseGroupRatioMap
+              baseGroupRatioMap,
+              props.displayCurrency
             )}
           </span>
         </div>
@@ -754,7 +759,8 @@ function PriceSection(props: {
         props.showRechargePrice,
         props.priceRate,
         props.usdExchangeRate,
-        baseGroupRatioMap
+        baseGroupRatioMap,
+        props.displayCurrency
       )}
       <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
         / {tokenUnitLabel}
@@ -876,6 +882,7 @@ function GroupPricingSection(props: {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  displayCurrency: PricingCurrency
 }) {
   const { t } = useTranslation()
   const showRechargePrice = props.showRechargePrice ?? false
@@ -963,6 +970,7 @@ function GroupPricingSection(props: {
       showRechargePrice,
       priceRate: props.priceRate,
       usdExchangeRate: props.usdExchangeRate,
+      displayCurrency: props.displayCurrency,
       groupRatioMultiplier: 1,
     })
     const formattedPricesByGroup = new Map(
@@ -975,6 +983,7 @@ function GroupPricingSection(props: {
             showRechargePrice,
             priceRate: props.priceRate,
             usdExchangeRate: props.usdExchangeRate,
+            displayCurrency: props.displayCurrency,
             groupRatioMultiplier: ratio,
           }),
         ] as const
@@ -1048,7 +1057,8 @@ function GroupPricingSection(props: {
       showRechargePrice,
       props.priceRate,
       props.usdExchangeRate,
-      props.groupRatio
+      props.groupRatio,
+      props.displayCurrency
     )
   const renderFixedGroupPrice = (group: string) =>
     formatFixedPrice(
@@ -1057,7 +1067,8 @@ function GroupPricingSection(props: {
       showRechargePrice,
       props.priceRate,
       props.usdExchangeRate,
-      props.groupRatio
+      props.groupRatio,
+      props.displayCurrency
     )
 
   return (
@@ -1153,6 +1164,7 @@ export interface ModelDetailsContentProps {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  displayCurrency: PricingCurrency
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
@@ -1195,9 +1207,17 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               usdExchangeRate={props.usdExchangeRate}
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
+              displayCurrency={props.displayCurrency}
             />
             {isDynamic && (
-              <DynamicPricingBreakdown billingExpr={props.model.billing_expr} />
+              <DynamicPricingBreakdown
+                billingExpr={props.model.billing_expr}
+                tokenUnit={props.tokenUnit}
+                showRechargePrice={showRechargePrice}
+                priceRate={props.priceRate}
+                usdExchangeRate={props.usdExchangeRate}
+                displayCurrency={props.displayCurrency}
+              />
             )}
             <GroupPricingSection
               model={props.model}
@@ -1208,6 +1228,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               usdExchangeRate={props.usdExchangeRate}
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
+              displayCurrency={props.displayCurrency}
             />
           </section>
 
@@ -1281,6 +1302,7 @@ export function ModelDetails() {
 
   const tokenUnit: TokenUnit =
     search.tokenUnit === 'K' ? 'K' : DEFAULT_TOKEN_UNIT
+  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
 
   const model = useMemo(() => {
     if (!models || !modelId) return null
@@ -1356,6 +1378,7 @@ export function ModelDetails() {
           usdExchangeRate={usdExchangeRate ?? 1}
           tokenUnit={tokenUnit}
           showRechargePrice={search.rechargePrice ?? false}
+          displayCurrency={displayCurrency}
           endpointMap={
             (endpointMap as Record<
               string,

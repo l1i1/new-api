@@ -53,7 +53,12 @@ import {
   type SortOption,
   type ViewMode,
 } from '../constants'
-import type { PricingModel, PricingVendor, TokenUnit } from '../types'
+import type {
+  PricingCurrency,
+  PricingModel,
+  PricingVendor,
+  TokenUnit,
+} from '../types'
 import { PricingSidebar } from './pricing-sidebar'
 
 type SegmentOption = {
@@ -72,6 +77,8 @@ export interface PricingToolbarProps {
   onTokenUnitChange: (value: TokenUnit) => void
   showRechargePrice: boolean
   onRechargePriceChange: (value: boolean) => void
+  displayCurrency: PricingCurrency
+  onDisplayCurrencyChange: (value: PricingCurrency) => void
   viewMode: ViewMode
   onViewModeChange: (value: ViewMode) => void
   quotaTypeFilter: string
@@ -134,7 +141,7 @@ function SegmentedControl(props: {
 
         return (
           <Tooltip key={option.value}>
-            <TooltipTrigger render={button}></TooltipTrigger>
+            <TooltipTrigger render={button} />
             <TooltipContent side='bottom' className='text-xs'>
               {option.tooltip}
             </TooltipContent>
@@ -162,6 +169,11 @@ export function PricingToolbar(props: PricingToolbarProps) {
 
   const handleRechargePriceChange = useCallback(
     (value: string) => props.onRechargePriceChange(value === 'recharge'),
+    [props]
+  )
+
+  const handleDisplayCurrencyChange = useCallback(
+    (value: string) => props.onDisplayCurrencyChange(value as PricingCurrency),
     [props]
   )
 
@@ -199,6 +211,15 @@ export function PricingToolbar(props: PricingToolbarProps) {
         </div>
 
         <div className='flex flex-wrap items-center gap-2'>
+          <SegmentedControl
+            options={[
+              { value: 'CNY', label: '¥ CNY' },
+              { value: 'USD', label: '$ USD' },
+            ]}
+            value={props.displayCurrency}
+            onChange={handleDisplayCurrencyChange}
+            ariaLabel={t('Currency')}
+          />
           <div className='hidden items-center gap-2 sm:flex'>
             <SegmentedControl
               options={[

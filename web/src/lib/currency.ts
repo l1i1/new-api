@@ -1,3 +1,4 @@
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -130,13 +131,6 @@ type DisplayMeta =
       quotaPerUnit: number
     }
 
-const CNY_DISPLAY_META: DisplayMeta = {
-  kind: 'currency',
-  symbol: '¥',
-  currencyCode: 'CNY',
-  exchangeRate: 1,
-}
-
 const DEFAULT_FORMAT_OPTIONS: ResolvedCurrencyFormatOptions = {
   digitsLarge: 2,
   digitsSmall: 4,
@@ -169,7 +163,7 @@ export function parseCurrencyDisplayType(
 function getConfig(): CurrencyConfig {
   const { config } = useSystemConfigStore.getState()
   const currency = config?.currency ?? DEFAULT_CURRENCY_CONFIG
-  return {
+  const baseConfig = {
     ...DEFAULT_CURRENCY_CONFIG,
     ...currency,
     quotaPerUnit:
@@ -188,6 +182,13 @@ function getConfig(): CurrencyConfig {
     customCurrencySymbol:
       currency?.customCurrencySymbol?.trim() ||
       DEFAULT_CURRENCY_CONFIG.customCurrencySymbol,
+  }
+  const displayCurrency = useCurrencyDisplayStore.getState().currency
+
+  return {
+    ...baseConfig,
+    displayInCurrency: true,
+    quotaDisplayType: displayCurrency,
   }
 }
 
@@ -634,23 +635,46 @@ export function formatCnyFromUSD(
 ): string {
   if (amountUSD == null || Number.isNaN(amountUSD)) return '-'
 
-  const config = getConfig()
-  const merged = mergeOptions(options)
-  return formatCurrencyValue(
-    amountUSD * config.usdExchangeRate,
-    merged,
-    CNY_DISPLAY_META
-  )
+  return formatBillingCurrencyFromUSD(amountUSD, options)
 }
 
-/** Format an amount already calculated in CNY with a fixed renminbi symbol. */
+/** Format an amount already calculated in CNY in the user's display currency. */
 export function formatCnyAmount(
   amount: number | null | undefined,
   options?: CurrencyFormatOptions
 ): string {
   if (amount == null || Number.isNaN(amount)) return '-'
 
-  return formatCurrencyValue(amount, mergeOptions(options), CNY_DISPLAY_META)
+  const config = getConfig()
+  return formatBillingCurrencyFromUSD(amount / config.usdExchangeRate, options)
+}
+
+/**
+ * Format a payment amount from its immutable provider currency snapshot.
+ *
+ * Only CNY and USD participate in the user's display-currency conversion.
+ * Other ISO currencies stay in their original unit so an order is never
+ * presented as a fabricated CNY/USD settlement.
+ */
+export function formatPaymentAmount(
+  amount: number | null | undefined,
+  paymentCurrency: string | null | undefined,
+  options?: CurrencyFormatOptions
+): string | null {
+  if (amount == null || Number.isNaN(amount)) return '-'
+
+  const sourceCurrency = paymentCurrency?.trim().toUpperCase()
+  if (sourceCurrency === 'CNY') return formatCnyAmount(amount, options)
+  if (sourceCurrency === 'USD') {
+    return formatBillingCurrencyFromUSD(amount, options)
+  }
+  if (!sourceCurrency || !/^[A-Z]{3}$/.test(sourceCurrency)) return null
+
+  return formatCurrencyValue(amount, mergeOptions(options), {
+    kind: 'custom',
+    symbol: sourceCurrency,
+    exchangeRate: 1,
+  })
 }
 
 /** Format raw quota units as CNY for wallet reward displays. */

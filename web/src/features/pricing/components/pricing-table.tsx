@@ -28,7 +28,7 @@ import {
 } from '@/components/data-table'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingCurrency, PricingModel, TokenUnit } from '../types'
 import { usePricingColumns } from './pricing-columns'
 
 export interface PricingTableProps {
@@ -38,6 +38,7 @@ export interface PricingTableProps {
   usdExchangeRate?: number
   tokenUnit?: TokenUnit
   showRechargePrice?: boolean
+  displayCurrency?: PricingCurrency
   selectedGroup?: string
   onModelClick?: (modelName: string) => void
 }
@@ -51,6 +52,7 @@ export function PricingTable(props: PricingTableProps) {
     usdExchangeRate = 1,
     tokenUnit = DEFAULT_TOKEN_UNIT,
     showRechargePrice = false,
+    displayCurrency = 'CNY',
     selectedGroup,
     onModelClick,
   } = props
@@ -65,6 +67,7 @@ export function PricingTable(props: PricingTableProps) {
     priceRate,
     usdExchangeRate,
     showRechargePrice,
+    displayCurrency,
     selectedGroup,
   })
 

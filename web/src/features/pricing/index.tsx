@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import {
   LoadingSkeleton,
@@ -82,6 +83,10 @@ export function Pricing() {
     clearFilters,
     clearSearch,
   } = useFilters(models || [])
+  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
+  const setDisplayCurrency = useCurrencyDisplayStore(
+    (state) => state.setCurrency
+  )
 
   const handleModelClick = useCallback((modelName: string) => {
     setSelectedModelName(modelName)
@@ -130,6 +135,7 @@ export function Pricing() {
           usdExchangeRate={usdExchangeRate}
           tokenUnit={tokenUnit}
           showRechargePrice={showRechargePrice}
+          displayCurrency={displayCurrency}
           selectedGroup={groupFilter}
         />
       )
@@ -142,6 +148,7 @@ export function Pricing() {
         usdExchangeRate={usdExchangeRate}
         tokenUnit={tokenUnit}
         showRechargePrice={showRechargePrice}
+        displayCurrency={displayCurrency}
         selectedGroup={groupFilter}
         onModelClick={handleModelClick}
       />
@@ -234,6 +241,8 @@ export function Pricing() {
                 onTokenUnitChange={setTokenUnit}
                 showRechargePrice={showRechargePrice}
                 onRechargePriceChange={setShowRechargePrice}
+                displayCurrency={displayCurrency}
+                onDisplayCurrencyChange={setDisplayCurrency}
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
                 quotaTypeFilter={quotaTypeFilter}
@@ -280,6 +289,7 @@ export function Pricing() {
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}
               showRechargePrice={showRechargePrice}
+              displayCurrency={displayCurrency}
             />
           )}
         </PageTransition>
