@@ -33,3 +33,28 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	// Non-admin billing fields remain visible.
 	require.Contains(t, parsed, "model_price")
 }
+
+func TestFormatUserLogsSanitizesStreamErrors(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"stream_status": map[string]interface{}{
+			"status":      "error",
+			"end_reason":  "upstream_error",
+			"error_count": 2,
+			"end_error":   "dial tcp 10.0.0.8:443: connection refused",
+			"errors":      []string{"provider response body", "internal panic detail"},
+		},
+	})
+	logs := []*Log{{Other: other}}
+
+	formatUserLogs(logs, 0)
+
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	streamStatus, ok := parsed["stream_status"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "error", streamStatus["status"])
+	require.Equal(t, "upstream_error", streamStatus["end_reason"])
+	require.EqualValues(t, 2, streamStatus["error_count"])
+	require.NotContains(t, streamStatus, "end_error")
+	require.NotContains(t, streamStatus, "errors")
+}
