@@ -3,13 +3,15 @@ package service
 import (
 	"math"
 	"math/rand"
+	"net/http"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -352,8 +354,8 @@ func TestPrepareTieredBillingForSelectedGroupUpdatesReservation(t *testing.T) {
 			EstimatedQuotaAfterGroup:  50_000,
 			QuotaPerUnit:              testQuotaPerUnit,
 		},
-		PriceData: types.PriceData{
-			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.20},
+		PriceData: hosttypes.PriceData{
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 0.20},
 		},
 	}
 
@@ -388,14 +390,16 @@ func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *test
 			EstimatedQuotaBeforeGroup: 500_000,
 			QuotaPerUnit:              testQuotaPerUnit,
 		},
-		PriceData: types.PriceData{
-			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.20},
+		PriceData: hosttypes.PriceData{
+			FreeModel:      true,
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 0.20},
 		},
 	}
 	ctx, _ := gin.CreateTestContext(nil)
 
 	require.Nil(t, PrepareTieredBillingForSelectedGroup(ctx, relayInfo))
 	require.NotNil(t, relayInfo.Billing)
+	assert.False(t, relayInfo.PriceData.FreeModel, "FreeModel must be cleared after switching to a paid group")
 	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
 	assert.Equal(t, 0.20, relayInfo.TieredBillingSnapshot.GroupRatio)
 	assert.Equal(t, 100_000, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
@@ -403,6 +407,105 @@ func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *test
 	userQuota, err := model.GetUserQuota(userID, false)
 	require.NoError(t, err)
 	assert.Equal(t, 400_000, userQuota)
+}
+
+func TestPrepareTieredBillingForSelectedGroupPaidToFreeKeepsFreeModelFalse(t *testing.T) {
+	const expr = `tier("base", p)`
+	billing := &recordingBillingSettler{preConsumedQuota: 50_000}
+	relayInfo := &relaycommon.RelayInfo{
+		Billing:               billing,
+		FinalPreConsumedQuota: 50_000,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                expr,
+			ExprHash:                  billingexpr.ExprHashString(expr),
+			GroupRatio:                0.10,
+			EstimatedQuotaBeforeGroup: 500_000,
+			EstimatedQuotaAfterGroup:  50_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: hosttypes.PriceData{
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 0},
+		},
+	}
+
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+
+	// Pre-consume did happen under the paid group, so FreeModel stays false;
+	// settlement already yields 0 for GroupRatio == 0 and the session refunds.
+	assert.False(t, relayInfo.PriceData.FreeModel)
+	assert.Empty(t, billing.reserveTargets)
+	assert.Equal(t, 50_000, relayInfo.FinalPreConsumedQuota)
+}
+
+func TestPrepareTieredBillingForSelectedGroupReserveInsufficientBalance(t *testing.T) {
+	truncate(t)
+
+	const userID = 701
+	// Covers nothing beyond the already-reserved 50k: the 50k top-up to 100k
+	// must fail with insufficient-quota semantics, not a 500-style DB error.
+	seedUser(t, userID, 20_000)
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:                userID,
+		IsPlayground:          true,
+		FinalPreConsumedQuota: 50_000,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:               "tiered_expr",
+			ExprString:                `tier("base", p)`,
+			ExprHash:                  billingexpr.ExprHashString(`tier("base", p)`),
+			GroupRatio:                0.10,
+			EstimatedQuotaBeforeGroup: 500_000,
+			EstimatedQuotaAfterGroup:  50_000,
+			QuotaPerUnit:              testQuotaPerUnit,
+		},
+		PriceData: hosttypes.PriceData{
+			GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 0.20},
+		},
+	}
+	relayInfo.Billing = &BillingSession{
+		relayInfo:        relayInfo,
+		funding:          &WalletFunding{userId: userID, consumed: 50_000},
+		preConsumedQuota: 50_000,
+	}
+
+	apiErr := PrepareTieredBillingForSelectedGroup(nil, relayInfo)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, types.ErrorCodeInsufficientUserQuota, apiErr.GetErrorCode())
+	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+	assert.True(t, types.IsSkipRetryError(apiErr))
+
+	// The failed top-up must not decrement the wallet or grow the reservation.
+	userQuota, err := model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 20_000, userQuota)
+	assert.Equal(t, 50_000, relayInfo.Billing.GetPreConsumedQuota())
+	assert.Equal(t, 50_000, relayInfo.FinalPreConsumedQuota)
+}
+
+func TestBillingSessionReserveWalletTopUpDecrementsBalance(t *testing.T) {
+	truncate(t)
+
+	const userID = 702
+	seedUser(t, userID, 500_000)
+
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+	}
+	session := &BillingSession{
+		relayInfo:        relayInfo,
+		funding:          &WalletFunding{userId: userID, consumed: 50_000},
+		preConsumedQuota: 50_000,
+	}
+
+	require.NoError(t, session.Reserve(100_000))
+
+	assert.Equal(t, 100_000, session.GetPreConsumedQuota())
+	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
+	userQuota, err := model.GetUserQuota(userID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 450_000, userQuota)
 }
 
 func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {
@@ -430,8 +533,8 @@ func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {
 					EstimatedQuotaAfterGroup:  50_000,
 					QuotaPerUnit:              testQuotaPerUnit,
 				},
-				PriceData: types.PriceData{
-					GroupRatioInfo: types.GroupRatioInfo{GroupRatio: tt.finalGroupRatio},
+				PriceData: hosttypes.PriceData{
+					GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: tt.finalGroupRatio},
 				},
 			}
 
