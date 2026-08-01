@@ -5390,6 +5390,14 @@
     "No model-specific rate limits configured.": "No model-specific rate limits configured.",
     "Model rate limit values are invalid": "Model rate limit values are invalid",
     "Failed to save model rate limits": "Failed to save model rate limits",
-    "Model rate limits saved": "Model rate limits saved"
+    "Model rate limits saved": "Model rate limits saved",
+    "Group model rate limits": "Group model rate limits",
+    "Limit requests per user for each group and model combination by time window.": "Limit requests per user for each group and model combination by time window.",
+    "Save group model limits": "Save group model limits",
+    "Failed to load group model rate limits": "Failed to load group model rate limits",
+    "No group model rate limits configured.": "No group model rate limits configured.",
+    "Group model rate limit values are invalid": "Group model rate limit values are invalid",
+    "Failed to save group model rate limits": "Failed to save group model rate limits",
+    "Group model rate limits saved": "Group model rate limits saved"
   }
 }
