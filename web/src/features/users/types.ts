@@ -128,6 +128,17 @@ export interface UserFormData {
   admin_permissions?: AdminPermissionMatrix
 }
 
+export interface UserModelRateLimit {
+  id?: number
+  user_id?: number
+  model_name: string
+  window_seconds: number
+  max_requests: number
+  enabled: boolean
+  created_at?: number
+  updated_at?: number
+}
+
 export type ManageUserAction =
   | 'promote'
   | 'demote'

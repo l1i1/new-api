@@ -5378,6 +5378,18 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Model Rate Limits": "Model Rate Limits",
+    "Limit requests per user and model by time window.": "Limit requests per user and model by time window.",
+    "Add rule": "Add rule",
+    "Window (seconds)": "Window (seconds)",
+    "Max requests": "Max requests",
+    "Remove rule": "Remove rule",
+    "Save model limits": "Save model limits",
+    "Failed to load model rate limits": "Failed to load model rate limits",
+    "No model-specific rate limits configured.": "No model-specific rate limits configured.",
+    "Model rate limit values are invalid": "Model rate limit values are invalid",
+    "Failed to save model rate limits": "Failed to save model rate limits",
+    "Model rate limits saved": "Model rate limits saved"
   }
 }

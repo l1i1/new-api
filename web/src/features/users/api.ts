@@ -28,6 +28,7 @@ import type {
   ManageUserAction,
   ManageUserQuotaPayload,
   ApiResponse,
+  UserModelRateLimit,
 } from './types'
 
 // ============================================================================
@@ -106,6 +107,21 @@ export async function updateUser(
   data: UserFormData & { id: number }
 ): Promise<ApiResponse<Partial<User>>> {
   const res = await api.put('/api/user/', data)
+  return res.data
+}
+
+export async function getUserModelRateLimits(
+  userId: number
+): Promise<ApiResponse<UserModelRateLimit[]>> {
+  const res = await api.get(`/api/user/${userId}/model-rate-limits`)
+  return res.data
+}
+
+export async function replaceUserModelRateLimits(
+  userId: number,
+  rules: UserModelRateLimit[]
+): Promise<ApiResponse<UserModelRateLimit[]>> {
+  const res = await api.put(`/api/user/${userId}/model-rate-limits`, { rules })
   return res.data
 }
 

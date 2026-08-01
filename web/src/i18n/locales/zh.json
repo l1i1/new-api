@@ -1607,7 +1607,7 @@
     "Enable Waffo Pancake": "启用 Waffo Pancake",
     "Enable WeChat Auth": "启用微信授权",
     "Enable when proxying workers that fetch images over HTTP.": "当代理通过 HTTP 获取图像的 worker 时启用。",
-    "Enabled": "已启用",
+    "Enabled": "启用",
     "Enabled all channels with tag: {{tag}}": "已启用标签「{{tag}}」下的所有渠道",
     "Enabled channels with tag {{tag}}": "启用标签为 {{tag}} 的渠道",
     "Enabled Status": "启用状态",
@@ -5378,6 +5378,18 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Model Rate Limits": "模型调用限制",
+    "Limit requests per user and model by time window.": "按用户和模型限制时间窗口内的请求次数。",
+    "Add rule": "添加规则",
+    "Window (seconds)": "窗口（秒）",
+    "Max requests": "最大请求数",
+    "Remove rule": "删除规则",
+    "Save model limits": "保存模型限制",
+    "Failed to load model rate limits": "加载模型调用限制失败",
+    "No model-specific rate limits configured.": "尚未配置模型调用限制。",
+    "Model rate limit values are invalid": "模型调用限制参数无效",
+    "Failed to save model rate limits": "保存模型调用限制失败",
+    "Model rate limits saved": "模型调用限制已保存"
   }
 }
