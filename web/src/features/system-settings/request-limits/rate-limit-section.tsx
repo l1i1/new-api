@@ -45,6 +45,7 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import { GroupModelRateLimitsSection } from './group-model-rate-limits-section'
 import { RateLimitVisualEditor } from './rate-limit-visual-editor'
 
 const isValidJSON = (value: string | undefined) => {
@@ -319,6 +320,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
           />
         </SettingsForm>
       </Form>
+      <GroupModelRateLimitsSection />
     </SettingsSection>
   )
 }
