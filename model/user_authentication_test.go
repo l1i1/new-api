@@ -39,6 +39,9 @@ func TestHardDeleteUserFailsClosedWhenAuthFenceCannotPublish(t *testing.T) {
 		TokenHash: "hard-delete-auth-flow", Purpose: AuthFlowPurposeTwoFALogin,
 		UserId: user.Id, ExpiresAt: time.Now().Add(time.Minute),
 	}).Error)
+	require.NoError(t, DB.Create(&UserModelRateLimit{
+		UserId: user.Id, ModelName: "gpt-hard-delete", WindowSeconds: 60, MaxRequests: 10, Enabled: true,
+	}).Error)
 
 	oldRedisEnabled, oldRDB := common.RedisEnabled, common.RDB
 	common.RedisEnabled = true
@@ -67,6 +70,7 @@ func TestHardDeleteUserFailsClosedWhenAuthFenceCannotPublish(t *testing.T) {
 		&UserSession{},
 		&AuthFlow{},
 		&ExternalIdentityClaim{},
+		&UserModelRateLimit{},
 	} {
 		require.NoError(t, DB.Unscoped().Model(record).Where("user_id = ?", user.Id).Count(&count).Error)
 		assert.EqualValues(t, 1, count)
@@ -99,6 +103,9 @@ func TestHardDeleteUserPublishesTombstoneAndPurgesAuthenticationData(t *testing.
 		TokenHash: "hard-delete-success-flow", Purpose: AuthFlowPurposeTwoFALogin,
 		UserId: user.Id, ExpiresAt: time.Now().Add(time.Minute),
 	}).Error)
+	require.NoError(t, DB.Create(&UserModelRateLimit{
+		UserId: user.Id, ModelName: "gpt-hard-delete", WindowSeconds: 60, MaxRequests: 10, Enabled: true,
+	}).Error)
 	require.NoError(t, populateUserCache(user))
 	// Administrative hard deletion commonly targets an already soft-deleted
 	// user; the shared version increment must therefore query unscoped.
@@ -118,6 +125,7 @@ func TestHardDeleteUserPublishesTombstoneAndPurgesAuthenticationData(t *testing.
 		&UserSession{},
 		&AuthFlow{},
 		&ExternalIdentityClaim{},
+		&UserModelRateLimit{},
 	} {
 		require.NoError(t, DB.Unscoped().Model(record).Where("user_id = ?", user.Id).Count(&count).Error)
 		assert.Zero(t, count)
