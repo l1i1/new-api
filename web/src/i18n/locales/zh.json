@@ -5391,13 +5391,20 @@
     "Model rate limit values are invalid": "模型调用限制参数无效",
     "Failed to save model rate limits": "保存模型调用限制失败",
     "Model rate limits saved": "模型调用限制已保存",
-    "Group model rate limits": "Group model rate limits",
-    "Limit requests per user for each group and model combination by time window.": "Limit requests per user for each group and model combination by time window.",
-    "Save group model limits": "Save group model limits",
-    "Failed to load group model rate limits": "Failed to load group model rate limits",
-    "No group model rate limits configured.": "No group model rate limits configured.",
-    "Group model rate limit values are invalid": "Group model rate limit values are invalid",
-    "Failed to save group model rate limits": "Failed to save group model rate limits",
-    "Group model rate limits saved": "Group model rate limits saved"
+    "Group model rate limits": "分组模型调用限制",
+    "Limit requests per user for each group and model combination by time window.": "按分组和模型组合限制每个用户的时间窗口请求次数。",
+    "Save group model limits": "保存分组模型限制",
+    "Failed to load group model rate limits": "加载分组模型调用限制失败",
+    "No group model rate limits configured.": "尚未配置分组模型调用限制。",
+    "Group model rate limit values are invalid": "分组模型调用限制参数无效",
+    "Failed to save group model rate limits": "保存分组模型调用限制失败",
+    "Group model rate limits saved": "分组模型调用限制已保存",
+    "User model rate limits": "用户模型调用限制",
+    "Model rate limits for user": "用户模型调用限制",
+    "Change user": "切换用户",
+    "Select a user to manage their model rate limits.": "选择用户以管理其模型调用限制。",
+    "Search users": "搜索用户",
+    "Search by username or display name...": "按用户名或显示名称搜索...",
+    "No users found": "未找到用户"
   }
 }

@@ -5398,6 +5398,13 @@
     "No group model rate limits configured.": "No group model rate limits configured.",
     "Group model rate limit values are invalid": "Group model rate limit values are invalid",
     "Failed to save group model rate limits": "Failed to save group model rate limits",
-    "Group model rate limits saved": "Group model rate limits saved"
+    "Group model rate limits saved": "Group model rate limits saved",
+    "User model rate limits": "User model rate limits",
+    "Model rate limits for user": "Model rate limits for user",
+    "Change user": "Change user",
+    "Select a user to manage their model rate limits.": "Select a user to manage their model rate limits.",
+    "Search users": "Search users",
+    "Search by username or display name...": "Search by username or display name...",
+    "No users found": "No users found"
   }
 }
