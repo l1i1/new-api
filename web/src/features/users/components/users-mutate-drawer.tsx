@@ -90,7 +90,6 @@ import {
   transformUserToFormDefaults,
 } from '../lib'
 import type { User } from '../types'
-import { UserModelRateLimitsSection } from './user-model-rate-limits-section'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -451,12 +450,6 @@ export function UsersMutateDrawer({
                       </FormItem>
                     )}
                   />
-                </SideDrawerSection>
-              )}
-
-              {isUpdate && currentRow && (
-                <SideDrawerSection>
-                  <UserModelRateLimitsSection userId={currentRow.id} />
                 </SideDrawerSection>
               )}
 
