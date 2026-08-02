@@ -22,6 +22,7 @@ import { CheckinSettingsSection } from '../general/checkin-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
+import { InvoiceSettingsSection } from './invoice-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
@@ -198,6 +199,19 @@ const BILLING_SECTIONS = [
           enabled: settings['checkin_setting.enabled'],
           minQuota: settings['checkin_setting.min_quota'],
           maxQuota: settings['checkin_setting.max_quota'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'invoice',
+    titleKey: 'Invoice Settings',
+    build: (settings: BillingSettings) => (
+      <InvoiceSettingsSection
+        defaultValues={{
+          enabled: settings.InvoiceEnabled,
+          notice: settings.InvoiceNotice,
+          minAmount: settings.InvoiceMinAmount,
         }}
       />
     ),

@@ -173,6 +173,28 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestCreemPay)
 			subscriptionRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestWaffoPancakePay)
 		}
+
+		// Invoice applications (self-service invoicing)
+		invoiceRoute := apiRouter.Group("/invoice")
+		invoiceRoute.Use(middleware.UserAuth())
+		{
+			invoiceRoute.GET("/options", middleware.DisableCache(), controller.GetInvoiceOptions)
+			invoiceRoute.GET("/", controller.GetUserInvoices)
+			invoiceRoute.POST("/", middleware.CriticalRateLimit(), controller.CreateInvoice)
+			invoiceRoute.GET("/:id", controller.GetInvoiceDetail)
+			invoiceRoute.POST("/:id/cancel", middleware.CriticalRateLimit(), controller.CancelInvoice)
+		}
+		invoiceAdminRoute := apiRouter.Group("/invoice/admin")
+		invoiceAdminRoute.Use(middleware.AdminAuth())
+		{
+			invoiceAdminRoute.GET("/", controller.GetAllInvoices)
+			invoiceAdminRoute.GET("/:id", controller.GetInvoiceDetailAdmin)
+			invoiceAdminRoute.POST("/:id/approve", controller.ApproveInvoice)
+			invoiceAdminRoute.POST("/:id/start-issue", controller.StartIssueInvoice)
+			invoiceAdminRoute.POST("/:id/complete-issue", controller.CompleteIssueInvoice)
+			invoiceAdminRoute.POST("/:id/reject", controller.RejectInvoice)
+		}
+
 		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
 		subscriptionAdminRoute.Use(middleware.AdminAuth())
 		{
