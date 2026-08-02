@@ -188,7 +188,8 @@ export function InvoiceSettingsSection({
                   <FormDescription>
                     {t(
                       'This notice is displayed to users on the invoice application page'
-                    )}
+                    )}{' '}
+                    {t('Supports Markdown and HTML')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

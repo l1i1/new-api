@@ -24,6 +24,8 @@ import type {
   InvoiceCreateResponse,
   InvoiceDetailResponse,
   InvoiceOptionsResponse,
+  InvoiceProfile,
+  InvoiceProfileResponse,
   InvoiceRecordsResponse,
 } from './types'
 
@@ -37,6 +39,24 @@ import type {
  */
 export async function getInvoiceOptions(): Promise<InvoiceOptionsResponse> {
   const res = await api.get('/api/invoice/options', {
+    skipBusinessError: true,
+  })
+  return res.data
+}
+
+/** Get the current user's reusable billing information. */
+export async function getInvoiceProfile(): Promise<InvoiceProfileResponse> {
+  const res = await api.get('/api/invoice/profile', {
+    skipBusinessError: true,
+  })
+  return res.data
+}
+
+/** Save the current user's reusable billing information. */
+export async function saveInvoiceProfile(
+  profile: InvoiceProfile
+): Promise<InvoiceProfileResponse> {
+  const res = await api.put('/api/invoice/profile', profile, {
     skipBusinessError: true,
   })
   return res.data

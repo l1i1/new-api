@@ -27,6 +27,10 @@ export const STATIC_I18N_KEYS = [
   'Docs',
   'About',
 
+  // Sidebar navigation
+  'Invoices',
+  'Invoice Review',
+
   // Sidebar views (drill-in workspaces)
   'System Settings',
   'Back to Dashboard',

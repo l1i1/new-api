@@ -28,11 +28,11 @@ import { Button } from '@/components/ui/button'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import { getAdminInvoices } from '../api'
 import { getInvoiceStatusConfig, INVOICE_STATUS_OPTIONS } from '../lib/status'
-import type { Invoice } from '../types'
+import type { AdminInvoiceListItem } from '../types'
 
 interface AdminInvoicesTableProps {
   refreshTrigger: number
-  onViewDetail: (invoice: Invoice) => void
+  onViewDetail: (invoice: AdminInvoiceListItem) => void
 }
 
 export function AdminInvoicesTable({ refreshTrigger, onViewDetail }: AdminInvoicesTableProps) {
@@ -64,7 +64,7 @@ export function AdminInvoicesTable({ refreshTrigger, onViewDetail }: AdminInvoic
     placeholderData: (previousData) => previousData,
   })
 
-  const columns: ColumnDef<Invoice>[] = [
+  const columns: ColumnDef<AdminInvoiceListItem>[] = [
     {
       accessorKey: 'id',
       header: t('ID'),
@@ -88,12 +88,6 @@ export function AdminInvoicesTable({ refreshTrigger, onViewDetail }: AdminInvoic
       header: t('Amount'),
       meta: { mobileHidden: true },
       cell: ({ row }) => <span className='font-semibold tabular-nums'>{formatNumber(row.original.total_amount)} {row.original.currency}</span>,
-    },
-    {
-      accessorKey: 'email',
-      header: t('Email'),
-      meta: { mobileHidden: true },
-      cell: ({ row }) => <span className='block max-w-[200px] truncate text-muted-foreground'>{row.original.email || '-'}</span>,
     },
     {
       accessorKey: 'status',

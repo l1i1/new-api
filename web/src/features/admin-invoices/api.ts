@@ -69,12 +69,22 @@ export async function getAdminInvoiceDetail(
 /**
  * Apply an admin state transition to an invoice application.
  * The note is optional except for rejection, where the backend requires it.
+ * Completing issuance requires a real invoice PDF file, which is sent directly
+ * to the recipient and is not retained by the service.
  */
 export async function updateInvoiceStatus(
   id: number,
   action: InvoiceAction,
-  note: string
+  note: string,
+  pdfFile?: File | null
 ): Promise<ApiResponse> {
-  const res = await api.post(`/api/invoice/admin/${id}/${action}`, { note })
+  const payload = new FormData()
+  payload.append('note', note)
+  if (pdfFile) {
+    payload.append('file', pdfFile)
+  }
+  const res = await api.post(`/api/invoice/admin/${id}/${action}`, payload, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
   return res.data
 }

@@ -258,8 +258,10 @@ func UpdateOption(c *gin.Context) {
 		err = operation_setting.ValidateToolPricesJSON(option.Value.(string))
 	case "InvoiceMinAmount":
 		value, convErr := strconv.ParseFloat(option.Value.(string), 64)
-		if convErr != nil || value < 0 {
-			common.ApiErrorMsg(c, "开票最低金额必须是非负数字")
+		// NaN, +Inf, -Inf and negative values are rejected; the read path also
+		// fails closed to zero for any value that slips through.
+		if convErr != nil || !model.ValidInvoiceMinAmount(value) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidInput)
 			return
 		}
 		if err != nil {

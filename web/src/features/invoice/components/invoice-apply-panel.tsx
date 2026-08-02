@@ -17,16 +17,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import type { TFunction } from 'i18next'
 import { useCallback, useEffect, useState } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
-import type { TFunction } from 'i18next'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { RichContent } from '@/components/rich-content'
 import {
   Form,
   FormControl,
@@ -36,6 +37,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -46,16 +48,38 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { getUserProfile } from '@/features/profile/api'
+import { EmailBindDialog } from '@/features/profile/components/dialogs/email-bind-dialog'
 import { formatPaymentAmount } from '@/lib/currency'
+import { isLikelyHtml } from '@/lib/content-format'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { createInvoice, getInvoiceOptions } from '../api'
-import type { InvoiceableOrder, InvoiceOptions } from '../types'
+import {
+  createInvoice,
+  getInvoiceOptions,
+  getInvoiceProfile,
+  saveInvoiceProfile,
+} from '../api'
+import {
+  canSubmitInvoice,
+  hasMixedCurrency,
+  isBelowMinimum,
+  resolveDefaultEmail,
+  sumOrderAmounts,
+} from '../lib/apply'
+import type {
+  InvoiceableOrder,
+  InvoiceOptions,
+  InvoiceProfile,
+  InvoiceType,
+} from '../types'
 
 interface InvoiceApplyPanelProps {
   onSubmitted: () => void
 }
 interface InvoiceApplyFormValues {
+  invoice_type: InvoiceType
   reason: string
   remark: string
   email: string
@@ -68,6 +92,7 @@ interface InvoiceApplyFormValues {
 }
 
 const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
+  invoice_type: 'company',
   reason: '',
   remark: '',
   email: '',
@@ -80,17 +105,28 @@ const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
 }
 
 function getInvoiceApplyFormSchema(t: TFunction) {
-  return z.object({
-    reason: z.string().trim().min(1, t('Invoice reason is required')),
-    remark: z.string().trim(),
-    email: z.string().trim().email(t('Please enter a valid email address')),
-    title: z.string().trim().min(1, t('Invoice title is required')),
-    tax_id: z.string().trim().min(1, t('Tax ID is required')),
-    phone: z.string().trim(),
-    address: z.string().trim(),
-    bank_name: z.string().trim(),
-    bank_account: z.string().trim(),
-  })
+  return z
+    .object({
+      invoice_type: z.enum(['individual', 'company']),
+      reason: z.string().trim(),
+      remark: z.string().trim(),
+      email: z.string().trim().email(t('Please enter a valid email address')),
+      title: z.string().trim().min(1, t('Invoice title is required')),
+      tax_id: z.string().trim().min(1, t('Tax ID is required')),
+      phone: z.string().trim(),
+      address: z.string().trim(),
+      bank_name: z.string().trim(),
+      bank_account: z.string().trim(),
+    })
+    .superRefine((values, context) => {
+      if (values.invoice_type === 'individual' && values.reason === '') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['reason'],
+          message: t('Individual invoice reason is required'),
+        })
+      }
+    })
 }
 
 function formatInvoiceAmount(amount: number, currency: string): string {
@@ -105,7 +141,12 @@ function formatInvoiceAmount(amount: number, currency: string): string {
 
 export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const { t } = useTranslation()
+  const authEmail = useAuthStore((state) => state.auth.user?.email?.trim() ?? '')
   const [options, setOptions] = useState<InvoiceOptions | null>(null)
+  const [profile, setProfile] = useState<InvoiceProfile | null>(null)
+  const [accountEmail, setAccountEmail] = useState(authEmail)
+  const [accountEmailLoaded, setAccountEmailLoaded] = useState(false)
+  const [bindEmailOpen, setBindEmailOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     new Set<number>()
@@ -134,8 +175,59 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
     void fetchOptions()
   }, [fetchOptions])
 
+  const fetchProfile = useCallback(async () => {
+    try {
+      const response = await getInvoiceProfile()
+      if (response.success && response.data) {
+        setProfile(response.data)
+      } else if (response.message) {
+        toast.error(response.message)
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to load invoice profile:', error)
+      toast.error(t('Failed to load invoice information'))
+    }
+  }, [t])
+
+  useEffect(() => {
+    void fetchProfile()
+  }, [fetchProfile])
+
+  const fetchAccountEmail = useCallback(async () => {
+    try {
+      const response = await getUserProfile()
+      if (response.success && response.data) {
+        const email = response.data.email?.trim() ?? ''
+        setAccountEmail(email)
+        if (email) setBindEmailOpen(false)
+      } else {
+        setAccountEmail(authEmail)
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to load account email:', error)
+      setAccountEmail(authEmail)
+      if (!authEmail) toast.error(t('Failed to load profile'))
+    } finally {
+      setAccountEmailLoaded(true)
+    }
+  }, [authEmail, t])
+
+  useEffect(() => {
+    void fetchAccountEmail()
+  }, [fetchAccountEmail])
+
+  useEffect(() => {
+    if (options?.enabled && accountEmailLoaded && !accountEmail) {
+      setBindEmailOpen(true)
+    }
+  }, [accountEmail, accountEmailLoaded, options?.enabled])
+
   const orders = options?.orders ?? []
-  const selectedOrders = orders.filter((order) => selectedIds.has(order.order_id))
+  const selectedOrders = orders.filter((order) =>
+    selectedIds.has(order.order_id)
+  )
 
   const toggleOrder = useCallback((orderId: number) => {
     setSelectedIds((prev) => {
@@ -150,7 +242,8 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   }, [])
 
   const allPageSelected =
-    orders.length > 0 && orders.every((order) => selectedIds.has(order.order_id))
+    orders.length > 0 &&
+    orders.every((order) => selectedIds.has(order.order_id))
   const somePageSelected = orders.some((order) =>
     selectedIds.has(order.order_id)
   )
@@ -167,23 +260,19 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
     })
   }
 
-  const selectedCurrencies = new Set(
-    selectedOrders.map((order) => order.currency)
-  )
-  const hasMixedCurrency = selectedCurrencies.size > 1
+  const mixedCurrency = hasMixedCurrency(selectedOrders)
   const selectedCurrency = selectedOrders[0]?.currency ?? ''
-  const selectedTotal = selectedOrders.reduce(
-    (sum, order) => sum + order.amount,
-    0
-  )
+  const selectedTotal = sumOrderAmounts(selectedOrders)
   const minAmount = options?.min_amount ?? 0
-  const belowMinAmount =
-    minAmount > 0 && selectedOrders.length > 0 && selectedTotal < minAmount
-  const submitDisabled =
-    submitting ||
-    selectedOrders.length === 0 ||
-    hasMixedCurrency ||
-    belowMinAmount
+  const belowMinAmount = isBelowMinimum(selectedTotal, minAmount)
+  const accountEmailUnavailable = !accountEmailLoaded || !accountEmail
+  const submitDisabled = !canSubmitInvoice({
+    selectedCount: selectedOrders.length,
+    mixedCurrency,
+    belowMinimum: belowMinAmount,
+    accountEmailUnavailable,
+    submitting,
+  })
 
   async function onSubmit(values: InvoiceApplyFormValues) {
     if (selectedOrders.length === 0) return
@@ -195,6 +284,7 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
           order_type: order.order_type,
           order_id: order.order_id,
         })),
+        invoice_type: values.invoice_type,
         title: values.title,
         tax_id: values.tax_id,
         phone: values.phone,
@@ -207,6 +297,29 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
       })
       if (response.success && response.data) {
         toast.success(t('Invoice application submitted successfully'))
+        try {
+          const profileResponse = await saveInvoiceProfile({
+            invoice_type: values.invoice_type,
+            title: values.title,
+            tax_id: values.tax_id,
+            phone: values.phone,
+            address: values.address,
+            bank_name: values.bank_name,
+            bank_account: values.bank_account,
+            email: values.email,
+          })
+          if (profileResponse.success && profileResponse.data) {
+            setProfile(profileResponse.data)
+          } else {
+            toast.error(
+              profileResponse.message || t('Failed to save invoice information')
+            )
+          }
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.error('Failed to save invoice information:', error)
+          toast.error(t('Failed to save invoice information'))
+        }
         setSelectedIds(new Set<number>())
         onSubmitted()
       } else {
@@ -264,13 +377,13 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
         </span>
         <span className='text-sm font-semibold'>
           {t('Total')}:{' '}
-          {hasMixedCurrency
+          {mixedCurrency
             ? formatNumber(selectedTotal)
             : formatInvoiceAmount(selectedTotal, selectedCurrency)}
         </span>
       </div>
 
-      {hasMixedCurrency && (
+      {mixedCurrency && (
         <Alert variant='destructive'>
           <AlertDescription>
             {t(
@@ -280,30 +393,55 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
         </Alert>
       )}
 
-      {!hasMixedCurrency && belowMinAmount && (
+      {!mixedCurrency && belowMinAmount && (
         <Alert variant='destructive'>
           <AlertDescription>
-            {t('The selected amount is below the minimum invoice amount of {{amount}}', {
-              amount: formatInvoiceAmount(minAmount, selectedCurrency),
-            })}
+            {t(
+              'The selected amount is below the minimum invoice amount of {{amount}}',
+              {
+                amount: formatInvoiceAmount(minAmount, selectedCurrency),
+              }
+            )}
           </AlertDescription>
         </Alert>
       )}
 
       <InvoiceApplyForm
+        accountEmail={accountEmail}
+        initialProfile={profile}
         submitting={submitting}
         submitDisabled={submitDisabled}
         onSubmit={onSubmit}
+      />
+
+      <EmailBindDialog
+        open={bindEmailOpen}
+        onOpenChange={(open) => {
+          if (open || !accountEmail) {
+            setBindEmailOpen(true)
+          } else {
+            setBindEmailOpen(false)
+          }
+        }}
+        currentEmail={accountEmail || undefined}
+        onSuccess={() => void fetchAccountEmail()}
       />
     </div>
   )
 }
 
 function InvoiceNotice({ notice }: { notice: string }) {
+  const contentIsHtml = isLikelyHtml(notice)
+
   return (
     <Alert>
-      <AlertDescription className='whitespace-pre-line'>
-        {notice}
+      <AlertDescription>
+        <RichContent
+          content={notice}
+          mode={contentIsHtml ? 'html' : 'markdown'}
+          breaks
+          className='prose-sm dark:prose-invert'
+        />
       </AlertDescription>
     </Alert>
   )
@@ -349,7 +487,10 @@ function InvoiceOrderSelectTable({
       <TableBody>
         {orders.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={5} className='text-muted-foreground text-center'>
+            <TableCell
+              colSpan={5}
+              className='text-muted-foreground text-center'
+            >
               {t('No invoiceable orders yet')}
             </TableCell>
           </TableRow>
@@ -380,22 +521,87 @@ function InvoiceOrderSelectTable({
 }
 
 interface InvoiceApplyFormProps {
+  accountEmail: string
+  initialProfile: InvoiceProfile | null
   submitting: boolean
   submitDisabled: boolean
   onSubmit: (values: InvoiceApplyFormValues) => void
 }
 
 function InvoiceApplyForm({
+  accountEmail,
+  initialProfile,
   submitting,
   submitDisabled,
   onSubmit,
 }: InvoiceApplyFormProps) {
   const { t } = useTranslation()
   const schema = getInvoiceApplyFormSchema(t)
+  const [savingProfile, setSavingProfile] = useState(false)
   const form = useForm<InvoiceApplyFormValues>({
-    resolver: zodResolver(schema) as unknown as Resolver<InvoiceApplyFormValues>,
-    defaultValues: INVOICE_APPLY_DEFAULT_VALUES,
+    resolver: zodResolver(
+      schema
+    ) as unknown as Resolver<InvoiceApplyFormValues>,
+    defaultValues: {
+      ...INVOICE_APPLY_DEFAULT_VALUES,
+      email: accountEmail,
+    },
   })
+  const invoiceType = form.watch('invoice_type')
+
+  useEffect(() => {
+    if (!initialProfile && !accountEmail) return
+    if (form.formState.isDirty) return
+
+    const currentValues = form.getValues()
+    form.reset({
+      ...INVOICE_APPLY_DEFAULT_VALUES,
+      ...initialProfile,
+      invoice_type: initialProfile?.invoice_type || 'company',
+      // The account email is the current default; a historically saved
+      // delivery email is only used as a fallback when there is no account
+      // email, so a newly bound account email is never overridden silently.
+      email: resolveDefaultEmail(accountEmail, initialProfile?.email ?? ''),
+      reason: currentValues.reason,
+      remark: currentValues.remark,
+    })
+  }, [accountEmail, form, initialProfile])
+
+  async function handleSaveProfile() {
+    const valid = await form.trigger([
+      'invoice_type',
+      'title',
+      'tax_id',
+      'email',
+    ])
+    if (!valid) return
+
+    const values = form.getValues()
+    setSavingProfile(true)
+    try {
+      const response = await saveInvoiceProfile({
+        invoice_type: values.invoice_type,
+        title: values.title,
+        tax_id: values.tax_id,
+        phone: values.phone,
+        address: values.address,
+        bank_name: values.bank_name,
+        bank_account: values.bank_account,
+        email: values.email,
+      })
+      if (response.success) {
+        toast.success(t('Invoice information saved successfully'))
+      } else {
+        toast.error(response.message || t('Failed to save invoice information'))
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to save invoice information:', error)
+      toast.error(t('Failed to save invoice information'))
+    } finally {
+      setSavingProfile(false)
+    }
+  }
 
   return (
     <Form {...form}>
@@ -404,6 +610,54 @@ function InvoiceApplyForm({
         className='space-y-4'
         autoComplete='off'
       >
+        <FormField
+          control={form.control}
+          name='invoice_type'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invoice Type')}</FormLabel>
+              <FormControl>
+                <RadioGroup
+                  value={field.value}
+                  onValueChange={(value) => {
+                    field.onChange(value as InvoiceType)
+                    form.clearErrors('reason')
+                  }}
+                  className='flex flex-wrap gap-4'
+                >
+                  <div className='flex items-center gap-2'>
+                    <RadioGroupItem
+                      id='invoice-type-company'
+                      value='company'
+                      disabled={submitting || savingProfile}
+                    />
+                    <FormLabel
+                      htmlFor='invoice-type-company'
+                      className='font-normal'
+                    >
+                      {t('Company')}
+                    </FormLabel>
+                  </div>
+                  <div className='flex items-center gap-2'>
+                    <RadioGroupItem
+                      id='invoice-type-individual'
+                      value='individual'
+                      disabled={submitting || savingProfile}
+                    />
+                    <FormLabel
+                      htmlFor='invoice-type-individual'
+                      className='font-normal'
+                    >
+                      {t('Individual')}
+                    </FormLabel>
+                  </div>
+                </RadioGroup>
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
         <div className='grid gap-4 sm:grid-cols-2'>
           <FormField
             control={form.control}
@@ -414,7 +668,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Company or individual name')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -431,25 +685,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Tax registration number')}
-                    disabled={submitting}
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name='email'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Invoice Email')}</FormLabel>
-                <FormControl>
-                  <Input
-                    type='email'
-                    placeholder={t('Where to receive the invoice')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -466,7 +702,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Contact phone (optional)')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -483,7 +719,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Billing address (optional)')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -500,7 +736,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Opening bank (optional)')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -517,7 +753,7 @@ function InvoiceApplyForm({
                 <FormControl>
                   <Input
                     placeholder={t('Bank account number (optional)')}
-                    disabled={submitting}
+                    disabled={submitting || savingProfile}
                     {...field}
                   />
                 </FormControl>
@@ -532,11 +768,14 @@ function InvoiceApplyForm({
           name='reason'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>{t('Invoice Reason')}</FormLabel>
+              <FormLabel>
+                {t('Invoice Reason')}
+                {invoiceType === 'individual' ? ` (${t('required')})` : ''}
+              </FormLabel>
               <FormControl>
                 <Textarea
                   placeholder={t('Why do you need this invoice?')}
-                  disabled={submitting}
+                  disabled={submitting || savingProfile}
                   rows={3}
                   {...field}
                 />
@@ -555,7 +794,7 @@ function InvoiceApplyForm({
               <FormControl>
                 <Textarea
                   placeholder={t('Anything we should know (optional)')}
-                  disabled={submitting}
+                  disabled={submitting || savingProfile}
                   rows={2}
                   {...field}
                 />
@@ -565,16 +804,39 @@ function InvoiceApplyForm({
           )}
         />
 
-        <div className='flex justify-end'>
-          <Button type='submit' disabled={submitDisabled}>
-            {submitting
-              ? t('Submitting...')
-              : t('Submit Invoice Application')}
+        <FormField
+          control={form.control}
+          name='email'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invoice Email')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='email'
+                  placeholder={accountEmail || t('Email Address')}
+                  disabled={submitting || savingProfile}
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className='flex flex-wrap justify-end gap-2'>
+          <Button
+            type='button'
+            variant='outline'
+            disabled={submitting || savingProfile}
+            onClick={() => void handleSaveProfile()}
+          >
+            {savingProfile ? t('Saving...') : t('Save Invoice Information')}
+          </Button>
+          <Button type='submit' disabled={submitDisabled || savingProfile}>
+            {submitting ? t('Submitting...') : t('Submit Invoice Application')}
           </Button>
         </div>
       </form>
     </Form>
   )
 }
-
-

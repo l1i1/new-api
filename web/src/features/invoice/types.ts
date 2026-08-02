@@ -22,6 +22,8 @@ For commercial licensing, please contact support@quantumnous.com
 
 export type InvoiceOrderType = 'topup'
 
+export type InvoiceType = 'individual' | 'company'
+
 export type InvoiceStatus =
   | 'pending'
   | 'approved'
@@ -59,6 +61,7 @@ export interface InvoiceOptions {
 export interface Invoice {
   id: number
   user_id: number
+  invoice_type: InvoiceType
   title: string
   tax_id: string
   phone: string
@@ -99,9 +102,22 @@ export interface InvoiceOrderRef {
   order_id: number
 }
 
+/** Reusable billing information saved for the current user. */
+export interface InvoiceProfile {
+  invoice_type: InvoiceType
+  title: string
+  tax_id: string
+  phone: string
+  address: string
+  bank_name: string
+  bank_account: string
+  email: string
+}
+
 /** Body of POST /api/user/invoice. */
 export interface InvoiceCreateRequest {
   orders: InvoiceOrderRef[]
+  invoice_type: InvoiceType
   title: string
   tax_id: string
   phone: string
@@ -120,6 +136,7 @@ export interface InvoiceRecordsData {
 }
 
 export type InvoiceOptionsResponse = ApiResponse<InvoiceOptions>
+export type InvoiceProfileResponse = ApiResponse<InvoiceProfile>
 export type InvoiceCreateResponse = ApiResponse<Invoice>
 export type InvoiceRecordsResponse = ApiResponse<InvoiceRecordsData>
 export type InvoiceDetailResponse = ApiResponse<InvoiceDetail>

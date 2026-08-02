@@ -75,7 +75,20 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 	return client, nil
 }
 
+// EmailAttachment is an in-memory MIME attachment. Callers should provide a
+// safe filename and a matching content type; the message builder handles MIME
+// encoding and line wrapping.
+type EmailAttachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
 func SendEmail(subject string, receiver string, content string) error {
+	return SendEmailWithAttachments(subject, receiver, content, nil)
+}
+
+func SendEmailWithAttachments(subject string, receiver string, content string, attachments []EmailAttachment) error {
 	if SMTPFrom == "" { // for compatibility
 		SMTPFrom = SMTPAccount
 	}
@@ -87,13 +100,53 @@ func SendEmail(subject string, receiver string, content string) error {
 		return fmt.Errorf("SMTP 服务器未配置")
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
-	mail := []byte(fmt.Sprintf("To: %s\r\n"+
-		"From: %s <%s>\r\n"+
-		"Subject: %s\r\n"+
-		"Date: %s\r\n"+
-		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
-		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+	var message string
+	if len(attachments) == 0 {
+		message = fmt.Sprintf("To: %s\r\n"+
+			"From: %s <%s>\r\n"+
+			"Subject: %s\r\n"+
+			"Date: %s\r\n"+
+			"Message-ID: %s\r\n"+ // 添加 Message-ID 头
+			"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
+			receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content)
+	} else {
+		boundary := fmt.Sprintf("=_new_api_%s", strings.Trim(id, "<>"))
+		var body strings.Builder
+		body.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		body.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+		body.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		body.WriteString(content)
+		body.WriteString("\r\n")
+		for _, attachment := range attachments {
+			if len(attachment.Data) == 0 {
+				continue
+			}
+			filename := strings.ReplaceAll(attachment.Filename, `"`, "")
+			if filename == "" {
+				filename = "attachment.bin"
+			}
+			contentType := attachment.ContentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+			body.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+			body.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", contentType, filename))
+			body.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", filename))
+			body.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+			body.WriteString(wrapBase64(attachment.Data))
+			body.WriteString("\r\n")
+		}
+		body.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+		message = fmt.Sprintf("To: %s\r\n"+
+			"From: %s <%s>\r\n"+
+			"Subject: %s\r\n"+
+			"Date: %s\r\n"+
+			"Message-ID: %s\r\n"+
+			"MIME-Version: 1.0\r\n"+
+			"Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n%s",
+			receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, boundary, body.String())
+	}
+	mail := []byte(message)
 	auth := getSMTPAuth()
 	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
 	to := strings.Split(receiver, ";")
@@ -130,7 +183,23 @@ func SendEmail(subject string, receiver string, content string) error {
 	}
 	err = client.Quit()
 	if err != nil {
-		SysError(fmt.Sprintf("failed to send email to %s: %v", receiver, err))
+		// Log the failure without echoing the recipient address (privacy).
+		SysError(fmt.Sprintf("failed to send email after quit: %v", err))
 	}
 	return err
+}
+
+func wrapBase64(data []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var wrapped strings.Builder
+	for len(encoded) > 0 {
+		lineLength := 76
+		if len(encoded) < lineLength {
+			lineLength = len(encoded)
+		}
+		wrapped.WriteString(encoded[:lineLength])
+		wrapped.WriteString("\r\n")
+		encoded = encoded[lineLength:]
+	}
+	return wrapped.String()
 }

@@ -131,12 +131,21 @@ export function InvoiceDetailDialog({
           </div>
 
           <div className='grid gap-3 sm:grid-cols-2'>
+            <DetailField
+              label={t('Invoice Type')}
+              value={t(
+                detail.invoice_type === 'individual' ? 'Individual' : 'Company'
+              )}
+            />
             <DetailField label={t('Invoice Title')} value={detail.title} />
             <DetailField label={t('Tax ID')} value={detail.tax_id} />
             <DetailField label={t('Phone')} value={detail.phone} />
             <DetailField label={t('Address')} value={detail.address} />
             <DetailField label={t('Bank Name')} value={detail.bank_name} />
-            <DetailField label={t('Bank Account')} value={detail.bank_account} />
+            <DetailField
+              label={t('Bank Account')}
+              value={detail.bank_account}
+            />
             <DetailField label={t('Invoice Email')} value={detail.email} />
             <DetailField
               label={t('Created At')}
@@ -192,4 +201,3 @@ function DetailField({ label, value }: DetailFieldProps) {
     </div>
   )
 }
-

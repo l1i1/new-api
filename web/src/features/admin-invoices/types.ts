@@ -37,23 +37,19 @@ export type InvoiceStatus =
   | 'rejected'
   | 'cancelled'
 
+export type InvoiceType = 'individual' | 'company'
+
 /**
  * Invoice application summary returned by the admin list endpoint.
+ * This DTO intentionally excludes all invoice material (tax ID, bank
+ * account, address, phone, email, reason, remark, admin note).
  */
-export interface Invoice {
+export interface AdminInvoiceListItem {
   id: number
   user_id: number
+  invoice_type: InvoiceType
   title: string
-  tax_id: string
-  phone: string
-  address: string
-  bank_name: string
-  bank_account: string
-  email: string
-  reason: string
-  remark: string
   status: InvoiceStatus
-  admin_note: string
   total_amount: number
   currency: string
   create_time: number
@@ -75,9 +71,27 @@ export interface InvoiceItem {
 }
 
 /**
- * Full invoice application including its attached orders.
+ * Full invoice application including its attached orders (admin detail only).
  */
-export interface InvoiceDetail extends Invoice {
+export interface InvoiceDetail {
+  id: number
+  user_id: number
+  invoice_type: InvoiceType
+  title: string
+  tax_id: string
+  phone: string
+  address: string
+  bank_name: string
+  bank_account: string
+  email: string
+  reason: string
+  remark: string
+  status: InvoiceStatus
+  admin_note: string
+  total_amount: number
+  currency: string
+  create_time: number
+  update_time: number
   items: InvoiceItem[]
 }
 
@@ -85,7 +99,7 @@ export interface InvoiceDetail extends Invoice {
  * Paginated invoice list returned by GET /api/invoice/admin.
  */
 export interface InvoiceListData {
-  items: Invoice[]
+  items: AdminInvoiceListItem[]
   total: number
 }
 

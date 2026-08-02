@@ -179,6 +179,8 @@ func SetApiRouter(router *gin.Engine) {
 		invoiceRoute.Use(middleware.UserAuth())
 		{
 			invoiceRoute.GET("/options", middleware.DisableCache(), controller.GetInvoiceOptions)
+			invoiceRoute.GET("/profile", middleware.DisableCache(), controller.GetInvoiceProfile)
+			invoiceRoute.PUT("/profile", middleware.CriticalRateLimit(), controller.SaveInvoiceProfile)
 			invoiceRoute.GET("/", controller.GetUserInvoices)
 			invoiceRoute.POST("/", middleware.CriticalRateLimit(), controller.CreateInvoice)
 			invoiceRoute.GET("/:id", controller.GetInvoiceDetail)

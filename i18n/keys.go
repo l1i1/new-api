@@ -298,6 +298,48 @@ const (
 	MsgOAuthTrustLevelLow   = "oauth.trust_level_low"
 )
 
+// Invoice related messages
+const (
+	MsgInvoiceDisabled             = "invoice.disabled"
+	MsgInvoiceSelectOrders         = "invoice.select_orders"
+	MsgInvoiceTypeRequired         = "invoice.type_required"
+	MsgInvoiceTitleTaxRequired     = "invoice.title_tax_required"
+	MsgInvoiceReasonRequired       = "invoice.reason_required"
+	MsgInvoiceEmailRequired        = "invoice.email_required"
+	MsgInvoiceEmailInvalid         = "invoice.email_invalid"
+	MsgInvoiceEmailBindRequired    = "invoice.email_bind_required"
+	MsgInvoiceUnsupportedOrderType = "invoice.unsupported_order_type"
+	MsgInvoiceOrderNotFound        = "invoice.order_not_found"
+	MsgInvoiceOrderNotPaid         = "invoice.order_not_paid"
+	MsgInvoiceOrderBalance         = "invoice.order_balance"
+	MsgInvoiceOrderMissingProvider = "invoice.order_missing_provider"
+	MsgInvoiceOrderMissingCurrency = "invoice.order_missing_currency"
+	MsgInvoiceOrderInvalidAmount   = "invoice.order_invalid_amount"
+	MsgInvoiceOrderClaimed         = "invoice.order_claimed"
+	MsgInvoiceMixedCurrency        = "invoice.mixed_currency"
+	MsgInvoiceBelowMinimum         = "invoice.below_minimum"
+	MsgInvoiceNotFound             = "invoice.not_found"
+	MsgInvoiceNoPermission         = "invoice.no_permission"
+	MsgInvoiceRejectReasonRequired = "invoice.reject_reason_required"
+	MsgInvoiceOnlyPendingCancel    = "invoice.only_pending_cancel"
+	MsgInvoiceInvalidTransition    = "invoice.invalid_transition"
+	MsgInvoicePdfInvalid           = "invoice.pdf_invalid"
+	MsgInvoicePdfTooLarge          = "invoice.pdf_too_large"
+	MsgInvoicePdfRequired          = "invoice.pdf_required"
+	MsgInvoiceNotIssuing           = "invoice.not_issuing"
+	MsgInvoiceEmailDeliveryFailed  = "invoice.email_delivery_failed"
+
+	MsgInvoiceEmailStatusSubject = "invoice.email.status_subject"
+	MsgInvoiceEmailStatusBody    = "invoice.email.status_body"
+
+	MsgInvoiceStatusPending   = "invoice.status.pending"
+	MsgInvoiceStatusApproved  = "invoice.status.approved"
+	MsgInvoiceStatusIssuing   = "invoice.status.issuing"
+	MsgInvoiceStatusIssued    = "invoice.status.issued"
+	MsgInvoiceStatusRejected  = "invoice.status.rejected"
+	MsgInvoiceStatusCancelled = "invoice.status.cancelled"
+)
+
 // Model layer error messages (for translation in controller)
 const (
 	MsgRedeemFailed          = "redeem.failed"

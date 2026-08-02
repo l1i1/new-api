@@ -23,12 +23,13 @@ import { SectionPageLayout } from '@/components/layout'
 
 import { AdminInvoiceDetailDialog } from './components/admin-invoice-detail-dialog'
 import { AdminInvoicesTable } from './components/admin-invoices-table'
-import type { Invoice } from './types'
+import type { AdminInvoiceListItem } from './types'
 
 export function AdminInvoices() {
   const { t } = useTranslation()
   const [refreshTrigger, setRefreshTrigger] = useState(0)
-  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null)
+  const [selectedInvoice, setSelectedInvoice] =
+    useState<AdminInvoiceListItem | null>(null)
 
   return (
     <>
