@@ -37,7 +37,6 @@ import {
 import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
-import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import {
   getDiscountLabel,
@@ -112,7 +111,6 @@ export function RechargeFormCard({
   enableWaffoPancakeTopup,
 }: RechargeFormCardProps) {
   const { i18n, t } = useTranslation()
-  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
   const contentLanguage = i18n.resolvedLanguage || i18n.language
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
 
@@ -143,15 +141,6 @@ export function RechargeFormCard({
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
-  const formattedPriceRatio = priceRatio.toLocaleString('zh-CN', {
-    maximumFractionDigits: 2,
-  })
-  const multiplierLabel =
-    displayCurrency === 'USD'
-      ? '× 1 USD ='
-      : contentLanguage.toLowerCase().startsWith('zh')
-        ? `×¥${formattedPriceRatio}=`
-        : `×${formattedPriceRatio} CNY =`
 
   if (loading) {
     return (
@@ -291,42 +280,58 @@ export function RechargeFormCard({
               )}
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label
-                  htmlFor='topup-amount'
-                  className='text-muted-foreground text-xs font-medium tracking-wider uppercase'
-                >
+                <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
                   {t('Custom Amount')}
                 </Label>
-                <div className='grid grid-cols-[minmax(0,1fr)_auto_minmax(110px,0.55fr)] items-center gap-2'>
-                  <Input
-                    id='topup-amount'
-                    type='number'
-                    value={localAmount}
-                    onChange={(e) => handleAmountChange(e.target.value)}
-                    min={minTopup}
-                    placeholder={`Minimum ${minTopup}`}
-                    className='h-9 text-base sm:h-10 sm:text-lg'
-                  />
-                  <span
-                    className='text-foreground flex min-h-9 items-center justify-center px-0.5 text-xs font-semibold whitespace-nowrap sm:text-sm'
-                    aria-label={multiplierLabel}
-                  >
-                    {multiplierLabel}
-                  </span>
-                  <div className='bg-muted/30 flex min-h-9 items-center justify-between gap-2 rounded-md border px-3 lg:min-w-52'>
-                    <span className='text-muted-foreground truncate text-xs'>
-                      {t('Amount to pay:')}
-                    </span>
-                    {calculating ? (
-                      <Skeleton className='h-5 w-16' />
-                    ) : (
+                <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.7fr)] sm:items-end'>
+                  <div className='space-y-1.5'>
+                    <Label
+                      htmlFor='topup-amount'
+                      className='text-muted-foreground text-xs'
+                    >
+                      {t('Recharge Amount (USD)')}
+                    </Label>
+                    <Input
+                      id='topup-amount'
+                      type='number'
+                      value={localAmount}
+                      onChange={(e) => handleAmountChange(e.target.value)}
+                      min={minTopup}
+                      placeholder={`Minimum ${minTopup}`}
+                      className='h-9 text-base sm:h-10 sm:text-lg'
+                    />
+                  </div>
+                  <div className='bg-muted/30 space-y-2 rounded-md border px-3 py-2.5'>
+                    <div className='flex items-center justify-between gap-3'>
+                      <span className='text-muted-foreground text-xs'>
+                        {t('Credited Amount')}
+                      </span>
                       <span
                         className='text-sm font-semibold'
-                        data-testid='wallet-payment-amount'
+                        data-testid='wallet-credit-amount'
                       >
-                        {formatCnyAmount(paymentAmount)}
+                        {formatCnyFromUSD(topupAmount, {
+                          digitsLarge: 2,
+                          digitsSmall: 2,
+                          abbreviate: false,
+                        })}
                       </span>
-                    )}
+                    </div>
+                    <div className='border-border/60 flex items-center justify-between gap-3 border-t pt-2'>
+                      <span className='text-muted-foreground text-xs'>
+                        {t('Amount Due')}
+                      </span>
+                      {calculating ? (
+                        <Skeleton className='h-5 w-16' />
+                      ) : (
+                        <span
+                          className='text-sm font-semibold'
+                          data-testid='wallet-payment-amount'
+                        >
+                          {formatCnyAmount(paymentAmount)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

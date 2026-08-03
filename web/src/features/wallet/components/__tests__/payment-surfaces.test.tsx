@@ -78,12 +78,18 @@ await i18n.use(initReactI18next).init({
       translation: {
         Save: 'Save',
         'You save': 'You save',
+        'Credited Amount': 'Credited Amount',
+        'Amount Due': 'Amount Due',
+        'Recharge Amount (USD)': 'Recharge Amount (USD)',
       },
     },
     zh: {
       translation: {
         Save: '保存',
         'You save': '节省',
+        'Credited Amount': '到账金额',
+        'Amount Due': '应付金额',
+        'Recharge Amount (USD)': '充值金额 (USD)',
       },
     },
   },
@@ -174,7 +180,15 @@ describe('wallet payment surfaces', () => {
 
     assert.equal(rendered.container.textContent?.includes('You save'), true)
     assert.equal(rendered.container.textContent?.includes('<tnt'), false)
-    assert.equal(rendered.container.textContent?.includes('× 1 USD ='), true)
+    assert.equal(rendered.container.textContent?.includes('× 1 USD ='), false)
+    assert.equal(
+      rendered.container.textContent?.includes('Credited Amount'),
+      true
+    )
+    assert.equal(
+      rendered.container.textContent?.includes('Recharge Amount (USD)'),
+      true
+    )
     assert.match(
       rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
         ?.textContent ?? '',
@@ -277,7 +291,7 @@ describe('wallet payment surfaces', () => {
     )
 
     assert.equal(document.body.textContent?.includes(warning), true)
-    assert.equal(document.body.textContent?.includes('You Pay'), true)
+    assert.equal(document.body.textContent?.includes('Amount Due'), true)
 
     await act(async () => {
       rendered.root.render(
@@ -297,7 +311,7 @@ describe('wallet payment surfaces', () => {
     })
 
     assert.equal(document.body.textContent?.includes(warning), false)
-    assert.equal(document.body.textContent?.includes('You Pay'), false)
+    assert.equal(document.body.textContent?.includes('Amount Due'), false)
 
     await act(async () => {
       rendered.root.render(
@@ -317,7 +331,7 @@ describe('wallet payment surfaces', () => {
     })
 
     assert.equal(document.body.textContent?.includes(warning), false)
-    assert.equal(document.body.textContent?.includes('You Pay'), false)
+    assert.equal(document.body.textContent?.includes('Amount Due'), false)
 
     for (const paymentMethod of [
       { name: 'Waffo Pancake', type: 'waffo_pancake' },
@@ -341,13 +355,13 @@ describe('wallet payment surfaces', () => {
       })
 
       assert.equal(document.body.textContent?.includes(warning), false)
-      assert.equal(document.body.textContent?.includes('You Pay'), false)
+      assert.equal(document.body.textContent?.includes('Amount Due'), false)
     }
 
     await unmountComponent(rendered)
   })
 
-  test('uses the Chinese multiplier form without calculating the payable amount locally', async () => {
+  test('uses explicit credited and payable amount labels in Chinese', async () => {
     useCurrencyDisplayStore.getState().setCurrency('CNY')
     await act(async () => {
       await i18n.changeLanguage('zh')
@@ -372,7 +386,9 @@ describe('wallet payment surfaces', () => {
       />
     )
 
-    assert.equal(rendered.container.textContent?.includes('×¥7='), true)
+    assert.equal(rendered.container.textContent?.includes('到账金额'), true)
+    assert.equal(rendered.container.textContent?.includes('应付金额'), true)
+    assert.equal(rendered.container.textContent?.includes('×¥7='), false)
     assert.match(
       rendered.container.querySelector('[data-testid="wallet-payment-amount"]')
         ?.textContent ?? '',
@@ -390,7 +406,7 @@ describe('wallet payment surfaces', () => {
     })
   })
 
-  test('keeps the generic local multiplier for Waffo payments', async () => {
+  test('uses explicit credited and payable amount labels for Waffo payments', async () => {
     useCurrencyDisplayStore.getState().setCurrency('CNY')
     await act(async () => {
       await i18n.changeLanguage('zh')
@@ -416,7 +432,9 @@ describe('wallet payment surfaces', () => {
       />
     )
 
-    assert.equal(rendered.container.textContent?.includes('×¥7='), true)
+    assert.equal(rendered.container.textContent?.includes('到账金额'), true)
+    assert.equal(rendered.container.textContent?.includes('应付金额'), true)
+    assert.equal(rendered.container.textContent?.includes('×¥7='), false)
     assert.equal(rendered.container.textContent?.includes('×¥1='), false)
 
     await unmountComponent(rendered)

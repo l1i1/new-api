@@ -1207,6 +1207,7 @@
     "Custom": "Пользовательский",
     "Custom (seconds)": "Пользовательский (секунды)",
     "Custom Amount": "Пользовательская сумма",
+    "Credited Amount": "Зачисленная сумма",
     "Custom API base URL. For official channels, New API has built-in addresses. Only fill this for third-party proxy sites or special endpoints. Do not add /v1 or trailing slash.": "Пользовательский базовый URL API. Для официальных каналов New API имеет встроенные адреса. Заполняйте это поле только для сторонних прокси-сайтов или специальных конечных точек. Не добавляйте /v1 или завершающий слэш.",
     "Custom API base URL. Leave empty to use provider default.": "Пользовательский базовый URL API. Оставьте пустым для использования значения по умолчанию провайдера.",
     "Custom Currency": "Пользовательская валюта",

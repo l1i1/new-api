@@ -89,7 +89,7 @@ export function PaymentConfirmDialog({
         <div className='space-y-3 py-3 sm:space-y-4 sm:py-4'>
           <div className='flex items-center justify-between'>
             <span className='text-muted-foreground text-sm'>
-              {t('Topup Amount')}
+              {t('Credited Amount')}
             </span>
             <span className='text-lg font-semibold'>
               {formatCnyFromUSD(topupAmount, {
@@ -103,7 +103,7 @@ export function PaymentConfirmDialog({
           {isStandardEpay && (
             <div className='flex items-center justify-between'>
               <span className='text-muted-foreground text-sm'>
-                {t('You Pay')}
+                {t('Amount Due')}
               </span>
               {calculating ? (
                 <Skeleton className='h-6 w-24' />
