@@ -24,10 +24,10 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
+import { RichContent } from '@/components/rich-content'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RichContent } from '@/components/rich-content'
 import {
   Form,
   FormControl,
@@ -48,10 +48,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { getUserProfile } from '@/features/profile/api'
-import { EmailBindDialog } from '@/features/profile/components/dialogs/email-bind-dialog'
-import { formatPaymentAmount } from '@/lib/currency'
 import { isLikelyHtml } from '@/lib/content-format'
+import { formatPaymentAmount } from '@/lib/currency'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -141,12 +139,11 @@ function formatInvoiceAmount(amount: number, currency: string): string {
 
 export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const { t } = useTranslation()
-  const authEmail = useAuthStore((state) => state.auth.user?.email?.trim() ?? '')
+  const authEmail = useAuthStore(
+    (state) => state.auth.user?.email?.trim() ?? ''
+  )
   const [options, setOptions] = useState<InvoiceOptions | null>(null)
   const [profile, setProfile] = useState<InvoiceProfile | null>(null)
-  const [accountEmail, setAccountEmail] = useState(authEmail)
-  const [accountEmailLoaded, setAccountEmailLoaded] = useState(false)
-  const [bindEmailOpen, setBindEmailOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     new Set<number>()
@@ -194,36 +191,6 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
     void fetchProfile()
   }, [fetchProfile])
 
-  const fetchAccountEmail = useCallback(async () => {
-    try {
-      const response = await getUserProfile()
-      if (response.success && response.data) {
-        const email = response.data.email?.trim() ?? ''
-        setAccountEmail(email)
-        if (email) setBindEmailOpen(false)
-      } else {
-        setAccountEmail(authEmail)
-      }
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to load account email:', error)
-      setAccountEmail(authEmail)
-      if (!authEmail) toast.error(t('Failed to load profile'))
-    } finally {
-      setAccountEmailLoaded(true)
-    }
-  }, [authEmail, t])
-
-  useEffect(() => {
-    void fetchAccountEmail()
-  }, [fetchAccountEmail])
-
-  useEffect(() => {
-    if (options?.enabled && accountEmailLoaded && !accountEmail) {
-      setBindEmailOpen(true)
-    }
-  }, [accountEmail, accountEmailLoaded, options?.enabled])
-
   const orders = options?.orders ?? []
   const selectedOrders = orders.filter((order) =>
     selectedIds.has(order.order_id)
@@ -265,7 +232,7 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const selectedTotal = sumOrderAmounts(selectedOrders)
   const minAmount = options?.min_amount ?? 0
   const belowMinAmount = isBelowMinimum(selectedTotal, minAmount)
-  const accountEmailUnavailable = !accountEmailLoaded || !accountEmail
+  const accountEmailUnavailable = !authEmail
   const submitDisabled = !canSubmitInvoice({
     selectedCount: selectedOrders.length,
     mixedCurrency,
@@ -407,24 +374,11 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
       )}
 
       <InvoiceApplyForm
-        accountEmail={accountEmail}
+        accountEmail={authEmail}
         initialProfile={profile}
         submitting={submitting}
         submitDisabled={submitDisabled}
         onSubmit={onSubmit}
-      />
-
-      <EmailBindDialog
-        open={bindEmailOpen}
-        onOpenChange={(open) => {
-          if (open || !accountEmail) {
-            setBindEmailOpen(true)
-          } else {
-            setBindEmailOpen(false)
-          }
-        }}
-        currentEmail={accountEmail || undefined}
-        onSuccess={() => void fetchAccountEmail()}
       />
     </div>
   )

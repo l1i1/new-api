@@ -626,6 +626,7 @@
     "Bind": "バインド",
     "Bind a Pancake store + product": "Pancake のストアと商品を紐付ける",
     "Bind an email address to your account.": "アカウントにメールアドレスを紐付けます。",
+    "An email address is required to continue.": "続行するにはメールアドレスの連携が必要です。",
     "Bind Email": "メールアドレス連携",
     "Bind Telegram Account": "Telegram連携",
     "Bind WeChat Account": "WeChatアカウント連携",

@@ -37,7 +37,8 @@ interface EmailBindDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   currentEmail?: string
-  onSuccess: () => void
+  onSuccess: (email: string) => void
+  required?: boolean
 }
 
 export function EmailBindDialog({
@@ -45,6 +46,7 @@ export function EmailBindDialog({
   onOpenChange,
   currentEmail,
   onSuccess,
+  required = false,
 }: EmailBindDialogProps) {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
@@ -76,7 +78,7 @@ export function EmailBindDialog({
       } else {
         toast.error(response.message || t('Failed to send verification code'))
       }
-    } catch (_error) {
+    } catch {
       toast.error(t('Failed to send verification code'))
     } finally {
       setSendingCode(false)
@@ -96,7 +98,7 @@ export function EmailBindDialog({
       if (response.success) {
         toast.success(t('Email bound successfully!'))
         onOpenChange(false)
-        onSuccess()
+        onSuccess(email.trim())
         // Reset form
         setEmail('')
         setCode('')
@@ -104,7 +106,7 @@ export function EmailBindDialog({
       } else {
         toast.error(response.message || t('Failed to bind email'))
       }
-    } catch (_error) {
+    } catch {
       toast.error(t('Failed to bind email'))
     } finally {
       setLoading(false)
@@ -123,31 +125,44 @@ export function EmailBindDialog({
     }
   }
 
+  let description = t('Bind an email address to your account.')
+  if (required) {
+    description = t('An email address is required to continue.')
+  } else if (currentEmail) {
+    description = t('Current email: {{email}}. Enter a new email to change.', {
+      email: currentEmail,
+    })
+  }
+
+  let sendCodeLabel = t('Send')
+  if (isActive) {
+    sendCodeLabel = `${secondsLeft}s`
+  } else if (sendingCode) {
+    sendCodeLabel = t('Sending...')
+  }
+
   return (
     <Dialog
       open={open}
-      onOpenChange={handleOpenChange}
+      onOpenChange={required ? () => undefined : handleOpenChange}
       title={t('Bind Email')}
-      description={
-        currentEmail
-          ? t('Current email: {{email}}. Enter a new email to change.', {
-              email: currentEmail,
-            })
-          : t('Bind an email address to your account.')
-      }
+      description={description}
       contentClassName='sm:max-w-md'
       contentHeight='auto'
       bodyClassName='space-y-4'
+      showCloseButton={!required}
       footer={
         <>
-          <Button
-            type='button'
-            variant='outline'
-            onClick={() => handleOpenChange(false)}
-            disabled={loading}
-          >
-            {t('Cancel')}
-          </Button>
+          {!required && (
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => handleOpenChange(false)}
+              disabled={loading}
+            >
+              {t('Cancel')}
+            </Button>
+          )}
           <Button
             type='button'
             onClick={handleBind}
@@ -189,11 +204,7 @@ export function EmailBindDialog({
               onClick={handleSendCode}
               disabled={sendingCode || isActive || !email}
             >
-              {isActive
-                ? `${secondsLeft}s`
-                : sendingCode
-                  ? t('Sending...')
-                  : t('Send')}
+              {sendCodeLabel}
             </Button>
           </div>
         </div>

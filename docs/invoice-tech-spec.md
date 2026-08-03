@@ -325,8 +325,9 @@ Feature folders: `web/src/features/invoice/` (user) and `web/src/features/admin-
 - User route `/invoice`: notice, eligible-order table with checkboxes, per-currency
   total, minimum feedback, invoice-type radio, material, reason (mandatory for
   individual), remark, delivery email (last field, defaults to the account email), and
-  submit. Without an account email the bind-email dialog is forced open and submission
-  is disabled.
+  submit. Accounts without an email are blocked by the global authenticated-app email
+  binding gate; the invoice page only consumes the authenticated account email and keeps
+  submission disabled until it is present.
 - Records view: paginated list, six-state badges, detail dialog, and pending cancellation.
 - Admin route `/invoices`: route-level `beforeLoad` admin guard. Server-paginated table
   with keyword/status search. Detail dialog shows administrator-authorized material and a
