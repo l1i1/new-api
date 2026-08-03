@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/mail"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/shopspring/decimal"
 
 	"github.com/gin-gonic/gin"
@@ -568,14 +570,20 @@ func sendInvoiceStatusEmail(inv *model.Invoice, statusLabelKey string, note stri
 	if lang == "" {
 		lang = i18n.DefaultLang
 	}
-	subject := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusSubject, map[string]any{"Id": inv.Id})
+	siteURL := strings.TrimRight(strings.TrimSpace(system_setting.ServerAddress), "/")
+	subject := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusSubject, map[string]any{
+		"SystemName": common.SystemName,
+		"Id":         inv.Id,
+	})
 	statusLabel := i18n.Translate(lang, statusLabelKey)
 	body := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusBody, map[string]any{
-		"Id":       inv.Id,
-		"Amount":   inv.TotalAmount,
-		"Currency": inv.Currency,
-		"Status":   statusLabel,
-		"Note":     note,
+		"SystemName": html.EscapeString(common.SystemName),
+		"SiteURL":    html.EscapeString(siteURL),
+		"Id":         inv.Id,
+		"Amount":     inv.TotalAmount,
+		"Currency":   html.EscapeString(inv.Currency),
+		"Status":     html.EscapeString(statusLabel),
+		"Note":       strings.ReplaceAll(html.EscapeString(note), "\n", "<br>"),
 	})
 	var err error
 	if len(attachments) > 0 {
