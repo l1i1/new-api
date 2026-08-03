@@ -40,6 +40,7 @@ import type {
   BusinessFlowBucket,
   BusinessFlowTotals,
 } from '@/features/dashboard/types'
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import { BusinessFlowChart } from './business-flow-chart'
 import { formatCNY, formatQuotaMoney } from './business-format'
@@ -80,12 +81,13 @@ function sumFlowRows(rows: BusinessFlowBucket[]): BusinessFlowTotals {
 
 export function BusinessAnalysis() {
   const { t } = useTranslation()
+  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
   const [periodView, setPeriodView] = useState<BusinessPeriodView>('daily')
   const query = useQuery({
     queryKey: ['dashboard', 'business-analysis'],
     queryFn: () =>
       getBusinessAnalysis({ daily_periods: 14, weekly_periods: 8 }),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
   })
 
   if (query.isLoading) return <BusinessAnalysisLoading />
@@ -119,6 +121,7 @@ export function BusinessAnalysis() {
     <BusinessAnalysisContent
       report={query.data}
       query={query}
+      displayCurrency={displayCurrency}
       periodView={periodView}
       onPeriodViewChange={setPeriodView}
     />
@@ -128,6 +131,7 @@ export function BusinessAnalysis() {
 function BusinessAnalysisContent(props: {
   report: BusinessAnalysisReport
   query: ReturnType<typeof useQuery<BusinessAnalysisReport>>
+  displayCurrency: 'CNY' | 'USD'
   periodView: BusinessPeriodView
   onPeriodViewChange: (view: BusinessPeriodView) => void
 }) {
@@ -138,7 +142,7 @@ function BusinessAnalysisContent(props: {
   const statItems = [
     {
       title: t('Top-ups'),
-      value: formatCNY(totals.topup_cny),
+      value: formatCNY(totals.topup_cny, props.report, props.displayCurrency),
       description: t('{{count}} orders · {{users}} paying users', {
         count: rows.reduce((total, row) => total + row.topup_orders, 0),
         users: rows.reduce((total, row) => total + row.topup_users, 0),
@@ -148,21 +152,33 @@ function BusinessAnalysisContent(props: {
     },
     {
       title: t('Consumption'),
-      value: formatQuotaMoney(totals.consume_quota, props.report),
+      value: formatQuotaMoney(
+        totals.consume_quota,
+        props.report,
+        props.displayCurrency
+      ),
       description: t('Quota consumed in the selected periods.'),
       icon: ArrowDownRight,
       tone: 'accent-2' as const,
     },
     {
       title: t('Non-recharge increase'),
-      value: formatQuotaMoney(totals.non_recharge_increase_quota, props.report),
+      value: formatQuotaMoney(
+        totals.non_recharge_increase_quota,
+        props.report,
+        props.displayCurrency
+      ),
       description: t('Grants, check-ins, manual additions, and overrides.'),
       icon: Gift,
       tone: 'accent-3' as const,
     },
     {
       title: t('Net change'),
-      value: formatQuotaMoney(totals.net_after_consume_quota, props.report),
+      value: formatQuotaMoney(
+        totals.net_after_consume_quota,
+        props.report,
+        props.displayCurrency
+      ),
       description: t('Top-up quota plus increases minus consumption.'),
       icon: TrendingUp,
       tone: 'accent-1' as const,
@@ -209,7 +225,11 @@ function BusinessAnalysisContent(props: {
         ))}
       </div>
 
-      <BusinessFlowChart rows={rows} report={props.report} />
+      <BusinessFlowChart
+        rows={rows}
+        report={props.report}
+        displayCurrency={props.displayCurrency}
+      />
 
       <Alert>
         <CircleAlert />
@@ -221,7 +241,10 @@ function BusinessAnalysisContent(props: {
         </AlertDescription>
       </Alert>
 
-      <BusinessInventory report={props.report} />
+      <BusinessInventory
+        report={props.report}
+        displayCurrency={props.displayCurrency}
+      />
     </div>
   )
 }

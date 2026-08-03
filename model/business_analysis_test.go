@@ -23,10 +23,33 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestBusinessAnalysisConsumeQuotaAggregatesAllPeriodsInOneQuery(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (type integer, created_at integer, quota integer)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (type, created_at, quota) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+		LogTypeConsume, 10, 100,
+		LogTypeConsume, 20, 200,
+		LogTypeManage, 10, 999,
+	).Error)
+
+	previousLogDB := LOG_DB
+	LOG_DB = db
+	t.Cleanup(func() { LOG_DB = previousLogDB })
+
+	quotas, err := sumBusinessConsumeQuotaByPeriods([]businessPeriod{
+		{Start: 0, End: 15},
+		{Start: 15, End: 25},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{100, 200}, quotas)
+}
 
 func TestBusinessAnalysisPeriodsUseShanghaiCalendar(t *testing.T) {
 	now := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC).Unix()
