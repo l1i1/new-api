@@ -432,7 +432,15 @@ func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	subjectKey := i18n.MsgInvoiceEmailStatusSubject
 	bodyKey := i18n.MsgInvoiceEmailStatusBody
-	args := map[string]any{"Id": 1}
+	args := map[string]any{
+		"SystemName": "Tokeness",
+		"SiteURL":    "https://tokeness.io",
+		"Id":         1,
+		"Amount":     100,
+		"Currency":   "CNY",
+		"Status":     "Issued",
+		"Note":       "",
+	}
 
 	enSubject := i18n.Translate(i18n.LangEn, subjectKey, args)
 	enBody := i18n.Translate(i18n.LangEn, bodyKey, args)
@@ -447,4 +455,8 @@ func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	assert.NotContains(t, zhSubject, subjectKey, "zh subject must not leak the raw key")
 	assert.Contains(t, enSubject, "1", "subject must interpolate the invoice id")
 	assert.Contains(t, zhSubject, "1", "subject must interpolate the invoice id")
+	assert.Contains(t, enSubject, "Tokeness", "subject must identify the sending site")
+	assert.Contains(t, zhSubject, "Tokeness", "subject must identify the sending site")
+	assert.Contains(t, enBody, "https://tokeness.io", "body must link back to the site")
+	assert.Contains(t, zhBody, "https://tokeness.io", "body must link back to the site")
 }

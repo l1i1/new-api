@@ -315,8 +315,10 @@ never send mail. The `issued` email carries the request-local real invoice PDF a
 attachment, and the state changes to `issued` only after SMTP accepts that message. Email
 content uses the backend i18n bundle (`invoice.email.status_subject` /
 `invoice.email.status_body`) and is rendered in the **recipient user's saved language**
-(`model.GetUserLanguage`), not the operator's request language. An idempotent repeat of
-an already-applied transition never sends a duplicate email.
+(`model.GetUserLanguage`), not the operator's request language. The subject identifies
+the configured system name, and the HTML body ends with the configured system name and
+`ServerAddress` link so recipients can identify the sender and return to the site. An
+idempotent repeat of an already-applied transition never sends a duplicate email.
 
 ## 9. Frontend plan
 

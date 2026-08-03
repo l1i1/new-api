@@ -314,8 +314,8 @@ invoice.pdf_required: "A real invoice PDF is required before marking the applica
 invoice.not_issuing: "The invoice application is not in the issuing status"
 invoice.email_delivery_failed: "The invoice email could not be delivered. Please upload the PDF again and retry."
 
-invoice.email.status_subject: "Invoice application #{{.Id}} status update"
-invoice.email.status_body: "Your invoice application #{{.Id}} ({{.Amount}} {{.Currency}}) has reached the final status: {{.Status}}.\n{{.Note}}"
+invoice.email.status_subject: "[{{.SystemName}}] Invoice application #{{.Id}} status update"
+invoice.email.status_body: "<p>Your invoice application #{{.Id}} ({{.Amount}} {{.Currency}}) has reached the final status: {{.Status}}.</p>{{if .Note}}<p>Processing note: {{.Note}}</p>{{end}}<p>{{.SystemName}}<br>Website: <a href=\"{{.SiteURL}}\">{{.SiteURL}}</a></p>"
 invoice.status.pending: "Pending"
 invoice.status.approved: "Approved"
 invoice.status.issuing: "Issuing"
