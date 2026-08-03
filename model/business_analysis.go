@@ -19,7 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 package model
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"regexp"
 	"sort"
@@ -230,11 +232,19 @@ func BuildBusinessAnalysisReport(dailyPeriods, weeklyPeriods int, now int64) (*B
 		return nil, err
 	}
 
-	dailyBuckets, err := buildBusinessFlowBuckets(daily, flowTopups, systemLogs, operationLogs, quotaPerUnit)
+	dailyConsumeQuota, err := sumBusinessConsumeQuotaByPeriods(daily)
 	if err != nil {
 		return nil, err
 	}
-	weeklyBuckets, err := buildBusinessFlowBuckets(weekly, flowTopups, systemLogs, operationLogs, quotaPerUnit)
+	weeklyConsumeQuota, err := sumBusinessConsumeQuotaByPeriods(weekly)
+	if err != nil {
+		return nil, err
+	}
+	dailyBuckets, err := buildBusinessFlowBuckets(daily, flowTopups, systemLogs, operationLogs, dailyConsumeQuota, quotaPerUnit)
+	if err != nil {
+		return nil, err
+	}
+	weeklyBuckets, err := buildBusinessFlowBuckets(weekly, flowTopups, systemLogs, operationLogs, weeklyConsumeQuota, quotaPerUnit)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +466,7 @@ func businessShanghaiDate(timestamp int64) string {
 	return time.Unix(timestamp+businessReportTimezoneOffsetSeconds, 0).UTC().Format("2006-01-02")
 }
 
-func buildBusinessFlowBuckets(periods []businessPeriod, topups []TopUp, systemLogs, operationLogs []businessLogRecord, quotaPerUnit float64) ([]BusinessFlowBucket, error) {
+func buildBusinessFlowBuckets(periods []businessPeriod, topups []TopUp, systemLogs, operationLogs []businessLogRecord, consumeQuota []int64, quotaPerUnit float64) ([]BusinessFlowBucket, error) {
 	buckets := make([]BusinessFlowBucket, len(periods))
 	topupUsers := make([]map[int]struct{}, len(periods))
 	for index, period := range periods {
@@ -511,23 +521,71 @@ func buildBusinessFlowBuckets(periods []businessPeriod, topups []TopUp, systemLo
 			}
 		}
 	}
-	for index, period := range periods {
-		consumeQuota, err := sumBusinessConsumeQuota(period.Start, period.End)
-		if err != nil {
-			return nil, err
-		}
+	for index := range periods {
 		bucket := &buckets[index]
-		bucket.ConsumeQuota = consumeQuota
+		if index < len(consumeQuota) {
+			bucket.ConsumeQuota = consumeQuota[index]
+		}
 		bucket.NonRechargeIncreaseQuota = bucket.SignupGrantQuota + bucket.CheckinQuota + bucket.ManualAddQuota + bucket.ManualOverrideIncreaseQuota
 		bucket.NetAfterConsumeQuota = bucket.TopupQuota + bucket.NonRechargeIncreaseQuota - bucket.ConsumeQuota
 	}
 	return buckets, nil
 }
 
-func sumBusinessConsumeQuota(start, end int64) (int64, error) {
-	var quota int64
-	err := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0)").Where("type = ? AND created_at >= ? AND created_at < ?", LogTypeConsume, start, end).Scan(&quota).Error
-	return quota, err
+// sumBusinessConsumeQuotaByPeriods folds all period sums into one SQL scan. The
+// previous implementation issued one aggregate query per day/week, which made
+// the admin page wait on 22 sequential scans before rendering any data.
+func sumBusinessConsumeQuotaByPeriods(periods []businessPeriod) ([]int64, error) {
+	if len(periods) == 0 {
+		return []int64{}, nil
+	}
+	selectParts := make([]string, 0, len(periods))
+	args := make([]any, 0, len(periods)*2+3)
+	minStart, maxEnd := periods[0].Start, periods[0].End
+	for index, period := range periods {
+		selectParts = append(selectParts, fmt.Sprintf(
+			"COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN quota ELSE 0 END), 0) AS period_%d",
+			index,
+		))
+		args = append(args, period.Start, period.End)
+		if period.Start < minStart {
+			minStart = period.Start
+		}
+		if period.End > maxEnd {
+			maxEnd = period.End
+		}
+	}
+	args = append(args, LogTypeConsume, minStart, maxEnd)
+	query := fmt.Sprintf(
+		"SELECT %s FROM logs WHERE type = ? AND created_at >= ? AND created_at < ?",
+		strings.Join(selectParts, ", "),
+	)
+	rows, err := LOG_DB.Raw(query, args...).Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return make([]int64, len(periods)), nil
+	}
+	values := make([]sql.NullInt64, len(periods))
+	destinations := make([]any, len(values))
+	for index := range values {
+		destinations[index] = &values[index]
+	}
+	if err := rows.Scan(destinations...); err != nil {
+		return nil, err
+	}
+	quotas := make([]int64, len(values))
+	for index, value := range values {
+		if value.Valid {
+			quotas[index] = value.Int64
+		}
+	}
+	return quotas, rows.Err()
 }
 
 func buildBusinessFlowTotals(buckets []BusinessFlowBucket) BusinessFlowTotals {

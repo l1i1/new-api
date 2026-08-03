@@ -33,17 +33,24 @@ import type {
   BusinessAnalysisReport,
   BusinessBalanceRow,
 } from '@/features/dashboard/types'
+import type { DisplayCurrency } from '@/stores/currency-display-store'
 
-import { formatPercent, formatQuota, formatQuotaMoney } from './business-format'
+import {
+  formatNumber,
+  formatPercent,
+  formatQuotaMoney,
+} from './business-format'
 
 interface BusinessInventoryProps {
   report: BusinessAnalysisReport
+  displayCurrency: DisplayCurrency
   loading?: boolean
 }
 
 function BalanceTable(props: {
   rows: BusinessBalanceRow[]
   report: BusinessAnalysisReport
+  displayCurrency: DisplayCurrency
   emptyMessage: string
 }) {
   const { t } = useTranslation()
@@ -79,16 +86,21 @@ function BalanceTable(props: {
               </div>
             </TableCell>
             <TableCell className='text-right font-medium'>
-              <div>{formatQuotaMoney(row.visible, props.report)}</div>
-              <div className='text-muted-foreground text-xs'>
-                {t('{{quota}} quota', { quota: formatQuota(row.visible) })}
-              </div>
+              {formatQuotaMoney(
+                row.visible,
+                props.report,
+                props.displayCurrency
+              )}
             </TableCell>
             <TableCell className='hidden text-right sm:table-cell'>
-              {formatQuota(row.used_quota)}
+              {formatQuotaMoney(
+                row.used_quota,
+                props.report,
+                props.displayCurrency
+              )}
             </TableCell>
             <TableCell className='hidden text-right md:table-cell'>
-              {formatQuota(row.request_count)}
+              {formatNumber(row.request_count)}
             </TableCell>
           </TableRow>
         ))}
@@ -121,35 +133,40 @@ export function BusinessInventory(props: BusinessInventoryProps) {
             label={t('Stocking balance')}
             value={formatQuotaMoney(
               inventory.consumable_enabled_visible,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
             label={t('Ordinary balance')}
             value={formatQuotaMoney(
               inventory.consumable_enabled_quota_only,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
             label={t('Invite balance')}
             value={formatQuotaMoney(
               inventory.consumable_enabled_aff_only,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
             label={t('Enabled net')}
             value={formatQuotaMoney(
               inventory.net_enabled_visible,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
             label={t('Disabled / deleted')}
             value={formatQuotaMoney(
               inventory.disabled_or_deleted_positive_visible,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
@@ -186,6 +203,7 @@ export function BusinessInventory(props: BusinessInventoryProps) {
           <BalanceTable
             rows={inventory.top20}
             report={props.report}
+            displayCurrency={props.displayCurrency}
             emptyMessage={t('No enabled account has a positive balance.')}
           />
         </div>
@@ -206,26 +224,27 @@ export function BusinessInventory(props: BusinessInventoryProps) {
         <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
           <Metric
             label={t('With top-up')}
-            value={`${origin.positive_quota_with_topup_users.toLocaleString()} · ${formatQuotaMoney(origin.positive_quota_with_topup_total, props.report)}`}
+            value={`${origin.positive_quota_with_topup_users.toLocaleString()} · ${formatQuotaMoney(origin.positive_quota_with_topup_total, props.report, props.displayCurrency)}`}
           />
           <Metric
             label={t('Without top-up')}
-            value={`${origin.positive_quota_no_topup_users.toLocaleString()} · ${formatQuotaMoney(origin.positive_quota_no_topup_total, props.report)}`}
+            value={`${origin.positive_quota_no_topup_users.toLocaleString()} · ${formatQuotaMoney(origin.positive_quota_no_topup_total, props.report, props.displayCurrency)}`}
           />
           <Metric
             label={t('Invite quota')}
-            value={`${origin.enabled_positive_aff_users.toLocaleString()} · ${formatQuotaMoney(origin.enabled_positive_aff_total, props.report)}`}
+            value={`${origin.enabled_positive_aff_users.toLocaleString()} · ${formatQuotaMoney(origin.enabled_positive_aff_total, props.report, props.displayCurrency)}`}
           />
           <Metric
             label={t('New-user grant')}
             value={formatQuotaMoney(
               origin.options.quota_for_new_user,
-              props.report
+              props.report,
+              props.displayCurrency
             )}
           />
           <Metric
             label={t('Check-in range')}
-            value={`${formatQuota(origin.options.checkin_min_quota)} - ${formatQuota(origin.options.checkin_max_quota)}`}
+            value={`${formatQuotaMoney(origin.options.checkin_min_quota, props.report, props.displayCurrency)} - ${formatQuotaMoney(origin.options.checkin_max_quota, props.report, props.displayCurrency)}`}
           />
           <Metric
             label={t('Enabled users')}
@@ -239,6 +258,7 @@ export function BusinessInventory(props: BusinessInventoryProps) {
           <BalanceTable
             rows={origin.top_no_topup}
             report={props.report}
+            displayCurrency={props.displayCurrency}
             emptyMessage={t(
               'All positive ordinary balances have a completed top-up.'
             )}

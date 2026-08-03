@@ -29,20 +29,23 @@ import type {
 } from '@/features/dashboard/types'
 import { useChartTheme } from '@/lib/use-chart-theme'
 import { VCHART_OPTION } from '@/lib/vchart'
+import type { DisplayCurrency } from '@/stores/currency-display-store'
 
 interface BusinessFlowChartProps {
   rows: BusinessFlowBucket[]
   report: BusinessAnalysisReport
+  displayCurrency: DisplayCurrency
   loading?: boolean
 }
 
-function quotaToCNY(quota: number, report: BusinessAnalysisReport): number {
+function quotaToUSD(quota: number, report: BusinessAnalysisReport): number {
   if (report.quota_per_unit <= 0) return 0
-  return (quota / report.quota_per_unit) * report.cny_per_usd
+  return quota / report.quota_per_unit
 }
 
-function formatMoney(value: number): string {
-  return `¥${value.toLocaleString(undefined, {
+function formatMoney(value: number, currency: DisplayCurrency): string {
+  const symbol = currency === 'CNY' ? '¥' : '$'
+  return `${symbol}${value.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`
@@ -56,22 +59,31 @@ export function BusinessFlowChart(props: BusinessFlowChartProps) {
       {
         period: row.label,
         metric: t('Top-ups'),
-        value: row.topup_cny,
+        value:
+          props.displayCurrency === 'CNY'
+            ? row.topup_cny
+            : row.topup_cny / props.report.cny_per_usd,
       },
       {
         period: row.label,
         metric: t('Consumption'),
-        value: quotaToCNY(row.consume_quota, props.report),
+        value:
+          quotaToUSD(row.consume_quota, props.report) *
+          (props.displayCurrency === 'CNY' ? props.report.cny_per_usd : 1),
       },
       {
         period: row.label,
         metric: t('Non-recharge increase'),
-        value: quotaToCNY(row.non_recharge_increase_quota, props.report),
+        value:
+          quotaToUSD(row.non_recharge_increase_quota, props.report) *
+          (props.displayCurrency === 'CNY' ? props.report.cny_per_usd : 1),
       },
       {
         period: row.label,
         metric: t('Net change'),
-        value: quotaToCNY(row.net_after_consume_quota, props.report),
+        value:
+          quotaToUSD(row.net_after_consume_quota, props.report) *
+          (props.displayCurrency === 'CNY' ? props.report.cny_per_usd : 1),
       },
     ])
 
@@ -89,7 +101,7 @@ export function BusinessFlowChart(props: BusinessFlowChartProps) {
             {
               key: (datum: Record<string, unknown>) => String(datum.metric),
               value: (datum: Record<string, unknown>) =>
-                formatMoney(Number(datum.value) || 0),
+                formatMoney(Number(datum.value) || 0, props.displayCurrency),
             },
           ],
         },
@@ -97,7 +109,7 @@ export function BusinessFlowChart(props: BusinessFlowChartProps) {
       background: { fill: 'transparent' },
       animation: true,
     }
-  }, [props.report, props.rows, t])
+  }, [props.displayCurrency, props.report, props.rows, t])
 
   return (
     <PanelWrapper
