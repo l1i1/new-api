@@ -24,6 +24,13 @@ import { Window } from 'happy-dom'
 import type { AuthUser } from '@/stores/auth-store'
 
 const domWindow = new Window({ url: 'https://tokeness.test/' })
+type TurnstileWindow = Window & {
+  turnstile?: {
+    render: (element: HTMLElement, options: Record<string, unknown>) => void
+  }
+}
+const turnstileWindow = domWindow as unknown as TurnstileWindow
+
 domWindow.document.write(
   '<!doctype html><html><head></head><body></body></html>'
 )
@@ -72,6 +79,8 @@ Object.defineProperty(domWindow, 'matchMedia', {
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { api } = await import('@/lib/api')
@@ -112,16 +121,24 @@ const missingEmailUser: AuthUser = {
   role: 1,
 }
 
-async function renderGate() {
+async function renderGate(status: Record<string, unknown> = {}) {
   const container = document.createElement('div')
   document.body.append(container)
   const root = createRoot(container)
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  })
+  queryClient.setQueryData(['status'], status)
 
   await act(async () => {
     root.render(
-      <I18nextProvider i18n={i18n}>
-        <EmailBindingGate />
-      </I18nextProvider>
+      <QueryClientProvider client={queryClient}>
+        <I18nextProvider i18n={i18n}>
+          <EmailBindingGate />
+        </I18nextProvider>
+      </QueryClientProvider>
     )
   })
 
@@ -189,6 +206,71 @@ describe('required email binding', () => {
     assert.equal(document.querySelector('[data-slot="dialog-content"]'), null)
     await act(async () => rendered.root.unmount())
     rendered.container.remove()
+  })
+
+  test('sends the verified Turnstile token with the email verification request', async () => {
+    const originalAdapter = api.defaults.adapter
+    const originalTurnstile = turnstileWindow.turnstile
+    let turnstileOptions: Record<string, unknown> | undefined
+    let verificationRequestUrl = ''
+
+    try {
+      turnstileWindow.turnstile = {
+        render: (_element: HTMLElement, options: Record<string, unknown>) => {
+          turnstileOptions = options
+        },
+      }
+      api.defaults.adapter = async (config) => {
+        verificationRequestUrl = config.url || ''
+        return {
+          data: { success: true },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      }
+      useAuthStore.getState().auth.setUser(missingEmailUser)
+      useAuthStore.getState().auth.setBootstrapState('complete')
+      const rendered = await renderGate({
+        turnstile_check: true,
+        turnstile_site_key: 'test-site-key',
+      })
+      const emailInput = document.querySelector<HTMLInputElement>('#email')
+      assert.ok(emailInput)
+
+      await act(async () => {
+        setInputValue(emailInput, 'bound@example.com')
+      })
+
+      const sendButton = findButton('Send')
+      assert.ok(sendButton)
+      assert.equal(sendButton.disabled, true)
+      assert.ok(turnstileOptions)
+      const onVerify = turnstileOptions.callback
+      assert.equal(typeof onVerify, 'function')
+
+      await act(async () => {
+        ;(onVerify as (token: string) => void)('turnstile-token')
+      })
+
+      assert.equal(sendButton.disabled, false)
+      await act(async () => {
+        sendButton.click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      assert.equal(
+        verificationRequestUrl,
+        '/api/verification?email=bound%40example.com&turnstile=turnstile-token'
+      )
+      await act(async () => rendered.root.unmount())
+      rendered.container.remove()
+    } finally {
+      api.defaults.adapter = originalAdapter
+      turnstileWindow.turnstile = originalTurnstile
+    }
   })
 
   test('updates the authenticated user after successful binding', async () => {
