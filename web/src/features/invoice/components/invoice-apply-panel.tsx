@@ -51,6 +51,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { isLikelyHtml } from '@/lib/content-format'
 import { formatPaymentAmount } from '@/lib/currency'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { resolveTntContent } from '@/lib/tnt-content'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -384,14 +385,16 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   )
 }
 
-function InvoiceNotice({ notice }: { notice: string }) {
-  const contentIsHtml = isLikelyHtml(notice)
+export function InvoiceNotice({ notice }: { notice: string }) {
+  const { i18n } = useTranslation()
+  const content = resolveTntContent(notice, i18n.language).trim()
+  const contentIsHtml = isLikelyHtml(content)
 
   return (
     <Alert>
       <AlertDescription>
         <RichContent
-          content={notice}
+          content={content}
           mode={contentIsHtml ? 'html' : 'markdown'}
           breaks
           className='prose-sm dark:prose-invert'
@@ -482,7 +485,7 @@ interface InvoiceApplyFormProps {
   onSubmit: (values: InvoiceApplyFormValues) => void
 }
 
-function InvoiceApplyForm({
+export function InvoiceApplyForm({
   accountEmail,
   initialProfile,
   submitting,
@@ -621,7 +624,11 @@ function InvoiceApplyForm({
                 <FormLabel>{t('Invoice Title')}</FormLabel>
                 <FormControl>
                   <Input
-                    placeholder={t('Company or individual name')}
+                    placeholder={
+                      invoiceType === 'individual'
+                        ? t('Individual name')
+                        : t('Company name')
+                    }
                     disabled={submitting || savingProfile}
                     {...field}
                   />
