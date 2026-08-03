@@ -96,6 +96,35 @@ func TestGroupModelRateLimitUsesAutoGroupWhenPresent(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, request().Code)
 }
 
+func TestGroupModelRateLimitCountsEachRetryTargetGroupOnce(t *testing.T) {
+	setupGroupModelRateLimitMiddlewareTest(t)
+	_, err := model.ReplaceGroupModelRateLimits([]model.GroupModelRateLimit{
+		{GroupName: "default", ModelName: "model-a", WindowSeconds: 60, MaxRequests: 1, Enabled: true},
+		{GroupName: "vip", ModelName: "model-a", WindowSeconds: 60, MaxRequests: 1, Enabled: true},
+	})
+	require.NoError(t, err)
+
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		c.Set(string(constant.ContextKeyUserId), 8)
+		return c
+	}
+
+	requestContext := newContext()
+	require.Nil(t, CheckGroupModelRateLimit(requestContext, "default", "model-a"))
+	require.Nil(t, CheckGroupModelRateLimit(requestContext, "default", "model-a"), "same-group retries must not count twice")
+	require.Nil(t, CheckGroupModelRateLimit(requestContext, "vip", "model-a"))
+	require.Nil(t, CheckGroupModelRateLimit(requestContext, "vip", "model-a"), "same target group must not count twice")
+
+	defaultLimited := CheckGroupModelRateLimit(newContext(), "default", "model-a")
+	require.NotNil(t, defaultLimited)
+	assert.Equal(t, http.StatusTooManyRequests, defaultLimited.StatusCode)
+	vipLimited := CheckGroupModelRateLimit(newContext(), "vip", "model-a")
+	require.NotNil(t, vipLimited)
+	assert.Equal(t, http.StatusTooManyRequests, vipLimited.StatusCode)
+}
+
 func TestGroupModelRateLimitEnforcesMultipleWindows(t *testing.T) {
 	setupGroupModelRateLimitMiddlewareTest(t)
 	_, err := model.ReplaceGroupModelRateLimits([]model.GroupModelRateLimit{

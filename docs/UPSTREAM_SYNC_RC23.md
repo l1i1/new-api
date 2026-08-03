@@ -32,7 +32,8 @@ deploy production.
 
 ## Acceptance Criteria
 
-- The merge commit has both `origin/tokeness/main` and upstream rc.23 as parents.
+- The merge commit has the candidate pre-merge tip and upstream rc.23 as parents,
+  with `origin/tokeness/main` preserved as the first-parent baseline ancestor.
 - All conflicts are resolved intentionally, with no conflict markers or accidental
   deletion of Tokeness-specific files.
 - Upstream Auto group ordering, tiered retry billing hardening, and Bedrock
@@ -56,6 +57,45 @@ deploy production.
 5. Run deployment shell transaction tests and workflow syntax checks.
 6. Build `Dockerfile.tokeness` when Docker is available.
 7. Review the final branch diff against both parents before pushing.
+
+## Integration Decisions
+
+- Wallet pre-consume and retry reservation use a conditional database update so
+  concurrent requests cannot overdraw the user quota. These reservations bypass
+  process-local batching; direct refunds keep the database and cache recovery
+  path aligned.
+- API-key Auto group snapshots are constrained by the administrator's current
+  global Auto allowlist at write time and again at routing time. Removing a group
+  globally therefore invalidates stale token snapshots immediately.
+- Group/model rate limits count each concrete group once per request. A retry in
+  the same group does not consume another slot, while a cross-group retry consumes
+  the destination group's bucket before contacting an upstream channel.
+- Local task rate-limit failures retain their original 429 response and are not
+  rewritten as upstream saturation or retried.
+- The Auto-group UI retains Tokeness `<tnt>` localization and exposes explicit
+  loading, failure, and retry states. Failed Auto configuration or API-key detail
+  requests cannot initialize or save a truncated group order.
+- The API-key table keeps a visible Auto identity and only displays Cross-group
+  when the key enables cross-group retry.
+
+## Validation Results
+
+- Root module: `go test ./...`, `go build ./...`, and `go vet ./...` passed.
+- RelayKit with `GOWORK=off`: test, build, and vet passed.
+- Focused race tests for model, service, middleware, and controller changes passed.
+- Frontend: `bun run typecheck`, all 63 test files, `bun run build`, and
+  `bun run i18n:sync` passed. All seven locale files contain 5,535 keys.
+- Focused lint and format checks passed for every manually modified TypeScript
+  and TSX file. Repository-wide frontend lint/format/copyright checks still report
+  pre-existing baseline violations outside this synchronization.
+- Deployment remote-command and rollout transaction tests passed. On Windows,
+  rollout validation used an LF-normalizing wrapper around the locally installed
+  `jq.exe`, whose CRLF stdout otherwise leaves a carriage return in Bash command
+  substitutions; production CI runs on Linux and requires no repository change.
+- All 10 GitHub Actions workflow files parsed successfully as YAML.
+- `git diff --check`, conflict-marker scanning, and candidate path review passed.
+- Docker is unavailable in the local environment, so `Dockerfile.tokeness` was
+  not built locally. Publishing and deployment remain outside this sync task.
 
 ## Rollback
 

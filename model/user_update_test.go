@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -60,6 +61,50 @@ func TestUserUpdateDoesNotOverwriteAccountingFields(t *testing.T) {
 	assert.Equal(t, 600, got.Quota)
 	assert.Equal(t, 420, got.UsedQuota)
 	assert.Equal(t, 4, got.RequestCount)
+}
+
+func TestDecreaseUserQuotaIfEnoughConcurrentDoesNotOverdraw(t *testing.T) {
+	setupUserUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	user := User{
+		Id:       901,
+		Username: "atomic-wallet-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+		Quota:    100,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	const attempts = 8
+	start := make(chan struct{})
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- DecreaseUserQuotaIfEnough(user.Id, 30)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+			continue
+		}
+		assert.ErrorIs(t, err, ErrInsufficientUserQuota)
+	}
+	assert.Equal(t, 3, successes)
+
+	quota, err := GetUserQuota(user.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, 10, quota)
 }
 
 func TestUpdateUserSettingOnlyUpdatesSetting(t *testing.T) {
