@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "Aucune récompense de première recharge pour le moment",
     "Rewards will appear here after an invited user completes their first top-up.": "Les récompenses apparaîtront ici après la première recharge d'un utilisateur invité.",
     "First top-up rewards are currently paused. Your referral link remains available.": "Les récompenses de première recharge sont actuellement suspendues. Votre lien reste disponible.",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "Les nouveaux utilisateurs inscrits via votre lien vous reversent automatiquement {{rate}} % de leur première recharge.",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "Les utilisateurs éligibles inscrits via votre lien vous reversent {{rate}} % de leur première recharge, créditée directement sur votre solde principal.",
     "Not issued": "Non attribuée",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "Le transfert des récompenses de parrainage est désactivé jusqu’à ce que l’administrateur confirme les conditions de conformité.",
     "Refine models by provider, group, type, and tags.": "Affinez les modèles par fournisseur, groupe, type et tags.",

@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "Вознаграждений за первое пополнение пока нет",
     "Rewards will appear here after an invited user completes their first top-up.": "Вознаграждение появится здесь после первого пополнения приглашённого пользователя.",
     "First top-up rewards are currently paused. Your referral link remains available.": "Вознаграждения за первое пополнение приостановлены, но реферальная ссылка доступна.",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "Новые пользователи, зарегистрированные по вашей ссылке, автоматически принесут вам {{rate}}% от первого пополнения.",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "Подходящие пользователи, зарегистрированные по вашей ссылке, приносят {{rate}}% от первого пополнения, которые сразу зачисляются на основной баланс.",
     "Not issued": "Не начислено",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "Перевод реферальных наград отключен, пока администратор не подтвердит условия соответствия.",
     "Refine models by provider, group, type, and tags.": "Уточняйте список моделей по поставщику, группе, типу и тегам.",

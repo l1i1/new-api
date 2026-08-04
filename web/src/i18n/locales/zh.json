@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "暂无首充返利",
     "Rewards will appear here after an invited user completes their first top-up.": "邀请用户完成首次充值后，返利会显示在这里。",
     "First top-up rewards are currently paused. Your referral link remains available.": "首充返利当前已暂停，推荐链接仍可使用。",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "通过你的邀请链接注册的新用户完成首次充值后，你将自动获得其首充金额的 {{rate}}%。",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "符合条件的邀请用户完成首次充值后，你将获得其首充金额的 {{rate}}%，并直接计入主余额。",
     "Not issued": "未发放",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "管理员确认合规条款之前，邀请奖励转移功能不可用。",
     "Refine models by provider, group, type, and tags.": "按供应商、分组、类型和标签细化模型。",

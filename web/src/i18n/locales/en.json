@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "No first top-up rewards yet",
     "Rewards will appear here after an invited user completes their first top-up.": "Rewards will appear here after an invited user completes their first top-up.",
     "First top-up rewards are currently paused. Your referral link remains available.": "First top-up rewards are currently paused. Your referral link remains available.",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.",
     "Not issued": "Not issued",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "Referral reward transfer is disabled until the administrator confirms compliance terms.",
     "Refine models by provider, group, type, and tags.": "Refine models by provider, group, type, and tags.",

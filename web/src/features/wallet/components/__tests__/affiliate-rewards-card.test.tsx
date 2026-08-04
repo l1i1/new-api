@@ -85,8 +85,8 @@ const user: UserWalletData = {
   quota: 1000,
   used_quota: 500,
   request_count: 10,
-  aff_quota: 100,
-  aff_history_quota: 250,
+  aff_quota: 0,
+  aff_history_quota: 250000,
   aff_count: 3,
   group: 'default',
 }
@@ -172,7 +172,7 @@ describe('affiliate rewards card', () => {
     domWindow.close()
   })
 
-  test('shows ledger-backed summary and recent statuses without restoring legacy transfer balances', async () => {
+  test('shows native first-top-up rewards without exposing legacy reward fields', async () => {
     useCurrencyDisplayStore.getState().setCurrency('USD')
     useSystemConfigStore.getState().setConfig({
       currency: {
@@ -187,6 +187,8 @@ describe('affiliate rewards card', () => {
 
     assert.match(text, /20%/)
     assert.match(text, /Invites/)
+    assert.doesNotMatch(text, /Historical referral rewards/)
+    assert.doesNotMatch(text, /Available to transfer/)
     assert.match(text, /Completed first top-ups/)
     assert.match(text, /Total earned/)
     assert.match(text, /Processing/)
@@ -195,7 +197,6 @@ describe('affiliate rewards card', () => {
     assert.match(text, /\$1\.5/)
     assert.match(text, /\+\$1/)
     assert.doesNotMatch(text, /Transfer to Balance/)
-    assert.doesNotMatch(text, /Affiliate quota/)
     assert.equal(rendered.container.querySelectorAll('button').length, 1)
     assert.equal(
       rendered.container.querySelector('button')?.getAttribute('aria-label'),
@@ -215,6 +216,20 @@ describe('affiliate rewards card', () => {
         '',
       /lg:border-l/
     )
+
+    await unmountCard(rendered)
+  })
+
+  test('hides legacy reward fields and transfer controls even when legacy quota exists', async () => {
+    const rendered = await renderCard({
+      user: { ...user, aff_quota: 1000000 },
+    })
+
+    const text = rendered.container.textContent ?? ''
+    assert.doesNotMatch(text, /Historical referral rewards/)
+    assert.doesNotMatch(text, /Available to transfer/)
+    assert.doesNotMatch(text, /Transfer to Balance/)
+    assert.equal(rendered.container.querySelectorAll('button').length, 1)
 
     await unmountCard(rendered)
   })
@@ -301,7 +316,7 @@ describe('affiliate rewards card', () => {
     await unmountCard(rendered)
   })
 
-  test('explains a paused program without hiding historical reward data or the referral link', async () => {
+  test('explains a paused native program without hiding the referral link', async () => {
     const rendered = await renderCard({
       rewards: { ...rewards, program_enabled: false },
     })

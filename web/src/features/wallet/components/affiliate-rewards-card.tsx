@@ -115,7 +115,7 @@ export function AffiliateRewardsCard(props: AffiliateRewardsCardProps) {
       maximumFractionDigits: 2,
     }).format(rewardRate)
     rewardDescription = t(
-      'New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.',
+      'Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.',
       { rate: rewardRateLabel }
     )
   }
@@ -199,7 +199,6 @@ export function AffiliateRewardsCard(props: AffiliateRewardsCardProps) {
               loading={rewardDataLoading}
             />
           </section>
-
           <AffiliateRewardList
             items={props.rewards?.items ?? []}
             loading={rewardDataLoading}

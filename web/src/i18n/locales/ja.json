@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "初回チャージ報酬はまだありません",
     "Rewards will appear here after an invited user completes their first top-up.": "招待したユーザーが初回チャージを完了すると、ここに報酬が表示されます。",
     "First top-up rewards are currently paused. Your referral link remains available.": "初回チャージ報酬は現在停止中ですが、招待リンクは利用できます。",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "招待リンクから登録した新規ユーザーの初回チャージの {{rate}}% が自動的に還元されます。",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "招待リンクから登録した対象ユーザーの初回チャージの {{rate}}% が自動的に主残高へ加算されます。",
     "Not issued": "未付与",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "管理者がコンプライアンス条件を確認するまで、紹介報酬の移転は無効です。",
     "Refine models by provider, group, type, and tags.": "プロバイダー、グループ、タイプ、タグでモデルを絞り込みます。",

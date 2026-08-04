@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Link } from '@tanstack/react-router'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -23,7 +24,6 @@ import { SectionPageLayout } from '@/components/layout'
 import { buttonVariants } from '@/components/ui/button'
 import { useStatus } from '@/hooks/use-status'
 import { getSelf } from '@/lib/api'
-import { Link } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'

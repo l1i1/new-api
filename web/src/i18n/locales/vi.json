@@ -3723,7 +3723,7 @@
     "No first top-up rewards yet": "Chưa có phần thưởng nạp đầu",
     "Rewards will appear here after an invited user completes their first top-up.": "Phần thưởng sẽ xuất hiện sau khi người dùng được mời hoàn tất lần nạp đầu.",
     "First top-up rewards are currently paused. Your referral link remains available.": "Phần thưởng nạp đầu hiện đang tạm dừng. Liên kết giới thiệu vẫn dùng được.",
-    "New users who register through your invite link will give you {{rate}}% of their first top-up back automatically.": "Người dùng mới đăng ký qua liên kết của bạn sẽ tự động hoàn lại {{rate}}% lần nạp đầu cho bạn.",
+    "Qualifying users who register through your invite link give you {{rate}}% of their first top-up, credited directly to your main balance.": "Người dùng đủ điều kiện đăng ký qua liên kết của bạn sẽ mang lại {{rate}}% lần nạp đầu, được cộng trực tiếp vào số dư chính.",
     "Not issued": "Chưa cấp",
     "Referral reward transfer is disabled until the administrator confirms compliance terms.": "Chuyển phần thưởng giới thiệu bị tắt cho đến khi quản trị viên xác nhận điều khoản tuân thủ.",
     "Refine models by provider, group, type, and tags.": "Tinh chỉnh mô hình theo nhà cung cấp, nhóm, loại và thẻ.",
