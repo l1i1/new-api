@@ -50,10 +50,39 @@ jobs:
           cache: true
 
       - name: Run release regression tests
-        run: go test ./model ./middleware ./relay/...
+        run: |
+          go test ./model ./middleware ./relay/...
+          bash scripts/publish-web-dist-test.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Verify frontend distribution credentials
+        env:
+          WEBDIST_DEPLOY_KEY: ${{ secrets.NEWAPI_WEBDIST_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$WEBDIST_DEPLOY_KEY" || {
+            echo "::error::NEWAPI_WEBDIST_DEPLOY_KEY is not configured"
+            exit 1
+          }
+
+      - name: Build frontend distribution for CDN
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          OUTPUT_DIR="$RUNNER_TEMP/newapi-webdist"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          docker buildx build \
+            --target web-dist-export \
+            --platform linux/amd64 \
+            --file Dockerfile.tokeness \
+            --output "type=local,dest=$OUTPUT_DIR" \
+            .
+          test -f "$OUTPUT_DIR/dist/index.html"
+          echo "Frontend distribution built for $RELEASE_VERSION"
 
       - name: Log in to GHCR
         uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
@@ -116,4 +145,33 @@ jobs:
             echo "${REGISTRY_IMAGE}:${RELEASE_VERSION}"
             echo "${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish frontend distribution to CDN repository
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/newapi-webdist/dist
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          TARGET_BRANCH: web-dist
+          WEBDIST_REPO_SLUG: l1i1/newapi-webdist
+          WEBDIST_REPO_URL: https://github.com/l1i1/newapi-webdist.git
+          WEBDIST_DEPLOY_KEY: ${{ secrets.NEWAPI_WEBDIST_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 0700 -d "$RUNNER_TEMP/newapi-webdist-ssh"
+          printf '%s\n' "$WEBDIST_DEPLOY_KEY" > "$RUNNER_TEMP/newapi-webdist-ssh/id_ed25519"
+          chmod 0600 "$RUNNER_TEMP/newapi-webdist-ssh/id_ed25519"
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+            https://api.github.com/meta | \
+            jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
+          test -s "$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/newapi-webdist-ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
+          export WEBDIST_REPO_URL="git@github.com:l1i1/newapi-webdist.git"
+          bash scripts/publish-web-dist.sh
+          {
+            echo
+            echo '### Frontend CDN distribution'
+            echo
+            echo "- Repository: https://github.com/l1i1/newapi-webdist/tree/web-dist/releases/${RELEASE_VERSION}"
+            echo "- Manifest: https://raw.githubusercontent.com/l1i1/newapi-webdist/web-dist/manifest.json"
           } >> "$GITHUB_STEP_SUMMARY"
