@@ -161,11 +161,17 @@ jobs:
           install -m 0700 -d "$RUNNER_TEMP/newapi-webdist-ssh"
           printf '%s\n' "$WEBDIST_DEPLOY_KEY" > "$RUNNER_TEMP/newapi-webdist-ssh/id_ed25519"
           chmod 0600 "$RUNNER_TEMP/newapi-webdist-ssh/id_ed25519"
+          ssh-keygen -y -f "$RUNNER_TEMP/newapi-webdist-ssh/id_ed25519" >/dev/null
           curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
             https://api.github.com/meta | \
             jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
           test -s "$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/newapi-webdist-ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/newapi-webdist-ssh/known_hosts"
+          auth_output="$(ssh -T git@github.com 2>&1 || true)"
+          grep -Fq 'successfully authenticated' <<< "$auth_output" || {
+            echo "::error::GitHub SSH authentication failed"
+            exit 1
+          }
           export WEBDIST_REPO_URL="git@github.com:l1i1/newapi-webdist.git"
           bash scripts/publish-web-dist.sh
           {
