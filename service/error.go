@@ -137,6 +137,25 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	return
 }
 
+// NormalizeServerOverloadError maps Codex's non-retryable capacity marker to
+// a transient server error so clients can retry or fail over to another model.
+func NormalizeServerOverloadError(openAIError *types.OpenAIError) bool {
+	if openAIError == nil {
+		return false
+	}
+	code, ok := openAIError.Code.(string)
+	if !ok {
+		return false
+	}
+	switch code {
+	case "server_is_overloaded", "server_overloaded", "serverOverloaded", "slow_down":
+		openAIError.Code = "server_error"
+		return true
+	default:
+		return false
+	}
+}
+
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
 	if newApiErr == nil {
 		return

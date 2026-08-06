@@ -122,6 +122,20 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 	require.Equal(t, message, newAPIError.Error())
 }
 
+func TestNormalizeServerOverloadError(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []string{"server_is_overloaded", "server_overloaded", "serverOverloaded", "slow_down"} {
+		errorValue := types.OpenAIError{Code: code}
+		require.True(t, NormalizeServerOverloadError(&errorValue), code)
+		require.Equal(t, "server_error", errorValue.Code, code)
+	}
+
+	unsupported := types.OpenAIError{Code: "invalid_request"}
+	require.False(t, NormalizeServerOverloadError(&unsupported))
+	require.Equal(t, "invalid_request", unsupported.Code)
+}
+
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	withDebugEnabled(t, true)
 

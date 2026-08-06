@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -107,6 +108,84 @@ func TestOaiResponsesHandlerDeclaredToolsWithoutOutputCountZero(t *testing.T) {
 	require.Nil(t, apiErr)
 	assert.Equal(t, 0, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview].CallCount)
 	assert.Equal(t, 0, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolFileSearch].CallCount)
+}
+
+func TestOaiResponsesHandlerTreatsFailedResponseAsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-test"}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":"failed","error":{"code":"server_is_overloaded","message":"Selected model is at capacity."}}`)),
+	}
+
+	usage, apiErr := OaiResponsesHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
+	require.Equal(t, "Selected model is at capacity.", apiErr.Error())
+	require.Empty(t, w.Body.String())
+}
+
+func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Selected model is at capacity.\"}}}\n\ndata: [DONE]\n\n")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
+	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	require.Contains(t, w.Body.String(), "response.failed")
+}
+
+func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"response.error\",\"error\":{\"code\":\"slow_down\",\"message\":\"Please retry.\"}}\n\ndata: [DONE]\n\n")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
+	require.Equal(t, "Please retry.", apiErr.Error())
+	require.Contains(t, w.Body.String(), "response.error")
 }
 
 func TestOaiResponsesHandlerCountsCompletedImageGenerationOutputs(t *testing.T) {
