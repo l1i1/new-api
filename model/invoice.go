@@ -32,8 +32,10 @@ const (
 const InvoiceOrderTypeTopUp = "topup"
 
 const (
-	InvoiceTypeIndividual = "individual"
-	InvoiceTypeCompany    = "company"
+	InvoiceTypeIndividual   = "individual"
+	InvoiceTypeOrganization = "organization"
+
+	legacyInvoiceTypeCompany = "company"
 )
 
 // Invoice eligibility and transition errors. Controllers map these to
@@ -194,7 +196,35 @@ func isDuplicateKeyError(err error) bool {
 }
 
 func validInvoiceType(invoiceType string) bool {
-	return invoiceType == InvoiceTypeIndividual || invoiceType == InvoiceTypeCompany
+	return invoiceType == InvoiceTypeIndividual || invoiceType == InvoiceTypeOrganization
+}
+
+// NormalizeInvoiceType converts the pre-organization company value to the
+// canonical value while preserving compatibility with existing API clients.
+func NormalizeInvoiceType(invoiceType string) string {
+	if invoiceType == legacyInvoiceTypeCompany {
+		return InvoiceTypeOrganization
+	}
+	return invoiceType
+}
+
+// IsValidInvoiceType reports whether an invoice type is supported, including
+// the legacy company value accepted for API compatibility.
+func IsValidInvoiceType(invoiceType string) bool {
+	return validInvoiceType(NormalizeInvoiceType(invoiceType))
+}
+
+// MigrateInvoiceTypeCompanyToOrganization updates persisted invoice data from
+// the legacy company value to the canonical organization value.
+func MigrateInvoiceTypeCompanyToOrganization() error {
+	if err := DB.Model(&Invoice{}).
+		Where("invoice_type = ?", legacyInvoiceTypeCompany).
+		Update("invoice_type", InvoiceTypeOrganization).Error; err != nil {
+		return err
+	}
+	return DB.Model(&InvoiceProfile{}).
+		Where("invoice_type = ?", legacyInvoiceTypeCompany).
+		Update("invoice_type", InvoiceTypeOrganization).Error
 }
 
 // validateInvoiceTopUp re-checks one locked order against the invoice
@@ -259,8 +289,9 @@ func CreateInvoiceApplication(userId int, inv *Invoice, itemOrders []*TopUp, min
 		if inv == nil {
 			return ErrInvoiceInvalid
 		}
+		inv.InvoiceType = NormalizeInvoiceType(strings.ToLower(strings.TrimSpace(inv.InvoiceType)))
 		if inv.InvoiceType == "" {
-			inv.InvoiceType = InvoiceTypeCompany
+			inv.InvoiceType = InvoiceTypeOrganization
 		}
 		if !validInvoiceType(inv.InvoiceType) {
 			return ErrInvoiceTypeInvalid
@@ -366,6 +397,7 @@ func GetInvoiceById(id int) *Invoice {
 	if err != nil {
 		return nil
 	}
+	inv.InvoiceType = invoiceTypeOrOrganization(inv.InvoiceType)
 	return &inv
 }
 
@@ -376,6 +408,7 @@ func GetInvoiceProfile(userId int) (*InvoiceProfile, error) {
 	var profile InvoiceProfile
 	err := DB.Where("user_id = ?", userId).First(&profile).Error
 	if err == nil {
+		profile.InvoiceType = invoiceTypeOrOrganization(profile.InvoiceType)
 		return &profile, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -387,7 +420,7 @@ func GetInvoiceProfile(userId int) (*InvoiceProfile, error) {
 	if err == nil {
 		return &InvoiceProfile{
 			UserId:      userId,
-			InvoiceType: invoiceTypeOrCompany(latest.InvoiceType),
+			InvoiceType: invoiceTypeOrOrganization(latest.InvoiceType),
 			Title:       latest.Title,
 			TaxId:       latest.TaxId,
 			Phone:       latest.Phone,
@@ -412,8 +445,9 @@ func SaveInvoiceProfile(profile *InvoiceProfile) error {
 	if profile == nil || profile.UserId == 0 {
 		return errors.New("invalid invoice profile")
 	}
+	profile.InvoiceType = NormalizeInvoiceType(strings.ToLower(strings.TrimSpace(profile.InvoiceType)))
 	if profile.InvoiceType == "" {
-		profile.InvoiceType = InvoiceTypeCompany
+		profile.InvoiceType = InvoiceTypeOrganization
 	}
 	if !validInvoiceType(profile.InvoiceType) {
 		return errors.New("invalid invoice type")
@@ -433,11 +467,11 @@ func SaveInvoiceProfile(profile *InvoiceProfile) error {
 	}).Create(profile).Error
 }
 
-func invoiceTypeOrCompany(invoiceType string) string {
-	if invoiceType == InvoiceTypeIndividual {
+func invoiceTypeOrOrganization(invoiceType string) string {
+	if NormalizeInvoiceType(invoiceType) == InvoiceTypeIndividual {
 		return InvoiceTypeIndividual
 	}
-	return InvoiceTypeCompany
+	return InvoiceTypeOrganization
 }
 
 func GetInvoiceItems(invoiceId int) ([]*InvoiceItem, error) {
@@ -467,6 +501,9 @@ func GetUserInvoices(userId int, pageInfo *common.PageInfo) ([]*InvoiceListItem,
 	if err != nil {
 		return nil, 0, err
 	}
+	for _, item := range items {
+		item.InvoiceType = invoiceTypeOrOrganization(item.InvoiceType)
+	}
 	return items, total, nil
 }
 
@@ -494,6 +531,9 @@ func GetAllInvoices(pageInfo *common.PageInfo, keyword string, status string) ([
 		Scan(&items).Error
 	if err != nil {
 		return nil, 0, err
+	}
+	for _, item := range items {
+		item.InvoiceType = invoiceTypeOrOrganization(item.InvoiceType)
 	}
 	return items, total, nil
 }

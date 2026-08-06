@@ -153,7 +153,7 @@ describe('reasonRequired', () => {
     assert.equal(reasonRequired('individual'), true)
   })
 
-  test('company invoices do not require a reason', () => {
-    assert.equal(reasonRequired('company'), false)
+  test('organization invoices do not require a reason', () => {
+    assert.equal(reasonRequired('organization'), false)
   })
 })

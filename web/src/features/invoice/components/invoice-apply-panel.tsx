@@ -91,7 +91,7 @@ interface InvoiceApplyFormValues {
 }
 
 const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
-  invoice_type: 'company',
+  invoice_type: 'organization',
   reason: '',
   remark: '',
   email: '',
@@ -106,7 +106,7 @@ const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
 function getInvoiceApplyFormSchema(t: TFunction) {
   return z
     .object({
-      invoice_type: z.enum(['individual', 'company']),
+      invoice_type: z.enum(['individual', 'organization']),
       reason: z.string().trim(),
       remark: z.string().trim(),
       email: z.string().trim().email(t('Please enter a valid email address')),
@@ -514,7 +514,7 @@ export function InvoiceApplyForm({
     form.reset({
       ...INVOICE_APPLY_DEFAULT_VALUES,
       ...initialProfile,
-      invoice_type: initialProfile?.invoice_type || 'company',
+      invoice_type: initialProfile?.invoice_type || 'organization',
       // The account email is the current default; a historically saved
       // delivery email is only used as a fallback when there is no account
       // email, so a newly bound account email is never overridden silently.
@@ -584,12 +584,12 @@ export function InvoiceApplyForm({
                 >
                   <div className='flex items-center gap-2'>
                     <RadioGroupItem
-                      id='invoice-type-company'
-                      value='company'
+                      id='invoice-type-organization'
+                      value='organization'
                       disabled={submitting || savingProfile}
                     />
                     <FormLabel
-                      htmlFor='invoice-type-company'
+                      htmlFor='invoice-type-organization'
                       className='font-normal'
                     >
                       {t('Company')}

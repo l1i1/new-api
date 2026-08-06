@@ -288,7 +288,7 @@ custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户
 # Invoice messages
 invoice.disabled: "发票功能未开启"
 invoice.select_orders: "请选择要开票的订单"
-invoice.type_required: "请选择个人或企业开票类型"
+invoice.type_required: "请选择个人或组织开票类型"
 invoice.title_tax_required: "发票抬头和税号为必填项"
 invoice.reason_required: "个人开票必须填写开票理由"
 invoice.email_required: "收票邮箱为必填项"

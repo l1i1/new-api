@@ -218,6 +218,7 @@ func GetInvoiceProfile(c *gin.Context) {
 
 func validateInvoiceProfileFields(c *gin.Context, req *InvoiceProfileRequest) (*model.InvoiceProfile, bool) {
 	req.InvoiceType = strings.ToLower(strings.TrimSpace(req.InvoiceType))
+	req.InvoiceType = model.NormalizeInvoiceType(req.InvoiceType)
 	req.Title = strings.TrimSpace(req.Title)
 	req.TaxId = strings.TrimSpace(req.TaxId)
 	req.Phone = strings.TrimSpace(req.Phone)
@@ -229,7 +230,7 @@ func validateInvoiceProfileFields(c *gin.Context, req *InvoiceProfileRequest) (*
 		common.ApiErrorI18n(c, i18n.MsgInvalidInput)
 		return nil, false
 	}
-	if req.InvoiceType != model.InvoiceTypeIndividual && req.InvoiceType != model.InvoiceTypeCompany {
+	if !model.IsValidInvoiceType(req.InvoiceType) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceTypeRequired)
 		return nil, false
 	}
@@ -299,6 +300,7 @@ func CreateInvoice(c *gin.Context) {
 		return
 	}
 	req.InvoiceType = strings.ToLower(strings.TrimSpace(req.InvoiceType))
+	req.InvoiceType = model.NormalizeInvoiceType(req.InvoiceType)
 	req.Title = strings.TrimSpace(req.Title)
 	req.TaxId = strings.TrimSpace(req.TaxId)
 	req.Email = strings.TrimSpace(req.Email)
@@ -312,7 +314,7 @@ func CreateInvoice(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidInput)
 		return
 	}
-	if req.InvoiceType != model.InvoiceTypeIndividual && req.InvoiceType != model.InvoiceTypeCompany {
+	if !model.IsValidInvoiceType(req.InvoiceType) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceTypeRequired)
 		return
 	}

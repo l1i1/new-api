@@ -49,7 +49,7 @@ func insertInvoiceControllerFixture(t *testing.T, userId int, username string, e
 	}
 	require.NoError(t, model.DB.Create(topUp).Error)
 	inv := &model.Invoice{
-		UserId: userId, InvoiceType: model.InvoiceTypeCompany, Title: "Acme", TaxId: "TAX-" + fmt.Sprint(userId),
+		UserId: userId, InvoiceType: model.InvoiceTypeOrganization, Title: "Acme", TaxId: "TAX-" + fmt.Sprint(userId),
 		Phone: "13800000000", Address: "Shanghai", BankName: "Test Bank", BankAccount: "6222" + fmt.Sprint(userId),
 		Email: "billing@" + username + ".example", Reason: "r", Remark: "user remark", Status: model.InvoiceStatusPending,
 		Currency: "CNY", TotalAmount: 50,
@@ -161,7 +161,7 @@ func TestCreateInvoiceRequiresBoundAccountEmail(t *testing.T) {
 	}
 	require.NoError(t, model.DB.Create(topUp).Error)
 
-	body := fmt.Sprintf(`{"orders":[{"order_type":"topup","order_id":%d}],"invoice_type":"company","title":"Acme","tax_id":"T","email":"deliver@example.com","reason":"r","remark":""}`, topUp.Id)
+	body := fmt.Sprintf(`{"orders":[{"order_type":"topup","order_id":%d}],"invoice_type":"organization","title":"Acme","tax_id":"T","email":"deliver@example.com","reason":"r","remark":""}`, topUp.Id)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Set("id", 806)
@@ -187,7 +187,7 @@ func TestCreateInvoiceTranslatesBusinessErrors(t *testing.T) {
 	}
 	require.NoError(t, model.DB.Create(topUpUSD).Error)
 
-	body := fmt.Sprintf(`{"orders":[{"order_type":"topup","order_id":%d},{"order_type":"topup","order_id":%d}],"invoice_type":"company","title":"Acme","tax_id":"T","email":"deliver@example.com","reason":"r","remark":""}`, 80700, 80701)
+	body := fmt.Sprintf(`{"orders":[{"order_type":"topup","order_id":%d},{"order_type":"topup","order_id":%d}],"invoice_type":"organization","title":"Acme","tax_id":"T","email":"deliver@example.com","reason":"r","remark":""}`, 80700, 80701)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Set("id", 807)
@@ -385,7 +385,7 @@ func TestInvoiceProfileValidationAndAtomicUpsert(t *testing.T) {
 	user := &model.User{Id: 811, Username: "profile", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Email: "p@example.com"}
 	require.NoError(t, model.DB.Create(user).Error)
 
-	body := `{"invoice_type":"company","title":"Acme","tax_id":"TAX","phone":"","address":"","bank_name":"","bank_account":"","email":"b@example.com"}`
+	body := `{"invoice_type":"organization","title":"Acme","tax_id":"TAX","phone":"","address":"","bank_name":"","bank_account":"","email":"b@example.com"}`
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Set("id", 811)
@@ -399,7 +399,7 @@ func TestInvoiceProfileValidationAndAtomicUpsert(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(recorder)
 	c.Set("id", 811)
-	c.Request = httptest.NewRequest(http.MethodPut, "/api/invoice/profile", bytes.NewReader([]byte(`{"invoice_type":"company","title":"Acme","tax_id":"TAX","email":"not-an-email"}`)))
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/invoice/profile", bytes.NewReader([]byte(`{"invoice_type":"organization","title":"Acme","tax_id":"TAX","email":"not-an-email"}`)))
 	c.Request.Header.Set("Content-Type", "application/json")
 	SaveInvoiceProfile(c)
 	payload = jsonResponse(t, recorder)
@@ -416,7 +416,7 @@ func TestInvoiceProfileRejectsOversizedFields(t *testing.T) {
 	user := &model.User{Id: 812, Username: "oversize", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Email: "o@example.com"}
 	require.NoError(t, model.DB.Create(user).Error)
 
-	body := fmt.Sprintf(`{"invoice_type":"company","title":"%s","tax_id":"TAX","email":"b@example.com"}`, strings.Repeat("x", 300))
+	body := fmt.Sprintf(`{"invoice_type":"organization","title":"%s","tax_id":"TAX","email":"b@example.com"}`, strings.Repeat("x", 300))
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Set("id", 812)

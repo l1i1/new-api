@@ -37,7 +37,7 @@ export type InvoiceStatus =
   | 'rejected'
   | 'cancelled'
 
-export type InvoiceType = 'individual' | 'company'
+export type InvoiceType = 'individual' | 'organization'
 
 /**
  * Invoice application summary returned by the admin list endpoint.

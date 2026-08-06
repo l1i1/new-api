@@ -22,7 +22,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 export type InvoiceOrderType = 'topup'
 
-export type InvoiceType = 'individual' | 'company'
+export type InvoiceType = 'individual' | 'organization'
 
 export type InvoiceStatus =
   | 'pending'

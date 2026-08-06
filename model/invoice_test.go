@@ -47,6 +47,30 @@ func newInvoiceFixture(t *testing.T, userId int, orders []*TopUp) *Invoice {
 	return inv
 }
 
+func TestNormalizeInvoiceTypeUsesOrganizationAsCanonicalValue(t *testing.T) {
+	assert.Equal(t, InvoiceTypeOrganization, NormalizeInvoiceType("company"))
+	assert.Equal(t, InvoiceTypeOrganization, NormalizeInvoiceType(InvoiceTypeOrganization))
+	assert.True(t, IsValidInvoiceType("company"))
+	assert.False(t, IsValidInvoiceType("enterprise"))
+}
+
+func TestMigrateInvoiceTypeCompanyToOrganization(t *testing.T) {
+	truncateTables(t)
+	legacyInvoice := &Invoice{InvoiceType: "company", Title: "Acme", TaxId: "TAX"}
+	legacyProfile := &InvoiceProfile{UserId: 901, InvoiceType: "company", Title: "Acme", TaxId: "TAX"}
+	require.NoError(t, DB.Create(legacyInvoice).Error)
+	require.NoError(t, DB.Create(legacyProfile).Error)
+
+	require.NoError(t, MigrateInvoiceTypeCompanyToOrganization())
+
+	var invoice Invoice
+	var profile InvoiceProfile
+	require.NoError(t, DB.First(&invoice, legacyInvoice.Id).Error)
+	require.NoError(t, DB.First(&profile, legacyProfile.Id).Error)
+	assert.Equal(t, InvoiceTypeOrganization, invoice.InvoiceType)
+	assert.Equal(t, InvoiceTypeOrganization, profile.InvoiceType)
+}
+
 func TestGetInvoiceableTopUps_FiltersEligibility(t *testing.T) {
 	truncateTables(t)
 	insertUserForPaymentGuardTest(t, 601, 100)
@@ -156,7 +180,7 @@ func TestSaveInvoiceProfile_ConcurrentSavesAreAtomic(t *testing.T) {
 				Title:       "Concurrent " + string(rune('A'+n)),
 				TaxId:       "TAX",
 				Email:       "c@example.com",
-				InvoiceType: InvoiceTypeCompany,
+				InvoiceType: InvoiceTypeOrganization,
 			}
 			errs <- SaveInvoiceProfile(p)
 		}(i)
@@ -188,7 +212,7 @@ func TestCreateInvoiceApplication_InvoiceTypeReasonRules(t *testing.T) {
 	assert.Zero(t, individual.Id)
 
 	company := &Invoice{
-		InvoiceType: InvoiceTypeCompany,
+		InvoiceType: InvoiceTypeOrganization,
 		Title:       "Acme Inc.",
 		TaxId:       "91310000TEST",
 		Email:       "billing@acme.example",
