@@ -1,6 +1,7 @@
 package model
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,9 @@ func InitOptionMap() {
 	common.OptionMap["InvoiceEnabled"] = "false"
 	common.OptionMap["InvoiceNotice"] = ""
 	common.OptionMap["InvoiceMinAmount"] = "0"
+	common.OptionMap[setting.PricingGeoIPDatabaseOptionKey] = os.Getenv(setting.PricingGeoIPDatabaseEnv)
+	common.OptionMap[setting.PricingGeoIPDownloadOptionKey] = os.Getenv(setting.PricingGeoIPDownloadEnv)
+	common.OptionMap[setting.PricingGeoIPSHA256OptionKey] = os.Getenv(setting.PricingGeoIPSHA256Env)
 	common.OptionMap["StripeMinTopUp"] = strconv.Itoa(setting.StripeMinTopUp)
 	common.OptionMap["StripeApiSecret"] = setting.StripeApiSecret
 	common.OptionMap["StripeWebhookSecret"] = setting.StripeWebhookSecret

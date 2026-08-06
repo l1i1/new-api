@@ -247,6 +247,9 @@ export type ModelSettings = {
 }
 
 export type BillingSettings = {
+  'pricing_geoip.db': string
+  'pricing_geoip.url': string
+  'pricing_geoip.sha256': string
   QuotaForNewUser: number
   PreConsumedQuota: number
   QuotaForInviter: number

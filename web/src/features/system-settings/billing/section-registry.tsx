@@ -22,10 +22,11 @@ import { CheckinSettingsSection } from '../general/checkin-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
-import { InvoiceSettingsSection } from './invoice-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { InvoiceSettingsSection } from './invoice-settings-section'
+import { PricingGeoIPSection } from './pricing-geoip-section'
 
 const getModelDefaults = (settings: BillingSettings) => ({
   ModelPrice: settings.ModelPrice,
@@ -99,6 +100,19 @@ const BILLING_SECTIONS = [
             custom_currency_exchange_rate:
               settings['general_setting.custom_currency_exchange_rate'] ?? 1,
           },
+        }}
+      />
+    ),
+  },
+  {
+    id: 'geoip',
+    titleKey: 'Pricing GeoIP Compliance',
+    build: (settings: BillingSettings) => (
+      <PricingGeoIPSection
+        defaultValues={{
+          databasePath: settings['pricing_geoip.db'],
+          downloadURL: settings['pricing_geoip.url'],
+          sha256: settings['pricing_geoip.sha256'],
         }}
       />
     ),

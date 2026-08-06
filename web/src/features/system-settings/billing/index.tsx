@@ -25,6 +25,9 @@ import {
 } from './section-registry.tsx'
 
 const defaultBillingSettings: BillingSettings = {
+  'pricing_geoip.db': '',
+  'pricing_geoip.url': '',
+  'pricing_geoip.sha256': '',
   QuotaForNewUser: 0,
   PreConsumedQuota: 0,
   QuotaForInviter: 0,
