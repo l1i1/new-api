@@ -370,8 +370,15 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
-	case setting.PricingGeoIPDatabaseOptionKey, setting.PricingGeoIPDownloadOptionKey, setting.PricingGeoIPSHA256OptionKey:
-		err = validatePricingGeoIPOption(option.Key, option.Value.(string))
+	case setting.ComplianceGeoIPEnabledOptionKey,
+		setting.ComplianceGeoIPCountryCodesOptionKey,
+		setting.ComplianceGeoIPModelKeywordsOptionKey,
+		setting.ComplianceGeoIPGroupKeywordsOptionKey,
+		setting.ComplianceGeoIPRetryBackoffMinutesOptionKey,
+		setting.ComplianceGeoIPDatabaseOptionKey,
+		setting.ComplianceGeoIPDownloadOptionKey,
+		setting.ComplianceGeoIPSHA256OptionKey:
+		err = validateComplianceGeoIPOption(option.Key, option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

@@ -247,9 +247,14 @@ export type ModelSettings = {
 }
 
 export type BillingSettings = {
-  'pricing_geoip.db': string
-  'pricing_geoip.url': string
-  'pricing_geoip.sha256': string
+  'compliance_geoip.enabled': boolean
+  'compliance_geoip.country_codes': string
+  'compliance_geoip.model_keywords': string
+  'compliance_geoip.group_keywords': string
+  'compliance_geoip.retry_backoff_minutes': number
+  'compliance_geoip.db': string
+  'compliance_geoip.url': string
+  'compliance_geoip.sha256': string
   QuotaForNewUser: number
   PreConsumedQuota: number
   QuotaForInviter: number

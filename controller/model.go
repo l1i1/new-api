@@ -207,6 +207,9 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 }
 
 func ListModels(c *gin.Context, modelType int) {
+	complianceCountry := complianceClientCountry(c)
+	setDiscoveryComplianceHeaders(c, complianceCountry)
+
 	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
 	if !acceptUnsetRatioModel {
 		userId := c.GetInt("id")
@@ -228,6 +231,9 @@ func ListModels(c *gin.Context, modelType int) {
 		return
 	}
 	ownerGroups := groups.ownerGroups
+	if complianceCountry != "" {
+		ownerGroups = filterComplianceGroups(ownerGroups)
+	}
 	modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 	var tokenModelLimit map[string]bool
 	if modelLimitEnable {
@@ -241,6 +247,9 @@ func ListModels(c *gin.Context, modelType int) {
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
 	for _, modelName := range models {
+		if complianceCountry != "" && isComplianceRestrictedModel(modelName) {
+			continue
+		}
 		if modelLimitEnable {
 			matchingName := ratio_setting.FormatMatchingModelName(modelName)
 			if !tokenModelLimit[modelName] && !tokenModelLimit[matchingName] {
@@ -328,8 +337,14 @@ func EnabledListModels(c *gin.Context) {
 }
 
 func RetrieveModel(c *gin.Context, modelType int) {
+	complianceCountry := complianceClientCountry(c)
+	setDiscoveryComplianceHeaders(c, complianceCountry)
 	modelId := c.Param("model")
-	if aiModel, ok := openAIModelsMap[modelId]; ok {
+	aiModel, ok := openAIModelsMap[modelId]
+	if complianceCountry != "" && isComplianceRestrictedModel(modelId) {
+		ok = false
+	}
+	if ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:
 			c.JSON(200, dto.AnthropicModel{

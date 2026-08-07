@@ -67,9 +67,11 @@ func TestUpdateVendorMetaRefreshesLocalizedPricingVendor(t *testing.T) {
 	pricingRecorder := httptest.NewRecorder()
 	pricingContext, _ := gin.CreateTestContext(pricingRecorder)
 	pricingContext.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+	pricingContext.Request.RemoteAddr = ""
 	GetPricing(pricingContext)
 
 	require.Equal(t, http.StatusOK, pricingRecorder.Code)
+	assert.Contains(t, pricingRecorder.Header().Get("Cache-Control"), "no-store")
 	var pricingResponse struct {
 		Success bool                  `json:"success"`
 		Vendors []model.PricingVendor `json:"vendors"`

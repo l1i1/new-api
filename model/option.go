@@ -87,9 +87,14 @@ func InitOptionMap() {
 	common.OptionMap["InvoiceEnabled"] = "false"
 	common.OptionMap["InvoiceNotice"] = ""
 	common.OptionMap["InvoiceMinAmount"] = "0"
-	common.OptionMap[setting.PricingGeoIPDatabaseOptionKey] = os.Getenv(setting.PricingGeoIPDatabaseEnv)
-	common.OptionMap[setting.PricingGeoIPDownloadOptionKey] = os.Getenv(setting.PricingGeoIPDownloadEnv)
-	common.OptionMap[setting.PricingGeoIPSHA256OptionKey] = os.Getenv(setting.PricingGeoIPSHA256Env)
+	common.OptionMap[setting.ComplianceGeoIPEnabledOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPEnabledEnv, setting.ComplianceGeoIPEnabledDefault)
+	common.OptionMap[setting.ComplianceGeoIPCountryCodesOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPCountryCodesEnv, setting.ComplianceGeoIPCountryCodesDefault)
+	common.OptionMap[setting.ComplianceGeoIPModelKeywordsOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPModelKeywordsEnv, setting.ComplianceGeoIPModelKeywordsDefault)
+	common.OptionMap[setting.ComplianceGeoIPGroupKeywordsOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPGroupKeywordsEnv, setting.ComplianceGeoIPGroupKeywordsDefault)
+	common.OptionMap[setting.ComplianceGeoIPRetryBackoffMinutesOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPRetryBackoffMinutesEnv, setting.ComplianceGeoIPRetryBackoffMinutesDefault)
+	common.OptionMap[setting.ComplianceGeoIPDatabaseOptionKey] = os.Getenv(setting.ComplianceGeoIPDatabaseEnv)
+	common.OptionMap[setting.ComplianceGeoIPDownloadOptionKey] = os.Getenv(setting.ComplianceGeoIPDownloadEnv)
+	common.OptionMap[setting.ComplianceGeoIPSHA256OptionKey] = os.Getenv(setting.ComplianceGeoIPSHA256Env)
 	common.OptionMap["StripeMinTopUp"] = strconv.Itoa(setting.StripeMinTopUp)
 	common.OptionMap["StripeApiSecret"] = setting.StripeApiSecret
 	common.OptionMap["StripeWebhookSecret"] = setting.StripeWebhookSecret
