@@ -636,6 +636,9 @@ func generateDefaultSidebarConfig(userRole int) string {
 }
 
 func GetUserModels(c *gin.Context) {
+	complianceCountry := complianceClientCountry(c)
+	setDiscoveryComplianceHeaders(c, complianceCountry)
+
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		id = c.GetInt("id")
@@ -662,10 +665,17 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = []string{group}
 		}
 	}
+	if complianceCountry != "" {
+		groupsToQuery = filterComplianceGroups(groupsToQuery)
+	}
+	models := service.GetGroupsEnabledModels(groupsToQuery)
+	if complianceCountry != "" {
+		models = filterComplianceModels(models)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    service.GetGroupsEnabledModels(groupsToQuery),
+		"data":    models,
 	})
 }
 

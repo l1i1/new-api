@@ -198,6 +198,7 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 	defaultRecorder := httptest.NewRecorder()
 	defaultContext, _ := gin.CreateTestContext(defaultRecorder)
 	defaultContext.Request = httptest.NewRequest(http.MethodGet, "/api/user/models?group=default", nil)
+	defaultContext.Request.RemoteAddr = ""
 	defaultContext.Set("id", 1002)
 
 	GetUserModels(defaultContext)
@@ -208,6 +209,7 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 	vipRecorder := httptest.NewRecorder()
 	vipContext, _ := gin.CreateTestContext(vipRecorder)
 	vipContext.Request = httptest.NewRequest(http.MethodGet, "/api/user/models?group=vip", nil)
+	vipContext.Request.RemoteAddr = ""
 	vipContext.Set("id", 1002)
 
 	GetUserModels(vipContext)
@@ -255,6 +257,7 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest(http.MethodGet, "/api/user/models?group=auto", nil)
+	context.Request.RemoteAddr = ""
 	context.Set("id", 1003)
 
 	GetUserModels(context)
@@ -294,6 +297,7 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Request.RemoteAddr = ""
 	ctx.Set("id", 1001)
 
 	ListModels(ctx, constant.ChannelTypeOpenAI)
@@ -379,6 +383,7 @@ func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Request.RemoteAddr = ""
 	ctx.Set("id", 1003)
 
 	ListModels(ctx, constant.ChannelTypeOpenAI)
@@ -413,6 +418,7 @@ func TestListModelsTokenLimitIncludesTieredBillingModel(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Request.RemoteAddr = ""
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
 	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
@@ -458,6 +464,7 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Request.RemoteAddr = ""
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "auto")
 	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
@@ -476,6 +483,7 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	emptyRecorder := httptest.NewRecorder()
 	emptyCtx, _ := gin.CreateTestContext(emptyRecorder)
 	emptyCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	emptyCtx.Request.RemoteAddr = ""
 	common.SetContextKey(emptyCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(emptyCtx, constant.ContextKeyTokenGroup, "auto")
 	common.SetContextKey(emptyCtx, constant.ContextKeyTokenAutoGroups, []string{"vip"})

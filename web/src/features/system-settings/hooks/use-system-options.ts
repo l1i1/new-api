@@ -37,9 +37,17 @@ function parseOptionValueSafe<T>(
   defaultValue: T
 ): ParseResult<T> {
   if (typeof defaultValue === 'boolean') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true' || normalized === 't' || normalized === '1') {
+      return { success: true, value: true as T }
+    }
+    if (normalized === 'false' || normalized === 'f' || normalized === '0') {
+      return { success: true, value: false as T }
+    }
     return {
-      success: true,
-      value: (value === 'true' || value === '1') as T,
+      success: false,
+      error: `Invalid boolean: "${value}"`,
+      fallback: defaultValue,
     }
   }
 

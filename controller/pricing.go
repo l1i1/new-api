@@ -11,10 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var pricingChinaModelKeywords = []string{"gpt", "gemini", "claude", "grok"}
-
-var pricingChinaGroupKeywords = []string{"gpt", "gemini", "claude", "grok", "genpic"}
-
 func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string) []model.Pricing {
 	if len(pricing) == 0 {
 		return pricing
@@ -39,17 +35,7 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
-func containsPricingKeyword(value string, keywords []string) bool {
-	text := strings.ToLower(value)
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-func filterPricingForChina(
+func filterPricingForCompliance(
 	pricing []model.Pricing,
 	vendors []model.PricingVendor,
 	groupRatio map[string]float64,
@@ -63,13 +49,13 @@ func filterPricingForChina(
 	seenVendorIDs := make(map[int]struct{})
 
 	for _, item := range pricing {
-		if containsPricingKeyword(item.ModelName, pricingChinaModelKeywords) {
+		if isComplianceRestrictedModel(item.ModelName) {
 			continue
 		}
 
 		bannedGroup := false
 		for _, group := range item.EnableGroup {
-			if containsPricingKeyword(group, pricingChinaGroupKeywords) {
+			if isComplianceRestrictedGroup(group) {
 				bannedGroup = true
 				break
 			}
@@ -94,7 +80,7 @@ func filterPricingForChina(
 	filteredAutoGroups := make([]string, 0, len(autoGroups))
 	allowedGroups := make(map[string]struct{})
 	for _, group := range autoGroups {
-		if _, seen := seenGroups[group]; !seen || containsPricingKeyword(group, pricingChinaGroupKeywords) {
+		if _, seen := seenGroups[group]; !seen || isComplianceRestrictedGroup(group) {
 			continue
 		}
 		if _, added := allowedGroups[group]; added {
@@ -104,7 +90,7 @@ func filterPricingForChina(
 		allowedGroups[group] = struct{}{}
 	}
 	for _, group := range seenGroupOrder {
-		if containsPricingKeyword(group, pricingChinaGroupKeywords) {
+		if isComplianceRestrictedGroup(group) {
 			continue
 		}
 		if _, added := allowedGroups[group]; added {
@@ -175,8 +161,10 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 	autoGroups := service.GetUserAutoGroup(group)
-	if isChinaPricingClient(c) {
-		pricing, vendors, groupRatio, usableGroup, autoGroups, supportedEndpoint = filterPricingForChina(
+	complianceCountry := complianceClientCountry(c)
+	setDiscoveryComplianceHeaders(c, complianceCountry)
+	if complianceCountry != "" {
+		pricing, vendors, groupRatio, usableGroup, autoGroups, supportedEndpoint = filterPricingForCompliance(
 			pricing,
 			vendors,
 			groupRatio,
@@ -184,7 +172,7 @@ func GetPricing(c *gin.Context) {
 			autoGroups,
 			supportedEndpoint,
 		)
-		c.Header("X-Pricing-Filtered", "cn")
+		c.Header("X-Pricing-Filtered", strings.ToLower(complianceCountry))
 	}
 
 	c.JSON(200, gin.H{

@@ -25,9 +25,14 @@ import {
 } from './section-registry.tsx'
 
 const defaultBillingSettings: BillingSettings = {
-  'pricing_geoip.db': '',
-  'pricing_geoip.url': '',
-  'pricing_geoip.sha256': '',
+  'compliance_geoip.enabled': true,
+  'compliance_geoip.country_codes': 'CN',
+  'compliance_geoip.model_keywords': 'gpt,gemini,claude,grok',
+  'compliance_geoip.group_keywords': 'gpt,gemini,claude,grok,genpic',
+  'compliance_geoip.retry_backoff_minutes': 5,
+  'compliance_geoip.db': '',
+  'compliance_geoip.url': '',
+  'compliance_geoip.sha256': '',
   QuotaForNewUser: 0,
   PreConsumedQuota: 0,
   QuotaForInviter: 0,

@@ -29,7 +29,12 @@ func GetUserGroups(c *gin.Context) {
 	userId := c.GetInt("id")
 	userGroup, _ = model.GetUserGroup(userId, false)
 	userUsableGroups := service.GetUserUsableGroups(userGroup)
+	complianceCountry := complianceClientCountry(c)
+	setDiscoveryComplianceHeaders(c, complianceCountry)
 	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
+		if complianceCountry != "" && isComplianceRestrictedGroup(groupName) {
+			continue
+		}
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
 			usableGroups[groupName] = map[string]interface{}{
@@ -39,9 +44,12 @@ func GetUserGroups(c *gin.Context) {
 		}
 	}
 	if _, ok := userUsableGroups["auto"]; ok {
-		usableGroups["auto"] = map[string]interface{}{
-			"ratio": "自动",
-			"desc":  setting.GetUsableGroupDescription("auto"),
+		autoGroups := service.GetUserAutoGroup(userGroup)
+		if complianceCountry == "" || len(filterComplianceGroups(autoGroups)) > 0 {
+			usableGroups["auto"] = map[string]interface{}{
+				"ratio": "自动",
+				"desc":  setting.GetUsableGroupDescription("auto"),
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
