@@ -157,6 +157,8 @@ func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
 	require.Contains(t, w.Body.String(), "response.failed")
+	require.NotContains(t, w.Body.String(), "server_is_overloaded")
+	require.Contains(t, w.Body.String(), `"code":"server_error"`)
 }
 
 func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) {
@@ -186,6 +188,8 @@ func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) 
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, "Please retry.", apiErr.Error())
 	require.Contains(t, w.Body.String(), "response.error")
+	require.NotContains(t, w.Body.String(), "slow_down")
+	require.Contains(t, w.Body.String(), `"code":"server_error"`)
 }
 
 func TestOaiResponsesHandlerCountsCompletedImageGenerationOutputs(t *testing.T) {

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -241,4 +242,92 @@ func sendResponsesStreamData(c *gin.Context, streamResponse dto.ResponsesStreamR
 		return
 	}
 	_ = helper.ResponseChunkData(c, streamResponse, data)
+}
+
+// rewriteResponsesServerOverload changes only the structured error code in a
+// Responses SSE event. Codex treats server_is_overloaded as a terminal error,
+// so forwarding that upstream code prevents its retry/failover path.
+func rewriteResponsesServerOverload(data string) (string, bool, error) {
+	if !strings.Contains(data, "server_is_overloaded") &&
+		!strings.Contains(data, "server_overloaded") &&
+		!strings.Contains(data, "serverOverloaded") &&
+		!strings.Contains(data, "slow_down") {
+		return data, false, nil
+	}
+
+	var event map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(data, &event); err != nil {
+		return "", false, err
+	}
+
+	rewritten := false
+	if responseData, ok := event["response"]; ok {
+		var response map[string]json.RawMessage
+		if err := common.Unmarshal(responseData, &response); err == nil {
+			if errorData, ok := response["error"]; ok {
+				updated, changed, err := rewriteResponsesErrorObject(errorData)
+				if err != nil {
+					return "", false, err
+				}
+				if changed {
+					response["error"] = updated
+					updatedResponse, err := common.Marshal(response)
+					if err != nil {
+						return "", false, err
+					}
+					event["response"] = updatedResponse
+					rewritten = true
+				}
+			}
+		}
+	}
+	if errorData, ok := event["error"]; ok {
+		updated, changed, err := rewriteResponsesErrorObject(errorData)
+		if err != nil {
+			return "", false, err
+		}
+		if changed {
+			event["error"] = updated
+			rewritten = true
+		}
+	}
+	if !rewritten {
+		return data, false, nil
+	}
+
+	eventData, err := common.Marshal(event)
+	if err != nil {
+		return "", false, err
+	}
+	return string(eventData), true, nil
+}
+
+func rewriteResponsesErrorObject(errorData json.RawMessage) (json.RawMessage, bool, error) {
+	var errorFields map[string]json.RawMessage
+	if err := common.Unmarshal(errorData, &errorFields); err != nil {
+		return errorData, false, nil
+	}
+	codeData, ok := errorFields["code"]
+	if !ok {
+		return errorData, false, nil
+	}
+	var code string
+	if err := common.Unmarshal(codeData, &code); err != nil {
+		return errorData, false, nil
+	}
+	switch code {
+	case "server_is_overloaded", "server_overloaded", "serverOverloaded", "slow_down":
+		codeData, err := common.Marshal("server_error")
+		if err != nil {
+			return nil, false, err
+		}
+		errorFields["code"] = codeData
+		errorData, err := common.Marshal(errorFields)
+		if err != nil {
+			return nil, false, err
+		}
+		return errorData, true, nil
+	default:
+		return errorData, false, nil
+	}
 }
