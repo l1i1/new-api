@@ -29,10 +29,19 @@ func TestGetPassThroughRequestBodyPreservesBytesAndSize(t *testing.T) {
 
 	body, err := getPassThroughRequestBody(ctx, info)
 	require.NoError(t, err)
+	replayable, ok := body.(common.ReplayableBody)
+	require.True(t, ok)
+	require.Equal(t, int64(len(expected)), replayable.Size())
 	actual, err := io.ReadAll(body)
 	require.NoError(t, err)
 	require.Equal(t, expected, actual)
-	require.Equal(t, int64(len(expected)), info.UpstreamRequestBodySize)
+
+	replay, err := replayable.NewReader()
+	require.NoError(t, err)
+	defer replay.Close()
+	replayed, err := io.ReadAll(replay)
+	require.NoError(t, err)
+	require.Equal(t, expected, replayed)
 }
 
 func TestShouldPassThroughClaudeRequestBodyRejectsOpenAICrossProtocol(t *testing.T) {

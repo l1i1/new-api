@@ -36,3 +36,14 @@ tag. At the time of preparation, `upstream/main` was 18 commits ahead of rc.24.
   Tokeness behavior while adopting upstream correctness fixes.
 - This is a source-integration candidate only. Publishing an immutable image
   and staged deployment require separate review and release approval.
+
+## Conflict Resolution
+
+- Retained Tokeness registration attribution: invite counts remain independent
+  from payment-compliance status, while inviter quota is still conditional.
+- Combined Tokeness raw-body protocol protection and diagnostics with rc.24's
+  replayable request body contract, so transport retries retain the original
+  body without allowing raw OpenAI payloads through non-OpenAI adapters.
+- Retired the obsolete `RelayInfo` body-size metadata and its duplicate test;
+  rc.24 now derives request length and retry factories directly from the
+  replayable body.
