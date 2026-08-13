@@ -1,34 +1,14 @@
 package channel
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
-
-func TestApplyUpstreamContentLengthForTypeErasedBody(t *testing.T) {
-	t.Parallel()
-
-	expected := "byte-identical pass-through body"
-	body := io.LimitReader(strings.NewReader(expected), int64(len(expected)))
-	request, err := http.NewRequest(http.MethodPost, "https://example.com/v1/chat/completions", body)
-	require.NoError(t, err)
-	require.Zero(t, request.ContentLength)
-
-	applyUpstreamContentLength(request, &relaycommon.RelayInfo{
-		UpstreamRequestBodySize: int64(len(expected)),
-	})
-	require.Equal(t, int64(len(expected)), request.ContentLength)
-	actual, err := io.ReadAll(request.Body)
-	require.NoError(t, err)
-	require.Equal(t, expected, string(actual))
-}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()

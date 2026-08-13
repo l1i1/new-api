@@ -35,7 +35,6 @@ func getPassThroughRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.
 		return nil, err
 	}
 
-	info.UpstreamRequestBodySize = storage.Size()
 	if common.DebugEnabled {
 		hash := sha256.New()
 		if _, err = io.Copy(hash, storage); err != nil {
@@ -54,5 +53,5 @@ func getPassThroughRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.
 		}
 	}
 
-	return common.ReaderOnly(storage), nil
+	return common.NewReplayableBodyReader(storage), nil
 }
