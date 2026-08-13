@@ -70,6 +70,9 @@ const i18n = (await import('i18next')).default
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { Toaster, toast } = await import('sonner')
 const { api } = await import('@/lib/api')
+const { useCurrencyDisplayStore } = await import(
+  '@/stores/currency-display-store'
+)
 const { useSystemConfigStore } = await import('@/stores/system-config-store')
 const { RedemptionsProvider } = await import('../redemptions-provider')
 const { RedemptionsMutateDrawer } = await import('../redemptions-mutate-drawer')
@@ -160,6 +163,7 @@ async function renderDrawer(
     usdExchangeRate: 1,
   }
 ): Promise<void> {
+  useCurrencyDisplayStore.getState().setCurrency(currency.quotaDisplayType)
   useSystemConfigStore.getState().setConfig({
     currency: {
       displayInCurrency: true,

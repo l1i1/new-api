@@ -47,3 +47,6 @@ tag. At the time of preparation, `upstream/main` was 18 commits ahead of rc.24.
 - Retired the obsolete `RelayInfo` body-size metadata and its duplicate test;
   rc.24 now derives request length and retry factories directly from the
   replayable body.
+- Aligned the rc.24 redemption-form test fixture with Tokeness's browser-local
+  display-currency preference, so CNY precision coverage exercises the same
+  source of truth as the rendered form.
