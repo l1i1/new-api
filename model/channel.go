@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -888,17 +889,53 @@ func UpdateChannelUsedQuota(id int, quota int) {
 }
 
 func ResetChannelUsedQuota(id int) (*Channel, error) {
-	var channel Channel
+	channels, err := ResetChannelsUsedQuota([]int{id})
+	if err != nil {
+		return nil, err
+	}
+	return &channels[0], nil
+}
+
+// ResetChannelsUsedQuota clears the operational usage counters for the
+// requested channels under one transaction. The selected rows are locked in
+// deterministic order so concurrent batch resets do not acquire overlapping
+// channel locks in different orders.
+func ResetChannelsUsedQuota(ids []int) ([]Channel, error) {
+	uniqueIDs := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			uniqueIDs[id] = struct{}{}
+		}
+	}
+	if len(uniqueIDs) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	normalizedIDs := make([]int, 0, len(uniqueIDs))
+	for id := range uniqueIDs {
+		normalizedIDs = append(normalizedIDs, id)
+	}
+	sort.Ints(normalizedIDs)
+
+	var channels []Channel
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockForUpdate(tx).Where("id = ?", id).First(&channel).Error; err != nil {
+		if err := lockForUpdate(tx).
+			Where("id IN ?", normalizedIDs).
+			Order("id ASC").
+			Find(&channels).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Channel{}).Where("id = ?", id).Update("used_quota", 0).Error
+		if len(channels) == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Model(&Channel{}).
+			Where("id IN ?", normalizedIDs).
+			Update("used_quota", 0).Error
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &channel, nil
+	return channels, nil
 }
 
 func updateChannelUsedQuota(id int, quota int) {

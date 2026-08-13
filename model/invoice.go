@@ -32,6 +32,12 @@ const (
 const InvoiceOrderTypeTopUp = "topup"
 
 const (
+	InvoiceAllowedPaymentMethodsOption = "InvoiceAllowedPaymentMethods"
+	maxInvoiceAllowedPaymentMethods    = 32
+	maxInvoicePaymentMethodBytes       = 50
+)
+
+const (
 	InvoiceTypeIndividual   = "individual"
 	InvoiceTypeOrganization = "organization"
 
@@ -41,26 +47,74 @@ const (
 // Invoice eligibility and transition errors. Controllers map these to
 // localized user-facing messages; the errors themselves stay language-neutral.
 var (
-	ErrInvoiceInvalid           = errors.New("invalid invoice application")
-	ErrInvoiceTypeInvalid       = errors.New("invalid invoice type")
-	ErrInvoiceReasonRequired    = errors.New("individual invoices require a reason")
-	ErrInvoiceNoOrders          = errors.New("no orders selected")
-	ErrInvoiceOrderNotFound     = errors.New("some orders do not exist")
-	ErrInvoiceOrderNotOwned     = errors.New("order does not belong to the user")
-	ErrInvoiceOrderNotPaid      = errors.New("order is not paid")
-	ErrInvoiceBalanceOrder      = errors.New("balance credit orders cannot be invoiced")
-	ErrInvoiceMissingProvider   = errors.New("order payment provider is missing")
-	ErrInvoiceMissingCurrency   = errors.New("order payment currency is missing")
-	ErrInvoiceInvalidAmount     = errors.New("order amount is not a positive finite number")
-	ErrInvoiceOrderClaimed      = errors.New("order is already attached to an invoice application")
-	ErrInvoiceMixedCurrency     = errors.New("all selected orders must use the same currency")
-	ErrInvoiceBelowMinimum      = errors.New("invoice amount is below the minimum")
-	ErrInvoiceNotFound          = errors.New("invoice application not found")
-	ErrInvoiceNotOwner          = errors.New("not the invoice owner")
-	ErrInvoiceOnlyPendingCancel = errors.New("only pending invoice applications can be cancelled")
-	ErrInvoiceInvalidTransition = errors.New("invalid invoice transition")
-	ErrInvoiceNotIssuing        = errors.New("invoice is not in the issuing status")
+	ErrInvoiceInvalid                 = errors.New("invalid invoice application")
+	ErrInvoiceTypeInvalid             = errors.New("invalid invoice type")
+	ErrInvoiceReasonRequired          = errors.New("individual invoices require a reason")
+	ErrInvoiceNoOrders                = errors.New("no orders selected")
+	ErrInvoiceOrderNotFound           = errors.New("some orders do not exist")
+	ErrInvoiceOrderNotOwned           = errors.New("order does not belong to the user")
+	ErrInvoiceOrderNotPaid            = errors.New("order is not paid")
+	ErrInvoiceBalanceOrder            = errors.New("balance credit orders cannot be invoiced")
+	ErrInvoiceMissingProvider         = errors.New("order payment provider is missing")
+	ErrInvoicePaymentMethodNotAllowed = errors.New("order payment method is not allowed for invoicing")
+	ErrInvoiceMissingCurrency         = errors.New("order payment currency is missing")
+	ErrInvoiceInvalidAmount           = errors.New("order amount is not a positive finite number")
+	ErrInvoiceOrderClaimed            = errors.New("order is already attached to an invoice application")
+	ErrInvoiceMixedCurrency           = errors.New("all selected orders must use the same currency")
+	ErrInvoiceBelowMinimum            = errors.New("invoice amount is below the minimum")
+	ErrInvoiceNotFound                = errors.New("invoice application not found")
+	ErrInvoiceNotOwner                = errors.New("not the invoice owner")
+	ErrInvoiceOnlyPendingCancel       = errors.New("only pending invoice applications can be cancelled")
+	ErrInvoiceInvalidTransition       = errors.New("invalid invoice transition")
+	ErrInvoiceNotIssuing              = errors.New("invoice is not in the issuing status")
 )
+
+// NormalizeInvoiceAllowedPaymentMethods validates and canonicalizes the JSON
+// option used by the invoice allowlist. An empty array means no restriction.
+func NormalizeInvoiceAllowedPaymentMethods(raw string) ([]string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return []string{}, nil
+	}
+	if trimmed == "null" {
+		return nil, errors.New("invoice payment methods must be an array")
+	}
+	var values []string
+	if err := common.Unmarshal([]byte(trimmed), &values); err != nil {
+		return nil, err
+	}
+	if len(values) > maxInvoiceAllowedPaymentMethods {
+		return nil, errors.New("too many invoice payment methods")
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || len(value) > maxInvoicePaymentMethodBytes {
+			return nil, errors.New("invalid invoice payment method")
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func invoicePaymentMethodAllowed(paymentMethod string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	method := strings.ToLower(strings.TrimSpace(paymentMethod))
+	for _, value := range allowed {
+		if method == strings.ToLower(strings.TrimSpace(value)) {
+			return true
+		}
+	}
+	return false
+}
 
 // Invoice is an invoice application created by a user. Material fields are PII
 // and must only be exposed to the owner and administrators (detail endpoints,
@@ -258,6 +312,12 @@ func validateInvoiceTopUp(order *TopUp) error {
 // snapshot, not a manual balance credit, and not currently claimed by any
 // active invoice application (claims table, not historical items).
 func GetInvoiceableTopUps(userId int) ([]*TopUp, error) {
+	return GetInvoiceableTopUpsWithPaymentMethods(userId, nil)
+}
+
+// GetInvoiceableTopUpsWithPaymentMethods applies the optional payment-method
+// allowlist to the same persisted payment snapshot used during application.
+func GetInvoiceableTopUpsWithPaymentMethods(userId int, allowed []string) ([]*TopUp, error) {
 	var topups []*TopUp
 	err := DB.
 		Where("user_id = ? AND status = ? AND payment_provider <> ? AND payment_provider <> '' AND payment_currency <> ''", userId, common.TopUpStatusSuccess, PaymentProviderBalance).
@@ -271,7 +331,7 @@ func GetInvoiceableTopUps(userId int) ([]*TopUp, error) {
 	// filter them here so the options list mirrors the creation rules.
 	eligible := make([]*TopUp, 0, len(topups))
 	for _, topup := range topups {
-		if money, err := MoneyFromFloat(topup.Money); err == nil && money.IsPositive() {
+		if money, err := MoneyFromFloat(topup.Money); err == nil && money.IsPositive() && invoicePaymentMethodAllowed(topup.PaymentMethod, allowed) {
 			eligible = append(eligible, topup)
 		}
 	}
@@ -285,6 +345,14 @@ func GetInvoiceableTopUps(userId int) ([]*TopUp, error) {
 // backstop. minAmount is re-checked inside the transaction using decimal
 // arithmetic.
 func CreateInvoiceApplication(userId int, inv *Invoice, itemOrders []*TopUp, minAmount Money) error {
+	return CreateInvoiceApplicationWithPaymentMethods(userId, inv, itemOrders, minAmount, nil)
+}
+
+// CreateInvoiceApplicationWithPaymentMethods performs the invoice transaction
+// with an optional payment-method allowlist. The allowlist is checked after
+// locking and reloading every selected order, so a forged request cannot bypass
+// the administrator's setting.
+func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOrders []*TopUp, minAmount Money, allowed []string) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if inv == nil {
 			return ErrInvoiceInvalid
@@ -327,6 +395,9 @@ func CreateInvoiceApplication(userId int, inv *Invoice, itemOrders []*TopUp, min
 			}
 			if err := validateInvoiceTopUp(&o); err != nil {
 				return err
+			}
+			if !invoicePaymentMethodAllowed(o.PaymentMethod, allowed) {
+				return ErrInvoicePaymentMethodNotAllowed
 			}
 			orderCurrency := o.PaymentCurrency
 			if currency == "" {

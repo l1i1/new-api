@@ -17,11 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { type Table } from '@tanstack/react-table'
-import { Power, PowerOff, Tag, Trash2 } from 'lucide-react'
+import type { Table } from '@tanstack/react-table'
+import { Power, PowerOff, RotateCcw, Tag, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableBulkActions as BulkActionsToolbar } from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
@@ -45,6 +46,7 @@ import {
   handleBatchDisable,
   handleBatchEnable,
   handleBatchSetTag,
+  handleBatchResetChannelUsedQuota,
 } from '../lib'
 import type { Channel } from '../types'
 
@@ -59,12 +61,19 @@ export function DataTableBulkActions<TData>({
   const queryClient = useQueryClient()
   const [showTagDialog, setShowTagDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
+  const [isResetting, setIsResetting] = useState(false)
   const [tagValue, setTagValue] = useState('')
   const currentUser = useAuthStore((s) => s.auth.user)
   const canEditSensitive = hasPermission(
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
+  )
+  const canOperate = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.OPERATE
   )
 
   const selectedRows = table.getFilteredSelectedRowModel().rows
@@ -106,6 +115,19 @@ export function DataTableBulkActions<TData>({
     })
   }
 
+  const handleReset = async () => {
+    if (!canOperate || isResetting) return
+    setIsResetting(true)
+    try {
+      await handleBatchResetChannelUsedQuota(selectedIds, queryClient, () => {
+        setShowResetConfirm(false)
+        handleClearSelection()
+      })
+    } finally {
+      setIsResetting(false)
+    }
+  }
+
   return (
     <>
       <BulkActionsToolbar table={table} entityName='channel'>
@@ -127,6 +149,44 @@ export function DataTableBulkActions<TData>({
           </TooltipTrigger>
           <TooltipContent>
             <p>{t('Enable selected channels')}</p>
+          </TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant='outline'
+                size='icon'
+                onClick={() => {
+                  if (!canOperate) return
+                  setShowResetConfirm(true)
+                }}
+                disabled={!canOperate}
+                className={cn(
+                  'size-8',
+                  !canOperate && 'cursor-not-allowed opacity-50'
+                )}
+                aria-label={t("Reset selected channels' used quota")}
+                title={
+                  canOperate
+                    ? t("Reset selected channels' used quota")
+                    : t('No permission to perform this action')
+                }
+              />
+            }
+          >
+            <RotateCcw />
+            <span className='sr-only'>
+              {t("Reset selected channels' used quota")}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>
+              {canOperate
+                ? t("Reset selected channels' used quota")
+                : t('No permission to perform this action')}
+            </p>
           </TooltipContent>
         </Tooltip>
 
@@ -210,6 +270,21 @@ export function DataTableBulkActions<TData>({
           </TooltipContent>
         </Tooltip>
       </BulkActionsToolbar>
+
+      <ConfirmDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title={t("Reset selected channels' used quota")}
+        desc={t(
+          'Reset used quota for {{count}} selected channel(s)? This only clears the channel usage counter and does not affect billing logs or user balances.',
+          { count: selectedIds.length }
+        )}
+        confirmText={t('Reset')}
+        destructive
+        disabled={!canOperate}
+        isLoading={isResetting}
+        handleConfirm={handleReset}
+      />
 
       {/* Set Tag Dialog */}
       <Dialog

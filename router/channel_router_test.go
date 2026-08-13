@@ -20,6 +20,7 @@ func TestChannelStatusRoutesUseOperatePermission(t *testing.T) {
 
 func TestChannelUsedQuotaResetRouteUsesOperatePermission(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodPost, "/:id/used_quota/reset", authz.ChannelOperate, controller.ResetChannelUsedQuota)
+	assertChannelRoutePermission(t, http.MethodPost, "/used_quota/reset", authz.ChannelOperate, controller.BatchResetChannelUsedQuota)
 }
 
 func TestChannelDeleteRoutesUseSensitiveWritePermission(t *testing.T) {

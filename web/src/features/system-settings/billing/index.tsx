@@ -118,6 +118,7 @@ const defaultBillingSettings: BillingSettings = {
   InvoiceEnabled: false,
   InvoiceNotice: '',
   InvoiceMinAmount: 0,
+  InvoiceAllowedPaymentMethods: [],
 }
 
 export function BillingSettings() {

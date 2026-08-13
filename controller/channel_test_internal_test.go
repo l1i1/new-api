@@ -261,6 +261,41 @@ func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
 	assert.Equal(t, float64(9876), auditData.Operation.Params["previous_used_quota"])
 }
 
+func TestBatchResetChannelUsedQuotaResetsSelectedChannels(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	first := &model.Channel{Name: "first quota channel", Key: "first-key", UsedQuota: 100}
+	second := &model.Channel{Name: "second quota channel", Key: "second-key", UsedQuota: 200}
+	require.NoError(t, db.Create(first).Error)
+	require.NoError(t, db.Create(second).Error)
+
+	requestBody, err := common.Marshal(ChannelBatch{Ids: []int{second.Id, first.Id}})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("id", 1)
+	ctx.Set("username", "admin")
+	ctx.Set("role", common.RoleAdminUser)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/used_quota/reset", bytes.NewReader(requestBody))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	BatchResetChannelUsedQuota(ctx)
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    int  `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.Equal(t, 2, response.Data)
+
+	var refreshed []model.Channel
+	require.NoError(t, db.Order("id ASC").Find(&refreshed).Error)
+	require.Len(t, refreshed, 2)
+	assert.Zero(t, refreshed[0].UsedQuota)
+	assert.Zero(t, refreshed[1].UsedQuota)
+}
+
 func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		TieredBillingSnapshot: &billingexpr.BillingSnapshot{

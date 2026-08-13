@@ -87,6 +87,7 @@ func InitOptionMap() {
 	common.OptionMap["InvoiceEnabled"] = "false"
 	common.OptionMap["InvoiceNotice"] = ""
 	common.OptionMap["InvoiceMinAmount"] = "0"
+	common.OptionMap[InvoiceAllowedPaymentMethodsOption] = "[]"
 	common.OptionMap[setting.ComplianceGeoIPEnabledOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPEnabledEnv, setting.ComplianceGeoIPEnabledDefault)
 	common.OptionMap[setting.ComplianceGeoIPCountryCodesOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPCountryCodesEnv, setting.ComplianceGeoIPCountryCodesDefault)
 	common.OptionMap[setting.ComplianceGeoIPModelKeywordsOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPModelKeywordsEnv, setting.ComplianceGeoIPModelKeywordsDefault)
@@ -221,6 +222,10 @@ func SyncOptions(frequency int) {
 func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
+	}
+	if key == InvoiceAllowedPaymentMethodsOption {
+		_, err := NormalizeInvoiceAllowedPaymentMethods(value)
+		return err
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)

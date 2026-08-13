@@ -54,6 +54,45 @@ func TestNormalizeInvoiceTypeUsesOrganizationAsCanonicalValue(t *testing.T) {
 	assert.False(t, IsValidInvoiceType("enterprise"))
 }
 
+func TestNormalizeInvoiceAllowedPaymentMethods(t *testing.T) {
+	allowed, err := NormalizeInvoiceAllowedPaymentMethods(`[" Stripe ","alipay","stripe"]`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alipay", "stripe"}, allowed)
+
+	for _, invalid := range []string{`null`, `{}`, `[""]`, `[1]`, `not-json`} {
+		_, err = NormalizeInvoiceAllowedPaymentMethods(invalid)
+		assert.Error(t, err, invalid)
+	}
+	allowed, err = NormalizeInvoiceAllowedPaymentMethods("")
+	require.NoError(t, err)
+	assert.Empty(t, allowed)
+}
+
+func TestInvoicePaymentMethodAllowlistFiltersAndRejectsLockedOrders(t *testing.T) {
+	truncateTables(t)
+	insertUserForPaymentGuardTest(t, 616, 100)
+	insertTopUpForInvoiceTest(t, 130, 616, "inv-method-alipay", 10, "CNY", PaymentProviderEpay, common.TopUpStatusSuccess)
+	insertTopUpForInvoiceTest(t, 131, 616, "inv-method-wxpay", 20, "CNY", PaymentProviderEpay, common.TopUpStatusSuccess)
+	insertTopUpForInvoiceTest(t, 132, 616, "inv-method-legacy", 30, "CNY", PaymentProviderEpay, common.TopUpStatusSuccess)
+	require.NoError(t, DB.Model(&TopUp{}).Where("id = ?", 130).Update("payment_method", "ALIPAY").Error)
+	require.NoError(t, DB.Model(&TopUp{}).Where("id = ?", 131).Update("payment_method", "wxpay").Error)
+	require.NoError(t, DB.Model(&TopUp{}).Where("id = ?", 132).Update("payment_method", "").Error)
+
+	eligible, err := GetInvoiceableTopUpsWithPaymentMethods(616, []string{"alipay"})
+	require.NoError(t, err)
+	require.Len(t, eligible, 1)
+	assert.Equal(t, 130, eligible[0].Id)
+
+	inv := &Invoice{Title: "Acme", TaxId: "T", Email: "b@acme.example", Reason: "r"}
+	err = CreateInvoiceApplicationWithPaymentMethods(616, inv, []*TopUp{{Id: 130}, {Id: 131}}, decimal.Zero, []string{"alipay"})
+	require.ErrorIs(t, err, ErrInvoicePaymentMethodNotAllowed)
+	assert.Zero(t, inv.Id)
+
+	eligible, err = GetInvoiceableTopUpsWithPaymentMethods(616, nil)
+	require.NoError(t, err)
+	assert.Len(t, eligible, 3, "empty allowlist must preserve existing behavior")
+}
+
 func TestMigrateInvoiceTypeCompanyToOrganization(t *testing.T) {
 	truncateTables(t)
 	legacyInvoice := &Invoice{InvoiceType: "company", Title: "Acme", TaxId: "TAX"}

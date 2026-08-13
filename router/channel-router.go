@@ -50,6 +50,7 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodPost, path: "/", permission: authz.ChannelSensitiveWrite, handler: controller.AddChannel},
 	{method: http.MethodPut, path: "/", permission: authz.ChannelWrite, handler: controller.UpdateChannel},
 	{method: http.MethodPost, path: "/:id/used_quota/reset", permission: authz.ChannelOperate, handler: controller.ResetChannelUsedQuota},
+	{method: http.MethodPost, path: "/used_quota/reset", permission: authz.ChannelOperate, handler: controller.BatchResetChannelUsedQuota},
 	{method: http.MethodPost, path: "/status/batch", permission: authz.ChannelOperate, handler: controller.BatchUpdateChannelStatus},
 	{method: http.MethodPost, path: "/:id/status", permission: authz.ChannelOperate, handler: controller.UpdateChannelStatus},
 	{method: http.MethodDelete, path: "/disabled", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteDisabledChannel},

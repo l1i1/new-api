@@ -295,6 +295,7 @@ func TestInvoiceI18nNoCrossLanguage(t *testing.T) {
 		i18n.MsgInvoiceOrderNotPaid,
 		i18n.MsgInvoiceOrderBalance,
 		i18n.MsgInvoiceOrderMissingProvider,
+		i18n.MsgInvoicePaymentMethodNotAllowed,
 		i18n.MsgInvoiceOrderMissingCurrency,
 		i18n.MsgInvoiceOrderInvalidAmount,
 		i18n.MsgInvoiceOrderClaimed,
@@ -378,6 +379,63 @@ func TestInvoiceNoticeOptionsServeEnabledAndMinAmount(t *testing.T) {
 	assert.Contains(t, body, `"order_id":81000`)
 	// The trade number is displayed to the owner in the order selection table.
 	assert.Contains(t, body, `"trade_no":"inv-opts"`)
+}
+
+func TestInvoiceOptionsFilterConfiguredPaymentMethods(t *testing.T) {
+	setupInvoiceControllerTest(t)
+	user := &model.User{Id: 813, Username: "payment-filter", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Email: "filter@example.com"}
+	require.NoError(t, model.DB.Create(user).Error)
+	for _, topUp := range []*model.TopUp{
+		{Id: 81300, UserId: 813, Money: 50, TradeNo: "inv-alipay", PaymentMethod: "alipay", PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "CNY", Status: common.TopUpStatusSuccess},
+		{Id: 81301, UserId: 813, Money: 60, TradeNo: "inv-wxpay", PaymentMethod: "wxpay", PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "CNY", Status: common.TopUpStatusSuccess},
+	} {
+		require.NoError(t, model.DB.Create(topUp).Error)
+	}
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap[model.InvoiceAllowedPaymentMethodsOption] = `["alipay"]`
+	common.OptionMapRWMutex.Unlock()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 813)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/invoice/options", nil)
+	GetInvoiceOptions(c)
+
+	body := recorder.Body.String()
+	assert.Contains(t, body, `"allowed_payment_methods":["alipay"]`)
+	assert.Contains(t, body, `"trade_no":"inv-alipay"`)
+	assert.NotContains(t, body, `"trade_no":"inv-wxpay"`)
+}
+
+func TestCreateInvoiceRejectsPaymentMethodOutsideAllowlist(t *testing.T) {
+	setupInvoiceControllerTest(t)
+	user := &model.User{Id: 814, Username: "payment-reject", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Email: "reject@example.com"}
+	require.NoError(t, model.DB.Create(user).Error)
+	topUp := &model.TopUp{
+		Id: 81400, UserId: 814, Money: 50, TradeNo: "inv-disallowed-wxpay", PaymentMethod: "wxpay",
+		PaymentProvider: model.PaymentProviderEpay, PaymentCurrency: "CNY", Status: common.TopUpStatusSuccess,
+	}
+	require.NoError(t, model.DB.Create(topUp).Error)
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap[model.InvoiceAllowedPaymentMethodsOption] = `["alipay"]`
+	common.OptionMapRWMutex.Unlock()
+
+	body := fmt.Sprintf(`{"orders":[{"order_type":"topup","order_id":%d}],"invoice_type":"organization","title":"Acme","tax_id":"T","email":"deliver@example.com","reason":"r","remark":""}`, topUp.Id)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 814)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/invoice", bytes.NewReader([]byte(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	CreateInvoice(c)
+
+	payload := jsonResponse(t, recorder)
+	assert.Equal(t, false, payload["success"])
+	message, _ := payload["message"].(string)
+	assert.NotEmpty(t, message)
+	assert.NotEqual(t, i18n.MsgInvoicePaymentMethodNotAllowed, message)
+	var invoiceCount int64
+	require.NoError(t, model.DB.Model(&model.Invoice{}).Count(&invoiceCount).Error)
+	assert.Zero(t, invoiceCount)
 }
 
 func TestInvoiceProfileValidationAndAtomicUpsert(t *testing.T) {

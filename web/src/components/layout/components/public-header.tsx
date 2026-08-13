@@ -25,10 +25,14 @@ import { Dialog } from '@/components/dialog'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
+import { SiteNoticeDialog } from '@/components/site-notice-dialog'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useNotifications } from '@/hooks/use-notifications'
+import {
+  getNotificationAutoOpenOptions,
+  useNotifications,
+} from '@/hooks/use-notifications'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 import { cn } from '@/lib/utils'
@@ -90,9 +94,13 @@ export function PublicHeader(props: PublicHeaderProps) {
     logoLoaded,
   } = useSystemConfig()
   const dynamicLinks = useTopNavLinks()
-  const notifications = useNotifications()
   const routerState = useRouterState()
   const pathname = routerState.location.pathname
+  const autoOpenOptions = getNotificationAutoOpenOptions(pathname)
+  const notifications = useNotifications({
+    ...autoOpenOptions,
+    autoOpenPopover: showNotifications && autoOpenOptions.autoOpenPopover,
+  })
 
   const user = auth.user
   const isAuthenticated = !!user
@@ -207,6 +215,11 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   return (
     <>
+      <SiteNoticeDialog
+        content={notifications.notice}
+        open={notifications.siteNoticeOpen}
+        onOpenChange={notifications.setSiteNoticeOpen}
+      />
       <header className='pointer-events-none fixed inset-x-0 top-0 z-50'>
         <div
           className={cn(

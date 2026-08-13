@@ -56,6 +56,31 @@ func TestChannelUsedQuotaBypassesProcessBatchAndResetsTransactionally(t *testing
 	assert.Zero(t, refreshed.UsedQuota)
 }
 
+func TestResetChannelsUsedQuotaResetsAllExistingChannels(t *testing.T) {
+	db := setupChannelUsedQuotaTestDB(t)
+	first := &Channel{Name: "first quota channel", UsedQuota: 100}
+	second := &Channel{Name: "second quota channel", UsedQuota: 200}
+	require.NoError(t, db.Create(first).Error)
+	require.NoError(t, db.Create(second).Error)
+
+	UpdateChannelUsedQuota(first.Id, 25)
+	UpdateChannelUsedQuota(second.Id, 50)
+
+	resetChannels, err := ResetChannelsUsedQuota([]int{second.Id, first.Id, first.Id, 999999})
+	require.NoError(t, err)
+	require.Len(t, resetChannels, 2)
+	assert.Equal(t, first.Id, resetChannels[0].Id)
+	assert.Equal(t, int64(125), resetChannels[0].UsedQuota)
+	assert.Equal(t, second.Id, resetChannels[1].Id)
+	assert.Equal(t, int64(250), resetChannels[1].UsedQuota)
+
+	var refreshed []Channel
+	require.NoError(t, db.Order("id ASC").Find(&refreshed).Error)
+	require.Len(t, refreshed, 2)
+	assert.Zero(t, refreshed[0].UsedQuota)
+	assert.Zero(t, refreshed[1].UsedQuota)
+}
+
 func TestResetChannelUsedQuotaReportsMissingChannel(t *testing.T) {
 	setupChannelUsedQuotaTestDB(t)
 

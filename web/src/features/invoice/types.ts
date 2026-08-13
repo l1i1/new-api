@@ -54,6 +54,7 @@ export interface InvoiceOptions {
   enabled: boolean
   notice: string
   min_amount: number
+  allowed_payment_methods: string[]
   orders: InvoiceableOrder[]
 }
 

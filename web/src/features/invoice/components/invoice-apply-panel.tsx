@@ -193,6 +193,7 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   }, [fetchProfile])
 
   const orders = options?.orders ?? []
+  const allowedPaymentMethods = options?.allowed_payment_methods ?? []
   const selectedOrders = orders.filter((order) =>
     selectedIds.has(order.order_id)
   )
@@ -329,6 +330,19 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   return (
     <div className='flex flex-col gap-4 sm:gap-5'>
       {options.notice ? <InvoiceNotice notice={options.notice} /> : null}
+
+      {allowedPaymentMethods.length > 0 && (
+        <Alert>
+          <AlertDescription>
+            {t(
+              'Only orders paid with these payment methods can be invoiced: {{methods}}',
+              {
+                methods: allowedPaymentMethods.join(', '),
+              }
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <InvoiceOrderSelectTable
         orders={orders}

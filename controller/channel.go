@@ -1198,6 +1198,38 @@ func ResetChannelUsedQuota(c *gin.Context) {
 	})
 }
 
+func BatchResetChannelUsedQuota(c *gin.Context) {
+	channelBatch := ChannelBatch{}
+	if err := c.ShouldBindJSON(&channelBatch); err != nil || len(channelBatch.Ids) == 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	for _, id := range channelBatch.Ids {
+		if id <= 0 {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+	}
+
+	channels, err := model.ResetChannelsUsedQuota(channelBatch.Ids)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	for _, channel := range channels {
+		recordManageAudit(c, "channel.used_quota_reset", map[string]interface{}{
+			"id":                  channel.Id,
+			"name":                channel.Name,
+			"previous_used_quota": channel.UsedQuota,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    len(channels),
+	})
+}
+
 func BatchUpdateChannelStatus(c *gin.Context) {
 	req := ChannelStatusBatchRequest{}
 	if err := c.ShouldBindJSON(&req); err != nil || len(req.Ids) == 0 || !isManageableChannelStatus(req.Status) {

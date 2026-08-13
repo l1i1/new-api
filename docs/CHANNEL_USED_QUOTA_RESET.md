@@ -16,6 +16,24 @@ balances.
 - Returns the standard New API error response when the channel does not exist
   or the database update fails.
 
+For multiple channels, use:
+
+`POST /api/channel/used_quota/reset`
+
+```json
+{
+  "ids": [12, 18, 25]
+}
+```
+
+- Uses the same `operate` permission.
+- Resets all existing channel IDs in one database transaction.
+- Returns the number of channels reset in `data`.
+- Duplicate IDs are collapsed; stale IDs are ignored when at least one
+  selected channel still exists.
+- Each reset channel keeps the existing `channel.used_quota_reset` audit shape,
+  including its previous counter value.
+
 ## Concurrency
 
 Channel usage increments bypass the per-process batch buffer and use an atomic

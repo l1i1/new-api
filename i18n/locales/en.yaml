@@ -298,6 +298,7 @@ invoice.order_not_found: "Order does not exist or does not belong to the current
 invoice.order_not_paid: "Only successfully paid orders can be invoiced"
 invoice.order_balance: "Balance credit orders cannot be invoiced"
 invoice.order_missing_provider: "Order payment provider snapshot is missing"
+invoice.payment_method_not_allowed: "This order's payment method is not eligible for invoicing"
 invoice.order_missing_currency: "Order payment currency snapshot is missing"
 invoice.order_invalid_amount: "Order amount is invalid"
 invoice.order_claimed: "Order is already attached to another invoice application"

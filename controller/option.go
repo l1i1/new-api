@@ -271,6 +271,18 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case model.InvoiceAllowedPaymentMethodsOption:
+		allowed, normalizeErr := model.NormalizeInvoiceAllowedPaymentMethods(option.Value.(string))
+		if normalizeErr != nil {
+			common.ApiErrorI18n(c, i18n.MsgInvalidInput)
+			return
+		}
+		normalized, marshalErr := common.Marshal(allowed)
+		if marshalErr != nil {
+			common.ApiError(c, marshalErr)
+			return
+		}
+		option.Value = string(normalized)
 	case "ImageRatio":
 		err = ratio_setting.UpdateImageRatioByJSONString(option.Value.(string))
 		if err != nil {

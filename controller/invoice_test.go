@@ -76,9 +76,10 @@ func setupInvoiceControllerTest(t *testing.T) {
 
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = map[string]string{
-		"InvoiceEnabled":   "true",
-		"InvoiceNotice":    "",
-		"InvoiceMinAmount": "0",
+		"InvoiceEnabled":                         "true",
+		"InvoiceNotice":                          "",
+		"InvoiceMinAmount":                       "0",
+		model.InvoiceAllowedPaymentMethodsOption: "[]",
 	}
 	common.OptionMapRWMutex.Unlock()
 
@@ -155,6 +156,21 @@ func TestInvoiceMinAmountFailsClosedOnInvalidValues(t *testing.T) {
 	common.OptionMap["InvoiceMinAmount"] = "100.5"
 	common.OptionMapRWMutex.Unlock()
 	assert.True(t, invoiceMinAmount().Equal(decimal.NewFromFloat(100.5)))
+}
+
+func TestInvoiceAllowedPaymentMethodsRejectsCorruptStoredValue(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap = map[string]string{model.InvoiceAllowedPaymentMethodsOption: `{"invalid":true}`}
+	common.OptionMapRWMutex.Unlock()
+	_, err := invoiceAllowedPaymentMethods()
+	assert.Error(t, err)
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap[model.InvoiceAllowedPaymentMethodsOption] = `[" Stripe ","stripe","ALIPAY"]`
+	common.OptionMapRWMutex.Unlock()
+	allowed, err := invoiceAllowedPaymentMethods()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alipay", "stripe"}, allowed)
 }
 
 // buildCompleteIssueMultipart creates a multipart/form-data body with the given

@@ -23,9 +23,10 @@ import (
 // Invoice feature option keys. Values are stored in the options table and
 // served to users only through GetInvoiceOptions.
 const (
-	optionInvoiceEnabled   = "InvoiceEnabled"
-	optionInvoiceNotice    = "InvoiceNotice"
-	optionInvoiceMinAmount = "InvoiceMinAmount"
+	optionInvoiceEnabled               = "InvoiceEnabled"
+	optionInvoiceNotice                = "InvoiceNotice"
+	optionInvoiceMinAmount             = "InvoiceMinAmount"
+	optionInvoiceAllowedPaymentMethods = model.InvoiceAllowedPaymentMethodsOption
 )
 
 const (
@@ -97,10 +98,11 @@ type InvoiceOptionOrder struct {
 }
 
 type InvoiceOptionsResponse struct {
-	Enabled   bool                 `json:"enabled"`
-	Notice    string               `json:"notice"`
-	MinAmount float64              `json:"min_amount"`
-	Orders    []InvoiceOptionOrder `json:"orders"`
+	Enabled               bool                 `json:"enabled"`
+	Notice                string               `json:"notice"`
+	MinAmount             float64              `json:"min_amount"`
+	AllowedPaymentMethods []string             `json:"allowed_payment_methods"`
+	Orders                []InvoiceOptionOrder `json:"orders"`
 }
 
 // optionValue returns the stored option value under the OptionMap read lock so
@@ -130,6 +132,14 @@ func invoiceMinAmount() decimal.Decimal {
 	return model.InvoiceMinAmountFromFloat(value)
 }
 
+func invoiceAllowedPaymentMethods() ([]string, error) {
+	allowed, err := model.NormalizeInvoiceAllowedPaymentMethods(optionValue(optionInvoiceAllowedPaymentMethods))
+	if err != nil {
+		return nil, err
+	}
+	return allowed, nil
+}
+
 // mapInvoiceError converts a model-layer invoice business error into a
 // localized API message.
 func mapInvoiceError(c *gin.Context, err error) {
@@ -150,6 +160,8 @@ func mapInvoiceError(c *gin.Context, err error) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceOrderBalance)
 	case errors.Is(err, model.ErrInvoiceMissingProvider):
 		common.ApiErrorI18n(c, i18n.MsgInvoiceOrderMissingProvider)
+	case errors.Is(err, model.ErrInvoicePaymentMethodNotAllowed):
+		common.ApiErrorI18n(c, i18n.MsgInvoicePaymentMethodNotAllowed)
 	case errors.Is(err, model.ErrInvoiceMissingCurrency):
 		common.ApiErrorI18n(c, i18n.MsgInvoiceOrderMissingCurrency)
 	case errors.Is(err, model.ErrInvoiceInvalidAmount):
@@ -179,7 +191,13 @@ func mapInvoiceError(c *gin.Context, err error) {
 // notice, the minimum amount, and the user's currently invoiceable orders.
 func GetInvoiceOptions(c *gin.Context) {
 	userId := c.GetInt("id")
-	topups, err := model.GetInvoiceableTopUps(userId)
+	allowedPaymentMethods, err := invoiceAllowedPaymentMethods()
+	if err != nil {
+		common.SysError("invalid invoice payment method allowlist: " + err.Error())
+		common.ApiErrorI18n(c, i18n.MsgRetryLater)
+		return
+	}
+	topups, err := model.GetInvoiceableTopUpsWithPaymentMethods(userId, allowedPaymentMethods)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -197,10 +215,11 @@ func GetInvoiceOptions(c *gin.Context) {
 		})
 	}
 	common.ApiSuccess(c, InvoiceOptionsResponse{
-		Enabled:   invoiceEnabled(),
-		Notice:    invoiceNotice(),
-		MinAmount: invoiceMinAmount().InexactFloat64(),
-		Orders:    orders,
+		Enabled:               invoiceEnabled(),
+		Notice:                invoiceNotice(),
+		MinAmount:             invoiceMinAmount().InexactFloat64(),
+		AllowedPaymentMethods: allowedPaymentMethods,
+		Orders:                orders,
 	})
 }
 
@@ -349,6 +368,12 @@ func CreateInvoice(c *gin.Context) {
 	var orders []*model.TopUp
 	currency := ""
 	total := decimal.Zero
+	allowedPaymentMethods, err := invoiceAllowedPaymentMethods()
+	if err != nil {
+		common.SysError("invalid invoice payment method allowlist: " + err.Error())
+		common.ApiErrorI18n(c, i18n.MsgRetryLater)
+		return
+	}
 	for _, ref := range req.Orders {
 		if ref.OrderType != model.InvoiceOrderTypeTopUp {
 			common.ApiErrorI18n(c, i18n.MsgInvoiceUnsupportedOrderType)
@@ -407,7 +432,7 @@ func CreateInvoice(c *gin.Context) {
 		Reason:      req.Reason,
 		Remark:      req.Remark,
 	}
-	if err := model.CreateInvoiceApplication(userId, inv, orders, minAmount); err != nil {
+	if err := model.CreateInvoiceApplicationWithPaymentMethods(userId, inv, orders, minAmount, allowedPaymentMethods); err != nil {
 		mapInvoiceError(c, err)
 		return
 	}

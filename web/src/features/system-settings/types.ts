@@ -342,6 +342,7 @@ export type BillingSettings = {
   InvoiceEnabled: boolean
   InvoiceNotice: string
   InvoiceMinAmount: number
+  InvoiceAllowedPaymentMethods: string[]
 }
 
 export type OperationsSettings = {

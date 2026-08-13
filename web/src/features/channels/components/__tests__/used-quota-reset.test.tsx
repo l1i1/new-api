@@ -61,6 +61,7 @@ const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { api } = await import('@/lib/api')
 const { ChannelUsedQuotaResetDialog } =
   await import('../dialogs/channel-used-quota-reset-dialog')
+const { handleBatchResetChannelUsedQuota } = await import('../../lib')
 const i18n = createInstance()
 const originalApiPost = api.post
 await i18n.use(initReactI18next).init({
@@ -71,9 +72,15 @@ await i18n.use(initReactI18next).init({
         Cancel: 'Cancel',
         Reset: 'Reset',
         'Reset channel used quota': 'Reset channel used quota',
+        "Reset selected channels' used quota":
+          "Reset selected channels' used quota",
         'Reset used quota for channel "{{name}}"? This only clears the channel usage counter and does not affect billing logs or user balances.':
           'Reset used quota for channel "{{name}}"? This only clears the channel usage counter and does not affect billing logs or user balances.',
+        'Reset used quota for {{count}} selected channel(s)? This only clears the channel usage counter and does not affect billing logs or user balances.':
+          'Reset used quota for {{count}} selected channel(s)? This only clears the channel usage counter and does not affect billing logs or user balances.',
         'Used quota reset successfully': 'Used quota reset successfully',
+        'Used quota reset for {{count}} channel(s)':
+          'Used quota reset for {{count}} channel(s)',
         'Failed to reset used quota': 'Failed to reset used quota',
       },
     },
@@ -220,5 +227,28 @@ describe('channel used quota reset dialog', () => {
 
     await act(async () => rendered.root.unmount())
     rendered.queryClient.clear()
+  })
+
+  test('submits selected channel IDs in one batch request', async () => {
+    let requestUrl = ''
+    let requestBody: unknown
+    api.post = (async (url, data) => {
+      requestUrl = String(url)
+      requestBody = data
+      return { data: { success: true, data: 2 } }
+    }) as typeof api.post
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    let succeeded = false
+    await handleBatchResetChannelUsedQuota([93, 94], queryClient, () => {
+      succeeded = true
+    })
+
+    assert.equal(requestUrl, '/api/channel/used_quota/reset')
+    assert.deepEqual(requestBody, { ids: [93, 94] })
+    assert.equal(succeeded, true)
+    queryClient.clear()
   })
 })

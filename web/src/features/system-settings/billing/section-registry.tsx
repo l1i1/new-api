@@ -233,6 +233,8 @@ const BILLING_SECTIONS = [
           enabled: settings.InvoiceEnabled,
           notice: settings.InvoiceNotice,
           minAmount: settings.InvoiceMinAmount,
+          allowedPaymentMethods: settings.InvoiceAllowedPaymentMethods,
+          paymentMethodConfig: settings.PayMethods,
         }}
       />
     ),

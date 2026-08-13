@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
+import { MultiSelect } from '@/components/multi-select'
 import {
   Form,
   FormControl,
@@ -43,11 +44,16 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import {
+  getPaymentMethodOptions,
+  normalizePaymentMethodValues,
+} from './invoice-payment-methods'
 
 const schema = z.object({
   enabled: z.boolean(),
   notice: z.string(),
   minAmount: z.coerce.number().min(0),
+  allowedPaymentMethods: z.array(z.string()),
 })
 
 type Values = z.infer<typeof schema>
@@ -59,6 +65,8 @@ export function InvoiceSettingsSection({
     enabled: boolean
     notice: string
     minAmount: number
+    allowedPaymentMethods: string[]
+    paymentMethodConfig: string
   }
 }) {
   const { t } = useTranslation()
@@ -70,11 +78,20 @@ export function InvoiceSettingsSection({
       enabled: defaultValues.enabled,
       notice: defaultValues.notice,
       minAmount: defaultValues.minAmount,
+      allowedPaymentMethods: normalizePaymentMethodValues(
+        defaultValues.allowedPaymentMethods
+      ),
     },
   })
 
   const { isDirty, isSubmitting } = form.formState
   const enabled = form.watch('enabled')
+  const allowedPaymentMethods = form.watch('allowedPaymentMethods')
+  const paymentMethodOptions = getPaymentMethodOptions(
+    defaultValues.paymentMethodConfig,
+    allowedPaymentMethods,
+    t
+  )
 
   async function onSubmit(values: Values) {
     const updates: Array<{ key: string; value: string }> = []
@@ -100,6 +117,19 @@ export function InvoiceSettingsSection({
       })
     }
 
+    const normalizedAllowed = normalizePaymentMethodValues(
+      values.allowedPaymentMethods
+    )
+    const defaultAllowed = normalizePaymentMethodValues(
+      defaultValues.allowedPaymentMethods
+    )
+    if (JSON.stringify(normalizedAllowed) !== JSON.stringify(defaultAllowed)) {
+      updates.push({
+        key: 'InvoiceAllowedPaymentMethods',
+        value: JSON.stringify(normalizedAllowed),
+      })
+    }
+
     if (updates.length === 0) {
       toast.info(t('No changes to save'))
       return
@@ -109,7 +139,10 @@ export function InvoiceSettingsSection({
       await updateOption.mutateAsync(update)
     }
 
-    form.reset(values)
+    form.reset({
+      ...values,
+      allowedPaymentMethods: normalizedAllowed,
+    })
   }
 
   return (
@@ -171,6 +204,35 @@ export function InvoiceSettingsSection({
             )}
           />
 
+          <FormField
+            control={form.control}
+            name='allowedPaymentMethods'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  {t('Payment methods allowed for invoicing')}
+                </FormLabel>
+                <FormControl>
+                  <MultiSelect
+                    options={paymentMethodOptions}
+                    selected={field.value}
+                    onChange={(values) => field.onChange(values)}
+                    placeholder={t('All payment methods')}
+                    disabled={updateOption.isPending || isSubmitting}
+                    maxVisibleChips={4}
+                    allowCreate
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Leave empty to allow all payment methods. Orders use the payment method recorded when they were paid.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
           {enabled && (
             <FormField
               control={form.control}
@@ -181,7 +243,9 @@ export function InvoiceSettingsSection({
                   <FormControl>
                     <Textarea
                       rows={6}
-                      placeholder={t('Invoice notice shown on the invoice page')}
+                      placeholder={t(
+                        'Invoice notice shown on the invoice page'
+                      )}
                       {...field}
                     />
                   </FormControl>

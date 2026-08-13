@@ -59,6 +59,10 @@ export function useUpdateOption() {
           }
         }
 
+        if (variables.key === 'Notice') {
+          queryClient.invalidateQueries({ queryKey: ['notice'] })
+        }
+
         toast.success(i18next.t('Setting updated successfully'))
       } else {
         toast.error(data.message || i18next.t('Failed to update setting'))

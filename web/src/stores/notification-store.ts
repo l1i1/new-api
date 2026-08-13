@@ -22,6 +22,8 @@ import { persist } from 'zustand/middleware'
 interface NotificationState {
   // Last read Notice content signature (full trimmed message)
   lastReadNotice: string
+  // Last Notice automatically opened from the pricing page
+  lastAutoOpenedPricingNotice: string
   // Array of read announcement keys (id or content hash)
   readAnnouncementKeys: string[]
   // Timestamp of last "Close Today" action
@@ -29,6 +31,7 @@ interface NotificationState {
 
   // Actions
   markNoticeRead: (noticeContent: string) => void
+  markPricingNoticeAutoOpened: (noticeContent: string) => void
   markAnnouncementsRead: (keys: string[]) => void
   setClosedUntilDate: (date: string | null) => void
   isAnnouncementRead: (key: string) => boolean
@@ -43,6 +46,7 @@ export const useNotificationStore = create<NotificationState>()(
   persist(
     (set, get) => ({
       lastReadNotice: '',
+      lastAutoOpenedPricingNotice: '',
       readAnnouncementKeys: [],
       closedUntilDate: null,
 
@@ -50,6 +54,10 @@ export const useNotificationStore = create<NotificationState>()(
         // Persist the full trimmed content so edits beyond 100 chars register
         const normalizedContent = noticeContent.trim()
         set({ lastReadNotice: normalizedContent })
+      },
+
+      markPricingNoticeAutoOpened: (noticeContent: string) => {
+        set({ lastAutoOpenedPricingNotice: noticeContent.trim() })
       },
 
       markAnnouncementsRead: (keys: string[]) => {
@@ -80,6 +88,7 @@ export const useNotificationStore = create<NotificationState>()(
       name: 'notification-storage',
       partialize: (state) => ({
         lastReadNotice: state.lastReadNotice,
+        lastAutoOpenedPricingNotice: state.lastAutoOpenedPricingNotice,
         readAnnouncementKeys: state.readAnnouncementKeys,
         closedUntilDate: state.closedUntilDate,
       }),
