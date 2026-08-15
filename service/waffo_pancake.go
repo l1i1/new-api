@@ -21,9 +21,11 @@ type WaffoPancakePriceSnapshot struct {
 // BuyerIdentity must be stable per user (see WaffoPancakeBuyerIdentityFromUserID),
 // but it is not a settlement invariant: Pancake may echo the checkout email
 // instead of this value in MerchantProvidedBuyerIdentity.
+// Currency and PriceSnapshot are sent to Pancake unchanged.
 // OrderMerchantExternalID = our trade_no; Pancake echoes it back in webhooks.
 type WaffoPancakeCreateSessionParams struct {
 	ProductID               string
+	Currency                string
 	BuyerIdentity           string
 	PriceSnapshot           *WaffoPancakePriceSnapshot
 	BuyerEmail              string
@@ -109,6 +111,10 @@ func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancake
 	if strings.TrimSpace(params.OrderMerchantExternalID) == "" {
 		return nil, fmt.Errorf("missing order merchant external id")
 	}
+	currency := strings.ToUpper(strings.TrimSpace(params.Currency))
+	if currency == "" {
+		return nil, fmt.Errorf("missing checkout currency")
+	}
 	client, err := newWaffoPancakeClient()
 	if err != nil {
 		return nil, fmt.Errorf("build Waffo Pancake client: %w", err)
@@ -117,7 +123,7 @@ func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancake
 	sdkParams := pancake.AuthenticatedCheckoutParams{
 		CreateCheckoutSessionParams: pancake.CreateCheckoutSessionParams{
 			ProductID:               params.ProductID,
-			Currency:                "USD",
+			Currency:                currency,
 			BuyerEmail:              optionalString(params.BuyerEmail),
 			ExpiresInSeconds:        params.ExpiresInSeconds,
 			OrderMerchantExternalID: optionalString(params.OrderMerchantExternalID),
@@ -215,7 +221,7 @@ func ResolveWaffoPancakeTradeNo(event *WaffoPancakeWebhookEvent) (string, error)
 	if topUp == nil || topUp.PaymentProvider != model.PaymentProviderWaffoPancake {
 		return "", fmt.Errorf("waffo pancake order not found for tradeNo=%s", tradeNo)
 	}
-	if err := validateWaffoPancakeSettlement(event, topUp.Money); err != nil {
+	if err := validateWaffoPancakeSettlement(event, topUp.Money, waffoPancakeOrderCurrency(topUp.PaymentCurrency)); err != nil {
 		return "", fmt.Errorf("invalid Waffo Pancake settlement for tradeNo=%s: %w", tradeNo, err)
 	}
 	return tradeNo, nil
@@ -235,18 +241,27 @@ func ResolveWaffoPancakeSubscriptionTradeNo(event *WaffoPancakeWebhookEvent) (st
 	if order == nil || order.PaymentProvider != model.PaymentProviderWaffoPancake {
 		return "", fmt.Errorf("waffo pancake subscription order not found for tradeNo=%s", tradeNo)
 	}
-	if err := validateWaffoPancakeSettlement(event, order.Money); err != nil {
+	if err := validateWaffoPancakeSettlement(event, order.Money, waffoPancakeOrderCurrency(order.PaymentCurrency)); err != nil {
 		return "", fmt.Errorf("invalid Waffo Pancake subscription settlement for tradeNo=%s: %w", tradeNo, err)
 	}
 	return tradeNo, nil
 }
 
-func validateWaffoPancakeSettlement(event *WaffoPancakeWebhookEvent, expectedMoney float64) error {
+func waffoPancakeOrderCurrency(currency string) string {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		// Orders created before payment_currency was introduced used USD.
+		return model.PaymentCurrencyUSD
+	}
+	return currency
+}
+
+func validateWaffoPancakeSettlement(event *WaffoPancakeWebhookEvent, expectedMoney float64, expectedCurrency string) error {
 	if event.NormalizedEventType() != "order.completed" {
 		return fmt.Errorf("unexpected event type %q", event.NormalizedEventType())
 	}
-	if !strings.EqualFold(strings.TrimSpace(event.Data.Currency), "USD") {
-		return fmt.Errorf("currency mismatch: expected=USD actual=%q", strings.TrimSpace(event.Data.Currency))
+	if !strings.EqualFold(strings.TrimSpace(event.Data.Currency), expectedCurrency) {
+		return fmt.Errorf("currency mismatch: expected=%s actual=%q", expectedCurrency, strings.TrimSpace(event.Data.Currency))
 	}
 	settlementAmount := strings.TrimSpace(event.Data.Subtotal)
 	amountField := "subtotal"
@@ -355,9 +370,10 @@ func CreateWaffoPancakeProductForPlan(ctx context.Context, merchantID, privateKe
 	return productID, nil
 }
 
-// CreateWaffoPancakePrimaryProduct mints (and publishes) the wallet-top-up
-// OnetimeProduct under storeID. Per-checkout price overrides via PriceSnapshot
-// are what make the "1.00" seed price irrelevant at runtime.
+// CreateWaffoPancakePrimaryProduct mints (and publishes) the wallet top-up
+// OnetimeProduct under storeID. It advertises both supported wallet currencies;
+// per-checkout price overrides via PriceSnapshot make the seed prices
+// irrelevant at runtime.
 func CreateWaffoPancakePrimaryProduct(ctx context.Context, merchantID, privateKey, storeID, returnURL string) (string, error) {
 	storeID = strings.TrimSpace(storeID)
 	if storeID == "" {
@@ -371,6 +387,10 @@ func CreateWaffoPancakePrimaryProduct(ctx context.Context, merchantID, privateKe
 		StoreID: storeID,
 		Name:    defaultWaffoPancakeProductName,
 		Prices: pancake.Prices{
+			"CNY": {
+				Amount:      "1.00", // overridden at checkout via PriceSnapshot
+				TaxCategory: pancake.TaxCategory("saas"),
+			},
 			"USD": {
 				Amount:      "1.00", // overridden at checkout via PriceSnapshot
 				TaxCategory: pancake.TaxCategory("saas"),

@@ -46,7 +46,6 @@ export type WaffoPancakeSettingsValues = {
   WaffoPancakeMerchantID: string
   WaffoPancakePrivateKey: string
   WaffoPancakeReturnURL: string
-  WaffoPancakeExchangeRate: number
 }
 
 export interface WaffoPancakeBinding {
@@ -447,27 +446,6 @@ export function WaffoPancakeSettingsSection({
           <p className='text-muted-foreground text-xs'>
             {t(
               'The environment (test vs production) is decided by the key you paste here — use the Test key while integrating, then swap to the Production key when going live.'
-            )}
-          </p>
-        </div>
-
-        <div className='grid gap-1.5 lg:col-span-2'>
-          <Label>{t('Waffo Pancake USD exchange rate (CNY per USD)')}</Label>
-          <Input
-            type='number'
-            min={0}
-            step='0.01'
-            value={values.WaffoPancakeExchangeRate}
-            onChange={(event) =>
-              onValueChange(
-                'WaffoPancakeExchangeRate',
-                event.target.value === '' ? 0 : event.target.valueAsNumber
-              )
-            }
-          />
-          <p className='text-muted-foreground text-xs'>
-            {t(
-              'Used to convert the local CNY payable amount into Pancake USD. Leave it at the recharge price to keep a one-to-one platform USD conversion.'
             )}
           </p>
         </div>

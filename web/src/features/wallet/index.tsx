@@ -25,6 +25,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { useStatus } from '@/hooks/use-status'
 import { getSelf } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
@@ -63,6 +64,7 @@ interface WalletProps {
 
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
+  const displayCurrency = useCurrencyDisplayStore((state) => state.currency)
   const [user, setUser] = useState<UserWalletData | null>(null)
   const [userLoading, setUserLoading] = useState(true)
   const [topupAmount, setTopupAmount] = useState(0)
@@ -80,6 +82,7 @@ export function Wallet(props: WalletProps) {
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
+  const previousDisplayCurrencyRef = useRef(displayCurrency)
 
   const { status } = useStatus()
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
@@ -135,27 +138,80 @@ export function Wallet(props: WalletProps) {
 
       // Calculate initial payment amount with default payment type
       const defaultPaymentType = getDefaultPaymentType(topupInfo)
-      calculatePaymentAmount(minTopup, defaultPaymentType)
+      calculatePaymentAmount(
+        minTopup,
+        defaultPaymentType,
+        defaultPaymentType === PAYMENT_TYPES.WAFFO_PANCAKE
+          ? displayCurrency
+          : undefined
+      )
     }
-  }, [topupInfo, calculatePaymentAmount])
+  }, [topupInfo, calculatePaymentAmount, displayCurrency])
+
+  useEffect(() => {
+    const currencyChanged =
+      previousDisplayCurrencyRef.current !== displayCurrency
+    previousDisplayCurrencyRef.current = displayCurrency
+    if (!currencyChanged) {
+      return
+    }
+
+    const currentPaymentType =
+      selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
+    if (
+      currentPaymentType !== PAYMENT_TYPES.WAFFO_PANCAKE ||
+      topupAmount <= 0
+    ) {
+      return
+    }
+    void calculatePaymentAmount(
+      topupAmount,
+      currentPaymentType,
+      displayCurrency
+    )
+    // The amount and payment-method handlers already recalculate when either
+    // changes; the ref keeps this effect focused on the global currency switch.
+  }, [
+    calculatePaymentAmount,
+    displayCurrency,
+    selectedPaymentMethod?.type,
+    topupAmount,
+    topupInfo,
+  ])
 
   // Get current payment type (selected or default)
   const getCurrentPaymentType = useCallback(() => {
     return selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
   }, [selectedPaymentMethod, topupInfo])
 
+  const paymentCurrency =
+    (selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)) ===
+    PAYMENT_TYPES.WAFFO_PANCAKE
+      ? displayCurrency
+      : 'CNY'
+
   // Handle preset selection
   const handleSelectPreset = (preset: PresetAmount) => {
     setTopupAmount(preset.value)
     setSelectedPreset(preset.value)
-    calculatePaymentAmount(preset.value, getCurrentPaymentType())
+    const paymentType = getCurrentPaymentType()
+    calculatePaymentAmount(
+      preset.value,
+      paymentType,
+      paymentType === PAYMENT_TYPES.WAFFO_PANCAKE ? displayCurrency : undefined
+    )
   }
 
   // Handle topup amount change
   const handleTopupAmountChange = (amount: number) => {
     setTopupAmount(amount)
     setSelectedPreset(null)
-    calculatePaymentAmount(amount, getCurrentPaymentType())
+    const paymentType = getCurrentPaymentType()
+    calculatePaymentAmount(
+      amount,
+      paymentType,
+      paymentType === PAYMENT_TYPES.WAFFO_PANCAKE ? displayCurrency : undefined
+    )
   }
 
   // Handle payment method selection
@@ -172,7 +228,13 @@ export function Wallet(props: WalletProps) {
       }
 
       // Calculate payment amount and show confirmation dialog
-      await calculatePaymentAmount(topupAmount, method.type)
+      await calculatePaymentAmount(
+        topupAmount,
+        method.type,
+        method.type === PAYMENT_TYPES.WAFFO_PANCAKE
+          ? displayCurrency
+          : undefined
+      )
       setConfirmDialogOpen(true)
     } finally {
       setPaymentLoading(null)
@@ -190,7 +252,8 @@ export function Wallet(props: WalletProps) {
       {
         regular: processPayment,
         waffo: processWaffoPayment,
-        waffoPancake: processWaffoPancakePayment,
+        waffoPancake: (amount) =>
+          processWaffoPancakePayment(amount, displayCurrency),
       }
     )
 
@@ -296,6 +359,7 @@ export function Wallet(props: WalletProps) {
                   topupAmount={topupAmount}
                   onTopupAmountChange={handleTopupAmountChange}
                   paymentAmount={paymentAmount}
+                  paymentCurrency={paymentCurrency}
                   calculating={calculating}
                   onPaymentMethodSelect={handlePaymentMethodSelect}
                   paymentLoading={paymentLoading}
@@ -347,6 +411,7 @@ export function Wallet(props: WalletProps) {
         onConfirm={handlePaymentConfirm}
         topupAmount={topupAmount}
         paymentAmount={paymentAmount}
+        paymentCurrency={paymentCurrency}
         paymentMethod={selectedPaymentMethod}
         calculating={calculating}
         processing={processing || waffoProcessing || pancakeProcessing}

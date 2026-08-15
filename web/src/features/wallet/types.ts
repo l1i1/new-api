@@ -203,6 +203,10 @@ export interface WaffoPaymentRequest {
 export interface WaffoPancakePaymentRequest {
   /** Topup amount */
   amount: number
+  /** Provider currency selected in the global wallet display switcher */
+  currency: 'CNY' | 'USD'
+  /** Explicit canonical method required by the HotPay gateway after cutover. */
+  payment_method?: 'wechat_pay' | 'card' | 'apple_pay' | 'google_pay'
 }
 
 /**
@@ -211,6 +215,8 @@ export interface WaffoPancakePaymentRequest {
 export interface AmountRequest {
   /** Topup amount to calculate */
   amount: number
+  /** Optional provider currency for currency-aware payment flows */
+  currency?: 'CNY' | 'USD'
 }
 
 /**

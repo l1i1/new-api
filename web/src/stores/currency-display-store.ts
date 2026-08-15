@@ -35,10 +35,12 @@ interface CurrencyDisplayState {
 }
 
 /**
- * User-local currency preference for display-only conversions.
+ * User-local currency preference for display conversions and the Waffo Pancake
+ * wallet checkout currency.
  *
- * This state never participates in payment requests, account balances, or
- * server-side billing. The configured exchange rate remains server-owned.
+ * Only Waffo Pancake wallet checkout consumes this value as a provider
+ * currency; other payment channels keep their own immutable currency rules.
+ * Account balances and server-side billing remain server-owned.
  */
 export const useCurrencyDisplayStore = create<CurrencyDisplayState>()(
   persist(

@@ -323,7 +323,7 @@ func validateWaffoPancakeProviderPayments(topUp *model.TopUp, payments []waffoPa
 		!strings.EqualFold(strings.TrimSpace(payment.OnetimeOrder.Status), "completed") ||
 		payment.OnetimeOrder.TestMode ||
 		strings.TrimSpace(payment.OnetimeOrder.Store.ID) != strings.TrimSpace(setting.WaffoPancakeStoreID) ||
-		!strings.EqualFold(strings.TrimSpace(payment.SnapshotAmountDetails.Currency), "USD") {
+		!strings.EqualFold(strings.TrimSpace(payment.SnapshotAmountDetails.Currency), waffoPancakeOrderCurrency(topUp.PaymentCurrency)) {
 		return nil, verificationError(PaymentVerificationMismatch)
 	}
 	if err := validatePaymentAmount(topUp.Money, payment.SnapshotAmountDetails.Subtotal); err != nil {
@@ -335,7 +335,7 @@ func validateWaffoPancakeProviderPayments(topUp *model.TopUp, payments []waffoPa
 		ProviderTradeNo: strings.TrimSpace(payment.ID),
 		PaymentMethod:   topUp.PaymentMethod,
 		PaidAmount:      strings.TrimSpace(payment.SnapshotAmountDetails.Subtotal),
-		Currency:        "USD",
+		Currency:        waffoPancakeOrderCurrency(topUp.PaymentCurrency),
 	}, nil
 }
 

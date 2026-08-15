@@ -287,7 +287,7 @@ func loadCompletedBusinessTopupUserIDs() (map[int]struct{}, error) {
 func loadBusinessFlowTopups(start, end int64) ([]TopUp, error) {
 	var topups []TopUp
 	query := DB.Model(&TopUp{}).
-		Select("id, user_id, amount, money, payment_method, payment_provider, create_time, complete_time, status").
+		Select("id, user_id, amount, money, payment_method, payment_provider, payment_currency, credited_quota, create_time, complete_time, status").
 		Where("(status IN ? OR complete_time > 0)", completedBusinessTopUpStatuses).
 		Where("(complete_time >= ? AND complete_time < ?) OR (complete_time = 0 AND create_time >= ? AND create_time < ?)", start, end, start, end)
 	err := query.Find(&topups).Error
@@ -484,7 +484,7 @@ func buildBusinessFlowBuckets(periods []businessPeriod, topups []TopUp, systemLo
 		}
 		bucket := &buckets[index]
 		bucket.TopupOrders++
-		bucket.TopupCNY += topup.Money
+		bucket.TopupCNY += businessTopUpCNY(topup)
 		bucket.TopupQuota += businessCreditedQuota(topup, quotaPerUnit)
 		topupUsers[index][topup.UserId] = struct{}{}
 	}
@@ -624,6 +624,9 @@ func businessTopUpCompleted(topup TopUp) bool {
 }
 
 func businessCreditedQuota(topup TopUp, quotaPerUnit float64) int64 {
+	if topup.CreditedQuota > 0 {
+		return int64(topup.CreditedQuota)
+	}
 	provider := strings.ToLower(strings.TrimSpace(topup.PaymentProvider))
 	if provider == "" {
 		provider = strings.ToLower(strings.TrimSpace(topup.PaymentMethod))
@@ -632,9 +635,40 @@ func businessCreditedQuota(topup TopUp, quotaPerUnit float64) int64 {
 		return nonNegativeRoundedQuota(float64(topup.Amount))
 	}
 	if topup.Money > 0 {
+		if businessTopUpCurrency(topup) == PaymentCurrencyCNY {
+			if topup.Amount > 0 {
+				return nonNegativeRoundedQuota(float64(topup.Amount) * quotaPerUnit)
+			}
+			return nonNegativeRoundedQuota(topup.Money * quotaPerUnit)
+		}
 		return nonNegativeRoundedQuota(topup.Money / businessReportCNYPerUSD * quotaPerUnit)
 	}
 	return nonNegativeRoundedQuota(float64(topup.Amount) * quotaPerUnit)
+}
+
+func businessTopUpCurrency(topup TopUp) string {
+	currency := strings.ToUpper(strings.TrimSpace(topup.PaymentCurrency))
+	if currency != "" {
+		return currency
+	}
+	provider := strings.ToLower(strings.TrimSpace(topup.PaymentProvider))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(topup.PaymentMethod))
+	}
+	if provider == PaymentProviderEpay {
+		return PaymentCurrencyCNY
+	}
+	return PaymentCurrencyUSD
+}
+
+func businessTopUpCNY(topup TopUp) float64 {
+	if topup.Money <= 0 {
+		return 0
+	}
+	if businessTopUpCurrency(topup) == PaymentCurrencyUSD {
+		return topup.Money * businessReportCNYPerUSD
+	}
+	return topup.Money
 }
 
 func businessQuotaFromLogContent(content string, quotaPerUnit float64) int64 {

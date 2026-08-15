@@ -72,8 +72,15 @@ func TestBusinessAnalysisCompletedTopupAndProviderConversion(t *testing.T) {
 		PaymentProvider: "creem",
 		Amount:          123,
 	}, 500_000))
-	assert.EqualValues(t, 1_000_000, businessCreditedQuota(TopUp{Money: 14}, 500_000))
+	assert.EqualValues(t, 1_000_000, businessCreditedQuota(TopUp{Money: 14, PaymentCurrency: PaymentCurrencyUSD}, 500_000))
+	assert.EqualValues(t, 7_000_000, businessCreditedQuota(TopUp{Money: 14, PaymentCurrency: PaymentCurrencyCNY}, 500_000))
 	assert.EqualValues(t, 1_000_000, businessCreditedQuota(TopUp{Amount: 2}, 500_000))
+}
+
+func TestBusinessAnalysisTopUpCurrencyConversion(t *testing.T) {
+	assert.Equal(t, 14.0, businessTopUpCNY(TopUp{Money: 14, PaymentCurrency: PaymentCurrencyCNY}))
+	assert.Equal(t, 98.0, businessTopUpCNY(TopUp{Money: 14, PaymentCurrency: PaymentCurrencyUSD}))
+	assert.Equal(t, 14.0, businessTopUpCNY(TopUp{Money: 14, PaymentProvider: PaymentProviderEpay}))
 }
 
 func TestBusinessAnalysisParsesNonRechargeLogs(t *testing.T) {

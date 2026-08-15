@@ -19,6 +19,10 @@ type TopUp struct {
 	TradeNo         string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
 	PaymentMethod   string  `json:"payment_method" gorm:"type:varchar(50)"`
 	PaymentProvider string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	// PaymentGatewayOrderID is the immutable canonical order ID returned by
+	// HotPay. It is kept separate from TradeNo because the gateway owns its
+	// own order identity and settlement commands must bind to both values.
+	PaymentGatewayOrderID string `json:"payment_gateway_order_id" gorm:"type:varchar(255);index"`
 	// PaymentCurrency is the provider's immutable settlement-currency snapshot.
 	// It is for display and audit only; quota and settlement calculations retain
 	// their existing units.

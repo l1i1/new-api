@@ -34,7 +34,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
+import {
+  formatCnyAmount,
+  formatCnyFromUSD,
+  formatPaymentAmount,
+} from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { cn } from '@/lib/utils'
 
@@ -61,6 +65,7 @@ interface RechargeFormCardProps {
   topupAmount: number
   onTopupAmountChange: (amount: number) => void
   paymentAmount: number
+  paymentCurrency?: 'CNY' | 'USD'
   calculating: boolean
   onPaymentMethodSelect: (method: PaymentMethod) => void
   paymentLoading: string | null
@@ -90,6 +95,7 @@ export function RechargeFormCard({
   topupAmount,
   onTopupAmountChange,
   paymentAmount,
+  paymentCurrency = 'CNY',
   calculating,
   onPaymentMethodSelect,
   paymentLoading,
@@ -328,7 +334,7 @@ export function RechargeFormCard({
                           className='text-sm font-semibold'
                           data-testid='wallet-payment-amount'
                         >
-                          {formatCnyAmount(paymentAmount)}
+                          {formatPaymentAmount(paymentAmount, paymentCurrency)}
                         </span>
                       )}
                     </div>

@@ -60,7 +60,8 @@ const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
 export async function requestPaymentAmount(
   topupAmount: number,
   paymentType: string,
-  calculators: PaymentAmountCalculators = defaultPaymentAmountCalculators
+  calculators: PaymentAmountCalculators = defaultPaymentAmountCalculators,
+  currency?: AmountRequest['currency']
 ): Promise<number> {
   let calculator = calculators.regular
   if (isStripePayment(paymentType)) {
@@ -71,7 +72,7 @@ export async function requestPaymentAmount(
     calculator = calculators.waffoPancake
   }
 
-  const response = await calculator({ amount: topupAmount })
+  const response = await calculator({ amount: topupAmount, currency })
   if (!isApiSuccess(response) || !response.data) {
     return 0
   }
@@ -86,12 +87,18 @@ export function usePayment() {
 
   // Calculate payment amount
   const calculatePaymentAmount = useCallback(
-    async (topupAmount: number, paymentType: string) => {
+    async (
+      topupAmount: number,
+      paymentType: string,
+      currency?: AmountRequest['currency']
+    ) => {
       try {
         setCalculating(true)
         const calculatedAmount = await requestPaymentAmount(
           topupAmount,
-          paymentType
+          paymentType,
+          defaultPaymentAmountCalculators,
+          currency
         )
         setAmount(calculatedAmount)
         return calculatedAmount

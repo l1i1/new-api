@@ -17,6 +17,7 @@ func manualVerificationTopUp(provider string) *model.TopUp {
 		Money:           9.99,
 		PaymentMethod:   "alipay",
 		PaymentProvider: provider,
+		PaymentCurrency: model.PaymentCurrencyCNY,
 	}
 }
 
@@ -147,7 +148,7 @@ func TestValidateWaffoPancakeProviderPaymentsRequiresUniqueUnrefundedMatch(t *te
 		OrderMerchantExternalID: topUp.TradeNo,
 		Status:                  "succeeded",
 	}
-	payment.SnapshotAmountDetails.Currency = "USD"
+	payment.SnapshotAmountDetails.Currency = model.PaymentCurrencyCNY
 	payment.SnapshotAmountDetails.Subtotal = "9.99"
 	payment.OnetimeOrder.Status = "completed"
 	payment.OnetimeOrder.Store.ID = setting.WaffoPancakeStoreID
@@ -155,6 +156,7 @@ func TestValidateWaffoPancakeProviderPaymentsRequiresUniqueUnrefundedMatch(t *te
 	verified, err := validateWaffoPancakeProviderPayments(topUp, []waffoPancakeReconciliationPayment{payment})
 	require.NoError(t, err)
 	assert.Equal(t, payment.ID, verified.ProviderTradeNo)
+	assert.Equal(t, model.PaymentCurrencyCNY, verified.Currency)
 
 	_, err = validateWaffoPancakeProviderPayments(topUp, []waffoPancakeReconciliationPayment{payment, payment})
 	requireVerificationState(t, PaymentVerificationAmbiguous, err)

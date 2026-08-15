@@ -46,11 +46,12 @@ func TestResolveWaffoPancakeTradeNo_UsesSubtotalWithoutBuyerIdentity(t *testing.
 		TradeNo:         "WAFFO_PANCAKE-test-wallet",
 		PaymentMethod:   model.PaymentMethodWaffoPancake,
 		PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentCurrency: model.PaymentCurrencyCNY,
 		Status:          common.TopUpStatusPending,
 	}
 	require.NoError(t, model.DB.Create(topUp).Error)
 
-	event := completedWaffoPancakeEvent(topUp.TradeNo, "13.76", "usd")
+	event := completedWaffoPancakeEvent(topUp.TradeNo, "13.76", "cny")
 	event.Data.Subtotal = "12.510"
 	event.Data.TaxAmount = "1.25"
 	event.Data.Total = "13.76"
@@ -69,11 +70,12 @@ func TestResolveWaffoPancakeTradeNo_FallsBackToLegacyAmount(t *testing.T) {
 		TradeNo:         "WAFFO_PANCAKE-test-legacy-amount",
 		PaymentMethod:   model.PaymentMethodWaffoPancake,
 		PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentCurrency: model.PaymentCurrencyCNY,
 		Status:          common.TopUpStatusPending,
 	}
 	require.NoError(t, model.DB.Create(topUp).Error)
 
-	tradeNo, err := ResolveWaffoPancakeTradeNo(completedWaffoPancakeEvent(topUp.TradeNo, "12.500", "USD"))
+	tradeNo, err := ResolveWaffoPancakeTradeNo(completedWaffoPancakeEvent(topUp.TradeNo, "12.500", "CNY"))
 	require.NoError(t, err)
 	assert.Equal(t, topUp.TradeNo, tradeNo)
 }
@@ -88,6 +90,7 @@ func TestResolveWaffoPancakeTradeNo_RejectsSettlementMismatch(t *testing.T) {
 		TradeNo:         "WAFFO_PANCAKE-test-mismatch",
 		PaymentMethod:   model.PaymentMethodWaffoPancake,
 		PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentCurrency: model.PaymentCurrencyCNY,
 		Status:          common.TopUpStatusPending,
 	}
 	require.NoError(t, model.DB.Create(topUp).Error)
@@ -96,19 +99,19 @@ func TestResolveWaffoPancakeTradeNo_RejectsSettlementMismatch(t *testing.T) {
 		name  string
 		event *WaffoPancakeWebhookEvent
 	}{
-		{name: "wrong amount", event: completedWaffoPancakeEvent(topUp.TradeNo, "12.49", "USD")},
-		{name: "unsupported amount precision", event: completedWaffoPancakeEvent(topUp.TradeNo, "12.501", "USD")},
-		{name: "malformed amount", event: completedWaffoPancakeEvent(topUp.TradeNo, "not-an-amount", "USD")},
+		{name: "wrong amount", event: completedWaffoPancakeEvent(topUp.TradeNo, "12.49", "CNY")},
+		{name: "unsupported amount precision", event: completedWaffoPancakeEvent(topUp.TradeNo, "12.501", "CNY")},
+		{name: "malformed amount", event: completedWaffoPancakeEvent(topUp.TradeNo, "not-an-amount", "CNY")},
 		{name: "wrong currency", event: completedWaffoPancakeEvent(topUp.TradeNo, "12.50", "EUR")},
 		{name: "inconsistent tax total", event: func() *WaffoPancakeWebhookEvent {
-			event := completedWaffoPancakeEvent(topUp.TradeNo, "13.50", "USD")
+			event := completedWaffoPancakeEvent(topUp.TradeNo, "13.50", "CNY")
 			event.Data.Subtotal = "12.50"
 			event.Data.TaxAmount = "1.00"
 			event.Data.Total = "14.00"
 			return event
 		}()},
 		{name: "wrong event type", event: func() *WaffoPancakeWebhookEvent {
-			event := completedWaffoPancakeEvent(topUp.TradeNo, "12.50", "USD")
+			event := completedWaffoPancakeEvent(topUp.TradeNo, "12.50", "CNY")
 			event.EventType = "order.created"
 			return event
 		}()},
@@ -152,6 +155,7 @@ func TestResolveWaffoPancakeSubscriptionTradeNo_ValidatesAmountAndCurrency(t *te
 		TradeNo:         "WAFFO_PANCAKE_SUB-test",
 		PaymentMethod:   model.PaymentMethodWaffoPancake,
 		PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentCurrency: model.PaymentCurrencyUSD,
 		Status:          common.TopUpStatusPending,
 	}
 	require.NoError(t, model.DB.Create(order).Error)

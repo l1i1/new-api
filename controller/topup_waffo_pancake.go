@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -20,7 +21,22 @@ import (
 )
 
 type WaffoPancakePayRequest struct {
-	Amount int64 `json:"amount"`
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	PaymentMethod string `json:"payment_method"`
+}
+
+func normalizeWaffoPancakeWalletCurrency(currency string) (string, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		// Keep older clients working while the frontend starts sending its
+		// display-currency selection explicitly.
+		return model.PaymentCurrencyCNY, nil
+	}
+	if currency != model.PaymentCurrencyCNY && currency != model.PaymentCurrencyUSD {
+		return "", fmt.Errorf("unsupported wallet currency %q", currency)
+	}
+	return currency, nil
 }
 
 func RequestWaffoPancakeAmount(c *gin.Context) {
@@ -34,6 +50,11 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
+	currency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "钱包币种仅支持 CNY 或 USD"})
+		return
+	}
 
 	id := c.GetInt("id")
 	group, err := model.GetUserGroup(id, true)
@@ -42,15 +63,17 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		return
 	}
 
-	localPayMoney, providerPayMoney := getWaffoPancakePaymentAmounts(req.Amount, group)
-	if localPayMoney <= 0.01 || providerPayMoney <= 0.01 {
+	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, currency)
+	if providerPayMoney <= 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
 	}
 
-	// The wallet is priced in local CNY. Pancake receives the converted USD
-	// amount only when the checkout session is created below.
-	c.JSON(http.StatusOK, gin.H{"message": "success", "data": fmt.Sprintf("%.2f", localPayMoney)})
+	c.JSON(http.StatusOK, gin.H{"message": "success", "data": formatWaffoPancakeAmount(providerPayMoney)})
+}
+
+func getWaffoPancakeLocalPayMoney(amount int64, group string) float64 {
+	return getPayMoney(amount, group)
 }
 
 func getWaffoPancakeExchangeRate() float64 {
@@ -66,22 +89,19 @@ func getWaffoPancakeExchangeRate() float64 {
 	return 1
 }
 
-func getWaffoPancakeLocalPayMoney(amount int64, group string) float64 {
-	return getPayMoney(amount, group)
-}
-
-func getWaffoPancakePayMoney(amount int64, group string) float64 {
-	localPayMoney := decimal.NewFromFloat(getWaffoPancakeLocalPayMoney(amount, group))
-	return localPayMoney.
+func getWaffoPancakePaymentAmount(amount int64, group, currency string) float64 {
+	localCNY := decimal.NewFromFloat(getWaffoPancakeLocalPayMoney(amount, group))
+	if currency == model.PaymentCurrencyCNY {
+		return localCNY.InexactFloat64()
+	}
+	return localCNY.
 		Div(decimal.NewFromFloat(getWaffoPancakeExchangeRate())).
 		Mul(decimal.NewFromFloat(setting.WaffoPancakeUnitPrice)).
 		InexactFloat64()
 }
 
-func getWaffoPancakePaymentAmounts(amount int64, group string) (localCNY, providerUSD float64) {
-	localCNY = getWaffoPancakeLocalPayMoney(amount, group)
-	providerUSD = getWaffoPancakePayMoney(amount, group)
-	return localCNY, providerUSD
+func getWaffoPancakeCNYAmount(amount int64, group string) float64 {
+	return getWaffoPancakeLocalPayMoney(amount, group)
 }
 
 func normalizeWaffoPancakeTopUpAmount(amount int64) int64 {
@@ -347,7 +367,7 @@ func getWaffoPancakeBuyerIdentity(user *model.User) string {
 }
 
 func RequestWaffoPancakePay(c *gin.Context) {
-	if !isWaffoPancakeTopUpEnabled() {
+	if !service.IsHotPayGatewayEnabled() && !isWaffoPancakeTopUpEnabled() {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 配置不完整"})
 		return
 	}
@@ -359,6 +379,11 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	}
 	if req.Amount < int64(setting.WaffoPancakeMinTopUp) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
+		return
+	}
+	currency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "钱包币种仅支持 CNY 或 USD"})
 		return
 	}
 
@@ -375,33 +400,113 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		return
 	}
 
-	localPayMoney, providerPayMoney := getWaffoPancakePaymentAmounts(req.Amount, group)
-	if localPayMoney < 0.01 || providerPayMoney < 0.01 {
+	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, currency)
+	if providerPayMoney < 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
 	}
 
+	gatewayEnabled := service.IsHotPayGatewayEnabled()
+	canonicalMethod := ""
+	if gatewayEnabled {
+		canonicalMethod, err = hotPayWalletMethod(currency, req.PaymentMethod)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 必须选择与币种匹配的支付方式"})
+			return
+		}
+	}
 	tradeNo := fmt.Sprintf("WAFFO_PANCAKE-%d-%d-%s", id, time.Now().UnixMilli(), randstr.String(6))
+	idempotencyKey := ""
+	if gatewayEnabled {
+		idempotencyKey = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		if idempotencyKey != "" {
+			tradeNo = hotPayMerchantOrderID("wallet", id, idempotencyKey)
+		} else {
+			idempotencyKey = hotPayIdempotencyKey(c, "wallet", tradeNo)
+		}
+	}
+	paymentProvider := model.PaymentProviderWaffoPancake
+	paymentMethod := model.PaymentMethodWaffoPancake
+	if canonicalMethod != "" {
+		paymentMethod = canonicalMethod
+	}
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          normalizeWaffoPancakeTopUpAmount(req.Amount),
 		Money:           providerPayMoney,
 		TradeNo:         tradeNo,
-		PaymentMethod:   model.PaymentMethodWaffoPancake,
-		PaymentProvider: model.PaymentProviderWaffoPancake,
-		PaymentCurrency: model.PaymentCurrencyUSD,
+		PaymentMethod:   paymentMethod,
+		PaymentProvider: paymentProvider,
+		PaymentCurrency: currency,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	if err := topUp.Insert(); err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, tradeNo, req.Amount, err.Error()))
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+	if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
+		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
+			return
+		}
+		topUp = existing
+	} else if err := topUp.Insert(); err != nil {
+		if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil && existing.UserId == id {
+			topUp = existing
+		} else {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, tradeNo, req.Amount, err.Error()))
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+			return
+		}
+	}
+
+	if gatewayEnabled {
+		client, clientErr := hotPayGatewayClient()
+		if clientErr != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(clientErr)})
+			return
+		}
+		amountMinor, amountErr := hotPayMinorAmount(providerPayMoney)
+		if amountErr != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额无效"})
+			return
+		}
+		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
+			MerchantOrderID: tradeNo,
+			BusinessType:    "wallet_topup",
+			UserID:          hotPayUserID(id),
+			BuyerEmail:      getWaffoPancakeBuyerEmail(user),
+			ProductID:       hotPayProviderProductID(),
+			AmountMinor:     amountMinor,
+			Currency:        currency,
+			QuotaAmount:     hotPayQuotaAmount(topUp.Amount),
+			Provider:        paymentProvider,
+			PaymentMethod:   canonicalMethod,
+			Environment:     hotPayEnvironment(),
+			ReturnURL:       hotPayReturnURL("/usage-logs"),
+			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
+				"quota_amount":     topUp.Amount,
+				"provider_amount":  hotPayStringAmount(providerPayMoney),
+				"pricing_currency": currency,
+			}),
+			ExpiresAt:   hotPayExpiresAt(45 * 60),
+			Description: "Wallet top-up",
+		})
+		if createErr != nil {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(createErr)})
+			return
+		}
+		if bindErr := model.BindPaymentGatewayOrderID(model.PaymentGatewayBusinessWallet, tradeNo, result.Order.ID); bindErr != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("HotPay 钱包订单绑定 canonical order 失败 user_id=%d trade_no=%s error=%q", id, tradeNo, bindErr.Error()))
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付订单状态保存失败"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "success", "data": hotPayCheckoutResponse(result), "url": result.Attempt.CheckoutURL})
 		return
 	}
 
 	expiresInSeconds := 45 * 60
 	session, err := service.CreateWaffoPancakeCheckoutSession(c.Request.Context(), &service.WaffoPancakeCreateSessionParams{
 		ProductID:     setting.WaffoPancakeProductID,
+		Currency:      currency,
 		BuyerIdentity: getWaffoPancakeBuyerIdentity(user),
 		PriceSnapshot: &service.WaffoPancakePriceSnapshot{
 			Amount:      formatWaffoPancakeAmount(providerPayMoney),
@@ -418,7 +523,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
 		return
 	}
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d local_cny=%.2f provider_usd=%.2f", id, tradeNo, session.SessionID, req.Amount, localPayMoney, providerPayMoney))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d currency=%s provider_amount=%.2f", id, tradeNo, session.SessionID, req.Amount, currency, providerPayMoney))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",
@@ -434,6 +539,13 @@ func RequestWaffoPancakePay(c *gin.Context) {
 }
 
 func WaffoPancakeWebhook(c *gin.Context) {
+	legacyWebhookDrain := strings.EqualFold(strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALLOW_LEGACY_WEBHOOKS")), "true") || strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALLOW_LEGACY_WEBHOOKS")) == "1"
+	if service.IsHotPayGatewayEnabled() && !legacyWebhookDrain {
+		// New provider callbacks terminate at HotPay after cutover. Keeping the
+		// old endpoint closed prevents a duplicate direct-SDK settlement path.
+		c.String(http.StatusGone, "legacy webhook disabled")
+		return
+	}
 	if !isWaffoPancakeWebhookEnabled() {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 被拒绝 reason=webhook_disabled path=%q client_ip=%s", c.Request.RequestURI, c.ClientIP()))
 		c.String(http.StatusForbidden, "webhook disabled")
@@ -477,6 +589,13 @@ func WaffoPancakeWebhook(c *gin.Context) {
 			expectedEnv, event.Mode, event.ID, event.Data.OrderID, c.ClientIP(),
 		))
 		c.String(http.StatusConflict, "environment mismatch")
+		return
+	}
+	if service.IsHotPayGatewayEnabled() && strings.HasPrefix(strings.TrimSpace(event.Data.OrderMerchantExternalID), "HP_") {
+		// Gateway-created orders use HP_* merchant IDs. They must never be
+		// settled through this legacy New API webhook, even when an operator has
+		// temporarily enabled legacy draining for older WAFFO_PANCAKE-* orders.
+		c.String(http.StatusGone, "gateway order webhook moved")
 		return
 	}
 

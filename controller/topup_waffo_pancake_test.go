@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -32,9 +33,7 @@ func TestFormatWaffoPancakeAmount_UsesDisplayPriceString(t *testing.T) {
 	}
 }
 
-func TestGetWaffoPancakePayMoney(t *testing.T) {
-	originalUnitPrice := setting.WaffoPancakeUnitPrice
-	originalExchangeRate := setting.WaffoPancakeExchangeRate
+func TestGetWaffoPancakeCNYAmount(t *testing.T) {
 	originalPrice := operation_setting.Price
 	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
 	originalDiscounts := make(map[int]float64, len(operation_setting.GetPaymentSetting().AmountDiscount))
@@ -44,16 +43,12 @@ func TestGetWaffoPancakePayMoney(t *testing.T) {
 	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
 
 	t.Cleanup(func() {
-		setting.WaffoPancakeUnitPrice = originalUnitPrice
-		setting.WaffoPancakeExchangeRate = originalExchangeRate
 		operation_setting.Price = originalPrice
 		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
 		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
 		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
 	})
 
-	setting.WaffoPancakeUnitPrice = 2.5
-	setting.WaffoPancakeExchangeRate = 7
 	operation_setting.Price = 7
 	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{
 		10:                           0.8,
@@ -70,91 +65,109 @@ func TestGetWaffoPancakePayMoney(t *testing.T) {
 		expected         float64
 	}{
 		{
-			name:             "currency display applies unit price group ratio and discount",
+			name:             "currency display applies local price group ratio and discount",
 			amount:           10,
 			group:            "vip",
 			quotaDisplayType: operation_setting.QuotaDisplayTypeUSD,
-			expected:         24,
+			expected:         67.2,
 		},
 		{
 			name:             "tokens display converts quota to display units before pricing",
 			amount:           int64(common.QuotaPerUnit * 3),
 			group:            "vip",
 			quotaDisplayType: operation_setting.QuotaDisplayTypeTokens,
-			expected:         4.5,
+			expected:         12.6,
 		},
 		{
 			name:             "non-positive discount falls back to no discount",
 			amount:           20,
 			group:            "default",
 			quotaDisplayType: operation_setting.QuotaDisplayTypeUSD,
-			expected:         50,
+			expected:         140,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			operation_setting.GetGeneralSetting().QuotaDisplayType = tc.quotaDisplayType
-			actual := getWaffoPancakePayMoney(tc.amount, tc.group)
+			actual := getWaffoPancakeCNYAmount(tc.amount, tc.group)
 			require.InDelta(t, tc.expected, actual, 0.000001)
 		})
 	}
 }
 
-func TestGetWaffoPancakePaymentAmountsSeparatesLocalCNYAndProviderUSD(t *testing.T) {
-	originalUnitPrice := setting.WaffoPancakeUnitPrice
-	originalExchangeRate := setting.WaffoPancakeExchangeRate
+func TestGetWaffoPancakeCNYAmountUsesLocalPayableAmount(t *testing.T) {
 	originalPrice := operation_setting.Price
 	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
 	originalDiscounts := operation_setting.GetPaymentSetting().AmountDiscount
 	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
 
 	t.Cleanup(func() {
-		setting.WaffoPancakeUnitPrice = originalUnitPrice
-		setting.WaffoPancakeExchangeRate = originalExchangeRate
 		operation_setting.Price = originalPrice
 		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
 		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
 		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
 	})
 
-	setting.WaffoPancakeUnitPrice = 1
-	setting.WaffoPancakeExchangeRate = 7
 	operation_setting.Price = 7
 	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
 	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{}
 	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":1}`))
 
-	localCNY, providerUSD := getWaffoPancakePaymentAmounts(71, "default")
-	require.InDelta(t, 497, localCNY, 0.000001)
-	require.InDelta(t, 71, providerUSD, 0.000001)
+	require.InDelta(t, 497, getWaffoPancakeCNYAmount(71, "default"), 0.000001)
 }
 
-func TestGetWaffoPancakePayMoneyFallsBackToRechargePrice(t *testing.T) {
-	originalUnitPrice := setting.WaffoPancakeUnitPrice
-	originalExchangeRate := setting.WaffoPancakeExchangeRate
+func TestWaffoPancakeWalletCurrencySelection(t *testing.T) {
 	originalPrice := operation_setting.Price
-	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
+	originalExchangeRate := setting.WaffoPancakeExchangeRate
+	originalUnitPrice := setting.WaffoPancakeUnitPrice
 	originalDiscounts := operation_setting.GetPaymentSetting().AmountDiscount
 	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
 
 	t.Cleanup(func() {
-		setting.WaffoPancakeUnitPrice = originalUnitPrice
-		setting.WaffoPancakeExchangeRate = originalExchangeRate
 		operation_setting.Price = originalPrice
-		operation_setting.GetGeneralSetting().QuotaDisplayType = originalQuotaDisplayType
+		setting.WaffoPancakeExchangeRate = originalExchangeRate
+		setting.WaffoPancakeUnitPrice = originalUnitPrice
 		operation_setting.GetPaymentSetting().AmountDiscount = originalDiscounts
 		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(originalTopupGroupRatio))
 	})
 
-	setting.WaffoPancakeUnitPrice = 1
-	setting.WaffoPancakeExchangeRate = 0
 	operation_setting.Price = 7
-	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
+	setting.WaffoPancakeExchangeRate = 7
+	setting.WaffoPancakeUnitPrice = 1
 	operation_setting.GetPaymentSetting().AmountDiscount = map[int]float64{}
 	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":1}`))
 
-	require.InDelta(t, 71, getWaffoPancakePayMoney(71, "default"), 0.000001)
+	cases := []struct {
+		name     string
+		currency string
+		expected float64
+	}{
+		{name: "native CNY", currency: model.PaymentCurrencyCNY, expected: 497},
+		{name: "converted USD", currency: model.PaymentCurrencyUSD, expected: 71},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.InDelta(t, tc.expected, getWaffoPancakePaymentAmount(71, "default", tc.currency), 0.000001)
+		})
+	}
+
+	for _, tc := range []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: model.PaymentCurrencyCNY},
+		{input: "cny", expected: model.PaymentCurrencyCNY},
+		{input: "USD", expected: model.PaymentCurrencyUSD},
+	} {
+		t.Run("normalize_"+tc.input, func(t *testing.T) {
+			actual, err := normalizeWaffoPancakeWalletCurrency(tc.input)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, actual)
+		})
+	}
+	_, err := normalizeWaffoPancakeWalletCurrency("EUR")
+	require.Error(t, err)
 }
 
 func TestHandleWaffoPancakeCompletedEvent_RetriesUnresolvedOrder(t *testing.T) {

@@ -31,7 +31,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatCnyAmount, formatCnyFromUSD } from '@/lib/currency'
+import { formatCnyFromUSD, formatPaymentAmount } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 
 import { DEFAULT_DISCOUNT_RATE } from '../../constants'
@@ -44,6 +44,7 @@ interface PaymentConfirmDialogProps {
   onConfirm: () => void
   topupAmount: number
   paymentAmount: number
+  paymentCurrency?: 'CNY' | 'USD'
   paymentMethod: PaymentMethod | undefined
   calculating: boolean
   processing: boolean
@@ -56,6 +57,7 @@ export function PaymentConfirmDialog({
   onConfirm,
   topupAmount,
   paymentAmount,
+  paymentCurrency = 'CNY',
   paymentMethod,
   calculating,
   processing,
@@ -110,11 +112,11 @@ export function PaymentConfirmDialog({
               ) : (
                 <div className='flex items-baseline gap-2'>
                   <span className='text-2xl font-semibold'>
-                    {formatCnyAmount(paymentAmount)}
+                    {formatPaymentAmount(paymentAmount, paymentCurrency)}
                   </span>
                   {hasDiscount && (
                     <span className='text-muted-foreground text-sm line-through'>
-                      {formatCnyAmount(originalAmount)}
+                      {formatPaymentAmount(originalAmount, paymentCurrency)}
                     </span>
                   )}
                 </div>
@@ -127,7 +129,7 @@ export function PaymentConfirmDialog({
               <div className='flex items-center justify-between text-sm'>
                 <span className='text-muted-foreground'>{t('You save')}</span>
                 <span className='font-semibold text-green-600'>
-                  {formatCnyAmount(discountAmount)}
+                  {formatPaymentAmount(discountAmount, paymentCurrency)}
                 </span>
               </div>
             </div>

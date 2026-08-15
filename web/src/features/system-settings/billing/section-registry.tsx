@@ -196,8 +196,6 @@ const BILLING_SECTIONS = [
           WaffoPancakeMerchantID: settings.WaffoPancakeMerchantID ?? '',
           WaffoPancakePrivateKey: settings.WaffoPancakePrivateKey ?? '',
           WaffoPancakeReturnURL: settings.WaffoPancakeReturnURL ?? '',
-          WaffoPancakeExchangeRate:
-            settings.WaffoPancakeExchangeRate || settings.Price || 1,
         }}
         waffoPancakeProvisionedStoreID={settings.WaffoPancakeStoreID ?? ''}
         waffoPancakeProvisionedProductID={settings.WaffoPancakeProductID ?? ''}

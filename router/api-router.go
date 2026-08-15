@@ -12,6 +12,10 @@ import (
 )
 
 func SetApiRouter(router *gin.Engine) {
+	// The gateway settlement receiver is authenticated by its HMAC contract and
+	// must stay outside the interactive /api rate-limit bucket.
+	router.POST("/internal/v1/payment/settlements", controller.PaymentGatewaySettlement)
+
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))

@@ -299,6 +299,7 @@ func migrateDB() error {
 		&InvoiceProfile{},
 		&InvoiceItem{},
 		&InvoiceOrderClaim{},
+		&PaymentGatewaySettlement{},
 	)
 	if err != nil {
 		return err
@@ -370,6 +371,7 @@ func migrateDBFast() error {
 		{&InvoiceProfile{}, "InvoiceProfile"},
 		{&InvoiceItem{}, "InvoiceItem"},
 		{&InvoiceOrderClaim{}, "InvoiceOrderClaim"},
+		{&PaymentGatewaySettlement{}, "PaymentGatewaySettlement"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
