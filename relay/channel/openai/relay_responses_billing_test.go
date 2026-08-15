@@ -156,6 +156,7 @@ func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), "response.failed")
 	require.NotContains(t, w.Body.String(), "server_is_overloaded")
 	require.Contains(t, w.Body.String(), `"code":"server_error"`)
@@ -187,9 +188,44 @@ func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) 
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, "Please retry.", apiErr.Error())
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), "response.error")
 	require.NotContains(t, w.Body.String(), "slow_down")
 	require.Contains(t, w.Body.String(), `"code":"server_error"`)
+}
+
+func TestOaiResponsesStreamHandlerKeepsCommittedStatusForMidStreamFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+			"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Selected model is at capacity.\"}}}\n\n",
+			"data: [DONE]\n\n",
+		}, ""))),
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "response.output_text.delta")
+	require.Contains(t, w.Body.String(), "response.failed")
 }
 
 func TestOaiResponsesHandlerCountsCompletedImageGenerationOutputs(t *testing.T) {

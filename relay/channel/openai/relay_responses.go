@@ -85,6 +85,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	responseDataSent := false
 	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -124,11 +125,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			service.NormalizeServerOverloadError(oaiError)
 			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable)
 		}
+		if streamErr != nil && !responseDataSent && !c.Writer.Written() {
+			// A failure received as the first SSE event has not committed the
+			// response yet. Expose it as a retryable HTTP failure so clients do
+			// not mistake a terminal SSE error for a successful 200 response.
+			c.Status(streamErr.StatusCode)
+		}
 		sendResponsesStreamData(c, streamResponse, data)
 		if streamErr != nil {
 			sr.Stop(streamErr)
 			return
 		}
+		responseDataSent = true
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
