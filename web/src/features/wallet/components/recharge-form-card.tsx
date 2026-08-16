@@ -228,7 +228,7 @@ export function RechargeFormCard({
             <>
               {presetAmounts.length > 0 && (
                 <div className='space-y-2.5 sm:space-y-3'>
-                  <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+                  <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
                     {t('Amount')}
                   </Label>
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 md:grid-cols-4'>
@@ -286,7 +286,7 @@ export function RechargeFormCard({
               )}
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+                <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
                   {t('Custom Amount')}
                 </Label>
                 <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.7fr)] sm:items-end'>
@@ -343,7 +343,7 @@ export function RechargeFormCard({
               </div>
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+                <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
                   {t('Payment Method')}
                 </Label>
                 {hasStandardPaymentMethods ? (
@@ -432,7 +432,7 @@ export function RechargeFormCard({
                 hasWaffoPaymentMethods &&
                 onWaffoMethodSelect && (
                   <div className='space-y-2.5 sm:space-y-3'>
-                    <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+                    <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
                       {t('Waffo Payment')}
                     </Label>
                     <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
@@ -516,9 +516,18 @@ export function RechargeFormCard({
         </div>
       ) : (
         <Alert>
-          <AlertDescription>
-            {t(
-              'Online topup is not enabled. Please use redemption code or contact administrator.'
+          <AlertDescription className='space-y-1'>
+            <p>
+              {t(
+                'Online topup is not enabled. Please use redemption code or contact administrator.'
+              )}
+            </p>
+            {!redemptionEnabled && (
+              <p>
+                {t(
+                  'Redemption codes are disabled until the administrator confirms compliance terms.'
+                )}
+              </p>
             )}
           </AlertDescription>
         </Alert>
@@ -530,7 +539,7 @@ export function RechargeFormCard({
         creemProducts.length > 0 &&
         onCreemProductSelect && (
           <div className='space-y-2.5 border-t pt-4 sm:space-y-3 sm:pt-6'>
-            <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+            <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
               {t('Creem Payment')}
             </Label>
             <CreemProductsSection
@@ -541,7 +550,7 @@ export function RechargeFormCard({
         )}
 
       {/* Redemption Code Section */}
-      {redemptionEnabled ? (
+      {redemptionEnabled && (
         <div className='space-y-2.5 border-t pt-4 sm:space-y-3 sm:pt-6'>
           <div className='flex items-center gap-2'>
             <IconBadge tone='warning' size='xs'>
@@ -549,7 +558,7 @@ export function RechargeFormCard({
             </IconBadge>
             <Label
               htmlFor='redemption-code'
-              className='text-muted-foreground text-xs font-medium tracking-wider uppercase'
+              className='text-muted-foreground text-xs font-medium tracking-wider'
             >
               {t('Have a Code?')}
             </Label>
@@ -587,7 +596,8 @@ export function RechargeFormCard({
             </p>
           )}
         </div>
-      ) : (
+      )}
+      {!redemptionEnabled && hasAnyTopup && (
         <Alert className='border-t'>
           <AlertDescription>
             {t(

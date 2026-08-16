@@ -37,6 +37,9 @@ export interface Message {
   completedAt?: number
   durationMs?: number
   sources?: { href: string; title: string }[]
+  /** Image payloads attached to a user message or produced by an image
+   * model. Values are data URLs or remote URLs. */
+  images?: string[]
   reasoning?: {
     content: string
     duration: number
@@ -49,6 +52,15 @@ export interface Message {
   isContentComplete?: boolean
   status?: MessageStatus
   errorCode?: string | null
+}
+
+/** A persisted conversation. All data lives in browser localStorage. */
+export interface PlaygroundSession {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: Message[]
 }
 
 // API payload types
@@ -113,6 +125,23 @@ export interface ChatCompletionResponse {
     completion_tokens: number
     total_tokens: number
   }
+}
+
+// Image generation types
+export interface ImageGenerationRequest {
+  model: string
+  prompt: string
+  group?: string
+}
+
+export interface ImageGenerationResult {
+  url?: string
+  b64_json?: string
+}
+
+export interface ImageGenerationResponse {
+  created: number
+  data: ImageGenerationResult[]
 }
 
 // Configuration types

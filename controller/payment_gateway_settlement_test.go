@@ -46,7 +46,7 @@ func TestPaymentGatewaySettlementRequiresValidSignatureAndAcknowledgesAfterCommi
 	require.NoError(t, model.DB.Create(user).Error)
 	topUp := &model.TopUp{
 		UserId: user.Id, Amount: 10, Money: 9.99, TradeNo: "gateway-controller-order",
-		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake, PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
 		PaymentGatewayOrderID: "gateway-controller-id",
 		PaymentCurrency:       model.PaymentCurrencyUSD, Status: common.TopUpStatusPending,
 	}
@@ -55,7 +55,7 @@ func TestPaymentGatewaySettlementRequiresValidSignatureAndAcknowledgesAfterCommi
 		CommandID: "gateway-controller-command", OrderID: "gateway-controller-id", MerchantOrderID: topUp.TradeNo,
 		BusinessType: model.PaymentGatewayBusinessWallet, UserID: "9211", AmountMinor: 999,
 		Currency: model.PaymentCurrencyUSD, Provider: model.PaymentProviderWaffoPancake,
-		ProviderEventID: "gateway-controller-event", PaymentMethod: "card", QuotaAmount: 0,
+		ProviderAccountID: "account-1", Environment: "test", ProviderEventID: "gateway-controller-event", ProviderOrderID: "provider-order-1", ProviderTransactionID: "provider-tx-1", PaymentMethod: "card", QuotaAmount: 0,
 		PriceSnapshot: map[string]any{"quota_amount": 10, "provider_amount": "9.99", "pricing_currency": model.PaymentCurrencyUSD},
 		IssuedAt:      time.Now().UTC(),
 	}
@@ -96,7 +96,7 @@ func TestPaymentGatewaySettlementRejectsBadSignatureAndDoesNotMutate(t *testing.
 	require.NoError(t, model.DB.Create(user).Error)
 	topUp := &model.TopUp{
 		UserId: user.Id, Amount: 10, Money: 9.99, TradeNo: "gateway-controller-invalid-order",
-		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake, PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
 		PaymentGatewayOrderID: "gateway-controller-invalid-id",
 		PaymentCurrency:       model.PaymentCurrencyUSD, Status: common.TopUpStatusPending,
 	}
@@ -105,7 +105,7 @@ func TestPaymentGatewaySettlementRejectsBadSignatureAndDoesNotMutate(t *testing.
 		CommandID: "gateway-controller-invalid-command", OrderID: "gateway-controller-invalid-id", MerchantOrderID: topUp.TradeNo,
 		BusinessType: model.PaymentGatewayBusinessWallet, UserID: "9212", AmountMinor: 999,
 		Currency: model.PaymentCurrencyUSD, Provider: model.PaymentProviderWaffoPancake,
-		ProviderEventID: "gateway-controller-invalid-event", PaymentMethod: "card", QuotaAmount: 0,
+		ProviderAccountID: "account-1", Environment: "test", ProviderEventID: "gateway-controller-invalid-event", ProviderOrderID: "provider-order-2", ProviderTransactionID: "provider-tx-2", PaymentMethod: "card", QuotaAmount: 0,
 		PriceSnapshot: map[string]any{"quota_amount": 10, "provider_amount": "9.99", "pricing_currency": model.PaymentCurrencyUSD},
 		IssuedAt:      time.Now().UTC(), Signature: "not-a-valid-signature",
 	}
@@ -131,7 +131,7 @@ func TestPaymentGatewaySettlementReturnsConflictForCurrencyMismatch(t *testing.T
 	require.NoError(t, model.DB.Create(user).Error)
 	topUp := &model.TopUp{
 		UserId: user.Id, Amount: 10, Money: 9.99, TradeNo: "gateway-controller-currency-order",
-		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentMethod: "card", PaymentProvider: model.PaymentProviderWaffoPancake, PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
 		PaymentGatewayOrderID: "gateway-controller-currency-id",
 		PaymentCurrency:       model.PaymentCurrencyUSD, Status: common.TopUpStatusPending,
 	}
@@ -140,7 +140,7 @@ func TestPaymentGatewaySettlementReturnsConflictForCurrencyMismatch(t *testing.T
 		CommandID: "gateway-controller-currency-command", OrderID: "gateway-controller-currency-id", MerchantOrderID: topUp.TradeNo,
 		BusinessType: model.PaymentGatewayBusinessWallet, UserID: "9213", AmountMinor: 999,
 		Currency: model.PaymentCurrencyCNY, Provider: model.PaymentProviderWaffoPancake,
-		ProviderEventID: "gateway-controller-currency-event", PaymentMethod: "card", QuotaAmount: 0,
+		ProviderAccountID: "account-1", Environment: "test", ProviderEventID: "gateway-controller-currency-event", ProviderOrderID: "provider-order-3", ProviderTransactionID: "provider-tx-3", PaymentMethod: "card", QuotaAmount: 0,
 		PriceSnapshot: map[string]any{"quota_amount": 10, "provider_amount": "9.99", "pricing_currency": model.PaymentCurrencyCNY},
 		IssuedAt:      time.Now().UTC(),
 	}
@@ -156,4 +156,11 @@ func TestPaymentGatewaySettlementReturnsConflictForCurrencyMismatch(t *testing.T
 	PaymentGatewaySettlement(context)
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	require.Contains(t, recorder.Body.String(), `"code":"payment_mismatch"`)
+}
+
+func TestPaymentGatewaySettlementBoundsConfiguredReplayWindow(t *testing.T) {
+	now := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	t.Setenv("HOTPAY_SETTLEMENT_MAX_AGE_SECONDS", "86401")
+	require.False(t, paymentGatewaySettlementTimestampValid(now.Add(-25*time.Hour), now))
+	require.True(t, paymentGatewaySettlementTimestampValid(now.Add(-4*time.Minute), now))
 }

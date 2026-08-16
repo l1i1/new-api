@@ -104,7 +104,7 @@ function SegmentedControl(props: {
     <div
       role='group'
       aria-label={props.ariaLabel}
-      className='bg-muted/60 inline-flex h-8 items-center rounded-lg border p-0.5'
+      className='border-border inline-flex h-8 items-center border p-0.5'
     >
       {props.options.map((option) => {
         const Icon = option.icon
@@ -116,10 +116,10 @@ function SegmentedControl(props: {
             onClick={() => props.onChange(option.value)}
             aria-pressed={isActive}
             className={cn(
-              'inline-flex h-full items-center justify-center rounded-md text-xs font-medium transition-all',
+              'inline-flex h-full items-center justify-center rounded-none text-xs font-medium transition-colors',
               Icon && !option.label ? 'w-7' : 'gap-1.5 px-3',
               isActive
-                ? 'bg-primary text-primary-foreground shadow-sm'
+                ? 'bg-foreground text-background'
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
@@ -166,7 +166,7 @@ export function PricingToolbar(props: PricingToolbarProps) {
   )
 
   return (
-    <div className='rounded-xl border p-3'>
+    <div className='border-border border-b pb-3'>
       <div className='flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between'>
         <div className='flex items-center gap-2'>
           <Button

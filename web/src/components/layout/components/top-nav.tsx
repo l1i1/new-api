@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { Menu } from 'lucide-react'
 import { useMemo } from 'react'
 
@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 
-import { type TopNavLink } from '../types'
+import type { TopNavLink } from '../types'
 
 type TopNavProps = React.HTMLAttributes<HTMLElement> & {
   links: TopNavLink[]
@@ -40,6 +40,10 @@ type TopNavProps = React.HTMLAttributes<HTMLElement> & {
  * 在大屏幕显示水平导航，在小屏幕显示下拉菜单
  */
 export function TopNav({ className, links, ...props }: TopNavProps) {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
   // 规范化链接，确保所有可选属性都有默认值
   const normalizedLinks = useMemo(
     () =>
@@ -51,6 +55,16 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
       })),
     [links]
   )
+
+  const isLinkActive = (link: {
+    href: string
+    external?: boolean
+    isActive?: boolean
+  }) => {
+    if (link.external) return Boolean(link.isActive)
+    if (link.href === '/') return pathname === '/'
+    return pathname.startsWith(link.href)
+  }
 
   return (
     <>
@@ -73,21 +87,29 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
                         href={href}
                         target='_blank'
                         rel='noopener noreferrer'
-                        className={!isActive ? 'text-muted-foreground' : ''}
+                        className={
+                          isLinkActive({ href, external, isActive })
+                            ? ''
+                            : 'text-muted-foreground'
+                        }
                       >
                         {title}
                       </a>
                     ) : (
                       <Link
                         to={href}
-                        className={!isActive ? 'text-muted-foreground' : ''}
+                        className={
+                          isLinkActive({ href, external, isActive })
+                            ? ''
+                            : 'text-muted-foreground'
+                        }
                         disabled={disabled}
                       >
                         {title}
                       </Link>
                     )
                   }
-                ></DropdownMenuItem>
+                />
               )
             )}
           </DropdownMenuContent>
@@ -109,7 +131,12 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
               href={href}
               target='_blank'
               rel='noopener noreferrer'
-              className={`hover:text-primary text-sm font-medium transition-colors ${isActive ? '' : 'text-muted-foreground'}`}
+              className={cn(
+                'hover:text-primary border-b-2 border-transparent text-sm font-medium transition-colors',
+                isLinkActive({ href, external, isActive })
+                  ? 'border-primary text-foreground'
+                  : 'text-muted-foreground'
+              )}
             >
               {title}
             </a>
@@ -118,7 +145,12 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
               key={`${title}-${href}`}
               to={href}
               disabled={disabled}
-              className={`hover:text-primary text-sm font-medium transition-colors ${isActive ? '' : 'text-muted-foreground'}`}
+              className={cn(
+                'hover:text-primary border-b-2 border-transparent text-sm font-medium transition-colors',
+                isLinkActive({ href, external, isActive })
+                  ? 'border-primary text-foreground'
+                  : 'text-muted-foreground'
+              )}
             >
               {title}
             </Link>

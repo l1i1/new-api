@@ -36,6 +36,10 @@ type Pricing struct {
 	BillingMode            string                  `json:"billing_mode,omitempty"`
 	BillingExpr            string                  `json:"billing_expr,omitempty"`
 	PricingVersion         string                  `json:"pricing_version,omitempty"`
+	// CreatedTime mirrors the catalog metadata creation time so clients can
+	// order the model square by when a model went live. Zero when the model
+	// has no metadata row.
+	CreatedTime int64 `json:"created_time,omitempty"`
 }
 
 type PricingVendor struct {
@@ -426,6 +430,7 @@ func updatePricing() {
 			pricing.Icon = meta.Icon
 			pricing.Tags = meta.Tags
 			pricing.VendorID = meta.VendorID
+			pricing.CreatedTime = meta.CreatedTime
 		}
 		modelPrice, findPrice := ratio_setting.GetModelPrice(model, false)
 		if findPrice {

@@ -106,6 +106,15 @@ function getModelPrice(model: PricingModel): number {
 }
 
 /**
+ * Catalog creation time for release-date sorting; models without metadata
+ * sort last.
+ */
+function getModelCreatedTime(model: PricingModel): number {
+  const created = Number(model.created_time)
+  return Number.isFinite(created) && created > 0 ? created : 0
+}
+
+/**
  * Sort models by specified option
  */
 export function sortModels(
@@ -115,6 +124,13 @@ export function sortModels(
   const sorted = [...models]
 
   switch (sortBy) {
+    case SORT_OPTIONS.NEWEST:
+      sorted.sort(
+        (a, b) =>
+          getModelCreatedTime(b) - getModelCreatedTime(a) ||
+          (a.model_name || '').localeCompare(b.model_name || '')
+      )
+      break
     case SORT_OPTIONS.NAME:
       sorted.sort((a, b) =>
         (a.model_name || '').localeCompare(b.model_name || '')

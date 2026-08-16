@@ -84,12 +84,12 @@ export function WalletStatsCard(props: WalletStatsCardProps) {
             <IconBadge tone={item.tone} size='stat'>
               <item.icon />
             </IconBadge>
-            <div className='text-muted-foreground truncate text-[11px] font-medium tracking-wider uppercase sm:text-xs'>
+            <div className='text-muted-foreground truncate text-[11px] font-medium tracking-wider  sm:text-xs'>
               {item.label}
             </div>
           </div>
 
-          <div className='text-foreground mt-1.5 font-mono text-sm font-bold tracking-tight break-all tabular-nums sm:mt-2.5 sm:text-2xl'>
+          <div className='text-foreground mt-1.5 font-mono text-sm font-bold  break-all tabular-nums sm:mt-2.5 sm:text-2xl'>
             {item.value}
           </div>
           <div className='text-muted-foreground/60 mt-1 hidden text-xs md:block'>

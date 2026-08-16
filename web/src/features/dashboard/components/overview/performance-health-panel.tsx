@@ -17,11 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Gauge, HeartPulse, Timer } from 'lucide-react'
+import { HeartPulse } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { IconBadge } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
 import {
@@ -92,7 +92,7 @@ export function PerformanceHealthPanel() {
   const hasData = models.length > 0
 
   return (
-    <section className='bg-card h-full overflow-hidden rounded-2xl border shadow-xs'>
+    <section className='bg-card border-border h-full overflow-hidden border'>
       <div className='flex items-center gap-2 border-b px-4 py-3 sm:px-5'>
         <IconBadge tone='success' size='sm'>
           <HeartPulse />
@@ -104,28 +104,22 @@ export function PerformanceHealthPanel() {
       </div>
 
       <div className='space-y-3 p-4 sm:p-5'>
-        <div className='grid grid-cols-3 gap-2'>
+        <div className='border-border grid grid-cols-3 divide-x divide-border border'>
           <MetricCell
-            icon={HeartPulse}
             label={t('Success rate')}
             value={formatUptimePct(summary.successRate)}
             loading={loading}
             valueClassName={getSuccessRateTextClass(summary.successRate)}
-            tone='success'
           />
           <MetricCell
-            icon={Timer}
             label={t('Average latency')}
             value={formatLatency(summary.avgLatencyMs)}
             loading={loading}
-            tone='warning'
           />
           <MetricCell
-            icon={Gauge}
             label={t('Throughput')}
             value={formatThroughput(summary.avgTps)}
             loading={loading}
-            tone='info'
           />
         </div>
 
@@ -179,28 +173,22 @@ export function PerformanceHealthPanel() {
 }
 
 function MetricCell(props: {
-  icon: React.ComponentType<{ className?: string }>
   label: string
   value: string
   loading: boolean
   valueClassName?: string
-  tone: IconBadgeTone
 }) {
-  const Icon = props.icon
   return (
-    <div className='bg-muted/40 rounded-xl px-3 py-2.5'>
-      <div className='text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium'>
-        <IconBadge tone={props.tone} size='xs'>
-          <Icon />
-        </IconBadge>
-        <span className='truncate'>{props.label}</span>
+    <div className='px-3 py-2.5'>
+      <div className='text-muted-foreground truncate text-xs'>
+        {props.label}
       </div>
       {props.loading ? (
         <Skeleton className='mt-1.5 h-5 w-16' />
       ) : (
         <div
           className={cn(
-            'mt-1.5 font-mono text-sm font-semibold tabular-nums',
+            'mt-1.5 truncate font-mono text-sm font-semibold tabular-nums',
             props.valueClassName
           )}
         >

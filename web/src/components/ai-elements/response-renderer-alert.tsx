@@ -146,7 +146,7 @@ export function renderBlockquote(
       >
         <div
           className={cn(
-            'mb-2 text-xs font-semibold tracking-wide uppercase',
+            'mb-2 text-xs font-semibold tracking-wide ',
             config.markerClassName
           )}
         >

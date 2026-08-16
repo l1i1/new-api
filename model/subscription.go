@@ -222,11 +222,13 @@ type SubscriptionOrder struct {
 	PaymentProvider string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
 	// PaymentGatewayOrderID is the immutable canonical order ID returned by
 	// HotPay and is required for signed gateway settlement matching.
-	PaymentGatewayOrderID string `json:"payment_gateway_order_id" gorm:"type:varchar(255);index"`
-	PaymentCurrency       string `json:"payment_currency" gorm:"type:varchar(8);default:''"`
-	Status                string `json:"status"`
-	CreateTime            int64  `json:"create_time"`
-	CompleteTime          int64  `json:"complete_time"`
+	PaymentGatewayOrderID    string `json:"payment_gateway_order_id" gorm:"type:varchar(255);index"`
+	PaymentProviderAccountID string `json:"payment_provider_account_id" gorm:"type:varchar(255);index"`
+	PaymentEnvironment       string `json:"payment_environment" gorm:"type:varchar(16);index"`
+	PaymentCurrency          string `json:"payment_currency" gorm:"type:varchar(8);default:''"`
+	Status                   string `json:"status"`
+	CreateTime               int64  `json:"create_time"`
+	CompleteTime             int64  `json:"complete_time"`
 
 	ProviderPayload string `json:"provider_payload" gorm:"type:text"`
 }

@@ -111,9 +111,7 @@ For commercial licensing, please contact support@quantumnous.com
   margin-bottom: 22px;
   color: var(--tokeness-home-primary);
   font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .tokeness-home__system-mark::after {
@@ -126,9 +124,9 @@ For commercial licensing, please contact support@quantumnous.com
 .tokeness-home .tokeness-home__hero-title {
   max-width: 12ch;
   margin: 0;
-  font-size: clamp(40px, 4vw, 56px);
-  line-height: 1.06;
-  font-weight: 900;
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.15;
+  font-weight: 700;
   letter-spacing: 0;
   text-wrap: balance;
 }
@@ -202,7 +200,7 @@ For commercial licensing, please contact support@quantumnous.com
   gap: 10px;
   margin: 0;
   font-size: 16px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .tokeness-home__side-title::before {
@@ -243,7 +241,7 @@ For commercial licensing, please contact support@quantumnous.com
   color: var(--tokeness-home-primary-foreground);
   background: var(--tokeness-home-primary);
   font-size: 13px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .tokeness-home__capabilities {
@@ -273,15 +271,13 @@ For commercial licensing, please contact support@quantumnous.com
   display: block;
   color: var(--tokeness-home-primary);
   font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
+  font-weight: 700;
   content: attr(data-index);
 }
 
 .tokeness-home .tokeness-home__capability strong {
   font-size: 15px;
-  font-weight: 900;
-  letter-spacing: -0.01em;
+  font-weight: 700;
 }
 
 .tokeness-home__capability span {
@@ -307,16 +303,14 @@ For commercial licensing, please contact support@quantumnous.com
 .tokeness-home__band-label {
   color: var(--tokeness-home-primary);
   font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .tokeness-home .tokeness-home__band-title {
   margin: 8px 0 0;
   font-size: 22px;
   line-height: 1.22;
-  font-weight: 900;
+  font-weight: 700;
   text-wrap: balance;
 }
 
@@ -345,7 +339,7 @@ For commercial licensing, please contact support@quantumnous.com
   color: var(--tokeness-home-foreground);
   font-size: 24px;
   line-height: 1;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .tokeness-home__stat span {
@@ -353,8 +347,6 @@ For commercial licensing, please contact support@quantumnous.com
   margin-top: 6px;
   color: var(--tokeness-home-muted-foreground);
   font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 .tokeness-home__block {
@@ -414,7 +406,7 @@ For commercial licensing, please contact support@quantumnous.com
   color: var(--tokeness-home-foreground);
   font-size: 28px;
   line-height: 1;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .tokeness-home__footer-grid {
@@ -426,7 +418,7 @@ For commercial licensing, please contact support@quantumnous.com
 .tokeness-home .tokeness-home__block-title {
   margin: 0;
   font-size: 16px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .tokeness-home__list {
@@ -457,7 +449,7 @@ For commercial licensing, please contact support@quantumnous.com
   min-width: 34px;
   color: var(--tokeness-home-primary);
   font-style: normal;
-  font-weight: 900;
+  font-weight: 700;
   text-align: center;
 }
 
@@ -486,9 +478,7 @@ For commercial licensing, please contact support@quantumnous.com
   color: var(--tokeness-home-muted-foreground);
   font-size: 12px;
   line-height: 1.2;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-weight: 700;
   white-space: nowrap;
 }
 
@@ -521,9 +511,7 @@ For commercial licensing, please contact support@quantumnous.com
   gap: 12px;
   color: var(--tokeness-home-foreground);
   font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .tokeness-home__footer-brand::before {

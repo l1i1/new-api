@@ -61,6 +61,11 @@ export type PricingModel = {
   /** Pricing version returned by backend, useful for cache busting */
   pricing_version?: string
   /**
+   * Catalog metadata creation time (unix seconds); used to order the model
+   * square by when a model went live. Absent when the model has no metadata.
+   */
+  created_time?: number
+  /**
    * Optional model metadata fields reserved for backend-provided catalog data.
    * Keep them data-driven; do not synthesize display values on the client.
    */

@@ -12,7 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const defaultPaymentGatewaySettlementMaxAge = 5 * time.Minute
+const (
+	defaultPaymentGatewaySettlementMaxAge = 5 * time.Minute
+	maximumPaymentGatewaySettlementMaxAge = 24 * time.Hour
+)
 
 // PaymentGatewaySettlement receives the gateway's signed, idempotent ledger
 // command. It returns 2xx only after the local transaction has committed.
@@ -84,6 +87,7 @@ func PaymentGatewaySettlement(c *gin.Context) {
 		"acknowledged_at":    acknowledgedAt,
 		"committed_at":       committedAt,
 		"duplicate":          result.Duplicate,
+		"request_id":         settlementRequestID(c),
 	})
 }
 
@@ -93,7 +97,7 @@ func paymentGatewaySettlementTimestampValid(issuedAt, now time.Time) bool {
 	}
 	maxAge := defaultPaymentGatewaySettlementMaxAge
 	if raw := strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_MAX_AGE_SECONDS")); raw != "" {
-		if seconds, err := time.ParseDuration(raw + "s"); err == nil && seconds > 0 {
+		if seconds, err := time.ParseDuration(raw + "s"); err == nil && seconds > 0 && seconds <= maximumPaymentGatewaySettlementMaxAge {
 			maxAge = seconds
 		}
 	}
@@ -103,5 +107,12 @@ func paymentGatewaySettlementTimestampValid(issuedAt, now time.Time) bool {
 }
 
 func writeSettlementError(c *gin.Context, status int, code, message string) {
-	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
+	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message, "request_id": settlementRequestID(c)}})
+}
+
+func settlementRequestID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.GetHeader("X-Request-ID"))
 }

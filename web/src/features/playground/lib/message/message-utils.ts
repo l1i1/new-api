@@ -76,13 +76,15 @@ export function updateCurrentVersionContent(
  */
 export function createUserMessage(
   content: string,
-  createdAt: number = Date.now()
+  createdAt: number = Date.now(),
+  images?: string[]
 ): Message {
   return {
     key: nanoid(),
     from: MESSAGE_ROLES.USER,
     versions: [createMessageVersion(content)],
     createdAt,
+    images: images?.length ? images : undefined,
   }
 }
 
@@ -150,10 +152,18 @@ export function getTextContent(content: string | ContentPart[]): string {
 }
 
 /**
- * Format message for API request
+ * Format message for API request. User messages carrying image attachments
+ * are sent as multipart content blocks so vision models receive both the
+ * text and the images.
  */
 export function formatMessageForAPI(message: Message): ChatCompletionMessage {
   const currentVersion = getCurrentVersion(message)
+  if (message.from === MESSAGE_ROLES.USER && message.images?.length) {
+    return {
+      role: message.from,
+      content: buildMessageContent(currentVersion.content, message.images),
+    }
+  }
   return {
     role: message.from,
     content: currentVersion.content,

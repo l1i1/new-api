@@ -20,9 +20,9 @@ const (
 type paymentReconciliationHandler struct{}
 
 type PaymentReconciliationScanResult struct {
-	CutoffTimestamp int64                               `json:"cutoff_timestamp"`
-	PendingCount    int64                               `json:"pending_count"`
-	Providers       []model.PendingTopUpProviderSummary `json:"providers"`
+	CutoffTimestamp int64                                 `json:"cutoff_timestamp"`
+	PendingCount    int64                                 `json:"pending_count"`
+	Providers       []model.PendingPaymentProviderSummary `json:"providers"`
 }
 
 func (paymentReconciliationHandler) Type() string { return paymentReconciliationTaskType }
@@ -54,7 +54,7 @@ func (paymentReconciliationHandler) Run(ctx context.Context, task *model.SystemT
 	}
 	cutoff := common.GetTimestamp() - int64((time.Duration(ageMinutes) * time.Minute).Seconds())
 
-	summaries, err := model.GetPendingTopUpProviderSummaries(cutoff)
+	summaries, err := model.GetPendingPaymentProviderSummaries(cutoff)
 	if err != nil {
 		failSystemTask(task, runnerID, err)
 		return
@@ -76,7 +76,7 @@ func (paymentReconciliationHandler) Run(ctx context.Context, task *model.SystemT
 
 	if result.PendingCount > 0 {
 		logger.LogWarn(ctx, fmt.Sprintf(
-			"payment reconciliation scan found overdue pending top-ups: total=%d pending_age_minutes=%d providers=%s",
+			"payment reconciliation scan found overdue pending payments: total=%d pending_age_minutes=%d providers=%s",
 			result.PendingCount,
 			ageMinutes,
 			strings.Join(providerCounts, ","),

@@ -971,7 +971,7 @@ function RouteEditor({
   const authLabel = getOptionLabel(ADVANCED_CUSTOM_AUTH_MODE_OPTIONS, authMode)
   const isNativeConverter = converter === 'none'
   const ConverterVisualIcon = isNativeConverter ? ArrowRight : Shuffle
-  const modelsInputValue = route.models?.join(', ') || ''
+  const modelsInputValue = route.models?.join(',') || ''
   const parsedRouteModels = parseAdvancedCustomRouteModels(modelsInputValue)
   const isFallback = !isModelListRoute && parsedRouteModels.length === 0
 
@@ -1149,7 +1149,7 @@ function RouteEditor({
                         variant={ruleKind === 'regex' ? 'outline' : 'secondary'}
                         className='max-w-full gap-1.5 font-mono'
                       >
-                        <span className='font-sans text-[10px] font-semibold tracking-normal uppercase'>
+                        <span className='font-sans text-[10px] font-semibold tracking-normal '>
                           {t(ruleKind === 'regex' ? 'Regex' : 'Exact')}
                         </span>
                         <span className='truncate'>{displayModel}</span>

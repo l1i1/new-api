@@ -42,7 +42,7 @@ const headingClasses = {
   3: 'mt-5 mb-2 text-base font-semibold tracking-normal',
   4: 'mt-5 mb-2 text-sm font-semibold tracking-normal',
   5: 'text-muted-foreground mt-4 mb-2 text-sm font-semibold tracking-normal',
-  6: 'text-muted-foreground mt-4 mb-2 text-xs font-semibold tracking-normal uppercase',
+  6: 'text-muted-foreground mt-4 mb-2 text-xs font-semibold tracking-normal ',
 } satisfies Record<1 | 2 | 3 | 4 | 5 | 6, string>
 
 export function renderHeading(

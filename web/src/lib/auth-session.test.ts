@@ -150,8 +150,12 @@ describe('authentication session coordination', () => {
   test('a rate limited refresh remains retryable without clearing the session', async () => {
     let transientCount = 0
     let clearCount = 0
+    let requestCount = 0
     const runtime: AuthRefreshRuntime = {
-      request: async () => ({ status: 429 }),
+      request: async () => {
+        requestCount += 1
+        return { status: 429 }
+      },
       getExpectedSID: () => bundle.session.sid,
       parseBundle: () => null,
       acceptBundle: () => undefined,
@@ -169,6 +173,36 @@ describe('authentication session coordination', () => {
     assert.equal(outcome.kind, 'transient_error')
     assert.equal(clearCount, 0)
     assert.equal(transientCount, 1)
+    assert.equal(requestCount, 3)
+  })
+
+  test('a rate limited refresh retries with backoff and recovers the session', async () => {
+    const delays: number[] = []
+    let requestCount = 0
+    const runtime: AuthRefreshRuntime = {
+      request: async () => {
+        requestCount += 1
+        if (requestCount < 3) {
+          return { status: 429, retryAfterSeconds: 2 }
+        }
+        return { status: 200, data: { success: true, data: bundle } }
+      },
+      getExpectedSID: () => bundle.session.sid,
+      parseBundle: (value) =>
+        value && typeof value === 'object' ? (value as AuthBundle) : null,
+      acceptBundle: () => undefined,
+      clear: () => undefined,
+      markTransient: () => undefined,
+      wait: async (delay) => {
+        delays.push(delay)
+      },
+    }
+
+    const outcome = await createRefreshRunner(runtime)()
+
+    assert.equal(outcome.kind, 'authenticated')
+    assert.equal(requestCount, 3)
+    assert.deepEqual(delays, [2000, 2000])
   })
 
   test('an exhausted refresh race clears the unusable local session', async () => {

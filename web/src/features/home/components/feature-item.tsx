@@ -35,7 +35,7 @@ export function FeatureItem({ title, description, icon }: FeatureItemProps) {
         </div>
       </div>
       {/* Title */}
-      <h3 className='text-sm leading-none font-semibold tracking-tight sm:text-base'>
+      <h3 className='text-sm leading-none font-semibold  sm:text-base'>
         {title}
       </h3>
       {/* Description */}

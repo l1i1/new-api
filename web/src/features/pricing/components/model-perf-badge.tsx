@@ -50,22 +50,35 @@ function formatCompactThroughput(tps: number): string {
   return `${formatCompactNumber(tps)}t`
 }
 
+const BAR_SLOTS = ['first', 'second', 'third'] as const
+const BAR_HEIGHT_CLASSES = ['h-2', 'h-2.5', 'h-3'] as const
+const BAR_EMPTY_CLASSES = [
+  'bg-muted-foreground/10',
+  'bg-muted-foreground/15',
+  'bg-muted-foreground/15',
+] as const
+
 export const ModelPerfBadge = memo(function ModelPerfBadge(
   props: ModelPerfBadgeProps
 ) {
   const { t } = useTranslation()
 
-  if (!props.perf) {
-    return null
-  }
-
-  const { avg_latency_ms, avg_tps, success_rate } = props.perf
+  const latency = props.perf
+    ? formatCompactLatency(props.perf.avg_latency_ms)
+    : '—'
+  const throughput = props.perf
+    ? formatCompactThroughput(props.perf.avg_tps)
+    : '—'
 
   const recentRates =
-    props.perf.recent_success_rates?.filter((rate) => Number.isFinite(rate)) ??
+    props.perf?.recent_success_rates?.filter((rate) => Number.isFinite(rate)) ??
     []
-  const statusRates =
-    recentRates.length > 0 ? recentRates.slice(-3) : [success_rate]
+  let statusRates: number[] = []
+  if (recentRates.length > 0) {
+    statusRates = recentRates.slice(-3)
+  } else if (props.perf) {
+    statusRates = [props.perf.success_rate]
+  }
   const statusBars = [
     ...Array(Math.max(0, 3 - statusRates.length)).fill(null),
     ...statusRates,
@@ -83,7 +96,7 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
           {t('Latency short')}
         </div>
         <div className='text-muted-foreground/80 font-mono text-xs leading-4 whitespace-nowrap'>
-          {formatCompactLatency(avg_latency_ms)}
+          {latency}
         </div>
       </div>
       <div title={t('Throughput')} className='min-w-0'>
@@ -91,11 +104,15 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
           {t('Throughput short')}
         </div>
         <div className='text-muted-foreground/80 font-mono text-xs leading-4 whitespace-nowrap'>
-          {formatCompactThroughput(avg_tps)}
+          {throughput}
         </div>
       </div>
       <div
-        title={`${t('Success rate')}: ${success_rate.toFixed(1)}%`}
+        title={
+          props.perf
+            ? `${t('Success rate')}: ${props.perf.success_rate.toFixed(1)}%`
+            : t('Success rate')
+        }
         className='min-w-0'
       >
         <div className='text-muted-foreground/55 truncate text-[10px] leading-4'>
@@ -104,16 +121,12 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
         <div className='flex h-4 items-center justify-end gap-0.5'>
           {statusBars.map((rate, index) => (
             <span
-              key={`${index}-${rate ?? 'empty'}`}
+              key={BAR_SLOTS[index]}
               className={cn(
                 'w-1 rounded-full',
-                index === 0 && 'h-2',
-                index === 1 && 'h-2.5',
-                index === 2 && 'h-3',
+                BAR_HEIGHT_CLASSES[index],
                 rate == null
-                  ? index === 0
-                    ? 'bg-muted-foreground/10'
-                    : 'bg-muted-foreground/15'
+                  ? BAR_EMPTY_CLASSES[index]
                   : getSuccessRateDotClass(rate)
               )}
             />

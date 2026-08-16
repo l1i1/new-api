@@ -2,6 +2,7 @@ package controller
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -408,10 +409,25 @@ func RequestWaffoPancakePay(c *gin.Context) {
 
 	gatewayEnabled := service.IsHotPayGatewayEnabled()
 	canonicalMethod := ""
+	amountMinor := int64(0)
 	if gatewayEnabled {
 		canonicalMethod, err = hotPayWalletMethod(currency, req.PaymentMethod)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 必须选择与币种匹配的支付方式"})
+			return
+		}
+		var amountErr error
+		amountMinor, amountErr = hotPayMinorAmount(providerPayMoney)
+		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额超出支付网关限额"})
+			return
+		}
+	}
+	quotaAmount := int64(0)
+	if gatewayEnabled {
+		quotaAmount, err = hotPayQuotaAmount(normalizeWaffoPancakeTopUpAmount(req.Amount))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值额度超出系统上限"})
 			return
 		}
 	}
@@ -431,18 +447,20 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		paymentMethod = canonicalMethod
 	}
 	topUp := &model.TopUp{
-		UserId:          id,
-		Amount:          normalizeWaffoPancakeTopUpAmount(req.Amount),
-		Money:           providerPayMoney,
-		TradeNo:         tradeNo,
-		PaymentMethod:   paymentMethod,
-		PaymentProvider: paymentProvider,
-		PaymentCurrency: currency,
-		CreateTime:      time.Now().Unix(),
-		Status:          common.TopUpStatusPending,
+		UserId:                   id,
+		Amount:                   normalizeWaffoPancakeTopUpAmount(req.Amount),
+		Money:                    providerPayMoney,
+		TradeNo:                  tradeNo,
+		PaymentMethod:            paymentMethod,
+		PaymentProvider:          paymentProvider,
+		PaymentProviderAccountID: hotPayProviderAccountID(),
+		PaymentEnvironment:       hotPayEnvironment(),
+		PaymentCurrency:          currency,
+		CreateTime:               time.Now().Unix(),
+		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount {
+		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 			return
 		}
@@ -463,24 +481,20 @@ func RequestWaffoPancakePay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(clientErr)})
 			return
 		}
-		amountMinor, amountErr := hotPayMinorAmount(providerPayMoney)
-		if amountErr != nil {
-			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额无效"})
-			return
-		}
 		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
-			MerchantOrderID: tradeNo,
-			BusinessType:    "wallet_topup",
-			UserID:          hotPayUserID(id),
-			BuyerEmail:      getWaffoPancakeBuyerEmail(user),
-			ProductID:       hotPayProviderProductID(),
-			AmountMinor:     amountMinor,
-			Currency:        currency,
-			QuotaAmount:     hotPayQuotaAmount(topUp.Amount),
-			Provider:        paymentProvider,
-			PaymentMethod:   canonicalMethod,
-			Environment:     hotPayEnvironment(),
-			ReturnURL:       hotPayReturnURL("/usage-logs"),
+			MerchantOrderID:   tradeNo,
+			BusinessType:      "wallet_topup",
+			UserID:            hotPayUserID(id),
+			BuyerEmail:        getWaffoPancakeBuyerEmail(user),
+			ProductID:         hotPayProviderProductID(),
+			AmountMinor:       amountMinor,
+			Currency:          currency,
+			QuotaAmount:       quotaAmount,
+			Provider:          paymentProvider,
+			ProviderAccountID: hotPayProviderAccountID(),
+			PaymentMethod:     canonicalMethod,
+			Environment:       hotPayEnvironment(),
+			ReturnURL:         hotPayReturnURL("/usage-logs"),
 			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
 				"quota_amount":     topUp.Amount,
 				"provider_amount":  hotPayStringAmount(providerPayMoney),
@@ -491,6 +505,10 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		})
 		if createErr != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))
+			if hotPayGatewayErrorIsPermanent(createErr) {
+				topUp.Status = common.TopUpStatusFailed
+				_ = topUp.Update()
+			}
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(createErr)})
 			return
 		}
@@ -565,10 +583,16 @@ func WaffoPancakeWebhook(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 读取请求体失败 path=%q client_ip=%s error=%q", c.Request.RequestURI, c.ClientIP(), err.Error()))
-		c.String(http.StatusBadRequest, "bad request")
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.String(http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			c.String(http.StatusBadRequest, "bad request")
+		}
 		return
 	}
 
@@ -591,23 +615,89 @@ func WaffoPancakeWebhook(c *gin.Context) {
 		c.String(http.StatusConflict, "environment mismatch")
 		return
 	}
-	if service.IsHotPayGatewayEnabled() && strings.HasPrefix(strings.TrimSpace(event.Data.OrderMerchantExternalID), "HP_") {
-		// Gateway-created orders use HP_* merchant IDs. They must never be
-		// settled through this legacy New API webhook, even when an operator has
-		// temporarily enabled legacy draining for older WAFFO_PANCAKE-* orders.
+	if service.IsHotPayGatewayEnabled() && isHotPayBoundWaffoPancakeOrder(event.Data.OrderMerchantExternalID) {
+		// A gateway-created order is identified by its durable local binding, not
+		// by a merchant-order prefix. Orders created without an idempotency key
+		// may use the legacy WAFFO_PANCAKE-* shape, so prefix checks can bypass
+		// the signed gateway settlement receiver during legacy draining.
 		c.String(http.StatusGone, "gateway order webhook moved")
+		return
+	}
+	if err := validateLegacyWaffoPancakeAccount(event); err != nil {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo Pancake legacy webhook account mismatch event_id=%s order_id=%s client_ip=%s", event.ID, event.Data.OrderID, c.ClientIP()))
+		c.String(http.StatusConflict, "account mismatch")
+		return
+	}
+	merchantOrderID := strings.TrimSpace(event.Data.OrderMerchantExternalID)
+	eventID := strings.TrimSpace(event.ID)
+	if eventID == "" {
+		eventID = strings.TrimSpace(event.EventID)
+	}
+	if eventID == "" {
+		c.String(http.StatusBadRequest, "missing event id")
+		return
+	}
+	duplicate, recordErr := model.RecordLegacyProviderEvent("waffo_pancake", expectedEnv, eventID, merchantOrderID, payloadSHA256, time.Now().Unix())
+	if recordErr != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake legacy webhook event record failed event_id=%s order_id=%s client_ip=%s error=%q", eventID, event.Data.OrderID, c.ClientIP(), recordErr.Error()))
+		c.String(http.StatusServiceUnavailable, "retry")
+		return
+	}
+	if duplicate {
+		c.String(http.StatusOK, "OK")
 		return
 	}
 
 	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake webhook 验签成功 event_type=%s event_id=%s order_id=%s client_ip=%s", event.NormalizedEventType(), event.ID, event.Data.OrderID, c.ClientIP()))
 	if event.NormalizedEventType() != "order.completed" {
+		_ = model.CompleteLegacyProviderEvent("waffo_pancake", expectedEnv, eventID)
 		c.String(http.StatusOK, "OK")
 		return
 	}
-	handleWaffoPancakeCompletedEvent(c, event, bodyBytes)
+	if handleWaffoPancakeCompletedEvent(c, event, bodyBytes) {
+		_ = model.CompleteLegacyProviderEvent("waffo_pancake", expectedEnv, eventID)
+		return
+	}
+	_ = model.FailLegacyProviderEvent("waffo_pancake", expectedEnv, eventID)
 }
 
-func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancakeWebhookEvent, bodyBytes []byte) {
+func validateLegacyWaffoPancakeAccount(event *service.WaffoPancakeWebhookEvent) error {
+	if event == nil {
+		return fmt.Errorf("event is nil")
+	}
+	expected := strings.TrimSpace(hotPayProviderAccountID())
+	if expected != "" && strings.TrimSpace(event.StoreID) != expected {
+		return fmt.Errorf("store mismatch")
+	}
+	tradeNo := strings.TrimSpace(event.Data.OrderMerchantExternalID)
+	if topUp := model.GetTopUpByTradeNo(tradeNo); topUp != nil && strings.TrimSpace(topUp.PaymentProviderAccountID) != "" && topUp.PaymentProviderAccountID != event.StoreID {
+		return fmt.Errorf("top-up account mismatch")
+	}
+	if order := model.GetSubscriptionOrderByTradeNo(tradeNo); order != nil && strings.TrimSpace(order.PaymentProviderAccountID) != "" && order.PaymentProviderAccountID != event.StoreID {
+		return fmt.Errorf("subscription account mismatch")
+	}
+	return nil
+}
+
+func isHotPayBoundWaffoPancakeOrder(tradeNo string) bool {
+	tradeNo = strings.TrimSpace(tradeNo)
+	if tradeNo == "" {
+		return false
+	}
+	if topUp := model.GetTopUpByTradeNo(tradeNo); topUp != nil &&
+		topUp.PaymentProvider == model.PaymentProviderWaffoPancake &&
+		strings.TrimSpace(topUp.PaymentGatewayOrderID) != "" {
+		return true
+	}
+	if order := model.GetSubscriptionOrderByTradeNo(tradeNo); order != nil &&
+		order.PaymentProvider == model.PaymentProviderWaffoPancake &&
+		strings.TrimSpace(order.PaymentGatewayOrderID) != "" {
+		return true
+	}
+	return false
+}
+
+func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancakeWebhookEvent, bodyBytes []byte) bool {
 	// Dispatch by trade_no prefix. OrderMerchantExternalID = our trade_no;
 	// OrderID is Pancake's internal ORD_* (logs only).
 	rawTradeNo := strings.TrimSpace(event.Data.OrderMerchantExternalID)
@@ -621,18 +711,18 @@ func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancak
 				event.ID, event.Data.OrderID, c.ClientIP(), err.Error(),
 			))
 			c.String(http.StatusServiceUnavailable, "retry")
-			return
+			return false
 		}
 		LockOrder(tradeNo)
 		defer UnlockOrder(tradeNo)
 		if err := model.CompleteSubscriptionOrder(tradeNo, string(bodyBytes), model.PaymentProviderWaffoPancake, ""); err != nil {
 			logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 订阅完成失败 trade_no=%s event_id=%s order_id=%s client_ip=%s error=%q", tradeNo, event.ID, event.Data.OrderID, c.ClientIP(), err.Error()))
 			c.String(http.StatusInternalServerError, "retry")
-			return
+			return false
 		}
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 订阅完成 trade_no=%s event_id=%s order_id=%s client_ip=%s", tradeNo, event.ID, event.Data.OrderID, c.ClientIP()))
 		c.String(http.StatusOK, "OK")
-		return
+		return false
 	}
 
 	tradeNo, err := service.ResolveWaffoPancakeTradeNo(event)
@@ -642,7 +732,7 @@ func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancak
 			event.ID, event.Data.OrderID, c.ClientIP(), err.Error(),
 		))
 		c.String(http.StatusServiceUnavailable, "retry")
-		return
+		return false
 	}
 
 	LockOrder(tradeNo)
@@ -651,9 +741,10 @@ func handleWaffoPancakeCompletedEvent(c *gin.Context, event *service.WaffoPancak
 	if err := model.RechargeWaffoPancake(tradeNo); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值处理失败 trade_no=%s event_id=%s order_id=%s client_ip=%s error=%q", tradeNo, event.ID, event.Data.OrderID, c.ClientIP(), err.Error()))
 		c.String(http.StatusInternalServerError, "retry")
-		return
+		return false
 	}
 
 	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值成功 trade_no=%s event_id=%s order_id=%s client_ip=%s", tradeNo, event.ID, event.Data.OrderID, c.ClientIP()))
 	c.String(http.StatusOK, "OK")
+	return true
 }

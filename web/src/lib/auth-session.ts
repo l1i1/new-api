@@ -39,6 +39,8 @@ export interface AuthRefreshHTTPResponse {
   status: number
   data?: unknown
   error?: unknown
+  /** Parsed Retry-After hint (seconds) from a 429 response, when present. */
+  retryAfterSeconds?: number
 }
 
 export interface AuthRefreshRuntime {
@@ -75,6 +77,11 @@ const authClient = axios.create({
 })
 
 const refreshRaceDelays = [80, 200, 500] as const
+// Backoff applied when the refresh endpoint answers 429: two quick retries
+// before the session is marked transient, so a short rate-limit window does
+// not bounce the user to the sign-in page.
+const refreshRateLimitDelays = [1000, 3000] as const
+const MAX_RETRY_AFTER_MS = 30 * 1000
 let refreshPromise: Promise<RefreshOutcome> | null = null
 let authEpoch = 0
 
@@ -215,7 +222,8 @@ export function createRefreshRunner(
   })
   const run = async (
     raceAttempt: number,
-    allowMismatchRetry: boolean
+    allowMismatchRetry: boolean,
+    rateLimitAttempt = 0
   ): Promise<RefreshOutcome> => {
     if (runtime.isCurrent && !runtime.isCurrent()) return superseded()
     const response = await runtime.request(runtime.getExpectedSID())
@@ -233,7 +241,7 @@ export function createRefreshRunner(
       const delay = refreshRaceDelays[raceAttempt]
       if (delay !== undefined) {
         await runtime.wait(delay)
-        return run(raceAttempt + 1, allowMismatchRetry)
+        return run(raceAttempt + 1, allowMismatchRetry, rateLimitAttempt)
       }
       runtime.clear(false)
       return { kind: 'out_of_sync', code }
@@ -242,7 +250,7 @@ export function createRefreshRunner(
     if (response.status === 409 && code === 'AUTH_SESSION_MISMATCH') {
       if (allowMismatchRetry) {
         runtime.clear(false, 'idle')
-        return run(0, false)
+        return run(0, false, rateLimitAttempt)
       }
       runtime.clear(false)
       return { kind: 'out_of_sync', code }
@@ -253,7 +261,24 @@ export function createRefreshRunner(
       return { kind: 'anonymous' }
     }
 
-    if (!response.status || response.status >= 500 || response.status === 429) {
+    if (response.status === 429) {
+      const backoff = refreshRateLimitDelays[rateLimitAttempt]
+      if (backoff !== undefined) {
+        const delay = response.retryAfterSeconds
+          ? Math.min(response.retryAfterSeconds * 1000, MAX_RETRY_AFTER_MS)
+          : backoff
+        await runtime.wait(delay)
+        if (runtime.isCurrent && !runtime.isCurrent()) return superseded()
+        return run(raceAttempt, allowMismatchRetry, rateLimitAttempt + 1)
+      }
+      runtime.markTransient()
+      return {
+        kind: 'transient_error',
+        error: response.error ?? response.data,
+      }
+    }
+
+    if (!response.status || response.status >= 500) {
       runtime.markTransient()
       return {
         kind: 'transient_error',
@@ -285,10 +310,18 @@ async function requestRefresh(
     return { status: response.status, data: response.data }
   } catch (error: unknown) {
     if (!axios.isAxiosError(error)) return { status: 0, error }
+    const retryAfterHeader = error.response?.headers?.['retry-after']
+    const retryAfterSeconds =
+      typeof retryAfterHeader === 'string'
+        ? Number.parseInt(retryAfterHeader, 10)
+        : Number.NaN
     return {
       status: error.response?.status ?? 0,
       data: error.response?.data,
       error,
+      retryAfterSeconds: Number.isFinite(retryAfterSeconds)
+        ? retryAfterSeconds
+        : undefined,
     }
   }
 }

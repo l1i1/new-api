@@ -54,3 +54,19 @@ func TestGetPendingTopUpProviderSummariesRejectsInvalidCutoff(t *testing.T) {
 	_, err := GetPendingTopUpProviderSummaries(0)
 	require.Error(t, err)
 }
+
+func TestGetPendingPaymentProviderSummariesIncludesSubscriptions(t *testing.T) {
+	truncateTables(t)
+	const cutoff = int64(20_000)
+	require.NoError(t, (&SubscriptionOrder{
+		UserId: 1, PlanId: 1, Money: 10, TradeNo: "pending-subscription",
+		PaymentProvider: PaymentProviderWaffoPancake, Status: common.TopUpStatusPending,
+		CreateTime: cutoff - 100,
+	}).Insert())
+	summaries, err := GetPendingPaymentProviderSummaries(cutoff)
+	require.NoError(t, err)
+	require.Len(t, summaries, 1)
+	assert.Equal(t, PaymentProviderWaffoPancake, summaries[0].PaymentProvider)
+	assert.Equal(t, int64(1), summaries[0].PendingCount)
+	assert.Equal(t, cutoff-100, summaries[0].OldestCreateTime)
+}

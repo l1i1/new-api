@@ -115,7 +115,7 @@ function formatConditionSummary(
       return `${varLabel} ${OP_LABELS[c.op] || c.op} ${hint || c.value}`
     })
     .filter(Boolean)
-    .join(' && ')
+    .join(' &&')
 }
 
 function describeCondition(
@@ -157,7 +157,7 @@ function describeGroup(
 ): string {
   return (group.conditions || [])
     .map((c) => describeCondition(c, t))
-    .join(' && ')
+    .join(' &&')
 }
 
 export function DynamicPricingBreakdown({
@@ -222,7 +222,7 @@ export function DynamicPricingBreakdown({
       <section className={cn('min-w-0', !compact && 'py-4')}>
         {!compact && (
           <div className='mb-3 flex items-center gap-2'>
-            <span className='inline-flex size-6 items-center justify-center rounded-lg bg-amber-100 text-amber-700 shadow-sm dark:bg-amber-500/20 dark:text-amber-300'>
+            <span className='bg-primary/10 text-primary inline-flex size-6 items-center justify-center border'>
               <TagIcon className='size-3.5' />
             </span>
             <div>
@@ -235,7 +235,7 @@ export function DynamicPricingBreakdown({
             </div>
           </div>
         )}
-        <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase'>
+        <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider '>
           {t('Raw expression')}
         </div>
         <code className='text-muted-foreground block text-xs break-all'>
@@ -257,7 +257,7 @@ export function DynamicPricingBreakdown({
     <section className={cn('min-w-0', !compact && 'py-3 sm:py-4')}>
       {!compact && (
         <div className='mb-3 flex items-start gap-2 sm:mb-4'>
-          <span className='mt-0.5 inline-flex size-6 items-center justify-center rounded-lg bg-amber-100 text-amber-700 shadow-sm dark:bg-amber-500/20 dark:text-amber-300'>
+          <span className='bg-primary/10 text-primary mt-0.5 inline-flex size-6 items-center justify-center border'>
             <TagIcon className='size-3.5' />
           </span>
           <div>
@@ -300,7 +300,7 @@ export function DynamicPricingBreakdown({
                   <div className='mb-1.5 flex flex-wrap items-center gap-1.5'>
                     <Badge
                       variant='secondary'
-                      className='bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+                      className='bg-primary/10 text-primary'
                     >
                       {tier.label || t('Default')}
                     </Badge>
@@ -325,7 +325,7 @@ export function DynamicPricingBreakdown({
                       )
                       return (
                         <div key={v.field} className='min-w-0'>
-                          <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
+                          <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider '>
                             {t(v.shortLabel)}
                           </div>
                           <div
@@ -385,7 +385,7 @@ export function DynamicPricingBreakdown({
                       <div className='flex flex-wrap items-center gap-1.5'>
                         <Badge
                           variant='secondary'
-                          className='bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+                          className='bg-primary/10 text-primary'
                         >
                           {tier.label || t('Default')}
                         </Badge>

@@ -78,6 +78,11 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			common.ApiErrorMsg(c, "该套餐未配置 HotPay 商品")
 			return
 		}
+		amountMinor, amountErr := hotPayMinorAmount(plan.PriceAmount)
+		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
+			common.ApiErrorMsg(c, "套餐金额超出支付网关限额")
+			return
+		}
 		tradeNo := fmt.Sprintf("SUBUSR%dNO%s", userId, common.GetRandomString(6)+strconv.FormatInt(time.Now().Unix(), 10))
 		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 		if idempotencyKey != "" {
@@ -86,18 +91,20 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			idempotencyKey = hotPayIdempotencyKey(c, "subscription", tradeNo)
 		}
 		order := &model.SubscriptionOrder{
-			UserId:          userId,
-			PlanId:          plan.Id,
-			Money:           plan.PriceAmount,
-			TradeNo:         tradeNo,
-			PaymentMethod:   canonicalMethod,
-			PaymentProvider: model.PaymentProviderWaffoPancake,
-			PaymentCurrency: planCurrency,
-			CreateTime:      time.Now().Unix(),
-			Status:          common.TopUpStatusPending,
+			UserId:                   userId,
+			PlanId:                   plan.Id,
+			Money:                    plan.PriceAmount,
+			TradeNo:                  tradeNo,
+			PaymentMethod:            canonicalMethod,
+			PaymentProvider:          model.PaymentProviderWaffoPancake,
+			PaymentProviderAccountID: hotPayProviderAccountID(),
+			PaymentEnvironment:       hotPayEnvironment(),
+			PaymentCurrency:          planCurrency,
+			CreateTime:               time.Now().Unix(),
+			Status:                   common.TopUpStatusPending,
 		}
 		if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil {
-			if existing.UserId != userId || existing.PlanId != plan.Id || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency {
+			if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
 				common.ApiErrorMsg(c, "支付请求与已有订单不匹配")
 				return
 			}
@@ -115,11 +122,6 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(clientErr))
 			return
 		}
-		amountMinor, amountErr := hotPayMinorAmount(plan.PriceAmount)
-		if amountErr != nil {
-			common.ApiErrorMsg(c, "套餐金额无效")
-			return
-		}
 		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
 			MerchantOrderID:       tradeNo,
 			BusinessType:          "subscription",
@@ -128,6 +130,7 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			AmountMinor:           amountMinor,
 			Currency:              planCurrency,
 			Provider:              model.PaymentProviderWaffoPancake,
+			ProviderAccountID:     hotPayProviderAccountID(),
 			PaymentMethod:         canonicalMethod,
 			CompatibilityProtocol: "epay",
 			Environment:           hotPayEnvironment(),
@@ -143,6 +146,10 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			Description: "Subscription: " + plan.Title,
 		})
 		if createErr != nil {
+			if hotPayGatewayErrorIsPermanent(createErr) {
+				order.Status = common.TopUpStatusFailed
+				_ = order.Update()
+			}
 			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(createErr))
 			return
 		}
@@ -208,6 +215,7 @@ func SubscriptionRequestEpay(c *gin.Context) {
 }
 
 func SubscriptionEpayNotify(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	var params map[string]string
 
 	if c.Request.Method == "POST" {
@@ -232,10 +240,6 @@ func SubscriptionEpayNotify(c *gin.Context) {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}
-	if acknowledgeHotPayEpayNotification(c, params["out_trade_no"], params["trade_status"]) {
-		return
-	}
-
 	client := GetEpayClient()
 	if client == nil {
 		_, _ = c.Writer.Write([]byte("fail"))
@@ -252,8 +256,7 @@ func SubscriptionEpayNotify(c *gin.Context) {
 		return
 	}
 	if service.IsHotPayGatewayEnabled() {
-		if order := model.GetSubscriptionOrderByTradeNo(verifyInfo.ServiceTradeNo); order != nil && order.PaymentProvider == model.PaymentProviderWaffoPancake && order.Status == common.TopUpStatusSuccess {
-			_, _ = c.Writer.Write([]byte("success"))
+		if acknowledgeHotPayEpayNotification(c, verifyInfo.ServiceTradeNo, verifyInfo.TradeStatus) {
 			return
 		}
 	}
