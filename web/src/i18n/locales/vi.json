@@ -5582,6 +5582,13 @@
     "Remove image": "Xóa hình ảnh",
     "Attached image": "Hình ảnh đã đính kèm",
     "Failed to attach image": "Không thể đính kèm hình ảnh",
-    "No image was generated": "Không có hình ảnh nào được tạo"
+    "No image was generated": "Không có hình ảnh nào được tạo",
+    "Error message privacy": "Quyền riêng tư của thông báo lỗi",
+    "Filter sensitive upstream details": "Lọc thông tin nhạy cảm từ nhà cung cấp upstream",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "Xóa tên và thương hiệu nhà cung cấp đã cấu hình khỏi lỗi relay trả về cho người dùng API. Nhật ký máy chủ vẫn giữ thông báo gốc.",
+    "Save privacy settings": "Lưu cài đặt quyền riêng tư",
+    "Privacy filter expression": "Biểu thức bộ lọc quyền riêng tư",
+    "Enter a Go RE2 regular expression": "Nhập biểu thức chính quy Go RE2",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Các phần khớp sẽ bị xóa khỏi thông báo lỗi relay. Để trống để giữ nguyên thông báo; biểu thức sử dụng cú pháp Go RE2."
   }
 }

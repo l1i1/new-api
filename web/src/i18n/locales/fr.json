@@ -5582,6 +5582,13 @@
     "Remove image": "Supprimer l'image",
     "Attached image": "Image jointe",
     "Failed to attach image": "Échec de l'ajout de l'image",
-    "No image was generated": "Aucune image n'a été générée"
+    "No image was generated": "Aucune image n'a été générée",
+    "Error message privacy": "Confidentialité des messages d'erreur",
+    "Filter sensitive upstream details": "Filtrer les détails sensibles du fournisseur amont",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "Supprime les noms et marques de fournisseurs configurés des erreurs relayées renvoyées aux utilisateurs de l'API. Les journaux du serveur conservent le message d'origine.",
+    "Save privacy settings": "Enregistrer les paramètres de confidentialité",
+    "Privacy filter expression": "Expression du filtre de confidentialité",
+    "Enter a Go RE2 regular expression": "Saisissez une expression régulière Go RE2",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Les correspondances sont supprimées des messages d'erreur relayés. Laissez vide pour conserver les messages tels quels ; les expressions utilisent la syntaxe Go RE2."
   }
 }

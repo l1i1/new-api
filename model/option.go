@@ -189,6 +189,8 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
+	common.OptionMap[operation_setting.ErrorMessageFilterEnabledOptionKey] = strconv.FormatBool(operation_setting.IsErrorMessageFilterEnabled())
+	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
 
 	// 自动添加所有注册的模型配置
@@ -220,6 +222,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == operation_setting.ErrorMessageFilterPatternOptionKey {
+		return operation_setting.ValidateErrorMessageFilterPattern(value)
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
@@ -296,6 +301,11 @@ func updateOptionMap(key string, value string) (err error) {
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
 		return nil
+	}
+	if key == operation_setting.ErrorMessageFilterPatternOptionKey {
+		if err := operation_setting.ValidateErrorMessageFilterPattern(value); err != nil {
+			return err
+		}
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
@@ -611,6 +621,10 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.AutomaticDisableStatusCodesFromString(value)
 	case "AutomaticRetryStatusCodes":
 		err = operation_setting.AutomaticRetryStatusCodesFromString(value)
+	case operation_setting.ErrorMessageFilterEnabledOptionKey:
+		operation_setting.SetErrorMessageFilterEnabled(value == "true")
+	case operation_setting.ErrorMessageFilterPatternOptionKey:
+		err = operation_setting.SetErrorMessageFilterPattern(value)
 	case "StreamCacheQueueLength":
 		setting.StreamCacheQueueLength, _ = strconv.Atoi(value)
 	case "PayMethods":

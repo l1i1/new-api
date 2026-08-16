@@ -5582,6 +5582,13 @@
     "Remove image": "Remove image",
     "Attached image": "Attached image",
     "Failed to attach image": "Failed to attach image",
-    "No image was generated": "No image was generated"
+    "No image was generated": "No image was generated",
+    "Error message privacy": "Error message privacy",
+    "Filter sensitive upstream details": "Filter sensitive upstream details",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.",
+    "Save privacy settings": "Save privacy settings",
+    "Privacy filter expression": "Privacy filter expression",
+    "Enter a Go RE2 regular expression": "Enter a Go RE2 regular expression",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax."
   }
 }

@@ -5582,6 +5582,13 @@
     "Remove image": "画像を削除",
     "Attached image": "添付された画像",
     "Failed to attach image": "画像の添付に失敗しました",
-    "No image was generated": "画像が生成されませんでした"
+    "No image was generated": "画像が生成されませんでした",
+    "Error message privacy": "エラーメッセージのプライバシー",
+    "Filter sensitive upstream details": "機密性の高い上流情報をフィルタリング",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "API ユーザーに返すリレーエラーから、設定されたプロバイダー名とブランド情報を削除します。サーバーログには元のメッセージが保持されます。",
+    "Save privacy settings": "プライバシー設定を保存",
+    "Privacy filter expression": "プライバシーフィルター式",
+    "Enter a Go RE2 regular expression": "Go RE2 正規表現を入力",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "一致した内容はリレーエラーメッセージから削除されます。メッセージを変更しない場合は空欄にしてください。式には Go RE2 構文を使用します。"
   }
 }

@@ -5582,6 +5582,13 @@
     "Remove image": "移除圖片",
     "Attached image": "已添加的圖片",
     "Failed to attach image": "圖片添加失敗",
-    "No image was generated": "未生成任何圖片"
+    "No image was generated": "未生成任何圖片",
+    "Error message privacy": "錯誤訊息隱私",
+    "Filter sensitive upstream details": "過濾敏感的上游資訊",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "從返回給 API 使用者的中繼錯誤中移除設定的供應商名稱和品牌資訊。伺服器日誌保留原始訊息。",
+    "Save privacy settings": "儲存隱私設定",
+    "Privacy filter expression": "隱私過濾表達式",
+    "Enter a Go RE2 regular expression": "輸入 Go RE2 正則表達式",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "匹配內容會從中繼錯誤訊息中移除。留空以保持訊息不變；表達式使用 Go RE2 語法。"
   }
 }

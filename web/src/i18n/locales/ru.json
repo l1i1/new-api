@@ -5582,6 +5582,13 @@
     "Remove image": "Удалить изображение",
     "Attached image": "Прикреплённое изображение",
     "Failed to attach image": "Не удалось прикрепить изображение",
-    "No image was generated": "Изображение не было создано"
+    "No image was generated": "Изображение не было создано",
+    "Error message privacy": "Конфиденциальность сообщений об ошибках",
+    "Filter sensitive upstream details": "Скрывать чувствительные сведения об upstream",
+    "Removes configured provider names and branding from relay errors returned to API users. Server logs keep the original message.": "Удаляет настроенные имена и брендинг провайдеров из ретранслируемых ошибок, возвращаемых пользователям API. Серверные журналы сохраняют исходное сообщение.",
+    "Save privacy settings": "Сохранить настройки конфиденциальности",
+    "Privacy filter expression": "Выражение фильтра конфиденциальности",
+    "Enter a Go RE2 regular expression": "Введите регулярное выражение Go RE2",
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Совпадения удаляются из сообщений ретранслируемых ошибок. Оставьте поле пустым, чтобы не изменять сообщения; выражения используют синтаксис Go RE2."
   }
 }

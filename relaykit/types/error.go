@@ -175,6 +175,18 @@ func (e *NewAPIError) MaskSensitiveErrorWithStatusCode() string {
 
 func (e *NewAPIError) SetMessage(message string) {
 	e.Err = errors.New(message)
+	switch relayError := e.RelayError.(type) {
+	case OpenAIError:
+		relayError.Message = message
+		e.RelayError = relayError
+	case *OpenAIError:
+		relayError.Message = message
+	case ClaudeError:
+		relayError.Message = message
+		e.RelayError = relayError
+	case *ClaudeError:
+		relayError.Message = message
+	}
 }
 
 func (e *NewAPIError) ToOpenAIError() OpenAIError {
