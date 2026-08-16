@@ -1210,6 +1210,17 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
 
           <section className='bg-card/60 border-border space-y-5 border p-4'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
+            <GroupPricingSection
+              model={props.model}
+              groupRatio={props.groupRatio}
+              usableGroup={props.usableGroup}
+              autoGroups={props.autoGroups}
+              priceRate={props.priceRate}
+              usdExchangeRate={props.usdExchangeRate}
+              tokenUnit={props.tokenUnit}
+              showRechargePrice={showRechargePrice}
+              displayCurrency={props.displayCurrency}
+            />
             <PriceSection
               model={props.model}
               priceRate={props.priceRate}
@@ -1228,17 +1239,6 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 displayCurrency={props.displayCurrency}
               />
             )}
-            <GroupPricingSection
-              model={props.model}
-              groupRatio={props.groupRatio}
-              usableGroup={props.usableGroup}
-              autoGroups={props.autoGroups}
-              priceRate={props.priceRate}
-              usdExchangeRate={props.usdExchangeRate}
-              tokenUnit={props.tokenUnit}
-              showRechargePrice={showRechargePrice}
-              displayCurrency={props.displayCurrency}
-            />
           </section>
 
           <ModelBackendDetailsSection model={props.model} />
