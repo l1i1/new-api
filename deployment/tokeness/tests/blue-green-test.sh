@@ -15,13 +15,14 @@ test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
 source "$REMOTE_SCRIPT"
-[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-08-17.2' ]] ||
+[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-08-17.3' ]] ||
   fail_test "remote command version handshake is missing"
 eval "$(declare -f blue_green_proxy_reload | sed '1s/blue_green_proxy_reload/real_blue_green_proxy_reload/')"
 eval "$(declare -f blue_green_remove_container | sed '1s/blue_green_remove_container/real_blue_green_remove_container/')"
 eval "$(declare -f discover_blue_green_proxy_container | sed '1s/discover_blue_green_proxy_container/real_discover_blue_green_proxy_container/')"
 eval "$(declare -f blue_green_verify_container_binding | sed '1s/blue_green_verify_container_binding/real_blue_green_verify_container_binding/')"
 eval "$(declare -f blue_green_verify_live_route | sed '1s/blue_green_verify_live_route/real_blue_green_verify_live_route/')"
+eval "$(declare -f blue_green_proxy_route_status | sed '1s/blue_green_proxy_route_status/real_blue_green_proxy_route_status/')"
 eval "$(declare -f drain_blue_green_container | sed '1s/drain_blue_green_container/real_drain_blue_green_container/')"
 eval "$(declare -f wait_for_blue_green_container | sed '1s/wait_for_blue_green_container/real_wait_for_blue_green_container/')"
 
@@ -59,6 +60,28 @@ blue_green_verify_container_binding() { :; }
 TEST_STATUS_BODY='{"success":true,"version":"blue-green-test","instance_id":"test-instance","start_time":100}'
 blue_green_proxy_route_status() { printf '%s\n' "${TEST_ROUTE_STATUS_BODY:-$TEST_STATUS_BODY}"; }
 status_json() { printf '%s\n' "$TEST_STATUS_BODY"; }
+
+(
+  fake_bin="$test_root/route-probe-bin"
+  mkdir -p "$fake_bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf '\''{"success":true,"data":{"version":"route-probe"},"instance_id":"route-instance"}\n'\''' \
+    > "$fake_bin/curl"
+  chmod +x "$fake_bin/curl"
+  export PATH="$fake_bin:$PATH"
+  BLUE_GREEN_PROXY_CONTAINER='proxy-container'
+  discover_blue_green_proxy_container() { :; }
+  run_timed() {
+    shift
+    [[ "$1" == docker && "$2" == exec && "$3" == 'proxy-container' ]] || return 1
+    shift 3
+    "$@"
+  }
+  route_probe_output="$(real_blue_green_proxy_route_status api.example.test)"
+  grep -Eq '"success"[[:space:]]*:[[:space:]]*true' <<< "$route_probe_output" ||
+    fail_test "OpenResty route probe rejected a healthy JSON response"
+)
 
 (
   BLUE_GREEN_PROXY_CONTAINER=''

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.2'
+readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.3'
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -474,15 +474,15 @@ blue_green_proxy_route_status() {
     body="$(curl -kfsS --max-time 10 --max-redirs 0 \
       --resolve "$host:443:127.0.0.1" -H "Host: $host" \
       "https://$host/api/status?tokeness_blue_green_probe=$probe" 2>/dev/null || true)"
-    if printf '%s\n' "$body" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
-      printf '%s\n' "$body"
+    if printf "%s\n" "$body" | grep -Eq "\"success\"[[:space:]]*:[[:space:]]*true"; then
+      printf "%s\n" "$body"
       exit 0
     fi
     body="$(curl -fsS --max-time 10 --max-redirs 0 \
       --resolve "$host:80:127.0.0.1" -H "Host: $host" \
       "http://$host/api/status?tokeness_blue_green_probe=$probe" 2>/dev/null || true)"
-    printf '%s\n' "$body" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true' || exit 1
-    printf '%s\n' "$body"
+    printf "%s\n" "$body" | grep -Eq "\"success\"[[:space:]]*:[[:space:]]*true" || exit 1
+    printf "%s\n" "$body"
   ' sh "$host" "$probe"
 }
 

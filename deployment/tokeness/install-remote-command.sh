@@ -4,7 +4,7 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SOURCE_SCRIPT="${1:-$SCRIPT_DIR/remote-command.sh}"
 readonly TARGET_SCRIPT="${TOKENESS_REMOTE_COMMAND_TARGET:-/usr/local/sbin/tokeness-new-api-deploy}"
-readonly EXPECTED_VERSION='2026-08-17.2'
+readonly EXPECTED_VERSION='2026-08-17.3'
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
