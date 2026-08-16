@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Projets liés",
     "footer.defaultCopyright": "Tous droits réservés.",
-    "footer.newapi.projectAttributionSuffix": "Tous droits réservés. Conçu et développé par les contributeurs du projet.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Tous droits réservés. Conçu et développé par les contributeurs du projet.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Pour les canaux ajoutés après le 10 mai 2025, pas besoin de supprimer \".\" des noms de modèles lors du déploiement",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Pour les déploiements privés, format : https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Imposer une réponse JSON syntaxiquement valide",
@@ -5591,7 +5591,13 @@
     "Privacy filter expression": "Expression du filtre de confidentialité",
     "Enter a Go RE2 regular expression": "Saisissez une expression régulière Go RE2",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Les correspondances sont supprimées des messages d'erreur relayés. Laissez vide pour conserver les messages tels quels ; les expressions utilisent la syntaxe Go RE2.",
-    "Fill Rule Templates": "Fill Rule Templates",
-    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
+    "Fill Rule Templates": "Remplir les modèles de règles",
+    "This will append all template rules to the existing rule list.": "Tous les modèles de règles seront ajoutés à la liste existante.",
+    "codex cli trace": "Trace CLI Codex",
+    "claude cli trace": "Trace CLI Claude",
+    "chat completion affinity": "Affinité des complétions de chat",
+    "responses trace": "Trace Responses",
+    "messages trace": "Trace Messages",
+    "gemini native affinity": "Affinité native Gemini"
   }
 }

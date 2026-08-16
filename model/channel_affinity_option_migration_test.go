@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -27,13 +28,20 @@ func useChannelAffinityMigrationDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestMigrateChannelAffinityDefaultRulesSupportsHistoricalCodexHeaders(t *testing.T) {
-	for index, historicalRules := range operation_setting.HistoricalDefaultChannelAffinityRules() {
-		t.Run(map[int]string{0: "full-codex-headers", 1: "trimmed-codex-headers"}[index], func(t *testing.T) {
+func TestMigrateChannelAffinityDefaultRulesSupportsEveryHistoricalDefault(t *testing.T) {
+	names := []string{
+		"original-rules",
+		"templates-added",
+		"skip-retry-enabled",
+		"model-name-field-added",
+		"codex-headers-expanded",
+	}
+	require.Len(t, historicalChannelAffinityRuleValues, len(names))
+
+	for index, historicalValue := range historicalChannelAffinityRuleValues {
+		t.Run(names[index], func(t *testing.T) {
 			db := useChannelAffinityMigrationDB(t)
-			value, err := common.Marshal(historicalRules)
-			require.NoError(t, err)
-			require.NoError(t, db.Create(&Option{Key: channelAffinityRulesOptionKey, Value: string(value)}).Error)
+			require.NoError(t, db.Create(&Option{Key: channelAffinityRulesOptionKey, Value: historicalValue}).Error)
 
 			require.NoError(t, MigrateChannelAffinityDefaultRules())
 			migrated := requireOptionValue(t, db, channelAffinityRulesOptionKey)
@@ -50,15 +58,11 @@ func TestMigrateChannelAffinityDefaultRulesSupportsHistoricalCodexHeaders(t *tes
 
 func TestMigrateChannelAffinityDefaultRulesPreservesCustomRules(t *testing.T) {
 	db := useChannelAffinityMigrationDB(t)
-	historical := operation_setting.HistoricalDefaultChannelAffinityRules()[0]
-	historical[0].Name = "my custom Codex rule"
-	historical[0].SkipRetryOnFailure = false
-	value, err := common.Marshal(historical)
-	require.NoError(t, err)
-	require.NoError(t, db.Create(&Option{Key: channelAffinityRulesOptionKey, Value: string(value)}).Error)
+	value := `[{"name":"my custom Codex rule"}]`
+	require.NoError(t, db.Create(&Option{Key: channelAffinityRulesOptionKey, Value: value}).Error)
 
 	require.NoError(t, MigrateChannelAffinityDefaultRules())
-	assert.Equal(t, string(value), requireOptionValue(t, db, channelAffinityRulesOptionKey))
+	assert.Equal(t, value, requireOptionValue(t, db, channelAffinityRulesOptionKey))
 }
 
 func TestMigrateChannelAffinityDefaultRulesPreservesMalformedRules(t *testing.T) {
@@ -68,4 +72,48 @@ func TestMigrateChannelAffinityDefaultRulesPreservesMalformedRules(t *testing.T)
 
 	require.NoError(t, MigrateChannelAffinityDefaultRules())
 	assert.Equal(t, value, requireOptionValue(t, db, channelAffinityRulesOptionKey))
+}
+
+func TestMigrateChannelAffinityDefaultRulesPreservesNonHistoricalNumberLexemes(t *testing.T) {
+	tests := map[string]string{
+		"decimal":   `"ttl_seconds":0.0`,
+		"exponent":  `"ttl_seconds":0e0`,
+		"negative":  `"ttl_seconds":-0`,
+		"duplicate": `"ttl_seconds":0,"ttl_seconds":0`,
+	}
+	for name, replacement := range tests {
+		t.Run(name, func(t *testing.T) {
+			db := useChannelAffinityMigrationDB(t)
+			value := strings.Replace(
+				historicalChannelAffinityRuleValues[0],
+				`"ttl_seconds":0`,
+				replacement,
+				1,
+			)
+			require.NoError(t, db.Create(&Option{Key: channelAffinityRulesOptionKey, Value: value}).Error)
+
+			require.NoError(t, MigrateChannelAffinityDefaultRules())
+			assert.Equal(t, value, requireOptionValue(t, db, channelAffinityRulesOptionKey))
+		})
+	}
+}
+
+func TestReplaceChannelAffinityDefaultRulesCASRejectsStaleValue(t *testing.T) {
+	db := useChannelAffinityMigrationDB(t)
+	require.NoError(t, db.Create(&Option{
+		Key:   channelAffinityRulesOptionKey,
+		Value: historicalChannelAffinityRuleValues[0],
+	}).Error)
+	var stale Option
+	require.NoError(t, db.Where(&Option{Key: channelAffinityRulesOptionKey}).First(&stale).Error)
+
+	const adminValue = `[{"name":"admin saved while migration was running"}]`
+	require.NoError(t, db.Model(&Option{}).
+		Where(&Option{Key: channelAffinityRulesOptionKey}).
+		Update("value", adminValue).Error)
+
+	replaced, err := replaceChannelAffinityDefaultRulesIfUnchanged(db, stale, "migrated")
+	require.NoError(t, err)
+	assert.False(t, replaced)
+	assert.Equal(t, adminValue, requireOptionValue(t, db, channelAffinityRulesOptionKey))
 }

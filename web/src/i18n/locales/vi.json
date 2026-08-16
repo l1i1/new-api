@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Các Dự Án Liên Quan",
     "footer.defaultCopyright": "Bản quyền được bảo lưu.",
-    "footer.newapi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Đối với các kênh được thêm sau ngày 10 tháng 5 năm 2025, không cần loại bỏ \".\" khỏi tên mô hình trong quá trình triển khai",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Đối với các triển khai riêng tư, định dạng: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Buộc phản hồi JSON hợp lệ về cú pháp",
@@ -5591,7 +5591,13 @@
     "Privacy filter expression": "Biểu thức bộ lọc quyền riêng tư",
     "Enter a Go RE2 regular expression": "Nhập biểu thức chính quy Go RE2",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Các phần khớp sẽ bị xóa khỏi thông báo lỗi relay. Để trống để giữ nguyên thông báo; biểu thức sử dụng cú pháp Go RE2.",
-    "Fill Rule Templates": "Fill Rule Templates",
-    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
+    "Fill Rule Templates": "Điền mẫu quy tắc",
+    "This will append all template rules to the existing rule list.": "Tất cả mẫu quy tắc sẽ được thêm vào danh sách quy tắc hiện có.",
+    "codex cli trace": "Theo dõi Codex CLI",
+    "claude cli trace": "Theo dõi Claude CLI",
+    "chat completion affinity": "Gắn kết hoàn thành trò chuyện",
+    "responses trace": "Theo dõi Responses",
+    "messages trace": "Theo dõi Messages",
+    "gemini native affinity": "Gắn kết Gemini native"
   }
 }

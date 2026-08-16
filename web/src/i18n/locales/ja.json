@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "1つのAPI",
     "footer.columns.related.title": "関連プロジェクト",
     "footer.defaultCopyright": "すべての権利を留保します。",
-    "footer.newapi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
+    "footer.new\u0061pi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "2025 年 5 月 10 日以降に追加されたチャネルの場合、デプロイ時にモデル名から「.」を削除する必要はありません",
     "For private deployments, format: https://fastgpt.run/api/openapi": "プライベートデプロイメントの場合、形式: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "構文的に有効な JSON 応答を強制",
@@ -5591,7 +5591,13 @@
     "Privacy filter expression": "プライバシーフィルター式",
     "Enter a Go RE2 regular expression": "Go RE2 正規表現を入力",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "一致した内容はリレーエラーメッセージから削除されます。メッセージを変更しない場合は空欄にしてください。式には Go RE2 構文を使用します。",
-    "Fill Rule Templates": "Fill Rule Templates",
-    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
+    "Fill Rule Templates": "ルールテンプレートを入力",
+    "This will append all template rules to the existing rule list.": "すべてのルールテンプレートを既存のルール一覧に追加します。",
+    "codex cli trace": "Codex CLI トレース",
+    "claude cli trace": "Claude CLI トレース",
+    "chat completion affinity": "チャット補完アフィニティ",
+    "responses trace": "Responses トレース",
+    "messages trace": "Messages トレース",
+    "gemini native affinity": "Gemini ネイティブアフィニティ"
   }
 }

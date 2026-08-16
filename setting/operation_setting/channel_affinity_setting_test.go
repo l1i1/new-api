@@ -46,6 +46,7 @@ func TestDefaultCodexRuleUsesTrimmedHeaderSet(t *testing.T) {
 		}
 	}
 	require.NotNil(t, codexRule)
+	require.True(t, codexRule.SkipRetryOnFailure)
 
 	tpl := codexRule.ParamOverrideTemplate
 	require.NotNil(t, tpl)
@@ -66,6 +67,21 @@ func TestDefaultCodexRuleUsesTrimmedHeaderSet(t *testing.T) {
 	// The full reference list is kept for upstream parity but must not leak
 	// into the shipped default template.
 	require.NotEqual(t, codexCliPassThroughHeaders, valueAny)
+}
+
+func TestDefaultClaudeRuleSkipsRetryOnFailure(t *testing.T) {
+	setting := GetChannelAffinitySetting()
+	require.NotNil(t, setting)
+
+	var claudeRule *ChannelAffinityRule
+	for i := range setting.Rules {
+		if setting.Rules[i].Name == "claude cli trace" {
+			claudeRule = &setting.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, claudeRule)
+	require.True(t, claudeRule.SkipRetryOnFailure)
 }
 
 func TestDefaultChatRuleKeySourceFallbackOrder(t *testing.T) {

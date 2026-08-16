@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "Один API",
     "footer.columns.related.title": "Связанные проекты",
     "footer.defaultCopyright": "Все права защищены.",
-    "footer.newapi.projectAttributionSuffix": "Все права защищены. Разработано участниками проекта.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Все права защищены. Разработано участниками проекта.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Для каналов, добавленных после 10 мая 2025 г., не нужно удалять \".\" из имён моделей при развёртывании",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Для частных развертываний, формат: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Принудительно возвращать синтаксически корректный JSON",
@@ -5591,7 +5591,13 @@
     "Privacy filter expression": "Выражение фильтра конфиденциальности",
     "Enter a Go RE2 regular expression": "Введите регулярное выражение Go RE2",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Совпадения удаляются из сообщений ретранслируемых ошибок. Оставьте поле пустым, чтобы не изменять сообщения; выражения используют синтаксис Go RE2.",
-    "Fill Rule Templates": "Fill Rule Templates",
-    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
+    "Fill Rule Templates": "Заполнить шаблоны правил",
+    "This will append all template rules to the existing rule list.": "Все шаблоны правил будут добавлены в существующий список правил.",
+    "codex cli trace": "Трассировка Codex CLI",
+    "claude cli trace": "Трассировка Claude CLI",
+    "chat completion affinity": "Привязка чат-комплишенов",
+    "responses trace": "Трассировка Responses",
+    "messages trace": "Трассировка Messages",
+    "gemini native affinity": "Нативная привязка Gemini"
   }
 }

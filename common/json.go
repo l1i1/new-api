@@ -22,6 +22,16 @@ func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// CompactJson removes insignificant whitespace without normalizing number
+// literals, object order, or duplicate keys.
+func CompactJson(data []byte) ([]byte, error) {
+	var buffer bytes.Buffer
+	if err := json.Compact(&buffer, data); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
 func GetJsonType(data json.RawMessage) string {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {

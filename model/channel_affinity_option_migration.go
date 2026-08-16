@@ -1,10 +1,9 @@
 package model
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -13,19 +12,29 @@ import (
 
 const channelAffinityRulesOptionKey = "channel_affinity_setting.rules"
 
-var channelAffinityRuleJSONFields = map[string]struct{}{
-	"name":                    {},
-	"model_regex":             {},
-	"path_regex":              {},
-	"user_agent_include":      {},
-	"key_sources":             {},
-	"value_regex":             {},
-	"ttl_seconds":             {},
-	"param_override_template": {},
-	"skip_retry_on_failure":   {},
-	"include_using_group":     {},
-	"include_model_name":      {},
-	"include_rule_name":       {},
+// These are the exact rule values shipped between c91d07466 and 1037acae6.
+// Missing fields are significant: only untouched defaults may be expanded.
+var historicalChannelAffinityRuleValues = []string{
+	`[
+		{"name":"codex trace","model_regex":["^gpt-.*$"],"path_regex":["/v1/responses"],"key_sources":[{"type":"gjson","path":"prompt_cache_key"}],"value_regex":"","ttl_seconds":0,"include_using_group":true,"include_rule_name":true},
+		{"name":"claude code trace","model_regex":["^claude-.*$"],"path_regex":["/v1/messages"],"key_sources":[{"type":"gjson","path":"metadata.user_id"}],"value_regex":"","ttl_seconds":0,"include_using_group":true,"include_rule_name":true}
+	]`,
+	`[
+		{"name":"codex cli trace","model_regex":["^gpt-.*$"],"path_regex":["/v1/responses"],"key_sources":[{"type":"gjson","path":"prompt_cache_key"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["Originator","Session_id","User-Agent","X-Codex-Beta-Features","X-Codex-Turn-Metadata"],"keep_origin":true}]},"include_using_group":true,"include_rule_name":true},
+		{"name":"claude cli trace","model_regex":["^claude-.*$"],"path_regex":["/v1/messages"],"key_sources":[{"type":"gjson","path":"metadata.user_id"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["X-Stainless-Arch","X-Stainless-Lang","X-Stainless-Os","X-Stainless-Package-Version","X-Stainless-Retry-Count","X-Stainless-Runtime","X-Stainless-Runtime-Version","X-Stainless-Timeout","User-Agent","X-App","Anthropic-Beta","Anthropic-Dangerous-Direct-Browser-Access","Anthropic-Version"],"keep_origin":true}]},"include_using_group":true,"include_rule_name":true}
+	]`,
+	`[
+		{"name":"codex cli trace","model_regex":["^gpt-.*$"],"path_regex":["/v1/responses"],"key_sources":[{"type":"gjson","path":"prompt_cache_key"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["Originator","Session_id","User-Agent","X-Codex-Beta-Features","X-Codex-Turn-Metadata"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_rule_name":true},
+		{"name":"claude cli trace","model_regex":["^claude-.*$"],"path_regex":["/v1/messages"],"key_sources":[{"type":"gjson","path":"metadata.user_id"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["X-Stainless-Arch","X-Stainless-Lang","X-Stainless-Os","X-Stainless-Package-Version","X-Stainless-Retry-Count","X-Stainless-Runtime","X-Stainless-Runtime-Version","X-Stainless-Timeout","User-Agent","X-App","Anthropic-Beta","Anthropic-Dangerous-Direct-Browser-Access","Anthropic-Version"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_rule_name":true}
+	]`,
+	`[
+		{"name":"codex cli trace","model_regex":["^gpt-.*$"],"path_regex":["/v1/responses"],"key_sources":[{"type":"gjson","path":"prompt_cache_key"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["Originator","Session_id","User-Agent","X-Codex-Beta-Features","X-Codex-Turn-Metadata"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_model_name":false,"include_rule_name":true},
+		{"name":"claude cli trace","model_regex":["^claude-.*$"],"path_regex":["/v1/messages"],"key_sources":[{"type":"gjson","path":"metadata.user_id"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["X-Stainless-Arch","X-Stainless-Lang","X-Stainless-Os","X-Stainless-Package-Version","X-Stainless-Retry-Count","X-Stainless-Runtime","X-Stainless-Runtime-Version","X-Stainless-Timeout","User-Agent","X-App","Anthropic-Beta","Anthropic-Dangerous-Direct-Browser-Access","Anthropic-Version"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_model_name":false,"include_rule_name":true}
+	]`,
+	`[
+		{"name":"codex cli trace","model_regex":["^gpt-.*$"],"path_regex":["/v1/responses"],"key_sources":[{"type":"gjson","path":"prompt_cache_key"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["Originator","Session_id","Thread_id","Session-Id","Thread-Id","X-Client-Request-Id","User-Agent","X-Codex-Beta-Features","X-Codex-Turn-State","X-Codex-Turn-Metadata","X-Codex-Window-Id","X-Codex-Parent-Thread-Id","X-OpenAI-Subagent","X-OpenAI-Memgen-Request","X-ResponsesAPI-Include-Timing-Metrics","X-OpenAI-Internal-Codex-Responses-Lite"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_model_name":false,"include_rule_name":true},
+		{"name":"claude cli trace","model_regex":["^claude-.*$"],"path_regex":["/v1/messages"],"key_sources":[{"type":"gjson","path":"metadata.user_id"}],"value_regex":"","ttl_seconds":0,"param_override_template":{"operations":[{"mode":"pass_headers","value":["X-Stainless-Arch","X-Stainless-Lang","X-Stainless-Os","X-Stainless-Package-Version","X-Stainless-Retry-Count","X-Stainless-Runtime","X-Stainless-Runtime-Version","X-Stainless-Timeout","User-Agent","X-App","Anthropic-Beta","Anthropic-Dangerous-Direct-Browser-Access","Anthropic-Version"],"keep_origin":true}]},"skip_retry_on_failure":true,"include_using_group":true,"include_model_name":false,"include_rule_name":true}
+	]`,
 }
 
 // MigrateChannelAffinityDefaultRules expands an untouched two-rule default to
@@ -39,7 +48,7 @@ func MigrateChannelAffinityDefaultRules() error {
 
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var option Option
-		err := tx.Where(&Option{Key: channelAffinityRulesOptionKey}).First(&option).Error
+		err := lockForUpdate(tx).Where(&Option{Key: channelAffinityRulesOptionKey}).First(&option).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
@@ -55,113 +64,36 @@ func MigrateChannelAffinityDefaultRules() error {
 		if err != nil {
 			return fmt.Errorf("encode current channel affinity rules: %w", err)
 		}
-		return tx.Model(&option).Update("value", string(encoded)).Error
+		_, err = replaceChannelAffinityDefaultRulesIfUnchanged(tx, option, string(encoded))
+		return err
 	})
 }
 
 func isHistoricalChannelAffinityRules(value string) bool {
-	var rawRules []map[string]json.RawMessage
-	if err := common.UnmarshalJsonStr(strings.TrimSpace(value), &rawRules); err != nil || len(rawRules) != 2 {
+	compacted, err := common.CompactJson(common.StringToByteSlice(value))
+	if err != nil {
 		return false
 	}
-	for _, rawRule := range rawRules {
-		if !historicalChannelAffinityRuleFields(rawRule) {
+	for _, historicalValue := range historicalChannelAffinityRuleValues {
+		historicalCompacted, err := common.CompactJson(common.StringToByteSlice(historicalValue))
+		if err != nil {
 			return false
 		}
-	}
-
-	var rules []operation_setting.ChannelAffinityRule
-	if err := common.UnmarshalJsonStr(strings.TrimSpace(value), &rules); err != nil || len(rules) != 2 {
-		return false
-	}
-	normalizeChannelAffinityRules(rules)
-
-	for _, candidate := range operation_setting.HistoricalDefaultChannelAffinityRules() {
-		normalizeChannelAffinityRules(candidate)
-		if channelAffinityRulesEqual(rules, candidate) {
+		if bytes.Equal(compacted, historicalCompacted) {
 			return true
 		}
 	}
 	return false
 }
 
-func historicalChannelAffinityRuleFields(rawRule map[string]json.RawMessage) bool {
-	for key := range rawRule {
-		if _, ok := channelAffinityRuleJSONFields[key]; !ok {
-			return false
-		}
+func replaceChannelAffinityDefaultRulesIfUnchanged(tx *gorm.DB, option Option, value string) (bool, error) {
+	result := tx.Model(&Option{}).
+		Where(&Option{Key: option.Key, Value: option.Value}).
+		Update("value", value)
+	if result.Error != nil {
+		return false, fmt.Errorf("update %s: %w", channelAffinityRulesOptionKey, result.Error)
 	}
-
-	// All non-omitempty fields plus the template are required by the old
-	// defaults. This prevents null or omitted values from being treated as an
-	// untouched rule after typed decoding drops that distinction.
-	for _, key := range []string{
-		"name",
-		"model_regex",
-		"path_regex",
-		"key_sources",
-		"value_regex",
-		"ttl_seconds",
-		"param_override_template",
-		"skip_retry_on_failure",
-		"include_using_group",
-		"include_model_name",
-		"include_rule_name",
-	} {
-		if _, ok := rawRule[key]; !ok {
-			return false
-		}
-	}
-
-	var keySources []map[string]json.RawMessage
-	if err := common.Unmarshal(rawRule["key_sources"], &keySources); err != nil {
-		return false
-	}
-	for _, keySource := range keySources {
-		for key := range keySource {
-			if key != "type" && key != "key" && key != "path" {
-				return false
-			}
-		}
-	}
-
-	var template map[string]json.RawMessage
-	if err := common.Unmarshal(rawRule["param_override_template"], &template); err != nil {
-		return false
-	}
-	if len(template) != 1 {
-		return false
-	}
-	var operations []map[string]json.RawMessage
-	if err := common.Unmarshal(template["operations"], &operations); err != nil {
-		return false
-	}
-	for _, operation := range operations {
-		for key := range operation {
-			if key != "mode" && key != "value" && key != "keep_origin" {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func normalizeChannelAffinityRules(rules []operation_setting.ChannelAffinityRule) {
-	for index := range rules {
-		if len(rules[index].UserAgentInclude) == 0 {
-			rules[index].UserAgentInclude = nil
-		}
-	}
-}
-
-func channelAffinityRulesEqual(left, right []operation_setting.ChannelAffinityRule) bool {
-	leftJSON, err := common.Marshal(left)
-	if err != nil {
-		return false
-	}
-	rightJSON, err := common.Marshal(right)
-	if err != nil {
-		return false
-	}
-	return string(leftJSON) == string(rightJSON)
+	// A zero-row CAS means an administrator saved a newer value after the
+	// read. Preserve it and let the next startup evaluate that value again.
+	return result.RowsAffected > 0, nil
 }

@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "强制返回语法合法的 JSON",
@@ -5592,6 +5592,12 @@
     "Enter a Go RE2 regular expression": "输入 Go RE2 正则表达式",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "匹配内容会从中继错误消息中移除。留空以保持消息不变；表达式使用 Go RE2 语法。",
     "Fill Rule Templates": "填充规则模板",
-    "This will append all template rules to the existing rule list.": "这将在现有规则列表中追加所有模板规则。"
+    "This will append all template rules to the existing rule list.": "这将在现有规则列表中追加所有模板规则。",
+    "codex cli trace": "Codex CLI 跟踪",
+    "claude cli trace": "Claude CLI 跟踪",
+    "chat completion affinity": "聊天补全亲和性",
+    "responses trace": "Responses 跟踪",
+    "messages trace": "Messages 跟踪",
+    "gemini native affinity": "Gemini 原生亲和性"
   }
 }

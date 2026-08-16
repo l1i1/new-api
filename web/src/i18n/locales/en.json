@@ -2050,7 +2050,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Force a syntactically valid JSON response",
@@ -5592,6 +5592,12 @@
     "Enter a Go RE2 regular expression": "Enter a Go RE2 regular expression",
     "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.",
     "Fill Rule Templates": "Fill Rule Templates",
-    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
+    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list.",
+    "codex cli trace": "Codex CLI trace",
+    "claude cli trace": "Claude CLI trace",
+    "chat completion affinity": "Chat completion affinity",
+    "responses trace": "Responses trace",
+    "messages trace": "Messages trace",
+    "gemini native affinity": "Gemini native affinity"
   }
 }
