@@ -75,6 +75,7 @@ func TestOaiResponsesToChatStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Contains(t, got, `"arguments":"{\"q\":\"x\"}"`)
 	require.Contains(t, got, `"finish_reason":"tool_calls"`)
 	require.Contains(t, got, `"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5`)
+	require.NotContains(t, got, `billing_usage`)
 	require.Contains(t, got, `data: [DONE]`)
 	requireOrderedSubstrings(t, got,
 		`"role":"assistant"`,
@@ -133,6 +134,7 @@ func TestOaiResponsesToChatStreamHandlerConvertsClaudeSSETerminalsAndUsage(t *te
 	assert.Contains(t, messageDeltaFrame, `"stop_reason":"end_turn"`)
 	assert.Contains(t, messageDeltaFrame, `"input_tokens":2`)
 	assert.Contains(t, messageDeltaFrame, `"output_tokens":3`)
+	assert.NotContains(t, got, `billing_usage`)
 	requireOrderedSubstrings(t, got,
 		"event: message_start\n",
 		"event: content_block_stop\n",
@@ -169,6 +171,20 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.Contains(t, got, `"name":"lookup"`)
 	require.Contains(t, got, `"arguments":"{\"q\":\"x\"}"`)
 	require.Contains(t, got, `"finish_reason":"tool_calls"`)
+	require.NotContains(t, got, `billing_usage`)
+}
+
+func TestOaiResponsesToChatHandlerStripsBillingUsage(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","created_at":1710000000,"status":"completed","model":"gpt-test","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[]}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+
+	usage, err := OaiResponsesToChatHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, 5, usage.TotalTokens)
+	assert.Contains(t, recorder.Body.String(), `"object":"chat.completion"`)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+	assert.NotNil(t, usage.BillingUsage)
 }
 
 func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
@@ -211,6 +227,7 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	require.Contains(t, got, `event: response.completed`)
 	require.Contains(t, got, `"input_tokens":2`)
 	require.Contains(t, got, `"output_tokens":3`)
+	require.NotContains(t, got, `billing_usage`)
 	requireOrderedSubstrings(t, got,
 		`event: response.created`,
 		`event: response.output_item.added`,
@@ -221,6 +238,20 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 		`event: response.function_call_arguments.done`,
 		`event: response.completed`,
 	)
+}
+
+func TestOaiChatToResponsesHandlerStripsBillingUsage(t *testing.T) {
+	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1710000000,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	usage, err := OaiChatToResponsesHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, 5, usage.TotalTokens)
+	assert.Contains(t, recorder.Body.String(), `"object":"response"`)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+	assert.NotNil(t, usage.BillingUsage)
 }
 
 func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {

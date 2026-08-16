@@ -120,6 +120,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamData string
 	var pendingUsageData string
 	var lastStreamHasUsage bool
+	var lastStreamHasChoices bool
+	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
@@ -129,12 +131,23 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		currentHasUsage := false
+		currentHasChoices := false
+		currentWithoutUsage := ""
 		if len(data) > 0 {
 			var streamResp struct {
-				Usage *dto.Usage `json:"usage"`
+				Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
+				Usage   *dto.Usage                                `json:"usage"`
 			}
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && streamResp.Usage != nil {
 				currentHasUsage = true
+				currentHasChoices = len(streamResp.Choices) > 0
+				stripped, stripErr := stripStreamUsageData(data)
+				if stripErr != nil {
+					common.SysLog("error stripping stream usage; suppressing the client event: " + stripErr.Error())
+					currentWithoutUsage = ""
+				} else {
+					currentWithoutUsage = stripped
+				}
 				if service.ValidUsage(streamResp.Usage) {
 					usage = dto.MergeUsage(usage, streamResp.Usage)
 					containStreamUsage = true
@@ -150,9 +163,24 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 		if lastStreamData != "" {
 			if info.RelayFormat == types.RelayFormatOpenAI && lastStreamHasUsage {
-				// Keep only the latest upstream usage event. Forwarding multiple
-				// cumulative chunks can make clients account the same request twice.
+				// Preserve choices carried beside usage, but keep the usage itself
+				// pending so clients receive only one cumulative event.
 				pendingUsageData = lastStreamData
+				if lastStreamHasChoices {
+					if lastStreamWithoutUsage != "" {
+						if err := HandleStreamFormat(c, info, lastStreamWithoutUsage, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+							common.SysLog("error handling stream format: " + err.Error())
+							sr.Error(err)
+						}
+					}
+					usageOnlyData, err := stripStreamChoicesData(lastStreamData)
+					if err != nil {
+						common.SysLog("error stripping stream choices; suppressing duplicate pending event: " + err.Error())
+						pendingUsageData = ""
+					} else {
+						pendingUsageData = usageOnlyData
+					}
+				}
 			} else {
 				streamData := lastStreamData
 				if info.RelayFormat == types.RelayFormatOpenAI {
@@ -177,6 +205,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if len(data) > 0 {
 			lastStreamData = data
 			lastStreamHasUsage = currentHasUsage
+			lastStreamHasChoices = currentHasChoices
+			lastStreamWithoutUsage = currentWithoutUsage
 			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
@@ -218,7 +248,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
+		if lastStreamHasUsage {
+			pendingUsageData = lastStreamData
+			if lastStreamHasChoices {
+				if lastStreamWithoutUsage != "" {
+					_ = sendStreamData(c, info, lastStreamWithoutUsage, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+				}
+				usageOnlyData, err := stripStreamChoicesData(lastStreamData)
+				if err != nil {
+					logger.LogError(c, "error stripping final stream choices; suppressing duplicate pending event: "+err.Error())
+					pendingUsageData = ""
+				} else {
+					pendingUsageData = usageOnlyData
+				}
+			}
+		} else if shouldSendLastResp {
 			streamData := lastStreamData
 			patched, err := patchStreamUsageData(streamData, usage)
 			if err != nil {
@@ -228,7 +272,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
-		if !lastStreamHasUsage && pendingUsageData != "" {
+		if info.ShouldIncludeUsage && pendingUsageData != "" {
 			streamData := pendingUsageData
 			patched, err := patchStreamUsageData(streamData, usage)
 			if err != nil {
@@ -369,7 +413,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
-		claudeRespStr, err := common.Marshal(convertResult.Value)
+		claudeResp, ok := convertResult.Value.(*dto.ClaudeResponse)
+		if !ok {
+			return nil, types.NewError(fmt.Errorf("expected Claude response, got %T", convertResult.Value), types.ErrorCodeBadResponseBody)
+		}
+		claudeRespStr, err := common.Marshal(helper.ClaudeResponseForClient(claudeResp))
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
@@ -379,7 +427,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
-		geminiRespStr, err := common.Marshal(convertResult.Value)
+		geminiResp, ok := convertResult.Value.(*dto.GeminiChatResponse)
+		if !ok {
+			return nil, types.NewError(fmt.Errorf("expected Gemini response, got %T", convertResult.Value), types.ErrorCodeBadResponseBody)
+		}
+		geminiRespStr, err := common.Marshal(helper.GeminiResponseForClient(geminiResp))
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}

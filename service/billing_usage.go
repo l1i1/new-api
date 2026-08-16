@@ -150,13 +150,24 @@ func usageFromClaudeBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 func usageFromGeminiBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 	metadata := *billingUsage.GeminiUsageMetadata
 	promptTokens := metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount
+	completionTokens := metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount
+	derivedTotal := promptTokens + completionTokens
+	if metadata.TotalTokenCount > derivedTotal {
+		missingCompletionTokens := metadata.TotalTokenCount - derivedTotal
+		metadata.CandidatesTokenCount += missingCompletionTokens
+		completionTokens += missingCompletionTokens
+	} else if metadata.TotalTokenCount < derivedTotal {
+		metadata.TotalTokenCount = derivedTotal
+	}
+	normalizedBillingUsage := dto.CloneBillingUsage(billingUsage)
+	normalizedBillingUsage.GeminiUsageMetadata = &metadata
 	usage := &dto.Usage{
 		PromptTokens:     promptTokens,
-		CompletionTokens: metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount,
+		CompletionTokens: completionTokens,
 		TotalTokens:      metadata.TotalTokenCount,
 		UsageSemantic:    dto.BillingUsageSemanticGemini,
 		UsageSource:      dto.BillingUsageSourceGeminiChat,
-		BillingUsage:     dto.CloneBillingUsage(billingUsage),
+		BillingUsage:     normalizedBillingUsage,
 	}
 	usage.CompletionTokenDetails.ReasoningTokens = metadata.ThoughtsTokenCount
 	usage.PromptTokensDetails.CachedTokens = metadata.CachedContentTokenCount
@@ -183,7 +194,7 @@ func usageFromGeminiBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 	} else if usage.CompletionTokens <= 0 {
 		usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
 	}
-	if usage.PromptTokens > 0 && usage.PromptTokensDetails.TextTokens == 0 && usage.PromptTokensDetails.AudioTokens == 0 {
+	if usage.PromptTokens > 0 && usage.PromptTokensDetails.TextTokens == 0 && usage.PromptTokensDetails.AudioTokens == 0 && usage.PromptTokensDetails.ImageTokens == 0 {
 		usage.PromptTokensDetails.TextTokens = usage.PromptTokens
 	}
 	return usage

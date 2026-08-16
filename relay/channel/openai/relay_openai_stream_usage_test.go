@@ -120,6 +120,121 @@ func TestOaiStreamHandlerRetainsCacheAcrossUsageEvents(t *testing.T) {
 	assert.Contains(t, usageEvents[len(usageEvents)-1], `"cached_tokens":80`)
 }
 
+func TestOaiStreamHandlerEmitsUsageOnlyWhenRequestedAndPreservesChoices(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	tests := []struct {
+		name                  string
+		shouldIncludeUsage    bool
+		body                  string
+		wantUsageEvents       int
+		wantFinishBeforeUsage bool
+	}{
+		{
+			name:               "usage disabled",
+			shouldIncludeUsage: false,
+			body: strings.Join([]string{
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}`,
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				`data: [DONE]`,
+				``,
+			}, "\n"),
+			wantUsageEvents: 0,
+		},
+		{
+			name:               "usage alongside finish choices",
+			shouldIncludeUsage: true,
+			body: strings.Join([]string{
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}`,
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+				`data: [DONE]`,
+				``,
+			}, "\n"),
+			wantUsageEvents:       1,
+			wantFinishBeforeUsage: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			}
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+				IsStream:           true,
+				RelayMode:          relayconstant.RelayModeChatCompletions,
+				RelayFormat:        types.RelayFormatOpenAI,
+				ShouldIncludeUsage: tt.shouldIncludeUsage,
+				DisablePing:        true,
+			}
+
+			usage, err := OaiStreamHandler(c, info, resp)
+			require.Nil(t, err)
+			require.NotNil(t, usage)
+			assert.Equal(t, 10, usage.PromptTokens)
+			assert.Equal(t, tt.wantUsageEvents, strings.Count(recorder.Body.String(), `"usage"`))
+			assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+			assert.Equal(t, 1, strings.Count(recorder.Body.String(), `"finish_reason":"stop"`))
+			if tt.wantFinishBeforeUsage {
+				assert.Greater(t, strings.LastIndex(recorder.Body.String(), `"usage"`), strings.Index(recorder.Body.String(), `"finish_reason":"stop"`))
+			}
+		})
+	}
+}
+
+func TestOaiStreamHandlerDoesNotDuplicateChoicesWhenUsageSharesFinalChunk(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"test-model","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+	assert.Equal(t, 1, strings.Count(got, `"content":"hello"`))
+	assert.Equal(t, 1, strings.Count(got, `"finish_reason":"stop"`))
+	assert.Equal(t, 1, strings.Count(got, `"usage"`))
+}
+
 func TestPatchStreamUsageDataPreservesExtensionsAndStripsBillingUsage(t *testing.T) {
 	data := `{"usage":{"prompt_tokens":1,"provider_extension":{"cache_tier":"ephemeral"},"billing_usage":{"source":"internal"}}}`
 	usage := &dto.Usage{

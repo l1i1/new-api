@@ -68,7 +68,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		responseValue = targetResult.Value
 	}
-	responseBody, err := common.Marshal(responseValue)
+	responseBody, err := common.Marshal(helper.ResponseForClient(responseValue))
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
@@ -176,7 +176,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 		responseValue = targetResult.Value
 	}
-	responseBody, err := common.Marshal(responseValue)
+	responseBody, err := common.Marshal(helper.ResponseForClient(responseValue))
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
@@ -212,7 +212,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if geminiResponse == nil {
 			return true
 		}
-		geminiResponseStr, err := common.Marshal(geminiResponse)
+		geminiResponseStr, err := common.Marshal(helper.GeminiResponseForClient(geminiResponse))
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false

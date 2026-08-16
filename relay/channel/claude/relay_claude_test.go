@@ -1,12 +1,16 @@
 package claude
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,6 +258,55 @@ func TestBuildOpenAIStyleUsageFromClaudeUsage(t *testing.T) {
 	if openAIUsage.UsageSource != "anthropic" {
 		t.Fatalf("UsageSource = %s, want anthropic", openAIUsage.UsageSource)
 	}
+}
+
+func TestHandleStreamFinalResponseStripsBillingUsage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	usage := &dto.Usage{
+		PromptTokens:     2,
+		CompletionTokens: 3,
+		TotalTokens:      5,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:  2,
+			OutputTokens: 3,
+		}),
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "claude-test"},
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+	}
+	claudeInfo := &ClaudeResponseInfo{
+		ResponseId: "chatcmpl-test",
+		Created:    1710000000,
+		Usage:      usage,
+		Done:       true,
+	}
+
+	HandleStreamFinalResponse(c, info, claudeInfo)
+
+	assert.Contains(t, recorder.Body.String(), `"prompt_tokens":2`)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+	assert.NotNil(t, usage.BillingUsage)
+}
+
+func TestHandleClaudeResponseDataStripsBillingUsage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-test"},
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	httpResp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
+	data := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`)
+
+	err := HandleClaudeResponseData(c, info, claudeInfo, httpResp, data)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `"prompt_tokens":2`)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+	assert.NotNil(t, claudeInfo.Usage.BillingUsage)
 }
 
 func TestBuildOpenAIStyleUsageFromClaudeUsagePreservesCacheCreationRemainder(t *testing.T) {

@@ -68,6 +68,32 @@ func patchStreamUsageData(data string, usage *dto.Usage) (string, error) {
 	return string(patched), nil
 }
 
+func stripStreamUsageData(data string) (string, error) {
+	var payload map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
+		return data, err
+	}
+	delete(payload, "usage")
+	stripped, err := common.Marshal(payload)
+	if err != nil {
+		return data, err
+	}
+	return string(stripped), nil
+}
+
+func stripStreamChoicesData(data string) (string, error) {
+	var payload map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
+		return data, err
+	}
+	payload["choices"] = json.RawMessage(`[]`)
+	stripped, err := common.Marshal(payload)
+	if err != nil {
+		return data, err
+	}
+	return string(stripped), nil
+}
+
 // 辅助函数
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	info.SendResponseCount++
@@ -127,7 +153,7 @@ func handleGeminiFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 		return nil
 	}
 
-	geminiResponseStr, err := common.Marshal(geminiResponse)
+	geminiResponseStr, err := common.Marshal(helper.GeminiResponseForClient(geminiResponse))
 	if err != nil {
 		logger.LogError(c, "failed to marshal gemini response: "+err.Error())
 		return err
@@ -273,7 +299,7 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 			return
 		}
 
-		geminiResponseStr, err := common.Marshal(geminiResponse)
+		geminiResponseStr, err := common.Marshal(helper.GeminiResponseForClient(geminiResponse))
 		if err != nil {
 			common.SysLog("error marshalling gemini response: " + err.Error())
 			return

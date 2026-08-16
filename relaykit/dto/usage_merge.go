@@ -173,6 +173,12 @@ func syncGeminiUsageFromBilling(usage *Usage) {
 		totalTokens = usage.TotalTokens
 	}
 	derivedTotal := promptTokens + completionTokens
+	if totalTokens > derivedTotal {
+		missingCompletionTokens := totalTokens - derivedTotal
+		metadata.CandidatesTokenCount += missingCompletionTokens
+		completionTokens += missingCompletionTokens
+		derivedTotal = totalTokens
+	}
 	if derivedTotal > totalTokens {
 		totalTokens = derivedTotal
 	}

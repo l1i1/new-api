@@ -379,7 +379,11 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
-		claudeRespStr, err := common.Marshal(convertResult.Value)
+		claudeResp, ok := convertResult.Value.(*dto.ClaudeResponse)
+		if !ok {
+			return nil, types.NewError(fmt.Errorf("expected Claude response, got %T", convertResult.Value), types.ErrorCodeBadResponseBody)
+		}
+		claudeRespStr, err := common.Marshal(helper.ClaudeResponseForClient(claudeResp))
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}

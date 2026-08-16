@@ -246,6 +246,46 @@ func TestCalculateTextQuotaSummaryUsesGeminiBillingUsageBeforeTopLevelUsage(t *t
 	require.Equal(t, 145, summary.Quota)
 }
 
+func TestEffectiveBillingUsageNormalizesPartialGeminiCompletionAndImageDetails(t *testing.T) {
+	usage := &dto.Usage{
+		BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+			PromptTokenCount:   100,
+			ThoughtsTokenCount: 2,
+			TotalTokenCount:    110,
+			PromptTokensDetails: []dto.GeminiPromptTokensDetails{
+				{Modality: "IMAGE", TokenCount: 100},
+			},
+		}),
+	}
+
+	effective := effectiveBillingUsage(usage)
+	require.NotNil(t, effective)
+	require.NotNil(t, effective.BillingUsage)
+	require.NotNil(t, effective.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 10, effective.CompletionTokens)
+	assert.Equal(t, 8, effective.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, 0, effective.PromptTokensDetails.TextTokens)
+	assert.Equal(t, 100, effective.PromptTokensDetails.ImageTokens)
+}
+
+func TestEffectiveBillingUsageRaisesGeminiTotalToReportedComponents(t *testing.T) {
+	usage := &dto.Usage{
+		BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+			PromptTokenCount:     100,
+			CandidatesTokenCount: 5,
+			ThoughtsTokenCount:   2,
+			TotalTokenCount:      105,
+		}),
+	}
+
+	effective := effectiveBillingUsage(usage)
+	require.NotNil(t, effective)
+	assert.Equal(t, 107, effective.TotalTokens)
+	require.NotNil(t, effective.BillingUsage)
+	require.NotNil(t, effective.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 107, effective.BillingUsage.GeminiUsageMetadata.TotalTokenCount)
+}
+
 func TestCalculateTextQuotaSummaryUsesOpenAIBillingUsageBeforeTopLevelUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

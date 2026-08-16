@@ -53,7 +53,7 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 
-	responseBody, err := common.Marshal(responsesResp)
+	responseBody, err := common.Marshal(helper.OpenAIResponsesResponseForClient(responsesResp))
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
@@ -79,7 +79,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	streamErr := (*types.NewAPIError)(nil)
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
-		data, err := common.Marshal(event.Payload)
+		data, err := common.Marshal(helper.ResponsesStreamResponseForClient(&event.Payload))
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false

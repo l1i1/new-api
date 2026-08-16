@@ -123,6 +123,27 @@ func TestMergeUsageKeepsGeminiThoughtsAndCandidatesConsistent(t *testing.T) {
 	assert.Equal(t, metadata.TotalTokenCount, merged.TotalTokens)
 }
 
+func TestMergeUsageAssignsUnreportedGeminiCompletionTokensFromTotal(t *testing.T) {
+	usage := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{
+			PromptTokenCount:   100,
+			ThoughtsTokenCount: 2,
+			TotalTokenCount:    110,
+		}),
+	}
+
+	merged := MergeUsage(&Usage{}, usage)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.BillingUsage)
+	require.NotNil(t, merged.BillingUsage.GeminiUsageMetadata)
+
+	metadata := merged.BillingUsage.GeminiUsageMetadata
+	assert.Equal(t, 8, metadata.CandidatesTokenCount)
+	assert.Equal(t, 2, metadata.ThoughtsTokenCount)
+	assert.Equal(t, 10, merged.CompletionTokens)
+	assert.Equal(t, 110, merged.TotalTokens)
+}
+
 func TestMergeUsageMergesGeminiModalitiesAcrossPartialEvents(t *testing.T) {
 	previous := &Usage{
 		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{

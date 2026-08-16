@@ -243,7 +243,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	case types.RelayFormatOpenAI:
 		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
 		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
-		responseData, err = common.Marshal(openaiResponse)
+		responseData, err = common.Marshal(helper.OpenAITextResponseForClient(openaiResponse))
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}

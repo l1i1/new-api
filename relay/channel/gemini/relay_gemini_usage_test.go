@@ -142,6 +142,80 @@ func TestGeminiChatStreamHandlerDoesNotExposeBillingUsage(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
 }
 
+func TestGeminiChatHandlerDoesNotExposeBillingUsageInClaudeResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+	payload := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Role: "model", Parts: []dto.GeminiPart{{Text: "ok"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 2,
+			TotalTokenCount:      12,
+		},
+	}
+	body, err := common.Marshal(payload)
+	require.NoError(t, err)
+
+	usage, newAPIError := GeminiChatHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(body))})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BillingUsage)
+	assert.Contains(t, recorder.Body.String(), `"type":"message"`)
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
+func TestGeminiChatStreamHandlerDoesNotExposeBillingUsageInClaudeResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
+
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+	info.EnsureClaudeConvertInfo()
+	payload := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Role: "model", Parts: []dto.GeminiPart{{Text: "ok"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 2,
+			TotalTokenCount:      12,
+		},
+	}
+	chunk, err := common.Marshal(payload)
+	require.NoError(t, err)
+	streamBody := []byte("data: " + string(chunk) + "\n" + "data: [DONE]\n")
+
+	usage, newAPIError := GeminiChatStreamHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(streamBody))})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BillingUsage)
+	assert.Contains(t, recorder.Body.String(), `event: message_start`)
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
 func TestGeminiStreamHandlerCompletionTokensExcludeToolUsePromptTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

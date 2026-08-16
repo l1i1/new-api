@@ -63,7 +63,8 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 		return nil
 	}
 
-	jsonData, err := common.Marshal(resp)
+	clientResponse := ClaudeResponseForClient(&resp)
+	jsonData, err := common.Marshal(clientResponse)
 	if err != nil {
 		common.SysError("error marshalling stream response: " + err.Error())
 	} else {
@@ -72,6 +73,104 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	}
 	_ = FlushWriter(c)
 	return nil
+}
+
+func ClaudeResponseForClient(resp *dto.ClaudeResponse) *dto.ClaudeResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := *resp
+	if resp.Usage != nil {
+		clientUsage := *resp.Usage
+		clientUsage.BillingUsage = nil
+		clientResponse.Usage = &clientUsage
+	}
+	return &clientResponse
+}
+
+func GeminiResponseForClient(resp *dto.GeminiChatResponse) *dto.GeminiChatResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := *resp
+	clientResponse.UsageMetadata.BillingUsage = nil
+	return &clientResponse
+}
+
+func UsageForClient(usage *dto.Usage) *dto.Usage {
+	if usage == nil {
+		return nil
+	}
+	clientUsage := *usage
+	clientUsage.BillingUsage = nil
+	return &clientUsage
+}
+
+func OpenAITextResponseForClient(resp *dto.OpenAITextResponse) *dto.OpenAITextResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := *resp
+	clientResponse.Usage.BillingUsage = nil
+	return &clientResponse
+}
+
+func OpenAIResponsesResponseForClient(resp *dto.OpenAIResponsesResponse) *dto.OpenAIResponsesResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := *resp
+	clientResponse.Usage = UsageForClient(resp.Usage)
+	return &clientResponse
+}
+
+func ChatCompletionsStreamResponseForClient(resp *dto.ChatCompletionsStreamResponse) *dto.ChatCompletionsStreamResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := resp.Copy()
+	clientResponse.Usage = UsageForClient(resp.Usage)
+	return clientResponse
+}
+
+func ResponsesStreamResponseForClient(resp *dto.ResponsesStreamResponse) *dto.ResponsesStreamResponse {
+	if resp == nil {
+		return nil
+	}
+	clientResponse := *resp
+	clientResponse.Response = OpenAIResponsesResponseForClient(resp.Response)
+	return &clientResponse
+}
+
+func ResponseForClient(response interface{}) interface{} {
+	switch value := response.(type) {
+	case dto.OpenAITextResponse:
+		return *OpenAITextResponseForClient(&value)
+	case *dto.OpenAITextResponse:
+		return OpenAITextResponseForClient(value)
+	case dto.OpenAIResponsesResponse:
+		return *OpenAIResponsesResponseForClient(&value)
+	case *dto.OpenAIResponsesResponse:
+		return OpenAIResponsesResponseForClient(value)
+	case dto.ChatCompletionsStreamResponse:
+		return *ChatCompletionsStreamResponseForClient(&value)
+	case *dto.ChatCompletionsStreamResponse:
+		return ChatCompletionsStreamResponseForClient(value)
+	case dto.ResponsesStreamResponse:
+		return *ResponsesStreamResponseForClient(&value)
+	case *dto.ResponsesStreamResponse:
+		return ResponsesStreamResponseForClient(value)
+	case dto.ClaudeResponse:
+		return *ClaudeResponseForClient(&value)
+	case *dto.ClaudeResponse:
+		return ClaudeResponseForClient(value)
+	case dto.GeminiChatResponse:
+		return *GeminiResponseForClient(&value)
+	case *dto.GeminiChatResponse:
+		return GeminiResponseForClient(value)
+	default:
+		return response
+	}
 }
 
 func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
@@ -126,7 +225,7 @@ func ObjectData(c *gin.Context, object interface{}) error {
 	if object == nil {
 		return errors.New("object is nil")
 	}
-	jsonData, err := common.Marshal(object)
+	jsonData, err := common.Marshal(ResponseForClient(object))
 	if err != nil {
 		return fmt.Errorf("error marshalling object: %w", err)
 	}

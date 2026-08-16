@@ -70,6 +70,11 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if responsesUsage == nil || responsesUsage.TotalTokens == 0 {
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(&usage)
 	}
+	if responsesResp.Usage != nil {
+		clientUsage := *responsesResp.Usage
+		clientUsage.BillingUsage = nil
+		responsesResp.Usage = &clientUsage
+	}
 
 	responseBody, err = common.Marshal(responsesResp)
 	if err != nil {
@@ -96,7 +101,15 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	var streamErr *types.NewAPIError
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
-		data, err := common.Marshal(event.Payload)
+		payload := event.Payload
+		if payload.Response != nil && payload.Response.Usage != nil {
+			clientResponse := *payload.Response
+			clientUsage := *clientResponse.Usage
+			clientUsage.BillingUsage = nil
+			clientResponse.Usage = &clientUsage
+			payload.Response = &clientResponse
+		}
+		data, err := common.Marshal(payload)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false

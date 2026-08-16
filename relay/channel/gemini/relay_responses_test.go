@@ -55,6 +55,7 @@ func TestGeminiResponsesHandlerReturnsOpenAIResponsesJSON(t *testing.T) {
 	require.NotNil(t, usage)
 	assert.Equal(t, 2, usage.PromptTokens)
 	assert.Equal(t, 3, usage.CompletionTokens)
+	require.NotNil(t, usage.BillingUsage)
 
 	got := recorder.Body.String()
 	assert.Contains(t, got, `"object":"response"`)
@@ -63,6 +64,7 @@ func TestGeminiResponsesHandlerReturnsOpenAIResponsesJSON(t *testing.T) {
 	assert.Contains(t, got, `"text":"hello"`)
 	assert.Contains(t, got, `"input_tokens":2`)
 	assert.Contains(t, got, `"output_tokens":3`)
+	assert.NotContains(t, got, `"billing_usage"`)
 	assert.NotContains(t, got, `"choices"`)
 	assert.NotContains(t, got, `"candidates"`)
 }
@@ -147,6 +149,7 @@ func TestGeminiResponsesStreamHandlerReturnsOpenAIResponsesSSE(t *testing.T) {
 	require.Nil(t, newAPIError)
 	require.NotNil(t, usage)
 	assert.Equal(t, 5, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage)
 
 	got := recorder.Body.String()
 	assert.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
@@ -156,6 +159,7 @@ func TestGeminiResponsesStreamHandlerReturnsOpenAIResponsesSSE(t *testing.T) {
 	assert.Contains(t, got, `event: response.completed`)
 	assert.Contains(t, got, `"input_tokens":2`)
 	assert.Contains(t, got, `"output_tokens":3`)
+	assert.NotContains(t, got, `"billing_usage"`)
 	assert.NotContains(t, got, `"choices"`)
 	assert.NotContains(t, got, `"candidates"`)
 	requireOrderedGeminiResponsesSubstrings(t, got,
