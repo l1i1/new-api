@@ -300,6 +300,7 @@ func migrateDB() error {
 		&InvoiceItem{},
 		&InvoiceOrderClaim{},
 		&PaymentGatewaySettlement{},
+		&PaymentGatewayProviderEvent{},
 	)
 	if err != nil {
 		return err

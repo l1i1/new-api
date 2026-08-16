@@ -18,27 +18,20 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowRight, Flame, ShieldCheck, TrendingDown } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { StaggerContainer, StaggerItem } from '@/components/page-transition'
-import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { getUserQuotaDates } from '@/features/dashboard/api'
-import { useSummaryCardsConfig } from '@/features/dashboard/hooks/use-dashboard-config'
 import type { QuotaDataItem } from '@/features/dashboard/types'
 import { useStatus } from '@/hooks/use-status'
-import { getCurrencyLabel, isCurrencyDisplayEnabled } from '@/lib/currency'
 import { formatNumber, formatQuota } from '@/lib/format'
 import { computeTimeRange } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { StatCard } from '../ui/stat-card'
-
 const SUMMARY_SPARKLINE_BUCKETS = 12
-
-type SummarySparklineKey = 'balance' | 'usage' | 'requests'
 
 function getBucketIndex(
   timestamp: number,
@@ -51,14 +44,12 @@ function getBucketIndex(
   return Math.min(bucketCount - 1, Math.max(0, Math.floor(ratio * bucketCount)))
 }
 
-function buildSummarySparklines(
+function buildUsageSparkline(
   data: QuotaDataItem[],
-  currentBalance: number,
   start: number,
   end: number
-): Record<SummarySparklineKey, number[]> {
+): number[] {
   const usage = Array.from({ length: SUMMARY_SPARKLINE_BUCKETS }, () => 0)
-  const requests = Array.from({ length: SUMMARY_SPARKLINE_BUCKETS }, () => 0)
 
   for (const item of data) {
     const timestamp = Number(item.created_at) || start
@@ -69,34 +60,9 @@ function buildSummarySparklines(
       SUMMARY_SPARKLINE_BUCKETS
     )
     usage[index] += Number(item.quota) || 0
-    requests[index] += Number(item.count) || 0
   }
 
-  let balance = currentBalance
-  const balanceTrend = Array.from(
-    { length: SUMMARY_SPARKLINE_BUCKETS },
-    () => 0
-  )
-
-  for (let index = SUMMARY_SPARKLINE_BUCKETS - 1; index >= 0; index--) {
-    balanceTrend[index] = Math.max(0, balance)
-    balance += usage[index]
-  }
-
-  return {
-    balance: balanceTrend,
-    usage,
-    requests,
-  }
-}
-
-function getSummarySparkline(
-  key: string,
-  sparklineData: Record<SummarySparklineKey, number[]>
-): number[] | undefined {
-  if (key === 'usage') return sparklineData.usage
-  if (key === 'requests') return sparklineData.requests
-  return undefined
+  return usage
 }
 
 function getRunwayDays(
@@ -136,10 +102,78 @@ const HEALTH_CONFIG: Record<
   },
 }
 
+function MiniSparkline(props: { values: number[] }) {
+  const points = useMemo(() => {
+    const values = props.values.map((value) => Math.max(0, Number(value) || 0))
+    const max = values.length ? Math.max(...values) : 0
+    if (max <= 0) return ''
+
+    const width = 100
+    const height = 24
+    const padding = 2
+
+    return values
+      .map((value, index) => {
+        const x =
+          values.length === 1
+            ? width / 2
+            : (index / (values.length - 1)) * width
+        const ratio = value / max
+        const y = height - padding - ratio * (height - padding * 2)
+        return `${x},${y}`
+      })
+      .join(' ')
+  }, [props.values])
+
+  if (!points) return null
+
+  return (
+    <svg
+      viewBox='0 0 100 24'
+      preserveAspectRatio='none'
+      className='text-muted-foreground/60 mt-1 h-6 w-full'
+      aria-hidden='true'
+    >
+      <polyline
+        points={points}
+        fill='none'
+        stroke='currentColor'
+        strokeWidth='1.5'
+        strokeLinecap='round'
+        strokeLinejoin='round'
+        vectorEffect='non-scaling-stroke'
+      />
+    </svg>
+  )
+}
+
+function MetricCell(props: {
+  label: string
+  value: string
+  loading?: boolean
+  sparkline?: number[]
+}) {
+  return (
+    <div className='border-border -mt-px -ml-px flex flex-col gap-1 border px-4 py-3'>
+      <span className='text-muted-foreground truncate text-xs'>
+        {props.label}
+      </span>
+      {props.loading ? (
+        <Skeleton className='h-7 w-20' />
+      ) : (
+        <span className='truncate font-mono text-lg font-semibold tabular-nums sm:text-xl'>
+          {props.value}
+        </span>
+      )}
+      {props.sparkline ? <MiniSparkline values={props.sparkline} /> : null}
+    </div>
+  )
+}
+
 export function SummaryCards() {
   const { t } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
-  const { status, loading } = useStatus()
+  const { loading } = useStatus()
 
   const summaryTimeRange = useMemo(() => computeTimeRange(1), [])
   const remainQuota = Number(user?.quota ?? 0)
@@ -163,34 +197,14 @@ export function SummaryCards() {
     staleTime: 60 * 1000,
   })
 
-  const summaryValues = useMemo(() => {
-    return {
-      usedDisplay: formatQuota(usedQuota),
-      requestCountDisplay: formatNumber(requestCount),
-    }
-  }, [requestCount, usedQuota])
-
-  const currencyEnabledFromStore = isCurrencyDisplayEnabled()
-  const statusCurrencyFlag =
-    typeof status?.display_in_currency === 'boolean'
-      ? Boolean(status.display_in_currency)
-      : undefined
-  const currencyEnabled =
-    statusCurrencyFlag !== undefined
-      ? statusCurrencyFlag
-      : currencyEnabledFromStore
-  const currencyLabel = currencyEnabled ? getCurrencyLabel() : 'Tokens'
-
-  const sparklineData = useMemo(
+  const usageSparkline = useMemo(
     () =>
-      buildSummarySparklines(
+      buildUsageSparkline(
         usageTrendQuery.data?.data ?? [],
-        remainQuota,
         summaryTimeRange.start_timestamp,
         summaryTimeRange.end_timestamp
       ),
     [
-      remainQuota,
       summaryTimeRange.end_timestamp,
       summaryTimeRange.start_timestamp,
       usageTrendQuery.data?.data,
@@ -210,7 +224,6 @@ export function SummaryCards() {
   const healthCfg = HEALTH_CONFIG[healthLevel]
   const runwayDays = getRunwayDays(remainQuota, recentUsage)
 
-  const todayUsageDisplay = formatQuota(recentUsage)
   let runwayDisplay: string
   if (runwayDays !== null) {
     if (runwayDays < 1) {
@@ -226,130 +239,78 @@ export function SummaryCards() {
     runwayDisplay = t('No recent usage')
   }
 
-  const items = useSummaryCardsConfig({
-    ...summaryValues,
-    todayUsageDisplay,
-    currencyEnabled,
-    currencyLabel,
-  }).map((config, index) => {
-    const tones = ['accent-1', 'accent-2', 'accent-3'] as const
-
-    return {
-      key: config.key,
-      title: config.title,
-      value: config.value,
-      desc: config.description,
-      icon: config.icon,
-      tone: tones[index] ?? 'accent-3',
-      sparkline:
-        config.key === 'todayUsage'
-          ? sparklineData.usage
-          : getSummarySparkline(config.key, sparklineData),
-      sparklineVariant: 'line' as const,
-    }
-  })
+  const metrics = [
+    {
+      key: 'todayUsage',
+      label: t('Last 24h usage'),
+      value: formatQuota(recentUsage),
+      sparkline: usageSparkline,
+    },
+    {
+      key: 'usage',
+      label: t('Historical Usage'),
+      value: formatQuota(usedQuota),
+    },
+    {
+      key: 'requests',
+      label: t('Request Count'),
+      value: formatNumber(requestCount),
+    },
+  ]
 
   return (
-    <div className='bg-card overflow-hidden rounded-2xl border shadow-xs'>
-      <div className='grid xl:grid-cols-[minmax(0,1fr)_19rem]'>
-        <div className='flex flex-col gap-2.5 p-3 sm:gap-3 sm:p-5'>
-          <div className='flex flex-wrap items-start justify-between gap-3'>
-            <div className='flex flex-col gap-1'>
-              <h3 className='text-sm font-semibold sm:text-base'>
-                {t('Usage at a glance')}
-              </h3>
-              <p className='text-muted-foreground text-xs sm:text-sm'>
-                {t('Monitor balance, usage, and request volume')}
-              </p>
-            </div>
-          </div>
-          <StaggerContainer className='grid grid-cols-3 gap-1.5 sm:gap-3'>
-            {items.map((it) => (
-              <StaggerItem
-                key={it.key}
-                className='bg-background/60 rounded-lg border px-2 py-1.5 sm:rounded-xl sm:p-3'
-              >
-                <StatCard
-                  title={it.title}
-                  value={it.value}
-                  description={it.desc}
-                  icon={it.icon}
-                  tone={it.tone}
-                  sparkline={it.sparkline}
-                  sparklineVariant={it.sparklineVariant}
-                  loading={loading}
-                  compactMobile
-                />
-              </StaggerItem>
-            ))}
-          </StaggerContainer>
-        </div>
-
-        <div className='flex flex-col justify-between gap-3 border-t bg-[linear-gradient(135deg,color-mix(in_oklch,var(--overview-accent-2)_12%,var(--background))_0%,color-mix(in_oklch,oklch(0.82_0.04_155)_8%,var(--background))_48%,color-mix(in_oklch,var(--overview-accent-1)_7%,var(--background))_100%)] p-3 sm:gap-4 sm:p-5 xl:border-t-0 xl:border-l'>
-          <div className='flex flex-col gap-2 sm:gap-3'>
-            <div className='flex items-center justify-between'>
-              <span className='text-muted-foreground text-xs font-medium'>
-                {t('Credit remaining')}
-              </span>
-              <span className='flex items-center gap-1.5'>
-                <span
-                  className={cn('size-1.5 rounded-full', healthCfg.dotClass)}
-                  aria-hidden='true'
-                />
-                <span className='text-muted-foreground text-[11px] font-medium'>
-                  {t(healthCfg.labelKey)}
-                </span>
-              </span>
-            </div>
-
-            <div className='font-mono text-xl font-semibold tracking-tight sm:text-2xl'>
-              {formatQuota(remainQuota)}
-            </div>
-
-            <div className='grid grid-cols-2 gap-2'>
-              <div className='bg-background/60 rounded-lg px-2.5 py-2'>
-                <div className='text-muted-foreground flex items-center gap-1 text-[11px] leading-none font-medium'>
-                  <Flame className='size-3 shrink-0' aria-hidden='true' />
-                  <span className='truncate'>{t('Last 24h usage')}</span>
-                </div>
-                <div className='text-foreground mt-1.5 truncate text-xs font-semibold tabular-nums'>
-                  {formatQuota(recentUsage)}
-                </div>
-              </div>
-              <div className='bg-background/60 rounded-lg px-2.5 py-2'>
-                <div className='text-muted-foreground flex items-center gap-1 text-[11px] leading-none font-medium'>
-                  {runwayDays !== null && runwayDays < 3 ? (
-                    <TrendingDown
-                      className='size-3 shrink-0'
-                      aria-hidden='true'
-                    />
-                  ) : (
-                    <ShieldCheck
-                      className='size-3 shrink-0'
-                      aria-hidden='true'
-                    />
-                  )}
-                  <span className='truncate'>{t('Runway')}</span>
-                </div>
-                <div
-                  className={cn(
-                    'mt-1.5 truncate text-xs font-semibold tabular-nums',
-                    healthLevel === 'critical' && 'text-destructive',
-                    healthLevel === 'caution' && 'text-warning'
-                  )}
-                >
-                  {runwayDisplay}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <Button className='justify-between' render={<Link to='/wallet' />}>
-            <span>{t('Wallet')}</span>
-            <ArrowRight data-icon='inline-end' />
-          </Button>
-        </div>
+    <section className='bg-card border-border border'>
+      <div className='border-border flex items-center justify-between gap-3 border-b px-4 py-2.5 sm:px-5'>
+        <h2 className='text-sm font-semibold'>{t('Usage at a glance')}</h2>
+        <Link
+          to='/wallet'
+          className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex shrink-0 items-center gap-1 rounded-none text-xs font-medium transition-colors outline-none focus-visible:ring-2'
+        >
+          {t('Wallet')}
+          <ArrowRight className='size-3' aria-hidden='true' />
+        </Link>
       </div>
-    </div>
+
+      <div className='grid grid-cols-2 sm:grid-cols-4'>
+        <div className='border-border col-span-2 -mt-px -ml-px flex flex-col gap-1 border px-4 py-3 sm:col-span-1'>
+          <span className='flex items-center gap-1.5'>
+            <span
+              className={cn('size-1.5 shrink-0 rounded-full', healthCfg.dotClass)}
+              aria-hidden='true'
+            />
+            <span className='text-muted-foreground truncate text-xs'>
+              {t('Credit remaining')}
+            </span>
+          </span>
+          {loading ? (
+            <Skeleton className='h-7 w-24' />
+          ) : (
+            <span className='truncate font-mono text-lg font-semibold tabular-nums sm:text-xl'>
+              {formatQuota(remainQuota)}
+            </span>
+          )}
+          <span
+            className={cn(
+              'text-muted-foreground truncate text-[11px]',
+              healthLevel === 'critical' && 'text-destructive',
+              healthLevel === 'caution' && 'text-warning'
+            )}
+            title={`${t('Runway')}: ${runwayDisplay} · ${t(healthCfg.labelKey)}`}
+          >
+            {t('Runway')}: {runwayDisplay}
+          </span>
+        </div>
+
+        {metrics.map((metric) => (
+          <MetricCell
+            key={metric.key}
+            label={metric.label}
+            value={metric.value}
+            loading={loading}
+            sparkline={metric.sparkline}
+          />
+        ))}
+      </div>
+    </section>
   )
 }

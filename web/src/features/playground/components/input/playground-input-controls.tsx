@@ -30,6 +30,7 @@ type PlaygroundInputControlsProps = {
   disabled?: boolean
   groups: GroupOption[]
   groupValue: string
+  hasAttachments?: boolean
   isGenerating?: boolean
   isModelLoading?: boolean
   models: ModelOption[]
@@ -45,6 +46,7 @@ export function PlaygroundInputControls({
   disabled,
   groups,
   groupValue,
+  hasAttachments = false,
   isGenerating,
   isModelLoading = false,
   models,
@@ -60,6 +62,7 @@ export function PlaygroundInputControls({
     getInputControlState({
       disabled,
       groups,
+      hasAttachments,
       hasStopHandler: Boolean(onStop),
       isGenerating,
       isModelLoading,

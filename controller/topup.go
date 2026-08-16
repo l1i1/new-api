@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,8 +54,11 @@ func GetTopUpInfo(c *gin.Context) {
 		}
 	}
 
-	// Waffo Pancake is displayed above the standard Waffo gateway.
-	enableWaffoPancake := isWaffoPancakeTopUpEnabled()
+	// After cutover the provider credentials live in HotPay. Keep the payment
+	// option visible when only the gateway client is configured; otherwise the
+	// New API UI silently hides the canonical checkout during credential drain.
+	// The local credential check remains necessary for the legacy direct path.
+	enableWaffoPancake := service.IsHotPayGatewayEnabled() || isWaffoPancakeTopUpEnabled()
 	if enableWaffoPancake {
 		hasWaffoPancake := false
 		for _, method := range payMethods {
@@ -97,7 +101,7 @@ func GetTopUpInfo(c *gin.Context) {
 	}
 
 	data := gin.H{
-		"enable_online_topup":              isEpayTopUpEnabled(),
+		"enable_online_topup":              service.IsHotPayGatewayEnabled() || isEpayTopUpEnabled(),
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
 		"enable_waffo_topup":               enableWaffo,
@@ -134,13 +138,26 @@ type AmountRequest struct {
 }
 
 func GetEpayClient() *epay.Client {
-	if operation_setting.PayAddress == "" || operation_setting.EpayId == "" || operation_setting.EpayKey == "" {
+	payAddress := strings.TrimSpace(operation_setting.PayAddress)
+	partnerID := strings.TrimSpace(operation_setting.EpayId)
+	key := strings.TrimSpace(operation_setting.EpayKey)
+	if service.IsHotPayGatewayEnabled() {
+		// During cutover, callbacks are signed by HotPay. Keep this verifier
+		// independent from the retired direct EPay credentials.
+		if value := strings.TrimSpace(os.Getenv("HOTPAY_EPAY_PID")); value != "" {
+			partnerID = value
+		}
+		if value := strings.TrimSpace(os.Getenv("HOTPAY_EPAY_KEY")); value != "" {
+			key = value
+		}
+		if payAddress == "" {
+			payAddress = strings.TrimRight(strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_URL")), "/")
+		}
+	}
+	if payAddress == "" || partnerID == "" || key == "" {
 		return nil
 	}
-	withUrl, err := epay.NewClient(&epay.Config{
-		PartnerID: operation_setting.EpayId,
-		Key:       operation_setting.EpayKey,
-	}, operation_setting.PayAddress)
+	withUrl, err := epay.NewClient(&epay.Config{PartnerID: partnerID, Key: key}, payAddress)
 	if err != nil {
 		return nil
 	}
@@ -222,11 +239,21 @@ func RequestEpay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "当前支付方式暂不支持 HotPay 网关"})
 			return
 		}
+		amountMinor, amountErr := hotPayMinorAmount(payMoney)
+		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额超出支付网关限额"})
+			return
+		}
 		amount := req.Amount
 		if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 			dAmount := decimal.NewFromInt(int64(amount))
 			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 			amount = dAmount.Div(dQuotaPerUnit).IntPart()
+		}
+		quotaAmount, quotaErr := hotPayQuotaAmount(amount)
+		if quotaErr != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值额度超出系统上限"})
+			return
 		}
 		tradeNo := fmt.Sprintf("USR%dNO%s", id, common.GetRandomString(6)+strconv.FormatInt(time.Now().Unix(), 10))
 		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
@@ -236,18 +263,20 @@ func RequestEpay(c *gin.Context) {
 			idempotencyKey = hotPayIdempotencyKey(c, "wallet", tradeNo)
 		}
 		topUp := &model.TopUp{
-			UserId:          id,
-			Amount:          amount,
-			Money:           payMoney,
-			TradeNo:         tradeNo,
-			PaymentMethod:   canonicalMethod,
-			PaymentProvider: model.PaymentProviderWaffoPancake,
-			PaymentCurrency: model.PaymentCurrencyCNY,
-			CreateTime:      time.Now().Unix(),
-			Status:          common.TopUpStatusPending,
+			UserId:                   id,
+			Amount:                   amount,
+			Money:                    payMoney,
+			TradeNo:                  tradeNo,
+			PaymentMethod:            canonicalMethod,
+			PaymentProvider:          model.PaymentProviderWaffoPancake,
+			PaymentProviderAccountID: hotPayProviderAccountID(),
+			PaymentEnvironment:       hotPayEnvironment(),
+			PaymentCurrency:          model.PaymentCurrencyCNY,
+			CreateTime:               time.Now().Unix(),
+			Status:                   common.TopUpStatusPending,
 		}
 		if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-			if existing.UserId != id || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != model.PaymentCurrencyCNY || existing.Amount != amount {
+			if existing.UserId != id || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != model.PaymentCurrencyCNY || existing.Amount != amount || existing.Money != payMoney || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
 				c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 				return
 			}
@@ -265,21 +294,18 @@ func RequestEpay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(clientErr)})
 			return
 		}
-		amountMinor, amountErr := hotPayMinorAmount(payMoney)
-		if amountErr != nil {
-			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额无效"})
-			return
-		}
 		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
 			MerchantOrderID:       tradeNo,
 			BusinessType:          "wallet_topup",
 			UserID:                hotPayUserID(id),
 			AmountMinor:           amountMinor,
-			QuotaAmount:           hotPayQuotaAmount(topUp.Amount),
+			QuotaAmount:           quotaAmount,
 			Currency:              model.PaymentCurrencyCNY,
 			Provider:              model.PaymentProviderWaffoPancake,
+			ProviderAccountID:     hotPayProviderAccountID(),
 			PaymentMethod:         canonicalMethod,
 			CompatibilityProtocol: "epay",
+			Environment:           hotPayEnvironment(),
 			MerchantNotifyURL:     hotPayReturnURL("/api/user/epay/notify"),
 			ReturnURL:             hotPayReturnURL("/usage-logs"),
 			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
@@ -292,6 +318,10 @@ func RequestEpay(c *gin.Context) {
 		})
 		if createErr != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay EPay 兼容钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))
+			if hotPayGatewayErrorIsPermanent(createErr) {
+				topUp.Status = common.TopUpStatusFailed
+				_ = topUp.Update()
+			}
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(createErr)})
 			return
 		}
@@ -398,6 +428,7 @@ func UnlockOrder(tradeNo string) {
 }
 
 func EpayNotify(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 	if !isEpayWebhookEnabled() && !service.IsHotPayGatewayEnabled() {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 webhook 被拒绝 reason=webhook_disabled path=%q client_ip=%s", c.Request.RequestURI, c.ClientIP()))
 		_, _ = c.Writer.Write([]byte("fail"))
@@ -429,9 +460,6 @@ func EpayNotify(c *gin.Context) {
 	if len(params) == 0 {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 webhook 参数为空 path=%q client_ip=%s", c.Request.RequestURI, c.ClientIP()))
 		_, _ = c.Writer.Write([]byte("fail"))
-		return
-	}
-	if acknowledgeHotPayEpayNotification(c, params["out_trade_no"], params["trade_status"]) {
 		return
 	}
 	client := GetEpayClient()
@@ -467,8 +495,7 @@ func EpayNotify(c *gin.Context) {
 		// HotPay has already committed the signed settlement into the local
 		// order. The EPay-compatible callback is only an acknowledgement path
 		// during migration and must never run the legacy EPay credit operation.
-		if topUp := model.GetTopUpByTradeNo(verifyInfo.ServiceTradeNo); topUp != nil && topUp.PaymentProvider == model.PaymentProviderWaffoPancake && topUp.Status == common.TopUpStatusSuccess {
-			_, _ = c.Writer.Write([]byte("success"))
+		if acknowledgeHotPayEpayNotification(c, verifyInfo.ServiceTradeNo, verifyInfo.TradeStatus) {
 			return
 		}
 	}
@@ -601,7 +628,7 @@ func AdminCompleteTopUp(c *gin.Context) {
 		common.ApiErrorMsg(c, "充值订单不存在")
 		return
 	}
-	if service.IsHotPayGatewayEnabled() && strings.HasPrefix(strings.TrimSpace(topUp.TradeNo), "HP_") {
+	if strings.TrimSpace(topUp.PaymentGatewayOrderID) != "" {
 		common.ApiErrorMsg(c, "该订单由 HotPay 管理，请通过网关对账")
 		return
 	}

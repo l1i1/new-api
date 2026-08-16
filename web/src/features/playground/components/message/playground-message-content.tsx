@@ -126,6 +126,26 @@ export function PlaygroundMessageContent({
         </div>
       )}
 
+      {message.images && message.images.length > 0 && (
+        <div className='mb-2 flex flex-wrap gap-2'>
+          {message.images.map((src) => (
+            <a
+              key={`${src.length}-${src.slice(30, 46)}`}
+              href={src}
+              target='_blank'
+              rel='noopener noreferrer'
+              className='border-border block overflow-hidden border'
+            >
+              <img
+                src={src}
+                alt={t('Attached image')}
+                className='max-h-56 max-w-full object-contain'
+              />
+            </a>
+          ))}
+        </div>
+      )}
+
       {isError && (
         <>
           <MessageError message={message} className='mb-2' />
@@ -151,12 +171,14 @@ export function PlaygroundMessageContent({
               <CodeBlockCopyButton />
             </CodeBlock>
           ) : (
-            <MessageContent
-              variant='flat'
-              className={cn(getMessageContentStyles())}
-            >
-              <Response final={isMessageFinal}>{displayContent}</Response>
-            </MessageContent>
+            displayContent && (
+              <MessageContent
+                variant='flat'
+                className={cn(getMessageContentStyles())}
+              >
+                <Response final={isMessageFinal}>{displayContent}</Response>
+              </MessageContent>
+            )
           )}
           <MessageMetadata alignment={alignment} message={message} />
           {actions}

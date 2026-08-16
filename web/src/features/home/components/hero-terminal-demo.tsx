@@ -81,7 +81,7 @@ const API_DEMOS: ApiDemoConfig[] = [
       '"model": "your-model",',
       '"messages": [',
       '  { "role": "user", "content": "..." }',
-      ']',
+     ']',
     ],
     response: [
       '{',
@@ -123,7 +123,7 @@ const API_DEMOS: ApiDemoConfig[] = [
       '"max_tokens": 1024,',
       '"messages": [',
       '  { "role": "user", "content": "..." }',
-      ']',
+     ']',
     ],
     response: [
       '{',
@@ -146,7 +146,7 @@ const API_DEMOS: ApiDemoConfig[] = [
       '"contents": [',
       '  { "role": "user",',
       '    "parts": [{ "text": "..." }] }',
-      ']',
+     ']',
     ],
     response: [
       '{',
@@ -243,7 +243,7 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
           })}
           <div className='ml-auto flex items-center gap-2 pr-2 sm:pr-3'>
             <span className='inline-block size-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.45)]' />
-            <span className='text-foreground/40 font-mono text-[10px] uppercase'>
+            <span className='text-foreground/40 font-mono text-[10px] '>
               200 ok
             </span>
           </div>
@@ -293,22 +293,22 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
           <div className='text-foreground/40 flex items-center gap-3 text-[10px] tabular-nums'>
             <span className='flex items-center gap-1'>
               <span className='font-mono'>{demo.latency}</span>
-              <span className='uppercase'>ms</span>
+              <span className=''>ms</span>
             </span>
             <span className='bg-foreground/15 size-1 rounded-full' />
             <span className='flex items-center gap-1'>
               <span className='font-mono'>{demo.tokens}</span>
-              <span className='uppercase'>tokens</span>
+              <span className=''>tokens</span>
             </span>
             <span className='bg-foreground/15 size-1 rounded-full' />
             <span className='flex items-center gap-1'>
-              <span className='uppercase'>cost</span>
+              <span className=''>cost</span>
               <span className='font-mono'>
                 ${(demo.tokens * 0.00003).toFixed(5)}
               </span>
             </span>
           </div>
-          <span className='text-foreground/30 font-mono text-[10px] uppercase'>
+          <span className='text-foreground/30 font-mono text-[10px] '>
             stream · sse
           </span>
         </div>
@@ -383,7 +383,7 @@ function ResponseBlock(props: { demo: ApiDemoConfig; transitioning: boolean }) {
 
 function SectionLabel(props: { children: ReactNode }) {
   return (
-    <span className='text-foreground/30 font-sans text-[10px] font-semibold uppercase'>
+    <span className='text-foreground/30 font-sans text-[10px] font-semibold '>
       {props.children}
     </span>
   )

@@ -174,7 +174,7 @@ export function useModelsColumns(vendors: Vendor[] = []): ColumnDef<Model>[] {
           model.matched_models.length > 0
         ) {
           const matchedBadges = model.matched_models.map((m) => (
-            <StatusBadge key={m} label={m} autoColor={m} size='sm' />
+            <StatusBadge key={m} label={m} variant='neutral' size='sm' />
           ))
 
           return (
@@ -249,7 +249,11 @@ export function useModelsColumns(vendors: Vendor[] = []): ColumnDef<Model>[] {
 
         return (
           <BadgeCell>
-            <ProviderBadge iconKey={vendor.icon} label={vendor.name} />
+            <ProviderBadge
+              iconKey={vendor.icon}
+              label={vendor.name}
+              colorText={false}
+            />
           </BadgeCell>
         )
       },
@@ -289,7 +293,7 @@ export function useModelsColumns(vendors: Vendor[] = []): ColumnDef<Model>[] {
         return (
           <BadgeListCell
             items={tagArray.map((tag) => (
-              <StatusBadge key={tag} label={tag} autoColor={tag} size='sm' />
+              <StatusBadge key={tag} label={tag} variant='neutral' size='sm' />
             ))}
           />
         )
@@ -310,7 +314,7 @@ export function useModelsColumns(vendors: Vendor[] = []): ColumnDef<Model>[] {
           <BadgeListCell
             max={3}
             items={endpointArray.map((ep) => (
-              <StatusBadge key={ep} label={ep} autoColor={ep} size='sm' />
+              <StatusBadge key={ep} label={ep} variant='neutral' size='sm' />
             ))}
           />
         )
@@ -337,7 +341,7 @@ export function useModelsColumns(vendors: Vendor[] = []): ColumnDef<Model>[] {
               <StatusBadge
                 key={c.id}
                 label={`${c.name} (${c.type})`}
-                autoColor={c.name}
+                variant='neutral'
                 size='sm'
               />
             ))}

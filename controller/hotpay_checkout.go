@@ -19,7 +19,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-var errHotPayUnsupportedLegacyMethod = errors.New("payment method is not supported by the HotPay gateway")
+var (
+	errHotPayUnsupportedLegacyMethod = errors.New("payment method is not supported by the HotPay gateway")
+	errHotPayQuotaOverflow           = errors.New("payment quota exceeds the supported maximum")
+	errHotPayAmountOutsideLimits     = errors.New("payment amount is outside the configured limits")
+)
 
 func hotPayGatewayClient() (*service.HotPayGatewayClient, error) {
 	return service.NewHotPayGatewayClientFromEnv()
@@ -31,6 +35,13 @@ func hotPayEnvironment() string {
 		return "test"
 	}
 	return "prod"
+}
+
+func hotPayProviderAccountID() string {
+	if value := strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_PROVIDER_ACCOUNT_ID")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(setting.WaffoPancakeMerchantID)
 }
 
 func hotPayIdempotencyKey(c *gin.Context, namespace, merchantOrderID string) string {
@@ -54,6 +65,24 @@ func hotPayMinorAmount(amount float64) (int64, error) {
 		return 0, errors.New("payment amount is invalid")
 	}
 	return minor.IntPart(), nil
+}
+
+func validateHotPayAmountMinor(amountMinor int64) error {
+	if amountMinor <= 0 {
+		return errHotPayAmountOutsideLimits
+	}
+	minimum := int64(1)
+	if value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_MIN_AMOUNT_MINOR")), 10, 64); err == nil && value > 0 {
+		minimum = value
+	}
+	maximum := int64(0)
+	if value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_MAX_AMOUNT_MINOR")), 10, 64); err == nil && value > 0 {
+		maximum = value
+	}
+	if amountMinor < minimum || (maximum > 0 && amountMinor > maximum) {
+		return errHotPayAmountOutsideLimits
+	}
+	return nil
 }
 
 func hotPayWalletMethod(currency, value string) (string, error) {
@@ -86,11 +115,18 @@ func hotPaySubscriptionMethod(currency, value string) (string, error) {
 
 func hotPayCheckoutResponse(result service.HotPayGatewayCreateOrderResponse) gin.H {
 	return gin.H{
-		"checkout_url":      result.Attempt.CheckoutURL,
-		"session_id":        result.Attempt.ProviderSessionID,
-		"expires_at":        result.Order.ExpiresAt,
-		"order_id":          result.Order.MerchantOrderID,
-		"provider_order_id": result.Order.ProviderOrderID,
+		"checkout_url":             result.Attempt.CheckoutURL,
+		"session_id":               result.Attempt.ProviderSessionID,
+		"expires_at":               result.Order.ExpiresAt,
+		"order_id":                 result.Order.MerchantOrderID,
+		"canonical_order_id":       result.Order.ID,
+		"provider_order_id":        result.Order.ProviderOrderID,
+		"provider":                 result.Order.Provider,
+		"provider_account_id":      result.Order.ProviderAccountID,
+		"environment":              result.Order.Environment,
+		"payment_method":           result.Order.PaymentMethod,
+		"provider_payment_methods": result.Order.ProviderPaymentMethods,
+		"status":                   result.Order.Status,
 	}
 }
 
@@ -118,12 +154,32 @@ func hotPayGatewayErrorMessage(err error) string {
 			return "支付商品未配置或不可用"
 		case "idempotency_conflict":
 			return "支付请求幂等键与已有订单冲突"
+		case "order_expired":
+			return "支付订单已过期"
 		}
 	}
 	if errors.Is(err, service.ErrHotPayGatewayNotConfigured) {
 		return "支付网关未配置"
 	}
 	return "拉起支付失败"
+}
+
+// A deterministic gateway rejection cannot become payable by retrying the
+// same local order. Network/5xx failures stay pending so the caller can retry
+// or reconciliation can recover a provider-side checkout that committed.
+func hotPayGatewayErrorIsPermanent(err error) bool {
+	var gatewayErr *service.HotPayGatewayError
+	if !errors.As(err, &gatewayErr) {
+		return false
+	}
+	switch gatewayErr.Code {
+	case "invalid_amount", "unsupported_currency", "unsupported_payment_method",
+		"provider_not_configured", "product_required", "product_not_found",
+		"product_unavailable", "product_mismatch":
+		return true
+	default:
+		return false
+	}
 }
 
 func hotPayExpiresAt(seconds int) string {
@@ -137,15 +193,15 @@ func hotPayPriceSnapshot(values map[string]any) map[string]any {
 	return values
 }
 
-func hotPayQuotaAmount(amount int64) int64 {
+func hotPayQuotaAmount(amount int64) (int64, error) {
 	if amount <= 0 {
-		return 0
+		return 0, errors.New("payment quota amount is invalid")
 	}
 	quota := decimal.NewFromInt(amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit))
 	if quota.GreaterThan(decimal.NewFromInt(int64(common.MaxQuota))) {
-		return 0
+		return 0, errHotPayQuotaOverflow
 	}
-	return quota.IntPart()
+	return quota.IntPart(), nil
 }
 
 func hotPayStringAmount(value float64) string {

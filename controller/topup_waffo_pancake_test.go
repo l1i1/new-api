@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -187,4 +188,38 @@ func TestHandleWaffoPancakeCompletedEvent_RetriesUnresolvedOrder(t *testing.T) {
 
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	assert.Equal(t, "retry", recorder.Body.String())
+}
+
+func TestIsHotPayBoundWaffoPancakeOrderDoesNotDependOnPrefix(t *testing.T) {
+	setupPaymentGatewaySettlementControllerTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionOrder{}))
+
+	topup := &model.TopUp{
+		UserId: 9101, TradeNo: "WAFFO_PANCAKE-legacy-shaped", PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentGatewayOrderID: "canonical-wallet-order", Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, model.DB.Create(topup).Error)
+	require.True(t, isHotPayBoundWaffoPancakeOrder(topup.TradeNo))
+
+	legacy := &model.TopUp{UserId: 9101, TradeNo: "WAFFO_PANCAKE-old", PaymentProvider: model.PaymentProviderWaffoPancake, Status: common.TopUpStatusPending}
+	require.NoError(t, model.DB.Create(legacy).Error)
+	require.False(t, isHotPayBoundWaffoPancakeOrder(legacy.TradeNo))
+}
+
+func TestAdminCompleteTopUpRejectsGatewayBoundOrderWithoutHotPayPrefix(t *testing.T) {
+	setupPaymentGatewaySettlementControllerTest(t)
+	topup := &model.TopUp{
+		UserId: 9102, TradeNo: "WAFFO_PANCAKE-legacy-shaped", PaymentProvider: model.PaymentProviderWaffoPancake,
+		PaymentGatewayOrderID: "canonical-wallet-order", Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, model.DB.Create(topup).Error)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/topup/complete", strings.NewReader(`{"trade_no":"WAFFO_PANCAKE-legacy-shaped"}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	AdminCompleteTopUp(context)
+
+	assert.Contains(t, recorder.Body.String(), "该订单由 HotPay 管理")
+	assert.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo(topup.TradeNo).Status)
 }

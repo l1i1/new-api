@@ -232,7 +232,7 @@ const createEmptyModelMappingGuardrail = (): ModelMappingGuardrail => ({
 })
 
 const formatModelNames = (models: string[]): string =>
-  models.map((model) => `"${model}"`).join(', ')
+  models.map((model) => `"${model}"`).join(',')
 
 const MODEL_MAPPING_PREVIEW_FALLBACK: Array<{
   source: string
@@ -384,7 +384,7 @@ function CardHeading(props: {
           {props.icon}
         </IconBadge>
       )}
-      <h3 className='text-sm font-semibold tracking-tight'>{props.title}</h3>
+      <h3 className='text-sm font-semibold '>{props.title}</h3>
     </div>
   )
 }
@@ -401,7 +401,7 @@ function SubHeading(props: {
           {props.icon}
         </IconBadge>
       )}
-      <h4 className='text-muted-foreground text-xs font-medium tracking-wide uppercase'>
+      <h4 className='text-muted-foreground text-xs font-medium tracking-wide '>
         {props.title}
       </h4>
     </div>
@@ -877,7 +877,7 @@ export function ChannelMutateDrawer({
     advancedCustomRouteTypeLabels.length
   const advancedCustomRouteTypeTitle =
     hiddenAdvancedCustomRouteTypeCount > 0
-      ? advancedCustomStats.routeTypeLabels.join(', ')
+      ? advancedCustomStats.routeTypeLabels.join(',')
       : undefined
 
   // Get all models list
@@ -1655,7 +1655,7 @@ export function ChannelMutateDrawer({
         if (invalidEntries.length > 0) {
           toast.error(
             t('Invalid status code mapping entries: {{entries}}', {
-              entries: invalidEntries.join(', '),
+              entries: invalidEntries.join(','),
             })
           )
           return
@@ -3483,7 +3483,7 @@ export function ChannelMutateDrawer({
                                             align='start'
                                             className='max-w-xs space-y-2 text-left'
                                           >
-                                            <p className='text-xs font-semibold tracking-wide uppercase'>
+                                            <p className='text-xs font-semibold tracking-wide '>
                                               {t('Request flow')}
                                             </p>
                                             <div className='space-y-1 font-mono text-xs'>
@@ -4744,7 +4744,7 @@ export function ChannelMutateDrawer({
                                     <>
                                       <span className='break-all'>
                                         {upstreamDetectedModelsPreview.join(
-                                          ', '
+                                          ','
                                         )}
                                       </span>
                                       {upstreamDetectedModelsOmittedCount >

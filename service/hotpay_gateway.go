@@ -20,6 +20,7 @@ const (
 	hotPayGatewayAPIKeyEnv           = "HOTPAY_GATEWAY_API_KEY"
 	hotPayGatewayTimeoutSecondsEnv   = "HOTPAY_GATEWAY_TIMEOUT_SECONDS"
 	hotPayGatewayAllowHTTPEnv        = "HOTPAY_GATEWAY_ALLOW_INSECURE_HTTP"
+	hotPayGatewayAllowedHostsEnv     = "HOTPAY_GATEWAY_ALLOWED_HOSTS"
 	hotPayGatewayDefaultTimeout      = 15 * time.Second
 	hotPayGatewayMaxResponseBodySize = 1 << 20
 )
@@ -49,11 +50,12 @@ func (e *HotPayGatewayError) Retryable() bool {
 }
 
 type HotPayGatewayConfig struct {
-	BaseURL    string
-	APIKey     string
-	Timeout    time.Duration
-	AllowHTTP  bool
-	HTTPClient *http.Client
+	BaseURL      string
+	APIKey       string
+	AllowedHosts []string
+	Timeout      time.Duration
+	AllowHTTP    bool
+	HTTPClient   *http.Client
 }
 
 type HotPayGatewayClient struct {
@@ -84,20 +86,22 @@ type HotPayGatewayCreateOrderRequest struct {
 }
 
 type HotPayGatewayOrder struct {
-	ID              string `json:"id"`
-	MerchantOrderID string `json:"merchant_order_id"`
-	BusinessType    string `json:"business_type"`
-	UserID          string `json:"user_id"`
-	AmountMinor     int64  `json:"amount_minor"`
-	Currency        string `json:"currency"`
-	QuotaAmount     int64  `json:"quota_amount"`
-	Provider        string `json:"provider"`
-	PaymentMethod   string `json:"payment_method"`
-	ProviderOrderID string `json:"provider_order_id"`
-	Environment     string `json:"environment"`
-	Status          string `json:"status"`
-	ExpiresAt       string `json:"expires_at"`
-	CreatedAt       string `json:"created_at"`
+	ID                     string   `json:"id"`
+	MerchantOrderID        string   `json:"merchant_order_id"`
+	BusinessType           string   `json:"business_type"`
+	UserID                 string   `json:"user_id"`
+	AmountMinor            int64    `json:"amount_minor"`
+	Currency               string   `json:"currency"`
+	QuotaAmount            int64    `json:"quota_amount"`
+	Provider               string   `json:"provider"`
+	ProviderAccountID      string   `json:"provider_account_id"`
+	PaymentMethod          string   `json:"payment_method"`
+	ProviderPaymentMethods []string `json:"provider_payment_methods"`
+	ProviderOrderID        string   `json:"provider_order_id"`
+	Environment            string   `json:"environment"`
+	Status                 string   `json:"status"`
+	ExpiresAt              string   `json:"expires_at"`
+	CreatedAt              string   `json:"created_at"`
 }
 
 type HotPayGatewayAttempt struct {
@@ -115,10 +119,11 @@ type HotPayGatewayCreateOrderResponse struct {
 
 func NewHotPayGatewayClientFromEnv() (*HotPayGatewayClient, error) {
 	return NewHotPayGatewayClient(HotPayGatewayConfig{
-		BaseURL:   strings.TrimSpace(os.Getenv(hotPayGatewayURLEnv)),
-		APIKey:    strings.TrimSpace(os.Getenv(hotPayGatewayAPIKeyEnv)),
-		Timeout:   hotPayGatewayTimeoutFromEnv(),
-		AllowHTTP: strings.EqualFold(strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)), "true") || strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)) == "1",
+		BaseURL:      strings.TrimSpace(os.Getenv(hotPayGatewayURLEnv)),
+		APIKey:       strings.TrimSpace(os.Getenv(hotPayGatewayAPIKeyEnv)),
+		AllowedHosts: splitHostList(os.Getenv(hotPayGatewayAllowedHostsEnv)),
+		Timeout:      hotPayGatewayTimeoutFromEnv(),
+		AllowHTTP:    strings.EqualFold(strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)), "true") || strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)) == "1",
 	})
 }
 
@@ -138,6 +143,9 @@ func NewHotPayGatewayClient(config HotPayGatewayConfig) (*HotPayGatewayClient, e
 	if parsed.Scheme != "https" && !(config.AllowHTTP && parsed.Scheme == "http") {
 		return nil, fmt.Errorf("%s must use HTTPS unless %s is enabled", hotPayGatewayURLEnv, hotPayGatewayAllowHTTPEnv)
 	}
+	if len(config.AllowedHosts) == 0 || !hotPayHostAllowed(parsed.Hostname(), config.AllowedHosts) {
+		return nil, fmt.Errorf("%s must match a host in %s", hotPayGatewayURLEnv, hotPayGatewayAllowedHostsEnv)
+	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	timeout := config.Timeout
 	if timeout <= 0 {
@@ -147,7 +155,31 @@ func NewHotPayGatewayClient(config HotPayGatewayConfig) (*HotPayGatewayClient, e
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
 	}
-	return &HotPayGatewayClient{baseURL: parsed, apiKey: strings.TrimSpace(config.APIKey), httpClient: httpClient}, nil
+	clonedClient := *httpClient
+	clonedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errors.New("hotpay gateway redirect rejected")
+	}
+	return &HotPayGatewayClient{baseURL: parsed, apiKey: strings.TrimSpace(config.APIKey), httpClient: &clonedClient}, nil
+}
+
+func splitHostList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' })
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func hotPayHostAllowed(host string, allowedHosts []string) bool {
+	for _, allowed := range allowedHosts {
+		if strings.EqualFold(strings.TrimSpace(allowed), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey string, request HotPayGatewayCreateOrderRequest) (HotPayGatewayCreateOrderResponse, error) {
@@ -156,6 +188,14 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	}
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("idempotency key is required")
+	}
+	request.ProviderAccountID = strings.TrimSpace(request.ProviderAccountID)
+	request.Environment = strings.ToLower(strings.TrimSpace(request.Environment))
+	if request.ProviderAccountID == "" {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("provider account ID is required")
+	}
+	if request.Environment != "test" && request.Environment != "prod" {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("payment environment must be test or prod")
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -192,22 +232,69 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if strings.TrimSpace(result.Order.ID) == "" || strings.TrimSpace(result.Order.MerchantOrderID) == "" || result.Order.MerchantOrderID != request.MerchantOrderID || strings.TrimSpace(result.Attempt.CheckoutURL) == "" {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response is missing order or checkout_url")
 	}
-	if result.Order.UserID != "" && result.Order.UserID != request.UserID {
+	if strings.TrimSpace(request.BusinessType) != "" && (strings.TrimSpace(result.Order.BusinessType) == "" || result.Order.BusinessType != request.BusinessType) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response business type does not match request")
+	}
+	if strings.TrimSpace(request.UserID) != "" && (strings.TrimSpace(result.Order.UserID) == "" || result.Order.UserID != request.UserID) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response user does not match request")
 	}
-	if result.Order.Currency != "" && !strings.EqualFold(result.Order.Currency, request.Currency) {
+	if strings.TrimSpace(request.Currency) != "" && (strings.TrimSpace(result.Order.Currency) == "" || !strings.EqualFold(result.Order.Currency, request.Currency)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response currency does not match request")
 	}
-	if result.Order.Provider != "" && !strings.EqualFold(result.Order.Provider, request.Provider) {
+	if strings.TrimSpace(request.Provider) != "" && (strings.TrimSpace(result.Order.Provider) == "" || !strings.EqualFold(result.Order.Provider, request.Provider)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider does not match request")
 	}
-	if result.Order.PaymentMethod != "" && !strings.EqualFold(result.Order.PaymentMethod, request.PaymentMethod) {
+	if strings.TrimSpace(result.Order.ProviderAccountID) == "" || result.Order.ProviderAccountID != request.ProviderAccountID {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider account does not match request")
+	}
+	if !strings.EqualFold(strings.TrimSpace(result.Order.Environment), request.Environment) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response environment does not match request")
+	}
+	if strings.TrimSpace(request.PaymentMethod) != "" && (strings.TrimSpace(result.Order.PaymentMethod) == "" || !strings.EqualFold(result.Order.PaymentMethod, request.PaymentMethod)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response payment method does not match request")
 	}
-	if result.Order.AmountMinor != 0 && result.Order.AmountMinor != request.AmountMinor {
+	if len(result.Order.ProviderPaymentMethods) == 0 || !containsFold(result.Order.ProviderPaymentMethods, request.PaymentMethod) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider payment method whitelist is missing or does not contain request method")
+	}
+	if request.AmountMinor > 0 && result.Order.AmountMinor != request.AmountMinor {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response amount does not match request")
 	}
+	if strings.TrimSpace(result.Order.Status) == "" || (result.Order.Status != "pending" && result.Order.Status != "processing") {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response order status is not payable")
+	}
+	if strings.TrimSpace(result.Attempt.Status) == "" {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response attempt status is missing")
+	}
+	if strings.TrimSpace(result.Attempt.ID) == "" {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response attempt ID is missing")
+	}
 	return result, nil
+}
+
+func containsFold(values []string, wanted string) bool {
+	wanted = normalizeGatewayPaymentMethod(wanted)
+	if wanted == "" {
+		return false
+	}
+	for _, value := range values {
+		if normalizeGatewayPaymentMethod(value) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeGatewayPaymentMethod(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "wechat", "wechat_pay", "wxpay":
+		return "wechat_pay"
+	case "applepay", "apple_pay":
+		return "apple_pay"
+	case "googlepay", "google_pay":
+		return "google_pay"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func decodeHotPayGatewayError(status int, body []byte) error {

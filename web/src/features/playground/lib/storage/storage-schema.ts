@@ -80,6 +80,7 @@ const messageSchema = z.object({
   completedAt: z.number().optional(),
   durationMs: z.number().optional(),
   sources: z.array(sourceSchema).optional(),
+  images: z.array(z.string()).optional(),
   reasoning: reasoningSchema.optional(),
   isReasoningStreaming: z.boolean().optional(),
   isReasoningComplete: z.boolean().optional(),
@@ -89,3 +90,13 @@ const messageSchema = z.object({
 })
 
 export const messagesSchema = z.array(messageSchema)
+
+export const sessionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  messages: messagesSchema,
+})
+
+export const sessionsSchema = z.array(sessionSchema)

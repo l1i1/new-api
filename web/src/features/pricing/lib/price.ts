@@ -204,6 +204,84 @@ export function formatPrice(
   })
 }
 
+export interface DisplayPriceParts {
+  price: string
+  /** Undiscounted price shown struck through when a group ratio applies */
+  original?: string
+}
+
+function formatTokenPriceWithRatio(
+  model: PricingModel,
+  type: PriceType,
+  ratio: number,
+  tokenUnit: TokenUnit,
+  showWithRecharge: boolean,
+  priceRate: number,
+  usdExchangeRate: number,
+  displayCurrency: PricingCurrency
+): string {
+  let priceInUSD = calculateTokenPrice(model, type, ratio)
+  priceInUSD = applyRechargeRate(
+    priceInUSD,
+    showWithRecharge,
+    priceRate,
+    usdExchangeRate
+  )
+
+  const price = priceInUSD / TOKEN_UNIT_DIVISORS[tokenUnit]
+  return formatPricingCurrencyFromUSD(price, displayCurrency, usdExchangeRate, {
+    digitsLarge: 4,
+    digitsSmall: 6,
+  })
+}
+
+/**
+ * Token-based price plus the undiscounted original when the displayed group
+ * ratio differs from 1, so the UI can strike through the original.
+ */
+export function formatPriceParts(
+  model: PricingModel,
+  type: PriceType,
+  tokenUnit: TokenUnit,
+  showWithRecharge = false,
+  priceRate = 1,
+  usdExchangeRate = 1,
+  selectedGroup?: string,
+  displayCurrency: PricingCurrency = 'CNY'
+): DisplayPriceParts {
+  if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
+    return { price: '-' }
+  }
+
+  const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  const price = formatTokenPriceWithRatio(
+    model,
+    type,
+    displayGroupRatio,
+    tokenUnit,
+    showWithRecharge,
+    priceRate,
+    usdExchangeRate,
+    displayCurrency
+  )
+  if (displayGroupRatio === 1) {
+    return { price }
+  }
+  return {
+    price,
+    original: formatTokenPriceWithRatio(
+      model,
+      type,
+      1,
+      tokenUnit,
+      showWithRecharge,
+      priceRate,
+      usdExchangeRate,
+      displayCurrency
+    ),
+  }
+}
+
 /**
  * Format price for a specific group (token-based)
  */
@@ -305,4 +383,44 @@ export function formatRequestPrice(
     usdExchangeRate,
     { digitsLarge: 4, digitsSmall: 4 }
   )
+}
+
+/**
+ * Pay-per-request price plus the undiscounted original when the displayed
+ * group ratio differs from 1.
+ */
+export function formatRequestPriceParts(
+  model: PricingModel,
+  showWithRecharge = false,
+  priceRate = 1,
+  usdExchangeRate = 1,
+  selectedGroup?: string,
+  displayCurrency: PricingCurrency = 'CNY'
+): DisplayPriceParts {
+  if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
+    return { price: '-' }
+  }
+
+  const formatWithRatio = (ratio: number): string => {
+    let priceInUSD = (model.model_price || 0) * ratio
+    priceInUSD = applyRechargeRate(
+      priceInUSD,
+      showWithRecharge,
+      priceRate,
+      usdExchangeRate
+    )
+    return formatPricingCurrencyFromUSD(
+      priceInUSD,
+      displayCurrency,
+      usdExchangeRate,
+      { digitsLarge: 4, digitsSmall: 4 }
+    )
+  }
+
+  const displayGroupRatio = getDisplayGroupRatio(model, selectedGroup)
+  const price = formatWithRatio(displayGroupRatio)
+  if (displayGroupRatio === 1) {
+    return { price }
+  }
+  return { price, original: formatWithRatio(1) }
 }

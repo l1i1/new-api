@@ -237,7 +237,7 @@ export function Footer(props: FooterProps) {
         )}
       >
         <div className='mx-auto w-full max-w-6xl px-6 py-5'>
-          <div className='bg-muted/20 border-border/50 flex flex-col items-center justify-between gap-4 rounded-2xl border px-4 py-4 backdrop-blur-sm sm:flex-row sm:px-5'>
+          <div className='flex flex-col items-center justify-between gap-4 px-1 py-2 sm:flex-row'>
             <HtmlContent
               className='custom-footer text-muted-foreground min-w-0 text-center text-sm sm:text-left'
               content={localizedFooterHtml}
@@ -266,7 +266,7 @@ export function Footer(props: FooterProps) {
                 alt={displayName}
                 className='size-7 rounded-lg object-contain'
               />
-              <span className='text-sm font-semibold tracking-tight'>
+              <span className='text-sm font-semibold '>
                 {displayName}
               </span>
             </Link>
@@ -280,7 +280,7 @@ export function Footer(props: FooterProps) {
             <div className='grid grid-cols-3 gap-8 md:gap-16'>
               {displayColumns.map((column) => (
                 <div key={column.title}>
-                  <p className='text-muted-foreground/50 mb-3 text-xs font-medium tracking-wider uppercase'>
+                  <p className='text-muted-foreground/50 mb-3 text-xs font-medium tracking-wider '>
                     {t(column.title)}
                   </p>
                   <ul className='space-y-2.5'>

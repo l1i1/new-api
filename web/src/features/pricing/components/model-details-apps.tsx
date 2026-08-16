@@ -125,7 +125,7 @@ export function ModelDetailsApps(props: { model: PricingModel }) {
     <div className='flex flex-col gap-4'>
       <div className='grid grid-cols-1 gap-2 sm:grid-cols-3'>
         <div className='bg-muted/20 rounded-lg border p-3'>
-          <div className='text-muted-foreground text-[10px] font-medium tracking-wider uppercase'>
+          <div className='text-muted-foreground text-[10px] font-medium tracking-wider '>
             {t('Tracked apps')}
           </div>
           <div className='text-foreground mt-1 font-mono text-lg font-semibold tabular-nums'>
@@ -136,7 +136,7 @@ export function ModelDetailsApps(props: { model: PricingModel }) {
           </p>
         </div>
         <div className='bg-muted/20 rounded-lg border p-3'>
-          <div className='text-muted-foreground text-[10px] font-medium tracking-wider uppercase'>
+          <div className='text-muted-foreground text-[10px] font-medium tracking-wider '>
             {t('Monthly tokens')}
           </div>
           <div className='text-foreground mt-1 font-mono text-lg font-semibold tabular-nums'>
@@ -147,7 +147,7 @@ export function ModelDetailsApps(props: { model: PricingModel }) {
           </p>
         </div>
         <div className='bg-muted/20 rounded-lg border p-3'>
-          <div className='text-muted-foreground text-[10px] font-medium tracking-wider uppercase'>
+          <div className='text-muted-foreground text-[10px] font-medium tracking-wider '>
             {t('#1 by usage')}
           </div>
           <div className='text-foreground mt-1 truncate text-base font-semibold'>

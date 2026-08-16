@@ -83,10 +83,17 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	}
 	gatewayEnabled := service.IsHotPayGatewayEnabled()
 	canonicalMethod := ""
+	amountMinor := int64(0)
 	if gatewayEnabled {
-		canonicalMethod, err = hotPayWalletMethod(planCurrency, req.PaymentMethod)
+		canonicalMethod, err = hotPaySubscriptionMethod(planCurrency, req.PaymentMethod)
 		if err != nil {
 			common.ApiErrorMsg(c, "Waffo Pancake 必须选择与套餐币种匹配的支付方式")
+			return
+		}
+		var amountErr error
+		amountMinor, amountErr = hotPayMinorAmount(plan.PriceAmount)
+		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
+			common.ApiErrorMsg(c, "套餐金额超出支付网关限额")
 			return
 		}
 	}
@@ -109,18 +116,20 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	}
 
 	order := &model.SubscriptionOrder{
-		UserId:          userId,
-		PlanId:          plan.Id,
-		Money:           plan.PriceAmount,
-		TradeNo:         tradeNo,
-		PaymentMethod:   paymentMethod,
-		PaymentProvider: model.PaymentProviderWaffoPancake,
-		PaymentCurrency: planCurrency,
-		CreateTime:      time.Now().Unix(),
-		Status:          common.TopUpStatusPending,
+		UserId:                   userId,
+		PlanId:                   plan.Id,
+		Money:                    plan.PriceAmount,
+		TradeNo:                  tradeNo,
+		PaymentMethod:            paymentMethod,
+		PaymentProvider:          model.PaymentProviderWaffoPancake,
+		PaymentProviderAccountID: hotPayProviderAccountID(),
+		PaymentEnvironment:       hotPayEnvironment(),
+		PaymentCurrency:          planCurrency,
+		CreateTime:               time.Now().Unix(),
+		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != userId || existing.PlanId != plan.Id || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency {
+		if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
 			common.ApiErrorMsg(c, "支付请求与已有订单不匹配")
 			return
 		}
@@ -141,23 +150,19 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(clientErr))
 			return
 		}
-		amountMinor, amountErr := hotPayMinorAmount(plan.PriceAmount)
-		if amountErr != nil {
-			common.ApiErrorMsg(c, "套餐金额无效")
-			return
-		}
 		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
-			MerchantOrderID: tradeNo,
-			BusinessType:    "subscription",
-			UserID:          hotPayUserID(userId),
-			BuyerEmail:      getWaffoPancakeBuyerEmail(user),
-			ProductID:       strings.TrimSpace(plan.WaffoPancakeProductId),
-			AmountMinor:     amountMinor,
-			Currency:        planCurrency,
-			Provider:        model.PaymentProviderWaffoPancake,
-			PaymentMethod:   canonicalMethod,
-			Environment:     hotPayEnvironment(),
-			ReturnURL:       hotPayReturnURL("/api/subscription/epay/return"),
+			MerchantOrderID:   tradeNo,
+			BusinessType:      "subscription",
+			UserID:            hotPayUserID(userId),
+			BuyerEmail:        getWaffoPancakeBuyerEmail(user),
+			ProductID:         strings.TrimSpace(plan.WaffoPancakeProductId),
+			AmountMinor:       amountMinor,
+			Currency:          planCurrency,
+			Provider:          model.PaymentProviderWaffoPancake,
+			ProviderAccountID: hotPayProviderAccountID(),
+			PaymentMethod:     canonicalMethod,
+			Environment:       hotPayEnvironment(),
+			ReturnURL:         hotPayReturnURL("/api/subscription/epay/return"),
 			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
 				"plan_id":      plan.Id,
 				"plan_title":   plan.Title,
@@ -169,6 +174,10 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		})
 		if createErr != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 订阅结账失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, createErr.Error()))
+			if hotPayGatewayErrorIsPermanent(createErr) {
+				order.Status = common.TopUpStatusFailed
+				_ = order.Update()
+			}
 			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(createErr))
 			return
 		}

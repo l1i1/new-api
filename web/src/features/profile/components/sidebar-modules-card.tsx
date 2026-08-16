@@ -209,7 +209,7 @@ export function SidebarModulesCard() {
             <LayoutDashboard />
           </IconBadge>
           <div className='min-w-0'>
-            <CardTitle className='text-lg tracking-tight sm:text-xl'>
+            <CardTitle className='text-lg  sm:text-xl'>
               {t('Sidebar Personal Settings')}
             </CardTitle>
             <CardDescription className='text-xs sm:text-sm'>

@@ -35,6 +35,8 @@ export const MESSAGE_STATUS = {
 // API endpoints
 export const API_ENDPOINTS = {
   CHAT_COMPLETIONS: '/pg/chat/completions',
+  IMAGES_GENERATIONS: '/pg/images/generations',
+  IMAGES_EDITS: '/pg/images/edits',
   USER_MODELS: '/api/user/models',
   USER_GROUPS: '/api/user/self/groups',
 } as const
@@ -57,11 +59,11 @@ export const DEFAULT_CONFIG: PlaygroundConfig = {
 }
 
 export const DEFAULT_PARAMETER_ENABLED: ParameterEnabled = {
-  temperature: true,
-  top_p: true,
+  temperature: false,
+  top_p: false,
   max_tokens: false,
-  frequency_penalty: true,
-  presence_penalty: true,
+  frequency_penalty: false,
+  presence_penalty: false,
   seed: false,
 }
 
@@ -70,7 +72,18 @@ export const STORAGE_KEYS = {
   CONFIG: 'playground_config',
   MESSAGES: 'playground_messages',
   PARAMETER_ENABLED: 'playground_parameter_enabled',
+  SESSIONS: 'playground_sessions',
+  ACTIVE_SESSION: 'playground_active_session',
 } as const
+
+/** Chat with a text model or generate images with an image model. */
+export const PLAYGROUND_MODES = {
+  CHAT: 'chat',
+  IMAGE: 'image',
+} as const
+
+export type PlaygroundMode =
+  (typeof PLAYGROUND_MODES)[keyof typeof PLAYGROUND_MODES]
 
 // Error messages
 export const ERROR_MESSAGES = {

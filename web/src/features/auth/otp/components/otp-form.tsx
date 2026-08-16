@@ -164,7 +164,7 @@ export function OtpForm({ className, ...props }: OtpFormProps) {
                     {...field}
                     maxLength={BACKUP_CODE_LENGTH}
                     autoComplete='off'
-                    className='font-mono uppercase'
+                    className='font-mono'
                     onChange={(e) => {
                       const formatted = formatBackupCode(e.target.value)
                       field.onChange(formatted)

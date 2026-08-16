@@ -95,6 +95,32 @@ export function getDisplayGroupRatio(
 }
 
 /**
+ * Format a group ratio as a localized discount label: ratios below 1 read as
+ * 折 for Chinese locales and % off elsewhere. A ratio of 1 returns undefined
+ * (no badge); premium ratios above 1 keep multiplier notation.
+ */
+export function formatGroupDiscount(
+  ratio: number | undefined,
+  language: string
+): string | undefined {
+  if (ratio == null || !Number.isFinite(ratio) || ratio === 1) {
+    return undefined
+  }
+  if (ratio > 1) {
+    const formatted = Number.isInteger(ratio)
+      ? ratio.toString()
+      : ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+    return `x${formatted}`
+  }
+  if (language.toLowerCase().startsWith('zh')) {
+    const zhe = ratio * 10
+    const formatted = Number.isInteger(zhe) ? zhe.toString() : zhe.toFixed(1)
+    return `${formatted}折`
+  }
+  return `${Math.round((1 - ratio) * 100)}% off`
+}
+
+/**
  * Replace model placeholder in endpoint path
  */
 export function replaceModelInPath(path: string, modelName: string): string {

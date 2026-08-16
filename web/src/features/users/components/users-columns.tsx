@@ -228,7 +228,7 @@ export function useUsersColumns(): ColumnDef<User>[] {
         const inviterId = user.inviter_id || 0
 
         return (
-          <div className='flex max-w-full min-w-0 flex-wrap items-center gap-1 overflow-hidden'>
+          <div className='flex max-w-full min-w-0 flex-wrap items-center gap-1 [&>*]:shrink-0'>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -288,7 +288,7 @@ export function useUsersColumns(): ColumnDef<User>[] {
           </div>
         )
       },
-      size: 240,
+      size: 260,
       enableSorting: false,
       meta: { mobileHidden: true },
     },

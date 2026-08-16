@@ -83,8 +83,7 @@ export function GroupBadge(props: GroupBadgeProps) {
       copyable={copyable}
       label={label}
       showDot={showDot ?? (isSpecialGroup ? false : undefined)}
-      variant={isSpecialGroup ? 'neutral' : undefined}
-      autoColor={isSpecialGroup ? undefined : groupName}
+      variant='neutral'
       className={cn('min-w-0 shrink overflow-hidden', className)}
     />
   )

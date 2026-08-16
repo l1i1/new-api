@@ -29,15 +29,11 @@ import {
   CreditCard,
   FileText,
   KeyRound,
-  ListChecks,
   RadioTower,
-  ShieldCheck,
   TerminalSquare,
-  Timer,
   type LucideIcon,
 } from 'lucide-react'
-import { motion, useReducedMotion } from 'motion/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -46,20 +42,20 @@ import {
   CardStaggerItem,
 } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
-import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { getUserModels } from '@/lib/api'
-import { MOTION_TRANSITION } from '@/lib/motion'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { getUptimeStatus } from '../../api'
 import {
   useApiInfo,
   useDashboardContentVisibility,
 } from '../../hooks/use-status-data'
+import type { UptimeGroupResult } from '../../types'
 import { AnnouncementsPanel } from './announcements-panel'
 import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
@@ -69,17 +65,6 @@ import { UptimePanel } from './uptime-panel'
 
 const SETUP_GUIDE_VISIBILITY_STORAGE_KEY =
   'dashboard_overview_setup_guide_expanded'
-
-const SETUP_GUIDE_CODE_PATTERN = [
-  'const request = await client.responses.create({',
-  "  model: 'gpt-4.1-mini',",
-  "  input: 'Start routing traffic',",
-  '})',
-  '',
-  'if (request.output_text) {',
-  '  console.log(request.output_text)',
-  '}',
-].join('\n')
 
 type DashboardActionPath =
   | '/keys'
@@ -99,7 +84,6 @@ interface StartStep {
 
 interface QuickAction {
   title: string
-  description: string
   to: DashboardActionPath
   icon: LucideIcon
   adminOnly?: boolean
@@ -114,11 +98,9 @@ interface RequestExample {
   ready: boolean
 }
 
-interface HeroSignal {
+interface StatusSignal {
   label: string
   value: string
-  icon: LucideIcon
-  tone: IconBadgeTone
 }
 
 function getSavedSetupGuideExpanded(): boolean | null {
@@ -180,94 +162,40 @@ function buildCurlCommand(args: {
   ].join('\n')
 }
 
-function SetupGuideBackdrop(props: { compact?: boolean }) {
-  return (
-    <>
-      <div
-        className={cn(
-          'pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_48%_120%_at_78%_0%,color-mix(in_oklch,var(--overview-accent-1)_14%,transparent)_0%,transparent_62%),linear-gradient(112deg,color-mix(in_oklch,var(--card)_94%,var(--overview-accent-2)_6%)_0%,color-mix(in_oklch,var(--card)_94%,var(--overview-accent-3)_6%)_48%,color-mix(in_oklch,var(--background)_90%,var(--overview-accent-1)_10%)_100%)] dark:opacity-60',
-          props.compact
-            ? '[mask-image:linear-gradient(90deg,black_0%,black_48%,transparent_74%)] opacity-55'
-            : 'opacity-85'
-        )}
-        aria-hidden='true'
-      />
-      <div
-        className={cn(
-          'text-foreground/5 dark:text-foreground/8 pointer-events-none absolute inset-y-0 right-0 hidden overflow-hidden font-mono sm:block',
-          props.compact ? 'w-1/2 opacity-45' : 'w-[58%] opacity-75'
-        )}
-        aria-hidden='true'
-      >
-        <pre
-          className={cn(
-            'absolute right-3 [mask-image:linear-gradient(90deg,transparent_0%,black_30%,black_82%,transparent_100%)] text-right tracking-[0.38em] whitespace-pre',
-            props.compact
-              ? '-top-6 text-[9px] leading-4'
-              : 'top-1 text-[11px] leading-5'
-          )}
-        >
-          {SETUP_GUIDE_CODE_PATTERN}
-        </pre>
-      </div>
-      <div
-        className='from-background/35 to-background/70 dark:from-background/20 dark:to-background/80 pointer-events-none absolute inset-0 bg-linear-to-b via-transparent'
-        aria-hidden='true'
-      />
-    </>
-  )
-}
-
-function StartStepItem(props: {
-  step: StartStep
-  index: number
-  isLast: boolean
-}) {
-  const Icon = props.step.icon
+function SetupStepRow(props: { step: StartStep; index: number }) {
   const StatusIcon = props.step.completed ? Check : Circle
 
   return (
-    <li className='relative flex gap-3 pb-2.5 last:pb-0'>
-      {!props.isLast && (
-        <span
-          className='bg-border absolute top-9 bottom-0 left-4 w-px'
-          aria-hidden='true'
-        />
-      )}
-      <span
-        className={cn(
-          'bg-background relative z-10 flex size-8 shrink-0 items-center justify-center rounded-lg border shadow-xs',
-          props.step.completed && 'border-success/30 bg-success/10'
-        )}
-      >
-        <StatusIcon
-          className={props.step.completed ? 'text-success size-4' : 'size-4'}
-          aria-hidden='true'
-        />
-      </span>
-
+    <li>
       <Link
         to={props.step.to}
-        className='bg-background/70 hover:bg-muted/50 focus-visible:ring-ring flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left shadow-xs transition-colors outline-none focus-visible:ring-2'
+        className='hover:bg-muted/50 focus-visible:ring-ring group flex items-center gap-3 px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset sm:px-5'
       >
-        <span className='flex min-w-0 items-start gap-2.5'>
-          <span className='bg-muted mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg'>
-            <Icon className='size-3.5' aria-hidden='true' />
+        <StatusIcon
+          className={cn(
+            'size-4 shrink-0',
+            props.step.completed ? 'text-success' : 'text-muted-foreground/40'
+          )}
+          aria-hidden='true'
+        />
+        <span className='flex min-w-0 flex-1 flex-col gap-0.5'>
+          <span
+            className={cn(
+              'truncate text-sm font-medium',
+              props.step.completed && 'text-muted-foreground'
+            )}
+          >
+            <span className='text-muted-foreground mr-1.5 font-mono text-xs tabular-nums'>
+              {props.index + 1}.
+            </span>
+            {props.step.title}
           </span>
-          <span className='flex min-w-0 flex-col gap-0.5'>
-            <span className='flex items-center gap-2 text-sm font-medium'>
-              <span className='text-muted-foreground font-mono text-xs tabular-nums'>
-                {props.index + 1}.
-              </span>
-              <span className='truncate'>{props.step.title}</span>
-            </span>
-            <span className='text-muted-foreground line-clamp-1 text-xs'>
-              {props.step.description}
-            </span>
+          <span className='text-muted-foreground truncate text-xs'>
+            {props.step.description}
           </span>
         </span>
         <ArrowRight
-          className='text-muted-foreground size-4 shrink-0'
+          className='text-muted-foreground size-4 shrink-0 transition-transform group-hover:translate-x-0.5'
           aria-hidden='true'
         />
       </Link>
@@ -275,12 +203,11 @@ function StartStepItem(props: {
   )
 }
 
-function RequestPreview(props: {
+function FirstRequestPanel(props: {
   example: RequestExample
-  signals: HeroSignal[]
+  signals: StatusSignal[]
 }) {
   const { t } = useTranslation()
-  const shouldReduceMotion = useReducedMotion()
   const [isCopying, setIsCopying] = useState(false)
   const { copyToClipboard } = useCopyToClipboard({ notify: false })
   const previewCurl = buildCurlCommand({
@@ -288,7 +215,7 @@ function RequestPreview(props: {
     apiKey: props.example.displayKey,
     model: props.example.model,
   })
-  const previewLines = previewCurl.split('\n')
+
   const handleCopyRequest = async () => {
     if (!props.example.keyId || isCopying) return
 
@@ -318,42 +245,23 @@ function RequestPreview(props: {
   }
 
   return (
-    <motion.div
-      initial={shouldReduceMotion ? false : { opacity: 0, y: 10, scale: 0.98 }}
-      animate={shouldReduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
-      transition={MOTION_TRANSITION.slow}
-      className='bg-background/75 relative overflow-hidden rounded-2xl border p-3 shadow-sm backdrop-blur'
-    >
-      {!shouldReduceMotion && (
-        <motion.div
-          className='via-foreground/30 pointer-events-none absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent to-transparent'
-          animate={{ x: ['-100%', '100%'] }}
-          transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
-          aria-hidden='true'
-        />
-      )}
-
-      <div className='flex items-center justify-between gap-3 border-b pb-3'>
-        <div className='flex min-w-0 items-center gap-2'>
-          <IconBadge tone='info'>
-            <TerminalSquare />
-          </IconBadge>
-          <div className='min-w-0'>
-            <div className='truncate text-sm font-medium'>
-              {t('First API request')}
-            </div>
-            <div className='text-muted-foreground truncate text-xs'>
-              {props.example.ready
-                ? props.example.keyName
-                : t('Create an API key to unlock the real request')}
-            </div>
+    <div className='border-border flex flex-col border-t lg:border-t-0'>
+      <div className='flex items-center justify-between gap-3 px-4 pt-3.5 sm:px-5'>
+        <div className='min-w-0'>
+          <div className='truncate text-sm font-medium'>
+            {t('First API request')}
+          </div>
+          <div className='text-muted-foreground truncate text-xs'>
+            {props.example.ready
+              ? props.example.keyName
+              : t('Create an API key to unlock the real request')}
           </div>
         </div>
         {props.example.ready ? (
           <Button
             variant='outline'
             size='sm'
-            className='h-7 gap-1.5 px-2 text-xs'
+            className='h-7 shrink-0 gap-1.5 px-2 text-xs'
             disabled={isCopying}
             onClick={handleCopyRequest}
             aria-label={t('Copy ready-to-run curl')}
@@ -362,96 +270,45 @@ function RequestPreview(props: {
             {isCopying ? t('Loading') : t('Copy')}
           </Button>
         ) : (
-          <Button size='sm' variant='outline' render={<Link to='/keys' />}>
+          <Button
+            size='sm'
+            variant='outline'
+            className='h-7 shrink-0 px-2 text-xs'
+            render={<Link to='/keys' />}
+          >
             {t('Create API Key')}
           </Button>
         )}
       </div>
 
-      <div className='bg-foreground/[0.035] my-3 rounded-xl p-3 font-mono text-xs'>
-        <div className='mb-2 flex items-center gap-1.5'>
-          <span className='bg-destructive size-2 rounded-full' />
-          <span className='bg-warning size-2 rounded-full' />
-          <span className='bg-success size-2 rounded-full' />
-        </div>
-        <div className='flex flex-col gap-1 overflow-hidden'>
-          {previewLines.map((line) => (
-            <code
-              key={line}
-              className='text-muted-foreground truncate'
-              title={line}
-            >
-              {line}
-            </code>
-          ))}
-        </div>
-      </div>
+      <pre className='bg-muted/40 border-border text-muted-foreground mx-4 mt-3 overflow-x-auto border p-3 font-mono text-xs leading-relaxed whitespace-pre sm:mx-5'>
+        {previewCurl}
+      </pre>
 
-      <div className='grid gap-2'>
-        {props.signals.map((signal) => {
-          const Icon = signal.icon
-
-          return (
-            <div
-              key={signal.label}
-              className='bg-muted/40 flex items-center justify-between gap-3 rounded-xl px-3 py-2'
-            >
-              <span className='flex min-w-0 items-center gap-2'>
-                <IconBadge tone={signal.tone} size='xs'>
-                  <Icon />
-                </IconBadge>
-                <span className='truncate text-xs font-medium'>
-                  {signal.label}
-                </span>
-              </span>
-              <span className='text-muted-foreground shrink-0 text-xs'>
-                {signal.value}
-              </span>
-            </div>
-          )
-        })}
+      <div className='flex flex-wrap gap-x-4 gap-y-1 px-4 py-3 sm:px-5'>
+        {props.signals.map((signal) => (
+          <span key={signal.label} className='text-muted-foreground text-xs'>
+            {signal.label}
+            {': '}
+            <span className='text-foreground font-medium'>{signal.value}</span>
+          </span>
+        ))}
       </div>
-    </motion.div>
+    </div>
   )
 }
 
-function QuickActionItem(props: { action: QuickAction }) {
+function QuickActionLink(props: { action: QuickAction }) {
   const Icon = props.action.icon
 
   return (
-    <Button
-      variant='outline'
-      className='h-auto justify-start rounded-xl px-3 py-3 text-left'
-      render={<Link to={props.action.to} />}
+    <Link
+      to={props.action.to}
+      className='text-foreground hover:text-primary focus-visible:ring-ring inline-flex items-center gap-1.5 rounded-none text-xs font-medium outline-none focus-visible:ring-2'
     >
-      <span className='bg-muted flex size-9 shrink-0 items-center justify-center rounded-lg'>
-        <Icon className='size-4' aria-hidden='true' />
-      </span>
-      <span className='flex min-w-0 flex-1 flex-col gap-0.5'>
-        <span className='truncate text-sm font-medium'>
-          {props.action.title}
-        </span>
-        <span className='text-muted-foreground line-clamp-2 text-xs leading-relaxed'>
-          {props.action.description}
-        </span>
-      </span>
-    </Button>
-  )
-}
-
-function CompactQuickAction(props: { action: QuickAction }) {
-  const Icon = props.action.icon
-
-  return (
-    <Button
-      variant='outline'
-      size='sm'
-      className='bg-background/70 h-8 min-w-24 gap-1.5 px-2.5'
-      render={<Link to={props.action.to} />}
-    >
-      <Icon data-icon='inline-start' />
-      <span>{props.action.title}</span>
-    </Button>
+      <Icon className='text-muted-foreground size-3.5' aria-hidden='true' />
+      {props.action.title}
+    </Link>
   )
 }
 
@@ -492,6 +349,17 @@ export function OverviewDashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const uptimeQuery = useQuery({
+    queryKey: ['dashboard', 'overview', 'uptime-status'],
+    queryFn: async (): Promise<UptimeGroupResult[]> => {
+      const result = await getUptimeStatus()
+      return result?.data ?? []
+    },
+    enabled: showUptimePanel,
+    staleTime: 60 * 1000,
+    retry: false,
+  })
+
   const preferredKey = useMemo(
     () => getPreferredKey(apiKeysQuery.data ?? []),
     [apiKeysQuery.data]
@@ -528,26 +396,22 @@ export function OverviewDashboard() {
     () => [
       {
         title: t('API Keys'),
-        description: t('Create a key for your app or service'),
         to: '/keys',
         icon: KeyRound,
       },
       {
         title: t('Channels'),
-        description: t('Configure upstream providers and routing.'),
         to: '/channels',
         icon: RadioTower,
         adminOnly: true,
       },
       {
         title: t('Usage Logs'),
-        description: t('Inspect requests, errors, and billing details'),
         to: '/usage-logs',
         icon: FileText,
       },
       {
         title: t('Pricing'),
-        description: t('Review model rates before scaling traffic'),
         to: '/pricing',
         icon: BookOpen,
       },
@@ -560,25 +424,19 @@ export function OverviewDashboard() {
     [isAdmin, quickActions]
   )
 
-  const heroSignals = useMemo<HeroSignal[]>(
+  const statusSignals = useMemo<StatusSignal[]>(
     () => [
       {
         label: t('Route active'),
         value: apiInfoItems.length > 0 ? t('Online') : t('Current domain'),
-        icon: RadioTower,
-        tone: 'info',
       },
       {
         label: t('Auth configured'),
         value: preferredKey ? t('Secured') : t('Needs API key'),
-        icon: ShieldCheck,
-        tone: 'success',
       },
       {
         label: t('Model selected'),
         value: modelsQuery.data?.[0] ?? t('Loading'),
-        icon: Timer,
-        tone: 'chart-4',
       },
     ],
     [apiInfoItems.length, modelsQuery.data, preferredKey, t]
@@ -609,7 +467,16 @@ export function OverviewDashboard() {
     manualSetupGuideExpanded ?? (setupStatusReady && !setupComplete)
   const showLeftContentPanels =
     isAdmin || showApiInfoPanel || showAnnouncementsPanel || showFAQPanel
-  const showContentPanels = showLeftContentPanels || showUptimePanel
+  // Only reserve layout space for the uptime rail once monitors are actually
+  // configured; an enabled-but-empty Uptime Kuma integration stays hidden.
+  const uptimeGroups = uptimeQuery.data ?? []
+  const showUptimeData = showUptimePanel && uptimeGroups.length > 0
+  const showContentPanels = showLeftContentPanels || showUptimeData
+
+  const setupProgressLabel = t('Setup progress: {{completed}}/{{total}}', {
+    completed: completedStepCount,
+    total: startSteps.length,
+  })
 
   const handleSetupGuideToggle = () => {
     const nextExpanded = !setupGuideExpanded
@@ -617,136 +484,104 @@ export function OverviewDashboard() {
     saveSetupGuideExpanded(nextExpanded)
   }
 
+  // Collapse the guide the moment the final step completes, even if the user
+  // had manually expanded it earlier. A completion state present on first
+  // load is left to the saved/default visibility instead.
+  const wasSetupCompleteRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (!setupStatusReady) return
+    if (
+      wasSetupCompleteRef.current === false &&
+      setupComplete &&
+      setupGuideExpanded
+    ) {
+      setManualSetupGuideExpanded(false)
+      saveSetupGuideExpanded(false)
+    }
+    wasSetupCompleteRef.current = setupComplete
+  }, [setupComplete, setupGuideExpanded, setupStatusReady])
+
   return (
     <div className='flex flex-col gap-4'>
       {setupGuideExpanded ? (
-        <CardStaggerContainer className='grid items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]'>
-          <CardStaggerItem className='bg-card h-full overflow-hidden rounded-2xl border shadow-xs'>
-            <div className='relative h-full overflow-hidden p-4 sm:p-5'>
-              <SetupGuideBackdrop />
-              <div className='relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]'>
-                <div className='flex min-w-0 flex-col gap-5'>
-                  <div className='flex flex-wrap items-start justify-between gap-3'>
-                    <div className='flex max-w-2xl flex-col gap-1'>
-                      <div className='text-muted-foreground flex items-center gap-2 text-xs font-medium tracking-wider uppercase'>
-                        <ListChecks className='size-3.5' aria-hidden='true' />
-                        {t('Get started')}
-                      </div>
-                      <h3 className='text-xl font-semibold tracking-tight sm:text-2xl'>
-                        {t('Build on your API gateway in minutes')}
-                      </h3>
-                      <p className='text-muted-foreground max-w-xl text-sm leading-relaxed'>
-                        {t(
-                          'A focused home for keys, balance, routing, and service health.'
-                        )}
-                      </p>
-                    </div>
-                    <div className='flex flex-wrap items-center gap-2'>
-                      <Button
-                        variant='outline'
-                        size='sm'
-                        onClick={handleSetupGuideToggle}
-                      >
-                        <ChevronUp data-icon='inline-start' />
-                        {t('Hide setup guide')}
-                      </Button>
-                      <Button size='sm' render={<Link to='/keys' />}>
-                        <KeyRound data-icon='inline-start' />
-                        {t('Create API Key')}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <ol className='bg-background/45 rounded-2xl border p-2 backdrop-blur'>
-                    {startSteps.map((step, index) => (
-                      <StartStepItem
-                        key={step.title}
-                        step={step}
-                        index={index}
-                        isLast={index === startSteps.length - 1}
-                      />
-                    ))}
-                  </ol>
-                </div>
-
-                <RequestPreview
-                  example={requestExample}
-                  signals={heroSignals}
-                />
-              </div>
+        <section className='bg-card border-border border'>
+          <div className='border-border flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5 sm:px-5'>
+            <div className='flex items-baseline gap-2'>
+              <h2 className='text-sm font-semibold'>{t('Get started')}</h2>
+              <span className='text-muted-foreground text-xs tabular-nums'>
+                {setupProgressLabel}
+              </span>
             </div>
-          </CardStaggerItem>
-
-          <CardStaggerItem className='bg-card h-full rounded-2xl border p-4 shadow-xs sm:p-5'>
-            <div className='flex h-full flex-col gap-4'>
-              <div className='flex flex-col gap-1'>
-                <div className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
-                  {t('Recommended actions')}
-                </div>
-                <h3 className='text-lg font-semibold tracking-tight'>
-                  {t('Keep the platform ready')}
-                </h3>
-              </div>
-              <div className='grid gap-2'>
-                {visibleQuickActions.map((action) => (
-                  <QuickActionItem key={action.title} action={action} />
-                ))}
-              </div>
+            <div className='flex items-center gap-2'>
+              <Button
+                variant='ghost'
+                size='sm'
+                className='h-7 px-2 text-xs'
+                onClick={handleSetupGuideToggle}
+              >
+                <ChevronUp data-icon='inline-start' />
+                {t('Hide setup guide')}
+              </Button>
+              <Button
+                size='sm'
+                className='h-7 px-2.5 text-xs'
+                render={<Link to='/keys' />}
+              >
+                <KeyRound data-icon='inline-start' />
+                {t('Create API Key')}
+              </Button>
             </div>
-          </CardStaggerItem>
-        </CardStaggerContainer>
+          </div>
+
+          <div className='grid lg:grid-cols-2'>
+            <ol className='divide-border divide-y'>
+              {startSteps.map((step, index) => (
+                <SetupStepRow key={step.title} step={step} index={index} />
+              ))}
+            </ol>
+            <FirstRequestPanel
+              example={requestExample}
+              signals={statusSignals}
+            />
+          </div>
+
+          <div className='border-border flex flex-wrap items-center gap-x-5 gap-y-2 border-t px-4 py-2.5 sm:px-5'>
+            <span className='text-muted-foreground text-xs'>
+              {t('Quick actions')}
+            </span>
+            {visibleQuickActions.map((action) => (
+              <QuickActionLink key={action.title} action={action} />
+            ))}
+          </div>
+        </section>
       ) : (
-        <CardStaggerContainer>
-          <CardStaggerItem className='bg-card overflow-hidden rounded-2xl border shadow-xs'>
-            <div className='relative overflow-hidden px-4 py-3 sm:px-5'>
-              <SetupGuideBackdrop compact />
-              <div className='relative flex flex-wrap items-center justify-between gap-3'>
-                <div className='flex min-w-0 items-center gap-3'>
-                  <span className='bg-background/70 flex size-9 shrink-0 items-center justify-center rounded-xl border shadow-xs'>
-                    <Check className='text-success size-4' aria-hidden='true' />
-                  </span>
-                  <div className='min-w-0'>
-                    <div className='flex items-center gap-2'>
-                      <h3 className='truncate text-sm font-semibold'>
-                        {setupComplete
-                          ? t('Setup guide complete')
-                          : t('Setup guide')}
-                      </h3>
-                      <span className='text-muted-foreground bg-background/60 rounded-md border px-2 py-0.5 text-xs'>
-                        {t('Setup progress: {{completed}}/{{total}}', {
-                          completed: completedStepCount,
-                          total: startSteps.length,
-                        })}
-                      </span>
-                    </div>
-                    <p className='text-muted-foreground line-clamp-1 text-xs'>
-                      {setupComplete
-                        ? t(
-                            'Your setup guide is collapsed so usage stays in focus.'
-                          )
-                        : t('Setup guide is collapsed. Expand it anytime.')}
-                    </p>
-                  </div>
-                </div>
-
-                <div className='flex flex-wrap items-center gap-2'>
-                  {visibleQuickActions.map((action) => (
-                    <CompactQuickAction key={action.title} action={action} />
-                  ))}
-                  <Button
-                    variant='outline'
-                    size='sm'
-                    className='bg-background/70 h-8 min-w-28'
-                    onClick={handleSetupGuideToggle}
-                  >
-                    <ChevronDown data-icon='inline-start' />
-                    {t('Show setup guide')}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </CardStaggerItem>
-        </CardStaggerContainer>
+        <div className='bg-card border-border flex flex-wrap items-center justify-between gap-3 border px-4 py-2.5 sm:px-5'>
+          <div className='flex min-w-0 items-center gap-2.5'>
+            {setupComplete ? (
+              <Check className='text-success size-4 shrink-0' aria-hidden='true' />
+            ) : (
+              <Circle
+                className='text-muted-foreground/40 size-4 shrink-0'
+                aria-hidden='true'
+              />
+            )}
+            <span className='truncate text-sm font-medium'>
+              {setupComplete ? t('Setup guide complete') : t('Setup guide')}
+            </span>
+            <span className='text-muted-foreground text-xs tabular-nums'>
+              {setupProgressLabel}
+            </span>
+          </div>
+          <Button
+            variant='ghost'
+            size='sm'
+            className='h-7 px-2 text-xs'
+            onClick={handleSetupGuideToggle}
+          >
+            <ChevronDown data-icon='inline-start' />
+            {t('Show setup guide')}
+          </Button>
+        </div>
       )}
 
       <SummaryCards />
@@ -756,7 +591,7 @@ export function OverviewDashboard() {
           className={cn(
             'grid grid-cols-1 gap-4',
             showLeftContentPanels &&
-              showUptimePanel &&
+              showUptimeData &&
               'xl:grid-cols-[minmax(0,1fr)_22rem]'
           )}
         >
@@ -790,9 +625,13 @@ export function OverviewDashboard() {
               )}
             </div>
           )}
-          {showUptimePanel && (
+          {showUptimeData && (
             <CardStaggerItem>
-              <UptimePanel />
+              <UptimePanel
+                groups={uptimeGroups}
+                refreshing={uptimeQuery.isRefetching}
+                onRefresh={() => void uptimeQuery.refetch()}
+              />
             </CardStaggerItem>
           )}
         </CardStaggerContainer>

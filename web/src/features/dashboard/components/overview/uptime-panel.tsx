@@ -17,13 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Activity, RotateCw } from 'lucide-react'
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { getUptimeStatus } from '@/features/dashboard/api'
 import type {
   UptimeGroupResult,
   UptimeMonitor,
@@ -45,54 +44,16 @@ const StatusDot = memo(function StatusDot(props: { status: number }) {
   return <span className={cn('inline-block size-2 rounded-full', color)} />
 })
 
-export function UptimePanel() {
+interface UptimePanelProps {
+  groups: UptimeGroupResult[]
+  refreshing?: boolean
+  onRefresh?: () => void
+}
+
+export function UptimePanel(props: UptimePanelProps) {
   const { t } = useTranslation()
-  const [groups, setGroups] = useState<UptimeGroupResult[]>([])
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
 
-  useEffect(() => {
-    const abortController = new AbortController()
-
-    void getUptimeStatus()
-      .then((res) => {
-        if (abortController.signal.aborted) return
-        setGroups(res?.data || [])
-      })
-      .catch(() => {
-        if (abortController.signal.aborted) return
-        setGroups([])
-      })
-      .finally(() => {
-        if (!abortController.signal.aborted) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      abortController.abort()
-    }
-  }, [])
-
-  const handleRefresh = () => {
-    const abortController = new AbortController()
-    setRefreshing(true)
-
-    void getUptimeStatus()
-      .then((res) => {
-        if (abortController.signal.aborted) return
-        setGroups(res?.data || [])
-      })
-      .catch(() => {
-        if (abortController.signal.aborted) return
-        setGroups([])
-      })
-      .finally(() => {
-        if (!abortController.signal.aborted) {
-          setRefreshing(false)
-        }
-      })
-  }
+  if (!props.groups.length) return null
 
   return (
     <PanelWrapper
@@ -105,21 +66,18 @@ export function UptimePanel() {
         </span>
       }
       description={t('Grouped monitor status from Uptime Kuma')}
-      loading={loading}
-      empty={!groups.length}
-      emptyMessage={t('No uptime monitoring configured')}
       height='h-80'
       contentClassName='p-0'
       headerActions={
         <Button
           variant='ghost'
           size='sm'
-          onClick={handleRefresh}
-          disabled={refreshing}
+          onClick={props.onRefresh}
+          disabled={props.refreshing}
           className='size-7 p-0'
         >
           <RotateCw
-            className={cn('size-3.5', refreshing && 'animate-spin')}
+            className={cn('size-3.5', props.refreshing && 'animate-spin')}
             aria-label={t('Refresh')}
           />
         </Button>
@@ -127,11 +85,11 @@ export function UptimePanel() {
     >
       <ScrollArea className='h-80'>
         <div>
-          {groups.map((group, groupIdx) => (
+          {props.groups.map((group, groupIdx) => (
             <div key={group.categoryName}>
               <div className='bg-muted/30 border-border/60 border-b px-3 py-2 sm:px-5'>
                 <div className='flex items-center gap-2'>
-                  <h4 className='text-muted-foreground text-xs font-semibold tracking-wider uppercase'>
+                  <h4 className='text-muted-foreground text-xs font-semibold tracking-wider '>
                     {group.categoryName}
                   </h4>
                   <span className='text-muted-foreground/40 font-mono text-xs tabular-nums'>
@@ -148,7 +106,7 @@ export function UptimePanel() {
                       'hover:bg-muted/40 flex items-center justify-between gap-2 px-3 py-2 transition-colors sm:px-5 sm:py-2.5',
                       monitorIdx < (group.monitors?.length || 0) - 1 &&
                         'border-border/40 border-b',
-                      groupIdx < groups.length - 1 &&
+                      groupIdx < props.groups.length - 1 &&
                         monitorIdx === (group.monitors?.length || 0) - 1 &&
                         'border-border/60 border-b'
                     )}

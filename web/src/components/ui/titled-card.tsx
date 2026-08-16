@@ -78,7 +78,7 @@ export function TitledCard({
             <div className='min-w-0'>
               <CardTitle
                 className={cn(
-                  'text-lg tracking-tight sm:text-xl',
+                  'text-lg  sm:text-xl',
                   titleClassName
                 )}
               >

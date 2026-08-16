@@ -299,7 +299,7 @@ export function SetupWizard() {
           {systemConfigLoading ? (
             <Skeleton className='h-7 w-40' />
           ) : (
-            <h1 className='text-2xl font-semibold tracking-tight'>
+            <h1 className='text-2xl font-semibold '>
               {t('Initialize')} {systemName}
             </h1>
           )}

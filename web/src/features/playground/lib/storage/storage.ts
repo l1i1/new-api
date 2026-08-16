@@ -17,7 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { MESSAGE_STATUS, STORAGE_KEYS } from '../../constants'
-import type { PlaygroundConfig, ParameterEnabled, Message } from '../../types'
+import type {
+  PlaygroundConfig,
+  ParameterEnabled,
+  Message,
+  PlaygroundSession,
+} from '../../types'
 import {
   finalizeMessage,
   isAssistantMessagePending,
@@ -34,6 +39,7 @@ import {
   messagesSchema,
   parameterEnabledSchema,
   playgroundConfigSchema,
+  sessionsSchema,
 } from './storage-schema'
 
 type StoredEnvelope<T> = {
@@ -391,8 +397,98 @@ export function clearPlaygroundData(): void {
     localStorage.removeItem(STORAGE_KEYS.CONFIG)
     localStorage.removeItem(STORAGE_KEYS.PARAMETER_ENABLED)
     localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+    localStorage.removeItem(STORAGE_KEYS.SESSIONS)
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_SESSION)
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to clear playground data:', error)
+  }
+}
+
+function normalizeSessionsForLoad(
+  sessions: PlaygroundSession[]
+): PlaygroundSession[] {
+  return sessions.map((session) => ({
+    ...session,
+    messages: sanitizeMessagesOnLoad(
+      session.messages.map(normalizeStoredMessageForLoad)
+    ),
+  }))
+}
+
+/**
+ * Load all sessions from localStorage, migrating the legacy single-session
+ * message store on first read. Returns null when nothing is stored.
+ */
+export function loadSessions(): PlaygroundSession[] | null {
+  try {
+    const saved = readStoredValue(STORAGE_KEYS.SESSIONS)
+    if (saved) {
+      const parsed = sessionsSchema.parse(
+        unwrapStoredValue(saved)
+      ) as PlaygroundSession[]
+      return normalizeSessionsForLoad(parsed)
+    }
+
+    const legacyMessages = loadMessages()
+    if (legacyMessages && legacyMessages.length > 0) {
+      const now = Date.now()
+      const migrated: PlaygroundSession[] = [
+        {
+          id: `session-${now}`,
+          title: '',
+          createdAt: legacyMessages[0]?.createdAt ?? now,
+          updatedAt: now,
+          messages: legacyMessages,
+        },
+      ]
+      saveSessions(migrated)
+      localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+      return migrated
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to load sessions:', error)
+  }
+  return null
+}
+
+/**
+ * Save all sessions to localStorage
+ */
+export function saveSessions(sessions: PlaygroundSession[]): void {
+  try {
+    const normalized = sessions.map((session) => ({
+      ...session,
+      messages: trimMessages(session.messages),
+    }))
+    const parsed = sessionsSchema.parse(normalized) as PlaygroundSession[]
+    writeStoredValue(STORAGE_KEYS.SESSIONS, parsed)
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to save sessions:', error)
+  }
+}
+
+/**
+ * Load the active session id from localStorage
+ */
+export function loadActiveSessionId(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.ACTIVE_SESSION)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Save the active session id to localStorage
+ */
+export function saveActiveSessionId(id: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, id)
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to save active session id:', error)
   }
 }

@@ -158,7 +158,7 @@ export function InvoiceDetailDialog({
           <DetailField label={t('Admin Note')} value={detail.admin_note} />
 
           <div className='space-y-2'>
-            <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>
+            <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
               {t('Related Orders')}
             </Label>
             <Table>

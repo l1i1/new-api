@@ -34,38 +34,49 @@ var (
 // gateway command. Both command_id and settlement_key are unique so a retry
 // cannot create a second ledger operation for the same business order.
 type PaymentGatewaySettlement struct {
-	Id                int    `json:"id"`
-	CommandID         string `json:"command_id" gorm:"type:varchar(128);not null;uniqueIndex"`
-	SettlementKey     string `json:"settlement_key" gorm:"type:varchar(384);not null;uniqueIndex"`
-	MerchantOrderID   string `json:"merchant_order_id" gorm:"type:varchar(255);not null;index"`
-	BusinessType      string `json:"business_type" gorm:"type:varchar(32);not null"`
-	Provider          string `json:"provider" gorm:"type:varchar(64);not null"`
-	ProviderEventID   string `json:"provider_event_id" gorm:"type:varchar(255);not null"`
-	PayloadHash       string `json:"payload_hash" gorm:"type:char(64);not null"`
-	CreditedReference string `json:"credited_reference" gorm:"type:varchar(255);not null"`
-	Status            string `json:"status" gorm:"type:varchar(32);not null"`
-	CreatedAt         int64  `json:"created_at" gorm:"bigint;not null"`
-	CommittedAt       int64  `json:"committed_at" gorm:"bigint;not null"`
+	Id                    int    `json:"id"`
+	CommandID             string `json:"command_id" gorm:"type:varchar(128);not null;uniqueIndex"`
+	SettlementKey         string `json:"settlement_key" gorm:"type:varchar(384);not null;uniqueIndex"`
+	MerchantOrderID       string `json:"merchant_order_id" gorm:"type:varchar(255);not null;index"`
+	BusinessType          string `json:"business_type" gorm:"type:varchar(32);not null"`
+	Provider              string `json:"provider" gorm:"type:varchar(64);not null;uniqueIndex:idx_gateway_provider_event,priority:1"`
+	ProviderAccountID     string `json:"provider_account_id" gorm:"type:varchar(255);not null;default:''"`
+	Environment           string `json:"environment" gorm:"type:varchar(16);not null;default:'';uniqueIndex:idx_gateway_provider_event,priority:2"`
+	ProviderEventID       string `json:"provider_event_id" gorm:"type:varchar(255);not null;uniqueIndex:idx_gateway_provider_event,priority:3"`
+	PaymentMethod         string `json:"payment_method" gorm:"type:varchar(64);not null;default:''"`
+	AmountMinor           int64  `json:"amount_minor" gorm:"bigint;not null;default:0"`
+	Currency              string `json:"currency" gorm:"type:varchar(8);not null;default:''"`
+	ProviderOrderID       string `json:"provider_order_id" gorm:"type:varchar(255);not null;default:''"`
+	ProviderTransactionID string `json:"provider_transaction_id" gorm:"type:varchar(255);not null;default:''"`
+	PayloadHash           string `json:"payload_hash" gorm:"type:char(64);not null"`
+	CreditedReference     string `json:"credited_reference" gorm:"type:varchar(255);not null"`
+	Status                string `json:"status" gorm:"type:varchar(32);not null"`
+	CreatedAt             int64  `json:"created_at" gorm:"bigint;not null"`
+	CommittedAt           int64  `json:"committed_at" gorm:"bigint;not null"`
 }
 
 // PaymentGatewaySettlementCommand mirrors the gateway's signed JSON contract.
 // PriceSnapshot is retained only for signature/idempotency validation; the
 // New API order tables remain the source of truth for business state.
 type PaymentGatewaySettlementCommand struct {
-	CommandID       string         `json:"command_id"`
-	OrderID         string         `json:"order_id"`
-	MerchantOrderID string         `json:"merchant_order_id"`
-	BusinessType    string         `json:"business_type"`
-	UserID          string         `json:"user_id"`
-	AmountMinor     int64          `json:"amount_minor"`
-	Currency        string         `json:"currency"`
-	Provider        string         `json:"provider"`
-	ProviderEventID string         `json:"provider_event_id"`
-	PaymentMethod   string         `json:"payment_method"`
-	QuotaAmount     int64          `json:"quota_amount"`
-	PriceSnapshot   map[string]any `json:"price_snapshot"`
-	Signature       string         `json:"signature,omitempty"`
-	IssuedAt        time.Time      `json:"issued_at"`
+	CommandID             string         `json:"command_id"`
+	OrderID               string         `json:"order_id"`
+	MerchantOrderID       string         `json:"merchant_order_id"`
+	BusinessType          string         `json:"business_type"`
+	UserID                string         `json:"user_id"`
+	AmountMinor           int64          `json:"amount_minor"`
+	Currency              string         `json:"currency"`
+	Provider              string         `json:"provider"`
+	ProviderAccountID     string         `json:"provider_account_id"`
+	Environment           string         `json:"environment"`
+	ProviderEventID       string         `json:"provider_event_id"`
+	ProviderOrderID       string         `json:"provider_order_id"`
+	ProviderTransactionID string         `json:"provider_transaction_id"`
+	PaymentMethod         string         `json:"payment_method"`
+	QuotaAmount           int64          `json:"quota_amount"`
+	PriceSnapshot         map[string]any `json:"price_snapshot"`
+	Signature             string         `json:"signature,omitempty"`
+	IssuedAt              time.Time      `json:"issued_at"`
 }
 
 type PaymentGatewaySettlementResult struct {
@@ -249,23 +260,27 @@ func validateGatewayQuota(topUp *TopUp, command *PaymentGatewaySettlementCommand
 
 func PaymentGatewaySettlementPayload(command PaymentGatewaySettlementCommand) ([]byte, error) {
 	return common.Marshal(struct {
-		CommandID       string         `json:"command_id"`
-		OrderID         string         `json:"order_id"`
-		MerchantOrderID string         `json:"merchant_order_id"`
-		BusinessType    string         `json:"business_type"`
-		UserID          string         `json:"user_id"`
-		AmountMinor     int64          `json:"amount_minor"`
-		Currency        string         `json:"currency"`
-		Provider        string         `json:"provider"`
-		ProviderEventID string         `json:"provider_event_id"`
-		PaymentMethod   string         `json:"payment_method"`
-		QuotaAmount     int64          `json:"quota_amount"`
-		PriceSnapshot   map[string]any `json:"price_snapshot"`
-		IssuedAt        time.Time      `json:"issued_at"`
+		CommandID             string         `json:"command_id"`
+		OrderID               string         `json:"order_id"`
+		MerchantOrderID       string         `json:"merchant_order_id"`
+		BusinessType          string         `json:"business_type"`
+		UserID                string         `json:"user_id"`
+		AmountMinor           int64          `json:"amount_minor"`
+		Currency              string         `json:"currency"`
+		Provider              string         `json:"provider"`
+		ProviderAccountID     string         `json:"provider_account_id"`
+		Environment           string         `json:"environment"`
+		ProviderEventID       string         `json:"provider_event_id"`
+		ProviderOrderID       string         `json:"provider_order_id"`
+		ProviderTransactionID string         `json:"provider_transaction_id"`
+		PaymentMethod         string         `json:"payment_method"`
+		QuotaAmount           int64          `json:"quota_amount"`
+		PriceSnapshot         map[string]any `json:"price_snapshot"`
+		IssuedAt              time.Time      `json:"issued_at"`
 	}{
 		CommandID: command.CommandID, OrderID: command.OrderID, MerchantOrderID: command.MerchantOrderID,
 		BusinessType: command.BusinessType, UserID: command.UserID, AmountMinor: command.AmountMinor,
-		Currency: command.Currency, Provider: command.Provider, ProviderEventID: command.ProviderEventID,
+		Currency: command.Currency, Provider: command.Provider, ProviderAccountID: command.ProviderAccountID, Environment: command.Environment, ProviderEventID: command.ProviderEventID, ProviderOrderID: command.ProviderOrderID, ProviderTransactionID: command.ProviderTransactionID,
 		PaymentMethod: command.PaymentMethod, QuotaAmount: command.QuotaAmount, PriceSnapshot: command.PriceSnapshot,
 		IssuedAt: command.IssuedAt.UTC(),
 	})
@@ -310,9 +325,16 @@ func ApplyPaymentGatewaySettlement(command PaymentGatewaySettlementCommand) (Pay
 	command.UserID = strings.TrimSpace(command.UserID)
 	command.Currency = strings.ToUpper(strings.TrimSpace(command.Currency))
 	command.Provider = strings.ToLower(strings.TrimSpace(command.Provider))
+	command.ProviderAccountID = strings.TrimSpace(command.ProviderAccountID)
+	command.Environment = strings.ToLower(strings.TrimSpace(command.Environment))
 	command.ProviderEventID = strings.TrimSpace(command.ProviderEventID)
+	command.ProviderOrderID = strings.TrimSpace(command.ProviderOrderID)
+	command.ProviderTransactionID = strings.TrimSpace(command.ProviderTransactionID)
 	command.PaymentMethod = strings.ToLower(strings.TrimSpace(command.PaymentMethod))
-	if command.CommandID == "" || command.OrderID == "" || command.MerchantOrderID == "" || command.BusinessType == "" || command.UserID == "" || command.AmountMinor <= 0 || command.Currency == "" || command.Provider == "" || command.ProviderEventID == "" || command.PaymentMethod == "" || command.QuotaAmount < 0 || command.IssuedAt.IsZero() {
+	if command.CommandID == "" || command.OrderID == "" || command.MerchantOrderID == "" || command.BusinessType == "" || command.UserID == "" || command.AmountMinor <= 0 || command.Currency == "" || command.Provider == "" || command.ProviderAccountID == "" || command.ProviderEventID == "" || command.ProviderOrderID == "" || command.ProviderTransactionID == "" || command.PaymentMethod == "" || command.QuotaAmount < 0 || command.IssuedAt.IsZero() {
+		return PaymentGatewaySettlementResult{}, ErrPaymentGatewaySettlementInvalid
+	}
+	if command.Environment != "test" && command.Environment != "prod" {
 		return PaymentGatewaySettlementResult{}, ErrPaymentGatewaySettlementInvalid
 	}
 	if command.BusinessType != PaymentGatewayBusinessWallet && command.BusinessType != PaymentGatewayBusinessSubscription {
@@ -347,6 +369,21 @@ func ApplyPaymentGatewaySettlement(command PaymentGatewaySettlementCommand) (Pay
 			return queryErr
 		}
 
+		// Provider event IDs are independently unique from gateway command IDs.
+		// This prevents a replayed event from being accepted under a new command
+		// or merchant order.
+		if queryErr := lockForUpdate(tx).
+			Where("provider = ? AND environment = ? AND provider_event_id = ?", command.Provider, command.Environment, command.ProviderEventID).
+			First(&existing).Error; queryErr == nil {
+			if existing.PayloadHash != payloadHash || existing.SettlementKey != settlementKey || existing.Status != PaymentGatewaySettlementCommitted {
+				return ErrPaymentGatewaySettlementConflict
+			}
+			result = PaymentGatewaySettlementResult{Settlement: existing, Duplicate: true, CreditedReference: existing.CreditedReference}
+			return nil
+		} else if !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+			return queryErr
+		}
+
 		if queryErr := lockForUpdate(tx).Where("settlement_key = ?", settlementKey).First(&existing).Error; queryErr == nil {
 			if existing.PayloadHash != payloadHash || existing.Status != PaymentGatewaySettlementCommitted {
 				return ErrPaymentGatewaySettlementConflict
@@ -360,6 +397,8 @@ func ApplyPaymentGatewaySettlement(command PaymentGatewaySettlementCommand) (Pay
 		record := PaymentGatewaySettlement{
 			CommandID: command.CommandID, SettlementKey: settlementKey, MerchantOrderID: command.MerchantOrderID,
 			BusinessType: command.BusinessType, Provider: command.Provider, ProviderEventID: command.ProviderEventID,
+			ProviderAccountID: command.ProviderAccountID, Environment: command.Environment, PaymentMethod: command.PaymentMethod,
+			AmountMinor: command.AmountMinor, Currency: command.Currency, ProviderOrderID: command.ProviderOrderID, ProviderTransactionID: command.ProviderTransactionID,
 			PayloadHash: payloadHash, Status: "processing", CreatedAt: now,
 		}
 		createResult := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record)
@@ -367,6 +406,18 @@ func ApplyPaymentGatewaySettlement(command PaymentGatewaySettlementCommand) (Pay
 			return createErr
 		}
 		if createResult.RowsAffected == 0 {
+			if queryErr := lockForUpdate(tx).Where("command_id = ?", command.CommandID).First(&existing).Error; queryErr == nil {
+				if existing.PayloadHash != payloadHash || existing.SettlementKey != settlementKey {
+					return ErrPaymentGatewaySettlementConflict
+				}
+				if existing.Status != PaymentGatewaySettlementCommitted {
+					return ErrPaymentGatewaySettlementRetryable
+				}
+				result = PaymentGatewaySettlementResult{Settlement: existing, Duplicate: true, CreditedReference: existing.CreditedReference}
+				return nil
+			} else if !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+				return queryErr
+			}
 			if queryErr := lockForUpdate(tx).Where("settlement_key = ?", settlementKey).First(&existing).Error; queryErr != nil {
 				return queryErr
 			}
@@ -425,9 +476,7 @@ func isTerminalPaymentGatewaySettlementError(err error) bool {
 		ErrPaymentMethodMismatch,
 		ErrPaymentAmountInvalid,
 		ErrPaymentAmountMismatch,
-		ErrTopUpNotFound,
 		ErrTopUpStatusInvalid,
-		ErrSubscriptionOrderNotFound,
 		ErrSubscriptionOrderStatusInvalid,
 	} {
 		if errors.Is(err, terminalErr) {
@@ -441,7 +490,9 @@ func applyGatewayWalletSettlementTx(tx *gorm.DB, command *PaymentGatewaySettleme
 	var topUp TopUp
 	if err := lockForUpdate(tx).Where("trade_no = ?", command.MerchantOrderID).First(&topUp).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrTopUpNotFound
+			// A signed provider event can race the local facade's order binding;
+			// leave it retryable so the gateway/provider can deliver it again.
+			return "", ErrPaymentGatewaySettlementRetryable
 		}
 		return "", err
 	}
@@ -449,6 +500,12 @@ func applyGatewayWalletSettlementTx(tx *gorm.DB, command *PaymentGatewaySettleme
 		return "", ErrPaymentMethodMismatch
 	}
 	if topUp.PaymentGatewayOrderID == "" || topUp.PaymentGatewayOrderID != command.OrderID {
+		return "", ErrPaymentGatewaySettlementMismatch
+	}
+	if topUp.PaymentProviderAccountID != command.ProviderAccountID && (topUp.PaymentProviderAccountID != "" || command.ProviderAccountID != "") {
+		return "", ErrPaymentGatewaySettlementMismatch
+	}
+	if topUp.PaymentEnvironment != command.Environment && (topUp.PaymentEnvironment != "" || command.Environment != "") {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
 	if normalizeGatewayPaymentMethod(topUp.PaymentMethod) != command.PaymentMethod {
@@ -482,7 +539,10 @@ func applyGatewayWalletSettlementTx(tx *gorm.DB, command *PaymentGatewaySettleme
 	var user User
 	if err := lockForUpdate(tx).Where("id = ?", userID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrPaymentGatewaySettlementMismatch
+			// The gateway order may arrive before a replicated user row is
+			// available. Keep the signed event retryable instead of acknowledging
+			// a provider success that could not be credited.
+			return "", ErrPaymentGatewaySettlementRetryable
 		}
 		return "", err
 	}
@@ -510,10 +570,21 @@ func applyGatewayWalletSettlementTx(tx *gorm.DB, command *PaymentGatewaySettleme
 }
 
 func applyGatewaySubscriptionSettlementTx(tx *gorm.DB, command *PaymentGatewaySettlementCommand, userID int) (string, error) {
+	var user User
+	if err := lockForUpdate(tx).Where("id = ?", userID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// A missing user is retryable: the gateway must not acknowledge a
+			// provider success while the entitlement owner is unavailable.
+			return "", ErrPaymentGatewaySettlementRetryable
+		}
+		return "", err
+	}
 	var order SubscriptionOrder
 	if err := lockForUpdate(tx).Where("trade_no = ?", command.MerchantOrderID).First(&order).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrSubscriptionOrderNotFound
+			// Treat a temporarily absent local order as retryable per the gateway
+			// contract; a missing order is not evidence that payment failed.
+			return "", ErrPaymentGatewaySettlementRetryable
 		}
 		return "", err
 	}
@@ -521,6 +592,12 @@ func applyGatewaySubscriptionSettlementTx(tx *gorm.DB, command *PaymentGatewaySe
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
 	if order.PaymentGatewayOrderID == "" || order.PaymentGatewayOrderID != command.OrderID {
+		return "", ErrPaymentGatewaySettlementMismatch
+	}
+	if order.PaymentProviderAccountID != command.ProviderAccountID && (order.PaymentProviderAccountID != "" || command.ProviderAccountID != "") {
+		return "", ErrPaymentGatewaySettlementMismatch
+	}
+	if order.PaymentEnvironment != command.Environment && (order.PaymentEnvironment != "" || command.Environment != "") {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
 	if normalizeGatewayPaymentMethod(order.PaymentMethod) != command.PaymentMethod {
