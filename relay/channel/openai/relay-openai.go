@@ -137,7 +137,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				Usage *dto.Usage `json:"usage"`
 			}
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && service.ValidUsage(streamResp.Usage) {
-				usage = streamResp.Usage
+				usage = dto.MergeUsage(usage, streamResp.Usage)
 				containStreamUsage = true
 			}
 
@@ -162,7 +162,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		err := common.Unmarshal([]byte(secondLastStreamData), &streamResp)
 		if err == nil && streamResp.Usage != nil && service.ValidUsage(streamResp.Usage) {
-			usage = streamResp.Usage
+			usage = dto.MergeUsage(usage, streamResp.Usage)
 			containStreamUsage = true
 
 			if common.DebugEnabled {

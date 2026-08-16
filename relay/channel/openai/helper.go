@@ -149,7 +149,7 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 
 	if service.ValidUsage(lastStreamResponse.Usage) {
 		*containStreamUsage = true
-		*usage = lastStreamResponse.Usage
+		*usage = dto.MergeUsage(*usage, lastStreamResponse.Usage)
 		if !info.ShouldIncludeUsage {
 			*shouldSendLastResp = lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
 				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != ""

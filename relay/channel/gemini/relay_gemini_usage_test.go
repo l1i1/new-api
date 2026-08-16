@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -425,6 +426,111 @@ func TestGeminiStreamHandlerPromptOnlyUsageMetadataEstimatesCompletionTokens(t *
 	require.True(t, usage.BillingUsage.Estimated)
 	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
 	require.Equal(t, usage.CompletionTokens, usage.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
+}
+
+func TestGeminiStreamHandlerRetainsCacheAcrossPartialUsageMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+
+	firstChunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Parts: []dto.GeminiPart{{Text: "partial"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:        100,
+			CandidatesTokenCount:    5,
+			TotalTokenCount:         105,
+			CachedContentTokenCount: 80,
+		},
+	}
+	secondChunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Parts: []dto.GeminiPart{{Text: "done"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     100,
+			CandidatesTokenCount: 10,
+			TotalTokenCount:      110,
+		},
+	}
+
+	firstData, err := common.Marshal(firstChunk)
+	require.NoError(t, err)
+	secondData, err := common.Marshal(secondChunk)
+	require.NoError(t, err)
+	streamBody := []byte("data: " + string(firstData) + "\n" + "data: " + string(secondData) + "\n" + "data: [DONE]\n")
+	resp := &http.Response{Body: io.NopCloser(bytes.NewReader(streamBody))}
+
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+		return true
+	})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	assert.Equal(t, 10, usage.CompletionTokens)
+	assert.Equal(t, 80, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 80, usage.BillingUsage.GeminiUsageMetadata.CachedContentTokenCount)
+}
+
+func TestGeminiStreamHandlerEstimatedBillingRetainsCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+
+	chunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Parts: []dto.GeminiPart{{Text: "partial answer"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:        100,
+			TotalTokenCount:         100,
+			CachedContentTokenCount: 80,
+		},
+	}
+	chunkData, err := common.Marshal(chunk)
+	require.NoError(t, err)
+	resp := &http.Response{
+		Body: io.NopCloser(bytes.NewReader([]byte("data: " + string(chunkData) + "\n" + "data: [DONE]\n"))),
+	}
+
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+		return true
+	})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	assert.Greater(t, usage.CompletionTokens, 0)
+	assert.Equal(t, 80, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 80, usage.BillingUsage.GeminiUsageMetadata.CachedContentTokenCount)
 }
 
 func TestGeminiChatHandlerPromptOnlyUsageMetadataEstimatesCompletionTokens(t *testing.T) {

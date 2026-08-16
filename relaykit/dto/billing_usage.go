@@ -116,9 +116,10 @@ func NewEstimatedGeminiChatBillingUsage(usage *Usage) *BillingUsage {
 		totalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	return newGeminiChatBillingUsage(&GeminiUsageMetadata{
-		PromptTokenCount:     usage.PromptTokens,
-		CandidatesTokenCount: usage.CompletionTokens,
-		TotalTokenCount:      totalTokens,
+		PromptTokenCount:        usage.PromptTokens,
+		CandidatesTokenCount:    usage.CompletionTokens,
+		TotalTokenCount:         totalTokens,
+		CachedContentTokenCount: usage.PromptTokensDetails.CachedTokens,
 	}, true)
 }
 

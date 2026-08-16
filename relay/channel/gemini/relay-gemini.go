@@ -178,7 +178,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		// 更新使用量统计
 		if metadata := geminiResponse.GetUsageMetadata(); dto.HasGeminiUsageMetadataTokens(metadata) {
 			mappedUsage := buildUsageFromGeminiMetadata(metadata, info.GetEstimatePromptTokens())
-			*usage = mappedUsage
+			usage = dto.MergeUsage(usage, &mappedUsage)
 			hasBillableUsageMetadata = true
 		}
 

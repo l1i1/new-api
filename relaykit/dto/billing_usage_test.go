@@ -53,6 +53,9 @@ func TestNewEstimatedGeminiChatBillingUsage(t *testing.T) {
 	billingUsage := NewEstimatedGeminiChatBillingUsage(&Usage{
 		PromptTokens:     11,
 		CompletionTokens: 7,
+		PromptTokensDetails: InputTokenDetails{
+			CachedTokens: 5,
+		},
 	})
 
 	require.NotNil(t, billingUsage)
@@ -61,6 +64,29 @@ func TestNewEstimatedGeminiChatBillingUsage(t *testing.T) {
 	assert.Equal(t, 11, billingUsage.GeminiUsageMetadata.PromptTokenCount)
 	assert.Equal(t, 7, billingUsage.GeminiUsageMetadata.CandidatesTokenCount)
 	assert.Equal(t, 18, billingUsage.GeminiUsageMetadata.TotalTokenCount)
+	assert.Equal(t, 5, billingUsage.GeminiUsageMetadata.CachedContentTokenCount)
+}
+
+func TestMergeUsageRetainsGeminiCacheFromEarlierEvent(t *testing.T) {
+	previous := &Usage{
+		PromptTokens:        100,
+		TotalTokens:         105,
+		BillingUsage:        NewGeminiChatBillingUsage(&GeminiUsageMetadata{PromptTokenCount: 100, TotalTokenCount: 105, CachedContentTokenCount: 80}),
+		PromptTokensDetails: InputTokenDetails{CachedTokens: 80},
+	}
+	next := &Usage{
+		PromptTokens:     100,
+		CompletionTokens: 5,
+		TotalTokens:      105,
+		BillingUsage:     NewGeminiChatBillingUsage(&GeminiUsageMetadata{PromptTokenCount: 100, CandidatesTokenCount: 5, TotalTokenCount: 105}),
+	}
+
+	merged := MergeUsage(previous, next)
+	require.NotNil(t, merged)
+	assert.Equal(t, 80, merged.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, merged.BillingUsage)
+	require.NotNil(t, merged.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 80, merged.BillingUsage.GeminiUsageMetadata.CachedContentTokenCount)
 }
 
 func TestBillingUsageJSONUsesProtocolNamedFields(t *testing.T) {
