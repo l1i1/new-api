@@ -500,7 +500,7 @@ export function ChannelAffinitySection(props: Props) {
                     setRuleEditorOpen(true)
                   }}
                 >
-                  {tpl.name}
+                  {t(tpl.name)}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>

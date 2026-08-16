@@ -323,6 +323,9 @@ func InitResources() error {
 		if err := model.MigrateRetiredFrontendOptions(); err != nil {
 			common.SysError("failed to migrate retired frontend options: " + err.Error())
 		}
+		if err := model.MigrateChannelAffinityDefaultRules(); err != nil {
+			common.SysError("failed to migrate channel affinity default rules: " + err.Error())
+		}
 	}
 	model.InitOptionMap()
 

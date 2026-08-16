@@ -110,6 +110,52 @@ func buildPassHeaderTemplate(headers []string) map[string]interface{} {
 	}
 }
 
+// HistoricalDefaultChannelAffinityRules returns the two-rule defaults used by
+// releases before the broader affinity templates were added. The Codex rule
+// accepts both the original full header set and the later trimmed set so the
+// startup migration can distinguish untouched defaults from admin edits.
+func HistoricalDefaultChannelAffinityRules() [][]ChannelAffinityRule {
+	buildRules := func(codexHeaders []string) []ChannelAffinityRule {
+		return []ChannelAffinityRule{
+			{
+				Name:       "codex cli trace",
+				ModelRegex: []string{"^gpt-.*$"},
+				PathRegex:  []string{"/v1/responses"},
+				KeySources: []ChannelAffinityKeySource{
+					{Type: "gjson", Path: "prompt_cache_key"},
+				},
+				ValueRegex:            "",
+				TTLSeconds:            0,
+				ParamOverrideTemplate: buildPassHeaderTemplate(codexHeaders),
+				SkipRetryOnFailure:    true,
+				IncludeUsingGroup:     true,
+				IncludeModelName:      false,
+				IncludeRuleName:       true,
+			},
+			{
+				Name:       "claude cli trace",
+				ModelRegex: []string{"^claude-.*$"},
+				PathRegex:  []string{"/v1/messages"},
+				KeySources: []ChannelAffinityKeySource{
+					{Type: "gjson", Path: "metadata.user_id"},
+				},
+				ValueRegex:            "",
+				TTLSeconds:            0,
+				ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
+				SkipRetryOnFailure:    true,
+				IncludeUsingGroup:     true,
+				IncludeModelName:      false,
+				IncludeRuleName:       true,
+			},
+		}
+	}
+
+	return [][]ChannelAffinityRule{
+		buildRules(codexCliPassThroughHeaders),
+		buildRules(codexCliPassThroughHeadersActive),
+	}
+}
+
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:               true,
 	SwitchOnSuccess:       true,
@@ -127,7 +173,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeadersActive),
-			SkipRetryOnFailure:    false,
+			SkipRetryOnFailure:    true,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      []string{},
@@ -142,7 +188,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
-			SkipRetryOnFailure:    false,
+			SkipRetryOnFailure:    true,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      []string{},
