@@ -397,11 +397,29 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
-			bodyMap["usage"] = simpleResponse.Usage
+			bodyMap["usage"] = helper.UsageForClient(&simpleResponse.Usage)
 			responseBody, _ = common.Marshal(bodyMap)
 		}
 		if forceFormat {
-			responseBody, err = common.Marshal(simpleResponse)
+			responseBody, err = common.Marshal(helper.OpenAITextResponseForClient(&simpleResponse))
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		} else if simpleResponse.Usage.BillingUsage != nil {
+			// Upstream extensions are preserved in the normal path, but the
+			// internal billing extension must never cross the client boundary.
+			var bodyMap map[string]interface{}
+			if err = common.Unmarshal(responseBody, &bodyMap); err != nil {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+			if rawUsage, ok := bodyMap["usage"]; ok {
+				var usageMap map[string]interface{}
+				if usageMap, ok = rawUsage.(map[string]interface{}); ok {
+					delete(usageMap, "billing_usage")
+					bodyMap["usage"] = usageMap
+				}
+			}
+			responseBody, err = common.Marshal(bodyMap)
 			if err != nil {
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}

@@ -255,3 +255,47 @@ func TestPatchStreamUsageDataPreservesExtensionsAndStripsBillingUsage(t *testing
 	assert.JSONEq(t, `{"cache_tier":"ephemeral"}`, string(payload.Usage["provider_extension"]))
 	assert.Equal(t, "10", string(payload.Usage["prompt_tokens"]))
 }
+
+func TestOpenaiHandlerStripsBillingUsageFromNormalResponse(t *testing.T) {
+	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1710000000,"model":"gpt-test","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5,"provider_extension":{"tier":"standard"},"billing_usage":{"source":"internal"}}}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+
+	usage, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, 5, usage.TotalTokens)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+	assert.Contains(t, recorder.Body.String(), `"provider_extension":{"tier":"standard"}`)
+}
+
+func TestOpenaiHandlerStripsBillingUsageWhenForceFormatting(t *testing.T) {
+	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1710000000,"model":"gpt-test","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5,"billing_usage":{"source":"internal"}}}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gpt-test",
+			ChannelSetting:    dto.ChannelSettings{ForceFormat: true},
+		},
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+
+	_, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	})
+
+	require.Nil(t, err)
+	assert.NotContains(t, recorder.Body.String(), `billing_usage`)
+}
