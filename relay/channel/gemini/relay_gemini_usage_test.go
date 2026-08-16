@@ -68,6 +68,80 @@ func TestGeminiChatHandlerCompletionTokensExcludeToolUsePromptTokens(t *testing.
 	require.Equal(t, 1120, usage.CompletionTokenDetails.ReasoningTokens)
 }
 
+func TestGeminiChatHandlerDoesNotExposeBillingUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	info := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+	payload := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Role: "model", Parts: []dto.GeminiPart{{Text: "ok"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 2,
+			TotalTokenCount:      12,
+		},
+	}
+	body, err := common.Marshal(payload)
+	require.NoError(t, err)
+
+	usage, newAPIError := GeminiChatHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(body))})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BillingUsage)
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
+func TestGeminiChatStreamHandlerDoesNotExposeBillingUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		OriginModelName:    "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+	payload := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Role: "model", Parts: []dto.GeminiPart{{Text: "ok"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 2,
+			TotalTokenCount:      12,
+		},
+	}
+	chunk, err := common.Marshal(payload)
+	require.NoError(t, err)
+	streamBody := []byte("data: " + string(chunk) + "\n" + "data: [DONE]\n")
+
+	usage, newAPIError := GeminiChatStreamHandler(c, info, &http.Response{Body: io.NopCloser(bytes.NewReader(streamBody))})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BillingUsage)
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
 func TestGeminiStreamHandlerCompletionTokensExcludeToolUsePromptTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -223,7 +297,7 @@ func TestGeminiChatHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *tes
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }
 
 func TestGeminiStreamHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *testing.T) {
@@ -280,7 +354,7 @@ func TestGeminiStreamHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *t
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }
 
 func TestGeminiTextGenerationHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *testing.T) {
@@ -330,7 +404,7 @@ func TestGeminiTextGenerationHandlerUsesEstimatedPromptTokensWhenUsagePromptMiss
 	require.NotNil(t, usage)
 	require.Equal(t, 20, usage.PromptTokens)
 	require.Equal(t, 100, usage.CompletionTokens)
-	require.Equal(t, 110, usage.TotalTokens)
+	require.Equal(t, 120, usage.TotalTokens)
 }
 
 func TestGeminiChatHandlerMissingUsageMetadataBuildsEstimatedBillingUsage(t *testing.T) {
@@ -485,6 +559,65 @@ func TestGeminiStreamHandlerRetainsCacheAcrossPartialUsageMetadata(t *testing.T)
 	require.NotNil(t, usage.BillingUsage)
 	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
 	assert.Equal(t, 80, usage.BillingUsage.GeminiUsageMetadata.CachedContentTokenCount)
+}
+
+func TestGeminiStreamHandlerMergesThoughtsAndCandidatesUsageEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-flash-preview",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash-preview",
+		},
+	}
+	firstChunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Parts: []dto.GeminiPart{{Text: "thinking"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:   100,
+			ThoughtsTokenCount: 2,
+			TotalTokenCount:    102,
+		},
+	}
+	secondChunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{Parts: []dto.GeminiPart{{Text: "answer"}}},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     100,
+			CandidatesTokenCount: 5,
+			TotalTokenCount:      105,
+		},
+	}
+
+	firstData, err := common.Marshal(firstChunk)
+	require.NoError(t, err)
+	secondData, err := common.Marshal(secondChunk)
+	require.NoError(t, err)
+	streamBody := []byte("data: " + string(firstData) + "\n" + "data: " + string(secondData) + "\n" + "data: [DONE]\n")
+	resp := &http.Response{Body: io.NopCloser(bytes.NewReader(streamBody))}
+
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+		return true
+	})
+	require.Nil(t, newAPIError)
+	require.NotNil(t, usage)
+	require.Equal(t, 7, usage.CompletionTokens)
+	require.Equal(t, 107, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 2, usage.BillingUsage.GeminiUsageMetadata.ThoughtsTokenCount)
+	assert.Equal(t, 5, usage.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, 107, usage.BillingUsage.GeminiUsageMetadata.TotalTokenCount)
 }
 
 func TestGeminiStreamHandlerEstimatedBillingRetainsCache(t *testing.T) {

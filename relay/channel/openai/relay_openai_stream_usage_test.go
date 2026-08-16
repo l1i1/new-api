@@ -1,17 +1,21 @@
 package openai
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,6 +63,7 @@ func TestOaiStreamHandlerKeepsUsageBeforeFinalEvent(t *testing.T) {
 	require.Equal(t, 11776, usage.PromptTokensDetails.CachedTokens)
 	require.Equal(t, 1, strings.Count(recorder.Body.String(), `"usage"`))
 	require.NotContains(t, recorder.Body.String(), `"prompt_tokens":4672`)
+	require.Greater(t, strings.LastIndex(recorder.Body.String(), `"usage"`), strings.Index(recorder.Body.String(), `"finish_reason":"stop"`))
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
@@ -104,5 +109,34 @@ func TestOaiStreamHandlerRetainsCacheAcrossUsageEvents(t *testing.T) {
 	require.NotNil(t, usage)
 	require.Equal(t, 10, usage.CompletionTokens)
 	require.Equal(t, 80, usage.PromptTokensDetails.CachedTokens)
-	require.Contains(t, recorder.Body.String(), `"cached_tokens":80`)
+	usageEvents := make([]string, 0, 2)
+	for _, line := range strings.Split(recorder.Body.String(), "\n") {
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"usage"`) {
+			usageEvents = append(usageEvents, line)
+		}
+	}
+	require.NotEmpty(t, usageEvents)
+	require.Len(t, usageEvents, 1)
+	assert.Contains(t, usageEvents[len(usageEvents)-1], `"cached_tokens":80`)
+}
+
+func TestPatchStreamUsageDataPreservesExtensionsAndStripsBillingUsage(t *testing.T) {
+	data := `{"usage":{"prompt_tokens":1,"provider_extension":{"cache_tier":"ephemeral"},"billing_usage":{"source":"internal"}}}`
+	usage := &dto.Usage{
+		PromptTokens: 10,
+		BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+			PromptTokens: 10,
+		}),
+	}
+
+	patched, err := patchStreamUsageData(data, usage)
+	require.NoError(t, err)
+
+	var payload struct {
+		Usage map[string]json.RawMessage `json:"usage"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(patched, &payload))
+	assert.NotContains(t, payload.Usage, "billing_usage")
+	assert.JSONEq(t, `{"cache_tier":"ephemeral"}`, string(payload.Usage["provider_extension"]))
+	assert.Equal(t, "10", string(payload.Usage["prompt_tokens"]))
 }

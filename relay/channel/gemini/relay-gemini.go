@@ -298,10 +298,12 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		return usage, err
 	}
 
-	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
+	clientUsage := *usage
+	clientUsage.BillingUsage = nil
+	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, clientUsage)
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil && !info.ClaudeConvertInfo.Done {
 		response = helper.GenerateStopResponse(id, createAt, info.UpstreamModelName, finishReason)
-		response.Usage = usage
+		response.Usage = &clientUsage
 	}
 	handleErr := handleFinalStream(c, info, response)
 	if handleErr != nil {
@@ -362,7 +364,9 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	fullTextResponse.Model = info.UpstreamModelName
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
-	fullTextResponse.Usage = usage
+	clientUsage := usage
+	clientUsage.BillingUsage = nil
+	fullTextResponse.Usage = clientUsage
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:

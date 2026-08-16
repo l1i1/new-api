@@ -47,7 +47,7 @@
   "usage": {
     "prompt_tokens": 10,
     "completion_tokens": 7,
-    "total_tokens": 15,
+    "total_tokens": 17,
     "billing_usage": {
       "source": "gemini_chat",
       "semantic": "gemini",
@@ -55,7 +55,7 @@
         "promptTokenCount": 10,
         "toolUsePromptTokenCount": 0,
         "candidatesTokenCount": 5,
-        "totalTokenCount": 15,
+        "totalTokenCount": 17,
         "thoughtsTokenCount": 2,
         "cachedContentTokenCount": 0,
         "promptTokensDetails": [],

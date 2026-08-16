@@ -73,7 +73,7 @@ func UsageFromGeminiMetadata(metadata *dto.GeminiUsageMetadata, fallbackPromptTo
 		usage.PromptTokensDetails.TextTokens = usage.PromptTokens
 	}
 
-	return usage
+	return dto.MergeUsage(&dto.Usage{}, usage)
 }
 
 func ResponseGeminiChat2OpenAI(id string, created int64, response *dto.GeminiChatResponse) *dto.OpenAITextResponse {

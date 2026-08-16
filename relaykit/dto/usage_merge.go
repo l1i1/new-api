@@ -43,6 +43,7 @@ func MergeUsage(previous, next *Usage) *Usage {
 		merged.InputTokensDetails = &inputDetails
 	}
 	merged.BillingUsage = mergeBillingUsage(previous.BillingUsage, next.BillingUsage)
+	syncGeminiUsageFromBilling(&merged)
 	return &merged
 }
 
@@ -110,14 +111,80 @@ func mergeGeminiUsageMetadata(previous, current GeminiUsageMetadata) GeminiUsage
 	mergeInt(&current.TotalTokenCount, previous.TotalTokenCount)
 	mergeInt(&current.ThoughtsTokenCount, previous.ThoughtsTokenCount)
 	mergeInt(&current.CachedContentTokenCount, previous.CachedContentTokenCount)
-	if len(current.PromptTokensDetails) == 0 {
-		current.PromptTokensDetails = append([]GeminiPromptTokensDetails{}, previous.PromptTokensDetails...)
-	}
-	if len(current.ToolUsePromptTokensDetails) == 0 {
-		current.ToolUsePromptTokensDetails = append([]GeminiPromptTokensDetails{}, previous.ToolUsePromptTokensDetails...)
-	}
-	if len(current.CandidatesTokensDetails) == 0 {
-		current.CandidatesTokensDetails = append([]GeminiPromptTokensDetails{}, previous.CandidatesTokensDetails...)
-	}
+	current.PromptTokensDetails = mergeGeminiTokenDetails(previous.PromptTokensDetails, current.PromptTokensDetails)
+	current.ToolUsePromptTokensDetails = mergeGeminiTokenDetails(previous.ToolUsePromptTokensDetails, current.ToolUsePromptTokensDetails)
+	current.CandidatesTokensDetails = mergeGeminiTokenDetails(previous.CandidatesTokensDetails, current.CandidatesTokensDetails)
 	return current
+}
+
+// mergeGeminiTokenDetails retains one latest confirmed value per modality. A
+// later stream event can omit modalities reported by an earlier event, so
+// replacing the whole slice would silently drop billable token classes.
+func mergeGeminiTokenDetails(previous, current []GeminiPromptTokensDetails) []GeminiPromptTokensDetails {
+	if len(previous) == 0 && len(current) == 0 {
+		return nil
+	}
+
+	merged := make([]GeminiPromptTokensDetails, 0, len(previous)+len(current))
+	byModality := make(map[string]int, len(previous)+len(current))
+	merge := func(detail GeminiPromptTokensDetails) {
+		if index, ok := byModality[detail.Modality]; ok {
+			// Zero is ambiguous on partial streams; retain a confirmed earlier
+			// count until a later event provides a non-zero value.
+			if detail.TokenCount != 0 {
+				merged[index] = detail
+			}
+			return
+		}
+		byModality[detail.Modality] = len(merged)
+		merged = append(merged, detail)
+	}
+
+	for _, detail := range previous {
+		merge(detail)
+	}
+	for _, detail := range current {
+		merge(detail)
+	}
+	return merged
+}
+
+// syncGeminiUsageFromBilling keeps the protocol-neutral usage object aligned
+// with the merged Gemini metadata used for settlement. This is important when
+// separate stream events carry thoughts and candidates token counts.
+func syncGeminiUsageFromBilling(usage *Usage) {
+	if usage == nil || usage.BillingUsage == nil || usage.BillingUsage.GeminiUsageMetadata == nil {
+		return
+	}
+
+	metadata := usage.BillingUsage.GeminiUsageMetadata
+	promptTokens := metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount
+	if promptTokens == 0 && usage.PromptTokens != 0 {
+		promptTokens = usage.PromptTokens
+		metadata.PromptTokenCount = promptTokens
+	}
+	completionTokens := metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount
+	if completionTokens == 0 && usage.CompletionTokens != 0 {
+		completionTokens = usage.CompletionTokens
+		metadata.CandidatesTokenCount = completionTokens
+	}
+	totalTokens := metadata.TotalTokenCount
+	if totalTokens == 0 {
+		totalTokens = usage.TotalTokens
+	}
+	derivedTotal := promptTokens + completionTokens
+	if derivedTotal > totalTokens {
+		totalTokens = derivedTotal
+	}
+	metadata.TotalTokenCount = totalTokens
+
+	usage.PromptTokens = promptTokens
+	usage.CompletionTokens = completionTokens
+	usage.TotalTokens = totalTokens
+	if metadata.ThoughtsTokenCount != 0 || usage.CompletionTokenDetails.ReasoningTokens == 0 {
+		usage.CompletionTokenDetails.ReasoningTokens = metadata.ThoughtsTokenCount
+	}
+	if metadata.CachedContentTokenCount != 0 || usage.PromptTokensDetails.CachedTokens == 0 {
+		usage.PromptTokensDetails.CachedTokens = metadata.CachedContentTokenCount
+	}
 }

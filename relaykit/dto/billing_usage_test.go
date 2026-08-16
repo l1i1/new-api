@@ -89,6 +89,115 @@ func TestMergeUsageRetainsGeminiCacheFromEarlierEvent(t *testing.T) {
 	assert.Equal(t, 80, merged.BillingUsage.GeminiUsageMetadata.CachedContentTokenCount)
 }
 
+func TestMergeUsageKeepsGeminiThoughtsAndCandidatesConsistent(t *testing.T) {
+	previousMetadata := &GeminiUsageMetadata{
+		PromptTokenCount:   100,
+		ThoughtsTokenCount: 2,
+		TotalTokenCount:    102,
+	}
+	nextMetadata := &GeminiUsageMetadata{
+		PromptTokenCount:     100,
+		CandidatesTokenCount: 5,
+		TotalTokenCount:      105,
+	}
+
+	previous := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(previousMetadata),
+	}
+	next := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(nextMetadata),
+	}
+
+	merged := MergeUsage(previous, next)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.BillingUsage)
+	require.NotNil(t, merged.BillingUsage.GeminiUsageMetadata)
+
+	metadata := merged.BillingUsage.GeminiUsageMetadata
+	assert.Equal(t, 2, metadata.ThoughtsTokenCount)
+	assert.Equal(t, 5, metadata.CandidatesTokenCount)
+	assert.Equal(t, 100, metadata.PromptTokenCount)
+	assert.Equal(t, 107, metadata.TotalTokenCount)
+	assert.Equal(t, metadata.PromptTokenCount+metadata.ToolUsePromptTokenCount, merged.PromptTokens)
+	assert.Equal(t, metadata.CandidatesTokenCount+metadata.ThoughtsTokenCount, merged.CompletionTokens)
+	assert.Equal(t, metadata.TotalTokenCount, merged.TotalTokens)
+}
+
+func TestMergeUsageMergesGeminiModalitiesAcrossPartialEvents(t *testing.T) {
+	previous := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{
+			PromptTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "TEXT", TokenCount: 100},
+			},
+			ToolUsePromptTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "AUDIO", TokenCount: 20},
+			},
+			CandidatesTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "IMAGE", TokenCount: 30},
+			},
+		}),
+	}
+	next := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{
+			PromptTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "IMAGE", TokenCount: 7},
+			},
+			ToolUsePromptTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "TEXT", TokenCount: 8},
+			},
+			CandidatesTokensDetails: []GeminiPromptTokensDetails{
+				{Modality: "AUDIO", TokenCount: 9},
+			},
+		}),
+	}
+
+	merged := MergeUsage(previous, next)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.BillingUsage)
+	require.NotNil(t, merged.BillingUsage.GeminiUsageMetadata)
+
+	metadata := merged.BillingUsage.GeminiUsageMetadata
+	assert.Equal(t, []GeminiPromptTokensDetails{
+		{Modality: "TEXT", TokenCount: 100},
+		{Modality: "IMAGE", TokenCount: 7},
+	}, metadata.PromptTokensDetails)
+	assert.Equal(t, []GeminiPromptTokensDetails{
+		{Modality: "AUDIO", TokenCount: 20},
+		{Modality: "TEXT", TokenCount: 8},
+	}, metadata.ToolUsePromptTokensDetails)
+	assert.Equal(t, []GeminiPromptTokensDetails{
+		{Modality: "IMAGE", TokenCount: 30},
+		{Modality: "AUDIO", TokenCount: 9},
+	}, metadata.CandidatesTokensDetails)
+}
+
+func TestMergeUsageKeepsGeminiFallbackTotalsForCacheOnlyMetadata(t *testing.T) {
+	previous := &Usage{
+		PromptTokens:     100,
+		CompletionTokens: 5,
+		TotalTokens:      105,
+		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{
+			CachedContentTokenCount: 80,
+		}),
+	}
+	next := &Usage{
+		BillingUsage: NewGeminiChatBillingUsage(&GeminiUsageMetadata{
+			CachedContentTokenCount: 80,
+		}),
+	}
+
+	merged := MergeUsage(previous, next)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.BillingUsage)
+	require.NotNil(t, merged.BillingUsage.GeminiUsageMetadata)
+	assert.Equal(t, 100, merged.PromptTokens)
+	assert.Equal(t, 5, merged.CompletionTokens)
+	assert.Equal(t, 105, merged.TotalTokens)
+	assert.Equal(t, 100, merged.BillingUsage.GeminiUsageMetadata.PromptTokenCount)
+	assert.Equal(t, 5, merged.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, 105, merged.BillingUsage.GeminiUsageMetadata.TotalTokenCount)
+}
+
 func TestBillingUsageJSONUsesProtocolNamedFields(t *testing.T) {
 	billingUsage := &BillingUsage{
 		OpenAIUsage:         &Usage{PromptTokens: 1, BillingUsage: NewClaudeMessagesBillingUsage(&ClaudeUsage{InputTokens: 9})},

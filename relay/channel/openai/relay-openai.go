@@ -118,6 +118,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var toolCount int
 	var usage = &dto.Usage{}
 	var lastStreamData string
+	var pendingUsageData string
+	var lastStreamHasUsage bool
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
@@ -126,27 +128,55 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		if lastStreamData != "" {
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
-				sr.Error(err)
-			}
-		}
+		currentHasUsage := false
 		if len(data) > 0 {
 			var streamResp struct {
 				Usage *dto.Usage `json:"usage"`
 			}
-			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && service.ValidUsage(streamResp.Usage) {
-				usage = dto.MergeUsage(usage, streamResp.Usage)
-				containStreamUsage = true
+			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && streamResp.Usage != nil {
+				currentHasUsage = true
+				if service.ValidUsage(streamResp.Usage) {
+					usage = dto.MergeUsage(usage, streamResp.Usage)
+					containStreamUsage = true
+				}
+			}
+			// Apply provider-specific cache extraction before the previous
+			// usage event is emitted, including caches carried by a later
+			// non-usage event (for example Moonshot choices[].usage).
+			if containStreamUsage {
+				applyUsagePostProcessing(info, usage, common.StringToByteSlice(data))
+			}
+		}
+
+		if lastStreamData != "" {
+			if info.RelayFormat == types.RelayFormatOpenAI && lastStreamHasUsage {
+				// Keep only the latest upstream usage event. Forwarding multiple
+				// cumulative chunks can make clients account the same request twice.
+				pendingUsageData = lastStreamData
+			} else {
+				streamData := lastStreamData
+				if info.RelayFormat == types.RelayFormatOpenAI {
+					patched, err := patchStreamUsageData(streamData, usage)
+					if err != nil {
+						common.SysLog("error patching stream usage; forwarding original event: " + err.Error())
+					} else {
+						streamData = patched
+					}
+				}
+				if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+					common.SysLog("error handling stream format: " + err.Error())
+					sr.Error(err)
+				}
 			}
 
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
 				secondLastStreamData = lastStreamData
 			}
-
+		}
+		if len(data) > 0 {
 			lastStreamData = data
+			lastStreamHasUsage = currentHasUsage
 			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
@@ -180,18 +210,35 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
-		}
-	}
-
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+
+	if info.RelayFormat == types.RelayFormatOpenAI {
+		if shouldSendLastResp {
+			streamData := lastStreamData
+			patched, err := patchStreamUsageData(streamData, usage)
+			if err != nil {
+				logger.LogError(c, "error patching final stream usage: "+err.Error())
+			} else {
+				streamData = patched
+			}
+			_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		}
+		if !lastStreamHasUsage && pendingUsageData != "" {
+			streamData := pendingUsageData
+			patched, err := patchStreamUsageData(streamData, usage)
+			if err != nil {
+				logger.LogError(c, "error patching pending stream usage; forwarding original event: "+err.Error())
+			} else {
+				streamData = patched
+			}
+			_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		}
+	}
 
 	for _, name := range streamFunctionCallNames {
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)

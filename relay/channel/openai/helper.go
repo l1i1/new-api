@@ -20,6 +20,54 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// patchStreamUsageData replaces only an SSE event's usage object with the
+// merged usage observed so far. Upstreams may split cache/details across
+// multiple usage events; forwarding the raw final event would make clients
+// under-report those fields even when billing retained them.
+func patchStreamUsageData(data string, usage *dto.Usage) (string, error) {
+	if data == "" || usage == nil {
+		return data, nil
+	}
+
+	var payload map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
+		return data, err
+	}
+	rawUsage, ok := payload["usage"]
+	if !ok || strings.TrimSpace(string(rawUsage)) == "null" {
+		return data, nil
+	}
+	var usagePayload map[string]json.RawMessage
+	if err := common.Unmarshal(rawUsage, &usagePayload); err != nil {
+		return data, err
+	}
+	delete(usagePayload, "billing_usage")
+
+	clientUsage := *usage
+	clientUsage.BillingUsage = nil
+	encodedUsage, err := common.Marshal(clientUsage)
+	if err != nil {
+		return data, err
+	}
+	var mergedUsagePayload map[string]json.RawMessage
+	if err := common.Unmarshal(encodedUsage, &mergedUsagePayload); err != nil {
+		return data, err
+	}
+	for key, value := range mergedUsagePayload {
+		usagePayload[key] = value
+	}
+	encodedUsage, err = common.Marshal(usagePayload)
+	if err != nil {
+		return data, err
+	}
+	payload["usage"] = encodedUsage
+	patched, err := common.Marshal(payload)
+	if err != nil {
+		return data, err
+	}
+	return string(patched), nil
+}
+
 // 辅助函数
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	info.SendResponseCount++
