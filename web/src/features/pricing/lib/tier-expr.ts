@@ -234,7 +234,7 @@ export function tryParseVisualConfig(
 
     const cfg = normalizeVisualConfig({ tiers })
     const regenerated = generateExprFromVisualConfig(cfg)
-    if (regenerated.replace(/\s+/g, '') !== body.replace(/\s+/g, '')) {
+    if (regenerated.replaceAll(/\s+/g, '') !== body.replaceAll(/\s+/g, '')) {
       return null
     }
     return cfg
@@ -268,6 +268,58 @@ export type EvalResult = {
   error: string | null
 }
 
+type LocalTimeParts = {
+  hour: number
+  minute: number
+  weekday: number
+  month: number
+  day: number
+}
+
+const UTC_TIME_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
+  timeZone: 'UTC',
+  hour: '2-digit',
+  hourCycle: 'h23',
+  minute: '2-digit',
+  weekday: 'short',
+  month: '2-digit',
+  day: '2-digit',
+}
+
+function localTimeParts(now: Date, timezone: string): LocalTimeParts {
+  const requestedTimezone = timezone.trim() || 'UTC'
+  let formatter: Intl.DateTimeFormat
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      ...UTC_TIME_FORMAT_OPTIONS,
+      timeZone: requestedTimezone,
+    })
+  } catch {
+    formatter = new Intl.DateTimeFormat('en-US', UTC_TIME_FORMAT_OPTIONS)
+  }
+
+  const parts = Object.fromEntries(
+    formatter.formatToParts(now).map((part) => [part.type, part.value])
+  )
+  const weekdayByName: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  }
+
+  return {
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    weekday: weekdayByName[parts.weekday] ?? 0,
+    month: Number(parts.month),
+    day: Number(parts.day),
+  }
+}
+
 export function evalExprLocally(
   exprStr: string,
   promptTokens: number,
@@ -288,11 +340,26 @@ export function evalExprLocally(
     const cacheCreate1hTokens = extraTokenValues.cacheCreate1hTokens || 0
     const len =
       promptTokens + cacheReadTokens + cacheCreateTokens + cacheCreate1hTokens
+    const now = new Date()
+    const timeCache = new Map<string, LocalTimeParts>()
+    const getTimeParts = (timezone: string) => {
+      const key = timezone.trim() || 'UTC'
+      const cached = timeCache.get(key)
+      if (cached) return cached
+      const parts = localTimeParts(now, key)
+      timeCache.set(key, parts)
+      return parts
+    }
     const env: Record<string, unknown> = {
       p: promptTokens,
       c: completionTokens,
       len,
       tier: tierFn,
+      hour: (timezone: string) => getTimeParts(timezone).hour,
+      minute: (timezone: string) => getTimeParts(timezone).minute,
+      weekday: (timezone: string) => getTimeParts(timezone).weekday,
+      month: (timezone: string) => getTimeParts(timezone).month,
+      day: (timezone: string) => getTimeParts(timezone).day,
       max: Math.max,
       min: Math.min,
       abs: Math.abs,
