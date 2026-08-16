@@ -5589,6 +5589,8 @@
     "Save privacy settings": "Сохранить настройки конфиденциальности",
     "Privacy filter expression": "Выражение фильтра конфиденциальности",
     "Enter a Go RE2 regular expression": "Введите регулярное выражение Go RE2",
-    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Совпадения удаляются из сообщений ретранслируемых ошибок. Оставьте поле пустым, чтобы не изменять сообщения; выражения используют синтаксис Go RE2."
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Совпадения удаляются из сообщений ретранслируемых ошибок. Оставьте поле пустым, чтобы не изменять сообщения; выражения используют синтаксис Go RE2.",
+    "Fill Rule Templates": "Fill Rule Templates",
+    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
   }
 }

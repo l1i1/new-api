@@ -5589,6 +5589,8 @@
     "Save privacy settings": "プライバシー設定を保存",
     "Privacy filter expression": "プライバシーフィルター式",
     "Enter a Go RE2 regular expression": "Go RE2 正規表現を入力",
-    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "一致した内容はリレーエラーメッセージから削除されます。メッセージを変更しない場合は空欄にしてください。式には Go RE2 構文を使用します。"
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "一致した内容はリレーエラーメッセージから削除されます。メッセージを変更しない場合は空欄にしてください。式には Go RE2 構文を使用します。",
+    "Fill Rule Templates": "Fill Rule Templates",
+    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
   }
 }

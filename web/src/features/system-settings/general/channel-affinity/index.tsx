@@ -491,24 +491,18 @@ export function ChannelAffinitySection(props: Props) {
               >
                 {t('Blank Rule')}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  setEditingRule(null)
-                  setRuleTemplateKey('codexCli')
-                  setRuleEditorOpen(true)
-                }}
-              >
-                Codex CLI
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  setEditingRule(null)
-                  setRuleTemplateKey('claudeCli')
-                  setRuleEditorOpen(true)
-                }}
-              >
-                Claude CLI
-              </DropdownMenuItem>
+              {Object.entries(RULE_TEMPLATES).map(([key, tpl]) => (
+                <DropdownMenuItem
+                  key={key}
+                  onClick={() => {
+                    setEditingRule(null)
+                    setRuleTemplateKey(key)
+                    setRuleEditorOpen(true)
+                  }}
+                >
+                  {tpl.name}
+                </DropdownMenuItem>
+              ))}
             </DropdownMenuContent>
           </DropdownMenu>
           <Button variant='outline' size='sm' onClick={handleFillTemplates}>
@@ -707,9 +701,9 @@ export function ChannelAffinitySection(props: Props) {
       <ChannelAffinityConfirmDialog
         open={fillTemplateDialogOpen}
         onOpenChange={setFillTemplateDialogOpen}
-        title={t('Fill Codex CLI / Claude CLI Templates')}
+        title={t('Fill Rule Templates')}
         desc={t(
-          'This will append 2 template rules (Codex CLI and Claude CLI) to the existing rule list.'
+          'This will append all template rules to the existing rule list.'
         )}
         handleConfirm={appendCliTemplates}
       />

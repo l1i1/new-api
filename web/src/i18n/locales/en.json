@@ -5589,6 +5589,8 @@
     "Save privacy settings": "Save privacy settings",
     "Privacy filter expression": "Privacy filter expression",
     "Enter a Go RE2 regular expression": "Enter a Go RE2 regular expression",
-    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax."
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.",
+    "Fill Rule Templates": "Fill Rule Templates",
+    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
   }
 }

@@ -36,8 +36,11 @@ type ChannelAffinitySetting struct {
 	Rules                 []ChannelAffinityRule `json:"rules"`
 }
 
-// Keep Codex CLI passthrough aligned with upstream. Codex uses lower-case
-// header names, while HTTP matching here is case-insensitive.
+// codexCliPassThroughHeaders is the full upstream Codex session-routing
+// header set. Keep it as the reference list for restoring upstream parity.
+// Codex uses lower-case header names, while HTTP matching here is
+// case-insensitive. The default template ships the trimmed production set
+// (codexCliPassThroughHeadersActive) instead.
 // Request session/thread headers:
 // https://github.com/openai/codex/commit/7c7b4861d88960f7e3bd5b7f30f8351be666dd84
 // Responses metadata headers/client_metadata:
@@ -63,6 +66,18 @@ var codexCliPassThroughHeaders = []string{
 	//"X-OAI-Attestation",
 	"X-ResponsesAPI-Include-Timing-Metrics",
 	"X-OpenAI-Internal-Codex-Responses-Lite",
+}
+
+// codexCliPassThroughHeadersActive is the header set shipped by the default
+// "codex cli trace" rule. It matches the Tokeness production rules: only the
+// headers proven safe to pass upstream are forwarded, so session routing
+// works without leaking optional flags.
+var codexCliPassThroughHeadersActive = []string{
+	"Originator",
+	"Session_id",
+	"User-Agent",
+	"X-Codex-Beta-Features",
+	"X-Codex-Turn-Metadata",
 }
 
 var claudeCliPassThroughHeaders = []string{
@@ -95,20 +110,6 @@ func buildPassHeaderTemplate(headers []string) map[string]interface{} {
 	}
 }
 
-func buildCodexPassHeaderTemplate() map[string]interface{} {
-	requestHeaders := make([]string, 0, len(codexCliPassThroughHeaders))
-	requestHeaders = append(requestHeaders, codexCliPassThroughHeaders...)
-	return map[string]interface{}{
-		"operations": []map[string]interface{}{
-			{
-				"mode":        "pass_headers",
-				"value":       requestHeaders,
-				"keep_origin": true,
-			},
-		},
-	}
-}
-
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:               true,
 	SwitchOnSuccess:       true,
@@ -125,11 +126,11 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			},
 			ValueRegex:            "",
 			TTLSeconds:            0,
-			ParamOverrideTemplate: buildCodexPassHeaderTemplate(),
-			SkipRetryOnFailure:    true,
+			ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeadersActive),
+			SkipRetryOnFailure:    false,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
-			UserAgentInclude:      nil,
+			UserAgentInclude:      []string{},
 		},
 		{
 			Name:       "claude cli trace",
@@ -141,10 +142,89 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
+			SkipRetryOnFailure:    false,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
-			UserAgentInclude:      nil,
+			UserAgentInclude:      []string{},
+		},
+		{
+			// Largest uncovered block: /v1/chat/completions carries no
+			// session identifier, so fall back to request `user`/`metadata`,
+			// then token id, then user id. Keyed per model so one token
+			// calling several models keeps independent bindings.
+			Name:       "chat completion affinity",
+			ModelRegex: []string{".*"},
+			PathRegex:  []string{"^/v1/chat/completions", "^/pg/chat/completions"},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "gjson", Path: "metadata.user_id"},
+				{Type: "gjson", Path: "user"},
+				{Type: "context_int", Key: "token_id"},
+				{Type: "context_int", Key: "id"},
+			},
+			ValueRegex:         "",
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeUsingGroup:  true,
+			IncludeModelName:   true,
+			IncludeRuleName:    true,
+			UserAgentInclude:   []string{},
+		},
+		{
+			// Non-Codex traffic on /v1/responses (deepseek, grok, codex-auto-
+			// review, ...) is missed by the `^gpt-.*$` rule above. Prefer the
+			// native prompt_cache_key when present, else token/user fallback.
+			Name:       "responses trace",
+			ModelRegex: []string{".*"},
+			PathRegex:  []string{"^/v1/responses"},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "gjson", Path: "prompt_cache_key"},
+				{Type: "context_int", Key: "token_id"},
+				{Type: "context_int", Key: "id"},
+			},
+			ValueRegex:         "",
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeUsingGroup:  true,
+			IncludeModelName:   true,
+			IncludeRuleName:    true,
+			UserAgentInclude:   []string{},
+		},
+		{
+			// Non-Claude traffic on /v1/messages (deepseek, gpt, ...) is
+			// missed by the `^claude-.*$` rule above.
+			Name:       "messages trace",
+			ModelRegex: []string{".*"},
+			PathRegex:  []string{"^/v1/messages"},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "gjson", Path: "metadata.user_id"},
+				{Type: "context_int", Key: "token_id"},
+				{Type: "context_int", Key: "id"},
+			},
+			ValueRegex:         "",
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeUsingGroup:  true,
+			IncludeModelName:   true,
+			IncludeRuleName:    true,
+			UserAgentInclude:   []string{},
+		},
+		{
+			// Gemini native paths have no OpenAI/Anthropic session header;
+			// a coarse token/user key is the only stable signal.
+			Name:       "gemini native affinity",
+			ModelRegex: []string{".*"},
+			PathRegex:  []string{"^/v1beta/models/", "^/v1/models/"},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "context_int", Key: "token_id"},
+				{Type: "context_int", Key: "id"},
+			},
+			ValueRegex:         "",
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeUsingGroup:  true,
+			IncludeModelName:   true,
+			IncludeRuleName:    true,
+			UserAgentInclude:   []string{},
 		},
 	},
 }

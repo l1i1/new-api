@@ -5589,6 +5589,8 @@
     "Save privacy settings": "Lưu cài đặt quyền riêng tư",
     "Privacy filter expression": "Biểu thức bộ lọc quyền riêng tư",
     "Enter a Go RE2 regular expression": "Nhập biểu thức chính quy Go RE2",
-    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Các phần khớp sẽ bị xóa khỏi thông báo lỗi relay. Để trống để giữ nguyên thông báo; biểu thức sử dụng cú pháp Go RE2."
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "Các phần khớp sẽ bị xóa khỏi thông báo lỗi relay. Để trống để giữ nguyên thông báo; biểu thức sử dụng cú pháp Go RE2.",
+    "Fill Rule Templates": "Fill Rule Templates",
+    "This will append all template rules to the existing rule list.": "This will append all template rules to the existing rule list."
   }
 }

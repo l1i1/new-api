@@ -5589,6 +5589,8 @@
     "Save privacy settings": "保存隐私设置",
     "Privacy filter expression": "隐私过滤表达式",
     "Enter a Go RE2 regular expression": "输入 Go RE2 正则表达式",
-    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "匹配内容会从中继错误消息中移除。留空以保持消息不变；表达式使用 Go RE2 语法。"
+    "Matches are removed from relay error messages. Leave blank to keep messages unchanged; expressions use Go RE2 syntax.": "匹配内容会从中继错误消息中移除。留空以保持消息不变；表达式使用 Go RE2 语法。",
+    "Fill Rule Templates": "填充规则模板",
+    "This will append all template rules to the existing rule list.": "这将在现有规则列表中追加所有模板规则。"
   }
 }
