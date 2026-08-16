@@ -67,38 +67,52 @@ The public key must be installed on each node with a forced command and SSH rest
 restrict,command="/usr/local/sbin/tokeness-new-api-deploy" ssh-ed25519 ... tokeness-gha-deploy
 ```
 
-Install `deployment/tokeness/remote-command.sh` as `/usr/local/sbin/tokeness-new-api-deploy`, owned by root and mode `0755`. The forced command permits only `verify` and `deploy ghcr.io/l1i1/new-api@sha256:<digest>`; it does not provide a general-purpose production shell.
+Install the reviewed command on every node with
+`bash deployment/tokeness/install-remote-command.sh`. The installer atomically
+replaces `/usr/local/sbin/tokeness-new-api-deploy`, verifies SHA-256, root
+ownership, mode `0755`, and command version `2026-08-17.2`. Fleet preflight
+rejects any node that reports another command version. The forced command
+permits only `verify` and `deploy ghcr.io/l1i1/new-api@sha256:<digest>`; it does
+not provide a general-purpose production shell.
 
 The `new-api` service on JP-M uses a blue-green update transaction. Before the
 first deployment, an operator must explicitly mark only the New API proxy
 snippet(s) under `/opt/1panel/www/sites/<site>/proxy/*.conf`:
 
 ```nginx
-# TOKENESS_BLUE_GREEN_MANAGED host=n.tokeness.cn
-proxy_pass http://127.0.0.1:3000;
+# TOKENESS_BLUE_GREEN_MANAGED host=tokeness.io
+proxy_pass http://127.0.0.1:8201;
 ```
 
 The marker must immediately precede each managed `proxy_pass`; its `host=` value
 is the exact virtual host used for the live route probe. The release command
 edits only those entries and never infers ownership from a shared loopback port
 or a 1Panel directory name. A malformed or unpaired marker fails the deployment,
-and exactly one OpenResty container must mount the site root. The deployer starts
-the inactive slot with `docker compose run`, validates its immutable image and
-exact `127.0.0.1:3000/3001 -> 3000/tcp` binding plus the EPay sidecar, and reloads
+and exactly one OpenResty container must mount `/opt/1panel/www`. The deployer
+starts the inactive slot with `docker compose run`, validates its immutable
+image and exact `127.0.0.1:8201/8202 -> 3000/tcp` binding plus the EPay sidecar, and reloads
 OpenResty only after `nginx -t` succeeds. Before draining the old container, it
 waits for a new OpenResty worker generation and probes `/api/status` through
-every marked virtual host. The host requires `ss`, and the OpenResty container
-requires `curl`, for these fail-closed checks.
+every marked virtual host. The host must expose the old container's
+`/proc/<pid>/net/tcp{,6}` files, and the OpenResty container requires `curl`, for
+these fail-closed checks.
 
 The host-local `.blue-green.state` contains no secret values. A `pending` phase
 is written before `release.env` changes, so a SIGKILL at any point before the
 switch can restore the old slot. After the route is switched, a
 `cleanup-pending` phase records the new slot and old container before draining;
 startup retries that cleanup idempotently before accepting another deployment.
+If cleanup is still pending after the retry, verification remains available but
+a new deployment is rejected so the recovery record cannot be overwritten. If
+the new active slot or its live OpenResty route is unhealthy during recovery,
+the deployer immediately verifies the previous slot, switches OpenResty back to
+it, and retains the failed slot as cleanup-pending instead of leaving the public
+route on a broken container.
 Existing connections on the old loopback port must reach zero before the old
 container receives a stop signal; otherwise cleanup remains pending for a later
-retry. Only then is the phase changed to `committed`. `new-api-slave` nodes
-retain the existing recreate path.
+retry. An old container that is already stopped is removed without a connection
+drain. Only then is the phase changed to `committed`. `new-api-slave` nodes retain
+the existing recreate path.
 
 Use a staged rollout and verify the version, container health, local status endpoint, and prompt-cache regression suite after deployment. The workflow performs deployment and routing checks; authenticated prompt-cache probes remain a separate release acceptance test so production API keys are not exposed to the deployment job.
 

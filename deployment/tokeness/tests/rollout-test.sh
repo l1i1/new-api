@@ -75,6 +75,12 @@ assert_commands "$noop_case/commands.log" \
   "156.246.94.70|deploy ghcr.io/l1i1/new-api@$NEW_DIGEST" \
   '156.246.94.70|verify'
 
+stale_command_case="$test_root/stale-command"
+if run_rollout "$stale_command_case" TOKENESS_TEST_COMMAND_VERSION=2026-08-16.1; then
+  fail "stale remote deployment command unexpectedly passed preflight"
+fi
+assert_commands "$stale_command_case/commands.log" '156.246.94.70|verify'
+
 mutable_case="$test_root/mutable"
 if run_rollout "$mutable_case" TOKENESS_TEST_MUTABLE_HOST=156.246.94.70; then
   fail "mutable rollback image unexpectedly passed preflight"

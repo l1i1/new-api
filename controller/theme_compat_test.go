@@ -28,6 +28,7 @@ func TestUpdateOptionRejectsRetiredFrontendTheme(t *testing.T) {
 }
 
 func TestGetStatusAdvertisesDefaultDashboard(t *testing.T) {
+	t.Setenv("TOKENESS_INSTANCE_ID", "test-instance")
 	previousMap := common.OptionMap
 	common.OptionMap = map[string]string{}
 	t.Cleanup(func() { common.OptionMap = previousMap })
@@ -44,4 +45,5 @@ func TestGetStatusAdvertisesDefaultDashboard(t *testing.T) {
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
 	assert.True(t, payload.Success)
 	assert.Equal(t, "default", payload.Data["theme"])
+	assert.Equal(t, "test-instance", payload.Data["instance_id"])
 }

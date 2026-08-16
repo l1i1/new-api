@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
+readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.2'
+
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
 }
@@ -46,13 +48,15 @@ readonly EPAY_RECONCILIATION_IP='172.18.0.250'
 readonly EPAY_RECONCILIATION_URL='http://172.18.0.250:18080/api.php'
 readonly BLUE_GREEN_STATE_BASENAME='.blue-green.state'
 readonly BLUE_GREEN_PROXY_MARKER='TOKENESS_BLUE_GREEN_MANAGED'
-readonly BLUE_GREEN_PROXY_ROOT='/opt/1panel/www/sites'
+readonly BLUE_GREEN_PRIMARY_PORT="${TOKENESS_BLUE_GREEN_PRIMARY_PORT:-8201}"
+readonly BLUE_GREEN_SECONDARY_PORT="${TOKENESS_BLUE_GREEN_SECONDARY_PORT:-8202}"
+readonly BLUE_GREEN_PROXY_ROOT="${TOKENESS_BLUE_GREEN_PROXY_ROOT:-/opt/1panel/www}"
 
 BLUE_GREEN_MODE=0
 BLUE_GREEN_STATE_FILE=''
 BLUE_GREEN_PROXY_CONTAINER=''
 declare -a BLUE_GREEN_PROXY_FILES=()
-BLUE_GREEN_ACTIVE_PORT=3000
+BLUE_GREEN_ACTIVE_PORT="$BLUE_GREEN_PRIMARY_PORT"
 BLUE_GREEN_ACTIVE_CONTAINER=''
 BLUE_GREEN_STATE_WAS_PRESENT=0
 BLUE_GREEN_STATE_BASELINE_PRESENT=0
@@ -64,12 +68,14 @@ BLUE_GREEN_PENDING_IMAGE=''
 BLUE_GREEN_CLEANUP_OLD_PORT=''
 BLUE_GREEN_CLEANUP_OLD_CONTAINER=''
 BLUE_GREEN_CLEANUP_OLD_IMAGE=''
-BLUE_GREEN_OLD_PORT=3000
+BLUE_GREEN_OLD_PORT="$BLUE_GREEN_PRIMARY_PORT"
 BLUE_GREEN_OLD_CONTAINER=''
-BLUE_GREEN_NEW_PORT=3001
+BLUE_GREEN_NEW_PORT="$BLUE_GREEN_SECONDARY_PORT"
 BLUE_GREEN_NEW_CONTAINER=''
+BLUE_GREEN_NEW_INSTANCE_ID=''
 BLUE_GREEN_SWITCHED=0
 BLUE_GREEN_PROXY_BACKUP_DIR=''
+BLUE_GREEN_PROC_ROOT='/proc'
 
 run_timed() {
   local seconds="$1"
@@ -92,8 +98,25 @@ validate_blue_green_container_name() {
   [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]]
 }
 
+is_blue_green_slot_port() {
+  [[ "$1" == "$BLUE_GREEN_PRIMARY_PORT" || "$1" == "$BLUE_GREEN_SECONDARY_PORT" ]]
+}
+
+validate_blue_green_configuration() {
+  [[ "$BLUE_GREEN_PRIMARY_PORT" =~ ^[0-9]+$ &&
+    "$BLUE_GREEN_PRIMARY_PORT" -ge 1 && "$BLUE_GREEN_PRIMARY_PORT" -le 65535 ]] ||
+    fail "blue-green primary port is invalid"
+  [[ "$BLUE_GREEN_SECONDARY_PORT" =~ ^[0-9]+$ &&
+    "$BLUE_GREEN_SECONDARY_PORT" -ge 1 && "$BLUE_GREEN_SECONDARY_PORT" -le 65535 ]] ||
+    fail "blue-green secondary port is invalid"
+  [[ "$BLUE_GREEN_PRIMARY_PORT" != "$BLUE_GREEN_SECONDARY_PORT" ]] ||
+    fail "blue-green ports must be distinct"
+  [[ "$BLUE_GREEN_PROXY_ROOT" == /* && "$BLUE_GREEN_PROXY_ROOT" != / ]] ||
+    fail "blue-green proxy root must be an absolute non-root path"
+}
+
 read_blue_green_state() {
-  BLUE_GREEN_ACTIVE_PORT=3000
+  BLUE_GREEN_ACTIVE_PORT="$BLUE_GREEN_PRIMARY_PORT"
   BLUE_GREEN_ACTIVE_CONTAINER="$SERVICE_NAME"
   BLUE_GREEN_STATE_WAS_PRESENT=0
   BLUE_GREEN_STATE_BASELINE_PRESENT=0
@@ -120,7 +143,7 @@ read_blue_green_state() {
     next_port="$(blue_green_state_value NEXT_PORT)"
     next_container="$(blue_green_state_value NEXT_CONTAINER)"
     next_image="$(blue_green_state_value NEXT_IMAGE)"
-    [[ "$next_port" == 3000 || "$next_port" == 3001 ]] ||
+    is_blue_green_slot_port "$next_port" ||
       fail "blue-green pending state has an invalid next port"
     validate_blue_green_container_name "$next_container" ||
       fail "blue-green pending state has an invalid next container"
@@ -134,7 +157,7 @@ read_blue_green_state() {
     old_port="$(blue_green_state_value OLD_PORT)"
     old_container="$(blue_green_state_value OLD_CONTAINER)"
     old_image="$(blue_green_state_value OLD_IMAGE)"
-    [[ "$old_port" == 3000 || "$old_port" == 3001 ]] ||
+    is_blue_green_slot_port "$old_port" ||
       fail "blue-green cleanup state has an invalid old port"
     validate_blue_green_container_name "$old_container" ||
       fail "blue-green cleanup state has an invalid old container"
@@ -151,7 +174,7 @@ read_blue_green_state() {
   port="$(blue_green_state_value PORT)"
   container="$(blue_green_state_value CONTAINER)"
   image="$(blue_green_state_value IMAGE)"
-  [[ "$port" == 3000 || "$port" == 3001 ]] ||
+  is_blue_green_slot_port "$port" ||
     fail "blue-green state has an invalid active port"
   validate_blue_green_container_name "$container" ||
     fail "blue-green state has an invalid active container"
@@ -165,7 +188,7 @@ read_blue_green_state() {
 
 write_blue_green_state() {
   local port="$1" container="$2" image="$3" next_file
-  [[ "$port" == 3000 || "$port" == 3001 ]] || fail "invalid blue-green state port"
+  is_blue_green_slot_port "$port" || fail "invalid blue-green state port"
   validate_blue_green_container_name "$container" || fail "invalid blue-green state container"
   is_trusted_image "$image" || fail "invalid blue-green state image"
   next_file="$(mktemp "$DEPLOY_DIR/.blue-green.state.XXXXXX")"
@@ -178,11 +201,11 @@ write_blue_green_state() {
 write_blue_green_pending_state() {
   local old_port="$1" old_container="$2" old_image="$3" baseline="$4"
   local next_port="$5" next_container="$6" next_image="$7" next_file
-  [[ "$old_port" == 3000 || "$old_port" == 3001 ]] || fail "invalid pending old port"
+  is_blue_green_slot_port "$old_port" || fail "invalid pending old port"
   validate_blue_green_container_name "$old_container" || fail "invalid pending old container"
   is_trusted_image "$old_image" || fail "invalid pending old image"
   [[ "$baseline" == 0 || "$baseline" == 1 ]] || fail "invalid pending baseline marker"
-  [[ "$next_port" == 3000 || "$next_port" == 3001 ]] || fail "invalid pending next port"
+  is_blue_green_slot_port "$next_port" || fail "invalid pending next port"
   validate_blue_green_container_name "$next_container" || fail "invalid pending next container"
   is_trusted_image "$next_image" || fail "invalid pending next image"
   next_file="$(mktemp "$DEPLOY_DIR/.blue-green.state.XXXXXX")"
@@ -196,13 +219,13 @@ write_blue_green_pending_state() {
 write_blue_green_cleanup_pending_state() {
   local active_port="$1" active_container="$2" active_image="$3"
   local old_port="$4" old_container="$5" old_image="$6" next_file
-  [[ "$active_port" == 3000 || "$active_port" == 3001 ]] ||
+  is_blue_green_slot_port "$active_port" ||
     fail "invalid cleanup active port"
   validate_blue_green_container_name "$active_container" ||
     fail "invalid cleanup active container"
   is_trusted_image "$active_image" ||
     fail "invalid cleanup active image"
-  [[ "$old_port" == 3000 || "$old_port" == 3001 ]] ||
+  is_blue_green_slot_port "$old_port" ||
     fail "invalid cleanup old port"
   validate_blue_green_container_name "$old_container" ||
     fail "invalid cleanup old container"
@@ -268,9 +291,9 @@ discover_blue_green_proxy_container() {
   for candidate in "${candidates[@]}"; do
     [[ "$candidate" == "$EPAY_RECONCILIATION_CONTAINER" ]] && continue
     mounts="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
-      --format '{{range .Mounts}}{{println .Source "\t" .Destination}}{{end}}' \
-      "$candidate")" || fail "could not inspect OpenResty proxy container $candidate"
-    if grep -Fq "$BLUE_GREEN_PROXY_ROOT" <<< "$mounts"; then
+			--format '{{range .Mounts}}{{printf "%s\t%s\n" .Source .Destination}}{{end}}' \
+			"$candidate")" || fail "could not inspect OpenResty proxy container $candidate"
+    if awk -F '\t' -v root="$BLUE_GREEN_PROXY_ROOT" '$1 == root { found = 1 } END { exit(found ? 0 : 1) }' <<< "$mounts"; then
       matches+=("$candidate")
     fi
   done
@@ -300,7 +323,8 @@ discover_blue_green_proxy_files() {
 
 blue_green_managed_proxy_entries() {
 	local file="$1"
-	awk -v marker="$BLUE_GREEN_PROXY_MARKER" '
+	awk -v marker="$BLUE_GREEN_PROXY_MARKER" \
+		-v primary="$BLUE_GREEN_PRIMARY_PORT" -v secondary="$BLUE_GREEN_SECONDARY_PORT" '
 		function managed_host(line, value) {
 			if (line !~ "^[[:space:]]*#[[:space:]]*" marker "[[:space:]]+host=[^[:space:]]+[[:space:]]*$") {
 				return ""
@@ -310,8 +334,9 @@ blue_green_managed_proxy_entries() {
 			sub("[[:space:]]*$", "", value)
 			return value
 		}
-		function is_backend(line) {
-			return line ~ /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:(3000|3001);[[:space:]]*$/
+		function is_backend(line, pattern) {
+			pattern = "^[[:space:]]*proxy_pass[[:space:]]+http://127\\.0\\.0\\.1:(" primary "|" secondary ");[[:space:]]*$"
+			return line ~ pattern
 		}
 		function has_marker_token(line) {
 			return line ~ "^[[:space:]]*#[[:space:]]*" marker "([[:space:]]|$)"
@@ -438,28 +463,46 @@ blue_green_proxy_route_host() {
 
 blue_green_proxy_route_status() {
   local host="${1:-}"
+  local probe
   [[ -n "$host" ]] || host="$(blue_green_proxy_route_host)"
+  probe="$(date +%s%N)"
   discover_blue_green_proxy_container
   run_timed "$STATUS_TIMEOUT_SECONDS" docker exec "$BLUE_GREEN_PROXY_CONTAINER" sh -c '
     host="$1"
+    probe="$2"
     command -v curl >/dev/null 2>&1 || exit 127
     body="$(curl -kfsS --max-time 10 --max-redirs 0 \
       --resolve "$host:443:127.0.0.1" -H "Host: $host" \
-      "https://$host/api/status" 2>/dev/null || true)"
+      "https://$host/api/status?tokeness_blue_green_probe=$probe" 2>/dev/null || true)"
     if printf '%s\n' "$body" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
       printf '%s\n' "$body"
       exit 0
     fi
     body="$(curl -fsS --max-time 10 --max-redirs 0 \
       --resolve "$host:80:127.0.0.1" -H "Host: $host" \
-      "http://$host/api/status" 2>/dev/null || true)"
+      "http://$host/api/status?tokeness_blue_green_probe=$probe" 2>/dev/null || true)"
     printf '%s\n' "$body" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true' || exit 1
     printf '%s\n' "$body"
-  ' sh "$host"
+  ' sh "$host" "$probe"
 }
 
 blue_green_status_version() {
   sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' <<< "$1" | head -n 1
+}
+
+blue_green_status_identity() {
+  local body="$1" instance_id start_time
+  instance_id="$(sed -n 's/.*"instance_id"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' <<< "$body" | head -n 1)"
+  if [[ -n "$instance_id" ]]; then
+    printf 'instance:%s\n' "$instance_id"
+    return 0
+  fi
+
+  # Older images do not expose instance_id. Their process start time remains
+  # a useful bootstrap identity until the first blue-green image is active.
+  start_time="$(sed -n 's/.*"start_time"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' <<< "$body" | head -n 1)"
+  [[ "$start_time" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf 'start:%s\n' "$start_time"
 }
 
 blue_green_verify_container_binding() {
@@ -470,7 +513,7 @@ blue_green_verify_container_binding() {
 		--format '{{printf "%s\t%s\t%s" .Id .Name .Config.Image}}' "$container")" ||
 		fail "could not inspect blue-green target container $container"
 	IFS=$'\t' read -r id name runtime <<< "$identity"
-	[[ -n "$id" && "$name" == "/$container" ]] ||
+	[[ -n "$id" && ( "$name" == "/$container" || "$id" == "$container" ) ]] ||
 		fail "blue-green target container identity is invalid: $container"
 	[[ "$runtime" == "$expected_image" ]] ||
 		fail "blue-green target container does not run the expected image: $container"
@@ -488,7 +531,8 @@ blue_green_verify_container_binding() {
 
 blue_green_verify_live_route() {
   local expected_port="$1" expected_container="$2" expected_image="$3"
-  local route_body target_body route_version target_version attempt host hosts all_hosts_ok
+  local route_body target_body route_version target_version route_identity target_identity
+  local attempt host hosts all_hosts_ok
 	blue_green_verify_container_binding "$expected_container" "$expected_image" "$expected_port"
   [[ "$(blue_green_proxy_port)" == "$expected_port" ]] ||
     fail "OpenResty proxy does not select the expected port $expected_port"
@@ -499,14 +543,17 @@ blue_green_verify_live_route() {
   for attempt in $(seq 1 10); do
     target_body="$(status_json "$expected_container" 2>/dev/null || true)"
     target_version="$(blue_green_status_version "$target_body")"
+    target_identity="$(blue_green_status_identity "$target_body" 2>/dev/null || true)"
     all_hosts_ok=1
     while IFS= read -r host; do
       [[ -n "$host" ]] || continue
       route_body="$(blue_green_proxy_route_status "$host" 2>/dev/null || true)"
       route_version="$(blue_green_status_version "$route_body")"
+      route_identity="$(blue_green_status_identity "$route_body" 2>/dev/null || true)"
       if ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' <<< "$route_body" ||
         ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' <<< "$target_body" ||
-        [[ -z "$route_version" || "$route_version" != "$target_version" ]]; then
+        [[ -z "$route_version" || "$route_version" != "$target_version" ||
+          -z "$target_identity" || "$route_identity" != "$target_identity" ]]; then
         all_hosts_ok=0
         break
       fi
@@ -529,11 +576,14 @@ blue_green_verify_selected_route() {
 
 blue_green_restore_proxy_backup() {
   local file backup index=0
-  [[ -n "$BLUE_GREEN_PROXY_BACKUP_DIR" && -d "$BLUE_GREEN_PROXY_BACKUP_DIR" ]] || return 0
+  [[ -n "$BLUE_GREEN_PROXY_BACKUP_DIR" && -d "$BLUE_GREEN_PROXY_BACKUP_DIR" ]] || return 1
   for file in "${BLUE_GREEN_PROXY_FILES[@]}"; do
     index=$((index + 1))
     backup="$BLUE_GREEN_PROXY_BACKUP_DIR/$index.conf"
-    [[ -f "$backup" ]] || continue
+    [[ -f "$backup" ]] || {
+      log "ERROR: missing OpenResty proxy backup: $backup"
+      return 1
+    }
     cp -a "$backup" "$file" || {
       log "ERROR: failed to restore OpenResty proxy file: $file"
       return 1
@@ -550,12 +600,14 @@ blue_green_rewrite_proxy_files() {
   local changed=0
   for file in "${BLUE_GREEN_PROXY_FILES[@]}"; do
     temp="$(mktemp "$file.blue-green.XXXXXX")"
-	awk -v marker="$BLUE_GREEN_PROXY_MARKER" -v port="$port" '
+	awk -v marker="$BLUE_GREEN_PROXY_MARKER" -v port="$port" \
+		-v primary="$BLUE_GREEN_PRIMARY_PORT" -v secondary="$BLUE_GREEN_SECONDARY_PORT" '
 		function is_marker(line) {
 			return line ~ "^[[:space:]]*#[[:space:]]*" marker "[[:space:]]+host=[^[:space:]]+[[:space:]]*$"
 		}
-		function is_backend(line) {
-			return line ~ /^[[:space:]]*proxy_pass[[:space:]]+http:\/\/127\.0\.0\.1:(3000|3001);[[:space:]]*$/
+		function is_backend(line, pattern) {
+			pattern = "^[[:space:]]*proxy_pass[[:space:]]+http://127\\.0\\.0\\.1:(" primary "|" secondary ");[[:space:]]*$"
+			return line ~ pattern
       }
       function indent(line, value) {
         value = line
@@ -634,13 +686,29 @@ switch_blue_green_proxy() {
       fail "could not back up OpenResty proxy file: $file"
   done
 
-  if ! blue_green_rewrite_proxy_files "$port" || ! blue_green_proxy_reload; then
-    blue_green_restore_proxy_backup
-    rm -rf -- "$backup_dir"
-    BLUE_GREEN_PROXY_BACKUP_DIR=''
+  # From this point on, a failed reload may have applied the new workers. Keep
+  # the rollback marker and backup until the old route is live again.
+  BLUE_GREEN_SWITCHED=1
+  if ! blue_green_rewrite_proxy_files "$port"; then
+    if blue_green_restore_proxy_backup; then
+      BLUE_GREEN_SWITCHED=0
+      rm -rf -- "$backup_dir"
+      BLUE_GREEN_PROXY_BACKUP_DIR=''
+    else
+      log "ERROR: OpenResty proxy rollback is pending; preserving switch backup"
+    fi
     fail "OpenResty blue-green proxy switch failed"
   fi
-  BLUE_GREEN_SWITCHED=1
+  if ! blue_green_proxy_reload; then
+    if blue_green_restore_proxy_backup; then
+      BLUE_GREEN_SWITCHED=0
+      rm -rf -- "$backup_dir"
+      BLUE_GREEN_PROXY_BACKUP_DIR=''
+    else
+      log "ERROR: OpenResty proxy rollback is pending; preserving switch backup"
+    fi
+    fail "OpenResty blue-green proxy switch failed"
+  fi
 }
 
 is_trusted_image() {
@@ -692,11 +760,11 @@ blue_green_standby_details() {
       head -n 1)"
     [[ -n "$BLUE_GREEN_OLD_CONTAINER" ]] || fail "active New API container was not found"
   fi
-  if [[ "$BLUE_GREEN_OLD_PORT" == 3000 ]]; then
-    BLUE_GREEN_NEW_PORT=3001
+  if [[ "$BLUE_GREEN_OLD_PORT" == "$BLUE_GREEN_PRIMARY_PORT" ]]; then
+		BLUE_GREEN_NEW_PORT="$BLUE_GREEN_SECONDARY_PORT"
     BLUE_GREEN_NEW_CONTAINER='new-api-blue'
   else
-    BLUE_GREEN_NEW_PORT=3000
+		BLUE_GREEN_NEW_PORT="$BLUE_GREEN_PRIMARY_PORT"
     BLUE_GREEN_NEW_CONTAINER='new-api-green'
   fi
 }
@@ -711,16 +779,20 @@ blue_green_commit_active_slot() {
     "$active_port" "$active_container" "$active_image" \
     "$old_port" "$old_container" "$old_image" || return 1
   DEPLOY_IN_PROGRESS=0
-	if ! drain_blue_green_container "$old_port" "$old_container"; then
+	if ! drain_blue_green_container "$old_port" "$old_container" "$active_container"; then
     log "WARNING: old blue-green container cleanup is pending: $old_container"
-    return 1
+		return 2
   fi
-  write_blue_green_state "$active_port" "$active_container" "$active_image"
+	if ! write_blue_green_state "$active_port" "$active_container" "$active_image"; then
+		log "WARNING: blue-green cleanup completed but committed state persistence is pending"
+		return 2
+	fi
 }
 
 recover_blue_green_cleanup_pending_state() {
   [[ "$BLUE_GREEN_STATE_PHASE" == 'cleanup-pending' ]] || return 0
 
+  local commit_status=0
   local active_port="$BLUE_GREEN_ACTIVE_PORT"
   local active_container="$BLUE_GREEN_ACTIVE_CONTAINER"
   local active_image="$BLUE_GREEN_ACTIVE_IMAGE"
@@ -728,19 +800,46 @@ recover_blue_green_cleanup_pending_state() {
   local old_container="$BLUE_GREEN_CLEANUP_OLD_CONTAINER"
   local old_image="$BLUE_GREEN_CLEANUP_OLD_IMAGE"
   BLUE_GREEN_NEW_CONTAINER="$active_container"
-  wait_for_blue_green_container "$active_container" "$active_image" ||
-    fail "cleanup-pending active New API slot is not healthy"
-  blue_green_verify_live_route "$active_port" "$active_container" "$active_image"
+  if wait_for_blue_green_container "$active_container" "$active_image" 1 &&
+    (blue_green_verify_live_route "$active_port" "$active_container" "$active_image"); then
+    blue_green_commit_active_slot \
+      "$active_port" "$active_container" "$active_image" \
+      "$old_port" "$old_container" "$old_image" || commit_status=$?
+    if [[ "$commit_status" -eq 2 ]]; then
+      log "blue-green active slot is healthy; old-slot cleanup remains pending"
+      return 0
+    fi
+    [[ "$commit_status" -eq 0 ]] ||
+      fail "cleanup-pending active slot could not be persisted"
+    return 0
+  fi
+
+  log "WARNING: cleanup-pending active slot or live route is unhealthy; restoring the previous slot"
+  wait_for_blue_green_container "$old_container" "$old_image" ||
+    fail "cleanup-pending previous New API slot is not healthy"
+  switch_blue_green_proxy "$old_port"
+  blue_green_verify_live_route "$old_port" "$old_container" "$old_image"
+  BLUE_GREEN_SWITCHED=0
+  rm -rf -- "$BLUE_GREEN_PROXY_BACKUP_DIR" ||
+    log "WARNING: could not remove rollback proxy backup directory"
+  BLUE_GREEN_PROXY_BACKUP_DIR=''
+
+  commit_status=0
   blue_green_commit_active_slot \
-    "$active_port" "$active_container" "$active_image" \
-    "$old_port" "$old_container" "$old_image" ||
-    fail "cleanup-pending old New API slot could not be drained"
+    "$old_port" "$old_container" "$old_image" \
+    "$active_port" "$active_container" "$active_image" || commit_status=$?
+  if [[ "$commit_status" -eq 2 ]]; then
+    log "blue-green rollback committed; failed-slot cleanup remains pending"
+    return 0
+  fi
+  [[ "$commit_status" -eq 0 ]] ||
+    fail "cleanup-pending rollback state could not be persisted"
 }
 
 recover_blue_green_pending_state() {
   [[ "$BLUE_GREEN_STATE_PHASE" == 'pending' ]] || return 0
 
-  local active_port="$BLUE_GREEN_ACTIVE_PORT"
+  local active_port="$BLUE_GREEN_ACTIVE_PORT" commit_status=0
   local next_port="$BLUE_GREEN_PENDING_PORT" next_container="$BLUE_GREEN_PENDING_CONTAINER"
   local next_image="$BLUE_GREEN_PENDING_IMAGE"
   active_port="$(blue_green_proxy_port)"
@@ -750,20 +849,26 @@ recover_blue_green_pending_state() {
   BLUE_GREEN_NEW_CONTAINER="$next_container"
 
   if [[ "$active_port" == "$next_port" ]]; then
-    if wait_for_blue_green_container "$next_container" "$next_image"; then
+    if wait_for_blue_green_container "$next_container" "$next_image" 1 &&
+      (blue_green_verify_live_route "$next_port" "$next_container" "$next_image"); then
       # The proxy file can say "next" while the old OpenResty workers are
       # still serving the old config. Reload and compare the live status route
       # before allowing the old container to be drained.
-      blue_green_verify_live_route "$next_port" "$next_container" "$next_image"
       blue_green_commit_active_slot \
         "$next_port" "$next_container" "$next_image" \
         "$BLUE_GREEN_OLD_PORT" "$BLUE_GREEN_OLD_CONTAINER" "$BLUE_GREEN_ACTIVE_IMAGE" ||
+        commit_status=$?
+      if [[ "$commit_status" -eq 2 ]]; then
+        log "pending blue-green recovery committed; old-slot cleanup remains pending"
+      elif [[ "$commit_status" -ne 0 ]]; then
         fail "pending blue-green cleanup could not be completed"
+      fi
       rm -rf -- "$BLUE_GREEN_PROXY_BACKUP_DIR" 2>/dev/null || true
       BLUE_GREEN_PROXY_BACKUP_DIR=''
+      read_blue_green_state
       return 0
     fi
-    log "WARNING: pending blue-green standby is not healthy; restoring old proxy slot"
+    log "WARNING: pending blue-green standby or live route is unhealthy; restoring old proxy slot"
     switch_blue_green_proxy "$BLUE_GREEN_OLD_PORT"
     blue_green_verify_live_route \
       "$BLUE_GREEN_OLD_PORT" "$BLUE_GREEN_OLD_CONTAINER" "$BLUE_GREEN_ACTIVE_IMAGE"
@@ -786,10 +891,11 @@ recover_blue_green_pending_state() {
   fi
   wait_for_ready "$BLUE_GREEN_ACTIVE_IMAGE" ||
     fail "old New API slot was not healthy during pending blue-green recovery"
+  read_blue_green_state
 }
 
 wait_for_blue_green_container() {
-  local container="$1" expected_image="$2" attempt runtime state health body
+  local container="$1" expected_image="$2" fail_fast="${3:-0}" attempt runtime state health body
   for attempt in $(seq 1 $((READY_TIMEOUT_SECONDS / 3))); do
     runtime="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
       --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
@@ -797,7 +903,11 @@ wait_for_blue_green_container() {
       --format '{{.State.Status}}' "$container" 2>/dev/null || true)"
     health="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
       --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
-    [[ "$runtime" == "$expected_image" ]] || { sleep 3; continue; }
+    if [[ "$runtime" != "$expected_image" ]]; then
+      [[ "$fail_fast" -eq 0 ]] || return 1
+      sleep 3
+      continue
+    fi
     if [[ "$state" == running && "$health" == healthy ]]; then
       return 0
     fi
@@ -807,10 +917,12 @@ wait_for_blue_green_container() {
       if grep -Eq '"success"[[:space:]]*:[[:space:]]*true' <<< "$body"; then
         return 0
       fi
+      [[ "$fail_fast" -eq 0 ]] || return 1
     fi
-    if [[ "$state" == dead || "$state" == exited ]]; then
+    if [[ "$health" == unhealthy || "$state" == dead || "$state" == exited ]]; then
       return 1
     fi
+    [[ "$fail_fast" -eq 0 ]] || return 1
     sleep 3
   done
   return 1
@@ -820,9 +932,11 @@ start_blue_green_standby() {
 	local image="$1" published_port="$BLUE_GREEN_NEW_PORT"
 	blue_green_remove_container "$BLUE_GREEN_NEW_CONTAINER" ||
 		fail "could not clear the inactive blue-green container"
+  BLUE_GREEN_NEW_INSTANCE_ID="${BLUE_GREEN_NEW_CONTAINER}-$(date +%s%N)-$RANDOM"
   log "starting standby container=$BLUE_GREEN_NEW_CONTAINER port=$published_port"
   compose_timed "$COMPOSE_UP_TIMEOUT_SECONDS" run -d --no-deps \
     --name "$BLUE_GREEN_NEW_CONTAINER" \
+    -e "TOKENESS_INSTANCE_ID=$BLUE_GREEN_NEW_INSTANCE_ID" \
     -p "127.0.0.1:$published_port:3000" "$SERVICE_NAME" >/dev/null
   wait_for_blue_green_container "$BLUE_GREEN_NEW_CONTAINER" "$image" ||
     fail "standby container did not become ready"
@@ -832,18 +946,33 @@ start_blue_green_standby() {
 }
 
 blue_green_active_connection_count() {
-	local port="$1"
-	[[ "$port" == 3000 || "$port" == 3001 ]] || return 1
-	run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" ss -Hnt state established \
-		"( sport = :$port )" 2>/dev/null | awk 'END { print NR + 0 }'
+	local container="$1" pid file count current readable=0
+	pid="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+		--format '{{.State.Pid}}' "$container" 2>/dev/null)" || return 1
+	[[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	count=0
+	for file in "$BLUE_GREEN_PROC_ROOT/$pid/net/tcp" "$BLUE_GREEN_PROC_ROOT/$pid/net/tcp6"; do
+		[[ -r "$file" ]] || continue
+		readable=1
+		current="$(awk '
+			NR > 1 {
+				split($2, endpoint, ":")
+				if (toupper(endpoint[2]) == "0BB8" && $4 == "01") count++
+			}
+			END { print count + 0 }
+		' "$file")" || return 1
+		count=$((count + current))
+	done
+	((readable == 1)) || return 1
+	printf '%s\n' "$count"
 }
 
 wait_for_blue_green_connections_to_drain() {
-	local port="$1" deadline count waiting_logged=0
+	local port="$1" container="$2" deadline count waiting_logged=0
 	deadline=$((SECONDS + BLUE_GREEN_DRAIN_TIMEOUT_SECONDS))
 	while ((SECONDS < deadline)); do
-		count="$(blue_green_active_connection_count "$port")" || {
-			log "WARNING: could not inspect active connections on old port $port"
+		count="$(blue_green_active_connection_count "$container")" || {
+			log "WARNING: could not inspect active connections in old container $container"
 			return 1
 		}
 		if ((count == 0)); then
@@ -860,8 +989,11 @@ wait_for_blue_green_connections_to_drain() {
 }
 
 drain_blue_green_container() {
-	local port="$1" container="$2" exists_status
-	[[ "$container" != "$BLUE_GREEN_NEW_CONTAINER" ]] || return 0
+	local port="$1" container="$2" active_container="${3:-$BLUE_GREEN_NEW_CONTAINER}" exists_status state
+	if [[ -n "$active_container" && "$container" == "$active_container" ]]; then
+		log "ERROR: refusing to drain the active blue-green container $container"
+		return 1
+	fi
 	if blue_green_container_exists "$container"; then
 		:
 	else
@@ -869,9 +1001,19 @@ drain_blue_green_container() {
 		[[ "$exists_status" -eq 1 ]] && return 0
 		return 1
 	fi
+	state="$(run_timed "$DOCKER_COMMAND_TIMEOUT_SECONDS" docker inspect \
+		--format '{{.State.Status}}' "$container" 2>/dev/null)" || return 1
+	if [[ "$state" == exited || "$state" == dead || "$state" == created ]]; then
+		blue_green_remove_container "$container"
+		return
+	fi
+	[[ "$state" == running ]] || {
+		log "WARNING: old blue-green container has unexpected state $state: $container"
+		return 1
+	}
 	# OpenResty stops creating connections to the old slot after reload. Wait for
 	# existing HTTP/SSE connections to close before signaling the application.
-	wait_for_blue_green_connections_to_drain "$port" || return 1
+	wait_for_blue_green_connections_to_drain "$port" "$container" || return 1
 	run_timed "$BLUE_GREEN_DRAIN_TIMEOUT_SECONDS" docker stop \
     --time "$BLUE_GREEN_DRAIN_TIMEOUT_SECONDS" "$container" >/dev/null 2>&1 ||
     log "WARNING: graceful stop timed out for old container $container"
@@ -997,8 +1139,9 @@ emit_result() {
   [[ -n "$version" ]] || fail "could not read New API version"
   verify_epay_reconciliation_sidecar "$id"
 
-  printf 'TOKENESS_RESULT\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$selected" "$runtime" "$state" "$health" "$started" "$version"
+  printf 'TOKENESS_RESULT\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$selected" "$runtime" "$state" "$health" "$started" "$version" \
+    "$TOKENESS_DEPLOY_COMMAND_VERSION"
 }
 
 verify_release() {
@@ -1046,7 +1189,7 @@ restore_blue_green() {
 }
 
 deploy_blue_green() {
-  local target="$1"
+  local target="$1" commit_status=0
   blue_green_standby_details
   ensure_blue_green_proxy "$BLUE_GREEN_OLD_PORT"
   start_blue_green_standby "$target"
@@ -1064,8 +1207,12 @@ deploy_blue_green() {
     "$BLUE_GREEN_NEW_PORT" "$BLUE_GREEN_NEW_CONTAINER" "$target"
   blue_green_commit_active_slot \
     "$BLUE_GREEN_NEW_PORT" "$BLUE_GREEN_NEW_CONTAINER" "$target" \
-    "$BLUE_GREEN_OLD_PORT" "$BLUE_GREEN_OLD_CONTAINER" "$PREVIOUS_IMAGE" ||
-    fail "blue-green deployment cleanup is pending"
+    "$BLUE_GREEN_OLD_PORT" "$BLUE_GREEN_OLD_CONTAINER" "$PREVIOUS_IMAGE" || commit_status=$?
+	if [[ "$commit_status" -eq 2 ]]; then
+		log "blue-green deployment committed; old-slot cleanup remains pending"
+	elif [[ "$commit_status" -ne 0 ]]; then
+		fail "blue-green deployment could not persist the active slot"
+	fi
   emit_result "$target"
 
   rm -rf -- "$BLUE_GREEN_PROXY_BACKUP_DIR" ||
@@ -1116,6 +1263,9 @@ rollback_interrupted_deploy() {
 deploy_release() {
   local target="$1" previous id runtime
   is_trusted_image "$target" || fail "refusing mutable or untrusted image reference"
+  if [[ "$BLUE_GREEN_MODE" -eq 1 && "$BLUE_GREEN_STATE_PHASE" == 'cleanup-pending' ]]; then
+    fail "previous blue-green slot cleanup is still pending; refusing a new deployment"
+  fi
 
   previous="$(read_release_image)"
   [[ -n "$previous" ]] || fail "release.env does not select an image"
@@ -1200,8 +1350,8 @@ initialize_runtime() {
 
 	if [[ "$SERVICE_NAME" == 'new-api' ]]; then
 		BLUE_GREEN_MODE=1
+		validate_blue_green_configuration
 		BLUE_GREEN_STATE_FILE="$DEPLOY_DIR/$BLUE_GREEN_STATE_BASENAME"
-		command -v ss >/dev/null 2>&1 || fail "ss is required for blue-green connection draining"
 	fi
 
   install -d -m 0755 /run/lock
@@ -1213,11 +1363,17 @@ initialize_runtime() {
     recover_blue_green_cleanup_pending_state
     read_blue_green_state
     recover_blue_green_pending_state
+    read_blue_green_state
   fi
 }
 
 main() {
   local -a command_parts
+  if [[ "${1:-}" == '--version' && "$#" -eq 1 ]]; then
+    printf '%s\n' "$TOKENESS_DEPLOY_COMMAND_VERSION"
+    return 0
+  fi
+  [[ "$#" -eq 0 ]] || fail "direct arguments are not accepted"
   initialize_runtime
   trap rollback_interrupted_deploy EXIT
   trap 'exit 129' HUP

@@ -32,6 +32,7 @@ fi
 selected="$(<"$state_file")"
 version='v-test-old'
 health='healthy'
+command_version="${TOKENESS_TEST_COMMAND_VERSION:-2026-08-17.2}"
 
 if [[ "$command" == verify && "$host" == "${TOKENESS_TEST_MUTABLE_HOST:-}" ]]; then
   selected="$MUTABLE_IMAGE"
@@ -64,5 +65,5 @@ if [[ "$host" == "${TOKENESS_TEST_FAIL_HOST:-}" && "$command" == deploy\ * ]]; t
   fi
 fi
 
-printf 'TOKENESS_RESULT\t%s\t%s\trunning\t%s\t2026-07-27T00:00:00Z\t%s\n' \
-  "$selected" "$selected" "$health" "$version"
+printf 'TOKENESS_RESULT\t%s\t%s\trunning\t%s\t2026-07-27T00:00:00Z\t%s\t%s\n' \
+  "$selected" "$selected" "$health" "$version" "$command_version"

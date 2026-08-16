@@ -10,6 +10,7 @@ readonly NODE_VERIFY_TIMEOUT_SECONDS=300
 readonly NODE_DEPLOY_TIMEOUT_SECONDS=960
 readonly NODE_RECONCILE_TIMEOUT_SECONDS=1200
 readonly NODE_RECONCILE_RETRY_SECONDS=15
+readonly EXPECTED_REMOTE_COMMAND_VERSION='2026-08-17.2'
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -64,11 +65,12 @@ ROLLBACK_ARMED=0
 ROLLOUT_SUCCEEDED=0
 
 parse_result() {
-  local output="$1" expected_image="${2:-}" line marker selected runtime state health started version
+  local output="$1" expected_image="${2:-}" line marker selected runtime state health started version command_version
   line="$(grep '^TOKENESS_RESULT' <<< "$output" | tail -n 1)"
   [[ -n "$line" ]] || return 1
-  IFS=$'\t' read -r marker selected runtime state health started version <<< "$line"
+  IFS=$'\t' read -r marker selected runtime state health started version command_version <<< "$line"
   [[ "$marker" == "TOKENESS_RESULT" && -n "$selected" && "$selected" == "$runtime" ]] || return 1
+  [[ "$command_version" == "$EXPECTED_REMOTE_COMMAND_VERSION" ]] || return 1
   [[ -z "$expected_image" || "$selected" == "$expected_image" ]] || return 1
   [[ "$state" == "running" && -n "$version" ]] || return 1
   [[ "$health" == "healthy" || "$health" == "none" ]] || return 1
