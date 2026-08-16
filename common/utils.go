@@ -291,6 +291,16 @@ func Max(a int, b int) int {
 }
 
 func MessageWithRequestId(message string, id string) string {
+	message = strings.TrimSpace(message)
+	// Remove IDs added by upstream New API instances before adding the local ID.
+	const requestIdSuffix = " (request id: "
+	for strings.HasSuffix(message, ")") {
+		requestIdStart := strings.LastIndex(message, requestIdSuffix)
+		if requestIdStart < 0 {
+			break
+		}
+		message = strings.TrimSpace(message[:requestIdStart])
+	}
 	return fmt.Sprintf("%s (request id: %s)", message, id)
 }
 
