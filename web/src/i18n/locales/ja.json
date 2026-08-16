@@ -4811,6 +4811,7 @@
     "TTFT P95": "TTFT P95",
     "TTFT P99": "TTFT P99",
     "TTFT percentiles, throughput, and 30-day uptime by group": "グループ別の TTFT 分位数、スループット、30 日間の稼働率",
+    "TTFT short": "TTFT",
     "TTL": "TTL",
     "TTL (seconds, 0 = default)": "TTL（秒、0 = デフォルト）",
     "TTL (seconds)": "TTL（秒）",

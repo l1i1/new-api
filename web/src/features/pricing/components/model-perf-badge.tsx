@@ -23,6 +23,7 @@ import { getSuccessRateDotClass } from '@/features/performance-metrics/lib/forma
 import { cn } from '@/lib/utils'
 
 export type ModelPerfBadgeData = {
+  avg_ttft_ms?: number
   avg_latency_ms: number
   success_rate: number
   avg_tps: number
@@ -63,9 +64,10 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
 ) {
   const { t } = useTranslation()
 
-  const latency = props.perf
-    ? formatCompactLatency(props.perf.avg_latency_ms)
-    : '—'
+  const ttft =
+    props.perf?.avg_ttft_ms && props.perf.avg_ttft_ms > 0
+      ? formatCompactLatency(props.perf.avg_ttft_ms)
+      : '—'
   const throughput = props.perf
     ? formatCompactThroughput(props.perf.avg_tps)
     : '—'
@@ -91,12 +93,12 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
         props.className
       )}
     >
-      <div title={t('Average latency')} className='min-w-0'>
+      <div title={t('Average TTFT')} className='min-w-0'>
         <div className='text-muted-foreground/55 text-[10px] leading-4'>
-          {t('Latency short')}
+          {t('TTFT short')}
         </div>
         <div className='text-muted-foreground/80 font-mono text-xs leading-4 whitespace-nowrap'>
-          {latency}
+          {ttft}
         </div>
       </div>
       <div title={t('Throughput')} className='min-w-0'>

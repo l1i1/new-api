@@ -4811,6 +4811,7 @@
     "TTFT P95": "TTFT P95",
     "TTFT P99": "TTFT P99",
     "TTFT percentiles, throughput, and 30-day uptime by group": "Percentiles TTFT, débit et disponibilité sur 30 jours par groupe",
+    "TTFT short": "TTFT",
     "TTL": "TTL",
     "TTL (seconds, 0 = default)": "TTL (secondes, 0 = par défaut)",
     "TTL (seconds)": "TTL (secondes)",

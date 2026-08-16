@@ -4811,6 +4811,7 @@
     "TTFT P95": "TTFT P95",
     "TTFT P99": "TTFT P99",
     "TTFT percentiles, throughput, and 30-day uptime by group": "各分組的 TTFT 分位數、吞吐量與 30 天可用率",
+    "TTFT short": "首字",
     "TTL": "TTL",
     "TTL (seconds, 0 = default)": "TTL（秒，0 表示預設）",
     "TTL (seconds)": "TTL（秒）",
