@@ -288,6 +288,11 @@ const UTC_TIME_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 
 function localTimeParts(now: Date, timezone: string): LocalTimeParts {
   const requestedTimezone = timezone.trim() || 'UTC'
+  if (requestedTimezone === 'Local') {
+    throw new Error(
+      'The Local timezone is not supported in browser billing previews; use an IANA timezone name'
+    )
+  }
   let formatter: Intl.DateTimeFormat
   try {
     formatter = new Intl.DateTimeFormat('en-US', {
@@ -324,7 +329,8 @@ export function evalExprLocally(
   exprStr: string,
   promptTokens: number,
   completionTokens: number,
-  extraTokenValues: ExtraTokenValues
+  extraTokenValues: ExtraTokenValues,
+  now: Date = new Date()
 ): EvalResult {
   try {
     if (!exprStr || !exprStr.trim()) {
@@ -340,7 +346,6 @@ export function evalExprLocally(
     const cacheCreate1hTokens = extraTokenValues.cacheCreate1hTokens || 0
     const len =
       promptTokens + cacheReadTokens + cacheCreateTokens + cacheCreate1hTokens
-    const now = new Date()
     const timeCache = new Map<string, LocalTimeParts>()
     const getTimeParts = (timezone: string) => {
       const key = timezone.trim() || 'UTC'
