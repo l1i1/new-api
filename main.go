@@ -23,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
+	channelobservability "github.com/QuantumNous/new-api/pkg/channel_observability"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -341,6 +342,7 @@ func InitResources() error {
 	}
 
 	perfmetrics.Init()
+	channelobservability.Init()
 
 	// 启动系统监控
 	common.StartSystemMonitor()

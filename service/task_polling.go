@@ -238,73 +238,100 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 	if adaptor == nil {
 		return errors.New("adaptor not found")
 	}
-	proxy := ch.GetSetting().Proxy
-	resp, err := adaptor.FetchTask(*ch.BaseURL, ch.Key, map[string]any{
-		"ids": taskIds,
-	}, proxy)
-	if err != nil {
-		common.SysLog(fmt.Sprintf("Get Task Do req error: %v", err))
-		return err
+	// A batched Suno request cannot mix credentials with different proxy
+	// routes. Partition by stable credential identity (or a one-way key
+	// fingerprint for legacy tasks) and poll each group independently.
+	type accessGroup struct {
+		key, proxy string
+		ids        []string
 	}
-	if resp.StatusCode != http.StatusOK {
-		logger.LogError(ctx, fmt.Sprintf("Get Task status code: %d", resp.StatusCode))
-		return fmt.Errorf("Get Task status code: %d", resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		common.SysLog(fmt.Sprintf("Get Suno Task parse body error: %v", err))
-		return err
-	}
-	var responseItems taskdto.TaskResponse[[]taskdto.SunoDataResponse]
-	err = common.Unmarshal(responseBody, &responseItems)
-	if err != nil {
-		logger.LogError(ctx, fmt.Sprintf("Get Suno Task parse body error2: %v, body: %s", err, string(responseBody)))
-		return err
-	}
-	if !responseItems.IsSuccess() {
-		common.SysLog(fmt.Sprintf("渠道 #%d 未完成的任务有: %d, 成功获取到任务数: %s", channelId, len(taskIds), string(responseBody)))
-		return err
+	groups := make(map[string]*accessGroup)
+	for _, taskID := range taskIds {
+		task := taskM[taskID]
+		key, proxy := model.ResolveTaskChannelAccess(task, ch)
+		groupID := "legacy:" + model.ChannelCredentialFingerprint(key) + "\x00" + proxy
+		if task != nil && task.PrivateData.ChannelCredentialID > 0 {
+			groupID = fmt.Sprintf("credential:%d", task.PrivateData.ChannelCredentialID)
+		}
+		group := groups[groupID]
+		if group == nil {
+			group = &accessGroup{key: key, proxy: proxy}
+			groups[groupID] = group
+		}
+		group.ids = append(group.ids, taskID)
 	}
 
-	for _, responseItem := range responseItems.Data {
+	for _, group := range groups {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		task := taskM[responseItem.TaskID]
-		if task == nil {
-			logger.LogWarn(ctx, fmt.Sprintf("Suno task response ignored: unknown task_id=%s", responseItem.TaskID))
-			continue
+		resp, fetchErr := adaptor.FetchTask(*ch.BaseURL, group.key, map[string]any{
+			"ids": group.ids,
+		}, group.proxy)
+		if fetchErr != nil {
+			common.SysLog(fmt.Sprintf("Get Task Do req error: %v", fetchErr))
+			return fetchErr
 		}
-		if !taskNeedsUpdate(task, responseItem) {
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			logger.LogError(ctx, fmt.Sprintf("Get Task status code: %d", resp.StatusCode))
+			return fmt.Errorf("Get Task status code: %d", resp.StatusCode)
+		}
+		responseBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			common.SysLog(fmt.Sprintf("Get Suno Task parse body error: %v", readErr))
+			return readErr
+		}
+		var responseItems taskdto.TaskResponse[[]taskdto.SunoDataResponse]
+		if unmarshalErr := common.Unmarshal(responseBody, &responseItems); unmarshalErr != nil {
+			logger.LogError(ctx, fmt.Sprintf("Get Suno Task parse body error2: %v, body: %s", unmarshalErr, string(responseBody)))
+			return unmarshalErr
+		}
+		if !responseItems.IsSuccess() {
+			common.SysLog(fmt.Sprintf("渠道 #%d 未完成的任务有: %d, 成功获取到任务数: %s", channelId, len(group.ids), string(responseBody)))
 			continue
 		}
 
-		prevStatus := task.Status
-		task.Status = lo.If(model.TaskStatus(responseItem.Status) != "", model.TaskStatus(responseItem.Status)).Else(task.Status)
-		task.FailReason = lo.If(responseItem.FailReason != "", responseItem.FailReason).Else(task.FailReason)
-		task.SubmitTime = lo.If(responseItem.SubmitTime != 0, responseItem.SubmitTime).Else(task.SubmitTime)
-		task.StartTime = lo.If(responseItem.StartTime != 0, responseItem.StartTime).Else(task.StartTime)
-		task.FinishTime = lo.If(responseItem.FinishTime != 0, responseItem.FinishTime).Else(task.FinishTime)
-		isFailure := responseItem.FailReason != "" || task.Status == model.TaskStatusFailure
-		if isFailure {
-			logger.LogInfo(ctx, task.TaskID+" 构建失败，"+task.FailReason)
-			task.Status = model.TaskStatusFailure
-			task.Progress = "100%"
-		}
-		if responseItem.Status == model.TaskStatusSuccess {
-			task.Progress = "100%"
-		}
-		task.Data = responseItem.Data
+		for _, responseItem := range responseItems.Data {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			task := taskM[responseItem.TaskID]
+			if task == nil {
+				logger.LogWarn(ctx, fmt.Sprintf("Suno task response ignored: unknown task_id=%s", responseItem.TaskID))
+				continue
+			}
+			if !taskNeedsUpdate(task, responseItem) {
+				continue
+			}
 
-		// 持久化走 CAS，防止重叠轮询/sweep/多实例/持久化失败重试导致重复退款或覆盖终态。
-		won, err := task.UpdateWithStatus(prevStatus)
-		if err != nil {
-			logger.LogError(ctx, fmt.Sprintf("UpdateSunoTask task %s error: %v", task.TaskID, err))
-		} else if !won {
-			logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
-		} else if isFailure && prevStatus != model.TaskStatusFailure && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, task.FailReason)
+			prevStatus := task.Status
+			task.Status = lo.If(model.TaskStatus(responseItem.Status) != "", model.TaskStatus(responseItem.Status)).Else(task.Status)
+			task.FailReason = lo.If(responseItem.FailReason != "", responseItem.FailReason).Else(task.FailReason)
+			task.SubmitTime = lo.If(responseItem.SubmitTime != 0, responseItem.SubmitTime).Else(task.SubmitTime)
+			task.StartTime = lo.If(responseItem.StartTime != 0, responseItem.StartTime).Else(task.StartTime)
+			task.FinishTime = lo.If(responseItem.FinishTime != 0, responseItem.FinishTime).Else(task.FinishTime)
+			isFailure := responseItem.FailReason != "" || task.Status == model.TaskStatusFailure
+			if isFailure {
+				logger.LogInfo(ctx, task.TaskID+" 构建失败，"+task.FailReason)
+				task.Status = model.TaskStatusFailure
+				task.Progress = "100%"
+			}
+			if responseItem.Status == model.TaskStatusSuccess {
+				task.Progress = "100%"
+			}
+			task.Data = responseItem.Data
+
+			// 持久化走 CAS，防止重叠轮询/sweep/多实例/持久化失败重试导致重复退款或覆盖终态。
+			won, err := task.UpdateWithStatus(prevStatus)
+			if err != nil {
+				logger.LogError(ctx, fmt.Sprintf("UpdateSunoTask task %s error: %v", task.TaskID, err))
+			} else if !won {
+				logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
+			} else if isFailure && prevStatus != model.TaskStatusFailure && task.Quota != 0 {
+				RefundTaskQuota(ctx, task, task.FailReason)
+			}
 		}
 	}
 	return nil
@@ -446,19 +473,12 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if ch.GetBaseURL() != "" {
 		baseURL = ch.GetBaseURL()
 	}
-	proxy := ch.GetSetting().Proxy
-
 	task := taskM[taskId]
 	if task == nil {
 		logger.LogError(ctx, fmt.Sprintf("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
-	key := ch.Key
-
-	privateData := task.PrivateData
-	if privateData.Key != "" {
-		key = privateData.Key
-	}
+	key, proxy := model.ResolveTaskChannelAccess(task, ch)
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,

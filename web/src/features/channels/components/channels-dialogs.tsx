@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useChannels } from './channels-provider'
 import { BalanceQueryDialog } from './dialogs/balance-query-dialog'
+import { ChannelObservabilityDialog } from './dialogs/channel-observability-dialog'
 import { ChannelTestDialog } from './dialogs/channel-test-dialog'
 import { CopyChannelDialog } from './dialogs/copy-channel-dialog'
 import { EditTagDialog } from './dialogs/edit-tag-dialog'
@@ -73,6 +74,11 @@ export function ChannelsDialogs() {
       {/* Multi-Key Management Dialog */}
       <MultiKeyManageDialog
         open={open === 'multi-key-manage'}
+        onOpenChange={(v) => !v && setOpen(null)}
+      />
+
+      <ChannelObservabilityDialog
+        open={open === 'observability'}
         onOpenChange={(v) => !v && setOpen(null)}
       />
 

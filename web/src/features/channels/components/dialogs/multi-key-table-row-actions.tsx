@@ -1,3 +1,4 @@
+import { Network } from 'lucide-react'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -27,6 +28,7 @@ type MultiKeyTableRowActionsProps = {
   status: number
   canDelete: boolean
   onAction: (action: MultiKeyConfirmAction) => void
+  onProxy: () => void
 }
 
 export function MultiKeyTableRowActions({
@@ -34,6 +36,7 @@ export function MultiKeyTableRowActions({
   status,
   canDelete,
   onAction,
+  onProxy,
 }: MultiKeyTableRowActionsProps) {
   const { t } = useTranslation()
   const isEnabled = status === 1
@@ -57,6 +60,15 @@ export function MultiKeyTableRowActions({
           {t('Enable')}
         </Button>
       )}
+      <Button
+        variant='ghost'
+        size='sm'
+        onClick={onProxy}
+        title={t('Configure key proxy')}
+        aria-label={t('Configure key proxy')}
+      >
+        <Network className='h-4 w-4' />
+      </Button>
       <Button
         variant='destructive'
         size='sm'

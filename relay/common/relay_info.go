@@ -58,6 +58,7 @@ type ResponsesUsageInfo struct {
 type ChannelMeta struct {
 	ChannelType          int
 	ChannelId            int
+	ChannelCredentialId  int
 	ChannelIsMultiKey    bool
 	ChannelMultiKeyIndex int
 	ChannelBaseUrl       string
@@ -81,16 +82,20 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId                         int
+	TokenKey                        string
+	TokenGroup                      string
+	UserId                          int
+	UsingGroup                      string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup                       string // 用户所在分组
+	TokenUnlimited                  bool
+	StartTime                       time.Time
+	FirstResponseTime               time.Time
+	AttemptStartTime                time.Time
+	AttemptFirstResponseTime        time.Time
+	FirstDownstreamWriteTime        time.Time
+	AttemptFirstDownstreamWriteTime time.Time
+	isFirstResponse                 bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -144,6 +149,10 @@ type RelayInfo struct {
 	IsClaudeBetaQuery                     bool // /v1/messages?beta=true
 	IsChannelTest                         bool // channel test request
 	RetryIndex                            int
+	ObservedUsage                         bool
+	ObservedInputTokens                   int64
+	ObservedCacheReadTokens               int64
+	ObservedCacheWriteTokens              int64
 	LastError                             *types.NewAPIError
 	RuntimeHeadersOverride                map[string]interface{}
 	UseRuntimeHeadersOverride             bool
@@ -193,6 +202,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelMeta := &ChannelMeta{
 		ChannelType:          channelType,
 		ChannelId:            common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+		ChannelCredentialId:  common.GetContextKeyInt(c, constant.ContextKeyChannelCredentialId),
 		ChannelIsMultiKey:    common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
 		ChannelMultiKeyIndex: common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
 		ChannelBaseUrl:       common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl),
@@ -291,8 +301,8 @@ func (info *RelayInfo) ToString() string {
 	// Channel metadata (mask ApiKey)
 	if info.ChannelMeta != nil {
 		cm := info.ChannelMeta
-		fmt.Fprintf(b, "ChannelMeta{ Type: %d, Id: %d, IsMultiKey: %t, MultiKeyIndex: %d, BaseURL: %q, ApiType: %d, ApiVersion: %q, Organization: %q, CreateTime: %d, UpstreamModelName: %q, IsModelMapped: %t, SupportStreamOptions: %t, ApiKey: ***masked*** }, ",
-			cm.ChannelType, cm.ChannelId, cm.ChannelIsMultiKey, cm.ChannelMultiKeyIndex, cm.ChannelBaseUrl, cm.ApiType, cm.ApiVersion, cm.Organization, cm.ChannelCreateTime, cm.UpstreamModelName, cm.IsModelMapped, cm.SupportStreamOptions)
+		fmt.Fprintf(b, "ChannelMeta{ Type: %d, Id: %d, CredentialId: %d, IsMultiKey: %t, MultiKeyIndex: %d, BaseURL: %q, ApiType: %d, ApiVersion: %q, Organization: %q, CreateTime: %d, UpstreamModelName: %q, IsModelMapped: %t, SupportStreamOptions: %t, ApiKey: ***masked*** }, ",
+			cm.ChannelType, cm.ChannelId, cm.ChannelCredentialId, cm.ChannelIsMultiKey, cm.ChannelMultiKeyIndex, cm.ChannelBaseUrl, cm.ApiType, cm.ApiVersion, cm.Organization, cm.ChannelCreateTime, cm.UpstreamModelName, cm.IsModelMapped, cm.SupportStreamOptions)
 	}
 
 	// Responses usage info (non-sensitive)
@@ -803,10 +813,41 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 }
 
 func (info *RelayInfo) SetFirstResponseTime() {
+	now := time.Now()
+	if info.AttemptFirstResponseTime.IsZero() {
+		info.AttemptFirstResponseTime = now
+	}
 	if info.isFirstResponse {
-		info.FirstResponseTime = time.Now()
+		info.FirstResponseTime = now
 		info.isFirstResponse = false
 	}
+}
+
+// SetDownstreamFirstWriteTime records the first actual response bytes flushed
+// to the client. It is intentionally separate from SetFirstResponseTime,
+// which represents the upstream first-response event used by FRT.
+func (info *RelayInfo) SetDownstreamFirstWriteTime() {
+	if info == nil {
+		return
+	}
+	now := time.Now()
+	if info.AttemptFirstDownstreamWriteTime.IsZero() {
+		info.AttemptFirstDownstreamWriteTime = now
+	}
+	if info.isFirstResponse && info.FirstDownstreamWriteTime.IsZero() {
+		info.FirstDownstreamWriteTime = now
+	}
+}
+
+// BeginAttempt resets attempt-local timing while preserving request-level
+// timing used by billing and existing user-facing logs.
+func (info *RelayInfo) BeginAttempt(start time.Time) {
+	if info == nil {
+		return
+	}
+	info.AttemptStartTime = start
+	info.AttemptFirstResponseTime = time.Time{}
+	info.AttemptFirstDownstreamWriteTime = time.Time{}
 }
 
 func (info *RelayInfo) HasSendResponse() bool {

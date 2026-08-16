@@ -211,7 +211,13 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		req.Header.Set("mj-api-secret", auth)
 	}
 	defer cancel()
-	resp, err := GetHttpClient().Do(req)
+	proxyURL := common.GetContextKeyString(c, constant.ContextKeyChannelEffectiveProxy)
+	client, clientErr := GetHttpClientWithProxy(proxyURL)
+	if clientErr != nil {
+		common.SysLog("configure midjourney proxy failed: " + clientErr.Error())
+		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "proxy_config_failed", http.StatusBadGateway), nullBytes, clientErr
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		common.SysLog("do request failed: " + err.Error())
 		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, err

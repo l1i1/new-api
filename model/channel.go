@@ -59,7 +59,8 @@ type Channel struct {
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
 	// cache info
-	Keys []string `json:"-" gorm:"-"`
+	Keys        []string            `json:"-" gorm:"-"`
+	Credentials []ChannelCredential `json:"-" gorm:"-"`
 }
 
 type ChannelInfo struct {
@@ -217,8 +218,22 @@ func (channel *Channel) GetNextEnabledKey(affinityValues ...int) (string, int, *
 	defer lock.Unlock()
 
 	statusList := channel.ChannelInfo.MultiKeyStatusList
-	// helper to get key status, default to enabled when missing
+	credentialsByPosition := make(map[int]*ChannelCredential, len(channel.Credentials))
+	for index := range channel.Credentials {
+		credential := &channel.Credentials[index]
+		if credential.Position < 0 || credential.Position >= len(keys) ||
+			credential.Fingerprint != ChannelCredentialFingerprint(keys[credential.Position]) {
+			continue
+		}
+		credentialsByPosition[credential.Position] = credential
+	}
+	// Credential status is the source of truth once the durable store is loaded.
+	// Positions not represented by a loaded credential retain the legacy fallback
+	// so an incomplete migration cannot make a channel unavailable.
 	getStatus := func(idx int) int {
+		if credential, ok := credentialsByPosition[idx]; ok {
+			return credential.Status
+		}
 		if statusList == nil {
 			return common.ChannelStatusEnabled
 		}
@@ -446,7 +461,21 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	if err != nil {
 		return nil, err
 	}
+	loadChannelCredentials(channel)
 	return channel, nil
+}
+
+func loadChannelCredentials(channel *Channel) {
+	if channel == nil || channel.Id <= 0 || DB == nil {
+		return
+	}
+	if !DB.Migrator().HasTable(&ChannelCredential{}) {
+		return
+	}
+	credentials, err := GetChannelCredentials(channel.Id)
+	if err == nil && len(credentials) > 0 {
+		channel.Credentials = credentials
+	}
 }
 
 func BatchInsertChannels(channels []Channel) error {
@@ -468,8 +497,13 @@ func BatchInsertChannels(channels []Channel) error {
 			tx.Rollback()
 			return err
 		}
-		for _, channel_ := range chunk {
-			if err := channel_.AddAbilities(tx); err != nil {
+		for index := range chunk {
+			channel := &chunk[index]
+			if err := migrateLegacyChannelCredentialsForChannel(tx, channel); err != nil {
+				tx.Rollback()
+				return err
+			}
+			if err := channel.AddAbilities(tx); err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -546,13 +580,15 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
-	var err error
-	err = DB.Create(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.AddAbilities(nil)
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		if err := migrateLegacyChannelCredentialsForChannel(tx, channel); err != nil {
+			return err
+		}
+		return channel.AddAbilities(tx)
+	})
 }
 
 func (channel *Channel) Update() error {
@@ -594,14 +630,25 @@ func (channel *Channel) Update() error {
 			}
 		}
 	}
-	var err error
-	err = DB.Model(channel).Updates(channel).Error
+	var updated Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(channel).Updates(channel).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&updated, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		if err := migrateLegacyChannelCredentialsForChannel(tx, &updated); err != nil {
+			return err
+		}
+		return updated.UpdateAbilities(tx)
+	})
 	if err != nil {
 		return err
 	}
-	DB.Model(channel).First(channel, "id = ?", channel.Id)
-	err = channel.UpdateAbilities(nil)
-	return err
+	*channel = updated
+	loadChannelCredentials(channel)
+	return nil
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
@@ -694,6 +741,25 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 			channel.SetOtherInfo(info)
 			return
 		}
+		// Keep the in-memory durable credential mirror in sync with the legacy
+		// status map. Runtime key selection treats Credential.Status as the
+		// source of truth, so updating only ChannelInfo would leave a cached
+		// auto-disabled key selectable until the next full cache rebuild.
+		for index := range channel.Credentials {
+			credential := &channel.Credentials[index]
+			if credential.Position != keyIndex || credential.Fingerprint != ChannelCredentialFingerprint(keys[keyIndex]) {
+				continue
+			}
+			credential.Status = status
+			if status == common.ChannelStatusEnabled {
+				credential.DisabledReason = ""
+				credential.DisabledAt = 0
+			} else {
+				credential.DisabledReason = reason
+				credential.DisabledAt = common.GetTimestamp()
+			}
+			break
+		}
 		if channel.ChannelInfo.MultiKeyStatusList == nil {
 			channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
 		}
@@ -716,8 +782,14 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 			info["status_reason"] = "All keys are disabled"
 			info["status_time"] = common.GetTimestamp()
 			channel.SetOtherInfo(info)
-		} else if status == common.ChannelStatusEnabled {
-			channel.Status = common.ChannelStatusEnabled
+		} else if status == common.ChannelStatusEnabled && channel.Status == common.ChannelStatusAutoDisabled {
+			info := channel.GetOtherInfo()
+			if info["status_reason"] == "All keys are disabled" {
+				channel.Status = common.ChannelStatusEnabled
+				delete(info, "status_reason")
+				delete(info, "status_time")
+				channel.SetOtherInfo(info)
+			}
 		}
 	}
 }
@@ -805,6 +877,11 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		if err != nil {
 			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
 			return false
+		}
+		if channel.ChannelInfo.IsMultiKey && usingKey != "" {
+			if syncErr := SyncChannelCredentialStatusForLegacyKey(DB, channel.Id, usingKey, status, reason); syncErr != nil {
+				common.SysLog(fmt.Sprintf("failed to sync credential status: channel_id=%d, error=%v", channel.Id, syncErr))
+			}
 		}
 	}
 	return true

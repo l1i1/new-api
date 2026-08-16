@@ -53,6 +53,10 @@ export function getMultiKeyConfirmMessage(
       return MULTI_KEY_CONFIRM_MESSAGES.ENABLE_ALL
     case 'disable-all':
       return MULTI_KEY_CONFIRM_MESSAGES.DISABLE_ALL
+    case 'enable-selected':
+      return MULTI_KEY_CONFIRM_MESSAGES.ENABLE_ALL
+    case 'disable-selected':
+      return MULTI_KEY_CONFIRM_MESSAGES.DISABLE_ALL
     case 'delete-disabled':
       return MULTI_KEY_CONFIRM_MESSAGES.DELETE_DISABLED
     default:
@@ -70,6 +74,7 @@ export function isDestructiveAction(
   return (
     action.type === 'delete' ||
     action.type === 'delete-disabled' ||
-    action.type === 'disable-all'
+    action.type === 'disable-all' ||
+    action.type === 'disable-selected'
   )
 }

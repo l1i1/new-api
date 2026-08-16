@@ -490,16 +490,72 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey(c.GetInt(string(constant.ContextKeyTokenId)))
-	if newAPIError != nil {
-		return newAPIError
+	forcedCredentialID := common.GetContextKeyInt(c, constant.ContextKeyForceMultiKeyCredentialID)
+	forceMultiKeyIndex := common.GetContextKeyBool(c, constant.ContextKeyForceMultiKeyIndex)
+	var key string
+	var index int
+	var newAPIError *types.NewAPIError
+	if !channel.ChannelInfo.IsMultiKey || (forcedCredentialID <= 0 && !forceMultiKeyIndex) {
+		key, index, newAPIError = channel.GetNextEnabledKey(c.GetInt(string(constant.ContextKeyTokenId)))
+		if newAPIError != nil {
+			return newAPIError
+		}
+	}
+	if forcedCredentialID > 0 && channel.ChannelInfo.IsMultiKey {
+		credential := channel.CredentialForID(forcedCredentialID)
+		if credential == nil {
+			return types.NewError(errors.New("selected multi-key credential was not found"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		keys := channel.GetKeys()
+		if credential.Position < 0 || credential.Position >= len(keys) || credential.Fingerprint != model.ChannelCredentialFingerprint(keys[credential.Position]) {
+			return types.NewError(errors.New("selected multi-key credential is no longer available"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		if credential.Status != common.ChannelStatusEnabled && !common.GetContextKeyBool(c, constant.ContextKeyIncludeDisabledKey) {
+			return types.NewError(errors.New("selected multi-key credential is disabled"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		key, index = keys[credential.Position], credential.Position
+	} else if forceMultiKeyIndex && channel.ChannelInfo.IsMultiKey {
+		forcedIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		keys := channel.GetKeys()
+		if forcedIndex < 0 || forcedIndex >= len(keys) {
+			return types.NewError(errors.New("multi-key index out of range"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		status := common.ChannelStatusEnabled
+		if credential := channel.CredentialForPosition(forcedIndex); credential != nil {
+			status = credential.Status
+		} else if channel.ChannelInfo.MultiKeyStatusList != nil {
+			if selectedStatus, ok := channel.ChannelInfo.MultiKeyStatusList[forcedIndex]; ok {
+				status = selectedStatus
+			}
+		}
+		if status != common.ChannelStatusEnabled && !common.GetContextKeyBool(c, constant.ContextKeyIncludeDisabledKey) {
+			return types.NewError(errors.New("selected multi-key is disabled"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		key, index = keys[forcedIndex], forcedIndex
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
+		credential := channel.CredentialForPosition(index)
+		if credential != nil {
+			settings := channel.GetSetting()
+			mode := model.NormalizeCredentialProxyMode(credential.ProxyMode)
+			effectiveProxy, proxyErr := credential.EffectiveProxyURL(settings.Proxy)
+			if proxyErr != nil {
+				return types.NewError(proxyErr, types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+			}
+			settings.Proxy = effectiveProxy
+			common.SetContextKey(c, constant.ContextKeyChannelCredentialId, credential.Id)
+			common.SetContextKey(c, constant.ContextKeyChannelProxyMode, mode)
+			common.SetContextKey(c, constant.ContextKeyChannelEffectiveProxy, effectiveProxy)
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, settings)
+		}
 	} else {
 		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)
+		common.SetContextKey(c, constant.ContextKeyChannelCredentialId, 0)
+		common.SetContextKey(c, constant.ContextKeyChannelProxyMode, model.CredentialProxyModeInherit)
+		common.SetContextKey(c, constant.ContextKeyChannelEffectiveProxy, channel.GetSetting().Proxy)
 	}
 	// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	common.SetContextKey(c, constant.ContextKeyChannelKey, key)

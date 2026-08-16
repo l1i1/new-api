@@ -199,7 +199,13 @@ func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 // bool is true only when a new pending row was created; false means an active
 // task of the same type already exists and was returned.
 func EnqueueSystemTask(taskType string, payload any) (*model.SystemTask, bool, error) {
-	activeTask, err := model.GetActiveSystemTask(taskType)
+	return EnqueueSystemTaskWithKey(taskType, taskType, payload)
+}
+
+// EnqueueSystemTaskWithKey deduplicates on a stable scope (for example a
+// channel ID) so unrelated channels can submit independent work.
+func EnqueueSystemTaskWithKey(taskType, activeKey string, payload any) (*model.SystemTask, bool, error) {
+	activeTask, err := model.GetActiveSystemTaskByKey(taskType, activeKey)
 	if err != nil {
 		return nil, false, err
 	}
@@ -207,9 +213,9 @@ func EnqueueSystemTask(taskType string, payload any) (*model.SystemTask, bool, e
 		return activeTask, false, nil
 	}
 
-	task, err := model.CreateSystemTask(taskType, payload, nil)
+	task, err := model.CreateSystemTaskWithKey(taskType, activeKey, payload, nil)
 	if err != nil {
-		activeTask, activeErr := model.GetActiveSystemTask(taskType)
+		activeTask, activeErr := model.GetActiveSystemTaskByKey(taskType, activeKey)
 		if activeErr == nil && activeTask != nil {
 			return activeTask, false, nil
 		}
@@ -234,6 +240,27 @@ func runSystemTaskClaimPass(runnerID string) {
 		return
 	}
 	for _, handler := range handlers {
+		if handler.Type() == model.SystemTaskTypeChannelCredentialTest {
+			pendingTasks, pendingErr := model.FindPendingSystemTasks(handler.Type(), 8)
+			if pendingErr != nil {
+				logger.LogWarn(context.Background(), fmt.Sprintf("system task credential test query failed: %v", pendingErr))
+				continue
+			}
+			for _, pending := range pendingTasks {
+				claimedTask, claimed, claimErr := model.ClaimSystemTask(pending.ID, handler.Type(), runnerID, systemTaskLockUntil())
+				if claimErr != nil || !claimed {
+					continue
+				}
+				dispatchHandler := handler
+				dispatchTask := claimedTask
+				gopool.Go(func() {
+					runWithLeaseHeartbeat(dispatchTask, runnerID, func(ctx context.Context) {
+						dispatchHandler.Run(ctx, dispatchTask, runnerID)
+					})
+				})
+			}
+			continue
+		}
 		task := pendingTasks[handler.Type()]
 		if task == nil {
 			continue

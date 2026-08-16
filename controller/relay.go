@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	channelobservability "github.com/QuantumNous/new-api/pkg/channel_observability"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -125,6 +126,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	if relayFormat != types.RelayFormatOpenAIRealtime {
+		originalWriter := c.Writer
+		c.Writer = &relayObservationWriter{ResponseWriter: originalWriter, info: relayInfo}
+		defer func() { c.Writer = originalWriter }()
+	}
+	defer func() {
+		channelobservability.RecordRequest(relayInfo, newAPIError == nil, channelobservability.Usage{
+			InputTokens:      relayInfo.ObservedInputTokens,
+			CacheReadTokens:  relayInfo.ObservedCacheReadTokens,
+			CacheWriteTokens: relayInfo.ObservedCacheWriteTokens,
+			Observable:       relayInfo.ObservedUsage,
+		})
+	}()
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -216,6 +230,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		relayInfo.BeginAttempt(time.Now())
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -227,6 +242,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		default:
 			newAPIError = relayHandler(c, relayInfo)
 		}
+		channelobservability.RecordAttempt(relayInfo, newAPIError == nil, func() string {
+			if newAPIError == nil {
+				return ""
+			}
+			return string(newAPIError.GetErrorCode())
+		}())
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
@@ -253,6 +274,25 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+type relayObservationWriter struct {
+	gin.ResponseWriter
+	info *relaycommon.RelayInfo
+}
+
+func (w *relayObservationWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 && w.info != nil {
+		w.info.SetDownstreamFirstWriteTime()
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *relayObservationWriter) WriteString(data string) (int, error) {
+	if len(data) > 0 && w.info != nil {
+		w.info.SetDownstreamFirstWriteTime()
+	}
+	return w.ResponseWriter.WriteString(data)
 }
 
 var upgrader = websocket.Upgrader{

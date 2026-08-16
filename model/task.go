@@ -101,9 +101,15 @@ func (m Properties) Value() (driver.Value, error) {
 }
 
 type TaskPrivateData struct {
-	Key            string `json:"key,omitempty"`
-	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
-	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	Key string `json:"key,omitempty"`
+	// ChannelCredentialID pins async polling to the durable credential selected
+	// at submission time. The secret remains in the credential store instead of
+	// being duplicated in task private data.
+	ChannelCredentialID int    `json:"channel_credential_id,omitempty"`
+	ProxySnapshot       string `json:"proxy_snapshot,omitempty"`
+	ProxySnapshotSet    bool   `json:"proxy_snapshot_set,omitempty"`
+	UpstreamTaskID      string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
+	ResultURL           string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
@@ -178,8 +184,11 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 	properties := Properties{}
 	privateData := TaskPrivateData{}
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
-		if relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeGemini ||
-			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi {
+		privateData.ChannelCredentialID = relayInfo.ChannelMeta.ChannelCredentialId
+		privateData.ProxySnapshot = relayInfo.ChannelMeta.ChannelSetting.Proxy
+		privateData.ProxySnapshotSet = true
+		if privateData.ChannelCredentialID <= 0 && (relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeGemini ||
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi) {
 			privateData.Key = relayInfo.ChannelMeta.ApiKey
 		}
 		if relayInfo.UpstreamModelName != "" {
@@ -211,6 +220,61 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		PrivateData: privateData,
 	}
 	return t
+}
+
+// ResolveTaskChannelAccess returns the upstream credential and effective proxy
+// for an async task. New tasks use the durable credential ID; older tasks fall
+// back to their historical private key or the channel-level configuration.
+// The helper is intentionally internal-facing and never serializes its result.
+func ResolveTaskChannelAccess(task *Task, channel *Channel) (string, string) {
+	if channel == nil {
+		return "", ""
+	}
+	key := channel.Key
+	proxy := channel.GetSetting().Proxy
+	if task == nil {
+		return key, proxy
+	}
+	if task.PrivateData.ProxySnapshotSet {
+		proxy = task.PrivateData.ProxySnapshot
+	}
+
+	if credentialID := task.PrivateData.ChannelCredentialID; credentialID > 0 {
+		credential := channel.CredentialForID(credentialID)
+		if credential == nil {
+			if loaded, err := GetChannelCredential(DB, channel.Id, credentialID); err == nil {
+				credential = loaded
+			}
+		}
+		if credential != nil {
+			keys := channel.GetKeys()
+			if credential.Position >= 0 && credential.Position < len(keys) &&
+				credential.Fingerprint == ChannelCredentialFingerprint(keys[credential.Position]) {
+				key = keys[credential.Position]
+			} else if credential.Secret != "" {
+				// Removed credentials remain addressable for in-flight tasks.
+				key = credential.Secret
+			}
+			if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
+				proxy = effectiveProxy
+			}
+			return key, proxy
+		}
+	}
+	if task.PrivateData.ChannelCredentialID <= 0 && channel.ChannelInfo.IsMultiKey {
+		if selectedKey, selectedProxy, _, err := ResolveSelectedChannelAccess(channel); err == nil {
+			key = selectedKey
+			if !task.PrivateData.ProxySnapshotSet {
+				proxy = selectedProxy
+			}
+		}
+	}
+
+	// Legacy Gemini/Vertex tasks already persisted a private key snapshot.
+	if task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
+	return key, proxy
 }
 
 func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQueryParams) []*Task {

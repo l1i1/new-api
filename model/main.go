@@ -260,6 +260,7 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&ChannelCredential{},
 		&Token{},
 		&User{},
 		&UserModelRateLimit{},
@@ -290,6 +291,7 @@ func migrateDB() error {
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
+		&ChannelModelPerfMetric{},
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
@@ -303,6 +305,9 @@ func migrateDB() error {
 		&PaymentGatewayProviderEvent{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := MigrateLegacyChannelCredentials(); err != nil {
 		return err
 	}
 	if err := MigrateInvoiceTypeCompanyToOrganization(); err != nil {
@@ -335,6 +340,7 @@ func migrateDBFast() error {
 		name  string
 	}{
 		{&Channel{}, "Channel"},
+		{&ChannelCredential{}, "ChannelCredential"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
 		{&UserModelRateLimit{}, "UserModelRateLimit"},
@@ -365,6 +371,7 @@ func migrateDBFast() error {
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
 		{&PerfMetric{}, "PerfMetric"},
+		{&ChannelModelPerfMetric{}, "ChannelModelPerfMetric"},
 		{&SystemInstance{}, "SystemInstance"},
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
@@ -396,6 +403,9 @@ func migrateDBFast() error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := MigrateLegacyChannelCredentials(); err != nil {
+		return err
 	}
 	if err := MigrateInvoiceTypeCompanyToOrganization(); err != nil {
 		return err

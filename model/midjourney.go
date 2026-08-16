@@ -20,9 +20,62 @@ type Midjourney struct {
 	Progress    string `json:"progress" gorm:"type:varchar(30);index"`
 	FailReason  string `json:"fail_reason"`
 	ChannelId   int    `json:"channel_id"`
-	Quota       int    `json:"quota"`
-	Buttons     string `json:"buttons"`
-	Properties  string `json:"properties"`
+	// ChannelCredentialID and ProxySnapshot pin asynchronous Midjourney
+	// follow-up requests to the credential and route selected at submission.
+	// They are internal-only and must never be returned in task DTOs.
+	ChannelCredentialID int    `json:"-" gorm:"index"`
+	ProxySnapshot       string `json:"-"`
+	ProxySnapshotSet    bool   `json:"-"`
+	Quota               int    `json:"quota"`
+	Buttons             string `json:"buttons"`
+	Properties          string `json:"properties"`
+}
+
+// ResolveMidjourneyChannelAccess returns the credential and effective proxy
+// captured for a Midjourney task. Legacy tasks fall back to the channel-level
+// configuration, while removed credentials remain addressable by their stored
+// secret until the task finishes.
+func ResolveMidjourneyChannelAccess(task *Midjourney, channel *Channel) (string, string) {
+	if channel == nil {
+		return "", ""
+	}
+	key := channel.Key
+	proxy := channel.GetSetting().Proxy
+	if task == nil {
+		return key, proxy
+	}
+	if task.ProxySnapshotSet {
+		proxy = task.ProxySnapshot
+	}
+	if task.ChannelCredentialID > 0 {
+		credential := channel.CredentialForID(task.ChannelCredentialID)
+		if credential == nil {
+			if loaded, err := GetChannelCredential(DB, channel.Id, task.ChannelCredentialID); err == nil {
+				credential = loaded
+			}
+		}
+		if credential != nil {
+			keys := channel.GetKeys()
+			if credential.Position >= 0 && credential.Position < len(keys) &&
+				credential.Fingerprint == ChannelCredentialFingerprint(keys[credential.Position]) {
+				key = keys[credential.Position]
+			} else if credential.Secret != "" {
+				key = credential.Secret
+			}
+			if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
+				proxy = effectiveProxy
+			}
+		}
+	}
+	if task.ChannelCredentialID <= 0 && channel.ChannelInfo.IsMultiKey {
+		if selectedKey, selectedProxy, _, err := ResolveSelectedChannelAccess(channel); err == nil {
+			key = selectedKey
+			if !task.ProxySnapshotSet {
+				proxy = selectedProxy
+			}
+		}
+	}
+	return key, proxy
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段

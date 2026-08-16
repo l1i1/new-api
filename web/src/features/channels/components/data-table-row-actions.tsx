@@ -151,6 +151,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     setOpen('multi-key-manage')
   }
 
+  const handleObservability = () => {
+    setCurrentRow(channel)
+    setOpen('observability')
+  }
+
   const handleToggleStatus = async (
     e?: React.MouseEvent<HTMLButtonElement>
   ) => {
@@ -369,6 +374,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               </DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
+
+          <DropdownMenuItem onClick={handleObservability}>
+            {t('Channel observability')}
+            <DropdownMenuShortcut>
+              <Gauge size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
 
           <DropdownMenuItem
             disabled={!canOperate}

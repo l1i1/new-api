@@ -17,6 +17,11 @@ type permissionRoute struct {
 }
 
 func registerChannelRoutes(apiRouter *gin.RouterGroup) {
+	apiRouter.GET("/observability/channel-model",
+		middleware.AdminAuth(),
+		middleware.RequirePermission(authz.ChannelRead),
+		controller.GetChannelModelObservability,
+	)
 	channelRoute := apiRouter.Group("/channel")
 	channelRoute.Use(middleware.AdminAuth())
 
@@ -38,6 +43,7 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 
 var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/", permission: authz.ChannelRead, handler: controller.GetAllChannels},
+	{method: http.MethodGet, path: "/observability", permission: authz.ChannelRead, handler: controller.GetLegacyChannelModelObservability},
 	{method: http.MethodGet, path: "/search", permission: authz.ChannelRead, handler: controller.SearchChannels},
 	{method: http.MethodGet, path: "/models", permission: authz.ChannelRead, handler: controller.ChannelListModels},
 	{method: http.MethodGet, path: "/models_enabled", permission: authz.ChannelRead, handler: controller.EnabledListModels},
@@ -74,6 +80,15 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/tag/models", permission: authz.ChannelRead, handler: controller.GetTagModels},
 	{method: http.MethodPost, path: "/copy/:id", permission: authz.ChannelSensitiveWrite, handler: controller.CopyChannel},
 	{method: http.MethodPost, path: "/multi_key/manage", permission: authz.ChannelOperate, handler: controller.ManageMultiKeys},
+	{method: http.MethodGet, path: "/:id/multi-key", permission: authz.ChannelRead, handler: controller.ListMultiKeyCredentials},
+	{method: http.MethodPost, path: "/:id/multi-key/test", permission: authz.ChannelOperate, handler: controller.TestMultiKeys},
+	{method: http.MethodGet, path: "/:id/multi-key/test/:task_id", permission: authz.ChannelOperate, handler: controller.GetMultiKeyTestTask},
+	{method: http.MethodPost, path: "/:id/multi-key/test/:task_id/cancel", permission: authz.ChannelOperate, handler: controller.CancelMultiKeyTestTask},
+	{method: http.MethodPost, path: "/:id/multi-key/status", permission: authz.ChannelOperate, handler: controller.UpdateMultiKeyStatus},
+	{method: http.MethodPatch, path: "/:id/multi-key/proxy", permission: authz.ChannelSensitiveWrite, handler: controller.UpdateMultiKeyProxy},
+	{method: http.MethodPost, path: "/:id/multi_key/test", permission: authz.ChannelOperate, handler: controller.TestMultiKeys},
+	{method: http.MethodPost, path: "/:id/multi_key/status", permission: authz.ChannelOperate, handler: controller.UpdateMultiKeyStatus},
+	{method: http.MethodPatch, path: "/:id/multi_key/proxy", permission: authz.ChannelSensitiveWrite, handler: controller.UpdateMultiKeyProxy},
 	{method: http.MethodPost, path: "/upstream_updates/apply", permission: authz.ChannelWrite, handler: controller.ApplyChannelUpstreamModelUpdates},
 	{method: http.MethodPost, path: "/upstream_updates/apply_all", permission: authz.ChannelWrite, handler: controller.ApplyAllChannelUpstreamModelUpdates},
 	{method: http.MethodPost, path: "/upstream_updates/detect", permission: authz.ChannelOperate, handler: controller.DetectChannelUpstreamModelUpdates},

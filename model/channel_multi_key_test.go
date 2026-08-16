@@ -58,3 +58,30 @@ func TestChannelGetNextEnabledKeyAffinity(t *testing.T) {
 		require.Equal(t, fallbackIndex, repeatedIndex)
 	}
 }
+
+func TestHandlerMultiKeyUpdateSynchronizesCredentialCacheStatus(t *testing.T) {
+	channel := &Channel{
+		Id:  1,
+		Key: "key-0\nkey-1",
+		Credentials: []ChannelCredential{
+			{Id: 10, Position: 0, Fingerprint: ChannelCredentialFingerprint("key-0"), Status: common.ChannelStatusEnabled},
+			{Id: 11, Position: 1, Fingerprint: ChannelCredentialFingerprint("key-1"), Status: common.ChannelStatusEnabled},
+		},
+		ChannelInfo: ChannelInfo{IsMultiKey: true},
+	}
+
+	handlerMultiKeyUpdate(channel, "key-0", common.ChannelStatusAutoDisabled, "upstream_503")
+	require.Equal(t, common.ChannelStatusAutoDisabled, channel.Credentials[0].Status)
+	require.Equal(t, "upstream_503", channel.Credentials[0].DisabledReason)
+	require.NotZero(t, channel.Credentials[0].DisabledAt)
+
+	key, index, err := channel.GetNextEnabledKey()
+	require.Nil(t, err)
+	require.Equal(t, "key-1", key)
+	require.Equal(t, 1, index)
+
+	handlerMultiKeyUpdate(channel, "key-0", common.ChannelStatusEnabled, "")
+	require.Equal(t, common.ChannelStatusEnabled, channel.Credentials[0].Status)
+	require.Empty(t, channel.Credentials[0].DisabledReason)
+	require.Zero(t, channel.Credentials[0].DisabledAt)
+}

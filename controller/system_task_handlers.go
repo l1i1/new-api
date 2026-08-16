@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,9 +20,42 @@ import (
 // service.StartSystemTaskRunner.
 func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(channelTestHandler{})
+	service.RegisterSystemTaskHandler(channelCredentialTestHandler{})
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+}
+
+type channelCredentialTestHandler struct{}
+
+func (channelCredentialTestHandler) Type() string { return model.SystemTaskTypeChannelCredentialTest }
+
+func (channelCredentialTestHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	payload := channelCredentialTestTaskPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, errors.New("invalid credential test task"))
+		return
+	}
+	payload.TaskID = task.TaskID
+	result, err := runMultiKeyCredentialTests(ctx, payload, service.NewSystemTaskProgressReporter(task, runnerID))
+	if err != nil {
+		cancelRequested, _ := model.IsSystemTaskCancelRequested(task.TaskID)
+		if cancelRequested {
+			finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusCanceled, nil, errors.New("credential test task canceled"))
+			return
+		}
+		// Do not persist upstream/provider error text in system-task records.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			err = errors.New("credential test task timed out")
+		} else if errors.Is(err, model.ErrChannelCredentialRevisionConflict) {
+			err = errors.New("credential set changed before testing completed")
+		} else {
+			err = errors.New("credential test task failed")
+		}
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, result, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

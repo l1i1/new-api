@@ -38,7 +38,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 	var httpClient *http.Client
 	var proxy string
 	if channel, err := model.CacheGetChannel(midjourneyTask.ChannelId); err == nil {
-		proxy = channel.GetSetting().Proxy
+		_, proxy = model.ResolveMidjourneyChannelAccess(midjourneyTask, channel)
 		if proxy != "" {
 			if httpClient, err = service.GetHttpClientWithProxy(proxy); err != nil {
 				c.JSON(400, gin.H{
@@ -95,6 +95,41 @@ func RelayMidjourneyImage(c *gin.Context) {
 		log.Println("Failed to stream image:", err)
 	}
 	return
+}
+
+// bindMidjourneyTaskChannel pins follow-up requests to the credential and
+// effective proxy captured when the task was submitted. The selected key is
+// kept in request context so DoMidjourneyHttpRequest and provider-specific
+// helpers use the same upstream identity.
+func bindMidjourneyTaskChannel(c *gin.Context, task *model.Midjourney, channel *model.Channel) string {
+	if c == nil || channel == nil {
+		return ""
+	}
+	key, proxy := model.ResolveMidjourneyChannelAccess(task, channel)
+	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+	credentialID := 0
+	if task != nil {
+		credentialID = task.ChannelCredentialID
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelCredentialId, credentialID)
+	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, channel.ChannelInfo.IsMultiKey)
+	mode := model.CredentialProxyModeInherit
+	if credentialID > 0 {
+		if credential := channel.CredentialForID(credentialID); credential != nil {
+			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, credential.Position)
+			mode = model.NormalizeCredentialProxyMode(credential.ProxyMode)
+		}
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelEffectiveProxy, proxy)
+	common.SetContextKey(c, constant.ContextKeyChannelProxyMode, mode)
+	settings := channel.GetSetting()
+	settings.Proxy = proxy
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, settings)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+	c.Set("channel_id", channel.Id)
+	c.Set("base_url", channel.GetBaseURL())
+	return key
 }
 
 func RelayMidjourneyNotify(c *gin.Context) *dto.MidjourneyResponse {
@@ -258,23 +293,26 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	}()
 	midjResponse := &mjResp.Response
 	midjourneyTask := &model.Midjourney{
-		UserId:      info.UserId,
-		Code:        midjResponse.Code,
-		Action:      constant.MjActionSwapFace,
-		MjId:        midjResponse.Result,
-		Prompt:      "InsightFace",
-		PromptEn:    "",
-		Description: midjResponse.Description,
-		State:       "",
-		SubmitTime:  info.StartTime.UnixNano() / int64(time.Millisecond),
-		StartTime:   time.Now().UnixNano() / int64(time.Millisecond),
-		FinishTime:  0,
-		ImageUrl:    "",
-		Status:      "",
-		Progress:    "0%",
-		FailReason:  "",
-		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+		UserId:              info.UserId,
+		Code:                midjResponse.Code,
+		Action:              constant.MjActionSwapFace,
+		MjId:                midjResponse.Result,
+		Prompt:              "InsightFace",
+		PromptEn:            "",
+		Description:         midjResponse.Description,
+		State:               "",
+		SubmitTime:          info.StartTime.UnixNano() / int64(time.Millisecond),
+		StartTime:           time.Now().UnixNano() / int64(time.Millisecond),
+		FinishTime:          0,
+		ImageUrl:            "",
+		Status:              "",
+		Progress:            "0%",
+		FailReason:          "",
+		ChannelId:           c.GetInt("channel_id"),
+		ChannelCredentialID: info.ChannelCredentialId,
+		ProxySnapshot:       info.ChannelSetting.Proxy,
+		ProxySnapshotSet:    true,
+		Quota:               priceData.Quota,
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -307,7 +345,8 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
 	}
 	c.Set("channel_id", originTask.ChannelId)
-	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+	key := bindMidjourneyTaskChannel(c, originTask, channel)
+	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	fullRequestURL := fmt.Sprintf("%s%s", channel.GetBaseURL(), requestURL)
@@ -482,7 +521,10 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			}
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
-			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+			key := bindMidjourneyTaskChannel(c, originTask, channel)
+			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+			relayInfo.ChannelId = originTask.ChannelId
+			relayInfo.InitChannelMeta(c)
 			logger.LogDebug(c, "Midjourney action uses origin channel: id=%s, base_url=%s", strconv.Itoa(originTask.ChannelId), channel.GetBaseURL())
 		}
 		midjRequest.Prompt = originTask.Prompt
@@ -571,23 +613,26 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	// 24-prompt包含敏感词 {"code":24,"description":"可能包含敏感词","properties":{"promptEn":"nude body","bannedWord":"nude"}}
 	// other: 提交错误，description为错误描述
 	midjourneyTask := &model.Midjourney{
-		UserId:      relayInfo.UserId,
-		Code:        midjResponse.Code,
-		Action:      midjRequest.Action,
-		MjId:        midjResponse.Result,
-		Prompt:      midjRequest.Prompt,
-		PromptEn:    "",
-		Description: midjResponse.Description,
-		State:       "",
-		SubmitTime:  time.Now().UnixNano() / int64(time.Millisecond),
-		StartTime:   0,
-		FinishTime:  0,
-		ImageUrl:    "",
-		Status:      "",
-		Progress:    "0%",
-		FailReason:  "",
-		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+		UserId:              relayInfo.UserId,
+		Code:                midjResponse.Code,
+		Action:              midjRequest.Action,
+		MjId:                midjResponse.Result,
+		Prompt:              midjRequest.Prompt,
+		PromptEn:            "",
+		Description:         midjResponse.Description,
+		State:               "",
+		SubmitTime:          time.Now().UnixNano() / int64(time.Millisecond),
+		StartTime:           0,
+		FinishTime:          0,
+		ImageUrl:            "",
+		Status:              "",
+		Progress:            "0%",
+		FailReason:          "",
+		ChannelId:           c.GetInt("channel_id"),
+		ChannelCredentialID: relayInfo.ChannelCredentialId,
+		ProxySnapshot:       relayInfo.ChannelSetting.Proxy,
+		ProxySnapshotSet:    true,
+		Quota:               priceData.Quota,
 	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）

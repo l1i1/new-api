@@ -37,7 +37,16 @@ const (
 	ContextKeyChannelStatusCodeMapping ContextKey = "status_code_mapping"
 	ContextKeyChannelIsMultiKey        ContextKey = "channel_is_multi_key"
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
+	ContextKeyChannelCredentialId      ContextKey = "channel_credential_id"
+	ContextKeyChannelProxyMode         ContextKey = "channel_proxy_mode"
+	ContextKeyChannelEffectiveProxy    ContextKey = "channel_effective_proxy"
 	ContextKeyChannelKey               ContextKey = "channel_key"
+	ContextKeyForceMultiKeyIndex       ContextKey = "force_multi_key_index"
+	// ContextKeyForceMultiKeyCredentialID pins a probe or other administrative
+	// operation to the durable credential identity. The runtime resolves its
+	// current legacy position immediately before selecting the key.
+	ContextKeyForceMultiKeyCredentialID ContextKey = "force_multi_key_credential_id"
+	ContextKeyIncludeDisabledKey       ContextKey = "include_disabled_key"
 
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"

@@ -33,6 +33,7 @@ func InitChannelCache() {
 	var channels []*Channel
 	DB.Find(&channels)
 	for _, channel := range channels {
+		loadChannelCredentials(channel)
 		newChannelId2channel[channel.Id] = channel
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
 			if config := channel.GetOtherSettings().AdvancedCustom; config != nil {

@@ -25,6 +25,7 @@ import type {
   BatchSetTagParams,
   Channel,
   ChannelBalanceResponse,
+  ChannelObservabilityResponse,
   ChannelOpsResponse,
   ChannelTestResponse,
   CopyChannelParams,
@@ -34,7 +35,9 @@ import type {
   GetChannelsParams,
   GetChannelsResponse,
   MultiKeyManageParams,
+  MultiKeyMutationResponse,
   MultiKeyStatusResponse,
+  MultiKeyTestResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
   TagOperationParams,
@@ -414,13 +417,11 @@ export async function getMultiKeyStatus(
   pageSize = 50,
   status?: number
 ): Promise<MultiKeyStatusResponse> {
-  return manageMultiKeys({
-    channel_id: channelId,
-    action: 'get_key_status',
-    page,
-    page_size: pageSize,
-    status,
-  }) as Promise<MultiKeyStatusResponse>
+  const res = await api.get(`/api/channel/${channelId}/multi-key`, {
+    params: { page, page_size: pageSize, status },
+    ...channelActionConfig(),
+  })
+  return res.data
 }
 
 /**
@@ -499,6 +500,120 @@ export async function deleteDisabledMultiKeys(
     channel_id: channelId,
     action: 'delete_disabled_keys',
   }) as Promise<{ success: boolean; message?: string; data?: number }>
+}
+
+export async function testMultiKeys(
+  channelId: number,
+  params: {
+    credential_ids?: number[]
+    key_indices?: number[]
+    all?: boolean
+    include_disabled?: boolean
+    model?: string
+    endpoint_type?: string
+    stream?: boolean
+    keys_revision?: number
+    concurrency?: number
+    timeout?: number
+  }
+): Promise<MultiKeyTestResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/multi-key/test`,
+    params,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function updateMultiKeyStatus(
+  channelId: number,
+  params: {
+    credential_ids?: number[]
+    key_indices?: number[]
+    all?: boolean
+    status: 'enabled' | 'manual_disabled'
+    reason?: string
+    keys_revision?: number
+  }
+): Promise<MultiKeyMutationResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/multi-key/status`,
+    params,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function updateMultiKeyProxy(
+  channelId: number,
+  params: {
+    credential_id?: number
+    credential_ids?: number[]
+    all?: boolean
+    proxy_mode: 'inherit' | 'direct' | 'custom'
+    proxy_url?: string
+    keys_revision?: number
+  }
+): Promise<MultiKeyMutationResponse> {
+  const res = await api.patch(
+    `/api/channel/${channelId}/multi-key/proxy`,
+    params,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export type MultiKeyTestTaskResponse = {
+  success: boolean
+  message?: string
+  data?: {
+    task_id: string
+    status: string
+    result?: {
+      results?: MultiKeyTestResponse['results']
+    }
+    error?: string
+  }
+}
+
+export async function getMultiKeyTestTask(
+  channelId: number,
+  taskId: string
+): Promise<MultiKeyTestTaskResponse> {
+  const res = await api.get(
+    `/api/channel/${channelId}/multi-key/test/${encodeURIComponent(taskId)}`,
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function cancelMultiKeyTestTask(
+  channelId: number,
+  taskId: string
+): Promise<{ success: boolean; message?: string }> {
+  const res = await api.post(
+    `/api/channel/${channelId}/multi-key/test/${encodeURIComponent(taskId)}/cancel`,
+    {},
+    channelActionConfig({ disableDuplicate: true })
+  )
+  return res.data
+}
+
+export async function getChannelObservability(
+  channelId: number,
+  hours = 24,
+  params?: {
+    page?: number
+    page_size?: number
+    sort_by?: string
+    sort_order?: 'asc' | 'desc'
+  }
+): Promise<ChannelObservabilityResponse> {
+  const res = await api.get('/api/observability/channel-model', {
+    params: { channel_id: channelId, hours, ...params },
+    ...channelActionConfig(),
+  })
+  return res.data
 }
 
 // ============================================================================

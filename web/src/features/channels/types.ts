@@ -218,11 +218,19 @@ export interface CopyChannelResponse {
 // ============================================================================
 
 export interface KeyStatus {
+  credential_id?: number
   index: number
   status: number // 1: enabled, 2: manual disabled, 3: auto disabled
   disabled_time?: number
   reason?: string
-  key_preview?: string
+  fingerprint?: string
+  proxy_mode?: 'inherit' | 'direct' | 'custom' | string
+  proxy_summary?: string
+  last_test_at?: number
+  last_test_status?: 'success' | 'failed' | 'skipped' | string
+  last_test_latency_ms?: number
+  last_test_error_code?: string
+  last_test_error_class?: string
 }
 
 export type MultiKeyConfirmAction = {
@@ -232,8 +240,11 @@ export type MultiKeyConfirmAction = {
     | 'delete'
     | 'enable-all'
     | 'disable-all'
+    | 'enable-selected'
+    | 'disable-selected'
     | 'delete-disabled'
   keyIndex?: number
+  credentialIds?: number[]
 }
 
 export interface MultiKeyStatusResponse {
@@ -248,6 +259,83 @@ export interface MultiKeyStatusResponse {
     enabled_count: number
     manual_disabled_count: number
     auto_disabled_count: number
+    keys_revision?: number
+  }
+}
+
+export interface MultiKeyTestResult {
+  credential_id: number
+  index: number
+  fingerprint: string
+  status: 'success' | 'failed' | 'skipped' | string
+  http_status?: number
+  latency_ms: number
+  error_code?: string
+  error_class?: string
+  tested_at?: number
+}
+
+export interface MultiKeyTestResponse {
+  success: boolean
+  message?: string
+  keys_revision?: number
+  results?: MultiKeyTestResult[]
+  data?: {
+    task_id: string
+    status: string
+    result?: {
+      results?: MultiKeyTestResult[]
+    }
+    error?: string
+  }
+}
+
+export interface MultiKeyMutationResponse {
+  success: boolean
+  message?: string
+  keys_revision?: number
+}
+
+export interface ChannelObservabilityResult {
+  channel_id: number
+  credential_id: number
+  requested_model: string
+  upstream_model?: string
+  upstream_models?: string[]
+  group: string
+  protocol: string
+  request_count: number
+  attempt_count: number
+  request_success_rate: number
+  attempt_success_rate: number
+  cache_hit_rate: number
+  cache_token_rate: number
+  avg_latency_ms: number
+  p95_latency_ms: number
+  avg_request_latency_ms: number
+  p95_request_latency_ms: number
+  avg_ttft_ms: number
+  p95_ttft_ms: number
+  avg_upstream_frt_ms: number
+  p95_upstream_frt_ms: number
+  sample_coverage: number
+  usage_coverage: number
+  sample_sufficient: boolean
+  usage_sufficient: boolean
+  error_trends?: Record<string, number>
+}
+
+export interface ChannelObservabilityResponse {
+  success: boolean
+  message?: string
+  data?: {
+    items: ChannelObservabilityResult[]
+    total: number
+    page: number
+    page_size: number
+    total_pages: number
+    start?: number
+    end?: number
   }
 }
 

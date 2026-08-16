@@ -713,6 +713,10 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := model.MigrateLegacyChannelCredentialsWithDB(model.DB); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	recordManageAudit(c, "channel.create", map[string]interface{}{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -1107,6 +1111,12 @@ func UpdateChannel(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if channel.ChannelInfo.IsMultiKey && channel.Key != originChannel.Key {
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	model.InitChannelCache()
 	if proxyChanged {
@@ -1562,11 +1572,18 @@ type MultiKeyStatusResponse struct {
 }
 
 type KeyStatus struct {
-	Index        int    `json:"index"`
-	Status       int    `json:"status"` // 1: enabled, 2: disabled
-	DisabledTime int64  `json:"disabled_time,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	CredentialID      int    `json:"credential_id,omitempty"`
+	Index             int    `json:"index"`
+	Status            int    `json:"status"`
+	DisabledTime      int64  `json:"disabled_time,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	Fingerprint       string `json:"fingerprint,omitempty"`
+	ProxyMode         string `json:"proxy_mode,omitempty"`
+	ProxySummary      string `json:"proxy_summary,omitempty"`
+	LastTestAt        int64  `json:"last_test_at,omitempty"`
+	LastTestStatus    string `json:"last_test_status,omitempty"`
+	LastTestLatencyMs int64  `json:"last_test_latency_ms,omitempty"`
+	LastTestErrorCode string `json:"last_test_error_code,omitempty"`
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1614,9 +1631,50 @@ func ManageMultiKeys(c *gin.Context) {
 	lock.Lock()
 	defer lock.Unlock()
 
+	// Keep the legacy action API compatible while routing state changes through
+	// the transactional credential store. This also synchronizes the aggregate
+	// channel status when the last key is disabled or the first key is restored.
+	if request.Action == "disable_key" || request.Action == "enable_key" || request.Action == "enable_all_keys" || request.Action == "disable_all_keys" {
+		status := common.ChannelStatusManuallyDisabled
+		all := request.Action == "enable_all_keys" || request.Action == "disable_all_keys"
+		positions := []int{}
+		if !all {
+			if request.KeyIndex == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "key_index is required"})
+				return
+			}
+			positions = append(positions, *request.KeyIndex)
+		}
+		if request.Action == "enable_key" || request.Action == "enable_all_keys" {
+			status = common.ChannelStatusEnabled
+		}
+		reason := "manual"
+		if status == common.ChannelStatusEnabled {
+			reason = ""
+		}
+		revision, updateErr := model.UpdateChannelCredentialStatuses(model.DB, model.ChannelCredentialStatusUpdate{
+			ChannelID: channel.Id, Positions: positions, All: all, Status: status, Reason: reason,
+		})
+		if updateErr != nil {
+			writeChannelCredentialError(c, updateErr)
+			return
+		}
+		model.InitChannelCache()
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "multi-key status updated", "keys_revision": revision})
+		return
+	}
+
 	switch request.Action {
 	case "get_key_status":
 		keys := channel.GetKeys()
+		credentials := channel.Credentials
+		if len(credentials) == 0 {
+			credentials, _ = model.ListChannelCredentials(model.DB, channel.Id)
+		}
+		credentialByPosition := make(map[int]model.ChannelCredential, len(credentials))
+		for _, credential := range credentials {
+			credentialByPosition[credential.Position] = credential
+		}
 
 		// Default pagination parameters
 		page := request.Page
@@ -1633,12 +1691,16 @@ func ManageMultiKeys(c *gin.Context) {
 
 		// Build all key status data first
 		var allKeyStatusList []KeyStatus
-		for i, key := range keys {
+		for i := range keys {
 			status := 1 // default enabled
+			credential, hasCredential := credentialByPosition[i]
+			if hasCredential {
+				status = credential.Status
+			}
 			var disabledTime int64
 			var reason string
 
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
+			if !hasCredential && channel.ChannelInfo.MultiKeyStatusList != nil {
 				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
 					status = s
 				}
@@ -1655,26 +1717,69 @@ func ManageMultiKeys(c *gin.Context) {
 			}
 
 			if status != 1 {
-				if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-					disabledTime = channel.ChannelInfo.MultiKeyDisabledTime[i]
+				if hasCredential {
+					disabledTime = credential.DisabledAt
+					reason = credential.DisabledReason
+				} else {
+					if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+						disabledTime = channel.ChannelInfo.MultiKeyDisabledTime[i]
+					}
+					if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+						reason = channel.ChannelInfo.MultiKeyDisabledReason[i]
+					}
 				}
-				if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-					reason = channel.ChannelInfo.MultiKeyDisabledReason[i]
-				}
-			}
-
-			// Create key preview (first 10 chars)
-			keyPreview := key
-			if len(key) > 10 {
-				keyPreview = key[:10] + "..."
 			}
 
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
-				Index:        i,
-				Status:       status,
-				DisabledTime: disabledTime,
-				Reason:       reason,
-				KeyPreview:   keyPreview,
+				CredentialID: func() int {
+					if hasCredential {
+						return credential.Id
+					}
+					return 0
+				}(),
+				Index: i, Status: status, DisabledTime: disabledTime, Reason: reason,
+				Fingerprint: func() string {
+					if hasCredential {
+						return credential.Fingerprint
+					}
+					return ""
+				}(),
+				ProxyMode: func() string {
+					if hasCredential {
+						return credential.ProxyMode
+					}
+					return model.CredentialProxyModeInherit
+				}(),
+				ProxySummary: func() string {
+					if hasCredential {
+						return credential.ProxySummary()
+					}
+					return ""
+				}(),
+				LastTestAt: func() int64 {
+					if hasCredential {
+						return credential.LastTestAt
+					}
+					return 0
+				}(),
+				LastTestStatus: func() string {
+					if hasCredential {
+						return credential.LastTestStatus
+					}
+					return ""
+				}(),
+				LastTestLatencyMs: func() int64 {
+					if hasCredential {
+						return credential.LastTestLatencyMs
+					}
+					return 0
+				}(),
+				LastTestErrorCode: func() string {
+					if hasCredential {
+						return credential.LastTestErrorCode
+					}
+					return ""
+				}(),
 			})
 		}
 
@@ -1764,6 +1869,10 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1806,6 +1915,10 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1827,6 +1940,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -1874,6 +1991,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -1957,6 +2078,10 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -2022,6 +2147,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -2094,8 +2223,13 @@ func OllamaPullModel(c *gin.Context) {
 		baseURL = channel.GetBaseURL()
 	}
 
-	key := strings.Split(channel.Key, "\n")[0]
-	err = ollama.PullOllamaModel(baseURL, key, req.ModelName)
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"success": false, "message": accessErr.Error()})
+		return
+	}
+	key = strings.TrimSpace(key)
+	err = ollama.PullOllamaModel(baseURL, key, req.ModelName, proxy)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -2163,7 +2297,14 @@ func OllamaPullModelStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("Access-Control-Allow-Origin", "*")
 
-	key := strings.Split(channel.Key, "\n")[0]
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", accessErr.Error())
+		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+		c.Writer.Flush()
+		return
+	}
+	key = strings.TrimSpace(key)
 
 	// 创建进度回调函数
 	progressCallback := func(progress ollama.OllamaPullResponse) {
@@ -2173,7 +2314,7 @@ func OllamaPullModelStream(c *gin.Context) {
 	}
 
 	// 执行拉取
-	err = ollama.PullOllamaModelStream(baseURL, key, req.ModelName, progressCallback)
+	err = ollama.PullOllamaModelStream(baseURL, key, req.ModelName, proxy, progressCallback)
 
 	if err != nil {
 		errorData, _ := json.Marshal(gin.H{
@@ -2239,8 +2380,13 @@ func OllamaDeleteModel(c *gin.Context) {
 		baseURL = channel.GetBaseURL()
 	}
 
-	key := strings.Split(channel.Key, "\n")[0]
-	err = ollama.DeleteOllamaModel(baseURL, key, req.ModelName)
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"success": false, "message": accessErr.Error()})
+		return
+	}
+	key = strings.TrimSpace(key)
+	err = ollama.DeleteOllamaModel(baseURL, key, req.ModelName, proxy)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -2288,8 +2434,13 @@ func OllamaVersion(c *gin.Context) {
 		baseURL = channel.GetBaseURL()
 	}
 
-	key := strings.Split(channel.Key, "\n")[0]
-	version, err := ollama.FetchOllamaVersion(baseURL, key)
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": accessErr.Error()})
+		return
+	}
+	key = strings.TrimSpace(key)
+	version, err := ollama.FetchOllamaVersion(baseURL, key, proxy)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

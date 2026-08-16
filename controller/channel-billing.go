@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -137,6 +138,26 @@ func GetClaudeAuthHeader(token string) http.Header {
 }
 
 func GetResponseBody(method, url string, channel *model.Channel, headers http.Header) ([]byte, error) {
+	key, proxy, _, err := model.ResolveSelectedChannelAccess(channel)
+	if err != nil {
+		return nil, err
+	}
+	legacyKey := strings.TrimSpace(channel.Key)
+	if legacyKey != "" && key != "" && legacyKey != key {
+		url = strings.ReplaceAll(url, channel.Key, key)
+		url = strings.ReplaceAll(url, legacyKey, key)
+		cloned := make(http.Header, len(headers))
+		for name, values := range headers {
+			for _, value := range values {
+				if channel.Key != "" {
+					value = strings.ReplaceAll(value, channel.Key, key)
+				}
+				value = strings.ReplaceAll(value, legacyKey, key)
+				cloned.Add(name, value)
+			}
+		}
+		headers = cloned
+	}
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return nil, err
@@ -144,7 +165,7 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 	for k := range headers {
 		req.Header.Add(k, headers.Get(k))
 	}
-	client, err := service.GetHttpClientWithProxy(channel.GetSetting().Proxy)
+	client, err := service.GetHttpClientWithProxy(proxy)
 	if err != nil {
 		return nil, err
 	}

@@ -304,7 +304,7 @@ func sanitizeFetchModelsError(err error, key string) error {
 	return errors.New(message)
 }
 
-func getFetchModelsResponseBody(method string, requestURL string, channel *model.Channel, headers http.Header) ([]byte, error) {
+func getFetchModelsResponseBody(method string, requestURL string, channel *model.Channel, headers http.Header, proxyURL string) ([]byte, error) {
 	request, err := http.NewRequest(method, requestURL, nil)
 	if err != nil {
 		return nil, err
@@ -317,7 +317,7 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 			request.Host = headers.Get(name)
 		}
 	}
-	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	client, err := service.NewProxyHttpClient(proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -339,8 +339,12 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	}
 
 	if channel.Type == constant.ChannelTypeOllama {
-		key := strings.TrimSpace(strings.Split(channel.Key, "\n")[0])
-		models, err := ollama.FetchOllamaModels(baseURL, key)
+		key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+		if accessErr != nil {
+			return nil, accessErr
+		}
+		key = strings.TrimSpace(key)
+		models, err := ollama.FetchOllamaModels(baseURL, key, proxy)
 		if err != nil {
 			return nil, err
 		}
@@ -350,12 +354,12 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	}
 
 	if channel.Type == constant.ChannelTypeGemini {
-		key, _, apiErr := channel.GetNextEnabledKey()
-		if apiErr != nil {
-			return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+		key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+		if accessErr != nil {
+			return nil, fmt.Errorf("获取渠道密钥失败: %w", accessErr)
 		}
 		key = strings.TrimSpace(key)
-		models, err := gemini.FetchGeminiModels(baseURL, key, channel.GetSetting().Proxy)
+		models, err := gemini.FetchGeminiModels(baseURL, key, proxy)
 		if err != nil {
 			return nil, err
 		}
@@ -396,9 +400,9 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		url = fmt.Sprintf("%s/v1/models", baseURL)
 	}
 
-	key, _, apiErr := channel.GetNextEnabledKey()
-	if apiErr != nil {
-		return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		return nil, fmt.Errorf("获取渠道密钥失败: %w", accessErr)
 	}
 	key = strings.TrimSpace(key)
 
@@ -407,7 +411,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
 
-	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
+	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers, proxy)
 	if err != nil {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
@@ -426,9 +430,9 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 }
 
 func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {
-	key, _, apiErr := channel.GetNextEnabledKey()
-	if apiErr != nil {
-		return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+	key, proxy, _, accessErr := model.ResolveSelectedChannelAccess(channel)
+	if accessErr != nil {
+		return nil, fmt.Errorf("获取渠道密钥失败: %w", accessErr)
 	}
 	key = strings.TrimSpace(key)
 
@@ -453,7 +457,7 @@ func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string)
 		return nil, sanitizeFetchModelsError(err, key)
 	}
 
-	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers)
+	body, err := getFetchModelsResponseBody(http.MethodGet, url, channel, headers, proxy)
 	if err != nil {
 		return nil, sanitizeFetchModelsError(err, key)
 	}

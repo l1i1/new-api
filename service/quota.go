@@ -256,6 +256,10 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+	relayInfo.ObservedUsage = true
+	relayInfo.ObservedInputTokens = int64(usage.InputTokens)
+	relayInfo.ObservedCacheReadTokens = int64(usage.InputTokenDetails.CachedTokens)
+	relayInfo.ObservedCacheWriteTokens = int64(usage.InputTokenDetails.CacheCreationTokensTotal())
 }
 
 func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData) int {
@@ -379,6 +383,10 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
+	relayInfo.ObservedUsage = true
+	relayInfo.ObservedInputTokens = int64(usage.PromptTokens)
+	relayInfo.ObservedCacheReadTokens = int64(usage.PromptTokensDetails.CachedTokens)
+	relayInfo.ObservedCacheWriteTokens = int64(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(usage.CompletionTokens))
 	})
