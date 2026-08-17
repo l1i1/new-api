@@ -94,7 +94,7 @@ import { ModelDetailsPerformance } from './model-details-performance'
 
 function SectionTitle(props: { children: React.ReactNode }) {
   return (
-    <h2 className='text-muted-foreground mb-3 text-xs font-semibold tracking-wider '>
+    <h2 className='text-muted-foreground mb-3 text-xs font-semibold tracking-wider'>
       {props.children}
     </h2>
   )
@@ -166,7 +166,7 @@ function OverviewMetric(props: {
     <div className='flex min-w-0 items-center gap-2 px-3 py-2'>
       <Icon className='text-muted-foreground/70 size-3.5 shrink-0' />
       <div className='min-w-0 flex-1'>
-        <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider '>
+        <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider'>
           {props.label}
         </div>
         <div
@@ -264,7 +264,7 @@ function CatalogTextValue(props: { children: React.ReactNode }) {
 function CatalogInfoCell(props: { label: string; children: React.ReactNode }) {
   return (
     <div className='bg-card flex min-w-0 flex-col gap-1 px-3 py-2.5'>
-      <span className='text-muted-foreground text-[10px] font-medium tracking-wider '>
+      <span className='text-muted-foreground text-[10px] font-medium tracking-wider'>
         {props.label}
       </span>
       {props.children}
@@ -371,7 +371,7 @@ function ModelBackendQuickStats(props: { model: PricingModel }) {
             key={stat.key}
             className='bg-background flex min-w-0 flex-col gap-0.5 px-3 py-2.5'
           >
-            <span className='text-muted-foreground inline-flex min-w-0 items-center gap-1 text-[10px] font-medium tracking-wider '>
+            <span className='text-muted-foreground inline-flex min-w-0 items-center gap-1 text-[10px] font-medium tracking-wider'>
               <Icon className='size-3 shrink-0' />
               <span className='truncate'>{stat.label}</span>
             </span>
@@ -558,7 +558,7 @@ function ModelHeader(props: { model: PricingModel }) {
     <header className='pb-4'>
       <div className='flex items-center gap-2.5'>
         {modelIcon}
-        <h1 className='font-mono text-xl font-bold  sm:text-2xl'>
+        <h1 className='font-mono text-xl font-bold sm:text-2xl'>
           {model.model_name}
         </h1>
         <CopyButton
@@ -663,7 +663,7 @@ function PriceSection(props: {
               {t('Unable to parse structured pricing')}
             </p>
             <div className='mt-3'>
-              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider '>
+              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
                 {t('Raw expression')}
               </div>
               <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
@@ -841,7 +841,14 @@ function AutoGroupChain(props: { model: PricingModel; autoGroups: string[] }) {
 
 type DynamicPriceOptions = Parameters<typeof getDynamicPriceEntries>[1]
 type DynamicPricingTier = ReturnType<typeof getDynamicPricingTiers>[number]
-type DynamicFormattedPricesByTier = Map<DynamicPricingTier, Map<string, string>>
+type DynamicFormattedPrice = Pick<
+  ReturnType<typeof getDynamicPriceEntries>[number],
+  'formatted' | 'original'
+>
+type DynamicFormattedPricesByTier = Map<
+  DynamicPricingTier,
+  Map<string, DynamicFormattedPrice>
+>
 
 function getDynamicPriceFields(
   tiers: DynamicPricingTier[],
@@ -866,7 +873,7 @@ function getDynamicFormattedPricesByTier(
       new Map(
         getDynamicPriceEntries(tier, options).map((entry) => [
           entry.field,
-          entry.formatted,
+          { formatted: entry.formatted, original: entry.original },
         ])
       ),
     ])
@@ -958,7 +965,7 @@ function GroupPricingSection(props: {
               )}
             </p>
             <div className='mt-3'>
-              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider '>
+              <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
                 {t('Raw expression')}
               </div>
               <code className='text-muted-foreground bg-background/80 block max-h-28 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs break-all'>
@@ -980,7 +987,7 @@ function GroupPricingSection(props: {
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = props.groupRatio[group] || 1
+        const ratio = props.groupRatio[group] ?? 1
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -1001,10 +1008,10 @@ function GroupPricingSection(props: {
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = props.groupRatio[group] ?? 1
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
-              new Map<DynamicPricingTier, Map<string, string>>()
+              new Map<DynamicPricingTier, Map<string, DynamicFormattedPrice>>()
 
             return (
               <div key={group} className='overflow-hidden rounded-lg border'>
@@ -1037,10 +1044,22 @@ function GroupPricingSection(props: {
                       header: t(fieldEntry.shortLabel),
                       className: `${thClass} text-right`,
                       cellClassName: 'py-2.5 text-right font-mono',
-                      cell: (tier: (typeof dynamicTiers)[number]) =>
-                        formattedPricesByTier
+                      cell: (tier: (typeof dynamicTiers)[number]) => {
+                        const price = formattedPricesByTier
                           .get(tier)
-                          ?.get(fieldEntry.field) ?? '-',
+                          ?.get(fieldEntry.field)
+                        if (!price) return '-'
+                        return (
+                          <span className='inline-flex flex-col items-end leading-tight'>
+                            {price.original && (
+                              <span className='text-muted-foreground/60 text-[10px] line-through'>
+                                {price.original}
+                              </span>
+                            )}
+                            <span>{price.formatted}</span>
+                          </span>
+                        )
+                      },
                     })),
                   ]}
                 />
@@ -1102,7 +1121,7 @@ function GroupPricingSection(props: {
             className: thClass,
             cellClassName: 'text-muted-foreground py-2.5 font-mono',
             cell: (group) =>
-              formatGroupDiscount(props.groupRatio[group] || 1, language) ??
+              formatGroupDiscount(props.groupRatio[group] ?? 1, language) ??
               '—',
           },
           ...(isTokenBased

@@ -30,6 +30,7 @@ import { loadSessions, saveSessions } from '../storage'
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>()
+  failWritesFor = new Set<string>()
 
   get length() {
     return this.values.size
@@ -37,6 +38,7 @@ class MemoryStorage implements Storage {
 
   clear() {
     this.values.clear()
+    this.failWritesFor.clear()
   }
 
   getItem(key: string) {
@@ -52,6 +54,9 @@ class MemoryStorage implements Storage {
   }
 
   setItem(key: string, value: string) {
+    if (this.failWritesFor.has(key)) {
+      throw new Error(`write failed for ${key}`)
+    }
     this.values.set(key, value)
   }
 }
@@ -116,5 +121,33 @@ describe('playground session storage', () => {
     assert.equal(sessions?.[0]?.config.model, 'chat-session')
     assert.equal(sessions?.[1]?.mode, PLAYGROUND_MODES.IMAGE)
     assert.equal(sessions?.[1]?.config.model, 'image-session')
+  })
+
+  test('keeps legacy messages when migrated session storage cannot be written', () => {
+    memoryStorage.setItem(
+      STORAGE_KEYS.MESSAGES,
+      JSON.stringify({ version: 1, data: [legacyMessage] })
+    )
+    memoryStorage.failWritesFor.add(STORAGE_KEYS.SESSIONS)
+
+    const sessions = loadSessions()
+
+    assert.equal(sessions?.length, 1)
+    assert.notEqual(memoryStorage.getItem(STORAGE_KEYS.MESSAGES), null)
+    assert.equal(memoryStorage.getItem(STORAGE_KEYS.SESSIONS), null)
+  })
+
+  test('falls back to legacy messages when the session store is corrupt', () => {
+    memoryStorage.setItem(STORAGE_KEYS.SESSIONS, '{"version":1,"data":42}')
+    memoryStorage.setItem(
+      STORAGE_KEYS.MESSAGES,
+      JSON.stringify({ version: 1, data: [legacyMessage] })
+    )
+
+    const sessions = loadSessions()
+
+    assert.equal(sessions?.length, 1)
+    assert.equal(sessions?.[0]?.messages[0]?.key, legacyMessage.key)
+    assert.equal(memoryStorage.getItem(STORAGE_KEYS.MESSAGES), null)
   })
 })

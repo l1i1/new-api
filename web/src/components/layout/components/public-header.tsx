@@ -211,7 +211,7 @@ export function PublicHeader(props: PublicHeaderProps) {
     <>
       <header className='border-border bg-background/95 pointer-events-none fixed inset-x-0 top-0 z-50 border-b'>
         <div className='pointer-events-auto mx-auto max-w-7xl px-4 md:px-6'>
-          <nav className='relative flex h-14 items-center justify-between px-1'>
+          <nav className='grid h-14 grid-cols-[minmax(0,1fr)_auto] items-center px-1 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-x-4'>
             {/* Logo */}
             <Link
               to={homeUrl}
@@ -226,7 +226,10 @@ export function PublicHeader(props: PublicHeaderProps) {
             </Link>
 
             {/* Desktop nav */}
-            <div className='absolute left-1/2 hidden -translate-x-1/2 items-center gap-0.5 lg:flex'>
+            <div
+              data-slot='public-header-navigation'
+              className='hidden items-center gap-0.5 xl:flex xl:justify-self-center'
+            >
               {links.map((link) => {
                 const isActive =
                   link.href === '/'
@@ -269,33 +272,23 @@ export function PublicHeader(props: PublicHeaderProps) {
                   </Link>
                 )
               })}
-
-              {(showLanguageSwitcher ||
-                showThemeSwitch ||
-                showNotifications) && (
-                <div className='bg-border/40 mx-2 h-4 w-px' />
-              )}
-
-              {showLanguageSwitcher && (
-                <>
-                  <CurrencyDisplaySwitcher />
-                  <LanguageSwitcher />
-                </>
-              )}
-              {showThemeSwitch && <ThemeSwitch />}
             </div>
 
-            <div className='ms-auto flex items-center gap-1 sm:gap-2'>
-              {/* Mobile: compact actions */}
-              <div className='flex items-center gap-2 lg:hidden'>
-                {showLanguageSwitcher && (
-                  <>
-                    <CurrencyDisplaySwitcher />
-                    <LanguageSwitcher />
-                  </>
-                )}
-                {showThemeSwitch && <ThemeSwitch />}
-              </div>
+            <div
+              data-slot='public-header-actions'
+              className='ms-auto flex items-center gap-1 sm:gap-2 xl:col-start-3 xl:justify-self-end'
+            >
+              {(showLanguageSwitcher || showThemeSwitch) && (
+                <div className='flex shrink-0 items-center gap-2'>
+                  {showLanguageSwitcher && (
+                    <>
+                      <CurrencyDisplaySwitcher />
+                      <LanguageSwitcher />
+                    </>
+                  )}
+                  {showThemeSwitch && <ThemeSwitch />}
+                </div>
+              )}
 
               {showNotifications && (
                 <NotificationPopover
@@ -309,14 +302,14 @@ export function PublicHeader(props: PublicHeaderProps) {
               )}
 
               {showAuthButtons && (
-                <div className='hidden items-center lg:flex'>
+                <div className='hidden items-center xl:flex'>
                   <div className='bg-border/40 mx-1 h-4 w-px' />
                   {desktopAuthContent}
                 </div>
               )}
 
               {showAuthButtons && !loading && isAuthenticated && (
-                <div className='lg:hidden'>
+                <div className='xl:hidden'>
                   <ProfileDropdown />
                 </div>
               )}
@@ -324,7 +317,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 type='button'
                 variant='ghost'
                 size='icon'
-                className='size-9 lg:hidden'
+                className='size-9 xl:hidden'
                 onClick={() => setMobileOpen((v) => !v)}
                 aria-label={t('Toggle navigation menu')}
               >
@@ -357,7 +350,7 @@ export function PublicHeader(props: PublicHeaderProps) {
       {/* Mobile full-screen overlay */}
       <div
         className={cn(
-          'bg-background fixed inset-0 z-40 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] lg:pointer-events-none lg:hidden',
+          'bg-background fixed inset-0 z-40 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] xl:pointer-events-none xl:hidden',
           mobileOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0'

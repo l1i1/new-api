@@ -20,10 +20,43 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
 import {
+  aggregateMultiKeyObservability,
   formatMultiKeyTestResult,
   getMultiKeyIndex,
   getMultiKeyTestResult,
 } from '../multi-key-utils'
+
+function observabilityMetric(
+  requestedModel: string,
+  sampleCoverage: number,
+  usageCoverage: number
+) {
+  return {
+    channel_id: 1,
+    credential_id: 17,
+    requested_model: requestedModel,
+    group: 'default',
+    protocol: 'openai',
+    request_count: 10,
+    attempt_count: 10,
+    request_success_rate: 100,
+    attempt_success_rate: 100,
+    cache_hit_rate: 50,
+    cache_token_rate: 0,
+    avg_latency_ms: 100,
+    p95_latency_ms: 200,
+    avg_request_latency_ms: 100,
+    p95_request_latency_ms: 200,
+    avg_ttft_ms: 50,
+    p95_ttft_ms: 80,
+    avg_upstream_frt_ms: 25,
+    p95_upstream_frt_ms: 40,
+    sample_coverage: sampleCoverage,
+    usage_coverage: usageCoverage,
+    sample_sufficient: false,
+    usage_sufficient: false,
+  }
+}
 
 describe('multi-key index normalization', () => {
   test('uses the API position when legacy index is missing', () => {
@@ -111,5 +144,18 @@ describe('multi-key test result formatting', () => {
     )
 
     assert.equal(formatted, 'Failed · HTTP status: 401 · authentication')
+  })
+})
+
+describe('multi-key observability aggregation', () => {
+  test('marks combined model samples sufficient after the credential total reaches the threshold', () => {
+    const metrics = aggregateMultiKeyObservability([
+      observabilityMetric('model-a', 100, 100),
+      observabilityMetric('model-b', 100, 100),
+    ])
+
+    assert.equal(metrics[17]?.request_count, 20)
+    assert.equal(metrics[17]?.sample_sufficient, true)
+    assert.equal(metrics[17]?.usage_sufficient, true)
   })
 })

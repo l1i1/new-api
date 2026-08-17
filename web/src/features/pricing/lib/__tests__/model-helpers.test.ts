@@ -38,5 +38,12 @@ describe('group discount formatting', () => {
     assert.equal(formatGroupDiscount(1, 'en'), undefined)
     assert.equal(formatGroupDiscount(1.5, 'en'), 'x1.5')
     assert.equal(formatGroupDiscount(2.5, 'zh'), 'x2.5')
+    assert.equal(formatGroupDiscount(1.001, 'en'), 'x1.01')
+    assert.equal(formatGroupDiscount(1.005, 'en'), 'x1.01')
+  })
+
+  test('keeps tiny discounts visible at two-decimal precision', () => {
+    assert.equal(formatGroupDiscount(0.99999, 'en'), '0.01% off')
+    assert.equal(formatGroupDiscount(0.99999, 'zh'), '9.99折')
   })
 })

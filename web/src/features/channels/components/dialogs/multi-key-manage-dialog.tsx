@@ -71,6 +71,7 @@ import {
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
   channelsQueryKeys,
+  aggregateMultiKeyObservability,
   formatTimestamp,
   formatMultiKeyTestResult,
   getMultiKeyIndex,
@@ -191,50 +192,7 @@ export function MultiKeyManageDialog({
             currentRow.id,
             24
           )
-          const metrics: Record<number, ChannelObservabilityResult> = {}
-          for (const item of metricsItems) {
-            if (item.credential_id > 0) {
-              const existing = metrics[item.credential_id]
-              if (!existing) {
-                metrics[item.credential_id] = item
-                continue
-              }
-              const requestCount = existing.request_count + item.request_count
-              const weighted = (left: number, right: number) =>
-                requestCount > 0
-                  ? (left * existing.request_count +
-                      right * item.request_count) /
-                    requestCount
-                  : 0
-              metrics[item.credential_id] = {
-                ...existing,
-                request_count: requestCount,
-                attempt_count: existing.attempt_count + item.attempt_count,
-                request_success_rate: weighted(
-                  existing.request_success_rate,
-                  item.request_success_rate
-                ),
-                attempt_success_rate: weighted(
-                  existing.attempt_success_rate,
-                  item.attempt_success_rate
-                ),
-                cache_hit_rate: weighted(
-                  existing.cache_hit_rate,
-                  item.cache_hit_rate
-                ),
-                p95_latency_ms: Math.max(
-                  existing.p95_latency_ms,
-                  item.p95_latency_ms
-                ),
-                p95_ttft_ms: Math.max(existing.p95_ttft_ms, item.p95_ttft_ms),
-                sample_sufficient:
-                  existing.sample_sufficient && item.sample_sufficient,
-                usage_sufficient:
-                  existing.usage_sufficient && item.usage_sufficient,
-              }
-            }
-          }
-          setKeyMetrics(metrics)
+          setKeyMetrics(aggregateMultiKeyObservability(metricsItems))
         } catch {
           setKeyMetrics({})
         }

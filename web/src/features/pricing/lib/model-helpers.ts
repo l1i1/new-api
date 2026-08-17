@@ -107,16 +107,23 @@ export function formatGroupDiscount(
     return undefined
   }
   if (ratio > 1) {
-    return `x${formatDiscountNumber(ratio)}`
+    const rounded = roundDiscountNumber(ratio)
+    return `x${formatDiscountNumber(rounded <= 1 ? 1.01 : rounded)}`
   }
   if (language.toLowerCase().startsWith('zh')) {
-    return `${formatDiscountNumber(ratio * 10)}折`
+    const rounded = roundDiscountNumber(ratio * 10)
+    return `${formatDiscountNumber(ratio < 1 && rounded >= 10 ? 9.99 : rounded)}折`
   }
-  return `${formatDiscountNumber((1 - ratio) * 100)}% off`
+  const rounded = roundDiscountNumber((1 - ratio) * 100)
+  return `${formatDiscountNumber(rounded === 0 ? 0.01 : rounded)}% off`
 }
 
 function formatDiscountNumber(value: number): string {
   return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function roundDiscountNumber(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
 /**

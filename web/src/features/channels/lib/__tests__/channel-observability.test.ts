@@ -53,6 +53,7 @@ function metric(
     avg_request_latency_ms: avgLatencyMs,
     p95_request_latency_ms: avgLatencyMs,
     avg_ttft_ms: avgLatencyMs,
+    ttft_count: requestCount,
     p95_ttft_ms: 0,
     avg_upstream_frt_ms: 0,
     p95_upstream_frt_ms: 0,
@@ -141,6 +142,7 @@ describe('channel availability aggregation', () => {
         failureCount: 1,
         successRate: 0,
         ttftMs: 2,
+        ttftSampleCount: 1,
         latencyMs: 2,
       },
     ])
@@ -207,6 +209,7 @@ describe('channel availability aggregation', () => {
     assert.equal(point.failureCount, 2)
     assert.equal(point.successRate, 60)
     assert.equal(point.ttftMs, 140)
+    assert.equal(point.ttftSampleCount, 5)
     assert.equal(point.latencyMs, 140)
     assert.equal(point.bucketStart, 100)
     assert.equal(point.bucketEnd, 200)
@@ -223,8 +226,25 @@ describe('channel availability aggregation', () => {
       failureCount: 0,
       successRate: 0,
       ttftMs: 0,
+      ttftSampleCount: 0,
       latencyMs: 0,
     })
+  })
+
+  test('weights first-token latency by TTFT samples instead of request count', () => {
+    const mostlyNonStreaming = metric(100, 100, 100)
+    mostlyNonStreaming.ttft_count = 1
+    const streaming = metric(10, 100, 300)
+    streaming.ttft_count = 10
+
+    const point = aggregateChannelAvailability(
+      [mostlyNonStreaming, streaming],
+      100,
+      200
+    )
+
+    assert.equal(point.ttftSampleCount, 11)
+    assert.equal(point.ttftMs, 282)
   })
 
   test('prefers exact success counts over rounded percentage estimates', () => {

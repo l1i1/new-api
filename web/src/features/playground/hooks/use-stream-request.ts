@@ -170,12 +170,15 @@ export function createStreamRequestController(
 
     nextSource.addEventListener('error', (event) => {
       if (!isCurrent() || completed) return
-      if (!isStreamClosedReadyState(nextSource.readyState)) {
-        // eslint-disable-next-line no-console
-        console.error('SSE Error:', event)
-        const { errorCode, errorMessage } = parseStreamErrorDetails(event.data)
-        handleError(errorMessage, errorCode)
+      if (isStreamClosedReadyState(nextSource.readyState)) {
+        handleError(ERROR_MESSAGES.CONNECTION_CLOSED)
+        return
       }
+
+      // eslint-disable-next-line no-console
+      console.error('SSE Error:', event)
+      const { errorCode, errorMessage } = parseStreamErrorDetails(event.data)
+      handleError(errorMessage, errorCode)
     })
 
     nextSource.addEventListener('readystatechange', (event) => {
@@ -187,6 +190,13 @@ export function createStreamRequestController(
 
       if (errorMessage) {
         handleError(errorMessage)
+        return
+      }
+      if (
+        isStreamClosedReadyState(event.readyState) ||
+        isStreamClosedReadyState(nextSource.readyState)
+      ) {
+        handleError(ERROR_MESSAGES.CONNECTION_CLOSED)
       }
     })
 

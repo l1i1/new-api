@@ -25,6 +25,8 @@ const (
 	maxPageSize                  = 200
 	MinimumReliableSamples int64 = 20
 	errorClassRedisPrefix        = "error_class:"
+	redisSketchQuantumMs   int64 = 10
+	redisSketchMaxMs       int64 = 60000
 )
 
 type Usage struct {
@@ -315,14 +317,18 @@ type Result struct {
 	P95RequestLatencyMs int64            `json:"p95_request_latency_ms"`
 	AvgTtftMs           int64            `json:"avg_ttft_ms"`
 	P95TtftMs           int64            `json:"p95_ttft_ms"`
+	TtftCount           int64            `json:"ttft_count"`
 	AvgFRTMs            int64            `json:"avg_upstream_frt_ms"`
 	P95FRTMs            int64            `json:"p95_upstream_frt_ms"`
 	SampleCoverage      float64          `json:"sample_coverage"`
 	UsageCoverage       float64          `json:"usage_coverage"`
 	SampleCount         int64            `json:"sample_count"`
+	TtftCoverage        float64          `json:"ttft_coverage"`
 	SampleSufficient    bool             `json:"sample_sufficient"`
 	SampleInsufficient  bool             `json:"sample_insufficient"`
 	SampleStatus        string           `json:"sample_status"`
+	TtftAvailable       bool             `json:"ttft_available"`
+	TtftSufficient      bool             `json:"ttft_sufficient"`
 	UsageSufficient     bool             `json:"usage_sufficient"`
 	ErrorTrends         map[string]int64 `json:"error_trends"`
 }
@@ -353,6 +359,7 @@ type AvailabilityPoint struct {
 	// AvgLatencyMs is retained for clients older than the TTFT contract.
 	AvgLatencyMs int64 `json:"avg_latency_ms"`
 	AvgTtftMs    int64 `json:"avg_ttft_ms"`
+	TtftCount    int64 `json:"ttft_count"`
 	latencySumMs int64
 	latencyCount int64
 	ttftSumMs    int64
@@ -472,6 +479,7 @@ func QueryAvailabilitySeries(query AvailabilityQuery) ([]AvailabilitySeries, err
 			point := &points[channelId][index]
 			point.RequestFailureCount = nonNegative(point.RequestCount - point.RequestSuccessCount)
 			point.RequestSuccessRate = percentage(point.RequestSuccessCount, point.RequestCount)
+			point.TtftCount = point.ttftCount
 		}
 		result = append(result, AvailabilitySeries{ChannelId: channelId, Points: points[channelId]})
 	}
@@ -504,6 +512,7 @@ func addAvailabilityMetricWithTTFT(points map[int][]AvailabilityPoint, channelId
 	if ttftCount > 0 {
 		point.ttftSumMs += ttftSum
 		point.ttftCount += ttftCount
+		point.TtftCount = point.ttftCount
 		point.AvgTtftMs = average(point.ttftSumMs, point.ttftCount)
 	}
 }
@@ -727,11 +736,11 @@ func aggregateResult(value model.ChannelModelPerfAggregate) Result {
 		RequestCount: value.RequestCount, RequestSuccessCount: value.RequestSuccessCount, RequestFailureCount: nonNegative(value.RequestCount - value.RequestSuccessCount), AttemptCount: value.AttemptCount,
 		AvgLatencyMs: average(value.LatencySumMs, value.LatencyCount), P95LatencyMs: value.LatencyHistogram.P95(),
 		AvgRequestLatencyMs: average(value.RequestLatencySumMs, value.RequestLatencyCount), P95RequestLatencyMs: value.RequestLatencyHistogram.P95(),
-		AvgTtftMs: average(value.TtftSumMs, value.TtftCount), P95TtftMs: value.TtftHistogram.P95(), AvgFRTMs: average(value.FRTSumMs, value.FRTCount), P95FRTMs: value.FRTHistogram.P95(),
-		UsageCoverage: percentage(value.UsageCount, value.RequestCount), SampleCoverage: percentage(value.SampleCount, value.RequestCount),
+		AvgTtftMs: average(value.TtftSumMs, value.TtftCount), P95TtftMs: value.TtftHistogram.P95(), TtftCount: value.TtftCount, AvgFRTMs: average(value.FRTSumMs, value.FRTCount), P95FRTMs: value.FRTHistogram.P95(),
+		UsageCoverage: percentage(value.UsageCount, value.RequestCount), SampleCoverage: percentage(value.SampleCount, value.RequestCount), TtftCoverage: percentage(value.TtftCount, value.RequestCount),
 		SampleCount: value.SampleCount, SampleSufficient: value.SampleCount >= MinimumReliableSamples,
 		SampleInsufficient: value.SampleCount < MinimumReliableSamples,
-		UsageSufficient:    value.UsageCount >= MinimumReliableSamples, SampleStatus: sampleStatus(value.SampleCount),
+		UsageSufficient:    value.UsageCount >= MinimumReliableSamples, SampleStatus: sampleStatus(value.SampleCount), TtftAvailable: value.TtftCount > 0, TtftSufficient: value.TtftCount >= MinimumReliableSamples,
 		ErrorTrends: copyErrorCounts(value.ErrorCounts),
 	}
 	result.RequestSuccessRate = percentage(value.RequestSuccessCount, value.RequestCount)
@@ -807,12 +816,35 @@ func localActiveAggregates(query Query, startTs, endTs int64) []model.ChannelMod
 		}
 		bucket := rawValue.(*atomicBucket)
 		bucket.mu.Lock()
-		value := bucket.value
+		value := cloneAggregate(bucket.value)
 		bucket.mu.Unlock()
 		result = append(result, value)
 		return true
 	})
 	return result
+}
+
+func cloneAggregate(value model.ChannelModelPerfAggregate) model.ChannelModelPerfAggregate {
+	value.UpstreamModels = append([]string(nil), value.UpstreamModels...)
+	value.LatencyHistogram = cloneHistogram(value.LatencyHistogram)
+	value.RequestLatencyHistogram = cloneHistogram(value.RequestLatencyHistogram)
+	value.TtftHistogram = cloneHistogram(value.TtftHistogram)
+	value.FRTHistogram = cloneHistogram(value.FRTHistogram)
+	if value.ErrorCounts != nil {
+		errorCounts := make(map[string]int64, len(value.ErrorCounts))
+		for class, count := range value.ErrorCounts {
+			errorCounts[class] = count
+		}
+		value.ErrorCounts = errorCounts
+	}
+	return value
+}
+
+func cloneHistogram(value model.ObservationHistogram) model.ObservationHistogram {
+	value.Counts = append([]int64(nil), value.Counts...)
+	value.Samples = append([]int64(nil), value.Samples...)
+	value.SampleWeights = append([]int64(nil), value.SampleWeights...)
+	return value
 }
 
 func matches(query Query, key bucketKey) bool {
@@ -876,6 +908,11 @@ func recordRedis(key bucketKey, sample Observation, request bool) {
 		pipe.HIncrBy(ctx, redisKey, "request_latency", sample.LatencyMs)
 		pipe.HIncrBy(ctx, redisKey, "request_latency_count", 1)
 		incrementRedisHistogram(pipe, ctx, redisKey, "request_hist", sample.LatencyMs)
+		if sample.TtftMs > 0 {
+			pipe.HIncrBy(ctx, redisKey, "ttft", sample.TtftMs)
+			pipe.HIncrBy(ctx, redisKey, "ttft_count", 1)
+			incrementRedisHistogram(pipe, ctx, redisKey, "ttft_hist", sample.TtftMs)
+		}
 		pipe.HIncrBy(ctx, redisKey, "sample", 1)
 	} else {
 		pipe.HIncrBy(ctx, redisKey, "attempt", 1)
@@ -927,6 +964,11 @@ func incrementRedisHistogram(pipe redis.Pipeliner, ctx context.Context, key, pre
 		}
 	}
 	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_%d", prefix, index), 1)
+	quantizedValue := ((valueMs + redisSketchQuantumMs/2) / redisSketchQuantumMs) * redisSketchQuantumMs
+	if quantizedValue > redisSketchMaxMs {
+		quantizedValue = redisSketchMaxMs
+	}
+	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_sample_%d", prefix, quantizedValue), 1)
 }
 
 func redisValueToAggregate(key bucketKey, values map[string]string) model.ChannelModelPerfAggregate {
@@ -935,6 +977,29 @@ func redisValueToAggregate(key bucketKey, values map[string]string) model.Channe
 		result := model.NewObservationHistogram()
 		for i := range result.Counts {
 			result.Counts[i] = parse(fmt.Sprintf("%s_%d", prefix, i))
+		}
+		type weightedSample struct {
+			value  int64
+			weight int64
+		}
+		samplePrefix := prefix + "_sample_"
+		samples := make([]weightedSample, 0)
+		for field, raw := range values {
+			if !strings.HasPrefix(field, samplePrefix) {
+				continue
+			}
+			value, valueErr := strconv.ParseInt(strings.TrimPrefix(field, samplePrefix), 10, 64)
+			weight, weightErr := strconv.ParseInt(raw, 10, 64)
+			if valueErr != nil || weightErr != nil || value < 0 || weight <= 0 {
+				continue
+			}
+			samples = append(samples, weightedSample{value: value, weight: weight})
+			result.SampleCount += weight
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i].value < samples[j].value })
+		for _, sample := range samples {
+			result.Samples = append(result.Samples, sample.value)
+			result.SampleWeights = append(result.SampleWeights, sample.weight)
 		}
 		return result
 	}

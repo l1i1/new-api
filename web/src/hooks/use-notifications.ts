@@ -91,7 +91,6 @@ export function useNotifications(
   } = {}
 ) {
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const [siteNoticeOpen, setSiteNoticeOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'notice' | 'announcements'>(
     'notice'
   )
@@ -243,9 +242,6 @@ export function useNotifications(
 
     setActiveTab(nextTab)
     setPopoverOpen(true)
-    if (options.autoOpenNotice) {
-      setSiteNoticeOpen(true)
-    }
   }, [
     announcements.length,
     markAnnouncementsAsRead,
@@ -271,19 +267,7 @@ export function useNotifications(
     }
 
     setPopoverOpen(false)
-    setSiteNoticeOpen(false)
     if (pendingAutoOpenKey) {
-      if (noticeContent) {
-        markNoticeRead(noticeContent)
-      }
-      markAnnouncementsAsRead()
-      setPendingAutoOpenKey(null)
-    }
-  }
-
-  const handleSiteNoticeOpenChange = (open: boolean) => {
-    setSiteNoticeOpen(open)
-    if (!open) {
       if (noticeContent) {
         markNoticeRead(noticeContent)
       }
@@ -315,8 +299,6 @@ export function useNotifications(
     // Popover state
     popoverOpen,
     setPopoverOpen: handlePopoverOpenChange,
-    siteNoticeOpen,
-    setSiteNoticeOpen: handleSiteNoticeOpenChange,
     activeTab,
     setActiveTab: handleTabChange,
 

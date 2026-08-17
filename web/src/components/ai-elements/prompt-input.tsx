@@ -38,6 +38,7 @@ import {
   type ClipboardEventHandler,
   type ComponentProps,
   createContext,
+  type DragEventHandler,
   type FormEvent,
   type FormEventHandler,
   Fragment,
@@ -177,20 +178,19 @@ export function PromptInputProvider({
   const openRef = useRef<() => void>(() => {})
 
   const add = useCallback((files: File[] | FileList) => {
-    const incoming = Array.from(files)
+    const incoming = [...files]
     if (incoming.length === 0) return
 
-    setAttachements((prev) =>
-      prev.concat(
-        incoming.map((file) => ({
-          id: nanoid(),
-          type: 'file' as const,
-          url: URL.createObjectURL(file),
-          mediaType: file.type,
-          filename: file.name,
-        }))
-      )
-    )
+    setAttachements((prev) => [
+      ...prev,
+      ...incoming.map((file) => ({
+        id: nanoid(),
+        type: 'file' as const,
+        url: URL.createObjectURL(file),
+        mediaType: file.type,
+        filename: file.name,
+      })),
+    ])
   }, [])
 
   const remove = useCallback((id: string) => {
@@ -442,6 +442,8 @@ export type PromptInputProps = Omit<
     code: 'max_files' | 'max_file_size' | 'accept'
     message: string
   }) => void
+  /** Route validated files to a caller-managed attachment store. */
+  onFilesAdded?: (files: File[]) => void
   onSubmit: (
     message: PromptInputMessage,
     event: FormEvent<HTMLFormElement>
@@ -463,8 +465,11 @@ export const PromptInput = ({
   maxFiles,
   maxFileSize,
   onError,
+  onFilesAdded,
   onSubmit,
   children,
+  onDragOver,
+  onDrop,
   ...props
 }: PromptInputProps) => {
   const { t } = useTranslation()
@@ -474,16 +479,6 @@ export const PromptInput = ({
 
   // Refs
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const anchorRef = useRef<HTMLSpanElement>(null)
-  const formRef = useRef<HTMLFormElement | null>(null)
-
-  // Find nearest form to scope drag & drop
-  useEffect(() => {
-    const root = anchorRef.current?.closest('form')
-    if (root instanceof HTMLFormElement) {
-      formRef.current = root
-    }
-  }, [])
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([])
@@ -509,7 +504,7 @@ export const PromptInput = ({
 
   const addLocal = useCallback(
     (fileList: File[] | FileList) => {
-      const incoming = Array.from(fileList)
+      const incoming = [...fileList]
       const accepted = incoming.filter((f) => matchesAccept(f))
       if (incoming.length && accepted.length === 0) {
         onError?.({
@@ -526,6 +521,11 @@ export const PromptInput = ({
           code: 'max_file_size',
           message: t('All files exceed the maximum size.'),
         })
+        return
+      }
+
+      if (onFilesAdded) {
+        onFilesAdded(sized)
         return
       }
 
@@ -552,10 +552,10 @@ export const PromptInput = ({
             filename: file.name,
           })
         }
-        return prev.concat(next)
+        return [...prev, ...next]
       })
     },
-    [matchesAccept, maxFiles, maxFileSize, onError, t]
+    [matchesAccept, maxFiles, maxFileSize, onError, onFilesAdded, t]
   )
 
   const add = useMemo(
@@ -619,31 +619,22 @@ export const PromptInput = ({
     }
   }, [files, syncHiddenInput])
 
-  // Attach drop handlers on nearest form and document (opt-in)
-  useEffect(() => {
-    const form = formRef.current
-    if (!form) return
+  const handleDragOver: DragEventHandler<HTMLFormElement> = (event) => {
+    if (event.dataTransfer.types.includes('Files')) {
+      event.preventDefault()
+    }
+    onDragOver?.(event)
+  }
 
-    const onDragOver = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes('Files')) {
-        e.preventDefault()
-      }
+  const handleDrop: DragEventHandler<HTMLFormElement> = (event) => {
+    if (event.dataTransfer.types.includes('Files')) {
+      event.preventDefault()
     }
-    const onDrop = (e: DragEvent) => {
-      if (e.dataTransfer?.types?.includes('Files')) {
-        e.preventDefault()
-      }
-      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-        add(e.dataTransfer.files)
-      }
+    if (event.dataTransfer.files.length > 0) {
+      add(event.dataTransfer.files)
     }
-    form.addEventListener('dragover', onDragOver)
-    form.addEventListener('drop', onDrop)
-    return () => {
-      form.removeEventListener('dragover', onDragOver)
-      form.removeEventListener('drop', onDrop)
-    }
-  }, [add])
+    onDrop?.(event)
+  }
 
   useEffect(() => {
     if (!globalDrop) return
@@ -727,7 +718,7 @@ export const PromptInput = ({
     }
 
     // Convert blob URLs to data URLs asynchronously
-    Promise.all(
+    void Promise.all(
       files.map(async ({ id, ...item }) => {
         if (item.url && item.url.startsWith('blob:')) {
           return {
@@ -737,39 +728,43 @@ export const PromptInput = ({
         }
         return item
       })
-    ).then((convertedFiles: FileUIPart[]) => {
-      try {
-        const result = onSubmit({ text, files: convertedFiles }, event)
+    )
+      .then((convertedFiles: FileUIPart[]) => {
+        try {
+          const result = onSubmit({ text, files: convertedFiles }, event)
 
-        // Handle both sync and async onSubmit
-        if (result instanceof Promise) {
-          result
-            .then(() => {
-              clear()
-              if (usingProvider) {
-                controller.textInput.clear()
-              }
-            })
-            .catch(() => {
-              // Don't clear on error - user may want to retry
-            })
-        } else {
-          // Sync function completed without throwing, clear attachments
-          clear()
-          if (usingProvider) {
-            controller.textInput.clear()
+          // Handle both sync and async onSubmit
+          if (result instanceof Promise) {
+            result
+              .then(() => {
+                clear()
+                if (usingProvider) {
+                  controller.textInput.clear()
+                }
+              })
+              .catch(() => {
+                // Don't clear on error - user may want to retry
+              })
+          } else {
+            // Sync function completed without throwing, clear attachments
+            clear()
+            if (usingProvider) {
+              controller.textInput.clear()
+            }
           }
+        } catch {
+          // Don't clear on error - user may want to retry
         }
-      } catch (_error) {
+      })
+      .catch(() => {
+        // Keep attachments when blob conversion fails so the user can retry.
         // Don't clear on error - user may want to retry
-      }
-    })
+      })
   }
 
   // Render with or without local provider
   const inner = (
     <>
-      <span aria-hidden='true' className='hidden' ref={anchorRef} />
       <input
         accept={accept}
         aria-label={t('Upload files')}
@@ -782,6 +777,8 @@ export const PromptInput = ({
       />
       <form
         className={cn('w-full', className)}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
         onSubmit={handleSubmit}
         {...props}
       >
@@ -841,10 +838,7 @@ export const PromptInputTextarea = ({
       attachments.files.length > 0
     ) {
       e.preventDefault()
-      const lastAttachment =
-        attachments.files.length > 0
-          ? attachments.files[attachments.files.length - 1]
-          : undefined
+      const lastAttachment = attachments.files.at(-1)
       if (lastAttachment) {
         attachments.remove(lastAttachment.id)
       }
@@ -1138,9 +1132,8 @@ export const PromptInputSpeechButton = ({
       speechRecognition.onresult = (event) => {
         let finalTranscript = ''
 
-        const results = Array.from(event.results)
-
-        for (const result of results) {
+        for (let index = 0; index < event.results.length; index += 1) {
+          const result = event.results.item(index)
           if (result.isFinal) {
             finalTranscript += result[0]?.transcript ?? ''
           }

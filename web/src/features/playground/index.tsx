@@ -116,6 +116,12 @@ export function Playground() {
     clearMessages()
   }
 
+  const handleDeleteSession = (sessionId: string) => {
+    stopGeneration(sessionId)
+    stopImageGeneration(sessionId)
+    deleteSession(sessionId)
+  }
+
   const { isLoadingModels } = usePlaygroundOptions({
     currentGroup: config.group,
     currentModel: config.model,
@@ -129,9 +135,10 @@ export function Playground() {
     activeSessionId,
     onCreateSession: createSession,
     onSelectSession: selectSession,
-    onDeleteSession: deleteSession,
+    onDeleteSession: handleDeleteSession,
     onRenameSession: renameSession,
     onReorderSessions: reorderSessions,
+    disabled: isLoadingSessions,
   }
 
   return (
@@ -174,8 +181,9 @@ export function Playground() {
         {/* Input area: center content and constrain to the same container width */}
         <div className='mx-auto w-full max-w-4xl'>
           <PlaygroundInput
+            key={activeSessionId ?? 'loading'}
             config={config}
-            disabled={isBusy}
+            disabled={isLoadingSessions || isBusy}
             groups={groups}
             groupValue={config.group}
             isGenerating={isBusy}

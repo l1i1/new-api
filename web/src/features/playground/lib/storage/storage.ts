@@ -439,15 +439,22 @@ function normalizeSessionsForLoad(
  * message store on first read. Returns null when nothing is stored.
  */
 export function loadSessions(): PlaygroundSession[] | null {
+  let saved: unknown | null = null
   try {
-    const saved = readStoredValue(STORAGE_KEYS.SESSIONS)
+    saved = readStoredValue(STORAGE_KEYS.SESSIONS)
     if (saved) {
       const parsed = sessionsSchema.parse(
         unwrapStoredValue(saved)
       ) as PlaygroundSession[]
       return normalizeSessionsForLoad(parsed)
     }
+  } catch (error) {
+    // A corrupt new store must not prevent recovery from the legacy messages.
+    // eslint-disable-next-line no-console
+    console.error('Failed to load sessions:', error)
+  }
 
+  try {
     const legacyMessages = loadMessages()
     if (legacyMessages && legacyMessages.length > 0) {
       const now = Date.now()
@@ -466,8 +473,9 @@ export function loadSessions(): PlaygroundSession[] | null {
           messages: legacyMessages,
         },
       ]
-      saveSessions(migrated)
-      localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+      if (saveSessions(migrated)) {
+        localStorage.removeItem(STORAGE_KEYS.MESSAGES)
+      }
       return migrated
     }
   } catch (error) {
@@ -480,7 +488,7 @@ export function loadSessions(): PlaygroundSession[] | null {
 /**
  * Save all sessions to localStorage
  */
-export function saveSessions(sessions: PlaygroundSession[]): void {
+export function saveSessions(sessions: PlaygroundSession[]): boolean {
   try {
     const normalized = sessions.map((session) => ({
       ...session,
@@ -488,9 +496,11 @@ export function saveSessions(sessions: PlaygroundSession[]): void {
     }))
     const parsed = sessionsSchema.parse(normalized) as PlaygroundSession[]
     writeStoredValue(STORAGE_KEYS.SESSIONS, parsed)
+    return true
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to save sessions:', error)
+    return false
   }
 }
 
