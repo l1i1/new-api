@@ -116,6 +116,8 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
+		// Upstream request IDs can identify private provider infrastructure.
+		logs[i].UpstreamRequestId = ""
 		if logs[i].Type == LogTypeError {
 			logs[i].Content = common.StripRequestIdSuffixes(operation_setting.FilterErrorMessage(logs[i].Content))
 		}

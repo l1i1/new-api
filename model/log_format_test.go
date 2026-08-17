@@ -73,8 +73,10 @@ func TestFormatUserLogsFiltersErrorContentForNonAdminViews(t *testing.T) {
 
 	logs := []*Log{
 		{
-			Type:    LogTypeError,
-			Content: "status_code=503, auth_unavailable: no auth available (providers=private-provider, model=qwen3.8-max) (request id: upstream-1) (request id: upstream-2)",
+			Type:              LogTypeError,
+			RequestId:         "local-request-id",
+			UpstreamRequestId: "upstream-request-id",
+			Content:           "status_code=503, auth_unavailable: no auth available (providers=private-provider, model=qwen3.8-max) (request id: upstream-1) (request id: upstream-2)",
 		},
 		{
 			Type:    LogTypeConsume,
@@ -85,5 +87,7 @@ func TestFormatUserLogsFiltersErrorContentForNonAdminViews(t *testing.T) {
 	formatUserLogs(logs, 0)
 
 	require.Equal(t, "status_code=503, auth_unavailable: no auth available", logs[0].Content)
+	require.Equal(t, "local-request-id", logs[0].RequestId)
+	require.Empty(t, logs[0].UpstreamRequestId)
 	require.Equal(t, "providers=should-remain-in-non-error-log", logs[1].Content)
 }
