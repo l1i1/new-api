@@ -97,6 +97,7 @@ import {
   getTierCacheMode,
   normalizeVisualConfig,
   normalizeVisualTier,
+  resolveTieredEditorMode,
   tryParseVisualConfig,
 } from '@/features/pricing/lib/tier-expr'
 import { cn } from '@/lib/utils'
@@ -1639,10 +1640,14 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
   onRequestRuleExprChange,
 }: TieredPricingEditorProps) {
   const { t } = useTranslation()
-  const [editorMode, setEditorMode] = useState<EditorMode>('visual')
-  const [visualConfig, setVisualConfig] = useState<VisualConfig | null>(() =>
-    tryParseVisualConfig(currentExpr)
+  const initialVisualConfig = tryParseVisualConfig(currentExpr)
+  const [editorMode, setEditorMode] = useState<EditorMode>(() =>
+    resolveTieredEditorMode(currentExpr)
   )
+  const [visualConfig, setVisualConfig] = useState<VisualConfig | null>(() => {
+    if (initialVisualConfig) return initialVisualConfig
+    return currentExpr ? null : createDefaultVisualConfig()
+  })
   const [rawExpr, setRawExpr] = useState(() =>
     combineBillingExpr(currentExpr || '', currentRequestRuleExpr || '')
   )
@@ -1682,11 +1687,12 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
 
   const effectiveExpr = useMemo(() => {
     if (editorMode === 'visual') {
+      if (!visualConfig) return currentExpr || ''
       return generateExprFromVisualConfig(visualConfig)
     }
     const { billingExpr } = splitBillingExprAndRequestRules(rawExpr)
     return billingExpr
-  }, [editorMode, visualConfig, rawExpr])
+  }, [currentExpr, editorMode, visualConfig, rawExpr])
 
   useEffect(() => {
     if (effectiveExpr !== currentExpr) {
@@ -1729,8 +1735,10 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
         const parsed = tryParseVisualConfig(billingExpr)
         if (parsed) {
           setVisualConfig(parsed)
-        } else {
+        } else if (!billingExpr.trim()) {
           setVisualConfig(createDefaultVisualConfig())
+        } else {
+          return
         }
         const parsedGroups = tryParseRequestRuleExpr(ruleStr)
         setRequestRuleGroups(parsedGroups || [])

@@ -243,6 +243,15 @@ export function tryParseVisualConfig(
   }
 }
 
+export type TieredEditorMode = 'visual' | 'raw'
+
+export function resolveTieredEditorMode(
+  billingExpr: string | null | undefined
+): TieredEditorMode {
+  const expr = billingExpr?.trim() || ''
+  return !expr || tryParseVisualConfig(expr) ? 'visual' : 'raw'
+}
+
 // ---------------------------------------------------------------------------
 // Local cost evaluator (for the estimator preview)
 // ---------------------------------------------------------------------------
