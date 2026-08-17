@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,15 @@ type WaffoPancakePriceSnapshot struct {
 	TaxCategory string
 }
 
+type WaffoPancakePaymentMethod string
+
+const (
+	WaffoPancakePaymentMethodCard      WaffoPancakePaymentMethod = "card"
+	WaffoPancakePaymentMethodApplePay  WaffoPancakePaymentMethod = "applepay"
+	WaffoPancakePaymentMethodGooglePay WaffoPancakePaymentMethod = "googlepay"
+	WaffoPancakePaymentMethodWeChat    WaffoPancakePaymentMethod = "wechat"
+)
+
 // WaffoPancakeCreateSessionParams is the input to CreateWaffoPancakeCheckoutSession.
 // BuyerIdentity must be stable per user (see WaffoPancakeBuyerIdentityFromUserID),
 // but it is not a settlement invariant: Pancake may echo the checkout email
@@ -31,6 +41,7 @@ type WaffoPancakeCreateSessionParams struct {
 	BuyerEmail              string
 	ExpiresInSeconds        *int
 	OrderMerchantExternalID string
+	IncludePaymentMethods   []WaffoPancakePaymentMethod
 }
 
 // WaffoPancakeCheckoutSession is the response of CreateWaffoPancakeCheckoutSession.
@@ -130,6 +141,9 @@ func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancake
 		},
 		BuyerIdentity: params.BuyerIdentity,
 	}
+	for _, method := range params.IncludePaymentMethods {
+		sdkParams.IncludePaymentMethods = append(sdkParams.IncludePaymentMethods, pancake.PaymentMethod(method))
+	}
 	if params.PriceSnapshot != nil {
 		sdkParams.PriceSnapshot = &pancake.PriceInfo{
 			Amount:      params.PriceSnapshot.Amount,
@@ -151,6 +165,26 @@ func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancake
 		Token:          session.Token,
 		TokenExpiresAt: session.TokenExpiresAt,
 	}, nil
+}
+
+func IsWaffoPancakeUnsupportedCurrencyError(err error, currency string) bool {
+	var providerErr *pancake.Error
+	if !errors.As(err, &providerErr) || providerErr.Status != 400 {
+		return false
+	}
+	currency = strings.ToLower(strings.TrimSpace(currency))
+	if currency == "" {
+		return false
+	}
+	for _, notice := range providerErr.Errors {
+		message := strings.ToLower(strings.TrimSpace(notice.Message))
+		if strings.Contains(message, "currency") &&
+			strings.Contains(message, currency) &&
+			(strings.Contains(message, "not supported") || strings.Contains(message, "unsupported")) {
+			return true
+		}
+	}
+	return false
 }
 
 func optionalString(s string) *string {
@@ -454,6 +488,24 @@ func SaveWaffoPancakeConfig(ctx context.Context, merchantID, privateKey, returnU
 	if merchantID == "" || storeID == "" || productID == "" {
 		return fmt.Errorf("merchant id, store id, and product id are required to save")
 	}
+	resolvedPrivateKey, err := resolveWaffoPancakeSavePrivateKey(merchantID, privateKey)
+	if err != nil {
+		return err
+	}
+	catalog, err := ListWaffoPancakeCatalog(ctx, merchantID, resolvedPrivateKey)
+	if err != nil {
+		return fmt.Errorf("verify Waffo Pancake catalog: %w", err)
+	}
+	if err := validateWaffoPancakeBinding(catalog, storeID, productID); err != nil {
+		return err
+	}
+	versions, err := listWaffoPancakeProductVersions(ctx, merchantID, resolvedPrivateKey, productID)
+	if err != nil {
+		return fmt.Errorf("verify Waffo Pancake production product: %w", err)
+	}
+	if err := validateWaffoPancakeProductionCurrencies(versions); err != nil {
+		return err
+	}
 	values := map[string]string{
 		"WaffoPancakeMerchantID": merchantID,
 		"WaffoPancakeReturnURL":  strings.TrimSpace(returnURL),
@@ -469,10 +521,31 @@ func SaveWaffoPancakeConfig(ctx context.Context, merchantID, privateKey, returnU
 	return nil
 }
 
+func resolveWaffoPancakeSavePrivateKey(merchantID, privateKey string) (string, error) {
+	privateKey = strings.TrimSpace(privateKey)
+	if privateKey != "" {
+		return privateKey, nil
+	}
+	if merchantID != strings.TrimSpace(setting.WaffoPancakeMerchantID) {
+		return "", fmt.Errorf("private key is required when merchant id changes")
+	}
+	persistedPrivateKey := strings.TrimSpace(setting.WaffoPancakePrivateKey)
+	if persistedPrivateKey == "" {
+		return "", fmt.Errorf("private key is required")
+	}
+	return persistedPrivateKey, nil
+}
+
+type WaffoPancakeCatalogPrice struct {
+	Currency string `json:"currency"`
+}
+
 type WaffoPancakeCatalogProduct struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID             string                     `json:"id"`
+	Name           string                     `json:"name"`
+	Status         string                     `json:"status"`
+	Prices         []WaffoPancakeCatalogPrice `json:"prices"`
+	HasProdVersion bool                       `json:"hasProdVersion"`
 }
 
 // WaffoPancakeCatalogStore nests its OnetimeProducts so the UI can render a
@@ -515,6 +588,8 @@ func ListWaffoPancakeCatalog(ctx context.Context, merchantID, privateKey string)
 					id
 					name
 					status
+					prices { currency }
+					hasProdVersion
 				}
 			}
 		}`,
@@ -539,4 +614,89 @@ func ListWaffoPancakeCatalog(ctx context.Context, merchantID, privateKey string)
 		stores[i].OnetimeProducts = active
 	}
 	return &WaffoPancakeCatalog{Stores: stores}, nil
+}
+
+type waffoPancakeProductVersion struct {
+	Prices        []WaffoPancakeCatalogPrice `json:"prices"`
+	IsProdVersion bool                       `json:"isProdVersion"`
+}
+
+func listWaffoPancakeProductVersions(ctx context.Context, merchantID, privateKey, productID string) ([]waffoPancakeProductVersion, error) {
+	client, err := newWaffoPancakeClientFromCreds(merchantID, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	type queryShape struct {
+		Versions []waffoPancakeProductVersion `json:"onetimeProductVersions"`
+	}
+	resp, err := pancake.GraphQLQuery[queryShape](ctx, client, pancake.GraphQLParams{
+		Query: `query ($productId: String!) {
+			onetimeProductVersions(productId: $productId) {
+				prices { currency }
+				isProdVersion
+			}
+		}`,
+		Variables: map[string]any{"productId": strings.TrimSpace(productID)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("product version query returned %d errors: %s", len(resp.Errors), resp.Errors[0].Message)
+	}
+	return resp.Data.Versions, nil
+}
+
+func validateWaffoPancakeBinding(catalog *WaffoPancakeCatalog, storeID, productID string) error {
+	if catalog == nil {
+		return fmt.Errorf("Waffo Pancake catalog is empty")
+	}
+	for _, store := range catalog.Stores {
+		if store.ID != storeID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(store.Status), "active") {
+			return fmt.Errorf("selected Waffo Pancake store is not active")
+		}
+		if !store.ProdEnabled {
+			return fmt.Errorf("selected Waffo Pancake store does not have production enabled")
+		}
+		for _, product := range store.OnetimeProducts {
+			if product.ID != productID {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(product.Status), "active") {
+				return fmt.Errorf("selected Waffo Pancake product is not active")
+			}
+			if !product.HasProdVersion {
+				return fmt.Errorf("selected Waffo Pancake product is not published to production")
+			}
+			return nil
+		}
+		return fmt.Errorf("selected Waffo Pancake product does not belong to the selected store")
+	}
+	return fmt.Errorf("selected Waffo Pancake store was not found")
+}
+
+func validateWaffoPancakeProductionCurrencies(versions []waffoPancakeProductVersion) error {
+	for _, version := range versions {
+		if !version.IsProdVersion {
+			continue
+		}
+		currencies := make(map[string]bool, len(version.Prices))
+		for _, price := range version.Prices {
+			currencies[strings.ToUpper(strings.TrimSpace(price.Currency))] = true
+		}
+		missing := make([]string, 0, 2)
+		for _, required := range []string{model.PaymentCurrencyCNY, model.PaymentCurrencyUSD} {
+			if !currencies[required] {
+				missing = append(missing, required)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("selected Waffo Pancake production product is missing currencies: %s", strings.Join(missing, ", "))
+		}
+		return nil
+	}
+	return fmt.Errorf("selected Waffo Pancake product has no production version")
 }

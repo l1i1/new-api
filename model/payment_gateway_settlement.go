@@ -152,6 +152,23 @@ func normalizeGatewayPaymentMethod(method string) string {
 	}
 }
 
+func gatewayWalletPaymentMethodMatches(localMethod, settledMethod, currency string) bool {
+	localMethod = normalizeGatewayPaymentMethod(localMethod)
+	settledMethod = normalizeGatewayPaymentMethod(settledMethod)
+	if localMethod == settledMethod {
+		return true
+	}
+	if localMethod != "auto" || !strings.EqualFold(strings.TrimSpace(currency), PaymentCurrencyUSD) {
+		return false
+	}
+	switch settledMethod {
+	case "card", "apple_pay", "google_pay", "wechat_pay":
+		return true
+	default:
+		return false
+	}
+}
+
 func snapshotString(snapshot map[string]any, key string) (string, bool) {
 	value, ok := snapshot[key]
 	if !ok {
@@ -508,7 +525,7 @@ func applyGatewayWalletSettlementTx(tx *gorm.DB, command *PaymentGatewaySettleme
 	if topUp.PaymentEnvironment != command.Environment && (topUp.PaymentEnvironment != "" || command.Environment != "") {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
-	if normalizeGatewayPaymentMethod(topUp.PaymentMethod) != command.PaymentMethod {
+	if !gatewayWalletPaymentMethodMatches(topUp.PaymentMethod, command.PaymentMethod, topUp.PaymentCurrency) {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
 	if topUp.PaymentCurrency == "" || !strings.EqualFold(topUp.PaymentCurrency, command.Currency) {

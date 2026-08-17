@@ -47,4 +47,53 @@ describe('payment amount routing', () => {
     assert.equal(amount, 18.75)
     assert.deepEqual(calls, ['waffo:120'])
   })
+
+  test('keeps bare Pancake checkout unrestricted', async () => {
+    let request:
+      | { amount: number; currency?: string; payment_method?: string }
+      | undefined
+    const amount = await requestPaymentAmount(
+      120,
+      PAYMENT_TYPES.WAFFO_PANCAKE,
+      {
+        regular: async () => ({ success: false, data: '' }),
+        stripe: async () => ({ success: false, data: '' }),
+        waffo: async () => ({ success: false, data: '' }),
+        waffoPancake: async (value) => {
+          request = value
+          return { success: true, data: '17.14' }
+        },
+      },
+      'CNY'
+    )
+
+    assert.equal(amount, 17.14)
+    assert.deepEqual(request, { amount: 120, currency: 'CNY' })
+  })
+
+  test('forwards the Pancake method selected by the processing identifier', async () => {
+    let request:
+      | { amount: number; currency?: string; payment_method?: string }
+      | undefined
+    await requestPaymentAmount(
+      120,
+      'waffo_pancake:googlepay',
+      {
+        regular: async () => ({ success: false, data: '' }),
+        stripe: async () => ({ success: false, data: '' }),
+        waffo: async () => ({ success: false, data: '' }),
+        waffoPancake: async (value) => {
+          request = value
+          return { success: true, data: '17.14' }
+        },
+      },
+      'CNY'
+    )
+
+    assert.deepEqual(request, {
+      amount: 120,
+      currency: 'CNY',
+      payment_method: 'google_pay',
+    })
+  })
 })

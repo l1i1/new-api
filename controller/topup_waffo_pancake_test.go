@@ -171,6 +171,84 @@ func TestWaffoPancakeWalletCurrencySelection(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWaffoPancakeProviderPaymentMethodMapping(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected service.WaffoPancakePaymentMethod
+	}{
+		{input: "card", expected: service.WaffoPancakePaymentMethodCard},
+		{input: "apple_pay", expected: service.WaffoPancakePaymentMethodApplePay},
+		{input: "google_pay", expected: service.WaffoPancakePaymentMethodGooglePay},
+		{input: "wechat_pay", expected: service.WaffoPancakePaymentMethodWeChat},
+		{input: "waffo_pancake:googlepay", expected: service.WaffoPancakePaymentMethodGooglePay},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			actual, err := waffoPancakeProviderPaymentMethod(tc.input)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, actual)
+		})
+	}
+
+	_, err := waffoPancakeProviderPaymentMethod("alipay")
+	require.Error(t, err)
+}
+
+func TestWaffoPancakeWalletRouteMatrix(t *testing.T) {
+	tests := []struct {
+		name             string
+		displayCurrency  string
+		paymentMethod    string
+		providerCurrency string
+		providerMethod   service.WaffoPancakePaymentMethod
+		allowFallback    bool
+	}{
+		{name: "CNY WeChat", displayCurrency: model.PaymentCurrencyCNY, paymentMethod: "wechat_pay", providerCurrency: model.PaymentCurrencyCNY, providerMethod: service.WaffoPancakePaymentMethodWeChat, allowFallback: true},
+		{name: "CNY card converts to USD", displayCurrency: model.PaymentCurrencyCNY, paymentMethod: "card", providerCurrency: model.PaymentCurrencyUSD, providerMethod: service.WaffoPancakePaymentMethodCard},
+		{name: "CNY Apple Pay converts to USD", displayCurrency: model.PaymentCurrencyCNY, paymentMethod: "apple_pay", providerCurrency: model.PaymentCurrencyUSD, providerMethod: service.WaffoPancakePaymentMethodApplePay},
+		{name: "CNY Google Pay converts to USD", displayCurrency: model.PaymentCurrencyCNY, paymentMethod: "google_pay", providerCurrency: model.PaymentCurrencyUSD, providerMethod: service.WaffoPancakePaymentMethodGooglePay},
+		{name: "USD WeChat stays USD", displayCurrency: model.PaymentCurrencyUSD, paymentMethod: "wechat_pay", providerCurrency: model.PaymentCurrencyUSD, providerMethod: service.WaffoPancakePaymentMethodWeChat},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			route, err := resolveWaffoPancakeWalletRoute(tc.displayCurrency, tc.paymentMethod)
+			require.NoError(t, err)
+			require.Equal(t, tc.providerCurrency, route.ProviderCurrency)
+			require.Equal(t, tc.providerMethod, route.ProviderMethod)
+			require.Equal(t, []service.WaffoPancakePaymentMethod{tc.providerMethod}, route.IncludePaymentMethods)
+			require.Equal(t, tc.allowFallback, route.AllowCNYToUSDFallback)
+		})
+	}
+
+	route, err := resolveWaffoPancakeWalletRoute(model.PaymentCurrencyUSD, "")
+	require.NoError(t, err)
+	require.Equal(t, model.PaymentCurrencyUSD, route.ProviderCurrency)
+	require.Empty(t, route.IncludePaymentMethods)
+
+	route, err = resolveWaffoPancakeWalletRoute(model.PaymentCurrencyCNY, "")
+	require.NoError(t, err)
+	require.Equal(t, model.PaymentCurrencyUSD, route.ProviderCurrency)
+	require.Empty(t, route.IncludePaymentMethods)
+
+	_, err = resolveWaffoPancakeWalletRoute(model.PaymentCurrencyCNY, "alipay")
+	require.Error(t, err)
+}
+
+func TestWaffoPancakePaymentMethodTypeClassification(t *testing.T) {
+	for _, paymentType := range []string{
+		"waffo_pancake",
+		"waffo_pancake:wechat",
+		"waffo_pancake:googlepay",
+		"waffo_pancake:applepay",
+		"waffo_pancake:card",
+	} {
+		require.True(t, isWaffoPancakePaymentMethodType(paymentType), paymentType)
+	}
+	require.False(t, isWaffoPancakePaymentMethodType("waffo_pancake:alipay"))
+	require.False(t, isWaffoPancakePaymentMethodType("custom-epay"))
+}
+
 func TestValidateLegacyWaffoPancakeAccountUsesStoreID(t *testing.T) {
 	setupPaymentGatewaySettlementControllerTest(t)
 	previousMerchantID := setting.WaffoPancakeMerchantID

@@ -48,3 +48,13 @@ func TestHotPayGatewayPermanentErrorClassification(t *testing.T) {
 	require.False(t, hotPayGatewayErrorIsPermanent(&service.HotPayGatewayError{Code: "provider_unavailable", StatusCode: 503}))
 	require.False(t, hotPayGatewayErrorIsPermanent(&service.HotPayGatewayError{Code: "idempotency_conflict", StatusCode: 409}))
 }
+
+func TestHotPayWaffoWalletPriceSnapshotPreservesSettlementCurrency(t *testing.T) {
+	snapshot := hotPayWaffoWalletPriceSnapshot(100, "7.00", model.PaymentCurrencyCNY, model.PaymentCurrencyUSD)
+
+	require.Equal(t, int64(100), snapshot["quota_amount"])
+	require.Equal(t, "7.00", snapshot["provider_amount"])
+	require.Equal(t, model.PaymentCurrencyUSD, snapshot["pricing_currency"])
+	require.Equal(t, model.PaymentCurrencyCNY, snapshot["display_currency"])
+	require.Equal(t, model.PaymentCurrencyUSD, snapshot["provider_currency"])
+}

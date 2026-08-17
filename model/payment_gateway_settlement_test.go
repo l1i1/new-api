@@ -98,6 +98,31 @@ func TestApplyPaymentGatewaySettlementWalletIsAtomicAndIdempotent(t *testing.T) 
 	require.Equal(t, int64(1), settlementCount)
 }
 
+func TestApplyPaymentGatewaySettlementAutoOrderUsesConcreteProviderMethod(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &User{}, &TopUp{}, &InviteTopUpReward{}, &Log{}, &PaymentGatewaySettlement{})
+	user := &User{Id: 9110, Username: "gateway-auto-method-user", Status: common.UserStatusEnabled, Quota: 10}
+	require.NoError(t, DB.Create(user).Error)
+	topUp := &TopUp{
+		UserId: user.Id, Amount: 10, Money: 9.99, TradeNo: "gateway-auto-method-order",
+		PaymentMethod: "auto", PaymentProvider: PaymentProviderWaffoPancake, PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
+		PaymentGatewayOrderID: "gateway-order-gateway-auto-method-order",
+		PaymentCurrency:       PaymentCurrencyUSD, Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, DB.Create(topUp).Error)
+	command := gatewaySettlementCommand(topUp.TradeNo, PaymentGatewayBusinessWallet)
+	command.UserID = strconv.Itoa(user.Id)
+	command.PaymentMethod = "apple_pay"
+
+	result, err := ApplyPaymentGatewaySettlement(command)
+	require.NoError(t, err)
+	require.False(t, result.Duplicate)
+	require.Equal(t, "topup:"+itoa(topUp.Id), result.CreditedReference)
+
+	var storedTopUp TopUp
+	require.NoError(t, DB.Where("trade_no = ?", topUp.TradeNo).First(&storedTopUp).Error)
+	require.Equal(t, common.TopUpStatusSuccess, storedTopUp.Status)
+}
+
 func TestApplyPaymentGatewaySettlementRequiresImmutableProviderSnapshot(t *testing.T) {
 	setupPaymentGatewaySettlementTest(t, &PaymentGatewaySettlement{})
 	valid := gatewaySettlementCommand("snapshot-validation-order", PaymentGatewayBusinessWallet)

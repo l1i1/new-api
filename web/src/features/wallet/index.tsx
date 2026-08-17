@@ -49,6 +49,9 @@ import {
   getDefaultPaymentType,
   getMinTopupAmount,
   dispatchSelectedPayment,
+  getWaffoPancakePaymentMethod,
+  getWaffoPancakeProviderCurrency,
+  isWaffoPancakePayment,
 } from './lib'
 import type {
   UserWalletData,
@@ -141,9 +144,7 @@ export function Wallet(props: WalletProps) {
       calculatePaymentAmount(
         minTopup,
         defaultPaymentType,
-        defaultPaymentType === PAYMENT_TYPES.WAFFO_PANCAKE
-          ? displayCurrency
-          : undefined
+        isWaffoPancakePayment(defaultPaymentType) ? displayCurrency : undefined
       )
     }
   }, [topupInfo, calculatePaymentAmount, displayCurrency])
@@ -158,10 +159,7 @@ export function Wallet(props: WalletProps) {
 
     const currentPaymentType =
       selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
-    if (
-      currentPaymentType !== PAYMENT_TYPES.WAFFO_PANCAKE ||
-      topupAmount <= 0
-    ) {
+    if (!isWaffoPancakePayment(currentPaymentType) || topupAmount <= 0) {
       return
     }
     void calculatePaymentAmount(
@@ -184,11 +182,12 @@ export function Wallet(props: WalletProps) {
     return selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
   }, [selectedPaymentMethod, topupInfo])
 
-  const paymentCurrency =
-    (selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)) ===
-    PAYMENT_TYPES.WAFFO_PANCAKE
-      ? displayCurrency
-      : 'CNY'
+  const currentPaymentType =
+    selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
+  const waffoPancakeMethod = getWaffoPancakePaymentMethod(currentPaymentType)
+  const paymentCurrency = isWaffoPancakePayment(currentPaymentType)
+    ? getWaffoPancakeProviderCurrency(displayCurrency, waffoPancakeMethod)
+    : 'CNY'
 
   // Handle preset selection
   const handleSelectPreset = (preset: PresetAmount) => {
@@ -198,7 +197,7 @@ export function Wallet(props: WalletProps) {
     calculatePaymentAmount(
       preset.value,
       paymentType,
-      paymentType === PAYMENT_TYPES.WAFFO_PANCAKE ? displayCurrency : undefined
+      isWaffoPancakePayment(paymentType) ? displayCurrency : undefined
     )
   }
 
@@ -210,7 +209,7 @@ export function Wallet(props: WalletProps) {
     calculatePaymentAmount(
       amount,
       paymentType,
-      paymentType === PAYMENT_TYPES.WAFFO_PANCAKE ? displayCurrency : undefined
+      isWaffoPancakePayment(paymentType) ? displayCurrency : undefined
     )
   }
 
@@ -231,9 +230,7 @@ export function Wallet(props: WalletProps) {
       await calculatePaymentAmount(
         topupAmount,
         method.type,
-        method.type === PAYMENT_TYPES.WAFFO_PANCAKE
-          ? displayCurrency
-          : undefined
+        isWaffoPancakePayment(method.type) ? displayCurrency : undefined
       )
       setConfirmDialogOpen(true)
     } finally {
@@ -253,7 +250,11 @@ export function Wallet(props: WalletProps) {
         regular: processPayment,
         waffo: processWaffoPayment,
         waffoPancake: (amount) =>
-          processWaffoPancakePayment(amount, displayCurrency),
+          processWaffoPancakePayment(
+            amount,
+            displayCurrency,
+            selectedPaymentMethod.type
+          ),
       }
     )
 
@@ -413,6 +414,7 @@ export function Wallet(props: WalletProps) {
         paymentAmount={paymentAmount}
         paymentCurrency={paymentCurrency}
         paymentMethod={selectedPaymentMethod}
+        waffoPancakeDisplayCurrency={displayCurrency}
         calculating={calculating}
         processing={processing || waffoProcessing || pancakeProcessing}
         discountRate={getDiscountRate()}

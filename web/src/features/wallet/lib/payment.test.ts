@@ -22,6 +22,8 @@ import { describe, test } from 'node:test'
 import { PAYMENT_TYPES } from '../constants'
 import {
   dispatchSelectedPayment,
+  getWaffoPancakePaymentMethod,
+  getWaffoPancakeProviderCurrency,
   isStandardEpayPayment,
   isStripePayment,
   isWaffoPayment,
@@ -33,6 +35,11 @@ describe('payment type classification', () => {
     assert.equal(isWaffoPayment(PAYMENT_TYPES.WAFFO), true)
     assert.equal(isWaffoPayment(PAYMENT_TYPES.WAFFO_PANCAKE), false)
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE), true)
+    assert.equal(isWaffoPancakePayment('waffo_pancake:wechat'), true)
+    assert.equal(isWaffoPancakePayment('waffo_pancake:googlepay'), true)
+    assert.equal(isWaffoPancakePayment('waffo_pancake:applepay'), true)
+    assert.equal(isWaffoPancakePayment('waffo_pancake:card'), true)
+    assert.equal(isWaffoPancakePayment('waffo_pancake:alipay'), false)
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO), false)
     assert.equal(isStripePayment(PAYMENT_TYPES.STRIPE), true)
   })
@@ -45,6 +52,27 @@ describe('payment type classification', () => {
     assert.equal(isStandardEpayPayment(PAYMENT_TYPES.CREEM), false)
     assert.equal(isStandardEpayPayment(PAYMENT_TYPES.WAFFO), false)
     assert.equal(isStandardEpayPayment(PAYMENT_TYPES.WAFFO_PANCAKE), false)
+  })
+
+  test('maps Pancake processing identifiers to provider methods and currency', () => {
+    assert.equal(getWaffoPancakePaymentMethod('waffo_pancake'), null)
+    assert.equal(
+      getWaffoPancakePaymentMethod('waffo_pancake:wechat'),
+      'wechat_pay'
+    )
+    assert.equal(
+      getWaffoPancakePaymentMethod('waffo_pancake:googlepay'),
+      'google_pay'
+    )
+    assert.equal(
+      getWaffoPancakePaymentMethod('waffo_pancake:applepay'),
+      'apple_pay'
+    )
+    assert.equal(getWaffoPancakePaymentMethod('waffo_pancake:card'), 'card')
+    assert.equal(getWaffoPancakeProviderCurrency('CNY', null), 'USD')
+    assert.equal(getWaffoPancakeProviderCurrency('CNY', 'wechat_pay'), 'CNY')
+    assert.equal(getWaffoPancakeProviderCurrency('CNY', 'card'), 'USD')
+    assert.equal(getWaffoPancakeProviderCurrency('USD', 'wechat_pay'), 'USD')
   })
 })
 

@@ -40,6 +40,70 @@ func normalizeWaffoPancakeWalletCurrency(currency string) (string, error) {
 	return currency, nil
 }
 
+func waffoPancakeProviderPaymentMethod(paymentMethod string) (service.WaffoPancakePaymentMethod, error) {
+	normalized := strings.ToLower(strings.TrimSpace(paymentMethod))
+	normalized = strings.TrimPrefix(normalized, model.PaymentMethodWaffoPancake+":")
+	switch normalized {
+	case "card":
+		return service.WaffoPancakePaymentMethodCard, nil
+	case "apple_pay", "applepay":
+		return service.WaffoPancakePaymentMethodApplePay, nil
+	case "google_pay", "googlepay":
+		return service.WaffoPancakePaymentMethodGooglePay, nil
+	case "wechat_pay", "wechat":
+		return service.WaffoPancakePaymentMethodWeChat, nil
+	default:
+		return "", fmt.Errorf("unsupported Waffo Pancake payment method %q", paymentMethod)
+	}
+}
+
+func isWaffoPancakePaymentMethodType(paymentType string) bool {
+	paymentType = strings.ToLower(strings.TrimSpace(paymentType))
+	switch paymentType {
+	case model.PaymentMethodWaffoPancake,
+		model.PaymentMethodWaffoPancake + ":wechat",
+		model.PaymentMethodWaffoPancake + ":googlepay",
+		model.PaymentMethodWaffoPancake + ":applepay",
+		model.PaymentMethodWaffoPancake + ":card":
+		return true
+	default:
+		return false
+	}
+}
+
+type waffoPancakeWalletRoute struct {
+	ProviderCurrency      string
+	ProviderMethod        service.WaffoPancakePaymentMethod
+	IncludePaymentMethods []service.WaffoPancakePaymentMethod
+	AllowCNYToUSDFallback bool
+}
+
+func resolveWaffoPancakeWalletRoute(displayCurrency, paymentMethod string) (waffoPancakeWalletRoute, error) {
+	paymentMethod = strings.TrimSpace(paymentMethod)
+	if strings.EqualFold(paymentMethod, model.PaymentMethodWaffoPancake) {
+		paymentMethod = ""
+	}
+	if paymentMethod == "" {
+		return waffoPancakeWalletRoute{ProviderCurrency: model.PaymentCurrencyUSD}, nil
+	}
+	providerMethod, err := waffoPancakeProviderPaymentMethod(paymentMethod)
+	if err != nil {
+		return waffoPancakeWalletRoute{}, err
+	}
+	providerCurrency := model.PaymentCurrencyUSD
+	allowFallback := false
+	if displayCurrency == model.PaymentCurrencyCNY && providerMethod == service.WaffoPancakePaymentMethodWeChat {
+		providerCurrency = model.PaymentCurrencyCNY
+		allowFallback = true
+	}
+	return waffoPancakeWalletRoute{
+		ProviderCurrency:      providerCurrency,
+		ProviderMethod:        providerMethod,
+		IncludePaymentMethods: []service.WaffoPancakePaymentMethod{providerMethod},
+		AllowCNYToUSDFallback: allowFallback,
+	}, nil
+}
+
 func RequestWaffoPancakeAmount(c *gin.Context) {
 	var req WaffoPancakePayRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -51,9 +115,14 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
-	currency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
+	displayCurrency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "钱包币种仅支持 CNY 或 USD"})
+		return
+	}
+	route, err := resolveWaffoPancakeWalletRoute(displayCurrency, req.PaymentMethod)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 支付方式不受支持"})
 		return
 	}
 
@@ -64,7 +133,7 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		return
 	}
 
-	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, currency)
+	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, route.ProviderCurrency)
 	if providerPayMoney <= 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
@@ -172,7 +241,7 @@ func SaveWaffoPancake(c *gin.Context) {
 			"Waffo Pancake 保存配置失败 store_id=%q product_id=%q error=%q",
 			req.StoreID, req.ProductID, err.Error(),
 		))
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "保存配置失败"})
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -386,9 +455,14 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
-	currency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
+	displayCurrency, err := normalizeWaffoPancakeWalletCurrency(req.Currency)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "钱包币种仅支持 CNY 或 USD"})
+		return
+	}
+	route, err := resolveWaffoPancakeWalletRoute(displayCurrency, req.PaymentMethod)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 支付方式不受支持"})
 		return
 	}
 
@@ -405,7 +479,8 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		return
 	}
 
-	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, currency)
+	providerCurrency := route.ProviderCurrency
+	providerPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, providerCurrency)
 	if providerPayMoney < 0.01 {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
 		return
@@ -415,10 +490,12 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	canonicalMethod := ""
 	amountMinor := int64(0)
 	if gatewayEnabled {
-		canonicalMethod, err = hotPayWalletMethod(currency, req.PaymentMethod)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 必须选择与币种匹配的支付方式"})
-			return
+		if route.ProviderMethod != "" {
+			canonicalMethod, err = hotPayWalletMethod(providerCurrency, string(route.ProviderMethod))
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 必须选择与币种匹配的支付方式"})
+				return
+			}
 		}
 		var amountErr error
 		amountMinor, amountErr = hotPayMinorAmount(providerPayMoney)
@@ -449,6 +526,8 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	paymentMethod := model.PaymentMethodWaffoPancake
 	if canonicalMethod != "" {
 		paymentMethod = canonicalMethod
+	} else if gatewayEnabled {
+		paymentMethod = "auto"
 	}
 	providerAccountID := hotPayProviderAccountID()
 	if !gatewayEnabled {
@@ -463,12 +542,12 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		PaymentProvider:          paymentProvider,
 		PaymentProviderAccountID: providerAccountID,
 		PaymentEnvironment:       hotPayEnvironment(),
-		PaymentCurrency:          currency,
+		PaymentCurrency:          providerCurrency,
 		CreateTime:               time.Now().Unix(),
 		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
+		if existing.UserId != id || existing.PaymentCurrency != providerCurrency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 			return
 		}
@@ -496,18 +575,19 @@ func RequestWaffoPancakePay(c *gin.Context) {
 			BuyerEmail:        getWaffoPancakeBuyerEmail(user),
 			ProductID:         hotPayProviderProductID(),
 			AmountMinor:       amountMinor,
-			Currency:          currency,
+			Currency:          providerCurrency,
 			QuotaAmount:       quotaAmount,
 			Provider:          paymentProvider,
 			ProviderAccountID: hotPayProviderAccountID(),
 			PaymentMethod:     canonicalMethod,
 			Environment:       hotPayEnvironment(),
 			ReturnURL:         hotPayReturnURL("/usage-logs"),
-			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
-				"quota_amount":     topUp.Amount,
-				"provider_amount":  hotPayStringAmount(providerPayMoney),
-				"pricing_currency": currency,
-			}),
+			PriceSnapshot: hotPayWaffoWalletPriceSnapshot(
+				topUp.Amount,
+				hotPayStringAmount(providerPayMoney),
+				displayCurrency,
+				providerCurrency,
+			),
 			ExpiresAt:   hotPayExpiresAt(45 * 60),
 			Description: "Wallet top-up",
 		})
@@ -530,9 +610,9 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	}
 
 	expiresInSeconds := 45 * 60
-	session, err := service.CreateWaffoPancakeCheckoutSession(c.Request.Context(), &service.WaffoPancakeCreateSessionParams{
+	checkoutParams := &service.WaffoPancakeCreateSessionParams{
 		ProductID:     setting.WaffoPancakeProductID,
-		Currency:      currency,
+		Currency:      providerCurrency,
 		BuyerIdentity: getWaffoPancakeBuyerIdentity(user),
 		PriceSnapshot: &service.WaffoPancakePriceSnapshot{
 			Amount:      formatWaffoPancakeAmount(providerPayMoney),
@@ -541,7 +621,29 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		BuyerEmail:              getWaffoPancakeBuyerEmail(user),
 		ExpiresInSeconds:        &expiresInSeconds,
 		OrderMerchantExternalID: tradeNo,
-	})
+		IncludePaymentMethods:   route.IncludePaymentMethods,
+	}
+	session, err := service.CreateWaffoPancakeCheckoutSession(c.Request.Context(), checkoutParams)
+	if err != nil && route.AllowCNYToUSDFallback && service.IsWaffoPancakeUnsupportedCurrencyError(err, model.PaymentCurrencyCNY) {
+		providerCurrency = model.PaymentCurrencyUSD
+		providerPayMoney = getWaffoPancakePaymentAmount(req.Amount, group, providerCurrency)
+		if providerPayMoney < 0.01 {
+			err = fmt.Errorf("USD fallback amount is too low")
+		} else {
+			topUp.Money = providerPayMoney
+			topUp.PaymentCurrency = providerCurrency
+			if updateErr := topUp.Update(); updateErr != nil {
+				err = fmt.Errorf("persist USD fallback snapshot: %w", updateErr)
+			} else {
+				checkoutParams.Currency = providerCurrency
+				checkoutParams.PriceSnapshot.Amount = formatWaffoPancakeAmount(providerPayMoney)
+				session, err = service.CreateWaffoPancakeCheckoutSession(c.Request.Context(), checkoutParams)
+				if err == nil {
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo Pancake CNY checkout unsupported; used USD fallback user_id=%d trade_no=%s", id, tradeNo))
+				}
+			}
+		}
+	}
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 创建结账会话失败 user_id=%d trade_no=%s error=%q", id, tradeNo, err.Error()))
 		topUp.Status = common.TopUpStatusFailed
@@ -549,7 +651,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
 		return
 	}
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d currency=%s provider_amount=%.2f", id, tradeNo, session.SessionID, req.Amount, currency, providerPayMoney))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Waffo Pancake 充值订单创建成功 user_id=%d trade_no=%s session_id=%s amount=%d display_currency=%s provider_currency=%s provider_amount=%.2f", id, tradeNo, session.SessionID, req.Amount, displayCurrency, providerCurrency, providerPayMoney))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",
@@ -560,6 +662,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 			"order_id":         tradeNo,
 			"token":            session.Token,
 			"token_expires_at": session.TokenExpiresAt,
+			"currency":         providerCurrency,
 		},
 	})
 }

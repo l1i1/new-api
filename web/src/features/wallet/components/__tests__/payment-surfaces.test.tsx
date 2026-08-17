@@ -274,7 +274,7 @@ describe('wallet payment surfaces', () => {
     await unmountComponent(dialog)
   })
 
-  test('shows the payable row and redirect warning only for standard EPay methods', async () => {
+  test('shows the payable row for EPay and Pancake without reusing the EPay warning', async () => {
     const warning =
       'Do not close the payment page after paying. Wait to be redirected back automatically.'
     const rendered = await renderComponent(
@@ -333,10 +333,28 @@ describe('wallet payment surfaces', () => {
     assert.equal(document.body.textContent?.includes(warning), false)
     assert.equal(document.body.textContent?.includes('Amount Due'), false)
 
-    for (const paymentMethod of [
-      { name: 'Waffo Pancake', type: 'waffo_pancake' },
-      { name: 'Creem', type: 'creem' },
-    ]) {
+    await act(async () => {
+      rendered.root.render(
+        <I18nextProvider i18n={i18n}>
+          <PaymentConfirmDialog
+            open
+            onOpenChange={() => undefined}
+            onConfirm={() => undefined}
+            topupAmount={10}
+            paymentAmount={8}
+            paymentCurrency='USD'
+            paymentMethod={{ name: 'Waffo Pancake', type: 'waffo_pancake' }}
+            calculating={false}
+            processing={false}
+          />
+        </I18nextProvider>
+      )
+    })
+
+    assert.equal(document.body.textContent?.includes(warning), false)
+    assert.equal(document.body.textContent?.includes('Amount Due'), true)
+
+    for (const paymentMethod of [{ name: 'Creem', type: 'creem' }]) {
       await act(async () => {
         rendered.root.render(
           <I18nextProvider i18n={i18n}>
@@ -358,6 +376,55 @@ describe('wallet payment surfaces', () => {
       assert.equal(document.body.textContent?.includes('Amount Due'), false)
     }
 
+    await unmountComponent(rendered)
+  })
+
+  test('shows the USD fallback notice only for CNY WeChat checkout', async () => {
+    const notice =
+      'If CNY checkout is unavailable, WeChat Pay may charge the equivalent amount in USD.'
+    const rendered = await renderComponent(
+      <PaymentConfirmDialog
+        open
+        onOpenChange={() => undefined}
+        onConfirm={() => undefined}
+        topupAmount={10}
+        paymentAmount={8}
+        paymentCurrency='CNY'
+        paymentMethod={{
+          name: 'Waffo Pancake WeChat Pay',
+          type: 'waffo_pancake:wechat',
+        }}
+        waffoPancakeDisplayCurrency='CNY'
+        calculating={false}
+        processing={false}
+      />
+    )
+
+    assert.equal(document.body.textContent?.includes(notice), true)
+
+    await act(async () => {
+      rendered.root.render(
+        <I18nextProvider i18n={i18n}>
+          <PaymentConfirmDialog
+            open
+            onOpenChange={() => undefined}
+            onConfirm={() => undefined}
+            topupAmount={10}
+            paymentAmount={8}
+            paymentCurrency='USD'
+            paymentMethod={{
+              name: 'Waffo Pancake Card',
+              type: 'waffo_pancake:card',
+            }}
+            waffoPancakeDisplayCurrency='CNY'
+            calculating={false}
+            processing={false}
+          />
+        </I18nextProvider>
+      )
+    })
+
+    assert.equal(document.body.textContent?.includes(notice), false)
     await unmountComponent(rendered)
   })
 

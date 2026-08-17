@@ -62,7 +62,7 @@ func GetTopUpInfo(c *gin.Context) {
 	if enableWaffoPancake {
 		hasWaffoPancake := false
 		for _, method := range payMethods {
-			if method["type"] == model.PaymentMethodWaffoPancake {
+			if isWaffoPancakePaymentMethodType(method["type"]) {
 				hasWaffoPancake = true
 				break
 			}

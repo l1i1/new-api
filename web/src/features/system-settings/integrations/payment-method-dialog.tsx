@@ -70,6 +70,10 @@ const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
   alipay: 'SiAlipay',
   stripe: 'SiStripe',
   waffo_pancake: 'LuCreditCard',
+  'waffo_pancake:wechat': 'SiWechat',
+  'waffo_pancake:googlepay': 'SiGooglepay',
+  'waffo_pancake:applepay': 'SiApplepay',
+  'waffo_pancake:card': 'LuCreditCard',
   wxpay: 'SiWechat',
 }
 
@@ -108,6 +112,30 @@ export function PaymentMethodDialog({
       label: 'Waffo Pancake (waffo_pancake)',
       name: 'Waffo Pancake',
       value: 'waffo_pancake',
+    },
+    {
+      iconName: 'SiWechat',
+      label: 'Waffo Pancake WeChat Pay (waffo_pancake:wechat)',
+      name: 'Waffo Pancake WeChat Pay',
+      value: 'waffo_pancake:wechat',
+    },
+    {
+      iconName: 'SiGooglepay',
+      label: 'Waffo Pancake Google Pay (waffo_pancake:googlepay)',
+      name: 'Waffo Pancake Google Pay',
+      value: 'waffo_pancake:googlepay',
+    },
+    {
+      iconName: 'SiApplepay',
+      label: 'Waffo Pancake Apple Pay (waffo_pancake:applepay)',
+      name: 'Waffo Pancake Apple Pay',
+      value: 'waffo_pancake:applepay',
+    },
+    {
+      iconName: 'LuCreditCard',
+      label: 'Waffo Pancake Card (waffo_pancake:card)',
+      name: 'Waffo Pancake Card',
+      value: 'waffo_pancake:card',
     },
   ]
   const getPaymentTypeOption = (value: string) =>
@@ -249,7 +277,7 @@ export function PaymentMethodDialog({
                 </FormControl>
                 <FormDescription className='leading-relaxed'>
                   {t(
-                    'Used to decide the payment flow. Built-in keys include stripe for Stripe and waffo_pancake for Waffo Pancake; other values are sent to Epay as the type parameter.'
+                    'Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Other values are sent to Epay as the type parameter.'
                   )}
                 </FormDescription>
                 <FormMessage />

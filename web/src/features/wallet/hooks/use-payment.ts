@@ -29,10 +29,12 @@ import {
   requestStripePayment,
   isApiSuccess,
 } from '../api'
+import { PAYMENT_TYPES } from '../constants'
 import {
   isStripePayment,
   isWaffoPayment,
   isWaffoPancakePayment,
+  getWaffoPancakePaymentMethod,
   submitPaymentForm,
 } from '../lib'
 import type { AmountRequest, AmountResponse } from '../types'
@@ -72,7 +74,25 @@ export async function requestPaymentAmount(
     calculator = calculators.waffoPancake
   }
 
-  const response = await calculator({ amount: topupAmount, currency })
+  const pancakeMethod = isWaffoPancakePayment(paymentType)
+    ? getWaffoPancakePaymentMethod(paymentType)
+    : undefined
+  if (
+    isWaffoPancakePayment(paymentType) &&
+    paymentType !== PAYMENT_TYPES.WAFFO_PANCAKE &&
+    !pancakeMethod
+  ) {
+    return 0
+  }
+
+  const request: AmountRequest = {
+    amount: topupAmount,
+    currency,
+  }
+  if (pancakeMethod) {
+    request.payment_method = pancakeMethod
+  }
+  const response = await calculator(request)
   if (!isApiSuccess(response) || !response.data) {
     return 0
   }

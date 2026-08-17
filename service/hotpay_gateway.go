@@ -250,10 +250,11 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if !strings.EqualFold(strings.TrimSpace(result.Order.Environment), request.Environment) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response environment does not match request")
 	}
-	if strings.TrimSpace(request.PaymentMethod) != "" && (strings.TrimSpace(result.Order.PaymentMethod) == "" || !strings.EqualFold(result.Order.PaymentMethod, request.PaymentMethod)) {
+	requestPaymentMethod := strings.TrimSpace(request.PaymentMethod)
+	if requestPaymentMethod != "" && (strings.TrimSpace(result.Order.PaymentMethod) == "" || !strings.EqualFold(result.Order.PaymentMethod, requestPaymentMethod)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response payment method does not match request")
 	}
-	if len(result.Order.ProviderPaymentMethods) == 0 || !containsFold(result.Order.ProviderPaymentMethods, request.PaymentMethod) {
+	if len(result.Order.ProviderPaymentMethods) == 0 || (requestPaymentMethod != "" && !containsFold(result.Order.ProviderPaymentMethods, requestPaymentMethod)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider payment method whitelist is missing or does not contain request method")
 	}
 	if request.AmountMinor > 0 && result.Order.AmountMinor != request.AmountMinor {

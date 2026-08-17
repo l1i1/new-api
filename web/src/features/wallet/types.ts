@@ -57,6 +57,7 @@ export type WaffoPancakePaymentResponse = ApiResponse<
       // without re-issuing checkout. Not consumed by the current handler.
       token?: string
       token_expires_at?: number | string
+      currency?: 'CNY' | 'USD'
     }
   | string
 >
@@ -203,11 +204,17 @@ export interface WaffoPaymentRequest {
 export interface WaffoPancakePaymentRequest {
   /** Topup amount */
   amount: number
-  /** Provider currency selected in the global wallet display switcher */
+  /** Display currency selected in the global wallet currency switcher */
   currency: 'CNY' | 'USD'
   /** Explicit canonical method required by the HotPay gateway after cutover. */
-  payment_method?: 'wechat_pay' | 'card' | 'apple_pay' | 'google_pay'
+  payment_method?: WaffoPancakePaymentMethod
 }
+
+export type WaffoPancakePaymentMethod =
+  | 'wechat_pay'
+  | 'card'
+  | 'apple_pay'
+  | 'google_pay'
 
 /**
  * Amount calculation request
@@ -215,8 +222,10 @@ export interface WaffoPancakePaymentRequest {
 export interface AmountRequest {
   /** Topup amount to calculate */
   amount: number
-  /** Optional provider currency for currency-aware payment flows */
+  /** Optional display currency for currency-aware payment flows */
   currency?: 'CNY' | 'USD'
+  /** Optional checkout method for provider-currency routing. */
+  payment_method?: WaffoPancakePaymentMethod
 }
 
 /**

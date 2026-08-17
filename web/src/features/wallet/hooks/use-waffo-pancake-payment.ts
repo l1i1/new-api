@@ -21,6 +21,8 @@ import { useState, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { requestWaffoPancakePayment, isApiSuccess } from '../api'
+import { PAYMENT_TYPES } from '../constants'
+import { getWaffoPancakePaymentMethod } from '../lib'
 import type { WaffoPancakePaymentRequest } from '../types'
 
 function getCheckoutUrl(data: unknown): string | null {
@@ -72,16 +74,25 @@ export function useWaffoPancakePayment() {
   const processWaffoPancakePayment = useCallback(
     async (
       topupAmount: number,
-      currency: WaffoPancakePaymentRequest['currency']
+      currency: WaffoPancakePaymentRequest['currency'],
+      paymentType: string
     ) => {
       setProcessing(true)
 
       try {
-        const response = await requestWaffoPancakePayment({
+        const paymentMethod = getWaffoPancakePaymentMethod(paymentType)
+        if (paymentType !== PAYMENT_TYPES.WAFFO_PANCAKE && !paymentMethod) {
+          toast.error(i18next.t('Payment request failed'))
+          return false
+        }
+        const request: WaffoPancakePaymentRequest = {
           amount: Math.floor(topupAmount),
           currency,
-          payment_method: currency === 'CNY' ? 'wechat_pay' : 'card',
-        })
+        }
+        if (paymentMethod) {
+          request.payment_method = paymentMethod
+        }
+        const response = await requestWaffoPancakePayment(request)
 
         if (isApiSuccess(response)) {
           const checkoutUrl = getCheckoutUrl(response.data)

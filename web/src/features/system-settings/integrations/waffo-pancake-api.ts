@@ -27,6 +27,8 @@ export interface CatalogProduct {
   id: string
   name: string
   status: string
+  prices: Array<{ currency: string }>
+  hasProdVersion: boolean
 }
 
 export interface CatalogStore {

@@ -22,7 +22,12 @@ import {
   DEFAULT_PAYMENT_TYPE,
   DEFAULT_MIN_TOPUP,
 } from '../constants'
-import type { PaymentMethod, PresetAmount, TopupInfo } from '../types'
+import type {
+  PaymentMethod,
+  PresetAmount,
+  TopupInfo,
+  WaffoPancakePaymentMethod,
+} from '../types'
 
 // ============================================================================
 // Payment Processing Functions
@@ -90,7 +95,52 @@ export function isWaffoPayment(paymentType: string): boolean {
  * special-cased in payment dispatch logic.
  */
 export function isWaffoPancakePayment(paymentType: string): boolean {
-  return paymentType === PAYMENT_TYPES.WAFFO_PANCAKE
+  switch (paymentType) {
+    case PAYMENT_TYPES.WAFFO_PANCAKE:
+    case `${PAYMENT_TYPES.WAFFO_PANCAKE}:wechat`:
+    case `${PAYMENT_TYPES.WAFFO_PANCAKE}:googlepay`:
+    case `${PAYMENT_TYPES.WAFFO_PANCAKE}:applepay`:
+    case `${PAYMENT_TYPES.WAFFO_PANCAKE}:card`:
+      return true
+    default:
+      return false
+  }
+}
+
+export function getWaffoPancakePaymentMethod(
+  paymentType: string
+): WaffoPancakePaymentMethod | null {
+  if (paymentType === PAYMENT_TYPES.WAFFO_PANCAKE) {
+    return null
+  }
+  if (!isWaffoPancakePayment(paymentType)) {
+    return null
+  }
+  switch (paymentType.slice(PAYMENT_TYPES.WAFFO_PANCAKE.length + 1)) {
+    case 'wechat':
+    case 'wechat_pay':
+      return 'wechat_pay'
+    case 'card':
+      return 'card'
+    case 'applepay':
+    case 'apple_pay':
+      return 'apple_pay'
+    case 'googlepay':
+    case 'google_pay':
+      return 'google_pay'
+    default:
+      return null
+  }
+}
+
+export function getWaffoPancakeProviderCurrency(
+  displayCurrency: 'CNY' | 'USD',
+  paymentMethod: WaffoPancakePaymentMethod | null
+): 'CNY' | 'USD' {
+  if (displayCurrency === 'CNY' && paymentMethod === 'wechat_pay') {
+    return 'CNY'
+  }
+  return 'USD'
 }
 
 /**
@@ -101,7 +151,7 @@ export function isStandardEpayPayment(paymentType: string): boolean {
     paymentType !== PAYMENT_TYPES.STRIPE &&
     paymentType !== PAYMENT_TYPES.CREEM &&
     paymentType !== PAYMENT_TYPES.WAFFO &&
-    paymentType !== PAYMENT_TYPES.WAFFO_PANCAKE
+    !isWaffoPancakePayment(paymentType)
   )
 }
 

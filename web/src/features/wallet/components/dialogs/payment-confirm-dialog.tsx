@@ -35,7 +35,12 @@ import { formatCnyFromUSD, formatPaymentAmount } from '@/lib/currency'
 import { resolveTntContent } from '@/lib/tnt-content'
 
 import { DEFAULT_DISCOUNT_RATE } from '../../constants'
-import { getPaymentIcon, isStandardEpayPayment } from '../../lib'
+import {
+  getPaymentIcon,
+  getWaffoPancakePaymentMethod,
+  isStandardEpayPayment,
+  isWaffoPancakePayment,
+} from '../../lib'
 import type { PaymentMethod } from '../../types'
 
 interface PaymentConfirmDialogProps {
@@ -46,6 +51,7 @@ interface PaymentConfirmDialogProps {
   paymentAmount: number
   paymentCurrency?: 'CNY' | 'USD'
   paymentMethod: PaymentMethod | undefined
+  waffoPancakeDisplayCurrency?: 'CNY' | 'USD'
   calculating: boolean
   processing: boolean
   discountRate?: number
@@ -59,6 +65,7 @@ export function PaymentConfirmDialog({
   paymentAmount,
   paymentCurrency = 'CNY',
   paymentMethod,
+  waffoPancakeDisplayCurrency,
   calculating,
   processing,
   discountRate = DEFAULT_DISCOUNT_RATE,
@@ -75,6 +82,12 @@ export function PaymentConfirmDialog({
     : ''
   const isStandardEpay =
     !!paymentMethod && isStandardEpayPayment(paymentMethod.type)
+  const isWaffoPancake =
+    !!paymentMethod && isWaffoPancakePayment(paymentMethod.type)
+  const waffoPancakeMethod = paymentMethod
+    ? getWaffoPancakePaymentMethod(paymentMethod.type)
+    : null
+  const showPayableAmount = isStandardEpay || isWaffoPancake
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -102,7 +115,7 @@ export function PaymentConfirmDialog({
             </span>
           </div>
 
-          {isStandardEpay && (
+          {showPayableAmount && (
             <div className='flex items-center justify-between'>
               <span className='text-muted-foreground text-sm'>
                 {t('Amount Due')}
@@ -134,6 +147,18 @@ export function PaymentConfirmDialog({
               </div>
             </div>
           )}
+
+          {isWaffoPancake &&
+            waffoPancakeDisplayCurrency === 'CNY' &&
+            waffoPancakeMethod === 'wechat_pay' && (
+              <Alert>
+                <AlertDescription>
+                  {t(
+                    'If CNY checkout is unavailable, WeChat Pay may charge the equivalent amount in USD.'
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
 
           <div className='border-t pt-4'>
             <div className='flex items-center justify-between'>

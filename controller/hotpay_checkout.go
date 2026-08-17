@@ -193,6 +193,18 @@ func hotPayPriceSnapshot(values map[string]any) map[string]any {
 	return values
 }
 
+// hotPayWaffoWalletPriceSnapshot keeps the legacy settlement key while also
+// recording the display/provider split used by the wallet selector.
+func hotPayWaffoWalletPriceSnapshot(quotaAmount int64, providerAmount, displayCurrency, providerCurrency string) map[string]any {
+	return hotPayPriceSnapshot(map[string]any{
+		"quota_amount":      quotaAmount,
+		"provider_amount":   providerAmount,
+		"pricing_currency":  providerCurrency,
+		"display_currency":  displayCurrency,
+		"provider_currency": providerCurrency,
+	})
+}
+
 func hotPayQuotaAmount(amount int64) (int64, error) {
 	if amount <= 0 {
 		return 0, errors.New("payment quota amount is invalid")
