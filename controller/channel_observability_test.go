@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestParseObservationChannelIdsDeduplicatesAndValidates(t *testing.T) {
 func TestBuildMultiKeyTestResultIncludesSafeErrorDetails(t *testing.T) {
 	credential := model.ChannelCredential{Id: 11, Position: 2, Fingerprint: "fingerprint"}
 	apiError := relaytypes.NewErrorWithStatusCode(
-		errors.New("upstream https://user:secret@example.com/v1 failed\nwith details"),
+		errors.New("upstream https://user:secret@example.com/v1 failed: Incorrect API key provided: sk-live-credential-value; Authorization: Bearer bearer-credential-value\nwith details"),
 		relaytypes.ErrorCode("upstream_error"),
 		429,
 	)
@@ -74,6 +75,8 @@ func TestBuildMultiKeyTestResultIncludesSafeErrorDetails(t *testing.T) {
 	assert.Equal(t, "upstream_error", result.ErrorCode)
 	assert.Equal(t, "rate_limited", result.ErrorClass)
 	assert.NotContains(t, result.ErrorMessage, "secret")
+	assert.NotContains(t, result.ErrorMessage, "sk-live-credential-value")
+	assert.NotContains(t, result.ErrorMessage, "bearer-credential-value")
 	assert.NotContains(t, result.ErrorMessage, "\n")
 	assert.Contains(t, result.ErrorMessage, "https://***")
 }
@@ -82,4 +85,12 @@ func TestSanitizeMultiKeyTestErrorBoundsResponseSize(t *testing.T) {
 	message := sanitizeMultiKeyTestError(strings.Repeat("x", 600))
 	assert.Len(t, []rune(message), 515)
 	assert.True(t, strings.HasSuffix(message, "..."))
+}
+
+func TestNewChannelTestBadResponseErrorPreservesUpstreamStatus(t *testing.T) {
+	assert.Equal(t, http.StatusTooManyRequests, newChannelTestBadResponseError(errors.New("rate limited"), http.StatusTooManyRequests).StatusCode)
+
+	upstream := relaytypes.NewOpenAIError(errors.New("rate limited"), relaytypes.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
+	wrapped := newChannelTestBadResponseError(upstream, http.StatusTooManyRequests)
+	assert.Equal(t, http.StatusTooManyRequests, wrapped.StatusCode)
 }

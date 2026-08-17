@@ -3,8 +3,10 @@ package model
 import (
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestChannelModelPerfMetricRoundTripsErrorCounts(t *testing.T) {
@@ -20,6 +22,35 @@ func TestChannelModelPerfMetricRoundTripsErrorCounts(t *testing.T) {
 	var recovered ChannelModelPerfAggregate
 	recovered.merge(metric)
 	assert.Equal(t, aggregate.ErrorCounts, recovered.ErrorCounts)
+}
+
+func TestGetChannelModelPerfMetricsKeepsSlashDelimitedModelsSeparate(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:channel_observation_metric?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&ChannelModelPerfMetric{}))
+	previousDB := DB
+	DB = db
+	t.Cleanup(func() {
+		DB = previousDB
+		sqlDB, sqlErr := db.DB()
+		if sqlErr == nil {
+			require.NoError(t, sqlDB.Close())
+		}
+	})
+
+	rows := []ChannelModelPerfMetric{
+		{BucketTs: 100, ChannelId: 1, CredentialId: 2, RequestedModel: "a/b", UpstreamModel: "c", UseGroup: "g", Protocol: "p", RequestCount: 3},
+		{BucketTs: 100, ChannelId: 1, CredentialId: 2, RequestedModel: "a", UpstreamModel: "b/c", UseGroup: "g", Protocol: "p", RequestCount: 5},
+	}
+	require.NoError(t, db.Create(&rows).Error)
+
+	metrics, err := GetChannelModelPerfMetrics(ChannelModelPerfQuery{StartTs: 100, EndTs: 100})
+	require.NoError(t, err)
+	require.Len(t, metrics, 2)
+	assert.ElementsMatch(t, []string{"a/b -> c", "a -> b/c"}, []string{
+		metrics[0].RequestedModel + " -> " + metrics[0].UpstreamModel,
+		metrics[1].RequestedModel + " -> " + metrics[1].UpstreamModel,
+	})
 }
 
 func TestObservationHistogramP95PreservesMillisecondSamples(t *testing.T) {

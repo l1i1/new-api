@@ -10,8 +10,15 @@ var (
 	maskURLPattern    = regexp.MustCompile(`(http|https)://[^\s/$.?#].[^\s]*`)
 	maskDomainPattern = regexp.MustCompile(`\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
 	maskIPPattern     = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	// maskApiKeyPattern matches patterns like 'api_key:xxx' or "api_key:xxx" to mask the API key value
-	maskApiKeyPattern = regexp.MustCompile(`(['"]?)api_key:([^\s'"]+)(['"]?)`)
+	// maskAPIKeyPattern handles provider errors such as "API key provided: sk-...",
+	// common header names, and JSON-like key/value fragments.
+	maskAPIKeyPattern = regexp.MustCompile(`(?i)(\b(?:x-api-key|api[_ -]*key)\b(?:[^:=\r\n]{0,48})?[:=]\s*)(["']?)([^\s,"']+)(["']?)`)
+	// maskBearerTokenPattern handles both complete Authorization headers and
+	// provider errors that echo a Bearer credential without the header name.
+	maskBearerTokenPattern = regexp.MustCompile(`(?i)(\b(?:authorization\s*:\s*)?bearer\s+)(["']?)([^\s,"']+)(["']?)`)
+	// maskOpenAIKeyPattern catches a bare OpenAI-compatible key when a provider
+	// does not label it in the error body.
+	maskOpenAIKeyPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9][A-Za-z0-9_-]{5,}\b`)
 )
 
 // maskHostTail returns the tail parts of a domain/host that should be preserved.
@@ -127,8 +134,11 @@ func MaskSensitiveInfo(str string) string {
 	// Mask IP addresses
 	str = maskIPPattern.ReplaceAllString(str, "***.***.***.***")
 
-	// Mask API keys (e.g., "api_key:AIzaSyAAAaUooTUni8AdaOkSRMda30n_Q4vrV70" -> "api_key:***")
-	str = maskApiKeyPattern.ReplaceAllString(str, "${1}api_key:***${3}")
+	// Mask API keys and authorization credentials before an error can be shown
+	// to administrators or persisted as a diagnostic result.
+	str = maskAPIKeyPattern.ReplaceAllString(str, "${1}${2}***${4}")
+	str = maskBearerTokenPattern.ReplaceAllString(str, "${1}${2}***${4}")
+	str = maskOpenAIKeyPattern.ReplaceAllString(str, "sk-***")
 
 	return str
 }

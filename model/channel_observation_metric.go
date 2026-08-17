@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 
@@ -394,6 +393,12 @@ type ChannelModelPerfAggregate struct {
 	ErrorCounts             map[string]int64
 }
 
+type channelModelPerfAggregateKey struct {
+	channelID, credentialID       int
+	requestedModel, upstreamModel string
+	group, protocol               string
+}
+
 func normalizeErrorCounts(value map[string]int64) map[string]int64 {
 	if value == nil {
 		return map[string]int64{}
@@ -477,9 +482,9 @@ func GetChannelModelPerfMetrics(query ChannelModelPerfQuery) ([]ChannelModelPerf
 	if err != nil {
 		return nil, err
 	}
-	merged := make(map[string]*ChannelModelPerfAggregate)
+	merged := make(map[channelModelPerfAggregateKey]*ChannelModelPerfAggregate)
 	for _, row := range rows {
-		key := fmtObservationAggregateKey(row.ChannelId, row.CredentialId, row.RequestedModel, row.UpstreamModel, row.UseGroup, row.Protocol)
+		key := channelModelPerfAggregateKey{channelID: row.ChannelId, credentialID: row.CredentialId, requestedModel: row.RequestedModel, upstreamModel: row.UpstreamModel, group: row.UseGroup, protocol: row.Protocol}
 		aggregate := merged[key]
 		if aggregate == nil {
 			aggregate = &ChannelModelPerfAggregate{ChannelId: row.ChannelId, CredentialId: row.CredentialId, RequestedModel: row.RequestedModel, UpstreamModel: row.UpstreamModel, Group: row.UseGroup, Protocol: row.Protocol, ErrorCounts: map[string]int64{}}
@@ -537,10 +542,6 @@ func GetChannelModelPerfMetricRows(query ChannelModelPerfQuery) ([]ChannelModelP
 		return nil, err
 	}
 	return rows, nil
-}
-
-func fmtObservationAggregateKey(channelID, credentialID int, modelName, upstreamModel, group, protocol string) string {
-	return fmt.Sprintf("%d/%d/%s/%s/%s/%s", channelID, credentialID, modelName, upstreamModel, group, protocol)
 }
 
 func BuildChannelModelPerfMetric(aggregate ChannelModelPerfAggregate, nodeName string, bucketTs int64) (ChannelModelPerfMetric, error) {

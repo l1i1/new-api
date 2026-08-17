@@ -240,6 +240,35 @@ describe('public header language controls', () => {
     const notificationButton = findButton(rendered.container, 'Notifications')
     assert.ok(notificationButton)
 
+    const navigation = rendered.container.querySelector(
+      '[data-slot="public-header-navigation"]'
+    )
+    const actions = rendered.container.querySelector(
+      '[data-slot="public-header-actions"]'
+    )
+    assert.ok(navigation)
+    assert.ok(actions)
+    assert.equal(
+      navigation.querySelectorAll('button').length,
+      0,
+      'the centered navigation must contain links only'
+    )
+    assert.equal(
+      actions.contains(findButton(rendered.container, 'Currency')),
+      true,
+      'currency selection must stay with the right-side actions'
+    )
+    assert.equal(
+      actions.contains(findButton(rendered.container, 'Change language')),
+      true,
+      'language selection must stay with the right-side actions'
+    )
+    assert.equal(
+      actions.contains(notificationButton),
+      true,
+      'notifications must stay with the right-side actions'
+    )
+
     await act(async () => notificationButton.click())
     assert.equal(
       document.body.textContent?.includes('System Announcements'),

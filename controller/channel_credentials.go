@@ -435,7 +435,9 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 				probe := testChannelWithOptions(probeCtx, channel, testUserID, payload.Model, payload.EndpointType, payload.Stream, &credentialID, payload.IncludeDisabled, false)
 				cancel()
 				result := buildMultiKeyTestResult(job.credential, probe, time.Since(started), ctx)
-				_ = model.RecordChannelCredentialTest(model.DB, payload.ChannelID, job.credential.Id, result.Status, result.LatencyMs, result.HTTPStatus, result.ErrorCode, result.ErrorClass, result.ErrorMessage)
+				if recordErr := model.RecordChannelCredentialTest(model.DB, payload.ChannelID, job.credential.Id, result.Status, result.LatencyMs, result.HTTPStatus, result.ErrorCode, result.ErrorClass, result.ErrorMessage); recordErr != nil {
+					common.SysError(fmt.Sprintf("failed to record channel credential test: channel_id=%d credential_id=%d error=%v", payload.ChannelID, job.credential.Id, recordErr))
+				}
 				results <- completedResult{order: job.order, result: result}
 			}
 		}()

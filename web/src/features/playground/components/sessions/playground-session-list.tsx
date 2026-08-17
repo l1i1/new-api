@@ -52,6 +52,7 @@ type PlaygroundSessionListProps = {
   ) => void
   /** Called after a session is picked so mobile drawers can close. */
   onNavigate?: () => void
+  disabled?: boolean
   className?: string
 }
 
@@ -129,6 +130,7 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
           variant='ghost'
           size='sm'
           className='h-7 gap-1 px-2 text-xs'
+          disabled={props.disabled}
           onClick={props.onCreateSession}
         >
           <Plus className='size-3.5' aria-hidden='true' />
@@ -170,7 +172,7 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
             const isEditing = editingId === session.id
             return (
               <li
-                draggable={!isEditing}
+                draggable={!isEditing && !props.disabled}
                 key={session.id}
                 onDragEnd={() => setDraggedId(null)}
                 onDragOver={(event) => {
@@ -202,14 +204,14 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
               >
                 <div
                   role='button'
-                  tabIndex={0}
+                  tabIndex={props.disabled ? -1 : 0}
                   onClick={() => {
-                    if (isEditing) return
+                    if (isEditing || props.disabled) return
                     props.onSelectSession(session.id)
                     props.onNavigate?.()
                   }}
                   onKeyDown={(event) => {
-                    if (isEditing) return
+                    if (isEditing || props.disabled) return
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
                       props.onSelectSession(session.id)
@@ -226,6 +228,7 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
                     aria-keyshortcuts='ArrowUp ArrowDown'
                     aria-label={`${t('Reorder chats')}: ${session.title || t('New chat')}`}
                     className='text-muted-foreground/50 hover:text-foreground focus-visible:ring-ring shrink-0 cursor-grab rounded-none p-0.5 outline-none focus-visible:ring-2'
+                    disabled={props.disabled}
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
                       if (
@@ -307,6 +310,7 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
                       <button
                         aria-label={t('Rename chat')}
                         className='text-muted-foreground/50 hover:text-foreground focus-visible:ring-ring shrink-0 rounded-none p-1 opacity-0 outline-none group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2'
+                        disabled={props.disabled}
                         onClick={(event) => {
                           event.stopPropagation()
                           startEditing(session)
@@ -318,6 +322,7 @@ export function PlaygroundSessionList(props: PlaygroundSessionListProps) {
                       <button
                         aria-label={t('Delete chat')}
                         className='text-muted-foreground/50 hover:text-destructive focus-visible:ring-ring shrink-0 rounded-none p-1 opacity-0 outline-none group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2'
+                        disabled={props.disabled}
                         onClick={(event) => {
                           event.stopPropagation()
                           setPendingDeleteId(session.id)

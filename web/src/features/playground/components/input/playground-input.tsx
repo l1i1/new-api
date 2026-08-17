@@ -126,8 +126,11 @@ export function PlaygroundInput({
   return (
     <div className='grid shrink-0 gap-4 px-1 md:pb-4'>
       <PromptInput
+        accept='image/*'
         className='relative'
         groupClassName='bg-background border-border overflow-hidden rounded-none border transition-colors focus-within:border-foreground/40'
+        maxFiles={MAX_IMAGE_ATTACHMENTS}
+        onFilesAdded={(files) => void handleAttachImages(files)}
         onSubmit={handleSubmit}
       >
         {attachments.length > 0 && (

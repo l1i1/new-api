@@ -195,28 +195,28 @@ export function ChannelObservabilityDialog(
               {
                 id: 'model',
                 header: t('Model'),
-                className: 'w-[22%]',
+                className: 'w-[20%]',
                 cellClassName: 'max-w-0',
                 cell: (row) => row.requested_model,
               },
               {
                 id: 'requests',
                 header: t('Requests'),
-                className: 'w-[9%] text-right',
+                className: 'w-[8%] text-right',
                 cellClassName: 'text-right',
                 cell: (row) => row.request_count.toLocaleString(),
               },
               {
                 id: 'attempts',
                 header: t('Attempts'),
-                className: 'hidden w-[9%] text-right sm:table-cell',
+                className: 'hidden w-[8%] text-right sm:table-cell',
                 cellClassName: 'hidden text-right sm:table-cell',
                 cell: (row) => row.attempt_count.toLocaleString(),
               },
               {
                 id: 'success',
                 header: t('Success rate'),
-                className: 'w-[12%] text-right',
+                className: 'w-[11%] text-right',
                 cellClassName: 'text-right',
                 cell: (row) =>
                   formatSampled(
@@ -228,7 +228,7 @@ export function ChannelObservabilityDialog(
               {
                 id: 'attempt-success',
                 header: t('Attempt success'),
-                className: 'hidden w-[12%] text-right lg:table-cell',
+                className: 'hidden w-[11%] text-right lg:table-cell',
                 cellClassName: 'hidden text-right lg:table-cell',
                 cell: (row) =>
                   formatSampled(
@@ -240,7 +240,7 @@ export function ChannelObservabilityDialog(
               {
                 id: 'cache',
                 header: t('Cache hit rate'),
-                className: 'hidden w-[12%] text-right md:table-cell',
+                className: 'hidden w-[11%] text-right md:table-cell',
                 cellClassName: 'hidden text-right md:table-cell',
                 cell: (row) =>
                   formatSampled(row.cache_hit_rate, row.usage_sufficient, t),
@@ -248,7 +248,7 @@ export function ChannelObservabilityDialog(
               {
                 id: 'latency',
                 header: t('P95 latency'),
-                className: 'w-[14%] text-right',
+                className: 'w-[12%] text-right',
                 cellClassName: 'text-right',
                 cell: (row) =>
                   row.sample_sufficient
@@ -258,17 +258,23 @@ export function ChannelObservabilityDialog(
               {
                 id: 'ttft',
                 header: t('P95 first token'),
-                className: 'hidden w-[14%] text-right md:table-cell',
+                className: 'hidden w-[12%] text-right md:table-cell',
                 cellClassName: 'hidden text-right md:table-cell',
-                cell: (row) =>
-                  row.sample_sufficient
-                    ? `${row.p95_ttft_ms} ms`
-                    : t('Insufficient sample'),
+                cell: (row) => {
+                  const ttftAvailable =
+                    row.ttft_available ?? (row.ttft_count ?? 0) > 0
+                  const ttftSufficient =
+                    row.ttft_sufficient ?? row.sample_sufficient
+                  if (ttftSufficient && ttftAvailable) {
+                    return `${row.p95_ttft_ms} ms`
+                  }
+                  return ttftAvailable ? t('Insufficient sample') : t('No data')
+                },
               },
               {
                 id: 'coverage',
                 header: t('Coverage'),
-                className: 'hidden w-[10%] text-right lg:table-cell',
+                className: 'hidden w-[7%] text-right lg:table-cell',
                 cellClassName: 'hidden text-right lg:table-cell',
                 cell: (row) => formatPercent(row.sample_coverage),
               },

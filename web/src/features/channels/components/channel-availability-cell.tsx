@@ -89,6 +89,7 @@ function aggregateTagSeries(
         avg_request_latency_ms: point.ttftMs,
         p95_request_latency_ms: point.ttftMs,
         avg_ttft_ms: point.ttftMs,
+        ttft_count: point.ttftSampleCount,
         p95_ttft_ms: 0,
         avg_upstream_frt_ms: 0,
         p95_upstream_frt_ms: 0,
@@ -186,8 +187,6 @@ export function ChannelAvailabilityCell(props: ChannelAvailabilityCellProps) {
                     className={`h-2.5 min-w-1 flex-1 rounded-[2px] transition-opacity hover:opacity-70 ${pointClassName(point)}`}
                     tabIndex={0}
                     aria-label={`${formatTime(point.bucketStart, locale)} - ${formatTime(point.bucketEnd, locale)}: ${point.successRate.toFixed(1)}%`}
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => event.stopPropagation()}
                   />
                 }
               />
@@ -204,7 +203,7 @@ export function ChannelAvailabilityCell(props: ChannelAvailabilityCellProps) {
                     </span>{' '}
                     <span>({point.successRate.toFixed(1)}%)</span>
                   </div>
-                  {point.ttftMs > 0 && (
+                  {point.ttftSampleCount > 0 && (
                     <div className='text-foreground/80'>
                       {t('First token')}: {point.ttftMs} ms
                     </div>

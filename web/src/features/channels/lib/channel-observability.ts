@@ -33,6 +33,8 @@ export interface ChannelAvailabilityPoint {
   successRate: number
   /** Average time to first downstream token. */
   ttftMs: number
+  /** Number of requests that produced a measurable first token. */
+  ttftSampleCount: number
   /** Compatibility alias for consumers built against the first contract. */
   latencyMs: number
 }
@@ -116,6 +118,12 @@ export function dedupeChannelObservabilityRows(
       (requestCount * Math.max(0, existing.usage_coverage)) / 100
     const nextUsageCount =
       (nextRequestCount * Math.max(0, row.usage_coverage)) / 100
+    const existingTtftCount = Number.isFinite(existing.ttft_count)
+      ? metricCount(existing.ttft_count)
+      : requestCount
+    const nextTtftCount = Number.isFinite(row.ttft_count)
+      ? metricCount(row.ttft_count)
+      : nextRequestCount
 
     existing.request_count = requestCount + nextRequestCount
     existing.request_success_count = existingSuccessCount + nextSuccessCount
@@ -165,11 +173,18 @@ export function dedupeChannelObservabilityRows(
     existing.avg_ttft_ms = Math.round(
       weightedAverage(
         existing.avg_ttft_ms,
-        requestCount,
+        existingTtftCount,
         row.avg_ttft_ms,
-        nextRequestCount
+        nextTtftCount
       )
     )
+    existing.ttft_count = existingTtftCount + nextTtftCount
+    existing.ttft_available = existing.ttft_count > 0
+    existing.ttft_coverage =
+      existing.request_count > 0
+        ? (existing.ttft_count / existing.request_count) * 100
+        : 0
+    existing.ttft_sufficient = existing.ttft_count >= 20
     // Percentiles cannot be exactly merged from row-level percentiles. The
     // maximum is conservative and avoids understating a slower credential.
     existing.p95_latency_ms = Math.max(
@@ -272,6 +287,7 @@ export function aggregateChannelAvailability(
   let requestCount = 0
   let successCount = 0
   let ttftTotal = 0
+  let ttftSampleCount = 0
 
   for (const row of rows) {
     const count = Math.max(0, Number(row.request_count) || 0)
@@ -279,8 +295,15 @@ export function aggregateChannelAvailability(
     successCount += getSuccessfulRequests(row)
     const hasTtft = Object.hasOwn(row, 'avg_ttft_ms')
     const ttftMs = hasTtft ? row.avg_ttft_ms : row.avg_latency_ms
-    if (count > 0 && Number.isFinite(ttftMs)) {
-      ttftTotal += count * (ttftMs ?? 0)
+    let ttftCount = 0
+    if (Number.isFinite(row.ttft_count)) {
+      ttftCount = metricCount(row.ttft_count)
+    } else if (hasTtft) {
+      ttftCount = count
+    }
+    if (ttftCount > 0 && Number.isFinite(ttftMs)) {
+      ttftTotal += ttftCount * (ttftMs ?? 0)
+      ttftSampleCount += ttftCount
     }
   }
 
@@ -292,8 +315,10 @@ export function aggregateChannelAvailability(
     successCount,
     failureCount,
     successRate: requestCount > 0 ? (successCount / requestCount) * 100 : 0,
-    ttftMs: requestCount > 0 ? Math.round(ttftTotal / requestCount) : 0,
-    latencyMs: requestCount > 0 ? Math.round(ttftTotal / requestCount) : 0,
+    ttftMs: ttftSampleCount > 0 ? Math.round(ttftTotal / ttftSampleCount) : 0,
+    ttftSampleCount,
+    latencyMs:
+      ttftSampleCount > 0 ? Math.round(ttftTotal / ttftSampleCount) : 0,
   }
 }
 
@@ -330,6 +355,11 @@ export async function getChannelAvailabilitySeries(
         failureCount: point.request_failure_count,
         successRate: point.request_success_rate,
         ttftMs: point.avg_ttft_ms ?? point.avg_latency_ms,
+        ttftSampleCount:
+          point.ttft_count ??
+          (point.avg_ttft_ms === undefined || point.avg_ttft_ms > 0
+            ? point.request_count
+            : 0),
         latencyMs: point.avg_ttft_ms ?? point.avg_latency_ms,
       }))
     }

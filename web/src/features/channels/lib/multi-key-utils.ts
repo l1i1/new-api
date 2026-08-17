@@ -21,10 +21,69 @@ import {
   MULTI_KEY_CONFIRM_MESSAGES,
 } from '../constants'
 import type {
+  ChannelObservabilityResult,
   KeyStatus,
   MultiKeyConfirmAction,
   MultiKeyTestResult,
 } from '../types'
+
+const MINIMUM_RELIABLE_SAMPLES = 20
+
+/** Aggregate 24-hour model rows into one diagnostic summary per credential. */
+export function aggregateMultiKeyObservability(
+  items: ChannelObservabilityResult[]
+): Record<number, ChannelObservabilityResult> {
+  const metrics: Record<number, ChannelObservabilityResult> = {}
+
+  for (const item of items) {
+    if (item.credential_id <= 0) continue
+
+    const existing = metrics[item.credential_id]
+    if (!existing) {
+      metrics[item.credential_id] = { ...item }
+      continue
+    }
+
+    const existingRequestCount = Math.max(0, existing.request_count)
+    const itemRequestCount = Math.max(0, item.request_count)
+    const requestCount = existingRequestCount + itemRequestCount
+    const weighted = (left: number, right: number) =>
+      requestCount > 0
+        ? (left * existingRequestCount + right * itemRequestCount) /
+          requestCount
+        : 0
+    const sampleCount =
+      (existingRequestCount * Math.max(0, existing.sample_coverage)) / 100 +
+      (itemRequestCount * Math.max(0, item.sample_coverage)) / 100
+    const usageCount =
+      (existingRequestCount * Math.max(0, existing.usage_coverage)) / 100 +
+      (itemRequestCount * Math.max(0, item.usage_coverage)) / 100
+
+    metrics[item.credential_id] = {
+      ...existing,
+      request_count: requestCount,
+      attempt_count: existing.attempt_count + item.attempt_count,
+      request_success_rate: weighted(
+        existing.request_success_rate,
+        item.request_success_rate
+      ),
+      attempt_success_rate: weighted(
+        existing.attempt_success_rate,
+        item.attempt_success_rate
+      ),
+      cache_hit_rate: weighted(existing.cache_hit_rate, item.cache_hit_rate),
+      p95_latency_ms: Math.max(existing.p95_latency_ms, item.p95_latency_ms),
+      p95_ttft_ms: Math.max(existing.p95_ttft_ms, item.p95_ttft_ms),
+      sample_coverage:
+        requestCount > 0 ? (sampleCount / requestCount) * 100 : 0,
+      usage_coverage: requestCount > 0 ? (usageCount / requestCount) * 100 : 0,
+      sample_sufficient: sampleCount >= MINIMUM_RELIABLE_SAMPLES,
+      usage_sufficient: usageCount >= MINIMUM_RELIABLE_SAMPLES,
+    }
+  }
+
+  return metrics
+}
 
 export function getMultiKeyIndex(
   key: Pick<KeyStatus, 'index' | 'position'>,

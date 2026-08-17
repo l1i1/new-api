@@ -42,6 +42,13 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func newChannelTestBadResponseError(err error, statusCode int) *types.NewAPIError {
+	if statusCode <= 0 {
+		statusCode = http.StatusInternalServerError
+	}
+	return types.NewOpenAIError(err, types.ErrorCodeBadResponse, statusCode, types.ErrOptionWithStatusCode(statusCode))
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
@@ -474,7 +481,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 			return testResult{
 				context:     c,
 				localErr:    err,
-				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+				newAPIError: newChannelTestBadResponseError(err, httpResp.StatusCode),
 			}
 		}
 	}

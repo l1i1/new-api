@@ -324,12 +324,16 @@ export interface ChannelObservabilityResult {
   p95_request_latency_ms: number
   avg_ttft_ms: number
   p95_ttft_ms: number
+  ttft_count?: number
+  ttft_available?: boolean
   avg_upstream_frt_ms: number
   p95_upstream_frt_ms: number
   sample_coverage: number
   usage_coverage: number
+  ttft_coverage?: number
   sample_sufficient: boolean
   usage_sufficient: boolean
+  ttft_sufficient?: boolean
   error_trends?: Record<string, number>
 }
 
@@ -362,6 +366,7 @@ export interface ChannelAvailabilityResponse {
         request_success_rate: number
         avg_latency_ms: number
         avg_ttft_ms?: number
+        ttft_count?: number
       }>
     }>
     start: number

@@ -275,4 +275,27 @@ describe('latest-wins stream request coordination', () => {
     assert.equal(sources[1]?.closed, false)
     assert.deepEqual(updates, ['first:one', 'second:two'])
   })
+
+  test('fails and clears streaming when a successful response closes without DONE', async () => {
+    const source = new FakeStreamSource()
+    const errors: string[] = []
+    const streamingStates: boolean[] = []
+    const controller = createStreamRequestController({
+      getHeaders: () => Promise.resolve({ Authorization: 'Bearer test' }),
+      createSource: () => source,
+      setStreaming: (streaming) => streamingStates.push(streaming),
+    })
+
+    await controller.send(payload, {
+      onUpdate: () => undefined,
+      onComplete: () => undefined,
+      onError: (error) => errors.push(error),
+    })
+    source.readyState = 2
+    source.emit('readystatechange')
+
+    assert.deepEqual(errors, ['Connection closed'])
+    assert.equal(source.closed, true)
+    assert.equal(streamingStates.at(-1), false)
+  })
 })

@@ -112,6 +112,8 @@ func TestAggregateResultMarksInsufficientSamples(t *testing.T) {
 	assert.Equal(t, int64(1), result.RequestSuccessCount)
 	assert.Equal(t, int64(2), result.RequestFailureCount)
 	assert.Equal(t, map[string]int64{"timeout": 2}, result.ErrorTrends)
+	assert.False(t, result.TtftAvailable)
+	assert.Equal(t, int64(0), result.TtftCount)
 }
 
 func TestAddAvailabilityMetricBuildsExactCountsAndWeightedLatency(t *testing.T) {
@@ -141,6 +143,7 @@ func TestAddAvailabilityMetricTracksTTFTSeparately(t *testing.T) {
 	point := points[7][0]
 	assert.Equal(t, int64(200), point.AvgLatencyMs)
 	assert.Equal(t, int64(250), point.AvgTtftMs)
+	assert.Equal(t, int64(2), point.TtftCount)
 }
 
 func TestSortResultsHonorsRequestedOrder(t *testing.T) {
@@ -159,4 +162,58 @@ func TestNormalizeErrorClassDropsSuccessAndBoundsFailures(t *testing.T) {
 	assert.Equal(t, "timeout", normalizeErrorClass(" Timeout ", false))
 	assert.Equal(t, "unknown", normalizeErrorClass("", false))
 	assert.Len(t, normalizeErrorClass("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", false), 64)
+}
+
+func TestCloneAggregateDoesNotShareMutableState(t *testing.T) {
+	original := model.ChannelModelPerfAggregate{
+		UpstreamModels:          []string{"provider-a"},
+		LatencyHistogram:        model.NewObservationHistogram(),
+		RequestLatencyHistogram: model.NewObservationHistogram(),
+		TtftHistogram:           model.NewObservationHistogram(),
+		FRTHistogram:            model.NewObservationHistogram(),
+		ErrorCounts:             map[string]int64{"timeout": 1},
+	}
+	original.LatencyHistogram.Add(1234)
+	original.RequestLatencyHistogram.Add(2345)
+	original.TtftHistogram.Add(345)
+	original.FRTHistogram.Add(456)
+
+	cloned := cloneAggregate(original)
+	original.UpstreamModels[0] = "provider-b"
+	original.LatencyHistogram.Counts[0]++
+	original.LatencyHistogram.Samples[0] = 9999
+	original.LatencyHistogram.SampleWeights[0] = 9
+	original.RequestLatencyHistogram.Counts[0]++
+	original.TtftHistogram.Counts[0]++
+	original.FRTHistogram.Counts[0]++
+	original.ErrorCounts["timeout"]++
+
+	assert.Equal(t, []string{"provider-a"}, cloned.UpstreamModels)
+	assert.Equal(t, int64(1234), cloned.LatencyHistogram.P95())
+	assert.Equal(t, int64(2345), cloned.RequestLatencyHistogram.P95())
+	assert.Equal(t, int64(345), cloned.TtftHistogram.P95())
+	assert.Equal(t, int64(456), cloned.FRTHistogram.P95())
+	assert.Equal(t, map[string]int64{"timeout": 1}, cloned.ErrorCounts)
+}
+
+func TestRedisAggregateRestoresMillisecondSketchAndTTFTCount(t *testing.T) {
+	key := bucketKey{channelId: 7, credentialId: 11, requestedModel: "model"}
+	values := map[string]string{
+		"request":                  "20",
+		"request_ok":               "19",
+		"request_hist_7":           "20",
+		"request_hist_sample_1230": "19",
+		"request_hist_sample_1240": "1",
+		"ttft":                     "5000",
+		"ttft_count":               "20",
+		"ttft_hist_4":              "20",
+		"ttft_hist_sample_250":     "20",
+	}
+
+	aggregate := redisValueToAggregate(key, values)
+
+	assert.Equal(t, int64(1230), aggregate.RequestLatencyHistogram.P95())
+	assert.Equal(t, int64(250), aggregate.TtftHistogram.P95())
+	assert.Equal(t, int64(20), aggregate.TtftCount)
+	assert.Equal(t, int64(20), aggregate.TtftHistogram.SampleCount)
 }
