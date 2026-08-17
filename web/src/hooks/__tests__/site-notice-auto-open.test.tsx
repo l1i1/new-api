@@ -77,7 +77,15 @@ function NoticeProbe(props: AutoOpenOptions) {
   return (
     <div>
       <output aria-label='notification popover state'>
-        {notifications.popoverOpen ? `open:${notifications.notice}` : 'closed'}
+        {notifications.popoverOpen ? 'open' : 'closed'}
+      </output>
+      <output aria-label='site notice state'>
+        {notifications.siteNoticeOpen
+          ? `open:${notifications.notice}`
+          : 'closed'}
+      </output>
+      <output aria-label='unread announcements count'>
+        {notifications.unreadAnnouncementsCount}
       </output>
       <button
         type='button'
@@ -85,6 +93,13 @@ function NoticeProbe(props: AutoOpenOptions) {
         onClick={() => notifications.closePopover()}
       >
         Close notification popover
+      </button>
+      <button
+        type='button'
+        aria-label='close site notice'
+        onClick={() => notifications.setSiteNoticeOpen(false)}
+      >
+        Close site notice
       </button>
     </div>
   )
@@ -162,6 +177,8 @@ afterEach(() => {
     readAnnouncementKeys: [],
     closedUntilDate: null,
     pendingAutoOpenKey: null,
+    lastObservedNotificationRevision: '',
+    pendingSiteNoticeKey: null,
   })
   document.body.replaceChildren()
 })
@@ -185,7 +202,7 @@ describe('pricing announcement automatic display', () => {
     await app.render()
     await waitForState(
       app.container,
-      'notification popover state',
+      'site notice state',
       'open:Initial site notice'
     )
 
@@ -196,12 +213,10 @@ describe('pricing announcement automatic display', () => {
 
     await act(async () => {
       app.container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="close notification popover"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="close site notice"]')
         ?.click()
     })
-    await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'site notice state', 'closed')
 
     notice = 'Updated site notice'
     await act(async () => {
@@ -209,21 +224,19 @@ describe('pricing announcement automatic display', () => {
     })
     await waitForState(
       app.container,
-      'notification popover state',
+      'site notice state',
       'open:Updated site notice'
     )
 
     await act(async () => {
       app.container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="close notification popover"]'
-        )
+        .querySelector<HTMLButtonElement>('[aria-label="close site notice"]')
         ?.click()
     })
     await act(async () => {
       await app.queryClient.invalidateQueries({ queryKey: ['notice'] })
     })
-    await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'site notice state', 'closed')
 
     await destroyTestApp(app)
   })
@@ -240,7 +253,7 @@ describe('pricing announcement automatic display', () => {
     await firstHeader.render()
     await waitForState(
       firstHeader.container,
-      'notification popover state',
+      'site notice state',
       'open:Pricing notice'
     )
 
@@ -252,7 +265,7 @@ describe('pricing announcement automatic display', () => {
     await loadedHeader.render()
     await waitForState(
       loadedHeader.container,
-      'notification popover state',
+      'site notice state',
       'open:Pricing notice'
     )
 
@@ -270,6 +283,7 @@ describe('pricing announcement automatic display', () => {
     const app = createTestApp({})
     await app.render()
     await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'site notice state', 'closed')
 
     await destroyTestApp(app)
   })
@@ -300,7 +314,7 @@ describe('notification popover automatic display', () => {
     })
   })
 
-  test('opens for an unread notice and stays closed for the same revision', async () => {
+  test('auto-opens an unread notice on a non-home route and clears it on close', async () => {
     api.get = (async (url: string) => {
       if (url === '/api/notice') {
         return { data: { success: true, data: 'Dashboard notice' } }
@@ -310,26 +324,23 @@ describe('notification popover automatic display', () => {
 
     const app = createTestApp({ autoOpenPopover: true })
     await app.render()
-    await waitForState(
-      app.container,
-      'notification popover state',
-      'open:Dashboard notice'
-    )
+    await waitForState(app.container, 'notification popover state', 'open')
+    assert.equal(useNotificationStore.getState().lastReadNotice, '')
+
+    await act(async () => {
+      app.container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="close notification popover"]'
+        )
+        ?.click()
+    })
+    await waitForState(app.container, 'notification popover state', 'closed')
     assert.equal(
       useNotificationStore.getState().lastReadNotice,
       'Dashboard notice'
     )
 
     await act(async () => {
-      app.container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="close notification popover"]'
-        )
-        ?.click()
-    })
-    await waitForState(app.container, 'notification popover state', 'closed')
-
-    await act(async () => {
       await app.queryClient.invalidateQueries({ queryKey: ['notice'] })
     })
     await waitForState(app.container, 'notification popover state', 'closed')
@@ -337,44 +348,23 @@ describe('notification popover automatic display', () => {
     await destroyTestApp(app)
   })
 
-  test('opens again when the notice revision changes', async () => {
-    let notice = 'Initial dashboard notice'
+  test('does not auto-open the home page notification center', async () => {
     api.get = (async (url: string) => {
       if (url === '/api/notice') {
-        return { data: { success: true, data: notice } }
+        return { data: { success: true, data: 'Home page notice' } }
       }
       throw new Error(`Unexpected API request: ${url}`)
     }) as typeof api.get
 
-    const app = createTestApp({ autoOpenPopover: true })
+    const app = createTestApp({ autoOpenPopover: false })
     await app.render()
-    await waitForState(
-      app.container,
-      'notification popover state',
-      'open:Initial dashboard notice'
-    )
-
-    await act(async () => {
-      app.container
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="close notification popover"]'
-        )
-        ?.click()
-    })
-    notice = 'Updated dashboard notice'
-    await act(async () => {
-      await app.queryClient.invalidateQueries({ queryKey: ['notice'] })
-    })
-    await waitForState(
-      app.container,
-      'notification popover state',
-      'open:Updated dashboard notice'
-    )
+    await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'site notice state', 'closed')
 
     await destroyTestApp(app)
   })
 
-  test('opens for timeline announcements and for edits to an existing item', async () => {
+  test('opens when a timeline revision changes and keeps it unread until viewed', async () => {
     api.get = (async (url: string) => {
       if (url === '/api/notice') {
         return { data: { success: true, data: '' } }
@@ -395,8 +385,13 @@ describe('notification popover automatic display', () => {
       ],
     })
     await app.render()
-    await waitForState(app.container, 'notification popover state', 'open:')
-    assert.equal(useNotificationStore.getState().readAnnouncementKeys.length, 1)
+    await waitForState(app.container, 'notification popover state', 'open')
+    assert.equal(
+      app.container.querySelector(
+        'output[aria-label="unread announcements count"]'
+      )?.textContent,
+      '1'
+    )
 
     await act(async () => {
       app.container
@@ -406,6 +401,7 @@ describe('notification popover automatic display', () => {
         ?.click()
     })
     await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'unread announcements count', '0')
 
     await act(async () => {
       app.queryClient.setQueryData(['status'], {
@@ -420,8 +416,23 @@ describe('notification popover automatic display', () => {
         ],
       })
     })
-    await waitForState(app.container, 'notification popover state', 'open:')
-    assert.equal(useNotificationStore.getState().readAnnouncementKeys.length, 2)
+    await waitForState(app.container, 'notification popover state', 'open')
+    assert.equal(
+      app.container.querySelector(
+        'output[aria-label="unread announcements count"]'
+      )?.textContent,
+      '1'
+    )
+
+    await act(async () => {
+      app.container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="close notification popover"]'
+        )
+        ?.click()
+    })
+    await waitForState(app.container, 'notification popover state', 'closed')
+    await waitForState(app.container, 'unread announcements count', '0')
 
     await destroyTestApp(app)
   })

@@ -30,6 +30,10 @@ interface NotificationState {
   closedUntilDate: string | null
   // Automatic announcement opens survive a route-level header remount.
   pendingAutoOpenKey: string | null
+  // The last Notice + Timeline revision observed on a route that allows auto-open.
+  lastObservedNotificationRevision: string
+  // Site notice dialog opens survive the pricing header remount.
+  pendingSiteNoticeKey: string | null
 
   // Actions
   markNoticeRead: (noticeContent: string) => void
@@ -37,6 +41,8 @@ interface NotificationState {
   markAnnouncementsRead: (keys: string[]) => void
   setClosedUntilDate: (date: string | null) => void
   setPendingAutoOpenKey: (key: string | null) => void
+  setLastObservedNotificationRevision: (revision: string) => void
+  setPendingSiteNoticeKey: (key: string | null) => void
   isAnnouncementRead: (key: string) => boolean
   isNoticeClosed: () => boolean
 }
@@ -53,6 +59,8 @@ export const useNotificationStore = create<NotificationState>()(
       readAnnouncementKeys: [],
       closedUntilDate: null,
       pendingAutoOpenKey: null,
+      lastObservedNotificationRevision: '',
+      pendingSiteNoticeKey: null,
 
       markNoticeRead: (noticeContent: string) => {
         // Persist the full trimmed content so edits beyond 100 chars register
@@ -80,6 +88,14 @@ export const useNotificationStore = create<NotificationState>()(
         set({ pendingAutoOpenKey: key })
       },
 
+      setLastObservedNotificationRevision: (revision: string) => {
+        set({ lastObservedNotificationRevision: revision })
+      },
+
+      setPendingSiteNoticeKey: (key: string | null) => {
+        set({ pendingSiteNoticeKey: key })
+      },
+
       isAnnouncementRead: (key: string) => {
         return get().readAnnouncementKeys.includes(key)
       },
@@ -100,6 +116,9 @@ export const useNotificationStore = create<NotificationState>()(
         readAnnouncementKeys: state.readAnnouncementKeys,
         closedUntilDate: state.closedUntilDate,
         pendingAutoOpenKey: state.pendingAutoOpenKey,
+        lastObservedNotificationRevision:
+          state.lastObservedNotificationRevision,
+        pendingSiteNoticeKey: state.pendingSiteNoticeKey,
       }),
     }
   )
