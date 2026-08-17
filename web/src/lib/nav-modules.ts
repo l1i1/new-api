@@ -22,6 +22,14 @@ export type ModuleAccess = { enabled: boolean; requireAuth: boolean }
 
 export type HeaderNavModule = 'rankings' | 'pricing'
 
+export type HeaderNavItem = {
+  id: string
+  title: string
+  url: string
+  newTab: boolean
+  visible: boolean
+}
+
 export type HeaderNavModules = {
   home: boolean
   console: boolean
@@ -29,7 +37,8 @@ export type HeaderNavModules = {
   rankings: ModuleAccess
   docs: boolean
   about: boolean
-  [key: string]: boolean | ModuleAccess
+  items: HeaderNavItem[]
+  [key: string]: boolean | ModuleAccess | HeaderNavItem[]
 }
 
 const DEFAULT_HEADER_NAV_MODULES: HeaderNavModules = {
@@ -39,6 +48,43 @@ const DEFAULT_HEADER_NAV_MODULES: HeaderNavModules = {
   rankings: { enabled: true, requireAuth: false },
   docs: true,
   about: true,
+  items: [
+    {
+      id: 'console',
+      title: 'Console',
+      url: '/dashboard',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'pricing',
+      title: 'Model Square',
+      url: '/pricing',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'rankings',
+      title: 'Rankings',
+      url: '/rankings',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'docs',
+      title: 'Docs',
+      url: '/docs',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'about',
+      title: 'About',
+      url: '/about',
+      newTab: false,
+      visible: true,
+    },
+  ],
 }
 
 const DEFAULTS: Record<HeaderNavModule, ModuleAccess> = {
@@ -51,6 +97,7 @@ function cloneHeaderNavDefaults(): HeaderNavModules {
     ...DEFAULT_HEADER_NAV_MODULES,
     pricing: { ...DEFAULT_HEADER_NAV_MODULES.pricing },
     rankings: { ...DEFAULT_HEADER_NAV_MODULES.rankings },
+    items: DEFAULT_HEADER_NAV_MODULES.items.map((item) => ({ ...item })),
   }
 }
 
@@ -93,6 +140,83 @@ function parseAccess(raw: unknown, fallback: ModuleAccess): ModuleAccess {
   return { ...fallback }
 }
 
+export function isSafeHeaderNavUrl(value: string): boolean {
+  const url = value.trim()
+  if (!url) return false
+  if (
+    [...url].some(
+      (char) => char <= '\u001f' || char === '\u007f' || char === '\\'
+    )
+  ) {
+    return false
+  }
+  if (/^\/(?!\/)/.test(url)) return true
+  try {
+    const parsed = new URL(url)
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      Boolean(parsed.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
+function parseHeaderNavItem(raw: unknown, index: number): HeaderNavItem | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const id = typeof record.id === 'string' ? record.id.trim() : ''
+  const title = typeof record.title === 'string' ? record.title.trim() : ''
+  const url = typeof record.url === 'string' ? record.url.trim() : ''
+  if (id === 'home' || !title || !isSafeHeaderNavUrl(url)) return null
+
+  return {
+    id: id || `custom-${index + 1}`,
+    title,
+    url,
+    newTab: parseHeaderNavBoolean(record.newTab, false),
+    visible: parseHeaderNavBoolean(record.visible, true),
+  }
+}
+
+function mergeHeaderNavItems(
+  rawItems: unknown,
+  fallback: HeaderNavItem[],
+  modules: Pick<
+    HeaderNavModules,
+    'console' | 'pricing' | 'rankings' | 'docs' | 'about'
+  >
+): HeaderNavItem[] {
+  const fallbackById = new Map(fallback.map((item) => [item.id, item]))
+  const legacyVisibility: Record<string, boolean> = {
+    console: modules.console,
+    pricing: modules.pricing.enabled,
+    rankings: modules.rankings.enabled,
+    docs: modules.docs,
+    about: modules.about,
+  }
+  const items: HeaderNavItem[] = []
+  const seen = new Set<string>()
+
+  if (Array.isArray(rawItems)) {
+    rawItems.forEach((raw, index) => {
+      const item = parseHeaderNavItem(raw, index)
+      if (!item || seen.has(item.id)) return
+      seen.add(item.id)
+      const builtin = fallbackById.get(item.id)
+      items.push(builtin ? { ...builtin, visible: item.visible } : item)
+    })
+  }
+
+  fallback.forEach((item) => {
+    if (seen.has(item.id)) return
+    seen.add(item.id)
+    items.push({ ...item, visible: legacyVisibility[item.id] ?? item.visible })
+  })
+
+  return items
+}
+
 function parseHeaderNavRecord(raw: unknown): Record<string, unknown> | null {
   if (!raw || String(raw).trim() === '') return null
   if (raw && typeof raw === 'object') return raw as Record<string, unknown>
@@ -118,6 +242,7 @@ export function parseHeaderNavModules(raw: unknown): HeaderNavModules {
       result.rankings = parseAccess(value, result.rankings)
       return
     }
+    if (key === 'items') return
 
     const fallback = result[key]
     if (
@@ -132,6 +257,21 @@ export function parseHeaderNavModules(raw: unknown): HeaderNavModules {
       )
     }
   })
+
+  const { items: _items, ...moduleAccess } = result
+  result.items = mergeHeaderNavItems(parsed.items, result.items, moduleAccess)
+
+  const itemVisibility = new Map(
+    result.items.map((item) => [item.id, item.visible])
+  )
+  result.console = itemVisibility.get('console') ?? result.console
+  result.docs = itemVisibility.get('docs') ?? result.docs
+  result.about = itemVisibility.get('about') ?? result.about
+  result.pricing.enabled =
+    itemVisibility.get('pricing') ?? result.pricing.enabled
+  result.rankings.enabled =
+    itemVisibility.get('rankings') ?? result.rankings.enabled
+  result.home = true
 
   return result
 }

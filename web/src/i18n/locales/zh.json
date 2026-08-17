@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "发票申请已更新",
     "Invoice information saved successfully": "开票信息已保存",
     "Invoices": "发票",
+    "Allow users to view and apply for invoices.": "允许用户查看发票并提交开票申请。",
+    "Review and process user invoice applications.": "审核并处理用户开票申请。",
+    "Move section up": "将分组上移",
+    "Move section down": "将分组下移",
+    "Move module up": "将模块上移",
+    "Move module down": "将模块下移",
     "Loading invoice details...": "正在加载开票详情…",
     "Mark this invoice as being issued": "将此申请标记为开票中",
     "Mark this invoice as issued": "将此申请标记为已开具",
@@ -5646,6 +5652,15 @@
     "P95 latency": "P95 延迟",
     "P95 first token": "P95 首 Token",
     "Coverage": "覆盖率",
-    "Availability": "可用性"
+    "Availability": "可用性",
+    "Fixed first item": "固定首项",
+    "The home link stays first and cannot be hidden.": "首页链接固定在首位且不可隐藏。",
+    "Move navigation item up": "上移导航项",
+    "Move navigation item down": "下移导航项",
+    "Toggle navigation item visibility": "切换导航项可见性",
+    "Navigation title": "导航标题",
+    "Navigation URL": "导航 URL",
+    "Custom navigation items require a title and a safe URL.": "自定义导航项必须填写标题和安全 URL。",
+    "Add navigation item": "添加导航项"
   }
 }

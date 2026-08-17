@@ -205,6 +205,52 @@ describe('wallet payment surfaces', () => {
     await unmountComponent(rendered)
   })
 
+  test('keeps payment methods intrinsically sized with a minimum width', async () => {
+    const longMethodName =
+      'A payment method name that must stay inside a narrow mobile viewport'
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={{
+          ...topupInfo,
+          pay_methods: [{ ...epayMethod, name: longMethodName }],
+        }}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={8}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+      />
+    )
+
+    const methods = rendered.container.querySelector(
+      '[data-testid="wallet-payment-methods"]'
+    )
+    assert.ok(methods)
+    assert.match(methods.className, /flex/)
+    assert.match(methods.className, /flex-wrap/)
+
+    const paymentButton = [
+      ...rendered.container.querySelectorAll('button'),
+    ].find((button) => button.getAttribute('aria-label') === longMethodName)
+    assert.ok(paymentButton instanceof HTMLButtonElement)
+    assert.match(paymentButton.className, /w-full/)
+    assert.match(paymentButton.className, /min-w-0/)
+    assert.match(paymentButton.className, /sm:w-auto/)
+    assert.match(paymentButton.className, /sm:min-w-\[12rem\]/)
+    assert.equal(paymentButton.className.includes('max-w-'), false)
+    assert.ok(paymentButton.querySelector('span.truncate'))
+
+    await unmountComponent(rendered)
+  })
+
   test('converts add-funds presentation to USD without changing payment values', async () => {
     const currentCurrencyConfig =
       useSystemConfigStore.getState().config.currency

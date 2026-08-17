@@ -114,6 +114,10 @@ func GetStatus(c *gin.Context) {
 		// 模块管理配置
 		"HeaderNavModules":    common.OptionMap["HeaderNavModules"],
 		"SidebarModulesAdmin": common.OptionMap["SidebarModulesAdmin"],
+		// The invoice navigation entries must follow the same feature switch
+		// as the invoice API. Keep this in the public status payload so the
+		// frontend can hide those entries without an extra authenticated call.
+		"invoice_enabled": common.OptionMap["InvoiceEnabled"] == "true",
 
 		"oidc_enabled":                system_setting.GetOIDCSettings().Enabled,
 		"oidc_client_id":              system_setting.GetOIDCSettings().ClientId,

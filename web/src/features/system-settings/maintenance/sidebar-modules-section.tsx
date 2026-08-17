@@ -16,10 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo } from 'react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import {
   Form,
   FormControl,
@@ -41,6 +43,7 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import {
   SIDEBAR_MODULES_DEFAULT,
+  moveSidebarItem,
   type SidebarModulesAdminConfig,
   serializeSidebarModulesAdmin,
 } from './config'
@@ -56,6 +59,14 @@ const toTitleCase = (value: string) =>
   value
     .replaceAll(/[_-]+/g, ' ')
     .replaceAll(/\b\w/g, (char) => char.toUpperCase())
+
+const getModuleOrder = (config: SidebarModulesAdminConfig) =>
+  Object.fromEntries(
+    Object.entries(config).map(([sectionKey, sectionConfig]) => [
+      sectionKey,
+      Object.keys(sectionConfig).filter((moduleKey) => moduleKey !== 'enabled'),
+    ])
+  ) as Record<string, string[]>
 
 export function SidebarModulesSection({
   config,
@@ -124,6 +135,10 @@ export function SidebarModulesSection({
         title: t('Wallet'),
         description: t('Top up balance and view billing history.'),
       },
+      invoice: {
+        title: t('Invoices'),
+        description: t('Allow users to view and apply for invoices.'),
+      },
       personal: {
         title: t('Profile'),
         description: t('Personal settings and profile management.'),
@@ -154,6 +169,10 @@ export function SidebarModulesSection({
         title: t('Subscription Management'),
         description: t('Manage subscription plans and pricing.'),
       },
+      invoice_admin: {
+        title: t('Invoice Review'),
+        description: t('Review and process user invoice applications.'),
+      },
     },
   }
   const formDefaults = useMemo(() => config, [config])
@@ -161,13 +180,44 @@ export function SidebarModulesSection({
   const form = useForm<SidebarFormValues>({
     defaultValues: formDefaults,
   })
+  const [sectionOrder, setSectionOrder] = useState(() => Object.keys(config))
+  const [moduleOrder, setModuleOrder] = useState(() => getModuleOrder(config))
 
   useEffect(() => {
     form.reset(formDefaults)
+    setSectionOrder(Object.keys(formDefaults))
+    setModuleOrder(getModuleOrder(formDefaults))
   }, [formDefaults, form])
 
   const onSubmit = async (values: SidebarFormValues) => {
-    const serialized = serializeSidebarModulesAdmin(values)
+    const orderedValues: SidebarFormValues = {}
+    const orderedSections = [
+      ...sectionOrder,
+      ...Object.keys(values).filter((key) => !sectionOrder.includes(key)),
+    ]
+
+    orderedSections.forEach((sectionKey) => {
+      const section = values[sectionKey]
+      if (!section) return
+
+      const orderedSection: SidebarFormValues[string] = {
+        enabled: section.enabled,
+      }
+      const keys = [
+        ...(moduleOrder[sectionKey] ?? []),
+        ...Object.keys(section).filter(
+          (key) => key !== 'enabled' && !moduleOrder[sectionKey]?.includes(key)
+        ),
+      ]
+      keys.forEach((moduleKey) => {
+        if (moduleKey in section) {
+          orderedSection[moduleKey] = section[moduleKey]
+        }
+      })
+      orderedValues[sectionKey] = orderedSection
+    })
+
+    const serialized = serializeSidebarModulesAdmin(orderedValues)
     if (serialized === initialSerialized) {
       return
     }
@@ -180,9 +230,15 @@ export function SidebarModulesSection({
 
   const resetToDefault = () => {
     form.reset(SIDEBAR_MODULES_DEFAULT)
+    setSectionOrder(Object.keys(SIDEBAR_MODULES_DEFAULT))
+    setModuleOrder(getModuleOrder(SIDEBAR_MODULES_DEFAULT))
   }
 
-  const sections = Object.entries(config)
+  const sections = sectionOrder
+    .map((sectionKey) => [sectionKey, config[sectionKey]] as const)
+    .filter((entry): entry is readonly [string, SidebarFormValues[string]] =>
+      Boolean(entry[1])
+    )
 
   return (
     <SettingsSection title={t('Sidebar modules')}>
@@ -195,21 +251,29 @@ export function SidebarModulesSection({
             resetLabel='Reset to default'
             saveLabel='Save sidebar modules'
           />
-          {sections.map(([sectionKey, sectionConfig]) => {
+          {sections.map(([sectionKey, sectionConfig], sectionIndex) => {
             const sectionInfo = sectionMeta[sectionKey] ?? {
               title: toTitleCase(sectionKey),
               description: t('Custom sidebar section'),
             }
-            const modules = Object.entries(sectionConfig).filter(
-              ([moduleKey]) => moduleKey !== 'enabled'
+            const sectionEnabledPath = `${sectionKey}.enabled` as const
+            const modules = (
+              moduleOrder[sectionKey] ?? Object.keys(sectionConfig)
             )
+              .filter((moduleKey) => moduleKey !== 'enabled')
+              .map(
+                (moduleKey) => [moduleKey, sectionConfig[moduleKey]] as const
+              )
+              .filter(
+                (entry): entry is readonly [string, boolean] =>
+                  typeof entry[1] === 'boolean'
+              )
 
             return (
               <SettingsControlGroup key={sectionKey}>
                 <FormField
                   control={form.control}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  name={`${sectionKey}.enabled` as any}
+                  name={sectionEnabledPath}
                   render={({ field }) => (
                     <SettingsSwitchItem>
                       <SettingsSwitchContent>
@@ -218,28 +282,58 @@ export function SidebarModulesSection({
                           {sectionInfo.description}
                         </FormDescription>
                       </SettingsSwitchContent>
-                      <FormControl>
-                        <Switch
-                          checked={Boolean(field.value)}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
+                      <div className='flex items-center gap-1'>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-xs'
+                          aria-label={`${t('Move section up')}: ${sectionInfo.title}`}
+                          disabled={sectionIndex === 0}
+                          onClick={() =>
+                            setSectionOrder((current) =>
+                              moveSidebarItem(current, sectionKey, -1)
+                            )
+                          }
+                        >
+                          <ArrowUp />
+                        </Button>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-xs'
+                          aria-label={`${t('Move section down')}: ${sectionInfo.title}`}
+                          disabled={sectionIndex === sections.length - 1}
+                          onClick={() =>
+                            setSectionOrder((current) =>
+                              moveSidebarItem(current, sectionKey, 1)
+                            )
+                          }
+                        >
+                          <ArrowDown />
+                        </Button>
+                        <FormControl>
+                          <Switch
+                            checked={Boolean(field.value)}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </div>
                     </SettingsSwitchItem>
                   )}
                 />
 
                 <SettingsControlChildren className='grid gap-3 md:grid-cols-2'>
-                  {modules.map(([moduleKey]) => {
+                  {modules.map(([moduleKey], moduleIndex) => {
                     const moduleInfo = moduleMeta[sectionKey]?.[moduleKey] ?? {
                       title: toTitleCase(moduleKey),
                       description: t('Custom module'),
                     }
+                    const modulePath = `${sectionKey}.${moduleKey}` as const
                     return (
                       <FormField
                         key={`${sectionKey}.${moduleKey}`}
                         control={form.control}
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        name={`${sectionKey}.${moduleKey}` as any}
+                        name={modulePath}
                         render={({ field }) => (
                           <SettingsSwitchItem className='py-2'>
                             <SettingsSwitchContent>
@@ -248,16 +342,53 @@ export function SidebarModulesSection({
                                 {moduleInfo.description}
                               </FormDescription>
                             </SettingsSwitchContent>
-                            <FormControl>
-                              <Switch
-                                checked={Boolean(field.value)}
-                                onCheckedChange={field.onChange}
-                                disabled={
-                                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                  !form.watch(`${sectionKey}.enabled` as any)
+                            <div className='flex items-center gap-1'>
+                              <Button
+                                type='button'
+                                variant='ghost'
+                                size='icon-xs'
+                                aria-label={`${t('Move module up')}: ${moduleInfo.title}`}
+                                disabled={moduleIndex === 0}
+                                onClick={() =>
+                                  setModuleOrder((current) => ({
+                                    ...current,
+                                    [sectionKey]: moveSidebarItem(
+                                      current[sectionKey] ?? [],
+                                      moduleKey,
+                                      -1
+                                    ),
+                                  }))
                                 }
-                              />
-                            </FormControl>
+                              >
+                                <ArrowUp />
+                              </Button>
+                              <Button
+                                type='button'
+                                variant='ghost'
+                                size='icon-xs'
+                                aria-label={`${t('Move module down')}: ${moduleInfo.title}`}
+                                disabled={moduleIndex === modules.length - 1}
+                                onClick={() =>
+                                  setModuleOrder((current) => ({
+                                    ...current,
+                                    [sectionKey]: moveSidebarItem(
+                                      current[sectionKey] ?? [],
+                                      moduleKey,
+                                      1
+                                    ),
+                                  }))
+                                }
+                              >
+                                <ArrowDown />
+                              </Button>
+                              <FormControl>
+                                <Switch
+                                  checked={Boolean(field.value)}
+                                  onCheckedChange={field.onChange}
+                                  disabled={!form.watch(sectionEnabledPath)}
+                                />
+                              </FormControl>
+                            </div>
                           </SettingsSwitchItem>
                         )}
                       />

@@ -16,6 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { isSafeHeaderNavUrl, type HeaderNavItem } from '@/lib/nav-modules'
+
+export { isSafeHeaderNavUrl }
+export type { HeaderNavItem }
+
 export type HeaderNavAccessConfig = {
   enabled: boolean
   requireAuth: boolean
@@ -28,7 +33,8 @@ export type HeaderNavModulesConfig = {
   rankings: HeaderNavAccessConfig
   docs: boolean
   about: boolean
-  [key: string]: boolean | HeaderNavAccessConfig
+  items: HeaderNavItem[]
+  [key: string]: boolean | HeaderNavAccessConfig | HeaderNavItem[]
 }
 
 export type SidebarSectionConfig = {
@@ -51,6 +57,43 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
   },
   docs: true,
   about: true,
+  items: [
+    {
+      id: 'console',
+      title: 'Console',
+      url: '/dashboard',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'pricing',
+      title: 'Model Square',
+      url: '/pricing',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'rankings',
+      title: 'Rankings',
+      url: '/rankings',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'docs',
+      title: 'Docs',
+      url: '/docs',
+      newTab: false,
+      visible: true,
+    },
+    {
+      id: 'about',
+      title: 'About',
+      url: '/about',
+      newTab: false,
+      visible: true,
+    },
+  ],
 }
 
 export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
@@ -71,6 +114,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     enabled: true,
     topup: true,
     personal: true,
+    invoice: true,
   },
   admin: {
     enabled: true,
@@ -80,6 +124,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     user: true,
     setting: true,
     subscription: true,
+    invoice_admin: true,
   },
 }
 
@@ -98,7 +143,71 @@ const cloneHeaderNavDefault = (): HeaderNavModulesConfig => ({
   ...HEADER_NAV_DEFAULT,
   pricing: { ...HEADER_NAV_DEFAULT.pricing },
   rankings: { ...HEADER_NAV_DEFAULT.rankings },
+  items: HEADER_NAV_DEFAULT.items.map((item) => ({ ...item })),
 })
+
+const parseHeaderNavItem = (
+  raw: unknown,
+  index: number
+): HeaderNavItem | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const rawId = typeof record.id === 'string' ? record.id.trim() : ''
+  const rawTitle = typeof record.title === 'string' ? record.title.trim() : ''
+  const rawUrl = typeof record.url === 'string' ? record.url.trim() : ''
+  const id = rawId || `custom-${index + 1}`
+  if (id === 'home' || !rawTitle || !isSafeHeaderNavUrl(rawUrl)) return null
+
+  return {
+    id,
+    title: rawTitle,
+    url: rawUrl,
+    newTab: toBoolean(record.newTab, false),
+    visible: toBoolean(record.visible, true),
+  }
+}
+
+const mergeHeaderNavItems = (
+  rawItems: unknown,
+  fallback: HeaderNavItem[],
+  access: Pick<
+    HeaderNavModulesConfig,
+    'console' | 'pricing' | 'rankings' | 'docs' | 'about'
+  >
+): HeaderNavItem[] => {
+  const fallbackById = new Map(fallback.map((item) => [item.id, item]))
+  const visibility: Record<string, boolean> = {
+    console: access.console,
+    pricing: access.pricing.enabled,
+    rankings: access.rankings.enabled,
+    docs: access.docs,
+    about: access.about,
+  }
+  const items: HeaderNavItem[] = []
+  const seen = new Set<string>()
+
+  if (Array.isArray(rawItems)) {
+    rawItems.forEach((raw, index) => {
+      const item = parseHeaderNavItem(raw, index)
+      if (!item || seen.has(item.id)) return
+      seen.add(item.id)
+      const builtin = fallbackById.get(item.id)
+      if (builtin) {
+        items.push({ ...builtin, visible: item.visible })
+        return
+      }
+      items.push(item)
+    })
+  }
+
+  fallback.forEach((item) => {
+    if (seen.has(item.id)) return
+    seen.add(item.id)
+    items.push({ ...item, visible: visibility[item.id] ?? item.visible })
+  })
+
+  return items
+}
 
 const parseAccessModule = (
   raw: unknown,
@@ -146,6 +255,7 @@ export function parseHeaderNavModules(
       ...base,
       pricing: { ...base.pricing },
       rankings: { ...base.rankings },
+      items: base.items.map((item) => ({ ...item })),
     }
 
     Object.entries(parsed).forEach(([key, raw]) => {
@@ -155,6 +265,9 @@ export function parseHeaderNavModules(
       }
       if (key === 'rankings') {
         result.rankings = parseAccessModule(raw, base.rankings)
+        return
+      }
+      if (key === 'items') {
         return
       }
 
@@ -168,6 +281,28 @@ export function parseHeaderNavModules(
       }
     })
 
+    result.items = mergeHeaderNavItems(parsed.items, base.items, {
+      console: result.console,
+      pricing: result.pricing,
+      rankings: result.rankings,
+      docs: result.docs,
+      about: result.about,
+    })
+
+    // Keep the legacy access fields authoritative for backend route guards
+    // while allowing the ordered item list to represent visibility.
+    const itemVisibility = new Map(
+      result.items.map((item) => [item.id, item.visible])
+    )
+    result.console = itemVisibility.get('console') ?? result.console
+    result.docs = itemVisibility.get('docs') ?? result.docs
+    result.about = itemVisibility.get('about') ?? result.about
+    result.pricing.enabled =
+      itemVisibility.get('pricing') ?? result.pricing.enabled
+    result.rankings.enabled =
+      itemVisibility.get('rankings') ?? result.rankings.enabled
+    result.home = true
+
     return result
   } catch {
     return base
@@ -178,6 +313,22 @@ export function serializeHeaderNavModules(
   config: HeaderNavModulesConfig
 ): string {
   return JSON.stringify(config)
+}
+
+/** Move one public navigation entry while preserving all other entries. */
+export function moveHeaderNavItem(
+  items: HeaderNavItem[],
+  itemId: string,
+  offset: -1 | 1
+): HeaderNavItem[] {
+  const index = items.findIndex((item) => item.id === itemId)
+  const nextIndex = index + offset
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return items
+
+  const next = [...items]
+  const [moved] = next.splice(index, 1)
+  next.splice(nextIndex, 0, moved)
+  return next
 }
 
 export function parseSidebarModulesAdmin(
@@ -239,4 +390,20 @@ export function serializeSidebarModulesAdmin(
   config: SidebarModulesAdminConfig
 ): string {
   return JSON.stringify(config)
+}
+
+/** Move one sidebar entry while preserving the order of all other entries. */
+export function moveSidebarItem(
+  items: string[],
+  item: string,
+  offset: -1 | 1
+): string[] {
+  const index = items.indexOf(item)
+  const nextIndex = index + offset
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return items
+
+  const next = [...items]
+  const [moved] = next.splice(index, 1)
+  next.splice(nextIndex, 0, moved)
+  return next
 }

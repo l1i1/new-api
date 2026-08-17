@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "Facture mise à jour",
     "Invoice information saved successfully": "Informations de facturation enregistrées",
     "Invoices": "Factures",
+    "Allow users to view and apply for invoices.": "Autoriser les utilisateurs à consulter et demander des factures.",
+    "Review and process user invoice applications.": "Examiner et traiter les demandes de facture des utilisateurs.",
+    "Move section up": "Déplacer la section vers le haut",
+    "Move section down": "Déplacer la section vers le bas",
+    "Move module up": "Déplacer le module vers le haut",
+    "Move module down": "Déplacer le module vers le bas",
     "Loading invoice details...": "Chargement des détails…",
     "Mark this invoice as being issued": "Marquer comme en cours d’émission",
     "Mark this invoice as issued": "Marquer comme émise",
@@ -5646,6 +5652,15 @@
     "P95 latency": "Latence P95",
     "P95 first token": "Premier token P95",
     "Coverage": "Couverture",
-    "Availability": "Disponibilité"
+    "Availability": "Disponibilité",
+    "Fixed first item": "Premier élément fixe",
+    "The home link stays first and cannot be hidden.": "Le lien d’accueil reste en première position et ne peut pas être masqué.",
+    "Move navigation item up": "Monter l’élément de navigation",
+    "Move navigation item down": "Descendre l’élément de navigation",
+    "Toggle navigation item visibility": "Modifier la visibilité de l’élément de navigation",
+    "Navigation title": "Titre de navigation",
+    "Navigation URL": "URL de navigation",
+    "Custom navigation items require a title and a safe URL.": "Les éléments de navigation personnalisés nécessitent un titre et une URL sûre.",
+    "Add navigation item": "Ajouter un élément de navigation"
   }
 }

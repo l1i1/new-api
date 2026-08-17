@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "Đã cập nhật hóa đơn",
     "Invoice information saved successfully": "Đã lưu thông tin hóa đơn",
     "Invoices": "Hóa đơn",
+    "Allow users to view and apply for invoices.": "Cho phép người dùng xem và yêu cầu xuất hóa đơn.",
+    "Review and process user invoice applications.": "Xem xét và xử lý yêu cầu xuất hóa đơn của người dùng.",
+    "Move section up": "Di chuyển phần lên trên",
+    "Move section down": "Di chuyển phần xuống dưới",
+    "Move module up": "Di chuyển mô-đun lên trên",
+    "Move module down": "Di chuyển mô-đun xuống dưới",
     "Loading invoice details...": "Đang tải chi tiết hóa đơn...",
     "Mark this invoice as being issued": "Đánh dấu đang xuất hóa đơn",
     "Mark this invoice as issued": "Đánh dấu đã xuất hóa đơn",
@@ -5646,6 +5652,15 @@
     "P95 latency": "Độ trễ P95",
     "P95 first token": "Token đầu tiên P95",
     "Coverage": "Độ bao phủ",
-    "Availability": "Tính khả dụng"
+    "Availability": "Tính khả dụng",
+    "Fixed first item": "Mục đầu tiên cố định",
+    "The home link stays first and cannot be hidden.": "Liên kết trang chủ luôn ở đầu và không thể ẩn.",
+    "Move navigation item up": "Di chuyển mục điều hướng lên",
+    "Move navigation item down": "Di chuyển mục điều hướng xuống",
+    "Toggle navigation item visibility": "Bật/tắt hiển thị mục điều hướng",
+    "Navigation title": "Tiêu đề điều hướng",
+    "Navigation URL": "URL điều hướng",
+    "Custom navigation items require a title and a safe URL.": "Mục điều hướng tùy chỉnh cần tiêu đề và URL an toàn.",
+    "Add navigation item": "Thêm mục điều hướng"
   }
 }

@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "發票申請已更新",
     "Invoice information saved successfully": "開票資訊已儲存",
     "Invoices": "發票",
+    "Allow users to view and apply for invoices.": "允許使用者查看發票並提交開票申請。",
+    "Review and process user invoice applications.": "審核並處理使用者開票申請。",
+    "Move section up": "將分組上移",
+    "Move section down": "將分組下移",
+    "Move module up": "將模組上移",
+    "Move module down": "將模組下移",
     "Loading invoice details...": "正在載入開票詳情…",
     "Mark this invoice as being issued": "將此申請標記為開立中",
     "Mark this invoice as issued": "將此申請標記為已開立",
@@ -5646,6 +5652,15 @@
     "P95 latency": "P95 延遲",
     "P95 first token": "P95 首 Token",
     "Coverage": "涵蓋率",
-    "Availability": "可用性"
+    "Availability": "可用性",
+    "Fixed first item": "固定首項",
+    "The home link stays first and cannot be hidden.": "首頁連結固定在首位且不可隱藏。",
+    "Move navigation item up": "上移導覽項目",
+    "Move navigation item down": "下移導覽項目",
+    "Toggle navigation item visibility": "切換導覽項目可見性",
+    "Navigation title": "導覽標題",
+    "Navigation URL": "導覽 URL",
+    "Custom navigation items require a title and a safe URL.": "自訂導覽項目必須填寫標題和安全 URL。",
+    "Add navigation item": "新增導覽項目"
   }
 }
