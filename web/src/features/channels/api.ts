@@ -635,6 +635,7 @@ export type ChannelObservabilityParams = {
   page_size?: number
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+  aggregate_by_model?: boolean
 }
 
 export async function getAllChannelObservability(

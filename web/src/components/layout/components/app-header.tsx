@@ -126,20 +126,21 @@ export function AppHeader({
   })
 
   return (
-    <Header>
+    <Header className='relative'>
       <SystemBrand variant='inline' />
 
       {leftContent ? (
         <div className='ms-2 flex items-center'>{leftContent}</div>
       ) : null}
 
+      {!rightContent && showTopNav && (
+        <div className='me-1 lg:absolute lg:left-1/2 lg:-translate-x-1/2'>
+          <TopNav links={links} />
+        </div>
+      )}
+
       {rightContent ?? (
         <div className='ms-auto flex items-center gap-1 sm:gap-2'>
-          {showTopNav && (
-            <div className='me-1 hidden lg:block'>
-              <TopNav links={links} />
-            </div>
-          )}
           {showSearch && <Search />}
           {showNotifications && (
             <NotificationPopover

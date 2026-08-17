@@ -107,17 +107,16 @@ export function formatGroupDiscount(
     return undefined
   }
   if (ratio > 1) {
-    const formatted = Number.isInteger(ratio)
-      ? ratio.toString()
-      : ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
-    return `x${formatted}`
+    return `x${formatDiscountNumber(ratio)}`
   }
   if (language.toLowerCase().startsWith('zh')) {
-    const zhe = ratio * 10
-    const formatted = Number.isInteger(zhe) ? zhe.toString() : zhe.toFixed(1)
-    return `${formatted}折`
+    return `${formatDiscountNumber(ratio * 10)}折`
   }
-  return `${Math.round((1 - ratio) * 100)}% off`
+  return `${formatDiscountNumber((1 - ratio) * 100)}% off`
+}
+
+function formatDiscountNumber(value: number): string {
+  return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
 }
 
 /**

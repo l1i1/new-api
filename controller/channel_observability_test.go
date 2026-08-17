@@ -16,7 +16,7 @@ import (
 func TestParseObservabilityQuerySupportsContractFilters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest("GET", "/api/observability/channel-model?start=1700000000&end=1700003600&channel_id=7&model=gpt-test&group=vip&protocol=openai&page=2&page_size=25&sort_by=p95_ttft_ms&sort_order=asc", nil)
+	context.Request = httptest.NewRequest("GET", "/api/observability/channel-model?start=1700000000&end=1700003600&channel_id=7&model=gpt-test&group=vip&protocol=openai&page=2&page_size=25&sort_by=p95_ttft_ms&sort_order=asc&aggregate_by_model=true", nil)
 
 	query, err := parseObservabilityQuery(context, true)
 	require.NoError(t, err)
@@ -30,6 +30,7 @@ func TestParseObservabilityQuerySupportsContractFilters(t *testing.T) {
 	assert.Equal(t, 25, query.PageSize)
 	assert.Equal(t, "p95_ttft_ms", query.SortBy)
 	assert.Equal(t, "asc", query.SortOrder)
+	assert.True(t, query.AggregateByModel)
 }
 
 func TestParseObservabilityQueryRejectsInvalidSortAndRange(t *testing.T) {
@@ -40,6 +41,10 @@ func TestParseObservabilityQueryRejectsInvalidSortAndRange(t *testing.T) {
 	require.Error(t, err)
 
 	context.Request = httptest.NewRequest("GET", "/api/observability/channel-model?start=1700003600&end=1700000000", nil)
+	_, err = parseObservabilityQuery(context, true)
+	assert.Error(t, err)
+
+	context.Request = httptest.NewRequest("GET", "/api/observability/channel-model?aggregate_by_model=maybe", nil)
 	_, err = parseObservabilityQuery(context, true)
 	assert.Error(t, err)
 }

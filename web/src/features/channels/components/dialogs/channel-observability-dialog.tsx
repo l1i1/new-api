@@ -26,6 +26,7 @@ import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 
 import { getAllChannelObservability } from '../../api'
+import { dedupeChannelObservabilityRows } from '../../lib/channel-observability'
 import type { ChannelObservabilityResult } from '../../types'
 import { useChannels } from '../channels-provider'
 
@@ -68,7 +69,14 @@ export function ChannelObservabilityDialog(
     if (!currentRow) return
     setIsLoading(true)
     try {
-      setRows(await getAllChannelObservability(currentRow.id, hours))
+      const loadedRows = await getAllChannelObservability(
+        currentRow.id,
+        hours,
+        {
+          aggregate_by_model: true,
+        }
+      )
+      setRows(dedupeChannelObservabilityRows(loadedRows))
     } catch (error: unknown) {
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
@@ -125,7 +133,7 @@ export function ChannelObservabilityDialog(
       description={t(
         'Requests, retries, cache behavior, p95 latency, and time to first token by model'
       )}
-      contentClassName='max-w-6xl'
+      contentClassName='max-w-[min(96vw,1440px)]'
       contentHeight='min(80vh, 760px)'
       bodyClassName='space-y-4'
     >
@@ -171,7 +179,7 @@ export function ChannelObservabilityDialog(
         />
       </div>
 
-      <div className='min-h-0 overflow-auto rounded-md border'>
+      <div className='min-h-0 overflow-y-auto rounded-md border [&_[data-slot=table-container]]:overflow-x-hidden'>
         {rows.length === 0 && !isLoading ? (
           <div className='text-muted-foreground py-12 text-center'>
             {t('No observability data available')}
@@ -182,27 +190,34 @@ export function ChannelObservabilityDialog(
             getRowKey={(row) =>
               `${row.requested_model}-${row.group}-${row.protocol}-${row.credential_id}`
             }
-            tableClassName='min-w-[1180px]'
+            tableClassName='table-fixed'
             columns={[
               {
                 id: 'model',
                 header: t('Model'),
-                className: 'min-w-[180px]',
+                className: 'w-[22%]',
+                cellClassName: 'max-w-0',
                 cell: (row) => row.requested_model,
               },
               {
                 id: 'requests',
                 header: t('Requests'),
+                className: 'w-[9%] text-right',
+                cellClassName: 'text-right',
                 cell: (row) => row.request_count.toLocaleString(),
               },
               {
                 id: 'attempts',
                 header: t('Attempts'),
+                className: 'hidden w-[9%] text-right sm:table-cell',
+                cellClassName: 'hidden text-right sm:table-cell',
                 cell: (row) => row.attempt_count.toLocaleString(),
               },
               {
                 id: 'success',
                 header: t('Success rate'),
+                className: 'w-[12%] text-right',
+                cellClassName: 'text-right',
                 cell: (row) =>
                   formatSampled(
                     row.request_success_rate,
@@ -213,6 +228,8 @@ export function ChannelObservabilityDialog(
               {
                 id: 'attempt-success',
                 header: t('Attempt success'),
+                className: 'hidden w-[12%] text-right lg:table-cell',
+                cellClassName: 'hidden text-right lg:table-cell',
                 cell: (row) =>
                   formatSampled(
                     row.attempt_success_rate,
@@ -223,12 +240,16 @@ export function ChannelObservabilityDialog(
               {
                 id: 'cache',
                 header: t('Cache hit rate'),
+                className: 'hidden w-[12%] text-right md:table-cell',
+                cellClassName: 'hidden text-right md:table-cell',
                 cell: (row) =>
                   formatSampled(row.cache_hit_rate, row.usage_sufficient, t),
               },
               {
                 id: 'latency',
                 header: t('P95 latency'),
+                className: 'w-[14%] text-right',
+                cellClassName: 'text-right',
                 cell: (row) =>
                   row.sample_sufficient
                     ? `${row.p95_latency_ms} ms`
@@ -237,6 +258,8 @@ export function ChannelObservabilityDialog(
               {
                 id: 'ttft',
                 header: t('P95 first token'),
+                className: 'hidden w-[14%] text-right md:table-cell',
+                cellClassName: 'hidden text-right md:table-cell',
                 cell: (row) =>
                   row.sample_sufficient
                     ? `${row.p95_ttft_ms} ms`
@@ -245,6 +268,8 @@ export function ChannelObservabilityDialog(
               {
                 id: 'coverage',
                 header: t('Coverage'),
+                className: 'hidden w-[10%] text-right lg:table-cell',
+                cellClassName: 'hidden text-right lg:table-cell',
                 cell: (row) => formatPercent(row.sample_coverage),
               },
             ]}

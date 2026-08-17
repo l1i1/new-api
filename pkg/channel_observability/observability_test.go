@@ -68,6 +68,35 @@ func TestMergeAggregateCombinesErrorTrends(t *testing.T) {
 	assert.Equal(t, map[string]int64{"timeout": 5, "upstream": 1}, merged[0].ErrorCounts)
 }
 
+func TestMergeAggregatesByRequestedModelPreservesDimensionsAndQuantiles(t *testing.T) {
+	left := model.ChannelModelPerfAggregate{
+		ChannelId: 1, CredentialId: 11, RequestedModel: "m", UpstreamModel: "provider-a", Group: "g", Protocol: "openai",
+		RequestCount: 2, RequestSuccessCount: 2, AttemptCount: 2, LatencyCount: 2,
+		LatencyHistogram: model.NewObservationHistogram(), RequestLatencyHistogram: model.NewObservationHistogram(),
+		TtftHistogram: model.NewObservationHistogram(), FRTHistogram: model.NewObservationHistogram(),
+	}
+	left.LatencyHistogram.Add(1234)
+	left.LatencyHistogram.Add(1240)
+
+	right := model.ChannelModelPerfAggregate{
+		ChannelId: 1, CredentialId: 12, RequestedModel: "m", UpstreamModel: "provider-b", Group: "g", Protocol: "openai",
+		RequestCount: 3, RequestSuccessCount: 2, AttemptCount: 3, LatencyCount: 3,
+		LatencyHistogram: model.NewObservationHistogram(), RequestLatencyHistogram: model.NewObservationHistogram(),
+		TtftHistogram: model.NewObservationHistogram(), FRTHistogram: model.NewObservationHistogram(),
+	}
+	right.LatencyHistogram.Add(2340)
+	right.LatencyHistogram.Add(2345)
+	right.LatencyHistogram.Add(2350)
+
+	merged := mergeAggregatesByRequestedModel([]model.ChannelModelPerfAggregate{left, right})
+
+	require.Len(t, merged, 1)
+	assert.Equal(t, 0, merged[0].CredentialId)
+	assert.Equal(t, int64(5), merged[0].RequestCount)
+	assert.Equal(t, []string{"provider-a", "provider-b"}, merged[0].UpstreamModels)
+	assert.Equal(t, int64(2350), merged[0].LatencyHistogram.P95())
+}
+
 func TestAggregateResultMarksInsufficientSamples(t *testing.T) {
 	value := model.ChannelModelPerfAggregate{
 		RequestCount: 3, RequestSuccessCount: 1, SampleCount: 3, UsageCount: 1,
@@ -101,6 +130,17 @@ func TestAddAvailabilityMetricBuildsExactCountsAndWeightedLatency(t *testing.T) 
 	assert.Equal(t, int64(2), point.RequestFailureCount)
 	assert.Equal(t, 50.0, point.RequestSuccessRate)
 	assert.Equal(t, int64(150), point.AvgLatencyMs)
+}
+
+func TestAddAvailabilityMetricTracksTTFTSeparately(t *testing.T) {
+	points := map[int][]AvailabilityPoint{
+		7: {{BucketStart: 100, BucketEnd: 200}},
+	}
+	addAvailabilityMetricWithTTFT(points, []int{7}, 120, 7, 4, 3, 800, 4, 500, 2, 100, 100, 1)
+
+	point := points[7][0]
+	assert.Equal(t, int64(200), point.AvgLatencyMs)
+	assert.Equal(t, int64(250), point.AvgTtftMs)
 }
 
 func TestSortResultsHonorsRequestedOrder(t *testing.T) {

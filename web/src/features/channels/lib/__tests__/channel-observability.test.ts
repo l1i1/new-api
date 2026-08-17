@@ -27,6 +27,7 @@ import {
   aggregateChannelAvailability,
   chunkChannelAvailabilityIds,
   collectChannelAvailabilityIds,
+  dedupeChannelObservabilityRows,
   getChannelAvailabilitySeries,
 } from '../channel-observability'
 
@@ -51,7 +52,7 @@ function metric(
     p95_latency_ms: avgLatencyMs,
     avg_request_latency_ms: avgLatencyMs,
     p95_request_latency_ms: avgLatencyMs,
-    avg_ttft_ms: 0,
+    avg_ttft_ms: avgLatencyMs,
     p95_ttft_ms: 0,
     avg_upstream_frt_ms: 0,
     p95_upstream_frt_ms: 0,
@@ -139,6 +140,7 @@ describe('channel availability aggregation', () => {
         successCount: 0,
         failureCount: 1,
         successRate: 0,
+        ttftMs: 2,
         latencyMs: 2,
       },
     ])
@@ -204,6 +206,7 @@ describe('channel availability aggregation', () => {
     assert.equal(point.successCount, 3)
     assert.equal(point.failureCount, 2)
     assert.equal(point.successRate, 60)
+    assert.equal(point.ttftMs, 140)
     assert.equal(point.latencyMs, 140)
     assert.equal(point.bucketStart, 100)
     assert.equal(point.bucketEnd, 200)
@@ -219,6 +222,7 @@ describe('channel availability aggregation', () => {
       successCount: 0,
       failureCount: 0,
       successRate: 0,
+      ttftMs: 0,
       latencyMs: 0,
     })
   })
@@ -233,5 +237,34 @@ describe('channel availability aggregation', () => {
     assert.equal(point.successCount, 1)
     assert.equal(point.failureCount, 2)
     assert.ok(Math.abs(point.successRate - 100 / 3) < 1e-12)
+  })
+
+  test('deduplicates model rows while preserving exact request counters', () => {
+    const first = metric(10, 80, 100)
+    first.credential_id = 11
+    first.request_success_count = 8
+    first.p95_latency_ms = 1234
+    first.upstream_model = 'provider-model-a'
+    const second = metric(5, 40, 300)
+    second.credential_id = 12
+    second.request_success_count = 2
+    second.p95_latency_ms = 2345
+    second.upstream_model = 'provider-model-b'
+
+    const rows = dedupeChannelObservabilityRows([first, second])
+
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]?.requested_model, 'gpt-test')
+    assert.equal(rows[0]?.credential_id, 0)
+    assert.equal(rows[0]?.request_count, 15)
+    assert.equal(rows[0]?.request_success_count, 10)
+    assert.equal(rows[0]?.request_failure_count, 5)
+    assert.equal(rows[0]?.request_success_rate, (10 / 15) * 100)
+    assert.equal(rows[0]?.avg_latency_ms, 167)
+    assert.equal(rows[0]?.p95_latency_ms, 2345)
+    assert.deepEqual(rows[0]?.upstream_models, [
+      'provider-model-a',
+      'provider-model-b',
+    ])
   })
 })

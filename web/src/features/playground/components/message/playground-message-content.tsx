@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Download } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -38,6 +39,12 @@ import {
   SourcesContent,
   SourcesTrigger,
 } from '@/components/ai-elements/sources'
+import { Button } from '@/components/ui/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 import { MESSAGE_STATUS } from '../../constants'
@@ -47,6 +54,7 @@ import {
   isErrorMessage,
   type MessageAlignment,
 } from '../../lib'
+import { downloadImage } from '../../lib/message/image-download'
 import { getMessageContentStyles } from '../../lib/message/message-styles'
 import type { Message } from '../../types'
 import { MessageError } from './message-error'
@@ -128,20 +136,47 @@ export function PlaygroundMessageContent({
 
       {message.images && message.images.length > 0 && (
         <div className='mb-2 flex flex-wrap gap-2'>
-          {message.images.map((src) => (
-            <a
+          {message.images.map((src, index) => (
+            <div
+              className='border-border group relative block overflow-hidden border'
               key={`${src.length}-${src.slice(30, 46)}`}
-              href={src}
-              target='_blank'
-              rel='noopener noreferrer'
-              className='border-border block overflow-hidden border'
             >
-              <img
-                src={src}
-                alt={t('Attached image')}
-                className='max-h-56 max-w-full object-contain'
-              />
-            </a>
+              <a
+                href={src}
+                target='_blank'
+                rel='noopener noreferrer'
+                className='block'
+              >
+                <img
+                  src={src}
+                  alt={t('Attached image')}
+                  className='max-h-56 max-w-full object-contain'
+                />
+              </a>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      aria-label={t('Download')}
+                      className='bg-background/80 hover:bg-background absolute right-1 bottom-1 size-8 opacity-85 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100'
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void downloadImage(src, index)
+                      }}
+                      size='icon-sm'
+                      type='button'
+                      variant='ghost'
+                    />
+                  }
+                >
+                  <Download className='size-4' />
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{t('Download')}</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
           ))}
         </div>
       )}

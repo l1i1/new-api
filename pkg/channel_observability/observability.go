@@ -277,19 +277,20 @@ func flushCompletedBuckets() {
 }
 
 type Query struct {
-	StartTs        int64
-	EndTs          int64
-	Hours          int
-	ChannelId      int
-	ChannelIds     []int
-	CredentialId   int
-	RequestedModel string
-	Group          string
-	Protocol       string
-	Page           int
-	PageSize       int
-	SortBy         string
-	SortOrder      string
+	StartTs          int64
+	EndTs            int64
+	Hours            int
+	ChannelId        int
+	ChannelIds       []int
+	CredentialId     int
+	RequestedModel   string
+	Group            string
+	Protocol         string
+	Page             int
+	PageSize         int
+	SortBy           string
+	SortOrder        string
+	AggregateByModel bool
 }
 
 type Result struct {
@@ -349,9 +350,13 @@ type AvailabilityPoint struct {
 	RequestSuccessCount int64   `json:"request_success_count"`
 	RequestFailureCount int64   `json:"request_failure_count"`
 	RequestSuccessRate  float64 `json:"request_success_rate"`
-	AvgLatencyMs        int64   `json:"avg_latency_ms"`
-	latencySumMs        int64
-	latencyCount        int64
+	// AvgLatencyMs is retained for clients older than the TTFT contract.
+	AvgLatencyMs int64 `json:"avg_latency_ms"`
+	AvgTtftMs    int64 `json:"avg_ttft_ms"`
+	latencySumMs int64
+	latencyCount int64
+	ttftSumMs    int64
+	ttftCount    int64
 }
 
 type AvailabilitySeries struct {
@@ -393,6 +398,9 @@ func queryMetricsPage(query Query) (PageResult, error) {
 	}
 	for _, value := range activeAggregates(query, startTs, endTs) {
 		aggregates = mergeAggregate(aggregates, value)
+	}
+	if query.AggregateByModel {
+		aggregates = mergeAggregatesByRequestedModel(aggregates)
 	}
 	results := make([]Result, 0, len(aggregates))
 	for _, value := range aggregates {
@@ -452,11 +460,11 @@ func QueryAvailabilitySeries(query AvailabilityQuery) ([]AvailabilitySeries, err
 		return nil, err
 	}
 	for _, row := range rows {
-		addAvailabilityMetric(points, channelIds, row.BucketTs, row.ChannelId, row.RequestCount, row.RequestSuccessCount, row.RequestLatencySumMs, row.RequestLatencyCount, startTs, bucketSize, bucketCount)
+		addAvailabilityMetricWithTTFT(points, channelIds, row.BucketTs, row.ChannelId, row.RequestCount, row.RequestSuccessCount, row.RequestLatencySumMs, row.RequestLatencyCount, row.TtftSumMs, row.TtftCount, startTs, bucketSize, bucketCount)
 	}
 	activeQuery := Query{StartTs: startTs, EndTs: endTs, ChannelIds: channelIds}
 	for _, aggregate := range activeAggregates(activeQuery, startTs, endTs) {
-		addAvailabilityMetric(points, channelIds, bucketStart(time.Now().Unix()), aggregate.ChannelId, aggregate.RequestCount, aggregate.RequestSuccessCount, aggregate.RequestLatencySumMs, aggregate.RequestLatencyCount, startTs, bucketSize, bucketCount)
+		addAvailabilityMetricWithTTFT(points, channelIds, bucketStart(time.Now().Unix()), aggregate.ChannelId, aggregate.RequestCount, aggregate.RequestSuccessCount, aggregate.RequestLatencySumMs, aggregate.RequestLatencyCount, aggregate.TtftSumMs, aggregate.TtftCount, startTs, bucketSize, bucketCount)
 	}
 	result := make([]AvailabilitySeries, 0, len(channelIds))
 	for _, channelId := range channelIds {
@@ -471,6 +479,10 @@ func QueryAvailabilitySeries(query AvailabilityQuery) ([]AvailabilitySeries, err
 }
 
 func addAvailabilityMetric(points map[int][]AvailabilityPoint, channelIds []int, bucketTs int64, channelId int, requestCount, successCount, latencySum, latencyCount int64, startTs, bucketSize int64, bucketCount int) {
+	addAvailabilityMetricWithTTFT(points, channelIds, bucketTs, channelId, requestCount, successCount, latencySum, latencyCount, 0, 0, startTs, bucketSize, bucketCount)
+}
+
+func addAvailabilityMetricWithTTFT(points map[int][]AvailabilityPoint, channelIds []int, bucketTs int64, channelId int, requestCount, successCount, latencySum, latencyCount, ttftSum, ttftCount int64, startTs, bucketSize int64, bucketCount int) {
 	if !containsInt(channelIds, channelId) || bucketTs < startTs {
 		return
 	}
@@ -488,6 +500,11 @@ func addAvailabilityMetric(points map[int][]AvailabilityPoint, channelIds []int,
 		point.latencySumMs += latencySum
 		point.latencyCount += latencyCount
 		point.AvgLatencyMs = average(point.latencySumMs, point.latencyCount)
+	}
+	if ttftCount > 0 {
+		point.ttftSumMs += ttftSum
+		point.ttftCount += ttftCount
+		point.AvgTtftMs = average(point.ttftSumMs, point.ttftCount)
 	}
 }
 
@@ -605,61 +622,104 @@ func sortResults(results []Result, sortBy, sortOrder string) {
 func mergeAggregate(target []model.ChannelModelPerfAggregate, value model.ChannelModelPerfAggregate) []model.ChannelModelPerfAggregate {
 	for i := range target {
 		if target[i].ChannelId == value.ChannelId && target[i].CredentialId == value.CredentialId && target[i].RequestedModel == value.RequestedModel && target[i].UpstreamModel == value.UpstreamModel && target[i].Group == value.Group && target[i].Protocol == value.Protocol {
-			target[i].RequestCount += value.RequestCount
-			target[i].RequestSuccessCount += value.RequestSuccessCount
-			target[i].AttemptCount += value.AttemptCount
-			target[i].AttemptSuccessCount += value.AttemptSuccessCount
-			target[i].CacheObservableCount += value.CacheObservableCount
-			target[i].CacheHitCount += value.CacheHitCount
-			target[i].InputTokens += value.InputTokens
-			target[i].CacheReadTokens += value.CacheReadTokens
-			target[i].CacheWriteTokens += value.CacheWriteTokens
-			target[i].LatencySumMs += value.LatencySumMs
-			target[i].RequestLatencySumMs += value.RequestLatencySumMs
-			target[i].TtftSumMs += value.TtftSumMs
-			target[i].FRTSumMs += value.FRTSumMs
-			target[i].LatencyCount += value.LatencyCount
-			target[i].RequestLatencyCount += value.RequestLatencyCount
-			target[i].TtftCount += value.TtftCount
-			target[i].FRTCount += value.FRTCount
-			target[i].SampleCount += value.SampleCount
-			target[i].UsageCount += value.UsageCount
-			if target[i].ErrorCounts == nil {
-				target[i].ErrorCounts = map[string]int64{}
-			}
-			for class, count := range value.ErrorCounts {
-				target[i].ErrorCounts[class] += count
-			}
-			target[i].LatencyHistogram.Merge(value.LatencyHistogram)
-			target[i].RequestLatencyHistogram.Merge(value.RequestLatencyHistogram)
-			target[i].TtftHistogram.Merge(value.TtftHistogram)
-			target[i].FRTHistogram.Merge(value.FRTHistogram)
-			if target[i].UpstreamModel == "" {
-				target[i].UpstreamModel = value.UpstreamModel
-			}
-			if target[i].UpstreamModel == "" {
-				for _, upstream := range value.UpstreamModels {
-					if upstream == "" {
-						continue
-					}
-					found := false
-					for _, existing := range target[i].UpstreamModels {
-						if existing == upstream {
-							found = true
-							break
-						}
-					}
-					if !found {
-						target[i].UpstreamModels = append(target[i].UpstreamModels, upstream)
-					}
-				}
-				sort.Strings(target[i].UpstreamModels)
-			}
+			mergeAggregateValues(&target[i], value)
 			return target
 		}
 	}
 	target = append(target, value)
 	return target
+}
+
+func mergeAggregatesByRequestedModel(values []model.ChannelModelPerfAggregate) []model.ChannelModelPerfAggregate {
+	merged := make([]model.ChannelModelPerfAggregate, 0, len(values))
+	for _, value := range values {
+		found := false
+		for i := range merged {
+			if merged[i].ChannelId != value.ChannelId || merged[i].RequestedModel != value.RequestedModel {
+				continue
+			}
+			mergeAggregateValues(&merged[i], value)
+			if merged[i].CredentialId != value.CredentialId {
+				merged[i].CredentialId = 0
+			}
+			if merged[i].Group != value.Group {
+				merged[i].Group = ""
+			}
+			if merged[i].Protocol != value.Protocol {
+				merged[i].Protocol = ""
+			}
+			found = true
+			break
+		}
+		if !found {
+			value.CredentialId = 0
+			merged = append(merged, value)
+		}
+	}
+	return merged
+}
+
+func mergeAggregateValues(target *model.ChannelModelPerfAggregate, value model.ChannelModelPerfAggregate) {
+	target.RequestCount += value.RequestCount
+	target.RequestSuccessCount += value.RequestSuccessCount
+	target.AttemptCount += value.AttemptCount
+	target.AttemptSuccessCount += value.AttemptSuccessCount
+	target.CacheObservableCount += value.CacheObservableCount
+	target.CacheHitCount += value.CacheHitCount
+	target.InputTokens += value.InputTokens
+	target.CacheReadTokens += value.CacheReadTokens
+	target.CacheWriteTokens += value.CacheWriteTokens
+	target.LatencySumMs += value.LatencySumMs
+	target.RequestLatencySumMs += value.RequestLatencySumMs
+	target.TtftSumMs += value.TtftSumMs
+	target.FRTSumMs += value.FRTSumMs
+	target.LatencyCount += value.LatencyCount
+	target.RequestLatencyCount += value.RequestLatencyCount
+	target.TtftCount += value.TtftCount
+	target.FRTCount += value.FRTCount
+	target.SampleCount += value.SampleCount
+	target.UsageCount += value.UsageCount
+	if target.ErrorCounts == nil {
+		target.ErrorCounts = map[string]int64{}
+	}
+	for class, count := range value.ErrorCounts {
+		target.ErrorCounts[class] += count
+	}
+	target.LatencyHistogram.Merge(value.LatencyHistogram)
+	target.RequestLatencyHistogram.Merge(value.RequestLatencyHistogram)
+	target.TtftHistogram.Merge(value.TtftHistogram)
+	target.FRTHistogram.Merge(value.FRTHistogram)
+	upstreams := append([]string{}, target.UpstreamModels...)
+	if target.UpstreamModel != "" {
+		upstreams = append(upstreams, target.UpstreamModel)
+	}
+	upstreams = append(upstreams, value.UpstreamModels...)
+	if value.UpstreamModel != "" {
+		upstreams = append(upstreams, value.UpstreamModel)
+	}
+	target.UpstreamModels = uniqueStrings(upstreams)
+	if len(target.UpstreamModels) == 1 {
+		target.UpstreamModel = target.UpstreamModels[0]
+	} else {
+		target.UpstreamModel = ""
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func aggregateResult(value model.ChannelModelPerfAggregate) Result {
