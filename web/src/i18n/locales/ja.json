@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "請求書を更新しました",
     "Invoice information saved successfully": "請求書情報を保存しました",
     "Invoices": "請求書",
+    "Allow users to view and apply for invoices.": "ユーザーが請求書を確認し、申請できるようにします。",
+    "Review and process user invoice applications.": "ユーザーの請求書申請を確認して処理します。",
+    "Move section up": "セクションを上へ移動",
+    "Move section down": "セクションを下へ移動",
+    "Move module up": "モジュールを上へ移動",
+    "Move module down": "モジュールを下へ移動",
     "Loading invoice details...": "請求書詳細を読み込み中…",
     "Mark this invoice as being issued": "発行中としてマーク",
     "Mark this invoice as issued": "発行済みとしてマーク",
@@ -5646,6 +5652,15 @@
     "P95 latency": "P95レイテンシ",
     "P95 first token": "P95初回トークン",
     "Coverage": "カバレッジ",
-    "Availability": "可用性"
+    "Availability": "可用性",
+    "Fixed first item": "固定された先頭項目",
+    "The home link stays first and cannot be hidden.": "ホームリンクは先頭に固定され、非表示にできません。",
+    "Move navigation item up": "ナビゲーション項目を上へ移動",
+    "Move navigation item down": "ナビゲーション項目を下へ移動",
+    "Toggle navigation item visibility": "ナビゲーション項目の表示を切り替え",
+    "Navigation title": "ナビゲーションタイトル",
+    "Navigation URL": "ナビゲーション URL",
+    "Custom navigation items require a title and a safe URL.": "カスタムナビゲーション項目にはタイトルと安全な URL が必要です。",
+    "Add navigation item": "ナビゲーション項目を追加"
   }
 }

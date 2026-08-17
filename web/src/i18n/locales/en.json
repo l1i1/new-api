@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "Invoice updated successfully",
     "Invoice information saved successfully": "Invoice information saved successfully",
     "Invoices": "Invoices",
+    "Allow users to view and apply for invoices.": "Allow users to view and apply for invoices.",
+    "Review and process user invoice applications.": "Review and process user invoice applications.",
+    "Move section up": "Move section up",
+    "Move section down": "Move section down",
+    "Move module up": "Move module up",
+    "Move module down": "Move module down",
     "Loading invoice details...": "Loading invoice details...",
     "Mark this invoice as being issued": "Mark this invoice as being issued",
     "Mark this invoice as issued": "Mark this invoice as issued",
@@ -5646,6 +5652,15 @@
     "P95 latency": "P95 latency",
     "P95 first token": "P95 first token",
     "Coverage": "Coverage",
-    "Availability": "Availability"
+    "Availability": "Availability",
+    "Fixed first item": "Fixed first item",
+    "The home link stays first and cannot be hidden.": "The home link stays first and cannot be hidden.",
+    "Move navigation item up": "Move navigation item up",
+    "Move navigation item down": "Move navigation item down",
+    "Toggle navigation item visibility": "Toggle navigation item visibility",
+    "Navigation title": "Navigation title",
+    "Navigation URL": "Navigation URL",
+    "Custom navigation items require a title and a safe URL.": "Custom navigation items require a title and a safe URL.",
+    "Add navigation item": "Add navigation item"
   }
 }

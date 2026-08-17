@@ -228,7 +228,7 @@ export function RechargeFormCard({
             <>
               {presetAmounts.length > 0 && (
                 <div className='space-y-2.5 sm:space-y-3'>
-                  <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
+                  <Label className='text-muted-foreground text-xs font-medium tracking-wider'>
                     {t('Amount')}
                   </Label>
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 md:grid-cols-4'>
@@ -286,7 +286,7 @@ export function RechargeFormCard({
               )}
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
+                <Label className='text-muted-foreground text-xs font-medium tracking-wider'>
                   {t('Custom Amount')}
                 </Label>
                 <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.7fr)] sm:items-end'>
@@ -343,11 +343,14 @@ export function RechargeFormCard({
               </div>
 
               <div className='space-y-2.5 sm:space-y-3'>
-                <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
+                <Label className='text-muted-foreground text-xs font-medium tracking-wider'>
                   {t('Payment Method')}
                 </Label>
                 {hasStandardPaymentMethods ? (
-                  <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
+                  <div
+                    className='flex flex-wrap gap-1.5 sm:gap-3'
+                    data-testid='wallet-payment-methods'
+                  >
                     {topupInfo?.pay_methods?.map((method) => {
                       const methodName = resolveTntContent(
                         method.name,
@@ -379,7 +382,7 @@ export function RechargeFormCard({
                               ? `${methodName}. ${disabledReason}`
                               : methodName
                           }
-                          className='min-h-14 min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left'
+                          className='min-h-14 w-full min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left sm:w-auto sm:min-w-[12rem]'
                         >
                           {paymentLoading === method.type ? (
                             <Loader2 className='h-4 w-4 animate-spin' />
@@ -392,11 +395,9 @@ export function RechargeFormCard({
                             )
                           )}
                           <span className='flex min-w-0 flex-col items-start gap-0.5'>
-                            <span className='max-w-full truncate'>
-                              {methodName}
-                            </span>
+                            <span className='truncate'>{methodName}</span>
                             {disabledLabel && (
-                              <span className='text-muted-foreground max-w-full truncate text-[11px] leading-4 font-normal'>
+                              <span className='text-muted-foreground truncate text-[11px] leading-4 font-normal'>
                                 {disabledLabel}
                               </span>
                             )}
@@ -432,10 +433,10 @@ export function RechargeFormCard({
                 hasWaffoPaymentMethods &&
                 onWaffoMethodSelect && (
                   <div className='space-y-2.5 sm:space-y-3'>
-                    <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
+                    <Label className='text-muted-foreground text-xs font-medium tracking-wider'>
                       {t('Waffo Payment')}
                     </Label>
-                    <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
+                    <div className='flex flex-wrap gap-1.5 sm:gap-3'>
                       {waffoPayMethods?.map((method, index) => {
                         const methodName = resolveTntContent(
                           method.name,
@@ -481,15 +482,13 @@ export function RechargeFormCard({
                                 ? `${methodName}. ${disabledReason}`
                                 : methodName
                             }
-                            className='min-h-14 min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left'
+                            className='min-h-14 w-full min-w-0 justify-start gap-2 rounded-lg px-3 py-2 text-left sm:w-auto sm:min-w-[12rem]'
                           >
                             {methodIcon}
                             <span className='flex min-w-0 flex-col items-start gap-0.5'>
-                              <span className='max-w-full truncate'>
-                                {methodName}
-                              </span>
+                              <span className='truncate'>{methodName}</span>
                               {disabledLabel && (
-                                <span className='text-muted-foreground max-w-full truncate text-[11px] leading-4 font-normal'>
+                                <span className='text-muted-foreground truncate text-[11px] leading-4 font-normal'>
                                   {disabledLabel}
                                 </span>
                               )}
@@ -539,7 +538,7 @@ export function RechargeFormCard({
         creemProducts.length > 0 &&
         onCreemProductSelect && (
           <div className='space-y-2.5 border-t pt-4 sm:space-y-3 sm:pt-6'>
-            <Label className='text-muted-foreground text-xs font-medium tracking-wider '>
+            <Label className='text-muted-foreground text-xs font-medium tracking-wider'>
               {t('Creem Payment')}
             </Label>
             <CreemProductsSection

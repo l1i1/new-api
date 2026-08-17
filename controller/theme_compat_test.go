@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,4 +48,30 @@ func TestGetStatusAdvertisesDefaultDashboard(t *testing.T) {
 	assert.True(t, payload.Success)
 	assert.Equal(t, "default", payload.Data["theme"])
 	assert.Equal(t, "test-instance", payload.Data["instance_id"])
+}
+
+func TestGetStatusAdvertisesInvoiceFeature(t *testing.T) {
+	previousMap := common.OptionMap
+	t.Cleanup(func() { common.OptionMap = previousMap })
+
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled_%t", enabled), func(t *testing.T) {
+			common.OptionMap = map[string]string{
+				"InvoiceEnabled": strconv.FormatBool(enabled),
+			}
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = httptest.NewRequest(http.MethodGet, "/api/status", nil)
+
+			GetStatus(context)
+
+			var payload struct {
+				Success bool           `json:"success"`
+				Data    map[string]any `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+			require.True(t, payload.Success)
+			assert.Equal(t, enabled, payload.Data["invoice_enabled"])
+		})
+	}
 }

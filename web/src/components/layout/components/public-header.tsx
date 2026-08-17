@@ -239,13 +239,19 @@ export function PublicHeader(props: PublicHeaderProps) {
                   link.href === '/'
                     ? pathname === '/'
                     : pathname.startsWith(link.href)
-                if (link.external) {
+                if (link.external || link.newTab) {
                   return (
                     <a
-                      key={`${link.href}-${link.title}`}
+                      key={link.id ?? `${link.href}-${link.title}`}
                       href={link.href}
-                      target='_blank'
-                      rel='noopener noreferrer'
+                      target={
+                        (link.newTab ?? link.external) ? '_blank' : undefined
+                      }
+                      rel={
+                        (link.newTab ?? link.external)
+                          ? 'noopener noreferrer'
+                          : undefined
+                      }
                       aria-disabled={link.disabled}
                       tabIndex={link.disabled ? -1 : undefined}
                       onClick={(event) => handleNavLinkClick(event, link)}
@@ -260,7 +266,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 }
                 return (
                   <Link
-                    key={`${link.href}-${link.title}`}
+                    key={link.id ?? `${link.href}-${link.title}`}
                     to={link.href}
                     disabled={link.disabled}
                     onClick={(event) => handleNavLinkClick(event, link)}
@@ -378,13 +384,19 @@ export function PublicHeader(props: PublicHeaderProps) {
               const transitionStyle = {
                 transitionDelay: mobileOpen ? `${100 + i * 50}ms` : '0ms',
               }
-              if (link.external) {
+              if (link.external || link.newTab) {
                 return (
                   <a
-                    key={`${link.href}-${link.title}`}
+                    key={link.id ?? `${link.href}-${link.title}`}
                     href={link.href}
-                    target='_blank'
-                    rel='noopener noreferrer'
+                    target={
+                      (link.newTab ?? link.external) ? '_blank' : undefined
+                    }
+                    rel={
+                      (link.newTab ?? link.external)
+                        ? 'noopener noreferrer'
+                        : undefined
+                    }
                     aria-disabled={link.disabled}
                     tabIndex={link.disabled ? -1 : undefined}
                     onClick={(event) => handleNavLinkClick(event, link, true)}
@@ -397,7 +409,7 @@ export function PublicHeader(props: PublicHeaderProps) {
               }
               return (
                 <Link
-                  key={`${link.href}-${link.title}`}
+                  key={link.id ?? `${link.href}-${link.title}`}
                   to={link.href}
                   disabled={link.disabled}
                   onClick={(event) => handleNavLinkClick(event, link, true)}

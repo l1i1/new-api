@@ -33,6 +33,23 @@ type SidebarModulesAdminConfig = Record<string, SidebarSectionConfig>
 // to signal "no narrowing" (empty/invalid/legacy users).
 type SidebarModulesUserConfig = SidebarModulesAdminConfig | null
 
+const INVOICE_NAVIGATION_URLS = new Set(['/invoice', '/invoices'])
+
+/**
+ * Read the invoice feature switch from the status payload. The fallback is
+ * deliberately disabled: invoice navigation must not expose a feature whose
+ * backend switch is absent or cannot be parsed.
+ */
+export function isInvoiceFeatureEnabled(
+  status: Record<string, unknown> | null | undefined
+): boolean {
+  const raw = status?.invoice_enabled ?? status?.InvoiceEnabled
+  if (typeof raw === 'boolean') return raw
+  if (typeof raw === 'string') return raw.trim().toLowerCase() === 'true'
+  if (typeof raw === 'number') return raw === 1
+  return false
+}
+
 /**
  * Default sidebar modules configuration
  */
@@ -81,12 +98,21 @@ const mergeWithDefaultSidebarModules = (
         return
       }
 
-      merged[sectionKey] = { ...defaultSection, ...existingSection }
-      Object.keys(defaultSection).forEach((moduleKey) => {
-        if (merged[sectionKey][moduleKey] === undefined) {
-          merged[sectionKey][moduleKey] = defaultSection[moduleKey]
+      // Preserve the administrator's JSON key order. The settings page uses
+      // that order for both the module editor and the rendered sidebar.
+      const mergedSection: SidebarSectionConfig = {
+        enabled: existingSection.enabled,
+      }
+      Object.entries(existingSection).forEach(([moduleKey, enabled]) => {
+        if (moduleKey === 'enabled') return
+        mergedSection[moduleKey] = enabled
+      })
+      Object.entries(defaultSection).forEach(([moduleKey, enabled]) => {
+        if (mergedSection[moduleKey] === undefined) {
+          mergedSection[moduleKey] = enabled
         }
       })
+      merged[sectionKey] = mergedSection
     }
   )
 
@@ -172,8 +198,11 @@ function parseUserSidebarConfig(
 function isModuleEnabled(
   url: string,
   adminConfig: SidebarModulesAdminConfig,
-  userConfig: SidebarModulesUserConfig
+  userConfig: SidebarModulesUserConfig,
+  invoiceEnabled = true
 ): boolean {
+  if (!invoiceEnabled && INVOICE_NAVIGATION_URLS.has(url)) return false
+
   const mapping = URL_TO_CONFIG_MAP[url]
   if (!mapping) {
     // No mapping config, default to visible (e.g. system settings and new features)
@@ -201,7 +230,8 @@ function isModuleEnabled(
 function isNavItemVisible(
   item: NavItem,
   adminConfig: SidebarModulesAdminConfig,
-  userConfig: SidebarModulesUserConfig
+  userConfig: SidebarModulesUserConfig,
+  invoiceEnabled: boolean
 ): boolean {
   // Handle dynamic chat presets type — also runs the admin × user AND gate
   if ('type' in item && item.type === 'chat-presets') {
@@ -219,7 +249,7 @@ function isNavItemVisible(
   if ('url' in item && item.url) {
     const configUrls = item.configUrls ?? [item.url]
     return configUrls.some((url) =>
-      isModuleEnabled(url as string, adminConfig, userConfig)
+      isModuleEnabled(url as string, adminConfig, userConfig, invoiceEnabled)
     )
   }
 
@@ -227,7 +257,12 @@ function isNavItemVisible(
   if ('items' in item && item.items) {
     // If has sub-items, show this collapsible item if at least one sub-item is visible
     return item.items.some((subItem) =>
-      isModuleEnabled(subItem.url as string, adminConfig, userConfig)
+      isModuleEnabled(
+        subItem.url as string,
+        adminConfig,
+        userConfig,
+        invoiceEnabled
+      )
     )
   }
 
@@ -240,14 +275,20 @@ function isNavItemVisible(
 function filterNavItems(
   items: NavItem[],
   adminConfig: SidebarModulesAdminConfig,
-  userConfig: SidebarModulesUserConfig
+  userConfig: SidebarModulesUserConfig,
+  invoiceEnabled: boolean
 ): NavItem[] {
-  return items
+  const filteredItems = items
     .map((item) => {
       // If collapsible item, also filter its sub-items
       if ('items' in item && item.items) {
         const filteredSubItems = item.items.filter((subItem) =>
-          isModuleEnabled(subItem.url as string, adminConfig, userConfig)
+          isModuleEnabled(
+            subItem.url as string,
+            adminConfig,
+            userConfig,
+            invoiceEnabled
+          )
         )
 
         return {
@@ -257,7 +298,83 @@ function filterNavItems(
       }
       return item
     })
-    .filter((item) => isNavItemVisible(item, adminConfig, userConfig))
+    .filter((item) =>
+      isNavItemVisible(item, adminConfig, userConfig, invoiceEnabled)
+    )
+
+  return filteredItems.sort((left, right) => {
+    const leftOrder = getNavItemOrder(left, adminConfig)
+    const rightOrder = getNavItemOrder(right, adminConfig)
+    return leftOrder - rightOrder
+  })
+}
+
+function getNavItemOrder(
+  item: NavItem,
+  adminConfig: SidebarModulesAdminConfig
+): number {
+  const urls: string[] = []
+  if ('url' in item && item.url) {
+    urls.push(String(item.url))
+    if (item.configUrls) urls.push(...item.configUrls.map(String))
+  }
+  if ('items' in item && item.items) {
+    urls.push(...item.items.map((subItem) => String(subItem.url)))
+  }
+
+  const orderIndexes: number[] = []
+  for (const url of urls) {
+    const mapping = URL_TO_CONFIG_MAP[url]
+    if (!mapping) continue
+    const section = adminConfig[mapping.section]
+    if (!section) continue
+    const moduleOrder = Object.keys(section).filter(
+      (moduleKey) => moduleKey !== 'enabled'
+    )
+    const index = moduleOrder.indexOf(mapping.module)
+    if (index >= 0) orderIndexes.push(index)
+  }
+
+  return orderIndexes.length > 0
+    ? Math.min(...orderIndexes)
+    : Number.MAX_SAFE_INTEGER
+}
+
+function getSidebarSectionOrder(
+  group: NavGroup,
+  adminConfig: SidebarModulesAdminConfig
+): number {
+  // The general group is the user-facing label for the persisted console
+  // section; all other root groups use their stable id directly.
+  const sectionKey = group.id === 'general' ? 'console' : group.id
+  if (!sectionKey) return Number.MAX_SAFE_INTEGER
+  const index = Object.keys(adminConfig).indexOf(sectionKey)
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER
+}
+
+/** Apply administrator ordering, visibility, and feature gates to navigation. */
+export function applySidebarNavigationConfig(
+  navGroups: NavGroup[],
+  adminConfig: SidebarModulesAdminConfig,
+  userConfig: SidebarModulesUserConfig,
+  invoiceEnabled: boolean
+): NavGroup[] {
+  return navGroups
+    .map((group) => ({
+      ...group,
+      items: filterNavItems(
+        group.items,
+        adminConfig,
+        userConfig,
+        invoiceEnabled
+      ),
+    }))
+    .filter((group) => group.items.length > 0)
+    .sort(
+      (left, right) =>
+        getSidebarSectionOrder(left, adminConfig) -
+        getSidebarSectionOrder(right, adminConfig)
+    )
 }
 
 /**
@@ -279,6 +396,10 @@ function filterNavItems(
 export function useSidebarConfig(navGroups: NavGroup[]): NavGroup[] {
   const { status } = useStatus()
   const { auth } = useAuthStore()
+  const invoiceEnabled = useMemo(
+    () => isInvoiceFeatureEnabled(status as Record<string, unknown> | null),
+    [status]
+  )
 
   const adminConfig = useMemo(
     () =>
@@ -302,13 +423,13 @@ export function useSidebarConfig(navGroups: NavGroup[]): NavGroup[] {
 
   const filteredNavGroups = useMemo(
     () =>
-      navGroups
-        .map((group) => ({
-          ...group,
-          items: filterNavItems(group.items, adminConfig, userConfig),
-        }))
-        .filter((group) => group.items.length > 0), // Only show navigation groups with visible items
-    [navGroups, adminConfig, userConfig]
+      applySidebarNavigationConfig(
+        navGroups,
+        adminConfig,
+        userConfig,
+        invoiceEnabled
+      ),
+    [navGroups, adminConfig, userConfig, invoiceEnabled]
   )
 
   return filteredNavGroups
@@ -331,5 +452,10 @@ export function useIsSidebarModuleVisible(url: string): boolean {
       ? null
       : parseUserSidebarConfig(auth?.user?.sidebar_modules)
 
-  return isModuleEnabled(url, adminConfig, userConfig)
+  return isModuleEnabled(
+    url,
+    adminConfig,
+    userConfig,
+    isInvoiceFeatureEnabled(status as Record<string, unknown> | null)
+  )
 }

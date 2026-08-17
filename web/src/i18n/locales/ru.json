@@ -5538,6 +5538,12 @@
     "Invoice updated successfully": "Заявка обновлена",
     "Invoice information saved successfully": "Данные счета сохранены",
     "Invoices": "Счета",
+    "Allow users to view and apply for invoices.": "Разрешить пользователям просматривать счета и подавать заявки на счета.",
+    "Review and process user invoice applications.": "Проверять и обрабатывать заявки пользователей на счета.",
+    "Move section up": "Переместить раздел вверх",
+    "Move section down": "Переместить раздел вниз",
+    "Move module up": "Переместить модуль вверх",
+    "Move module down": "Переместить модуль вниз",
     "Loading invoice details...": "Загрузка сведений о счете…",
     "Mark this invoice as being issued": "Пометить как оформляемый",
     "Mark this invoice as issued": "Пометить как выставленный",
@@ -5646,6 +5652,15 @@
     "P95 latency": "Задержка P95",
     "P95 first token": "Первый токен P95",
     "Coverage": "Покрытие",
-    "Availability": "Доступность"
+    "Availability": "Доступность",
+    "Fixed first item": "Фиксированный первый пункт",
+    "The home link stays first and cannot be hidden.": "Ссылка на главную всегда первая и не может быть скрыта.",
+    "Move navigation item up": "Переместить пункт навигации вверх",
+    "Move navigation item down": "Переместить пункт навигации вниз",
+    "Toggle navigation item visibility": "Переключить видимость пункта навигации",
+    "Navigation title": "Название навигации",
+    "Navigation URL": "URL навигации",
+    "Custom navigation items require a title and a safe URL.": "Для пользовательских пунктов навигации нужны название и безопасный URL.",
+    "Add navigation item": "Добавить пункт навигации"
   }
 }

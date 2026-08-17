@@ -78,14 +78,14 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
           </DropdownMenuTrigger>
           <DropdownMenuContent side='bottom' align='start'>
             {normalizedLinks.map(
-              ({ title, href, isActive, disabled, external }) => (
+              ({ id, title, href, isActive, disabled, external, newTab }) => (
                 <DropdownMenuItem
-                  key={`${title}-${href}`}
+                  key={id ?? `${title}-${href}`}
                   render={
-                    external ? (
+                    external || newTab ? (
                       <a
                         href={href}
-                        target='_blank'
+                        target={(newTab ?? external) ? '_blank' : undefined}
                         rel='noopener noreferrer'
                         className={
                           isLinkActive({ href, external, isActive })
@@ -124,37 +124,38 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
         )}
         {...props}
       >
-        {normalizedLinks.map(({ title, href, isActive, disabled, external }) =>
-          external ? (
-            <a
-              key={`${title}-${href}`}
-              href={href}
-              target='_blank'
-              rel='noopener noreferrer'
-              className={cn(
-                'hover:text-primary shrink-0 border-b-2 border-transparent text-sm font-medium whitespace-nowrap transition-colors',
-                isLinkActive({ href, external, isActive })
-                  ? 'border-primary text-foreground'
-                  : 'text-muted-foreground'
-              )}
-            >
-              {title}
-            </a>
-          ) : (
-            <Link
-              key={`${title}-${href}`}
-              to={href}
-              disabled={disabled}
-              className={cn(
-                'hover:text-primary shrink-0 border-b-2 border-transparent text-sm font-medium whitespace-nowrap transition-colors',
-                isLinkActive({ href, external, isActive })
-                  ? 'border-primary text-foreground'
-                  : 'text-muted-foreground'
-              )}
-            >
-              {title}
-            </Link>
-          )
+        {normalizedLinks.map(
+          ({ id, title, href, isActive, disabled, external, newTab }) =>
+            external || newTab ? (
+              <a
+                key={id ?? `${title}-${href}`}
+                href={href}
+                target={(newTab ?? external) ? '_blank' : undefined}
+                rel='noopener noreferrer'
+                className={cn(
+                  'hover:text-primary shrink-0 border-b-2 border-transparent text-sm font-medium whitespace-nowrap transition-colors',
+                  isLinkActive({ href, external, isActive })
+                    ? 'border-primary text-foreground'
+                    : 'text-muted-foreground'
+                )}
+              >
+                {title}
+              </a>
+            ) : (
+              <Link
+                key={id ?? `${title}-${href}`}
+                to={href}
+                disabled={disabled}
+                className={cn(
+                  'hover:text-primary shrink-0 border-b-2 border-transparent text-sm font-medium whitespace-nowrap transition-colors',
+                  isLinkActive({ href, external, isActive })
+                    ? 'border-primary text-foreground'
+                    : 'text-muted-foreground'
+                )}
+              >
+                {title}
+              </Link>
+            )
         )}
       </nav>
     </>

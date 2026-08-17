@@ -26,6 +26,15 @@ export const STATIC_I18N_KEYS = [
   'Rankings',
   'Docs',
   'About',
+  'Fixed first item',
+  'The home link stays first and cannot be hidden.',
+  'Move navigation item up',
+  'Move navigation item down',
+  'Toggle navigation item visibility',
+  'Navigation title',
+  'Navigation URL',
+  'Custom navigation items require a title and a safe URL.',
+  'Add navigation item',
 
   // Sidebar navigation
   'Invoices',

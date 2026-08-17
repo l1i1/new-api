@@ -19,86 +19,105 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import type { TopNavLink } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
-import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
+import {
+  parseHeaderNavModulesFromStatus,
+  type HeaderNavModules,
+} from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
 
-export type TopNavLink = {
-  title: string
-  href: string
-  disabled?: boolean
-  requiresAuth?: boolean
-  external?: boolean
+export type { TopNavLink } from '@/components/layout/types'
+
+export function buildTopNavLinks(
+  modules: HeaderNavModules,
+  docsLink: string | undefined,
+  isAuthed: boolean,
+  translate: (key: string) => string
+): TopNavLink[] {
+  const links: TopNavLink[] = []
+
+  // Home is intentionally fixed and is not part of the administrator-managed
+  // order. The remaining entries follow the configured ordered item list.
+  if (modules?.home !== false) {
+    links.push({ id: 'home', title: translate('Home'), href: '/' })
+  }
+
+  const builtinLinks: Record<
+    string,
+    {
+      title: string
+      href: string
+      requiresAuth?: boolean
+      external?: boolean
+      newTab?: boolean
+    }
+  > = {
+    console: { title: translate('Console'), href: '/dashboard' },
+    pricing: {
+      title: translate('Model Square'),
+      href: '/pricing',
+      requiresAuth: modules.pricing.requireAuth && !isAuthed,
+    },
+    rankings: {
+      title: translate('Rankings'),
+      href: '/rankings',
+      requiresAuth: modules.rankings.requireAuth && !isAuthed,
+    },
+    docs: {
+      title: translate('Docs'),
+      href: docsLink || '/docs',
+      external: Boolean(docsLink),
+      // Preserve the historical docs behavior: external documentation opens
+      // in a new tab even when no explicit item setting exists.
+      newTab: Boolean(docsLink),
+    },
+    about: { title: translate('About'), href: '/about' },
+  }
+
+  modules.items.forEach((item) => {
+    if (!item.visible || item.id === 'home') return
+    const builtin = builtinLinks[item.id]
+    if (builtin) {
+      links.push({
+        ...builtin,
+        id: item.id,
+        newTab: builtin.newTab ?? item.newTab,
+      })
+      return
+    }
+
+    links.push({
+      id: item.id,
+      title: item.title,
+      href: item.url,
+      external: /^https?:\/\//i.test(item.url),
+      newTab: item.newTab,
+    })
+  })
+
+  return links
 }
 
 /**
- * Generate top navigation links based on HeaderNavModules configuration from backend /api/status
- * Backend format example (stringified JSON):
- * {
- *   home: true,
- *   console: true,
- *   pricing: { enabled: true, requireAuth: false },
- *   rankings: { enabled: true, requireAuth: false },
- *   docs: true,
- *   about: true
- * }
+ * Generate top navigation links based on HeaderNavModules configuration from
+ * backend `/api/status`.
  */
 export function useTopNavLinks(): TopNavLink[] {
   const { t } = useTranslation()
   const { status } = useStatus()
   const { auth } = useAuthStore()
 
-  // Parse HeaderNavModules
   const modules = useMemo(() => {
     return parseHeaderNavModulesFromStatus(
       status as Record<string, unknown> | null
     )
   }, [status])
-
-  // Documentation link (may be external)
   const docsLink: string | undefined = status?.docs_link as string | undefined
-
   const isAuthed = !!auth?.user
 
-  const links: TopNavLink[] = []
-
-  // Home
-  if (modules?.home !== false) {
-    links.push({ title: t('Home'), href: '/' })
-  }
-
-  // Console -> /dashboard (new console path)
-  if (modules?.console !== false) {
-    links.push({ title: t('Console'), href: '/dashboard' })
-  }
-
-  // Pricing
-  const pricing = modules?.pricing
-  if (pricing && typeof pricing === 'object' && pricing.enabled) {
-    const requiresAuth = pricing.requireAuth && !isAuthed
-    links.push({ title: t('Model Square'), href: '/pricing', requiresAuth })
-  }
-
-  // Rankings
-  const rankings = modules?.rankings
-  if (rankings && typeof rankings === 'object' && rankings.enabled) {
-    const requiresAuth = rankings.requireAuth && !isAuthed
-    links.push({ title: t('Rankings'), href: '/rankings', requiresAuth })
-  }
-
-  // Docs (supports external links)
-  if (modules?.docs !== false) {
-    if (docsLink) {
-      links.push({ title: t('Docs'), href: docsLink, external: true })
-    } else {
-      links.push({ title: t('Docs'), href: '/docs' })
-    }
-  }
-
-  // About
-  if (modules?.about !== false) {
-    links.push({ title: t('About'), href: '/about' })
-  }
-
-  return links
+  return useMemo(
+    () => buildTopNavLinks(modules, docsLink, isAuthed, t),
+    [docsLink, isAuthed, modules, t]
+  )
 }
