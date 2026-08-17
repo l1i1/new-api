@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
+	rootcommon "github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -21,8 +22,14 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 	isResponsesCompact := info.RelayMode == relayconstant.RelayModeResponsesCompact
 	originModelName := info.OriginModelName
 	mappingModelName := originModelName
-	if isResponsesCompact && strings.HasSuffix(originModelName, ratio_setting.CompactModelSuffix) {
-		mappingModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
+	resolvedModelName := rootcommon.GetContextKeyString(c, constant.ContextKeyResolvedModel)
+	compactAliasApplied := resolvedModelName != "" && resolvedModelName != originModelName
+	if compactAliasApplied {
+		mappingModelName = resolvedModelName
+	} else if isResponsesCompact {
+		if compactBaseModel, ok := ratio_setting.CompactBaseModelName(originModelName); ok {
+			mappingModelName = compactBaseModel
+		}
 	}
 
 	// map model name
@@ -73,6 +80,13 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 		}
 		info.UpstreamModelName = finalUpstreamModelName
 		info.OriginModelName = ratio_setting.WithCompactModelSuffix(finalUpstreamModelName)
+	} else if compactAliasApplied {
+		finalUpstreamModelName := mappingModelName
+		if info.IsModelMapped && info.UpstreamModelName != "" {
+			finalUpstreamModelName = info.UpstreamModelName
+		}
+		info.UpstreamModelName = finalUpstreamModelName
+		info.IsModelMapped = true
 	}
 	if request != nil {
 		request.SetModelName(info.UpstreamModelName)

@@ -8,6 +8,7 @@ const (
 	ContextKeyEstimatedTokens ContextKey = "estimated_tokens"
 
 	ContextKeyOriginalModel    ContextKey = "original_model"
+	ContextKeyResolvedModel    ContextKey = "resolved_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
 
 	/* token related keys */
@@ -46,7 +47,7 @@ const (
 	// operation to the durable credential identity. The runtime resolves its
 	// current legacy position immediately before selecting the key.
 	ContextKeyForceMultiKeyCredentialID ContextKey = "force_multi_key_credential_id"
-	ContextKeyIncludeDisabledKey       ContextKey = "include_disabled_key"
+	ContextKeyIncludeDisabledKey        ContextKey = "include_disabled_key"
 
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"

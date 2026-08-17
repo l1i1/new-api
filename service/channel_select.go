@@ -105,6 +105,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
+			routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(autoGroup, param.ModelName, param.RequestPath)
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
 			priorityRetry := param.GetRetry()
@@ -115,7 +116,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, routingModel, priorityRetry, param.RequestPath)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -129,6 +130,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				continue
 			}
 			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
+			setResolvedModelContext(param.Ctx, routingModel, compactAlias)
 			selectGroup = autoGroup
 			logger.LogDebug(param.Ctx, "Auto selected group: %s", autoGroup)
 
@@ -153,10 +155,24 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(param.TokenGroup, param.ModelName, param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, routingModel, param.GetRetry(), param.RequestPath)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
+		if channel != nil {
+			setResolvedModelContext(param.Ctx, routingModel, compactAlias)
+		}
 	}
 	return channel, selectGroup, nil
+}
+
+func setResolvedModelContext(c *gin.Context, modelName string, compactAlias bool) {
+	if c == nil || !compactAlias {
+		if c != nil {
+			common.SetContextKey(c, constant.ContextKeyResolvedModel, "")
+		}
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyResolvedModel, modelName)
 }

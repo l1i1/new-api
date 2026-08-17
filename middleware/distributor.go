@@ -39,6 +39,7 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		common.SetContextKey(c, constant.ContextKeyResolvedModel, "")
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -54,10 +55,13 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
+			resolvedModel, compactAlias := model.ResolveCompactModelAliasForChannel(channel, modelRequest.Model, c.Request.URL.Path)
+			setResolvedModelContext(c, resolvedModel, compactAlias)
 		} else {
 			// Select a channel for the user
 			// check token model mapping
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
+			var tokenModelLimit map[string]bool
 			if modelLimitEnable {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 				if !ok {
@@ -65,13 +69,11 @@ func Distribute() func(c *gin.Context) {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
 					return
 				}
-				var tokenModelLimit map[string]bool
 				tokenModelLimit, ok = s.(map[string]bool)
 				if !ok {
 					tokenModelLimit = map[string]bool{}
 				}
-				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // match gpts & thinking-*
-				if _, ok := tokenModelLimit[matchName]; !ok {
+				if !tokenModelLimitAllowsCandidate(tokenModelLimit, modelRequest.Model) {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
 					return
 				}
@@ -129,26 +131,33 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
-						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
+					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+								routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(g, modelRequest.Model, c.Request.URL.Path)
+								if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
+									model.IsChannelEnabledForGroupModel(g, routingModel, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+									setResolvedModelContext(c, routingModel, compactAlias)
 									channel = preferred
 									affinityUsable = true
 									service.MarkChannelAffinityUsed(c, g, preferred.Id)
 									break
 								}
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
-							channel = preferred
-							selectGroup = usingGroup
-							affinityUsable = true
-							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+						} else {
+							routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(usingGroup, modelRequest.Model, c.Request.URL.Path)
+							if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
+								model.IsChannelEnabledForGroupModel(usingGroup, routingModel, preferred.Id) {
+								channel = preferred
+								selectGroup = usingGroup
+								setResolvedModelContext(c, routingModel, compactAlias)
+								affinityUsable = true
+								service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+							}
 						}
 					}
 					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
@@ -184,6 +193,14 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 			}
+			if modelLimitEnable && !tokenModelLimitAllowsResolved(
+				tokenModelLimit,
+				modelRequest.Model,
+				common.GetContextKeyString(c, constant.ContextKeyResolvedModel),
+			) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
+				return
+			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
@@ -192,6 +209,40 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+func tokenModelLimitAllowsExact(tokenModelLimit map[string]bool, modelName string) bool {
+	return tokenModelLimit[modelName] || tokenModelLimit[ratio_setting.FormatMatchingModelName(modelName)]
+}
+
+func tokenModelLimitAllowsCandidate(tokenModelLimit map[string]bool, modelName string) bool {
+	if tokenModelLimitAllowsExact(tokenModelLimit, modelName) {
+		return true
+	}
+	baseModel, ok := ratio_setting.CompactBaseModelName(modelName)
+	if !ok {
+		return false
+	}
+	return tokenModelLimitAllowsExact(tokenModelLimit, baseModel)
+}
+
+func tokenModelLimitAllowsResolved(tokenModelLimit map[string]bool, modelName, resolvedModelName string) bool {
+	if tokenModelLimitAllowsExact(tokenModelLimit, modelName) {
+		return true
+	}
+	baseModel, ok := ratio_setting.CompactBaseModelName(modelName)
+	if !ok || resolvedModelName != baseModel {
+		return false
+	}
+	return tokenModelLimitAllowsExact(tokenModelLimit, baseModel)
+}
+
+func setResolvedModelContext(c *gin.Context, modelName string, compactAlias bool) {
+	if !compactAlias {
+		common.SetContextKey(c, constant.ContextKeyResolvedModel, "")
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyResolvedModel, modelName)
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

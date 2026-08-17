@@ -12,6 +12,17 @@ func WithCompactModelSuffix(modelName string) string {
 	return modelName + CompactModelSuffix
 }
 
+func CompactBaseModelName(modelName string) (string, bool) {
+	if !strings.HasSuffix(modelName, CompactModelSuffix) {
+		return "", false
+	}
+	baseModel := strings.TrimSuffix(modelName, CompactModelSuffix)
+	if baseModel == "" {
+		return "", false
+	}
+	return baseModel, true
+}
+
 func WithCompactModelVariants(models []string) []string {
 	variants := make([]string, 0, len(models)*2)
 	seen := make(map[string]struct{}, len(models)*2)
