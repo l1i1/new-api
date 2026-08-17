@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -115,6 +116,9 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
+		if logs[i].Type == LogTypeError {
+			logs[i].Content = operation_setting.FilterErrorMessage(logs[i].Content)
+		}
 		logs[i].ChannelName = ""
 		var otherMap map[string]interface{}
 		otherMap, _ = common.StrToMap(logs[i].Other)

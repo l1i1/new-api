@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/stretchr/testify/require"
 )
@@ -57,4 +58,32 @@ func TestFormatUserLogsSanitizesStreamErrors(t *testing.T) {
 	require.EqualValues(t, 2, streamStatus["error_count"])
 	require.NotContains(t, streamStatus, "end_error")
 	require.NotContains(t, streamStatus, "errors")
+}
+
+func TestFormatUserLogsFiltersErrorContentForNonAdminViews(t *testing.T) {
+	originalEnabled := operation_setting.IsErrorMessageFilterEnabled()
+	originalPattern := operation_setting.GetErrorMessageFilterPattern()
+	t.Cleanup(func() {
+		operation_setting.SetErrorMessageFilterEnabled(originalEnabled)
+		require.NoError(t, operation_setting.SetErrorMessageFilterPattern(originalPattern))
+	})
+
+	operation_setting.SetErrorMessageFilterEnabled(true)
+	require.NoError(t, operation_setting.SetErrorMessageFilterPattern(operation_setting.ErrorMessageFilterDefaultPattern))
+
+	logs := []*Log{
+		{
+			Type:    LogTypeError,
+			Content: "status_code=503, auth_unavailable: no auth available (providers=private-provider, model=qwen3.8-max)",
+		},
+		{
+			Type:    LogTypeConsume,
+			Content: "providers=should-remain-in-non-error-log",
+		},
+	}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, "status_code=503, auth_unavailable: no auth available", logs[0].Content)
+	require.Equal(t, "providers=should-remain-in-non-error-log", logs[1].Content)
 }
