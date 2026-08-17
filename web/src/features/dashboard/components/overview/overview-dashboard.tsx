@@ -57,7 +57,6 @@ import {
 } from '../../hooks/use-status-data'
 import type { UptimeGroupResult } from '../../types'
 import { AnnouncementsPanel } from './announcements-panel'
-import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
 import { PerformanceHealthPanel } from './performance-health-panel'
 import { SummaryCards } from './summary-cards'
@@ -317,7 +316,6 @@ export function OverviewDashboard() {
   const user = useAuthStore((state) => state.auth.user)
   const { items: apiInfoItems } = useApiInfo()
   const {
-    apiInfo: showApiInfoPanel,
     announcements: showAnnouncementsPanel,
     faq: showFAQPanel,
     uptimeKuma: showUptimePanel,
@@ -466,7 +464,7 @@ export function OverviewDashboard() {
   const setupGuideExpanded =
     manualSetupGuideExpanded ?? (setupStatusReady && !setupComplete)
   const showLeftContentPanels =
-    isAdmin || showApiInfoPanel || showAnnouncementsPanel || showFAQPanel
+    isAdmin || showAnnouncementsPanel || showFAQPanel
   // Only reserve layout space for the uptime rail once monitors are actually
   // configured; an enabled-but-empty Uptime Kuma integration stays hidden.
   const uptimeGroups = uptimeQuery.data ?? []
@@ -558,7 +556,10 @@ export function OverviewDashboard() {
         <div className='bg-card border-border flex flex-wrap items-center justify-between gap-3 border px-4 py-2.5 sm:px-5'>
           <div className='flex min-w-0 items-center gap-2.5'>
             {setupComplete ? (
-              <Check className='text-success size-4 shrink-0' aria-hidden='true' />
+              <Check
+                className='text-success size-4 shrink-0'
+                aria-hidden='true'
+              />
             ) : (
               <Circle
                 className='text-muted-foreground/40 size-4 shrink-0'
@@ -599,18 +600,12 @@ export function OverviewDashboard() {
             <div
               className={cn(
                 'grid min-w-0 grid-cols-1 gap-4',
-                (showApiInfoPanel || showAnnouncementsPanel || showFAQPanel) &&
-                  'lg:grid-cols-2'
+                (showAnnouncementsPanel || showFAQPanel) && 'lg:grid-cols-2'
               )}
             >
               {isAdmin && (
                 <CardStaggerItem className='lg:col-span-2'>
                   <PerformanceHealthPanel />
-                </CardStaggerItem>
-              )}
-              {showApiInfoPanel && (
-                <CardStaggerItem>
-                  <ApiInfoPanel />
                 </CardStaggerItem>
               )}
               {showAnnouncementsPanel && (

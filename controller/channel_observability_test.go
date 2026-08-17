@@ -1,9 +1,13 @@
 package controller
 
 import (
+	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,4 +42,39 @@ func TestParseObservabilityQueryRejectsInvalidSortAndRange(t *testing.T) {
 	context.Request = httptest.NewRequest("GET", "/api/observability/channel-model?start=1700003600&end=1700000000", nil)
 	_, err = parseObservabilityQuery(context, true)
 	assert.Error(t, err)
+}
+
+func TestParseObservationChannelIdsDeduplicatesAndValidates(t *testing.T) {
+	ids, err := parseObservationChannelIds("7, 8,7")
+	require.NoError(t, err)
+	assert.Equal(t, []int{7, 8}, ids)
+
+	_, err = parseObservationChannelIds("")
+	assert.Error(t, err)
+	_, err = parseObservationChannelIds("7,invalid")
+	assert.Error(t, err)
+}
+
+func TestBuildMultiKeyTestResultIncludesSafeErrorDetails(t *testing.T) {
+	credential := model.ChannelCredential{Id: 11, Position: 2, Fingerprint: "fingerprint"}
+	apiError := relaytypes.NewErrorWithStatusCode(
+		errors.New("upstream https://user:secret@example.com/v1 failed\nwith details"),
+		relaytypes.ErrorCode("upstream_error"),
+		429,
+	)
+	result := buildMultiKeyTestResult(credential, testResult{newAPIError: apiError}, 0, nil)
+
+	assert.Equal(t, "failed", result.Status)
+	assert.Equal(t, 429, result.HTTPStatus)
+	assert.Equal(t, "upstream_error", result.ErrorCode)
+	assert.Equal(t, "rate_limited", result.ErrorClass)
+	assert.NotContains(t, result.ErrorMessage, "secret")
+	assert.NotContains(t, result.ErrorMessage, "\n")
+	assert.Contains(t, result.ErrorMessage, "https://***")
+}
+
+func TestSanitizeMultiKeyTestErrorBoundsResponseSize(t *testing.T) {
+	message := sanitizeMultiKeyTestError(strings.Repeat("x", 600))
+	assert.Len(t, []rune(message), 515)
+	assert.True(t, strings.HasSuffix(message, "..."))
 }

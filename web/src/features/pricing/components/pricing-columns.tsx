@@ -158,11 +158,19 @@ export function usePricingColumns(
 
           return (
             <div className='max-w-full min-w-0'>
-              <span className='font-mono text-sm tabular-nums'>
+              <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm tabular-nums'>
                 {primaryEntries.map((entry, index) => (
-                  <span key={entry.key}>
+                  <span
+                    key={entry.key}
+                    className='inline-flex items-baseline gap-1'
+                  >
                     {index > 0 && (
                       <span className='text-muted-foreground/40 mx-1'>/</span>
+                    )}
+                    {entry.original && (
+                      <span className='text-muted-foreground/60 text-xs tabular-nums line-through'>
+                        {stripTrailingZeros(entry.original)}
+                      </span>
                     )}
                     {stripTrailingZeros(entry.formatted)}
                   </span>

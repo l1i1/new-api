@@ -60,7 +60,7 @@ type PlaygroundInputToolsProps = {
 
 const MODE_OPTIONS: { value: PlaygroundMode; labelKey: string }[] = [
   { value: PLAYGROUND_MODES.CHAT, labelKey: 'Chat' },
-  { value: PLAYGROUND_MODES.IMAGE, labelKey: 'Image' },
+  { value: PLAYGROUND_MODES.IMAGE, labelKey: 'Image generation' },
 ]
 
 export function PlaygroundInputTools({

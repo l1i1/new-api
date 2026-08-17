@@ -24,7 +24,9 @@ import type {
   BatchDeleteParams,
   BatchSetTagParams,
   Channel,
+  ChannelAvailabilityResponse,
   ChannelBalanceResponse,
+  ChannelObservabilityResult,
   ChannelObservabilityResponse,
   ChannelOpsResponse,
   ChannelTestResponse,
@@ -421,7 +423,22 @@ export async function getMultiKeyStatus(
     params: { page, page_size: pageSize, status },
     ...channelActionConfig(),
   })
-  return res.data
+  const response = res.data as MultiKeyStatusResponse
+  if (response.data?.keys) {
+    response.data.keys = response.data.keys.map((key, fallbackIndex) => {
+      const rawIndex = typeof key.index === 'number' ? key.index : Number.NaN
+      const rawPosition =
+        typeof key.position === 'number' ? key.position : Number.NaN
+      let index = fallbackIndex
+      if (Number.isFinite(rawIndex)) {
+        index = rawIndex
+      } else if (Number.isFinite(rawPosition)) {
+        index = rawPosition
+      }
+      return { ...key, index }
+    })
+  }
+  return response
 }
 
 /**
@@ -602,15 +619,66 @@ export async function cancelMultiKeyTestTask(
 export async function getChannelObservability(
   channelId: number,
   hours = 24,
-  params?: {
-    page?: number
-    page_size?: number
-    sort_by?: string
-    sort_order?: 'asc' | 'desc'
-  }
+  params?: ChannelObservabilityParams
 ): Promise<ChannelObservabilityResponse> {
   const res = await api.get('/api/observability/channel-model', {
     params: { channel_id: channelId, hours, ...params },
+    ...channelActionConfig(),
+  })
+  return res.data
+}
+
+export type ChannelObservabilityParams = {
+  start?: number
+  end?: number
+  page?: number
+  page_size?: number
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+}
+
+export async function getAllChannelObservability(
+  channelId: number,
+  hours = 24,
+  params?: Omit<ChannelObservabilityParams, 'page' | 'page_size'>
+): Promise<ChannelObservabilityResult[]> {
+  const pageSize = 200
+  const items: ChannelObservabilityResult[] = []
+  let page = 1
+
+  while (true) {
+    const response = await getChannelObservability(channelId, hours, {
+      ...params,
+      page,
+      page_size: pageSize,
+    })
+    if (!response.success) {
+      throw new Error(
+        response.message || 'Failed to load channel observability'
+      )
+    }
+
+    const data = response.data
+    if (!data) return items
+    items.push(...data.items)
+
+    const totalPages = Math.max(1, data.total_pages || 1)
+    if (page >= totalPages) return items
+    page += 1
+  }
+}
+
+export async function getChannelAvailability(
+  channelIds: number[],
+  hours = 24,
+  bucketCount = 24
+): Promise<ChannelAvailabilityResponse> {
+  const res = await api.get('/api/observability/channel-availability', {
+    params: {
+      channel_ids: channelIds.join(','),
+      hours,
+      bucket_count: bucketCount,
+    },
     ...channelActionConfig(),
   })
   return res.data

@@ -20,6 +20,8 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 
+import { ApiInfoPanel } from '../dashboard/components/overview/api-info-panel'
+import { useDashboardContentVisibility } from '../dashboard/hooks/use-status-data'
 import { ApiKeysDialogs } from './components/api-keys-dialogs'
 import { ApiKeysPrimaryButtons } from './components/api-keys-primary-buttons'
 import { ApiKeysProvider } from './components/api-keys-provider'
@@ -27,11 +29,13 @@ import { ApiKeysTable } from './components/api-keys-table'
 
 export function ApiKeys() {
   const { t } = useTranslation()
+  const { apiInfo: showApiInfo } = useDashboardContentVisibility()
   return (
     <ApiKeysProvider>
       <SectionPageLayout fixedContent>
         <SectionPageLayout.Title>{t('API Keys')}</SectionPageLayout.Title>
         <SectionPageLayout.Actions>
+          {showApiInfo && <ApiInfoPanel compact />}
           <ApiKeysPrimaryButtons />
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>

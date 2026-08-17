@@ -45,6 +45,8 @@ export type DynamicPriceEntry = {
   shortLabel: string
   value: number
   formatted: string
+  /** Undiscounted price shown struck through when a group ratio applies. */
+  original?: string
   variable: BillingVar
 }
 
@@ -130,6 +132,8 @@ export function getDynamicPriceEntries(
 ): DynamicPriceEntry[] {
   if (!tier) return []
 
+  const groupRatio = options.groupRatioMultiplier ?? 1
+
   return BILLING_PRICING_VARS.flatMap((variable) => {
     if (!variable.field) return []
     const value = Number(tier[variable.field])
@@ -143,6 +147,13 @@ export function getDynamicPriceEntries(
         shortLabel: variable.shortLabel,
         value,
         formatted: formatDynamicUnitPrice(value, options),
+        original:
+          groupRatio === 1
+            ? undefined
+            : formatDynamicUnitPrice(value, {
+                ...options,
+                groupRatioMultiplier: 1,
+              }),
         variable,
       },
     ]

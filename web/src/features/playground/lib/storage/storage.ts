@@ -16,7 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { MESSAGE_STATUS, STORAGE_KEYS } from '../../constants'
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_PARAMETER_ENABLED,
+  MESSAGE_STATUS,
+  PLAYGROUND_MODES,
+  STORAGE_KEYS,
+} from '../../constants'
 import type {
   PlaygroundConfig,
   ParameterEnabled,
@@ -408,8 +414,20 @@ export function clearPlaygroundData(): void {
 function normalizeSessionsForLoad(
   sessions: PlaygroundSession[]
 ): PlaygroundSession[] {
+  const legacyConfig = { ...DEFAULT_CONFIG, ...loadConfig() }
+  const legacyParameterEnabled = {
+    ...DEFAULT_PARAMETER_ENABLED,
+    ...loadParameterEnabled(),
+  }
+
   return sessions.map((session) => ({
     ...session,
+    mode: session.mode ?? PLAYGROUND_MODES.CHAT,
+    config: { ...legacyConfig, ...session.config },
+    parameterEnabled: {
+      ...legacyParameterEnabled,
+      ...session.parameterEnabled,
+    },
     messages: sanitizeMessagesOnLoad(
       session.messages.map(normalizeStoredMessageForLoad)
     ),
@@ -439,6 +457,12 @@ export function loadSessions(): PlaygroundSession[] | null {
           title: '',
           createdAt: legacyMessages[0]?.createdAt ?? now,
           updatedAt: now,
+          mode: PLAYGROUND_MODES.CHAT,
+          config: { ...DEFAULT_CONFIG, ...loadConfig() },
+          parameterEnabled: {
+            ...DEFAULT_PARAMETER_ENABLED,
+            ...loadParameterEnabled(),
+          },
           messages: legacyMessages,
         },
       ]

@@ -59,7 +59,7 @@ function PriceRow(props: {
     <div className='flex items-baseline gap-1.5 text-xs'>
       <span className='text-muted-foreground shrink-0'>{props.label}</span>
       {props.original && (
-        <span className='text-muted-foreground/60 font-mono text-xs line-through tabular-nums'>
+        <span className='text-muted-foreground/60 font-mono text-xs tabular-nums line-through'>
           {props.original}
         </span>
       )}
@@ -165,6 +165,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           key={entry.key}
           label={t(entry.shortLabel)}
           value={entry.formatted}
+          original={entry.original}
         />
       ))
     } else {

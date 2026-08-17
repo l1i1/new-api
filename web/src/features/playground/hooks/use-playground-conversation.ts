@@ -16,51 +16,96 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { PLAYGROUND_MODES, type PlaygroundMode } from '../constants'
 import {
   appendUserMessagePair,
   applyMessageEdit,
   createRegeneratedMessages,
+  getMessageContent,
+  getPreviousUserMessage,
   removeMessageByKey,
 } from '../lib'
 import type { Message } from '../types'
 
+type SessionMessageUpdater = (
+  sessionId: string,
+  updater: (previousMessages: Message[]) => Message[]
+) => void
+
 type UsePlaygroundConversationOptions = {
   messages: Message[]
-  updateMessages: (
-    updater: Message[] | ((prev: Message[]) => Message[])
+  mode: PlaygroundMode
+  sessionId: string | null
+  updateMessages: SessionMessageUpdater
+  sendChat: (sessionId: string, messages: Message[]) => void
+  sendImage: (
+    sessionId: string,
+    text: string,
+    images?: string[],
+    appendUserMessages?: boolean
   ) => void
-  sendChat: (messages: Message[]) => void
 }
 
 export function usePlaygroundConversation({
   messages,
+  mode,
+  sessionId,
   updateMessages,
   sendChat,
+  sendImage,
 }: UsePlaygroundConversationOptions) {
   const [editingMessageKey, setEditingMessageKey] = useState<string | null>(
     null
   )
 
+  useEffect(() => {
+    setEditingMessageKey(null)
+  }, [sessionId])
+
   const handleSendMessage = useCallback(
     (text: string, images?: string[]) => {
+      if (!sessionId) return
       const nextMessages = appendUserMessagePair(messages, text, images)
-      updateMessages(nextMessages)
-      sendChat(nextMessages)
+      updateMessages(sessionId, () => nextMessages)
+      if (mode === PLAYGROUND_MODES.IMAGE) {
+        sendImage(sessionId, text, images, false)
+      } else {
+        sendChat(sessionId, nextMessages)
+      }
     },
-    [messages, updateMessages, sendChat]
+    [messages, mode, sendChat, sendImage, sessionId, updateMessages]
   )
 
   const handleRegenerateMessage = useCallback(
     (message: Message) => {
+      if (!sessionId) return
       const nextMessages = createRegeneratedMessages(messages, message.key)
       if (!nextMessages) return
 
-      updateMessages(nextMessages)
-      sendChat(nextMessages)
+      updateMessages(sessionId, () => nextMessages)
+      if (mode === PLAYGROUND_MODES.IMAGE) {
+        const messageIndex = messages.findIndex(
+          (candidate) => candidate.key === message.key
+        )
+        const userMessage =
+          message.from === 'user'
+            ? message
+            : getPreviousUserMessage(messages, messageIndex)
+        if (userMessage) {
+          sendImage(
+            sessionId,
+            getMessageContent(userMessage),
+            userMessage.images,
+            false
+          )
+        }
+      } else {
+        sendChat(sessionId, nextMessages)
+      }
     },
-    [messages, updateMessages, sendChat]
+    [messages, mode, sendChat, sendImage, sessionId, updateMessages]
   )
 
   const handleEditMessage = useCallback((message: Message) => {
@@ -75,7 +120,7 @@ export function usePlaygroundConversation({
 
   const applyEdit = useCallback(
     (newContent: string, shouldSubmit: boolean) => {
-      if (!editingMessageKey) return
+      if (!editingMessageKey || !sessionId) return
 
       const editResult = applyMessageEdit(
         messages,
@@ -86,22 +131,45 @@ export function usePlaygroundConversation({
       if (!editResult) return
 
       setEditingMessageKey(null)
-      updateMessages(editResult.messages)
+      updateMessages(sessionId, () => editResult.messages)
 
       if (editResult.shouldSend) {
-        sendChat(editResult.messages)
+        if (mode === PLAYGROUND_MODES.IMAGE) {
+          const editedMessage = editResult.messages.find(
+            (message) => message.key === editingMessageKey
+          )
+          if (editedMessage) {
+            sendImage(
+              sessionId,
+              getMessageContent(editedMessage),
+              editedMessage.images,
+              false
+            )
+          }
+        } else {
+          sendChat(sessionId, editResult.messages)
+        }
       }
     },
-    [editingMessageKey, messages, updateMessages, sendChat]
+    [
+      editingMessageKey,
+      messages,
+      mode,
+      sendChat,
+      sendImage,
+      sessionId,
+      updateMessages,
+    ]
   )
 
   const handleDeleteMessage = useCallback(
     (message: Message) => {
-      updateMessages((previousMessages) =>
+      if (!sessionId) return
+      updateMessages(sessionId, (previousMessages) =>
         removeMessageByKey(previousMessages, message.key)
       )
     },
-    [updateMessages]
+    [sessionId, updateMessages]
   )
 
   return {

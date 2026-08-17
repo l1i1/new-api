@@ -61,6 +61,48 @@ func TestChannelCredentialFingerprintAndPublicViewDoNotExposeSecrets(t *testing.
 	assert.Empty(t, RedactProxyURL("http://proxy-user:proxy-password@proxy.example.test:8080/path"))
 }
 
+func TestRecordChannelCredentialTestPersistsFailureDetails(t *testing.T) {
+	db := setupChannelCredentialSQLite(t)
+	credential, err := NewChannelCredential(11, 0, "test-credential-value")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(credential).Error)
+
+	require.NoError(t, RecordChannelCredentialTest(
+		db, 11, credential.Id, "failed", 123, 429,
+		"rate_limit_exceeded", "rate_limited", "upstream rejected the request",
+	))
+
+	var stored ChannelCredential
+	require.NoError(t, db.First(&stored, credential.Id).Error)
+	assert.Equal(t, "failed", stored.LastTestStatus)
+	assert.Equal(t, int64(123), stored.LastTestLatencyMs)
+	assert.Equal(t, 429, stored.LastTestHTTPStatus)
+	assert.Equal(t, "rate_limit_exceeded", stored.LastTestErrorCode)
+	assert.Equal(t, "rate_limited", stored.LastTestErrorClass)
+	assert.Equal(t, "upstream rejected the request", stored.LastTestErrorMessage)
+
+	public := stored.PublicView()
+	assert.Equal(t, 429, public.LastTestHTTPStatus)
+	assert.Equal(t, "upstream rejected the request", public.LastTestErrorMessage)
+}
+
+func TestChannelCredentialLastTestErrorMessageUsesPortableColumnType(t *testing.T) {
+	db := setupChannelCredentialSQLite(t)
+
+	columns, err := db.Migrator().ColumnTypes(&ChannelCredential{})
+	require.NoError(t, err)
+	for _, column := range columns {
+		if !strings.EqualFold(column.Name(), "last_test_error_message") {
+			continue
+		}
+
+		assert.Contains(t, strings.ToLower(column.DatabaseTypeName()), "char")
+		return
+	}
+
+	t.Fatal("last_test_error_message column was not migrated")
+}
+
 func TestChannelCredentialProxyResolutionHonorsMode(t *testing.T) {
 	mode, customURL, err := NormalizeChannelCredentialProxy(
 		ChannelCredentialProxyModeCustom,

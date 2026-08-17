@@ -1572,18 +1572,20 @@ type MultiKeyStatusResponse struct {
 }
 
 type KeyStatus struct {
-	CredentialID      int    `json:"credential_id,omitempty"`
-	Index             int    `json:"index"`
-	Status            int    `json:"status"`
-	DisabledTime      int64  `json:"disabled_time,omitempty"`
-	Reason            string `json:"reason,omitempty"`
-	Fingerprint       string `json:"fingerprint,omitempty"`
-	ProxyMode         string `json:"proxy_mode,omitempty"`
-	ProxySummary      string `json:"proxy_summary,omitempty"`
-	LastTestAt        int64  `json:"last_test_at,omitempty"`
-	LastTestStatus    string `json:"last_test_status,omitempty"`
-	LastTestLatencyMs int64  `json:"last_test_latency_ms,omitempty"`
-	LastTestErrorCode string `json:"last_test_error_code,omitempty"`
+	CredentialID         int    `json:"credential_id,omitempty"`
+	Index                int    `json:"index"`
+	Status               int    `json:"status"`
+	DisabledTime         int64  `json:"disabled_time,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	Fingerprint          string `json:"fingerprint,omitempty"`
+	ProxyMode            string `json:"proxy_mode,omitempty"`
+	ProxySummary         string `json:"proxy_summary,omitempty"`
+	LastTestAt           int64  `json:"last_test_at,omitempty"`
+	LastTestStatus       string `json:"last_test_status,omitempty"`
+	LastTestLatencyMs    int64  `json:"last_test_latency_ms,omitempty"`
+	LastTestHTTPStatus   int    `json:"last_test_http_status,omitempty"`
+	LastTestErrorCode    string `json:"last_test_error_code,omitempty"`
+	LastTestErrorMessage string `json:"last_test_error_message,omitempty"`
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1774,9 +1776,21 @@ func ManageMultiKeys(c *gin.Context) {
 					}
 					return 0
 				}(),
+				LastTestHTTPStatus: func() int {
+					if hasCredential {
+						return credential.LastTestHTTPStatus
+					}
+					return 0
+				}(),
 				LastTestErrorCode: func() string {
 					if hasCredential {
 						return credential.LastTestErrorCode
+					}
+					return ""
+				}(),
+				LastTestErrorMessage: func() string {
+					if hasCredential {
+						return credential.LastTestErrorMessage
 					}
 					return ""
 				}(),

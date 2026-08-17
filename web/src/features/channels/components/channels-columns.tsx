@@ -76,8 +76,10 @@ import {
   isTagAggregateRow,
   type TagRow,
 } from '../lib'
+import type { ChannelAvailabilitySeries } from '../lib/channel-observability'
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
+import { ChannelAvailabilityCell } from './channel-availability-cell'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
 import { DataTableRowActions } from './data-table-row-actions'
@@ -87,6 +89,8 @@ import {
   type CodexUsageDialogData,
 } from './dialogs/codex-usage-dialog'
 import { NumericSpinnerInput } from './numeric-spinner-input'
+
+const EMPTY_AVAILABILITY_SERIES: ChannelAvailabilitySeries = {}
 
 function parseIonetMeta(otherInfo: string | null | undefined): null | {
   source?: string
@@ -547,11 +551,14 @@ function BalanceCell({ channel }: { channel: Channel }) {
 export function useChannelsColumns(
   options: {
     enableSelection?: boolean
+    availabilityByChannelId?: ChannelAvailabilitySeries
   } = {}
 ): ColumnDef<Channel>[] {
   const { t, i18n } = useTranslation()
   const { sensitiveVisible } = useChannels()
   const enableSelection = options.enableSelection ?? true
+  const availabilityByChannelId =
+    options.availabilityByChannelId ?? EMPTY_AVAILABILITY_SERIES
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   // The column definitions only depend on the translation function, the active
   // locale, and sensitive-data visibility. Memoizing keeps the array (and every
@@ -990,6 +997,21 @@ export function useChannelsColumns(
         enableSorting: false,
       },
 
+      // Availability column
+      {
+        id: 'availability',
+        header: t('Availability'),
+        meta: { mobileHidden: true },
+        cell: ({ row }) => (
+          <ChannelAvailabilityCell
+            channel={row.original}
+            series={availabilityByChannelId}
+          />
+        ),
+        size: 220,
+        enableSorting: false,
+      },
+
       // Models column
       {
         accessorKey: 'models',
@@ -1188,6 +1210,6 @@ export function useChannelsColumns(
         meta: { pinned: 'right' as const },
       },
     ],
-    [enableSelection, t, locale, sensitiveVisible]
+    [availabilityByChannelId, enableSelection, t, locale, sensitiveVisible]
   )
 }

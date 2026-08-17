@@ -39,24 +39,26 @@ var (
 // that need to return credentials to an administrator must use PublicView,
 // which contains only a fingerprint and a redacted proxy summary.
 type ChannelCredential struct {
-	Id                  int    `json:"credential_id" gorm:"primaryKey"`
-	ChannelID           int    `json:"channel_id" gorm:"not null;index:idx_channel_credential_channel_position,priority:1;index:idx_channel_credential_channel_status,priority:1;index:idx_channel_credential_channel_fingerprint,priority:1"`
-	Position            int    `json:"position" gorm:"not null;index:idx_channel_credential_channel_position,priority:2"`
-	Secret              string `json:"-" gorm:"column:secret;type:text;not null"`
-	Fingerprint         string `json:"fingerprint" gorm:"type:char(64);not null;index:idx_channel_credential_channel_fingerprint,priority:2"`
-	Status              int    `json:"status" gorm:"not null;default:1;index:idx_channel_credential_channel_status,priority:2"`
-	DisabledReason      string `json:"disabled_reason,omitempty" gorm:"type:varchar(255);not null;default:''"`
-	DisabledAt          int64  `json:"disabled_at,omitempty" gorm:"bigint;not null;default:0"`
-	ProxyMode           string `json:"proxy_mode" gorm:"type:varchar(16);not null;default:'inherit'"`
-	ProxyURL            string `json:"-" gorm:"column:proxy_url;type:text;not null"`
-	LastTestAt          int64  `json:"last_test_at,omitempty" gorm:"bigint;not null;default:0"`
-	LastTestStatus      string `json:"last_test_status,omitempty" gorm:"type:varchar(32);not null;default:''"`
-	LastTestLatencyMs   int64  `json:"last_test_latency_ms,omitempty" gorm:"bigint;not null;default:0"`
-	LastTestErrorCode   string `json:"last_test_error_code,omitempty" gorm:"type:varchar(128);not null;default:''"`
-	LastTestErrorClass  string `json:"last_test_error_class,omitempty" gorm:"type:varchar(64);not null;default:''"`
-	ConsecutiveFailures int    `json:"consecutive_failures" gorm:"not null;default:0"`
-	CreatedAt           int64  `json:"created_at" gorm:"bigint;not null;autoCreateTime"`
-	UpdatedAt           int64  `json:"updated_at" gorm:"bigint;not null;autoUpdateTime"`
+	Id                   int    `json:"credential_id" gorm:"primaryKey"`
+	ChannelID            int    `json:"channel_id" gorm:"not null;index:idx_channel_credential_channel_position,priority:1;index:idx_channel_credential_channel_status,priority:1;index:idx_channel_credential_channel_fingerprint,priority:1"`
+	Position             int    `json:"position" gorm:"not null;index:idx_channel_credential_channel_position,priority:2"`
+	Secret               string `json:"-" gorm:"column:secret;type:text;not null"`
+	Fingerprint          string `json:"fingerprint" gorm:"type:char(64);not null;index:idx_channel_credential_channel_fingerprint,priority:2"`
+	Status               int    `json:"status" gorm:"not null;default:1;index:idx_channel_credential_channel_status,priority:2"`
+	DisabledReason       string `json:"disabled_reason,omitempty" gorm:"type:varchar(255);not null;default:''"`
+	DisabledAt           int64  `json:"disabled_at,omitempty" gorm:"bigint;not null;default:0"`
+	ProxyMode            string `json:"proxy_mode" gorm:"type:varchar(16);not null;default:'inherit'"`
+	ProxyURL             string `json:"-" gorm:"column:proxy_url;type:text;not null"`
+	LastTestAt           int64  `json:"last_test_at,omitempty" gorm:"bigint;not null;default:0"`
+	LastTestStatus       string `json:"last_test_status,omitempty" gorm:"type:varchar(32);not null;default:''"`
+	LastTestLatencyMs    int64  `json:"last_test_latency_ms,omitempty" gorm:"bigint;not null;default:0"`
+	LastTestHTTPStatus   int    `json:"last_test_http_status,omitempty" gorm:"not null;default:0"`
+	LastTestErrorCode    string `json:"last_test_error_code,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	LastTestErrorClass   string `json:"last_test_error_class,omitempty" gorm:"type:varchar(64);not null;default:''"`
+	LastTestErrorMessage string `json:"last_test_error_message,omitempty" gorm:"type:varchar(2048);not null;default:''"`
+	ConsecutiveFailures  int    `json:"consecutive_failures" gorm:"not null;default:0"`
+	CreatedAt            int64  `json:"created_at" gorm:"bigint;not null;autoCreateTime"`
+	UpdatedAt            int64  `json:"updated_at" gorm:"bigint;not null;autoUpdateTime"`
 }
 
 func (ChannelCredential) TableName() string {
@@ -79,21 +81,23 @@ func (ChannelCredentialRevision) TableName() string {
 // ChannelCredentialPublic is the safe administrator-facing representation.
 // It intentionally has no Secret or full ProxyURL field.
 type ChannelCredentialPublic struct {
-	Id                  int    `json:"credential_id"`
-	ChannelID           int    `json:"channel_id"`
-	Position            int    `json:"position"`
-	Fingerprint         string `json:"fingerprint"`
-	Status              int    `json:"status"`
-	DisabledReason      string `json:"disabled_reason,omitempty"`
-	DisabledAt          int64  `json:"disabled_at,omitempty"`
-	ProxyMode           string `json:"proxy_mode"`
-	ProxySummary        string `json:"proxy_summary,omitempty"`
-	LastTestAt          int64  `json:"last_test_at,omitempty"`
-	LastTestStatus      string `json:"last_test_status,omitempty"`
-	LastTestLatencyMs   int64  `json:"last_test_latency_ms,omitempty"`
-	LastTestErrorCode   string `json:"last_test_error_code,omitempty"`
-	LastTestErrorClass  string `json:"last_test_error_class,omitempty"`
-	ConsecutiveFailures int    `json:"consecutive_failures"`
+	Id                   int    `json:"credential_id"`
+	ChannelID            int    `json:"channel_id"`
+	Position             int    `json:"position"`
+	Fingerprint          string `json:"fingerprint"`
+	Status               int    `json:"status"`
+	DisabledReason       string `json:"disabled_reason,omitempty"`
+	DisabledAt           int64  `json:"disabled_at,omitempty"`
+	ProxyMode            string `json:"proxy_mode"`
+	ProxySummary         string `json:"proxy_summary,omitempty"`
+	LastTestAt           int64  `json:"last_test_at,omitempty"`
+	LastTestStatus       string `json:"last_test_status,omitempty"`
+	LastTestLatencyMs    int64  `json:"last_test_latency_ms,omitempty"`
+	LastTestHTTPStatus   int    `json:"last_test_http_status,omitempty"`
+	LastTestErrorCode    string `json:"last_test_error_code,omitempty"`
+	LastTestErrorClass   string `json:"last_test_error_class,omitempty"`
+	LastTestErrorMessage string `json:"last_test_error_message,omitempty"`
+	ConsecutiveFailures  int    `json:"consecutive_failures"`
 }
 
 // NewChannelCredential creates a normalized credential without exposing the
@@ -241,21 +245,23 @@ func (credential ChannelCredential) ProxySummary() string {
 
 func (credential ChannelCredential) PublicView() ChannelCredentialPublic {
 	return ChannelCredentialPublic{
-		Id:                  credential.Id,
-		ChannelID:           credential.ChannelID,
-		Position:            credential.Position,
-		Fingerprint:         credential.Fingerprint,
-		Status:              credential.Status,
-		DisabledReason:      credential.DisabledReason,
-		DisabledAt:          credential.DisabledAt,
-		ProxyMode:           credential.ProxyMode,
-		ProxySummary:        credential.ProxySummary(),
-		LastTestAt:          credential.LastTestAt,
-		LastTestStatus:      credential.LastTestStatus,
-		LastTestLatencyMs:   credential.LastTestLatencyMs,
-		LastTestErrorCode:   credential.LastTestErrorCode,
-		LastTestErrorClass:  credential.LastTestErrorClass,
-		ConsecutiveFailures: credential.ConsecutiveFailures,
+		Id:                   credential.Id,
+		ChannelID:            credential.ChannelID,
+		Position:             credential.Position,
+		Fingerprint:          credential.Fingerprint,
+		Status:               credential.Status,
+		DisabledReason:       credential.DisabledReason,
+		DisabledAt:           credential.DisabledAt,
+		ProxyMode:            credential.ProxyMode,
+		ProxySummary:         credential.ProxySummary(),
+		LastTestAt:           credential.LastTestAt,
+		LastTestStatus:       credential.LastTestStatus,
+		LastTestLatencyMs:    credential.LastTestLatencyMs,
+		LastTestHTTPStatus:   credential.LastTestHTTPStatus,
+		LastTestErrorCode:    credential.LastTestErrorCode,
+		LastTestErrorClass:   credential.LastTestErrorClass,
+		LastTestErrorMessage: credential.LastTestErrorMessage,
+		ConsecutiveFailures:  credential.ConsecutiveFailures,
 	}
 }
 
@@ -610,7 +616,7 @@ func UpdateChannelCredentialProxies(db *gorm.DB, input ChannelCredentialProxyUpd
 // RecordChannelCredentialTest updates health metadata without changing the
 // credential state. Test metadata is intentionally independent from key-set
 // revisions so concurrent tests do not invalidate an admin status form.
-func RecordChannelCredentialTest(db *gorm.DB, channelID, credentialID int, status string, latencyMs int64, errorClass string) error {
+func RecordChannelCredentialTest(db *gorm.DB, channelID, credentialID int, status string, latencyMs int64, httpStatus int, errorCode, errorClass, errorMessage string) error {
 	if db == nil || channelID <= 0 || credentialID <= 0 {
 		return ErrChannelCredentialRevisionInput
 	}
@@ -620,13 +626,18 @@ func RecordChannelCredentialTest(db *gorm.DB, channelID, credentialID int, statu
 	if latencyMs < 0 {
 		latencyMs = 0
 	}
+	if httpStatus < 0 {
+		httpStatus = 0
+	}
 	return db.Model(&ChannelCredential{}).Where("id = ? AND channel_id = ?", credentialID, channelID).Updates(map[string]interface{}{
-		"last_test_at":          common.GetTimestamp(),
-		"last_test_status":      status,
-		"last_test_latency_ms":  latencyMs,
-		"last_test_error_code":  strings.TrimSpace(errorClass),
-		"last_test_error_class": strings.TrimSpace(errorClass),
-		"consecutive_failures":  gorm.Expr("CASE WHEN ? = 'success' THEN 0 ELSE consecutive_failures + 1 END", status),
+		"last_test_at":            common.GetTimestamp(),
+		"last_test_status":        status,
+		"last_test_latency_ms":    latencyMs,
+		"last_test_http_status":   httpStatus,
+		"last_test_error_code":    strings.TrimSpace(errorCode),
+		"last_test_error_class":   strings.TrimSpace(errorClass),
+		"last_test_error_message": strings.TrimSpace(errorMessage),
+		"consecutive_failures":    gorm.Expr("CASE WHEN ? = 'success' THEN 0 ELSE consecutive_failures + 1 END", status),
 	}).Error
 }
 

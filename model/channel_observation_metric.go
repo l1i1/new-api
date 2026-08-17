@@ -167,6 +167,7 @@ type ChannelModelPerfQuery struct {
 	StartTs        int64
 	EndTs          int64
 	ChannelId      int
+	ChannelIds     []int
 	CredentialId   int
 	RequestedModel string
 	Group          string
@@ -289,37 +290,8 @@ func (a *ChannelModelPerfAggregate) merge(metric ChannelModelPerfMetric) {
 }
 
 func GetChannelModelPerfMetrics(query ChannelModelPerfQuery) ([]ChannelModelPerfAggregate, error) {
-	if query.EndTs <= 0 {
-		query.EndTs = time.Now().Unix()
-	}
-	if query.StartTs <= 0 {
-		hours := query.Hours
-		if hours <= 0 {
-			hours = 24
-		}
-		if hours > 24*30 {
-			hours = 24 * 30
-		}
-		query.StartTs = query.EndTs - int64(hours)*3600
-	}
-	dbQuery := DB.Where("bucket_ts >= ? AND bucket_ts <= ?", query.StartTs, query.EndTs)
-	if query.ChannelId > 0 {
-		dbQuery = dbQuery.Where("channel_id = ?", query.ChannelId)
-	}
-	if query.CredentialId > 0 {
-		dbQuery = dbQuery.Where("credential_id = ?", query.CredentialId)
-	}
-	if query.RequestedModel != "" {
-		dbQuery = dbQuery.Where("requested_model = ?", query.RequestedModel)
-	}
-	if query.Group != "" {
-		dbQuery = dbQuery.Where(commonGroupCol+" = ?", query.Group)
-	}
-	if query.Protocol != "" {
-		dbQuery = dbQuery.Where("protocol = ?", query.Protocol)
-	}
-	var rows []ChannelModelPerfMetric
-	if err := dbQuery.Find(&rows).Error; err != nil {
+	rows, err := GetChannelModelPerfMetricRows(query)
+	if err != nil {
 		return nil, err
 	}
 	merged := make(map[string]*ChannelModelPerfAggregate)
@@ -343,6 +315,45 @@ func GetChannelModelPerfMetrics(query ChannelModelPerfQuery) ([]ChannelModelPerf
 		return result[i].AttemptCount > result[j].AttemptCount
 	})
 	return result, nil
+}
+
+func GetChannelModelPerfMetricRows(query ChannelModelPerfQuery) ([]ChannelModelPerfMetric, error) {
+	if query.EndTs <= 0 {
+		query.EndTs = time.Now().Unix()
+	}
+	if query.StartTs <= 0 {
+		hours := query.Hours
+		if hours <= 0 {
+			hours = 24
+		}
+		if hours > 24*30 {
+			hours = 24 * 30
+		}
+		query.StartTs = query.EndTs - int64(hours)*3600
+	}
+	dbQuery := DB.Where("bucket_ts >= ? AND bucket_ts <= ?", query.StartTs, query.EndTs)
+	if query.ChannelId > 0 {
+		dbQuery = dbQuery.Where("channel_id = ?", query.ChannelId)
+	} else if len(query.ChannelIds) > 0 {
+		dbQuery = dbQuery.Where("channel_id IN ?", query.ChannelIds)
+	}
+	if query.CredentialId > 0 {
+		dbQuery = dbQuery.Where("credential_id = ?", query.CredentialId)
+	}
+	if query.RequestedModel != "" {
+		dbQuery = dbQuery.Where("requested_model = ?", query.RequestedModel)
+	}
+	if query.Group != "" {
+		dbQuery = dbQuery.Where(commonGroupCol+" = ?", query.Group)
+	}
+	if query.Protocol != "" {
+		dbQuery = dbQuery.Where("protocol = ?", query.Protocol)
+	}
+	var rows []ChannelModelPerfMetric
+	if err := dbQuery.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func fmtObservationAggregateKey(channelID, credentialID int, modelName, upstreamModel, group, protocol string) string {

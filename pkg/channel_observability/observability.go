@@ -281,6 +281,7 @@ type Query struct {
 	EndTs          int64
 	Hours          int
 	ChannelId      int
+	ChannelIds     []int
 	CredentialId   int
 	RequestedModel string
 	Group          string
@@ -300,6 +301,8 @@ type Result struct {
 	Group               string           `json:"group"`
 	Protocol            string           `json:"protocol"`
 	RequestCount        int64            `json:"request_count"`
+	RequestSuccessCount int64            `json:"request_success_count"`
+	RequestFailureCount int64            `json:"request_failure_count"`
 	AttemptCount        int64            `json:"attempt_count"`
 	RequestSuccessRate  float64          `json:"request_success_rate"`
 	AttemptSuccessRate  float64          `json:"attempt_success_rate"`
@@ -331,6 +334,31 @@ type PageResult struct {
 	TotalPages int      `json:"total_pages"`
 }
 
+type AvailabilityQuery struct {
+	StartTs     int64
+	EndTs       int64
+	Hours       int
+	ChannelIds  []int
+	BucketCount int
+}
+
+type AvailabilityPoint struct {
+	BucketStart         int64   `json:"bucket_start"`
+	BucketEnd           int64   `json:"bucket_end"`
+	RequestCount        int64   `json:"request_count"`
+	RequestSuccessCount int64   `json:"request_success_count"`
+	RequestFailureCount int64   `json:"request_failure_count"`
+	RequestSuccessRate  float64 `json:"request_success_rate"`
+	AvgLatencyMs        int64   `json:"avg_latency_ms"`
+	latencySumMs        int64
+	latencyCount        int64
+}
+
+type AvailabilitySeries struct {
+	ChannelId int                 `json:"channel_id"`
+	Points    []AvailabilityPoint `json:"points"`
+}
+
 func QueryMetrics(query Query) ([]Result, error) {
 	query.Page = 0
 	query.PageSize = 0
@@ -359,7 +387,7 @@ func queryMetricsPage(query Query) (PageResult, error) {
 	if err != nil {
 		return PageResult{}, err
 	}
-	aggregates, err := model.GetChannelModelPerfMetrics(model.ChannelModelPerfQuery{StartTs: startTs, EndTs: endTs, Hours: query.Hours, ChannelId: query.ChannelId, CredentialId: query.CredentialId, RequestedModel: query.RequestedModel, Group: query.Group, Protocol: query.Protocol})
+	aggregates, err := model.GetChannelModelPerfMetrics(model.ChannelModelPerfQuery{StartTs: startTs, EndTs: endTs, Hours: query.Hours, ChannelId: query.ChannelId, ChannelIds: query.ChannelIds, CredentialId: query.CredentialId, RequestedModel: query.RequestedModel, Group: query.Group, Protocol: query.Protocol})
 	if err != nil {
 		return PageResult{}, err
 	}
@@ -384,6 +412,115 @@ func queryMetricsPage(query Query) (PageResult, error) {
 		end = total
 	}
 	return PageResult{Items: results[start:end], Total: total, Page: query.Page, PageSize: query.PageSize, TotalPages: pageCount(total, query.PageSize)}, nil
+}
+
+func QueryAvailabilitySeries(query AvailabilityQuery) ([]AvailabilitySeries, error) {
+	startTs, endTs, err := queryRange(Query{StartTs: query.StartTs, EndTs: query.EndTs, Hours: query.Hours})
+	if err != nil {
+		return nil, err
+	}
+	channelIds := uniquePositiveInts(query.ChannelIds)
+	if len(channelIds) == 0 {
+		return []AvailabilitySeries{}, nil
+	}
+	bucketCount := query.BucketCount
+	if bucketCount <= 0 {
+		bucketCount = 24
+	}
+	if bucketCount > 96 {
+		bucketCount = 96
+	}
+	bucketSize := (endTs - startTs) / int64(bucketCount)
+	if bucketSize <= 0 {
+		bucketSize = 1
+	}
+	points := make(map[int][]AvailabilityPoint, len(channelIds))
+	for _, channelId := range channelIds {
+		points[channelId] = make([]AvailabilityPoint, bucketCount)
+		for index := range points[channelId] {
+			bucketStart := startTs + int64(index)*bucketSize
+			bucketEnd := bucketStart + bucketSize
+			if index == bucketCount-1 || bucketEnd > endTs {
+				bucketEnd = endTs
+			}
+			points[channelId][index] = AvailabilityPoint{BucketStart: bucketStart, BucketEnd: bucketEnd}
+		}
+	}
+
+	rows, err := model.GetChannelModelPerfMetricRows(model.ChannelModelPerfQuery{StartTs: startTs, EndTs: endTs, Hours: query.Hours, ChannelIds: channelIds})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		addAvailabilityMetric(points, channelIds, row.BucketTs, row.ChannelId, row.RequestCount, row.RequestSuccessCount, row.RequestLatencySumMs, row.RequestLatencyCount, startTs, bucketSize, bucketCount)
+	}
+	activeQuery := Query{StartTs: startTs, EndTs: endTs, ChannelIds: channelIds}
+	for _, aggregate := range activeAggregates(activeQuery, startTs, endTs) {
+		addAvailabilityMetric(points, channelIds, bucketStart(time.Now().Unix()), aggregate.ChannelId, aggregate.RequestCount, aggregate.RequestSuccessCount, aggregate.RequestLatencySumMs, aggregate.RequestLatencyCount, startTs, bucketSize, bucketCount)
+	}
+	result := make([]AvailabilitySeries, 0, len(channelIds))
+	for _, channelId := range channelIds {
+		for index := range points[channelId] {
+			point := &points[channelId][index]
+			point.RequestFailureCount = nonNegative(point.RequestCount - point.RequestSuccessCount)
+			point.RequestSuccessRate = percentage(point.RequestSuccessCount, point.RequestCount)
+		}
+		result = append(result, AvailabilitySeries{ChannelId: channelId, Points: points[channelId]})
+	}
+	return result, nil
+}
+
+func addAvailabilityMetric(points map[int][]AvailabilityPoint, channelIds []int, bucketTs int64, channelId int, requestCount, successCount, latencySum, latencyCount int64, startTs, bucketSize int64, bucketCount int) {
+	if !containsInt(channelIds, channelId) || bucketTs < startTs {
+		return
+	}
+	index := int((bucketTs - startTs) / bucketSize)
+	if index < 0 {
+		return
+	}
+	if index >= bucketCount {
+		index = bucketCount - 1
+	}
+	point := &points[channelId][index]
+	point.RequestCount += nonNegative(requestCount)
+	point.RequestSuccessCount += nonNegative(successCount)
+	if latencyCount > 0 {
+		point.latencySumMs += latencySum
+		point.latencyCount += latencyCount
+		point.AvgLatencyMs = average(point.latencySumMs, point.latencyCount)
+	}
+}
+
+func nonNegative(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func uniquePositiveInts(values []int) []int {
+	seen := make(map[int]struct{}, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func queryRange(query Query) (int64, int64, error) {
@@ -527,7 +664,7 @@ func mergeAggregate(target []model.ChannelModelPerfAggregate, value model.Channe
 
 func aggregateResult(value model.ChannelModelPerfAggregate) Result {
 	result := Result{ChannelId: value.ChannelId, CredentialId: value.CredentialId, RequestedModel: value.RequestedModel, UpstreamModel: value.UpstreamModel, UpstreamModels: value.UpstreamModels, Group: value.Group, Protocol: value.Protocol,
-		RequestCount: value.RequestCount, AttemptCount: value.AttemptCount,
+		RequestCount: value.RequestCount, RequestSuccessCount: value.RequestSuccessCount, RequestFailureCount: nonNegative(value.RequestCount - value.RequestSuccessCount), AttemptCount: value.AttemptCount,
 		AvgLatencyMs: average(value.LatencySumMs, value.LatencyCount), P95LatencyMs: value.LatencyHistogram.P95(),
 		AvgRequestLatencyMs: average(value.RequestLatencySumMs, value.RequestLatencyCount), P95RequestLatencyMs: value.RequestLatencyHistogram.P95(),
 		AvgTtftMs: average(value.TtftSumMs, value.TtftCount), P95TtftMs: value.TtftHistogram.P95(), AvgFRTMs: average(value.FRTSumMs, value.FRTCount), P95FRTMs: value.FRTHistogram.P95(),
@@ -619,7 +756,7 @@ func localActiveAggregates(query Query, startTs, endTs int64) []model.ChannelMod
 }
 
 func matches(query Query, key bucketKey) bool {
-	return (query.ChannelId <= 0 || query.ChannelId == key.channelId) && (query.CredentialId <= 0 || query.CredentialId == key.credentialId) && (query.RequestedModel == "" || query.RequestedModel == key.requestedModel) && (query.Group == "" || query.Group == key.group) && (query.Protocol == "" || query.Protocol == key.protocol)
+	return (query.ChannelId <= 0 || query.ChannelId == key.channelId) && (len(query.ChannelIds) == 0 || containsInt(query.ChannelIds, key.channelId)) && (query.CredentialId <= 0 || query.CredentialId == key.credentialId) && (query.RequestedModel == "" || query.RequestedModel == key.requestedModel) && (query.Group == "" || query.Group == key.group) && (query.Protocol == "" || query.Protocol == key.protocol)
 }
 
 func redisIndexKey() string { return "channel-observation:v1:index" }

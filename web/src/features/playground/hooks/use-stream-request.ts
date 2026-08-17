@@ -53,61 +53,96 @@ interface StreamRequestControllerRuntime {
     payload: ChatCompletionRequest,
     headers: Record<string, string>
   ) => StreamEventSource
-  setStreaming: (streaming: boolean) => void
+  setStreaming: (streaming: boolean, requestKey?: string) => void
+}
+
+type ActiveStream = {
+  generation: number
+  source: StreamEventSource | null
+}
+
+function getStreamStartErrorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : ERROR_MESSAGES.STREAM_START_ERROR
 }
 
 export function createStreamRequestController(
   runtime: StreamRequestControllerRuntime
 ) {
-  let source: StreamEventSource | null = null
-  let generation = 0
+  const activeStreams = new Map<string, ActiveStream>()
+  const generations = new Map<string, number>()
 
-  const closeActiveSource = (target: StreamEventSource) => {
+  const getGeneration = (requestKey: string) =>
+    (generations.get(requestKey) ?? 0) + 1
+
+  const closeActiveSource = (requestKey: string, target: StreamEventSource) => {
     target.close()
-    if (source === target) {
-      source = null
-      runtime.setStreaming(false)
+    const active = activeStreams.get(requestKey)
+    if (active?.source === target) {
+      activeStreams.delete(requestKey)
+      runtime.setStreaming(false, requestKey)
     }
   }
 
   const send = async (
     payload: ChatCompletionRequest,
-    callbacks: StreamRequestCallbacks
+    callbacks: StreamRequestCallbacks,
+    requestKey = 'default'
   ) => {
-    const requestGeneration = generation + 1
-    generation = requestGeneration
-    const previousSource = source
-    source = null
-    previousSource?.close()
-    runtime.setStreaming(false)
+    const requestGeneration = getGeneration(requestKey)
+    generations.set(requestKey, requestGeneration)
+    const previous = activeStreams.get(requestKey)
+    activeStreams.set(requestKey, {
+      generation: requestGeneration,
+      source: null,
+    })
+    previous?.source?.close()
+    runtime.setStreaming(false, requestKey)
 
     let headers: Record<string, string>
     try {
       headers = await runtime.getHeaders()
     } catch (error: unknown) {
-      if (generation !== requestGeneration) return
-      callbacks.onError(
-        error instanceof Error
-          ? error.message
-          : ERROR_MESSAGES.STREAM_START_ERROR
-      )
+      if (generations.get(requestKey) !== requestGeneration) return
+      activeStreams.delete(requestKey)
+      callbacks.onError(getStreamStartErrorMessage(error))
       return
     }
-    if (generation !== requestGeneration) return
+    if (generations.get(requestKey) !== requestGeneration) return
 
-    const nextSource = runtime.createSource(payload, headers)
-    source = nextSource
-    runtime.setStreaming(true)
+    let nextSource: StreamEventSource
+    try {
+      nextSource = runtime.createSource(payload, headers)
+    } catch (error: unknown) {
+      if (generations.get(requestKey) !== requestGeneration) return
+      activeStreams.delete(requestKey)
+      runtime.setStreaming(false, requestKey)
+      callbacks.onError(getStreamStartErrorMessage(error))
+      return
+    }
+
+    activeStreams.set(requestKey, {
+      generation: requestGeneration,
+      source: nextSource,
+    })
+    runtime.setStreaming(true, requestKey)
     let completed = false
 
-    const isCurrent = () =>
-      generation === requestGeneration && source === nextSource
+    const isCurrent = () => {
+      const active = activeStreams.get(requestKey)
+      return (
+        generations.get(requestKey) === requestGeneration &&
+        active?.generation === requestGeneration &&
+        active.source === nextSource
+      )
+    }
 
     const handleError = (errorMessage: string, errorCode?: string) => {
       if (!isCurrent() || completed) return
       completed = true
       callbacks.onError(errorMessage, errorCode)
-      closeActiveSource(nextSource)
+      closeActiveSource(requestKey, nextSource)
     }
 
     nextSource.addEventListener('message', (event) => {
@@ -115,7 +150,7 @@ export function createStreamRequestController(
       const data = event.data ?? ''
       if (isStreamDoneMessage(data)) {
         completed = true
-        closeActiveSource(nextSource)
+        closeActiveSource(requestKey, nextSource)
         callbacks.onComplete()
         return
       }
@@ -166,25 +201,36 @@ export function createStreamRequestController(
     }
   }
 
-  const cancel = (notify: boolean) => {
-    generation += 1
-    const activeSource = source
-    source = null
-    activeSource?.close()
-    if (notify) runtime.setStreaming(false)
+  const cancel = (requestKey: string, notify: boolean) => {
+    const nextGeneration = getGeneration(requestKey)
+    generations.set(requestKey, nextGeneration)
+    const active = activeStreams.get(requestKey)
+    activeStreams.delete(requestKey)
+    active?.source?.close()
+    if (notify) runtime.setStreaming(false, requestKey)
   }
 
-  const stop = () => cancel(true)
-  const dispose = () => cancel(false)
+  const stop = (requestKey = 'default') => cancel(requestKey, true)
+  const dispose = () => {
+    for (const requestKey of new Set([
+      ...generations.keys(),
+      ...activeStreams.keys(),
+    ])) {
+      cancel(requestKey, false)
+    }
+  }
 
   return { send, stop, dispose }
 }
 
 /**
- * Hook for handling streaming chat completion requests
+ * Hook for handling streaming chat completion requests. A request key keeps
+ * streams for separate playground sessions independent.
  */
 export function useStreamRequest() {
-  const [isStreaming, setIsStreaming] = useState(false)
+  const [streamingKeys, setStreamingKeys] = useState<Set<string>>(
+    () => new Set()
+  )
   const controllerRef = useRef<ReturnType<
     typeof createStreamRequestController
   > | null>(null)
@@ -197,7 +243,17 @@ export function useStreamRequest() {
           method: 'POST',
           payload: JSON.stringify(payload),
         }) as StreamEventSource,
-      setStreaming: setIsStreaming,
+      setStreaming: (streaming, requestKey = 'default') => {
+        setStreamingKeys((previousKeys) => {
+          const nextKeys = new Set(previousKeys)
+          if (streaming) {
+            nextKeys.add(requestKey)
+          } else {
+            nextKeys.delete(requestKey)
+          }
+          return nextKeys
+        })
+      },
     })
   }
 
@@ -206,18 +262,23 @@ export function useStreamRequest() {
       payload: ChatCompletionRequest,
       onUpdate: (type: 'reasoning' | 'content', chunk: string) => void,
       onComplete: () => void,
-      onError: (error: string, errorCode?: string) => void
+      onError: (error: string, errorCode?: string) => void,
+      requestKey = 'default'
     ) =>
-      controllerRef.current?.send(payload, {
-        onUpdate,
-        onComplete,
-        onError,
-      }),
+      controllerRef.current?.send(
+        payload,
+        {
+          onUpdate,
+          onComplete,
+          onError,
+        },
+        requestKey
+      ),
     []
   )
 
-  const stopStream = useCallback(() => {
-    controllerRef.current?.stop()
+  const stopStream = useCallback((requestKey = 'default') => {
+    controllerRef.current?.stop(requestKey)
   }, [])
 
   useEffect(
@@ -227,9 +288,15 @@ export function useStreamRequest() {
     []
   )
 
+  const isStreamingFor = useCallback(
+    (requestKey: string) => streamingKeys.has(requestKey),
+    [streamingKeys]
+  )
+
   return {
     sendStreamRequest,
     stopStream,
-    isStreaming,
+    isStreaming: streamingKeys.has('default'),
+    isStreamingFor,
   }
 }

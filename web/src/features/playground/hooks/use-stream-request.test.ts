@@ -131,6 +131,38 @@ describe('latest-wins stream request coordination', () => {
     assert.equal(sourceCount, 0)
   })
 
+  test('recovers from synchronous source construction failure', async () => {
+    const errors: string[] = []
+    const streamingStates: boolean[] = []
+    let attempts = 0
+    let recoveredSource: FakeStreamSource | undefined
+    const controller = createStreamRequestController({
+      getHeaders: () => Promise.resolve({ Authorization: 'Bearer test' }),
+      createSource: () => {
+        attempts += 1
+        if (attempts === 1) {
+          throw new Error('source construction failed')
+        }
+        recoveredSource = new FakeStreamSource()
+        return recoveredSource
+      },
+      setStreaming: (streaming) => streamingStates.push(streaming),
+    })
+    const callbacks = {
+      onUpdate: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: string) => errors.push(error),
+    }
+
+    await assert.doesNotReject(() => controller.send(payload, callbacks))
+    assert.deepEqual(errors, ['source construction failed'])
+    assert.equal(streamingStates.at(-1), false)
+
+    await assert.doesNotReject(() => controller.send(payload, callbacks))
+    assert.equal(recoveredSource?.streamed, true)
+    controller.dispose()
+  })
+
   test('dispose cancels a pending header request without a state update', async () => {
     const headers = deferred<Record<string, string>>()
     const streamingStates: boolean[] = []
@@ -196,5 +228,51 @@ describe('latest-wins stream request coordination', () => {
     )
 
     assert.deepEqual(updates, ['current'])
+  })
+
+  test('keeps streams for separate sessions independent', async () => {
+    const sources: FakeStreamSource[] = []
+    const updates: string[] = []
+    const controller = createStreamRequestController({
+      getHeaders: () => Promise.resolve({ Authorization: 'Bearer test' }),
+      createSource: () => {
+        const source = new FakeStreamSource()
+        sources.push(source)
+        return source
+      },
+      setStreaming: () => undefined,
+    })
+
+    await controller.send(
+      payload,
+      {
+        onUpdate: (_type, chunk) => updates.push(`first:${chunk}`),
+        onComplete: () => undefined,
+        onError: () => undefined,
+      },
+      'first-session'
+    )
+    await controller.send(
+      payload,
+      {
+        onUpdate: (_type, chunk) => updates.push(`second:${chunk}`),
+        onComplete: () => undefined,
+        onError: () => undefined,
+      },
+      'second-session'
+    )
+
+    sources[0]?.emit(
+      'message',
+      JSON.stringify({ choices: [{ delta: { content: 'one' } }] })
+    )
+    sources[1]?.emit(
+      'message',
+      JSON.stringify({ choices: [{ delta: { content: 'two' } }] })
+    )
+
+    assert.equal(sources[0]?.closed, false)
+    assert.equal(sources[1]?.closed, false)
+    assert.deepEqual(updates, ['first:one', 'second:two'])
   })
 })

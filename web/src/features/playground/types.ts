@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { PlaygroundMode } from './constants'
+
 // Message types
 export type MessageRole = 'user' | 'assistant' | 'system'
 
@@ -60,6 +62,9 @@ export interface PlaygroundSession {
   title: string
   createdAt: number
   updatedAt: number
+  mode: PlaygroundMode
+  config: PlaygroundConfig
+  parameterEnabled: ParameterEnabled
   messages: Message[]
 }
 

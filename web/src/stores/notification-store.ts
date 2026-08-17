@@ -28,12 +28,15 @@ interface NotificationState {
   readAnnouncementKeys: string[]
   // Timestamp of last "Close Today" action
   closedUntilDate: string | null
+  // Automatic announcement opens survive a route-level header remount.
+  pendingAutoOpenKey: string | null
 
   // Actions
   markNoticeRead: (noticeContent: string) => void
   markPricingNoticeAutoOpened: (noticeContent: string) => void
   markAnnouncementsRead: (keys: string[]) => void
   setClosedUntilDate: (date: string | null) => void
+  setPendingAutoOpenKey: (key: string | null) => void
   isAnnouncementRead: (key: string) => boolean
   isNoticeClosed: () => boolean
 }
@@ -49,6 +52,7 @@ export const useNotificationStore = create<NotificationState>()(
       lastAutoOpenedPricingNotice: '',
       readAnnouncementKeys: [],
       closedUntilDate: null,
+      pendingAutoOpenKey: null,
 
       markNoticeRead: (noticeContent: string) => {
         // Persist the full trimmed content so edits beyond 100 chars register
@@ -72,6 +76,10 @@ export const useNotificationStore = create<NotificationState>()(
         set({ closedUntilDate: date })
       },
 
+      setPendingAutoOpenKey: (key: string | null) => {
+        set({ pendingAutoOpenKey: key })
+      },
+
       isAnnouncementRead: (key: string) => {
         return get().readAnnouncementKeys.includes(key)
       },
@@ -91,6 +99,7 @@ export const useNotificationStore = create<NotificationState>()(
         lastAutoOpenedPricingNotice: state.lastAutoOpenedPricingNotice,
         readAnnouncementKeys: state.readAnnouncementKeys,
         closedUntilDate: state.closedUntilDate,
+        pendingAutoOpenKey: state.pendingAutoOpenKey,
       }),
     }
   )

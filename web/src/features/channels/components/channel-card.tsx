@@ -36,8 +36,8 @@ const SENSITIVE_MASK = '••••'
  * renderer via `flexRender`, so the table's information and interactions are
  * preserved: row selection, provider/multi-key/IO.NET type badge, id,
  * name/remark + warning icons, status (with tooltips), groups, inline
- * priority/weight spinners, balance refresh, response/test times, tag
- * expand-collapse, and the per-row (or per-tag) actions menu.
+ * priority/weight spinners, balance refresh, response/test times, availability,
+ * tag expand-collapse, and the per-row (or per-tag) actions menu.
  */
 function ChannelCardComponent({
   row,
@@ -77,6 +77,7 @@ function ChannelCardComponent({
   const balanceCell = renderCell('balance')
   const responseCell = renderCell('response_time')
   const testCell = renderCell('test_time')
+  const availabilityCell = renderCell('availability')
 
   const labelClass = 'text-muted-foreground text-[11px] font-medium select-none'
 
@@ -155,6 +156,13 @@ function ChannelCardComponent({
             </div>
           </div>
         </div>
+
+        {availabilityCell && (
+          <div className='min-w-0'>
+            <div className={cn('mb-1', labelClass)}>{t('Availability')}</div>
+            <div className='min-w-0 overflow-hidden'>{availabilityCell}</div>
+          </div>
+        )}
 
         {/* Last row: groups span the full width, showing every group (no label) */}
         <div className='min-w-0'>

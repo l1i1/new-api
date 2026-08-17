@@ -20,7 +20,65 @@ import {
   MULTI_KEY_STATUS_CONFIG,
   MULTI_KEY_CONFIRM_MESSAGES,
 } from '../constants'
-import type { MultiKeyConfirmAction } from '../types'
+import type {
+  KeyStatus,
+  MultiKeyConfirmAction,
+  MultiKeyTestResult,
+} from '../types'
+
+export function getMultiKeyIndex(
+  key: Pick<KeyStatus, 'index' | 'position'>,
+  fallback = 0
+): number {
+  const index = Number(key.index)
+  if (Number.isInteger(index) && index >= 0) return index
+
+  const position = Number(key.position)
+  if (Number.isInteger(position) && position >= 0) return position
+
+  return fallback
+}
+
+export function getMultiKeyTestResult(
+  testResults: Record<number, MultiKeyTestResult>,
+  key: KeyStatus
+): MultiKeyTestResult | undefined {
+  // Stable credential IDs must never silently resolve to a different legacy row.
+  if (key.credential_id !== undefined && key.credential_id !== null) {
+    const credentialId = Number(key.credential_id)
+    if (!Number.isInteger(credentialId) || credentialId <= 0) return undefined
+    return testResults[credentialId]
+  }
+
+  return testResults[getMultiKeyIndex(key)]
+}
+
+export function formatMultiKeyTestResult(
+  result: MultiKeyTestResult | undefined,
+  key: KeyStatus | undefined,
+  translate: (value: string) => string = (value) => value
+): string | null {
+  const status = result?.status ?? key?.last_test_status
+  if (!status) return null
+  if (status !== 'failed') return translate(status)
+
+  const httpStatus = result?.http_status ?? key?.last_test_http_status
+  const error =
+    result?.error_message ??
+    key?.last_test_error_message ??
+    result?.error_code ??
+    key?.last_test_error_code ??
+    result?.error_class ??
+    key?.last_test_error_class
+
+  return [
+    translate('Failed'),
+    httpStatus ? `${translate('HTTP status')}: ${httpStatus}` : null,
+    error,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
 
 /**
  * Get status badge configuration for multi-key status

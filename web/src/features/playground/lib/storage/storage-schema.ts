@@ -96,6 +96,9 @@ export const sessionSchema = z.object({
   title: z.string(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  mode: z.enum(['chat', 'image']).optional(),
+  config: playgroundConfigSchema.optional(),
+  parameterEnabled: parameterEnabledSchema.optional(),
   messages: messagesSchema,
 })
 

@@ -59,6 +59,7 @@ type multiKeyTestResult struct {
 	LatencyMs    int64  `json:"latency_ms"`
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorClass   string `json:"error_class,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 	TestedAt     int64  `json:"tested_at"`
 }
 
@@ -434,7 +435,7 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 				probe := testChannelWithOptions(probeCtx, channel, testUserID, payload.Model, payload.EndpointType, payload.Stream, &credentialID, payload.IncludeDisabled, false)
 				cancel()
 				result := buildMultiKeyTestResult(job.credential, probe, time.Since(started), ctx)
-				_ = model.RecordChannelCredentialTest(model.DB, payload.ChannelID, job.credential.Id, result.Status, result.LatencyMs, result.ErrorClass)
+				_ = model.RecordChannelCredentialTest(model.DB, payload.ChannelID, job.credential.Id, result.Status, result.LatencyMs, result.HTTPStatus, result.ErrorCode, result.ErrorClass, result.ErrorMessage)
 				results <- completedResult{order: job.order, result: result}
 			}
 		}()
@@ -482,12 +483,30 @@ func buildMultiKeyTestResult(credential model.ChannelCredential, probe testResul
 	if probe.newAPIError != nil {
 		result.HTTPStatus = probe.newAPIError.StatusCode
 		result.ErrorClass = classifyChannelCredentialTestError(probe.newAPIError.StatusCode, string(probe.newAPIError.GetErrorCode()), probe.newAPIError.Error(), ctx)
-		result.ErrorCode = result.ErrorClass
+		result.ErrorCode = string(probe.newAPIError.GetErrorCode())
+		if result.ErrorCode == "" {
+			result.ErrorCode = result.ErrorClass
+		}
+		result.ErrorMessage = sanitizeMultiKeyTestError(probe.newAPIError.MaskSensitiveError())
 	} else {
 		result.ErrorClass = classifyChannelCredentialTestError(0, "", probe.localErr.Error(), ctx)
 		result.ErrorCode = result.ErrorClass
+		result.ErrorMessage = sanitizeMultiKeyTestError(common.MaskSensitiveInfo(probe.localErr.Error()))
 	}
 	return result
+}
+
+func sanitizeMultiKeyTestError(message string) string {
+	const maxErrorRunes = 512
+	message = strings.Join(strings.Fields(message), " ")
+	if message == "" {
+		return ""
+	}
+	runes := []rune(message)
+	if len(runes) > maxErrorRunes {
+		return string(runes[:maxErrorRunes]) + "..."
+	}
+	return message
 }
 
 func classifyChannelCredentialTestError(status int, errorCode, message string, ctx context.Context) string {
@@ -601,6 +620,78 @@ func GetChannelModelObservability(c *gin.Context) {
 		"items": page.Items, "total": page.Total, "page": page.Page, "page_size": page.PageSize,
 		"total_pages": page.TotalPages, "start": query.StartTs, "end": query.EndTs,
 	}})
+}
+
+func GetChannelAvailability(c *gin.Context) {
+	channelIds, err := parseObservationChannelIds(c.Query("channel_ids"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	hours, err := parseObservationInt(c.Query("hours"), 24, 24*30, true)
+	if err != nil || hours <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid hours: must be between 1 and 720"})
+		return
+	}
+	bucketCount, err := parseObservationInt(c.Query("bucket_count"), 24, 96, true)
+	if err != nil || bucketCount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid bucket_count: must be between 1 and 96"})
+		return
+	}
+	now := time.Now().Unix()
+	startTs, err := parseObservationTime(c.Query("start"), now-int64(hours)*3600, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid start: " + err.Error()})
+		return
+	}
+	endTs, err := parseObservationTime(c.Query("end"), now, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid end: " + err.Error()})
+		return
+	}
+	if startTs > endTs || endTs-startTs > int64(30*24*3600) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid observation range"})
+		return
+	}
+	series, err := channelobservability.QueryAvailabilitySeries(channelobservability.AvailabilityQuery{
+		StartTs: startTs, EndTs: endTs, Hours: hours, ChannelIds: channelIds, BucketCount: bucketCount,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"items": series, "start": startTs, "end": endTs, "bucket_count": bucketCount,
+	}})
+}
+
+func parseObservationChannelIds(raw string) ([]int, error) {
+	const maxChannelIds = 200
+	parts := strings.Split(raw, ",")
+	result := make([]int, 0, len(parts))
+	seen := make(map[int]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value <= 0 || value > 1<<30 {
+			return nil, fmt.Errorf("invalid channel_ids")
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) > maxChannelIds {
+			return nil, fmt.Errorf("channel_ids cannot contain more than %d values", maxChannelIds)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("channel_ids is required")
+	}
+	return result, nil
 }
 
 // GetLegacyChannelModelObservability preserves the pre-pagination response

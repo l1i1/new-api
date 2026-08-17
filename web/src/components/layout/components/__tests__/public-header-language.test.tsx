@@ -44,6 +44,7 @@ const domGlobals = [
   'HTMLElement',
   'HTMLButtonElement',
   'HTMLDivElement',
+  'HTMLTemplateElement',
   'SVGElement',
   'Node',
   'Element',
@@ -118,7 +119,7 @@ reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 function findButton(root: ParentNode, name: string): HTMLButtonElement | null {
   return (
-    Array.from(root.querySelectorAll('button')).find(
+    [...root.querySelectorAll('button')].find(
       (button) =>
         button.getAttribute('aria-label') === name ||
         button.textContent?.trim() === name
@@ -126,7 +127,10 @@ function findButton(root: ParentNode, name: string): HTMLButtonElement | null {
   )
 }
 
-async function renderHeader(showLanguageSwitcher = true) {
+async function renderHeader(
+  showLanguageSwitcher = true,
+  showNotifications = false
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
@@ -143,7 +147,7 @@ async function renderHeader(showLanguageSwitcher = true) {
       <PublicHeader
         showAuthButtons={false}
         showLanguageSwitcher={showLanguageSwitcher}
-        showNotifications={false}
+        showNotifications={showNotifications}
         showThemeSwitch={false}
         siteName='Tokeness'
       />
@@ -197,18 +201,18 @@ describe('public header language controls', () => {
     assert.ok(currencyButton, 'mobile actions must expose currency selection')
 
     await act(async () => languageButton.click())
-    const chineseOption = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitem"]')
-    ).find((item) => item.textContent?.includes('简体中文'))
+    const chineseOption = [
+      ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent?.includes('简体中文'))
     assert.ok(chineseOption)
 
     await act(async () => chineseOption.click())
     assert.equal(i18n.language, 'zhCN')
 
     await act(async () => currencyButton.click())
-    const usdOption = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitem"]')
-    ).find((item) => item.textContent?.includes('$ USD'))
+    const usdOption = [
+      ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent?.includes('$ USD'))
     assert.ok(usdOption)
     await act(async () => usdOption.click())
     assert.equal(useCurrencyDisplayStore.getState().currency, 'USD')
@@ -224,6 +228,23 @@ describe('public header language controls', () => {
 
     assert.equal(findButton(rendered.container, 'Change language'), null)
     assert.equal(findButton(rendered.container, 'Currency'), null)
+
+    await act(async () => rendered.root.unmount())
+    rendered.container.remove()
+    rendered.queryClient.clear()
+  })
+
+  test('mobile actions expose an accessible notification entry', async () => {
+    await i18n.changeLanguage('en')
+    const rendered = await renderHeader(true, true)
+    const notificationButton = findButton(rendered.container, 'Notifications')
+    assert.ok(notificationButton)
+
+    await act(async () => notificationButton.click())
+    assert.equal(
+      document.body.textContent?.includes('System Announcements'),
+      true
+    )
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()

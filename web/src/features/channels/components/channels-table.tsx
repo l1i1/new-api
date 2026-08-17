@@ -60,6 +60,10 @@ import {
   getChannelTypeIcon,
   getChannelTypeLabel,
 } from '../lib'
+import {
+  collectChannelAvailabilityIds,
+  getChannelAvailabilitySeries,
+} from '../lib/channel-observability'
 import type { Channel, ChannelSortBy } from '../types'
 import { ChannelCard } from './channel-card'
 import { useChannelsColumns } from './channels-columns'
@@ -304,8 +308,23 @@ export function ChannelsTable() {
   const totalCount = data?.data?.total || 0
   const typeCounts = data?.data?.type_counts
 
+  const channelIds = useMemo(
+    () => collectChannelAvailabilityIds(channels),
+    [channels]
+  )
+  const availabilityQuery = useQuery({
+    queryKey: ['channel-availability', channelIds],
+    queryFn: () => getChannelAvailabilitySeries(channelIds),
+    enabled: channelIds.length > 0,
+    staleTime: 2 * 60 * 1000,
+    retry: false,
+  })
+
   // Columns configuration
-  const columns = useChannelsColumns({ enableSelection: batchMode })
+  const columns = useChannelsColumns({
+    enableSelection: batchMode,
+    availabilityByChannelId: availabilityQuery.data,
+  })
 
   // React Table instance
   const { table } = useDataTable({

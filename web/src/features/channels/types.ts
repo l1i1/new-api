@@ -220,6 +220,9 @@ export interface CopyChannelResponse {
 export interface KeyStatus {
   credential_id?: number
   index: number
+  // New credential responses expose the stable position field. Keep it as a
+  // compatibility fallback while the API boundary normalizes index.
+  position?: number
   status: number // 1: enabled, 2: manual disabled, 3: auto disabled
   disabled_time?: number
   reason?: string
@@ -229,8 +232,10 @@ export interface KeyStatus {
   last_test_at?: number
   last_test_status?: 'success' | 'failed' | 'skipped' | string
   last_test_latency_ms?: number
+  last_test_http_status?: number
   last_test_error_code?: string
   last_test_error_class?: string
+  last_test_error_message?: string
 }
 
 export type MultiKeyConfirmAction = {
@@ -272,6 +277,7 @@ export interface MultiKeyTestResult {
   latency_ms: number
   error_code?: string
   error_class?: string
+  error_message?: string
   tested_at?: number
 }
 
@@ -305,6 +311,8 @@ export interface ChannelObservabilityResult {
   group: string
   protocol: string
   request_count: number
+  request_success_count?: number
+  request_failure_count?: number
   attempt_count: number
   request_success_rate: number
   attempt_success_rate: number
@@ -336,6 +344,28 @@ export interface ChannelObservabilityResponse {
     total_pages: number
     start?: number
     end?: number
+  }
+}
+
+export interface ChannelAvailabilityResponse {
+  success: boolean
+  message?: string
+  data?: {
+    items: Array<{
+      channel_id: number
+      points: Array<{
+        bucket_start: number
+        bucket_end: number
+        request_count: number
+        request_success_count: number
+        request_failure_count: number
+        request_success_rate: number
+        avg_latency_ms: number
+      }>
+    }>
+    start: number
+    end: number
+    bucket_count: number
   }
 }
 

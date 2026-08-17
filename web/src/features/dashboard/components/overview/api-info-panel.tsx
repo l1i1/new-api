@@ -32,7 +32,11 @@ import type { PingStatusMap, ApiInfoItem } from '@/features/dashboard/types'
 import { PanelWrapper } from '../ui/panel-wrapper'
 import { ApiInfoItemComponent } from './api-info-item'
 
-export function ApiInfoPanel() {
+interface ApiInfoPanelProps {
+  compact?: boolean
+}
+
+export function ApiInfoPanel(props: ApiInfoPanelProps = {}) {
   const { t } = useTranslation()
   const { items: list, loading } = useApiInfo()
   const [pingStatus, setPingStatus] = useState<PingStatusMap>({})
@@ -46,6 +50,47 @@ export function ApiInfoPanel() {
     const result = await testUrlLatency(url)
     setPingStatus((prev) => ({ ...prev, [url]: result }))
   }, [])
+
+  if (props.compact) {
+    let compactContent = (
+      <span className='text-muted-foreground text-xs'>{t('Loading')}</span>
+    )
+    if (!loading) {
+      if (list.length === 0) {
+        compactContent = (
+          <span className='text-muted-foreground text-xs'>
+            {t('No API routes configured')}
+          </span>
+        )
+      } else {
+        compactContent = (
+          <div className='flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1'>
+            {list.map((item: ApiInfoItem) => (
+              <ApiInfoItemComponent
+                key={item.url}
+                item={item}
+                status={pingStatus[item.url] || getDefaultPingStatus()}
+                onTest={handleTest}
+                compact
+              />
+            ))}
+          </div>
+        )
+      }
+    }
+
+    return (
+      <div
+        className='flex max-w-full min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1'
+        aria-label={t('API Info')}
+      >
+        <span className='text-muted-foreground shrink-0 text-xs'>
+          {t('API Info')}
+        </span>
+        {compactContent}
+      </div>
+    )
+  }
 
   return (
     <PanelWrapper
