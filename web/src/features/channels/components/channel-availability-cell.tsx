@@ -84,11 +84,11 @@ function aggregateTagSeries(
         attempt_success_rate: point.successRate,
         cache_hit_rate: 0,
         cache_token_rate: 0,
-        avg_latency_ms: point.latencyMs,
-        p95_latency_ms: point.latencyMs,
-        avg_request_latency_ms: point.latencyMs,
-        p95_request_latency_ms: point.latencyMs,
-        avg_ttft_ms: 0,
+        avg_latency_ms: point.ttftMs,
+        p95_latency_ms: point.ttftMs,
+        avg_request_latency_ms: point.ttftMs,
+        p95_request_latency_ms: point.ttftMs,
+        avg_ttft_ms: point.ttftMs,
         p95_ttft_ms: 0,
         avg_upstream_frt_ms: 0,
         p95_upstream_frt_ms: 0,
@@ -153,7 +153,7 @@ export function ChannelAvailabilityCell(props: ChannelAvailabilityCellProps) {
 
   return (
     <div
-      className='hover:bg-muted/50 focus-visible:ring-ring flex min-w-[180px] cursor-pointer flex-col gap-1.5 rounded-sm py-0.5 outline-none focus-visible:ring-2'
+      className='text-foreground hover:bg-muted/50 focus-visible:ring-ring flex min-w-[180px] cursor-pointer flex-col gap-1.5 rounded-sm py-0.5 outline-none focus-visible:ring-2'
       role={isTagRow ? undefined : 'button'}
       tabIndex={isTagRow ? undefined : 0}
       onClick={openObservability}
@@ -204,9 +204,9 @@ export function ChannelAvailabilityCell(props: ChannelAvailabilityCellProps) {
                     </span>{' '}
                     <span>({point.successRate.toFixed(1)}%)</span>
                   </div>
-                  {point.latencyMs > 0 && (
-                    <div className='text-muted-foreground'>
-                      {t('Average latency')}: {point.latencyMs} ms
+                  {point.ttftMs > 0 && (
+                    <div className='text-foreground/80'>
+                      {t('First token')}: {point.ttftMs} ms
                     </div>
                   )}
                 </div>

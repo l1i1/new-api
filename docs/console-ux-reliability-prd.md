@@ -60,6 +60,19 @@ not consistently show the undiscounted comparison price.
    search, and pointer/keyboard-accessible drag ordering that persists.
 8. Tiered-expression model cards show the undiscounted price struck through
    whenever the selected group ratio changes the displayed price.
+9. Channel observability reports millisecond-resolution p95 values for newly
+   recorded samples, presents one row per requested model, uses a wider
+   responsive dialog without a bottom horizontal scrollbar, and labels channel
+   availability timing as first-token latency with readable light/dark styling.
+10. Public and authenticated desktop navigation centers the primary links
+    independently of the brand and utility controls. The global search entry is
+    an icon button while preserving its accessible name and keyboard shortcut.
+11. The compact `/keys` API information surface exposes the endpoint URL,
+    localized node description, one-click copy, and status without requiring a
+    hidden hover-only interaction.
+12. Image-generation responses expose a download action per generated image.
+    Discount labels retain up to two decimal places without unnecessary trailing
+    zeroes in both Chinese `折` and non-Chinese `% off` formats.
 
 ## Verification
 

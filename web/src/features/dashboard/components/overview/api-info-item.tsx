@@ -49,8 +49,8 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
   if (props.compact) {
     return (
       <div
-        className='group inline-flex min-w-0 items-center gap-1.5'
-        title={item.url}
+        className='group border-border/60 inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5'
+        title={[description || route, item.url].filter(Boolean).join('\n')}
       >
         <span
           className={cn(
@@ -58,9 +58,14 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
             getBgColorClass(item.color)
           )}
         />
-        <span className='max-w-28 truncate font-mono text-xs font-medium'>
+        <span className='max-w-24 truncate font-mono text-xs font-medium sm:max-w-28'>
           {route}
         </span>
+        {description && (
+          <span className='text-muted-foreground max-w-24 truncate text-[10px] sm:max-w-36'>
+            {description}
+          </span>
+        )}
         {status.testing && (
           <StatusBadge
             label={t('Testing...')}
@@ -83,6 +88,15 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
         {status.error && (
           <StatusBadge label={t('N/A')} variant='neutral' copyable={false} />
         )}
+        <CopyButton
+          value={item.url}
+          variant='ghost'
+          size='sm'
+          className='size-6 p-0 opacity-70 hover:opacity-100'
+          iconClassName='size-3'
+          tooltip={t('Copy URL')}
+          aria-label={`${t('Copy URL')}: ${route}`}
+        />
         <Button
           variant='ghost'
           size='sm'

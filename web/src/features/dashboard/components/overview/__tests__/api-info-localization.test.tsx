@@ -130,4 +130,52 @@ describe('API info item localization', () => {
     await act(async () => root.unmount())
     container.remove()
   })
+
+  test('compact items expose the node description and a copy action for the URL', async () => {
+    const item: ApiInfoItem = {
+      route: 'Primary',
+      description: 'Global acceleration',
+      url: 'https://api.example.com/v1',
+      color: 'cyan',
+    }
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const copiedValues: string[] = []
+
+    Object.defineProperty(domWindow.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copiedValues.push(value)
+        },
+      },
+    })
+
+    await act(async () => {
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <ApiInfoItemComponent
+            item={item}
+            status={{ latency: null, testing: false, error: false }}
+            onTest={() => undefined}
+            compact
+          />
+        </I18nextProvider>
+      )
+    })
+
+    assert.equal(container.textContent?.includes('Global acceleration'), true)
+    const copyButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Copy URL: Primary"]'
+    )
+    assert.ok(copyButton)
+
+    await act(async () => copyButton.click())
+
+    assert.deepEqual(copiedValues, [item.url])
+
+    await act(async () => root.unmount())
+    container.remove()
+  })
 })

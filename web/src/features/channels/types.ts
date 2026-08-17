@@ -361,6 +361,7 @@ export interface ChannelAvailabilityResponse {
         request_failure_count: number
         request_success_rate: number
         avg_latency_ms: number
+        avg_ttft_ms?: number
       }>
     }>
     start: number

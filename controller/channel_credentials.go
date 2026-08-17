@@ -729,6 +729,13 @@ func parseObservabilityQuery(c *gin.Context, strict bool) (channelobservability.
 		SortBy:         strings.TrimSpace(c.Query("sort_by")),
 		SortOrder:      strings.ToLower(strings.TrimSpace(c.Query("sort_order"))),
 	}
+	if raw := strings.TrimSpace(c.Query("aggregate_by_model")); raw != "" {
+		value, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return query, fmt.Errorf("invalid aggregate_by_model: must be true or false")
+		}
+		query.AggregateByModel = value
+	}
 	if query.SortOrder == "" {
 		query.SortOrder = "desc"
 	}

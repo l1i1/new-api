@@ -14,9 +14,20 @@ import (
 type ObservationHistogram struct {
 	Counts   []int64 `json:"counts"`
 	Overflow int64   `json:"overflow"`
+	// Samples keeps a small quantile sketch alongside the fixed buckets. The
+	// buckets remain the compatibility fallback for old rows, while new rows
+	// retain millisecond-level p95 detail without storing every request.
+	Samples       []int64 `json:"samples,omitempty"`
+	SampleWeights []int64 `json:"sample_weights,omitempty"`
+	SampleCount   int64   `json:"sample_count,omitempty"`
 }
 
 var ObservationHistogramBounds = []int64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000}
+
+const (
+	observationQuantileSampleLimit       = 256
+	observationQuantileSampleBufferLimit = observationQuantileSampleLimit * 2
+)
 
 func NewObservationHistogram() ObservationHistogram {
 	return ObservationHistogram{Counts: make([]int64, len(ObservationHistogramBounds)+1)}
@@ -26,23 +37,42 @@ func (h *ObservationHistogram) Add(valueMs int64) {
 	if h == nil || valueMs < 0 {
 		return
 	}
+	samplesComplete := h.sampleSketchComplete()
 	if len(h.Counts) != len(ObservationHistogramBounds)+1 {
 		h.Counts = make([]int64, len(ObservationHistogramBounds)+1)
 	}
 	for i, bound := range ObservationHistogramBounds {
 		if valueMs <= bound {
 			h.Counts[i]++
-			return
+			break
 		}
 	}
-	h.Counts[len(h.Counts)-1]++
-	h.Overflow++
+	if valueMs > ObservationHistogramBounds[len(ObservationHistogramBounds)-1] {
+		h.Counts[len(h.Counts)-1]++
+		h.Overflow++
+	}
+	if !samplesComplete {
+		h.Samples = nil
+		h.SampleWeights = nil
+		h.SampleCount = 0
+		return
+	}
+	h.SampleCount++
+	h.Samples = append(h.Samples, valueMs)
+	h.SampleWeights = append(h.SampleWeights, 1)
+	if len(h.Samples) > observationQuantileSampleBufferLimit {
+		h.compactSamples()
+	}
 }
 
 func (h *ObservationHistogram) Merge(other ObservationHistogram) {
 	if h == nil {
 		return
 	}
+	leftCount := h.Count()
+	rightCount := other.Count()
+	leftSamples, leftWeights := h.quantileSamples()
+	rightSamples, rightWeights := other.quantileSamples()
 	if len(h.Counts) != len(ObservationHistogramBounds)+1 {
 		h.Counts = make([]int64, len(ObservationHistogramBounds)+1)
 	}
@@ -53,6 +83,141 @@ func (h *ObservationHistogram) Merge(other ObservationHistogram) {
 		h.Counts[i] += count
 	}
 	h.Overflow += other.Overflow
+	if leftCount == 0 {
+		h.SampleCount = rightCount
+		h.Samples = append(h.Samples[:0], rightSamples...)
+		h.SampleWeights = append(h.SampleWeights[:0], rightWeights...)
+		h.compactSamples()
+		return
+	}
+	if rightCount == 0 {
+		return
+	}
+	h.SampleCount = leftCount + rightCount
+	h.Samples = append(leftSamples, rightSamples...)
+	h.SampleWeights = append(leftWeights, rightWeights...)
+	h.compactSamples()
+}
+
+func (h ObservationHistogram) sampleSketchComplete() bool {
+	count := h.Count()
+	if count == 0 {
+		return true
+	}
+	if h.SampleCount != count || len(h.Samples) == 0 {
+		return false
+	}
+	weights := h.sampleWeights()
+	if len(weights) != len(h.Samples) {
+		return false
+	}
+	var totalWeight int64
+	for _, weight := range weights {
+		if weight <= 0 {
+			return false
+		}
+		totalWeight += weight
+	}
+	return totalWeight == h.SampleCount
+}
+
+func (h ObservationHistogram) sampleWeights() []int64 {
+	if len(h.SampleWeights) == len(h.Samples) {
+		return h.SampleWeights
+	}
+	// Early development builds stored exact, uncompressed samples without
+	// explicit weights. Treat only that lossless shape as compatible.
+	if len(h.SampleWeights) == 0 && h.SampleCount == int64(len(h.Samples)) {
+		weights := make([]int64, len(h.Samples))
+		for i := range weights {
+			weights[i] = 1
+		}
+		return weights
+	}
+	return nil
+}
+
+func (h ObservationHistogram) quantileSamples() ([]int64, []int64) {
+	if h.sampleSketchComplete() {
+		return append([]int64(nil), h.Samples...), append([]int64(nil), h.sampleWeights()...)
+	}
+	values := make([]int64, 0, len(h.Counts))
+	weights := make([]int64, 0, len(h.Counts))
+	for i, count := range h.Counts {
+		if count <= 0 {
+			continue
+		}
+		value := ObservationHistogramBounds[len(ObservationHistogramBounds)-1]
+		if i < len(ObservationHistogramBounds) {
+			value = ObservationHistogramBounds[i]
+		}
+		values = append(values, value)
+		weights = append(weights, count)
+	}
+	return values, weights
+}
+
+func (h *ObservationHistogram) compactSamples() {
+	if h == nil || len(h.Samples) == 0 {
+		return
+	}
+	weights := h.sampleWeights()
+	if len(weights) != len(h.Samples) {
+		h.Samples = nil
+		h.SampleWeights = nil
+		h.SampleCount = 0
+		return
+	}
+	type weightedSample struct {
+		value  int64
+		weight int64
+	}
+	samples := make([]weightedSample, 0, len(h.Samples))
+	for i, value := range h.Samples {
+		if weights[i] > 0 {
+			samples = append(samples, weightedSample{value: value, weight: weights[i]})
+		}
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i].value < samples[j].value })
+	h.Samples = h.Samples[:0]
+	h.SampleWeights = h.SampleWeights[:0]
+	for _, sample := range samples {
+		last := len(h.Samples) - 1
+		if last >= 0 && h.Samples[last] == sample.value {
+			h.SampleWeights[last] += sample.weight
+			continue
+		}
+		h.Samples = append(h.Samples, sample.value)
+		h.SampleWeights = append(h.SampleWeights, sample.weight)
+	}
+	if len(h.Samples) <= observationQuantileSampleLimit {
+		return
+	}
+	compressedValues := make([]int64, 0, observationQuantileSampleLimit)
+	compressedWeights := make([]int64, 0, observationQuantileSampleLimit)
+	totalWeight := h.SampleCount
+	sampleIndex := 0
+	var seenWeight int64
+	for i := 0; i < observationQuantileSampleLimit; i++ {
+		binStart := int64(i) * totalWeight / observationQuantileSampleLimit
+		binEnd := int64(i+1) * totalWeight / observationQuantileSampleLimit
+		midpoint := binStart + (binEnd-binStart-1)/2
+		for sampleIndex < len(h.Samples)-1 && seenWeight+h.SampleWeights[sampleIndex] <= midpoint {
+			seenWeight += h.SampleWeights[sampleIndex]
+			sampleIndex++
+		}
+		value := h.Samples[sampleIndex]
+		weight := binEnd - binStart
+		last := len(compressedValues) - 1
+		if last >= 0 && compressedValues[last] == value {
+			compressedWeights[last] += weight
+			continue
+		}
+		compressedValues = append(compressedValues, value)
+		compressedWeights = append(compressedWeights, weight)
+	}
+	h.Samples = compressedValues
+	h.SampleWeights = compressedWeights
 }
 
 func (h ObservationHistogram) Count() int64 {
@@ -86,6 +251,23 @@ func (h ObservationHistogram) P95() int64 {
 	if total == 0 {
 		return 0
 	}
+	if h.sampleSketchComplete() {
+		sketch := ObservationHistogram{
+			Samples:       append([]int64(nil), h.Samples...),
+			SampleWeights: append([]int64(nil), h.sampleWeights()...),
+			SampleCount:   h.SampleCount,
+		}
+		sketch.compactSamples()
+		rank := (total*95 + 99) / 100
+		var seen int64
+		for i, weight := range sketch.SampleWeights {
+			seen += weight
+			if seen >= rank {
+				return sketch.Samples[i]
+			}
+		}
+		return sketch.Samples[len(sketch.Samples)-1]
+	}
 	rank := (total*95 + 99) / 100
 	var seen int64
 	for i, count := range h.Counts {
@@ -101,6 +283,7 @@ func (h ObservationHistogram) P95() int64 {
 }
 
 func marshalObservationHistogram(hist ObservationHistogram) string {
+	hist.compactSamples()
 	data, err := common.Marshal(hist)
 	if err != nil {
 		return ""

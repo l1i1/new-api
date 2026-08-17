@@ -85,6 +85,41 @@ Return both original and discounted display parts whenever the ratio is positive
 and differs from one. Rendering uses the same strikethrough treatment as fixed
 token pricing.
 
+Discount-label formatting rounds to at most two decimal places and removes
+trailing zeroes. Chinese locales format `ratio * 10` as `折`; other locales
+format `(1 - ratio) * 100` as `% off`. Premium ratios continue using `xN`.
+
+## Observability Follow-up
+
+Persist a bounded mergeable quantile sketch inside the existing histogram JSON
+so new observations retain millisecond p95 detail without a database migration.
+Sketch representatives carry explicit population weights so differently sized
+buckets and nodes merge without equal-sample bias. Legacy database rows and the
+Redis hot bucket remain readable through the fixed histogram; during merges,
+their bucket counts become weighted representative values instead of discarding
+the precise part of the combined sketch. The channel detail response folds
+dimensions that are implementation details for this view (credential, upstream
+mapping, group, and protocol) into one requested model row while preserving
+weighted counts, coverage, averages, histograms, and error totals.
+
+The dialog uses a viewport-bounded wide layout and fixed table columns that fit
+inside the content width. Only the table body scrolls vertically. Availability
+points expose average first-token latency; the client keeps a compatibility
+fallback for older responses that only provide average total latency.
+
+## Header, API Info, and Generated Images
+
+Desktop headers use a three-region layout: brand, independently centered primary
+navigation, and right-aligned utilities. The search control reuses the existing
+command-menu state and keyboard shortcut but renders as a square icon button.
+The public header switches to its mobile menu below the large breakpoint so the
+centered navigation cannot collapse into vertical text at intermediate widths.
+
+Compact API endpoint items show route, description, URL copy, status, and probe
+actions in a wrapping layout. Generated Playground images keep their existing
+preview link and add an explicit download button that uses a stable filename and
+does not navigate away from the conversation.
+
 ## Risks
 
 - Metrics can contain sparse buckets; neutral rendering must not imply failure.
@@ -93,6 +128,10 @@ token pricing.
 - LocalStorage migrations must fail closed to defaults on malformed user data.
 - Public and authenticated headers must share announcement behavior without
   mounting two competing dialogs.
+- Centered navigation must not collide with the brand or utility controls at
+  intermediate desktop widths; it falls back before overlap is possible.
+- Existing observability rows do not contain exact latency samples, so their p95
+  remains bucket-derived until the selected time window contains new metrics.
 
 ## Validation Plan
 
