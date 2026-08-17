@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.3'
+readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.4'
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -934,7 +934,7 @@ start_blue_green_standby() {
 		fail "could not clear the inactive blue-green container"
   BLUE_GREEN_NEW_INSTANCE_ID="${BLUE_GREEN_NEW_CONTAINER}-$(date +%s%N)-$RANDOM"
   log "starting standby container=$BLUE_GREEN_NEW_CONTAINER port=$published_port"
-  compose_timed "$COMPOSE_UP_TIMEOUT_SECONDS" run -d --no-deps \
+  compose_timed "$COMPOSE_UP_TIMEOUT_SECONDS" run -d --no-deps --use-aliases \
     --name "$BLUE_GREEN_NEW_CONTAINER" \
     -e "TOKENESS_INSTANCE_ID=$BLUE_GREEN_NEW_INSTANCE_ID" \
     -p "127.0.0.1:$published_port:3000" "$SERVICE_NAME" >/dev/null

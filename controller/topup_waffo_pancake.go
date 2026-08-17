@@ -130,6 +130,10 @@ func getWaffoPancakeBuyerEmail(user *model.User) string {
 	return ""
 }
 
+func legacyWaffoPancakeProviderAccountID() string {
+	return strings.TrimSpace(setting.WaffoPancakeStoreID)
+}
+
 // The admin config endpoints below accept typed-but-not-yet-saved creds in
 // the body and fall back to persisted creds when the body is blank (see
 // resolveWaffoPancakeAdminCreds). Only SaveWaffoPancake writes to OptionMap.
@@ -446,6 +450,10 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	if canonicalMethod != "" {
 		paymentMethod = canonicalMethod
 	}
+	providerAccountID := hotPayProviderAccountID()
+	if !gatewayEnabled {
+		providerAccountID = legacyWaffoPancakeProviderAccountID()
+	}
 	topUp := &model.TopUp{
 		UserId:                   id,
 		Amount:                   normalizeWaffoPancakeTopUpAmount(req.Amount),
@@ -453,14 +461,14 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		TradeNo:                  tradeNo,
 		PaymentMethod:            paymentMethod,
 		PaymentProvider:          paymentProvider,
-		PaymentProviderAccountID: hotPayProviderAccountID(),
+		PaymentProviderAccountID: providerAccountID,
 		PaymentEnvironment:       hotPayEnvironment(),
 		PaymentCurrency:          currency,
 		CreateTime:               time.Now().Unix(),
 		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
+		if existing.UserId != id || existing.PaymentCurrency != currency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 			return
 		}
@@ -665,18 +673,30 @@ func validateLegacyWaffoPancakeAccount(event *service.WaffoPancakeWebhookEvent) 
 	if event == nil {
 		return fmt.Errorf("event is nil")
 	}
-	expected := strings.TrimSpace(hotPayProviderAccountID())
-	if expected != "" && strings.TrimSpace(event.StoreID) != expected {
+	expected := legacyWaffoPancakeProviderAccountID()
+	actual := strings.TrimSpace(event.StoreID)
+	if expected == "" || actual == "" || actual != expected {
 		return fmt.Errorf("store mismatch")
 	}
 	tradeNo := strings.TrimSpace(event.Data.OrderMerchantExternalID)
-	if topUp := model.GetTopUpByTradeNo(tradeNo); topUp != nil && strings.TrimSpace(topUp.PaymentProviderAccountID) != "" && topUp.PaymentProviderAccountID != event.StoreID {
+	if topUp := model.GetTopUpByTradeNo(tradeNo); topUp != nil && !legacyWaffoPancakeOrderAccountMatches(topUp.PaymentProviderAccountID, actual) {
 		return fmt.Errorf("top-up account mismatch")
 	}
-	if order := model.GetSubscriptionOrderByTradeNo(tradeNo); order != nil && strings.TrimSpace(order.PaymentProviderAccountID) != "" && order.PaymentProviderAccountID != event.StoreID {
+	if order := model.GetSubscriptionOrderByTradeNo(tradeNo); order != nil && !legacyWaffoPancakeOrderAccountMatches(order.PaymentProviderAccountID, actual) {
 		return fmt.Errorf("subscription account mismatch")
 	}
 	return nil
+}
+
+func legacyWaffoPancakeOrderAccountMatches(snapshot, storeID string) bool {
+	snapshot = strings.TrimSpace(snapshot)
+	if snapshot == "" || snapshot == strings.TrimSpace(storeID) {
+		return true
+	}
+	// A short-lived release incorrectly persisted MerchantID in this field.
+	// Accept only that known historical value so paid pending orders can be
+	// retried, while still requiring the signed event's StoreID above.
+	return snapshot == strings.TrimSpace(setting.WaffoPancakeMerchantID)
 }
 
 func isHotPayBoundWaffoPancakeOrder(tradeNo string) bool {

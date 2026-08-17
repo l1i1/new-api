@@ -32,7 +32,7 @@ fi
 selected="$(<"$state_file")"
 version='v-test-old'
 health='healthy'
-command_version="${TOKENESS_TEST_COMMAND_VERSION:-2026-08-17.3}"
+command_version="${TOKENESS_TEST_COMMAND_VERSION:-2026-08-17.4}"
 
 if [[ "$command" == verify && "$host" == "${TOKENESS_TEST_MUTABLE_HOST:-}" ]]; then
   selected="$MUTABLE_IMAGE"

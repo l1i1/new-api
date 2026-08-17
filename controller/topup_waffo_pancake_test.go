@@ -171,6 +171,41 @@ func TestWaffoPancakeWalletCurrencySelection(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateLegacyWaffoPancakeAccountUsesStoreID(t *testing.T) {
+	setupPaymentGatewaySettlementControllerTest(t)
+	previousMerchantID := setting.WaffoPancakeMerchantID
+	previousStoreID := setting.WaffoPancakeStoreID
+	t.Cleanup(func() {
+		setting.WaffoPancakeMerchantID = previousMerchantID
+		setting.WaffoPancakeStoreID = previousStoreID
+	})
+
+	setting.WaffoPancakeMerchantID = "merchant-1"
+	setting.WaffoPancakeStoreID = "store-1"
+
+	event := &service.WaffoPancakeWebhookEvent{StoreID: "store-1"}
+	require.NoError(t, validateLegacyWaffoPancakeAccount(event))
+
+	event.StoreID = "merchant-1"
+	require.Error(t, validateLegacyWaffoPancakeAccount(event))
+}
+
+func TestLegacyWaffoPancakeOrderAccountMatchesHistoricalMerchantSnapshot(t *testing.T) {
+	previousMerchantID := setting.WaffoPancakeMerchantID
+	previousStoreID := setting.WaffoPancakeStoreID
+	t.Cleanup(func() {
+		setting.WaffoPancakeMerchantID = previousMerchantID
+		setting.WaffoPancakeStoreID = previousStoreID
+	})
+
+	setting.WaffoPancakeMerchantID = "merchant-1"
+	setting.WaffoPancakeStoreID = "store-1"
+	require.True(t, legacyWaffoPancakeOrderAccountMatches("merchant-1", "store-1"))
+	require.True(t, legacyWaffoPancakeOrderAccountMatches("store-1", "store-1"))
+	require.True(t, legacyWaffoPancakeOrderAccountMatches("", "store-1"))
+	require.False(t, legacyWaffoPancakeOrderAccountMatches("other-account", "store-1"))
+}
+
 func TestHandleWaffoPancakeCompletedEvent_RetriesUnresolvedOrder(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

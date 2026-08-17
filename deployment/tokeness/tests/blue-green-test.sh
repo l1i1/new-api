@@ -15,7 +15,7 @@ test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
 source "$REMOTE_SCRIPT"
-[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-08-17.3' ]] ||
+[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-08-17.4' ]] ||
   fail_test "remote command version handshake is missing"
 eval "$(declare -f blue_green_proxy_reload | sed '1s/blue_green_proxy_reload/real_blue_green_proxy_reload/')"
 eval "$(declare -f blue_green_remove_container | sed '1s/blue_green_remove_container/real_blue_green_remove_container/')"
@@ -25,6 +25,24 @@ eval "$(declare -f blue_green_verify_live_route | sed '1s/blue_green_verify_live
 eval "$(declare -f blue_green_proxy_route_status | sed '1s/blue_green_proxy_route_status/real_blue_green_proxy_route_status/')"
 eval "$(declare -f drain_blue_green_container | sed '1s/drain_blue_green_container/real_drain_blue_green_container/')"
 eval "$(declare -f wait_for_blue_green_container | sed '1s/wait_for_blue_green_container/real_wait_for_blue_green_container/')"
+
+(
+  compose_log="$test_root/standby-compose.args"
+  BLUE_GREEN_NEW_PORT=8202
+  BLUE_GREEN_NEW_CONTAINER='new-api-blue'
+  SERVICE_NAME='new-api'
+  blue_green_remove_container() { :; }
+  compose_timed() {
+    shift
+    printf '%s\n' "$@" > "$compose_log"
+  }
+  wait_for_blue_green_container() { :; }
+  run_timed() { :; }
+  start_blue_green_standby "$NEW_IMAGE"
+  mapfile -t compose_args < "$compose_log"
+  [[ " ${compose_args[*]} " == *' run -d --no-deps --use-aliases '* ]] ||
+    fail_test "standby container did not retain Compose service aliases"
+)
 
 case_dir="$test_root/proxy"
 mkdir -p "$case_dir"

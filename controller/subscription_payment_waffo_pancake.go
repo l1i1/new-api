@@ -114,6 +114,10 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 	if canonicalMethod != "" {
 		paymentMethod = canonicalMethod
 	}
+	providerAccountID := hotPayProviderAccountID()
+	if !gatewayEnabled {
+		providerAccountID = legacyWaffoPancakeProviderAccountID()
+	}
 
 	order := &model.SubscriptionOrder{
 		UserId:                   userId,
@@ -122,14 +126,14 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		TradeNo:                  tradeNo,
 		PaymentMethod:            paymentMethod,
 		PaymentProvider:          model.PaymentProviderWaffoPancake,
-		PaymentProviderAccountID: hotPayProviderAccountID(),
+		PaymentProviderAccountID: providerAccountID,
 		PaymentEnvironment:       hotPayEnvironment(),
 		PaymentCurrency:          planCurrency,
 		CreateTime:               time.Now().Unix(),
 		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
+		if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 			common.ApiErrorMsg(c, "支付请求与已有订单不匹配")
 			return
 		}
