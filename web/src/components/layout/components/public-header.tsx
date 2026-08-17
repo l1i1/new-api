@@ -25,7 +25,6 @@ import { Dialog } from '@/components/dialog'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
-import { SiteNoticeDialog } from '@/components/site-notice-dialog'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -97,8 +96,11 @@ export function PublicHeader(props: PublicHeaderProps) {
   const pathname = routerState.location.pathname
   const autoOpenOptions = getNotificationAutoOpenOptions(pathname)
   const notifications = useNotifications({
-    ...autoOpenOptions,
-    autoOpenPopover: showNotifications && autoOpenOptions.autoOpenPopover,
+    autoOpenNotice: showNotifications && autoOpenOptions.autoOpenNotice,
+    autoOpenPopover:
+      showNotifications &&
+      (autoOpenOptions.autoOpenPopover || autoOpenOptions.autoOpenNotice),
+    pollAnnouncements: showNotifications,
   })
 
   const user = auth.user
@@ -207,11 +209,6 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   return (
     <>
-      <SiteNoticeDialog
-        content={notifications.notice}
-        open={notifications.siteNoticeOpen}
-        onOpenChange={notifications.setSiteNoticeOpen}
-      />
       <header className='border-border bg-background/95 pointer-events-none fixed inset-x-0 top-0 z-50 border-b'>
         <div className='pointer-events-auto mx-auto max-w-7xl px-4 md:px-6'>
           <nav className='flex h-14 items-center justify-between px-1'>
@@ -223,7 +220,7 @@ export function PublicHeader(props: PublicHeaderProps) {
               <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
                 {logoContent}
               </div>
-              <span className='text-sm font-semibold '>
+              <span className='text-sm font-semibold'>
                 {loading ? <Skeleton className='h-4 w-16' /> : displaySiteName}
               </span>
             </Link>
@@ -286,13 +283,25 @@ export function PublicHeader(props: PublicHeaderProps) {
                 </>
               )}
               {showThemeSwitch && <ThemeSwitch />}
+            </div>
+
+            <div className='ms-auto flex items-center gap-1 sm:gap-2'>
+              {/* Mobile: compact actions */}
+              <div className='flex items-center gap-2 sm:hidden'>
+                {showLanguageSwitcher && (
+                  <>
+                    <CurrencyDisplaySwitcher />
+                    <LanguageSwitcher />
+                  </>
+                )}
+                {showThemeSwitch && <ThemeSwitch />}
+              </div>
+
               {showNotifications && (
                 <NotificationPopover
                   open={notifications.popoverOpen}
                   onOpenChange={notifications.setPopoverOpen}
                   unreadCount={notifications.unreadCount}
-                  activeTab={notifications.activeTab}
-                  onTabChange={notifications.setActiveTab}
                   notice={notifications.notice}
                   announcements={notifications.announcements}
                   loading={notifications.loading}
@@ -300,30 +309,22 @@ export function PublicHeader(props: PublicHeaderProps) {
               )}
 
               {showAuthButtons && (
-                <>
+                <div className='hidden items-center sm:flex'>
                   <div className='bg-border/40 mx-1 h-4 w-px' />
                   {desktopAuthContent}
-                </>
+                </div>
               )}
-            </div>
 
-            {/* Mobile: compact actions + hamburger */}
-            <div className='flex items-center gap-2 sm:hidden'>
-              {showLanguageSwitcher && (
-                <>
-                  <CurrencyDisplaySwitcher />
-                  <LanguageSwitcher />
-                </>
-              )}
-              {showThemeSwitch && <ThemeSwitch />}
               {showAuthButtons && !loading && isAuthenticated && (
-                <ProfileDropdown />
+                <div className='sm:hidden'>
+                  <ProfileDropdown />
+                </div>
               )}
               <Button
                 type='button'
                 variant='ghost'
                 size='icon'
-                className='size-9'
+                className='size-9 sm:hidden'
                 onClick={() => setMobileOpen((v) => !v)}
                 aria-label={t('Toggle navigation menu')}
               >

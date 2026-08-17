@@ -35,6 +35,7 @@ interface ApiInfoItemProps {
   item: ApiInfoItem
   status: PingStatus
   onTest: (url: string) => void
+  compact?: boolean
 }
 
 export function ApiInfoItemComponent(props: ApiInfoItemProps) {
@@ -44,6 +45,58 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
   const contentLanguage = i18n.resolvedLanguage || i18n.language
   const route = resolveTntContent(item.route, contentLanguage)
   const description = resolveTntContent(item.description, contentLanguage)
+
+  if (props.compact) {
+    return (
+      <div
+        className='group inline-flex min-w-0 items-center gap-1.5'
+        title={item.url}
+      >
+        <span
+          className={cn(
+            'inline-block size-1.5 shrink-0 rounded-full',
+            getBgColorClass(item.color)
+          )}
+        />
+        <span className='max-w-28 truncate font-mono text-xs font-medium'>
+          {route}
+        </span>
+        {status.testing && (
+          <StatusBadge
+            label={t('Testing...')}
+            variant='warning'
+            className='animate-pulse'
+            copyable={false}
+          />
+        )}
+        {status.latency !== null && !status.testing && (
+          <StatusBadge
+            variant='success'
+            label={`${status.latency}${t('ms')}`}
+            className={cn(
+              'font-mono text-[10px] font-medium',
+              getLatencyColorClass(status.latency)
+            )}
+            copyable={false}
+          />
+        )}
+        {status.error && (
+          <StatusBadge label={t('N/A')} variant='neutral' copyable={false} />
+        )}
+        <Button
+          variant='ghost'
+          size='sm'
+          onClick={() => props.onTest(item.url)}
+          disabled={status.testing}
+          className='size-6 p-0 opacity-70 hover:opacity-100'
+          title={t('Test Latency')}
+          aria-label={`${t('Test Latency')}: ${route}`}
+        >
+          <Zap className={cn('size-3', status.testing && 'animate-pulse')} />
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <div className='group hover:bg-muted/40 flex items-center justify-between gap-2 px-3 py-2.5 transition-colors sm:gap-3 sm:px-5 sm:py-3'>

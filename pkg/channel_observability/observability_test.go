@@ -70,7 +70,7 @@ func TestMergeAggregateCombinesErrorTrends(t *testing.T) {
 
 func TestAggregateResultMarksInsufficientSamples(t *testing.T) {
 	value := model.ChannelModelPerfAggregate{
-		RequestCount: 3, SampleCount: 3, UsageCount: 1,
+		RequestCount: 3, RequestSuccessCount: 1, SampleCount: 3, UsageCount: 1,
 		ErrorCounts:      map[string]int64{"timeout": 2},
 		LatencyHistogram: model.NewObservationHistogram(), RequestLatencyHistogram: model.NewObservationHistogram(),
 		TtftHistogram: model.NewObservationHistogram(), FRTHistogram: model.NewObservationHistogram(),
@@ -80,7 +80,27 @@ func TestAggregateResultMarksInsufficientSamples(t *testing.T) {
 	assert.False(t, result.SampleSufficient)
 	assert.Equal(t, "insufficient", result.SampleStatus)
 	assert.Equal(t, int64(3), result.SampleCount)
+	assert.Equal(t, int64(1), result.RequestSuccessCount)
+	assert.Equal(t, int64(2), result.RequestFailureCount)
 	assert.Equal(t, map[string]int64{"timeout": 2}, result.ErrorTrends)
+}
+
+func TestAddAvailabilityMetricBuildsExactCountsAndWeightedLatency(t *testing.T) {
+	points := map[int][]AvailabilityPoint{
+		7: {{BucketStart: 100, BucketEnd: 200}},
+	}
+	channelIds := []int{7}
+	addAvailabilityMetric(points, channelIds, 120, 7, 3, 2, 300, 3, 100, 100, 1)
+	addAvailabilityMetric(points, channelIds, 150, 7, 1, 0, 300, 1, 100, 100, 1)
+	point := &points[7][0]
+	point.RequestFailureCount = nonNegative(point.RequestCount - point.RequestSuccessCount)
+	point.RequestSuccessRate = percentage(point.RequestSuccessCount, point.RequestCount)
+
+	assert.Equal(t, int64(4), point.RequestCount)
+	assert.Equal(t, int64(2), point.RequestSuccessCount)
+	assert.Equal(t, int64(2), point.RequestFailureCount)
+	assert.Equal(t, 50.0, point.RequestSuccessRate)
+	assert.Equal(t, int64(150), point.AvgLatencyMs)
 }
 
 func TestSortResultsHonorsRequestedOrder(t *testing.T) {

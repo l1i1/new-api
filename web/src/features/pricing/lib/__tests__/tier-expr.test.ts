@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { evalExprLocally } from '../tier-expr'
+import { evalExprLocally, resolveTieredEditorMode } from '../tier-expr'
 
 const emptyExtras = {
   cacheReadTokens: 0,
@@ -32,6 +32,18 @@ const emptyExtras = {
 }
 
 describe('local billing expression evaluator', () => {
+  test('keeps complex billing expressions in expression-editor mode', () => {
+    const deepSeekExpr =
+      '((hour("UTC") >= 1 && hour("UTC") < 4) || (hour("UTC") >= 6 && hour("UTC") < 10)) ? tier("peak", p * 0.44 + cr * 0.014 + c * 1.32) : tier("off_peak", p * 0.22 + cr * 0.007 + c * 0.66)'
+
+    assert.equal(resolveTieredEditorMode(deepSeekExpr), 'raw')
+    assert.equal(
+      resolveTieredEditorMode('tier("base", p * 2 + c * 4)'),
+      'visual'
+    )
+    assert.equal(resolveTieredEditorMode(''), 'visual')
+  })
+
   test('matches backend timezone, weekday, month, and day semantics', () => {
     const now = new Date('2026-01-01T00:00:00Z')
     const result = evalExprLocally(

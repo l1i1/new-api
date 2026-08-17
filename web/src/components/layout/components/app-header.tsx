@@ -122,6 +122,7 @@ export function AppHeader({
     ...autoOpenOptions,
     autoOpenPopover:
       !rightContent && showNotifications && autoOpenOptions.autoOpenPopover,
+    pollAnnouncements: !rightContent && showNotifications,
   })
 
   return (
@@ -145,8 +146,6 @@ export function AppHeader({
               open={notifications.popoverOpen}
               onOpenChange={notifications.setPopoverOpen}
               unreadCount={notifications.unreadCount}
-              activeTab={notifications.activeTab}
-              onTabChange={notifications.setActiveTab}
               notice={notifications.notice}
               announcements={notifications.announcements}
               loading={notifications.loading}

@@ -1,102 +1,141 @@
-import { RefreshCw } from "lucide-react";
 /*
 Copyright (C) 2023-2026 QuantumNous
 
 This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
+import { RefreshCw } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
-import { StaticDataTable } from "@/components/data-table";
-import { Dialog } from "@/components/dialog";
-import { Button } from "@/components/ui/button";
+import { StaticDataTable } from '@/components/data-table'
+import { Dialog } from '@/components/dialog'
+import { Button } from '@/components/ui/button'
 
-import { getChannelObservability } from "../../api";
-import type { ChannelObservabilityResult } from "../../types";
-import { useChannels } from "../channels-provider";
+import { getAllChannelObservability } from '../../api'
+import type { ChannelObservabilityResult } from '../../types'
+import { useChannels } from '../channels-provider'
 
 type ChannelObservabilityDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-};
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
 
 function formatPercent(value: number): string {
-  return `${value.toFixed(1)}%`;
+  return `${value.toFixed(1)}%`
 }
 
 function formatSampled(
   value: number,
   sufficient: boolean,
-  translate: (key: string) => string,
+  translate: (key: string) => string
 ): string {
-  return sufficient ? formatPercent(value) : translate("Insufficient sample");
+  return sufficient ? formatPercent(value) : translate('Insufficient sample')
 }
 
 function formatRangeLabel(
   value: number,
-  translate: (key: string) => string,
+  translate: (key: string) => string
 ): string {
-  if (value === 1) return translate("1 hour");
-  if (value === 24) return translate("24 hours");
-  return translate("7 days");
+  if (value === 1) return translate('1 hour')
+  if (value === 24) return translate('24 hours')
+  return translate('7 days')
 }
 
 export function ChannelObservabilityDialog(
-  props: ChannelObservabilityDialogProps,
+  props: ChannelObservabilityDialogProps
 ) {
-  const { t } = useTranslation();
-  const { currentRow } = useChannels();
-  const [hours, setHours] = useState(24);
-  const [rows, setRows] = useState<ChannelObservabilityResult[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const { t } = useTranslation()
+  const { currentRow } = useChannels()
+  const [hours, setHours] = useState(24)
+  const [rows, setRows] = useState<ChannelObservabilityResult[]>([])
+  const [isLoading, setIsLoading] = useState(false)
 
   const load = async () => {
-    if (!currentRow) return;
-    setIsLoading(true);
+    if (!currentRow) return
+    setIsLoading(true)
     try {
-      const response = await getChannelObservability(currentRow.id, hours);
-      if (!response.success) {
-        toast.error(response.message || t("Operation failed"));
-        return;
-      }
-      setRows(response.data?.items || []);
+      setRows(await getAllChannelObservability(currentRow.id, hours))
     } catch (error: unknown) {
       toast.error(
-        error instanceof Error ? error.message : t("Operation failed"),
-      );
+        error instanceof Error ? error.message : t('Operation failed')
+      )
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   useEffect(() => {
-    if (props.open) void load();
+    if (props.open) void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, currentRow?.id, hours]);
+  }, [props.open, currentRow?.id, hours])
+
+  const summary = useMemo(() => {
+    const requests = rows.reduce(
+      (total, row) => total + Math.max(0, row.request_count),
+      0
+    )
+    const successes = rows.reduce((total, row) => {
+      const requestCount = Math.max(0, row.request_count)
+      if (Number.isFinite(row.request_success_count)) {
+        return (
+          total +
+          Math.min(requestCount, Math.max(0, row.request_success_count ?? 0))
+        )
+      }
+      return (
+        total +
+        Math.min(
+          requestCount,
+          Math.round(
+            (requestCount *
+              Math.min(100, Math.max(0, row.request_success_rate))) /
+              100
+          )
+        )
+      )
+    }, 0)
+    const failures = Math.max(0, requests - successes)
+    return {
+      requests,
+      successes,
+      failures,
+      successRate: requests > 0 ? (successes / requests) * 100 : 0,
+    }
+  }, [rows])
 
   return (
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t("Channel observability")}
+      title={t('Channel observability')}
       description={t(
-        "Requests, retries, cache behavior, p95 latency, and time to first token by model",
+        'Requests, retries, cache behavior, p95 latency, and time to first token by model'
       )}
-      contentClassName="max-w-6xl"
-      contentHeight="min(80vh, 760px)"
-      bodyClassName="space-y-4"
+      contentClassName='max-w-6xl'
+      contentHeight='min(80vh, 760px)'
+      bodyClassName='space-y-4'
     >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex gap-2">
+      <div className='flex items-center justify-between gap-3'>
+        <div className='flex gap-2'>
           {[1, 24, 168].map((value) => (
             <Button
               key={value}
-              variant={hours === value ? "default" : "outline"}
-              size="sm"
+              variant={hours === value ? 'default' : 'outline'}
+              size='sm'
               onClick={() => setHours(value)}
             >
               {formatRangeLabel(value, t)}
@@ -104,19 +143,38 @@ export function ChannelObservabilityDialog(
           ))}
         </div>
         <Button
-          variant="outline"
-          size="icon-sm"
+          variant='outline'
+          size='icon-sm'
           onClick={() => void load()}
           disabled={isLoading}
-          aria-label={t("Refresh")}
+          aria-label={t('Refresh')}
         >
-          <RefreshCw className={isLoading ? "size-4 animate-spin" : "size-4"} />
+          <RefreshCw className={isLoading ? 'size-4 animate-spin' : 'size-4'} />
         </Button>
       </div>
-      <div className="min-h-0 overflow-auto rounded-md border">
+
+      <div className='grid grid-cols-2 divide-x divide-y rounded-md border sm:grid-cols-4 sm:divide-y-0'>
+        <SummaryMetric label={t('Requests')} value={summary.requests} />
+        <SummaryMetric
+          label={t('Successful requests')}
+          value={summary.successes}
+          tone='success'
+        />
+        <SummaryMetric
+          label={t('Failed requests')}
+          value={summary.failures}
+          tone='danger'
+        />
+        <SummaryMetric
+          label={t('Success rate')}
+          value={formatPercent(summary.successRate)}
+        />
+      </div>
+
+      <div className='min-h-0 overflow-auto rounded-md border'>
         {rows.length === 0 && !isLoading ? (
-          <div className="text-muted-foreground py-12 text-center">
-            {t("No observability data available")}
+          <div className='text-muted-foreground py-12 text-center'>
+            {t('No observability data available')}
           </div>
         ) : (
           <StaticDataTable
@@ -124,69 +182,69 @@ export function ChannelObservabilityDialog(
             getRowKey={(row) =>
               `${row.requested_model}-${row.group}-${row.protocol}-${row.credential_id}`
             }
-            tableClassName="min-w-[1180px]"
+            tableClassName='min-w-[1180px]'
             columns={[
               {
-                id: "model",
-                header: t("Model"),
-                className: "min-w-[180px]",
+                id: 'model',
+                header: t('Model'),
+                className: 'min-w-[180px]',
                 cell: (row) => row.requested_model,
               },
               {
-                id: "requests",
-                header: t("Requests"),
+                id: 'requests',
+                header: t('Requests'),
                 cell: (row) => row.request_count.toLocaleString(),
               },
               {
-                id: "attempts",
-                header: t("Attempts"),
+                id: 'attempts',
+                header: t('Attempts'),
                 cell: (row) => row.attempt_count.toLocaleString(),
               },
               {
-                id: "success",
-                header: t("Success rate"),
+                id: 'success',
+                header: t('Success rate'),
                 cell: (row) =>
                   formatSampled(
                     row.request_success_rate,
                     row.sample_sufficient,
-                    t,
+                    t
                   ),
               },
               {
-                id: "attempt-success",
-                header: t("Attempt success"),
+                id: 'attempt-success',
+                header: t('Attempt success'),
                 cell: (row) =>
                   formatSampled(
                     row.attempt_success_rate,
                     row.sample_sufficient,
-                    t,
+                    t
                   ),
               },
               {
-                id: "cache",
-                header: t("Cache hit rate"),
+                id: 'cache',
+                header: t('Cache hit rate'),
                 cell: (row) =>
                   formatSampled(row.cache_hit_rate, row.usage_sufficient, t),
               },
               {
-                id: "latency",
-                header: t("P95 latency"),
+                id: 'latency',
+                header: t('P95 latency'),
                 cell: (row) =>
                   row.sample_sufficient
                     ? `${row.p95_latency_ms} ms`
-                    : t("Insufficient sample"),
+                    : t('Insufficient sample'),
               },
               {
-                id: "ttft",
-                header: t("P95 first token"),
+                id: 'ttft',
+                header: t('P95 first token'),
                 cell: (row) =>
                   row.sample_sufficient
                     ? `${row.p95_ttft_ms} ms`
-                    : t("Insufficient sample"),
+                    : t('Insufficient sample'),
               },
               {
-                id: "coverage",
-                header: t("Coverage"),
+                id: 'coverage',
+                header: t('Coverage'),
                 cell: (row) => formatPercent(row.sample_coverage),
               },
             ]}
@@ -194,5 +252,29 @@ export function ChannelObservabilityDialog(
         )}
       </div>
     </Dialog>
-  );
+  )
+}
+
+function SummaryMetric(props: {
+  label: string
+  value: string | number
+  tone?: 'success' | 'danger'
+}) {
+  let valueClassName = 'text-lg font-semibold'
+  if (props.tone === 'success') {
+    valueClassName = 'text-success text-lg font-semibold'
+  } else if (props.tone === 'danger') {
+    valueClassName = 'text-destructive text-lg font-semibold'
+  }
+
+  return (
+    <div className='px-3 py-2'>
+      <div className='text-muted-foreground text-xs'>{props.label}</div>
+      <div className={valueClassName}>
+        {typeof props.value === 'number'
+          ? props.value.toLocaleString()
+          : props.value}
+      </div>
+    </div>
+  )
 }

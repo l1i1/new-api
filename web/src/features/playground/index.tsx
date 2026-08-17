@@ -38,31 +38,35 @@ import {
 export function Playground() {
   const { t } = useTranslation()
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false)
-  const [mode, setMode] = useState<PlaygroundMode>(PLAYGROUND_MODES.CHAT)
   const {
     config,
     parameterEnabled,
+    mode,
     sessions,
     activeSessionId,
     messages,
     isLoadingSessions,
     models,
     groups,
-    updateMessages,
+    updateSessionMessages,
     setModels,
     setGroups,
     updateConfig,
     updateParameterEnabled,
+    updateMode,
     createSession,
     selectSession,
     deleteSession,
+    renameSession,
+    reorderSessions,
     clearMessages,
   } = usePlaygroundState()
 
   const { sendChat, stopGeneration, isGenerating } = useChatHandler({
+    activeSessionId,
     config,
     parameterEnabled,
-    onMessageUpdate: updateMessages,
+    onMessageUpdate: updateSessionMessages,
   })
 
   const {
@@ -70,8 +74,9 @@ export function Playground() {
     stopGeneration: stopImageGeneration,
     isGenerating: isGeneratingImage,
   } = useImageGeneration({
+    activeSessionId,
     config,
-    onMessageUpdate: updateMessages,
+    onMessageUpdate: updateSessionMessages,
   })
 
   const {
@@ -84,18 +89,26 @@ export function Playground() {
     handleDeleteMessage,
   } = usePlaygroundConversation({
     messages,
-    updateMessages,
+    mode,
+    sessionId: activeSessionId,
+    updateMessages: updateSessionMessages,
     sendChat,
+    sendImage: generateImage,
   })
 
   const isBusy = isGenerating || isGeneratingImage
-  const handleStop = isGeneratingImage ? stopImageGeneration : stopGeneration
-  const handleSubmit =
-    mode === PLAYGROUND_MODES.IMAGE ? generateImage : handleSendMessage
+  const handleStop = () => {
+    if (!activeSessionId) return
+    if (isGeneratingImage) {
+      stopImageGeneration(activeSessionId)
+    } else {
+      stopGeneration(activeSessionId)
+    }
+  }
 
   const handleModeChange = (nextMode: PlaygroundMode) => {
     if (isBusy) return
-    setMode(nextMode)
+    updateMode(nextMode)
   }
 
   const handleClearMessages = () => {
@@ -117,6 +130,8 @@ export function Playground() {
     onCreateSession: createSession,
     onSelectSession: selectSession,
     onDeleteSession: deleteSession,
+    onRenameSession: renameSession,
+    onReorderSessions: reorderSessions,
   }
 
   return (
@@ -148,7 +163,7 @@ export function Playground() {
             onEditMessage={handleEditMessage}
             onDeleteMessage={handleDeleteMessage}
             onSelectPrompt={handleSendMessage}
-            isGenerating={isGenerating}
+            isGenerating={isBusy}
             editingKey={editingMessageKey}
             onCancelEdit={handleEditOpenChange}
             onSaveEdit={(newContent) => applyEdit(newContent, false)}
@@ -175,7 +190,15 @@ export function Playground() {
             onModelChange={(value) => updateConfig('model', value)}
             onParameterEnabledChange={updateParameterEnabled}
             onStop={handleStop}
-            onSubmit={handleSubmit}
+            onSubmit={
+              mode === PLAYGROUND_MODES.IMAGE
+                ? (text, images) => {
+                    if (activeSessionId) {
+                      void generateImage(activeSessionId, text, images)
+                    }
+                  }
+                : handleSendMessage
+            }
             parameterEnabled={parameterEnabled}
             hasMessages={messages.length > 0}
           />

@@ -33,9 +33,21 @@ import {
 } from '../lib'
 import type { ImageGenerationResult, Message, PlaygroundConfig } from '../types'
 
+type SessionMessageUpdater = (
+  sessionId: string,
+  updater: (previousMessages: Message[]) => Message[]
+) => void
+
 interface UseImageGenerationOptions {
+  activeSessionId: string | null
   config: PlaygroundConfig
-  onMessageUpdate: (updater: (prev: Message[]) => Message[]) => void
+  onMessageUpdate: SessionMessageUpdater
+}
+
+type ImageRequestState = {
+  abortController: AbortController | null
+  generation: number
+  isGenerating: boolean
 }
 
 /** Normalize an API image result to a renderable URL (data URL or remote). */
@@ -66,52 +78,82 @@ async function buildImageEditsFormData(
   return formData
 }
 
+function createRequestState(): ImageRequestState {
+  return { abortController: null, generation: 0, isGenerating: false }
+}
+
 /**
- * Hook for image mode: sends a prompt (optionally with reference images) to
- * the images API and appends the produced images to the assistant message.
+ * Handle image requests per session so switching conversations does not
+ * cancel or disable an unrelated conversation.
  */
 export function useImageGeneration({
+  activeSessionId,
   config,
   onMessageUpdate,
 }: UseImageGenerationOptions) {
   const { t } = useTranslation()
-  const [isGenerating, setIsGenerating] = useState(false)
-  const abortControllerRef = useRef<AbortController | null>(null)
-  const generationRef = useRef(0)
+  const requestStatesRef = useRef<Map<string, ImageRequestState>>(new Map())
+  const [, setActivityVersion] = useState(0)
+
+  const getRequestState = useCallback((sessionId: string) => {
+    const existing = requestStatesRef.current.get(sessionId)
+    if (existing) return existing
+    const created = createRequestState()
+    requestStatesRef.current.set(sessionId, created)
+    return created
+  }, [])
 
   useEffect(
     () => () => {
-      generationRef.current += 1
-      abortControllerRef.current?.abort()
-      abortControllerRef.current = null
+      for (const state of requestStatesRef.current.values()) {
+        state.generation += 1
+        state.abortController?.abort()
+      }
+      requestStatesRef.current.clear()
     },
     []
   )
 
-  const stopGeneration = useCallback(() => {
-    generationRef.current += 1
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = null
-    setIsGenerating(false)
-    onMessageUpdate((prev) =>
-      updateLastAssistantMessage(prev, (message) =>
-        isAssistantMessagePending(message)
-          ? completeAssistantMessage(message)
-          : message
+  const stopGeneration = useCallback(
+    (sessionId: string) => {
+      const state = getRequestState(sessionId)
+      state.generation += 1
+      state.abortController?.abort()
+      state.abortController = null
+      state.isGenerating = false
+      setActivityVersion((version) => version + 1)
+      onMessageUpdate(sessionId, (previousMessages) =>
+        updateLastAssistantMessage(previousMessages, (message) =>
+          isAssistantMessagePending(message)
+            ? completeAssistantMessage(message)
+            : message
+        )
       )
-    )
-  }, [onMessageUpdate])
+    },
+    [getRequestState, onMessageUpdate]
+  )
 
   const generateImage = useCallback(
-    async (text: string, images?: string[]) => {
-      const generation = generationRef.current + 1
-      generationRef.current = generation
-      abortControllerRef.current?.abort()
+    async (
+      sessionId: string,
+      text: string,
+      images?: string[],
+      appendUserMessages = true
+    ) => {
+      const state = getRequestState(sessionId)
+      state.generation += 1
+      const generation = state.generation
+      state.abortController?.abort()
       const abortController = new AbortController()
-      abortControllerRef.current = abortController
+      state.abortController = abortController
+      state.isGenerating = true
+      setActivityVersion((version) => version + 1)
 
-      onMessageUpdate((prev) => appendUserMessagePair(prev, text, images))
-      setIsGenerating(true)
+      if (appendUserMessages) {
+        onMessageUpdate(sessionId, (previousMessages) =>
+          appendUserMessagePair(previousMessages, text, images)
+        )
+      }
 
       try {
         const response = images?.length
@@ -128,10 +170,7 @@ export function useImageGeneration({
               abortController.signal
             )
 
-        if (
-          abortController.signal.aborted ||
-          generationRef.current !== generation
-        ) {
+        if (abortController.signal.aborted || state.generation !== generation) {
           return
         }
 
@@ -142,11 +181,11 @@ export function useImageGeneration({
         if (rendered.length === 0) {
           const errorTitle = t(ERROR_MESSAGES.API_REQUEST_ERROR)
           toast.error(t('No image was generated'))
-          onMessageUpdate((prev) =>
-            generationRef.current !== generation
-              ? prev
+          onMessageUpdate(sessionId, (previousMessages) =>
+            state.generation !== generation
+              ? previousMessages
               : updateAssistantMessageWithError(
-                  prev,
+                  previousMessages,
                   t('No image was generated'),
                   undefined,
                   errorTitle
@@ -155,41 +194,43 @@ export function useImageGeneration({
           return
         }
 
-        onMessageUpdate((prev) =>
-          generationRef.current !== generation
-            ? prev
-            : updateLastAssistantMessage(prev, (message) =>
+        onMessageUpdate(sessionId, (previousMessages) =>
+          state.generation !== generation
+            ? previousMessages
+            : updateLastAssistantMessage(previousMessages, (message) =>
                 completeAssistantMessage({ ...message, images: rendered })
               )
         )
       } catch (error: unknown) {
-        if (
-          abortController.signal.aborted ||
-          generationRef.current !== generation
-        ) {
+        if (abortController.signal.aborted || state.generation !== generation) {
           return
         }
         const { errorCode, errorMessage } = parseRequestErrorDetails(error)
         toast.error(errorMessage)
-        onMessageUpdate((prev) =>
-          generationRef.current !== generation
-            ? prev
+        onMessageUpdate(sessionId, (previousMessages) =>
+          state.generation !== generation
+            ? previousMessages
             : updateAssistantMessageWithError(
-                prev,
+                previousMessages,
                 errorMessage,
                 errorCode,
                 t(ERROR_MESSAGES.API_REQUEST_ERROR)
               )
         )
       } finally {
-        if (generationRef.current === generation) {
-          abortControllerRef.current = null
-          setIsGenerating(false)
+        if (state.generation === generation) {
+          state.abortController = null
+          state.isGenerating = false
+          setActivityVersion((version) => version + 1)
         }
       }
     },
-    [config, onMessageUpdate, t]
+    [config, getRequestState, onMessageUpdate, t]
   )
+
+  const isGenerating = activeSessionId
+    ? Boolean(getRequestState(activeSessionId).isGenerating)
+    : false
 
   return { generateImage, stopGeneration, isGenerating }
 }

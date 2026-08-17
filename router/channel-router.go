@@ -22,6 +22,11 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		middleware.RequirePermission(authz.ChannelRead),
 		controller.GetChannelModelObservability,
 	)
+	apiRouter.GET("/observability/channel-availability",
+		middleware.AdminAuth(),
+		middleware.RequirePermission(authz.ChannelRead),
+		controller.GetChannelAvailability,
+	)
 	channelRoute := apiRouter.Group("/channel")
 	channelRoute.Use(middleware.AdminAuth())
 

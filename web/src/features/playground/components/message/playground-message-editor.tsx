@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Check, RotateCcw, Send, X } from 'lucide-react'
+import { useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CodeBlockEditor } from '@/components/ai-elements/code-block'
@@ -51,7 +52,7 @@ export function PlaygroundMessageEditor({
     originalText
   )
 
-  const handleCancel = () => {
+  const handleCancel = useCallback(() => {
     if (
       hasChanged &&
       !window.confirm(
@@ -62,26 +63,35 @@ export function PlaygroundMessageEditor({
     }
 
     onCancelEdit?.(false)
-  }
+  }, [hasChanged, onCancelEdit, t])
 
-  const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      handleCancel()
-      return
-    }
+  const latestStateRef = useRef({ editText, canSave, showSaveAndSubmit })
+  const cancelRef = useRef(handleCancel)
+  latestStateRef.current = { editText, canSave, showSaveAndSubmit }
+  cancelRef.current = handleCancel
 
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault()
-      if (!canSave) return
-
-      if (showSaveAndSubmit) {
-        onSaveEditAndSubmit?.(editText)
-      } else {
-        onSaveEdit?.(editText)
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      const latestState = latestStateRef.current
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        cancelRef.current()
+        return
       }
-    }
-  }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        if (!latestState.canSave) return
+
+        if (latestState.showSaveAndSubmit) {
+          onSaveEditAndSubmit?.(latestState.editText)
+        } else {
+          onSaveEdit?.(latestState.editText)
+        }
+      }
+    },
+    [onSaveEdit, onSaveEditAndSubmit]
+  )
 
   const editorActions = (
     <>

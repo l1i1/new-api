@@ -65,13 +65,16 @@ import {
   getMultiKeyTestTask,
   updateMultiKeyStatus,
   updateMultiKeyProxy,
-  getChannelObservability,
+  getAllChannelObservability,
   cancelMultiKeyTestTask,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
   channelsQueryKeys,
   formatTimestamp,
+  formatMultiKeyTestResult,
+  getMultiKeyIndex,
+  getMultiKeyTestResult,
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
   isDestructiveAction,
@@ -80,6 +83,7 @@ import type {
   ChannelObservabilityResult,
   KeyStatus,
   MultiKeyConfirmAction,
+  MultiKeyTestResult,
 } from '../../types'
 import { useChannels } from '../channels-provider'
 import { StatisticsCard } from './multi-key-statistics-card'
@@ -123,7 +127,9 @@ export function MultiKeyManageDialog({
   const [isPerformingAction, setIsPerformingAction] = useState(false)
   const [isTestingKeys, setIsTestingKeys] = useState(false)
   const [testTaskId, setTestTaskId] = useState<string | null>(null)
-  const [testResults, setTestResults] = useState<Record<number, string>>({})
+  const [testResults, setTestResults] = useState<
+    Record<number, MultiKeyTestResult>
+  >({})
   const [failedCredentialIds, setFailedCredentialIds] = useState<number[]>([])
   const [failedOnly, setFailedOnly] = useState(false)
   const [keyMetrics, setKeyMetrics] = useState<
@@ -181,13 +187,12 @@ export function MultiKeyManageDialog({
         setAutoDisabledCount(response.data.auto_disabled_count || 0)
         setKeysRevision(response.data.keys_revision)
         try {
-          const metricsResponse = await getChannelObservability(
+          const metricsItems = await getAllChannelObservability(
             currentRow.id,
-            24,
-            { page_size: 200 }
+            24
           )
           const metrics: Record<number, ChannelObservabilityResult> = {}
-          for (const item of metricsResponse.data?.items || []) {
+          for (const item of metricsItems) {
             if (item.credential_id > 0) {
               const existing = metrics[item.credential_id]
               if (!existing) {
@@ -368,12 +373,12 @@ export function MultiKeyManageDialog({
         taskResponse = await getMultiKeyTestTask(currentRow.id, taskId)
       }
       const results = taskResponse.data?.result?.results || []
-      const nextResults: Record<number, string> = {}
+      const nextResults: Record<number, MultiKeyTestResult> = {}
       const nextFailedCredentialIds: number[] = []
       for (const result of results) {
-        nextResults[result.index] = result.error_code
-          ? `${result.status}: ${result.error_code}`
-          : result.status
+        const resultKey =
+          result.credential_id > 0 ? result.credential_id : result.index
+        nextResults[resultKey] = result
         if (result.status === 'failed' && result.credential_id > 0) {
           nextFailedCredentialIds.push(result.credential_id)
         }
@@ -503,6 +508,10 @@ export function MultiKeyManageDialog({
   const formatKeyTimestamp = (timestamp?: number) => {
     if (!timestamp) return '-'
     return formatTimestamp(timestamp)
+  }
+
+  const getTestResult = (key: KeyStatus) => {
+    return getMultiKeyTestResult(testResults, key)
   }
 
   if (!currentRow) return null
@@ -757,7 +766,9 @@ export function MultiKeyManageDialog({
                 className='rounded-none border-0'
                 tableClassName='min-w-[800px]'
                 data={visibleKeys}
-                getRowKey={(key) => key.index}
+                getRowKey={(key, rowIndex) =>
+                  `${key.credential_id ?? 'key'}-${getMultiKeyIndex(key, rowIndex)}`
+                }
                 columns={[
                   {
                     id: 'select',
@@ -806,7 +817,7 @@ export function MultiKeyManageDialog({
                           )
                         }}
                         aria-label={t('Select key {{index}}', {
-                          index: key.index + 1,
+                          index: getMultiKeyIndex(key) + 1,
                         })}
                       />
                     ),
@@ -816,7 +827,7 @@ export function MultiKeyManageDialog({
                     header: t('Index'),
                     className: 'w-20',
                     cellClassName: 'font-mono text-sm',
-                    cell: (key) => `#${key.index + 1}`,
+                    cell: (key) => `#${getMultiKeyIndex(key) + 1}`,
                   },
                   {
                     id: 'status',
@@ -854,9 +865,11 @@ export function MultiKeyManageDialog({
                     cell: (key) => (
                       <div className='space-y-0.5'>
                         <div>
-                          {testResults[key.index] ||
-                            key.last_test_status ||
-                            '-'}
+                          {formatMultiKeyTestResult(
+                            getTestResult(key),
+                            key,
+                            t
+                          ) || '-'}
                         </div>
                         <div className='text-muted-foreground'>
                           {formatKeyTimestamp(key.last_test_at)}
@@ -929,7 +942,7 @@ export function MultiKeyManageDialog({
                     className: 'text-right',
                     cell: (key) => (
                       <MultiKeyTableRowActions
-                        keyIndex={key.index}
+                        keyIndex={getMultiKeyIndex(key)}
                         status={key.status}
                         canDelete={canEditSensitive}
                         onAction={setConfirmAction}

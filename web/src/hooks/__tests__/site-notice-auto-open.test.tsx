@@ -50,8 +50,11 @@ const { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
 const { api } = await import('@/lib/api')
 const { useNotificationStore } = await import('@/stores/notification-store')
-const { getNotificationAutoOpenOptions, useNotifications } =
-  await import('../use-notifications')
+const {
+  getNotificationAutoOpenOptions,
+  getNotificationRefreshInterval,
+  useNotifications,
+} = await import('../use-notifications')
 
 const originalApiGet = api.get
 const reactTestGlobals = globalThis as typeof globalThis & {
@@ -170,6 +173,7 @@ afterEach(() => {
     lastAutoOpenedPricingNotice: '',
     readAnnouncementKeys: [],
     closedUntilDate: null,
+    pendingAutoOpenKey: null,
   })
   document.body.replaceChildren()
 })
@@ -232,6 +236,37 @@ describe('site notice automatic display', () => {
     await destroyTestApp(app)
   })
 
+  test('reopens after the pricing header remounts during page loading', async () => {
+    api.get = (async (url: string) => {
+      if (url === '/api/notice') {
+        return { data: { success: true, data: 'Pricing notice' } }
+      }
+      throw new Error(`Unexpected API request: ${url}`)
+    }) as typeof api.get
+
+    const firstHeader = createTestApp({ autoOpenNotice: true })
+    await firstHeader.render()
+    await waitForState(
+      firstHeader.container,
+      'site notice state',
+      'open:Pricing notice'
+    )
+
+    await act(async () => firstHeader.root.unmount())
+    firstHeader.container.remove()
+    firstHeader.queryClient.clear()
+
+    const loadedHeader = createTestApp({ autoOpenNotice: true })
+    await loadedHeader.render()
+    await waitForState(
+      loadedHeader.container,
+      'site notice state',
+      'open:Pricing notice'
+    )
+
+    await destroyTestApp(loadedHeader)
+  })
+
   test('does not open when automatic display is disabled', async () => {
     api.get = (async (url: string) => {
       if (url === '/api/notice') {
@@ -250,6 +285,11 @@ describe('site notice automatic display', () => {
 })
 
 describe('notification popover automatic display', () => {
+  test('refreshes announcements at a bounded interval when polling is enabled', () => {
+    assert.equal(getNotificationRefreshInterval(true), 5 * 60 * 1000)
+    assert.equal(getNotificationRefreshInterval(false), false)
+  })
+
   test('selects one automatic surface based on the current route', () => {
     assert.deepEqual(getNotificationAutoOpenOptions('/'), {
       autoOpenNotice: false,
@@ -339,6 +379,58 @@ describe('notification popover automatic display', () => {
       'notification popover state',
       'open:Updated dashboard notice'
     )
+
+    await destroyTestApp(app)
+  })
+
+  test('opens for timeline announcements and for edits to an existing item', async () => {
+    api.get = (async (url: string) => {
+      if (url === '/api/notice') {
+        return { data: { success: true, data: '' } }
+      }
+      throw new Error(`Unexpected API request: ${url}`)
+    }) as typeof api.get
+
+    const app = createTestApp({ autoOpenPopover: true })
+    app.queryClient.setQueryData(['status'], {
+      announcements_enabled: true,
+      announcements: [
+        {
+          id: 7,
+          content: 'Initial timeline update',
+          publishDate: '2026-08-17T00:00:00Z',
+          type: 'ongoing',
+        },
+      ],
+    })
+    await app.render()
+    await waitForState(app.container, 'notification popover state', 'open:')
+    assert.equal(useNotificationStore.getState().readAnnouncementKeys.length, 1)
+
+    await act(async () => {
+      app.container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="close notification popover"]'
+        )
+        ?.click()
+    })
+    await waitForState(app.container, 'notification popover state', 'closed')
+
+    await act(async () => {
+      app.queryClient.setQueryData(['status'], {
+        announcements_enabled: true,
+        announcements: [
+          {
+            id: 7,
+            content: 'Edited timeline update',
+            publishDate: '2026-08-17T00:00:00Z',
+            type: 'ongoing',
+          },
+        ],
+      })
+    })
+    await waitForState(app.container, 'notification popover state', 'open:')
+    assert.equal(useNotificationStore.getState().readAnnouncementKeys.length, 2)
 
     await destroyTestApp(app)
   })

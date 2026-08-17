@@ -37,7 +37,7 @@ function getInitialStatus(): SystemStatus | undefined {
   return undefined
 }
 
-export function useStatus() {
+export function useStatus(options: { refetchInterval?: number | false } = {}) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['status'],
     queryFn: async () => {
@@ -72,6 +72,7 @@ export function useStatus() {
     staleTime: 5 * 60 * 1000,
     // Cache expires after 30 minutes
     gcTime: 30 * 60 * 1000,
+    refetchInterval: options.refetchInterval ?? false,
   })
 
   return {

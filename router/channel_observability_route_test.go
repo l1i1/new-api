@@ -19,5 +19,6 @@ func TestChannelObservabilityRoutesExposePaginatedAndLegacyPaths(t *testing.T) {
 		routes[route.Method+" "+route.Path] = true
 	}
 	require.True(t, routes[http.MethodGet+" /api/observability/channel-model"])
+	require.True(t, routes[http.MethodGet+" /api/observability/channel-availability"])
 	assert.True(t, routes[http.MethodGet+" /api/channel/observability"])
 }
