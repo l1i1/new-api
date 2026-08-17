@@ -123,6 +123,103 @@ func TestApplyPaymentGatewaySettlementAutoOrderUsesConcreteProviderMethod(t *tes
 	require.Equal(t, common.TopUpStatusSuccess, storedTopUp.Status)
 }
 
+func TestBindPaymentGatewayWalletOrderSynchronizesCNYFallbackAtomically(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &TopUp{})
+	topUp := &TopUp{
+		UserId: 9120, Amount: 1, Money: 7, TradeNo: "gateway-wallet-fallback",
+		PaymentMethod: "wechat_pay", PaymentProvider: PaymentProviderWaffoPancake,
+		PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
+		PaymentCurrency: PaymentCurrencyCNY, Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, DB.Create(topUp).Error)
+	snapshot := PaymentGatewayWalletOrderSnapshot{
+		OrderID: "gateway-order-fallback", UserID: topUp.UserId, AmountMinor: 100, Currency: PaymentCurrencyUSD,
+		QuotaAmount: 500000, Provider: PaymentProviderWaffoPancake, ProviderAccountID: "account-1",
+		Environment: "test", PaymentMethod: "wechat_pay",
+		PriceSnapshot: map[string]any{
+			"quota_amount": int64(1), "provider_amount": "1.00", "pricing_currency": PaymentCurrencyUSD,
+			"display_currency": PaymentCurrencyCNY, "fallback_from_currency": PaymentCurrencyCNY,
+			"fallback_from_amount_minor": int64(700), "fallback_from_payment_method": "wechat_pay",
+		},
+	}
+	require.NoError(t, BindPaymentGatewayWalletOrder(topUp.TradeNo, snapshot))
+	require.NoError(t, BindPaymentGatewayWalletOrder(topUp.TradeNo, snapshot))
+
+	var stored TopUp
+	require.NoError(t, DB.Where("trade_no = ?", topUp.TradeNo).First(&stored).Error)
+	require.Equal(t, snapshot.OrderID, stored.PaymentGatewayOrderID)
+	require.Equal(t, PaymentCurrencyUSD, stored.PaymentCurrency)
+	require.Equal(t, 1.0, stored.Money)
+	require.Equal(t, "wechat_pay", stored.PaymentMethod)
+}
+
+func TestBindPaymentGatewayWalletOrderAllowsBareAutoUSD(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &TopUp{})
+	topUp := &TopUp{
+		UserId: 9121, Amount: 1, Money: 1, TradeNo: "gateway-wallet-auto",
+		PaymentMethod: "auto", PaymentProvider: PaymentProviderWaffoPancake,
+		PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
+		PaymentCurrency: PaymentCurrencyUSD, Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, DB.Create(topUp).Error)
+	require.NoError(t, BindPaymentGatewayWalletOrder(topUp.TradeNo, PaymentGatewayWalletOrderSnapshot{
+		OrderID: "gateway-order-auto", UserID: topUp.UserId, AmountMinor: 100, Currency: PaymentCurrencyUSD,
+		QuotaAmount: 500000, Provider: PaymentProviderWaffoPancake, ProviderAccountID: "account-1",
+		Environment: "test", PaymentMethod: "auto",
+		PriceSnapshot: map[string]any{"quota_amount": int64(1), "provider_amount": "1.00", "pricing_currency": PaymentCurrencyUSD},
+	}))
+}
+
+func TestBindPaymentGatewayWalletOrderRejectsSuccessfulOrderMutation(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &TopUp{})
+	topUp := &TopUp{
+		UserId: 9122, Amount: 1, Money: 7, TradeNo: "gateway-wallet-successful",
+		PaymentMethod: "wechat_pay", PaymentProvider: PaymentProviderWaffoPancake,
+		PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
+		PaymentGatewayOrderID: "gateway-order-successful", PaymentCurrency: PaymentCurrencyCNY,
+		Status: common.TopUpStatusSuccess, CreditedQuota: 500000,
+	}
+	require.NoError(t, DB.Create(topUp).Error)
+
+	err := BindPaymentGatewayWalletOrder(topUp.TradeNo, PaymentGatewayWalletOrderSnapshot{
+		OrderID: topUp.PaymentGatewayOrderID, UserID: topUp.UserId, AmountMinor: 100, Currency: PaymentCurrencyUSD,
+		QuotaAmount: 500000, Provider: PaymentProviderWaffoPancake, ProviderAccountID: "account-1",
+		Environment: "test", PaymentMethod: "wechat_pay",
+		PriceSnapshot: map[string]any{
+			"quota_amount": int64(1), "provider_amount": "1.00", "pricing_currency": PaymentCurrencyUSD,
+			"display_currency": PaymentCurrencyCNY, "fallback_from_currency": PaymentCurrencyCNY,
+			"fallback_from_amount_minor": int64(700), "fallback_from_payment_method": "wechat_pay",
+		},
+	})
+	require.ErrorIs(t, err, ErrPaymentGatewaySettlementMismatch)
+
+	var stored TopUp
+	require.NoError(t, DB.Where("trade_no = ?", topUp.TradeNo).First(&stored).Error)
+	require.Equal(t, PaymentCurrencyCNY, stored.PaymentCurrency)
+	require.Equal(t, "wechat_pay", stored.PaymentMethod)
+	require.Equal(t, 7.0, stored.Money)
+	require.Equal(t, 500000, stored.CreditedQuota)
+}
+
+func TestBindPaymentGatewayWalletOrderAllowsIdenticalSuccessfulReplay(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &TopUp{})
+	topUp := &TopUp{
+		UserId: 9123, Amount: 1, Money: 1, TradeNo: "gateway-wallet-successful-replay",
+		PaymentMethod: "card", PaymentProvider: PaymentProviderWaffoPancake,
+		PaymentProviderAccountID: "account-1", PaymentEnvironment: "test",
+		PaymentGatewayOrderID: "gateway-order-successful-replay", PaymentCurrency: PaymentCurrencyUSD,
+		Status: common.TopUpStatusSuccess, CreditedQuota: 500000,
+	}
+	require.NoError(t, DB.Create(topUp).Error)
+
+	require.NoError(t, BindPaymentGatewayWalletOrder(topUp.TradeNo, PaymentGatewayWalletOrderSnapshot{
+		OrderID: topUp.PaymentGatewayOrderID, UserID: topUp.UserId, AmountMinor: 100, Currency: PaymentCurrencyUSD,
+		QuotaAmount: 500000, Provider: PaymentProviderWaffoPancake, ProviderAccountID: "account-1",
+		Environment: "test", PaymentMethod: "card",
+		PriceSnapshot: map[string]any{"quota_amount": int64(1), "provider_amount": "1.00", "pricing_currency": PaymentCurrencyUSD},
+	}))
+}
+
 func TestApplyPaymentGatewaySettlementRequiresImmutableProviderSnapshot(t *testing.T) {
 	setupPaymentGatewaySettlementTest(t, &PaymentGatewaySettlement{})
 	valid := gatewaySettlementCommand("snapshot-validation-order", PaymentGatewayBusinessWallet)

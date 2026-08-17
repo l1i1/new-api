@@ -85,6 +85,19 @@ type PaymentGatewaySettlementResult struct {
 	CreditedReference string
 }
 
+type PaymentGatewayWalletOrderSnapshot struct {
+	OrderID           string
+	UserID            int
+	AmountMinor       int64
+	Currency          string
+	QuotaAmount       int64
+	Provider          string
+	ProviderAccountID string
+	Environment       string
+	PaymentMethod     string
+	PriceSnapshot     map[string]any
+}
+
 // BindPaymentGatewayOrderID records the canonical HotPay order ID on the
 // local pending order. The binding is write-once: retries may return the same
 // ID, but a different ID is a terminal mismatch and must not be exposed as a
@@ -137,6 +150,96 @@ func BindPaymentGatewayOrderID(businessType, merchantOrderID, gatewayOrderID str
 			return ErrPaymentGatewaySettlementInvalid
 		}
 	})
+}
+
+// BindPaymentGatewayWalletOrder atomically records the HotPay order identity
+// and synchronizes a provider-approved CNY-to-USD fallback snapshot before the
+// checkout URL is returned to the buyer.
+func BindPaymentGatewayWalletOrder(merchantOrderID string, snapshot PaymentGatewayWalletOrderSnapshot) error {
+	if DB == nil {
+		return ErrPaymentGatewaySettlementRetryable
+	}
+	merchantOrderID = strings.TrimSpace(merchantOrderID)
+	snapshot.OrderID = strings.TrimSpace(snapshot.OrderID)
+	snapshot.Currency = strings.ToUpper(strings.TrimSpace(snapshot.Currency))
+	snapshot.Provider = strings.ToLower(strings.TrimSpace(snapshot.Provider))
+	snapshot.ProviderAccountID = strings.TrimSpace(snapshot.ProviderAccountID)
+	snapshot.Environment = strings.ToLower(strings.TrimSpace(snapshot.Environment))
+	snapshot.PaymentMethod = normalizeGatewayPaymentMethod(snapshot.PaymentMethod)
+	if merchantOrderID == "" || snapshot.OrderID == "" || snapshot.UserID <= 0 || snapshot.AmountMinor <= 0 ||
+		snapshot.Currency == "" || snapshot.QuotaAmount <= 0 || snapshot.Provider == "" ||
+		snapshot.ProviderAccountID == "" || (snapshot.Environment != "test" && snapshot.Environment != "prod") ||
+		!validGatewayCheckoutPaymentMethod(snapshot.PaymentMethod) || len(snapshot.PriceSnapshot) == 0 {
+		return ErrPaymentGatewaySettlementInvalid
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var topUp TopUp
+		if err := lockForUpdate(tx).Where("trade_no = ?", merchantOrderID).First(&topUp).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrTopUpNotFound
+			}
+			return err
+		}
+		if topUp.UserId != snapshot.UserID || topUp.PaymentProvider != snapshot.Provider ||
+			topUp.PaymentProviderAccountID != snapshot.ProviderAccountID || topUp.PaymentEnvironment != snapshot.Environment {
+			return ErrPaymentGatewaySettlementMismatch
+		}
+		if topUp.PaymentGatewayOrderID != "" && topUp.PaymentGatewayOrderID != snapshot.OrderID {
+			return ErrPaymentGatewaySettlementMismatch
+		}
+		command := PaymentGatewaySettlementCommand{QuotaAmount: snapshot.QuotaAmount}
+		if _, err := validateGatewayQuota(&topUp, &command); err != nil {
+			return err
+		}
+		providerAmount, ok := snapshotString(snapshot.PriceSnapshot, "provider_amount")
+		if !ok || validateGatewaySnapshotMinor(providerAmount, snapshot.AmountMinor) != nil {
+			return ErrPaymentGatewaySettlementMismatch
+		}
+		pricingCurrency, ok := snapshotString(snapshot.PriceSnapshot, "pricing_currency")
+		if !ok || !strings.EqualFold(pricingCurrency, snapshot.Currency) {
+			return ErrPaymentGatewaySettlementMismatch
+		}
+		quotaAmount, ok := snapshotInt64(snapshot.PriceSnapshot, "quota_amount")
+		if !ok || quotaAmount != topUp.Amount {
+			return ErrPaymentGatewaySettlementMismatch
+		}
+
+		localMatchesFinal := strings.EqualFold(topUp.PaymentCurrency, snapshot.Currency) &&
+			gatewayWalletPaymentMethodMatches(topUp.PaymentMethod, snapshot.PaymentMethod, snapshot.Currency) &&
+			validateGatewayMoney(topUp.Money, snapshot.AmountMinor) == nil
+		if topUp.Status == common.TopUpStatusSuccess {
+			if topUp.PaymentGatewayOrderID != snapshot.OrderID || !localMatchesFinal {
+				return ErrPaymentGatewaySettlementMismatch
+			}
+			return nil
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+		if !localMatchesFinal {
+			fallbackCurrency, currencyOK := snapshotString(snapshot.PriceSnapshot, "fallback_from_currency")
+			fallbackAmountMinor, amountOK := snapshotInt64(snapshot.PriceSnapshot, "fallback_from_amount_minor")
+			fallbackMethod, methodOK := snapshotString(snapshot.PriceSnapshot, "fallback_from_payment_method")
+			displayCurrency, displayOK := snapshotString(snapshot.PriceSnapshot, "display_currency")
+			if snapshot.Currency != PaymentCurrencyUSD || snapshot.PaymentMethod != "wechat_pay" ||
+				!currencyOK || !strings.EqualFold(fallbackCurrency, topUp.PaymentCurrency) || !strings.EqualFold(fallbackCurrency, PaymentCurrencyCNY) ||
+				!amountOK || validateGatewayMoney(topUp.Money, fallbackAmountMinor) != nil ||
+				!methodOK || normalizeGatewayPaymentMethod(fallbackMethod) != normalizeGatewayPaymentMethod(topUp.PaymentMethod) ||
+				!displayOK || !strings.EqualFold(displayCurrency, PaymentCurrencyCNY) {
+				return ErrPaymentGatewaySettlementMismatch
+			}
+		}
+		topUp.PaymentGatewayOrderID = snapshot.OrderID
+		topUp.PaymentCurrency = snapshot.Currency
+		topUp.PaymentMethod = snapshot.PaymentMethod
+		providerAmountDecimal, _ := decimal.NewFromString(providerAmount)
+		topUp.Money = providerAmountDecimal.InexactFloat64()
+		return tx.Save(&topUp).Error
+	})
+}
+
+func validGatewayCheckoutPaymentMethod(method string) bool {
+	return normalizeGatewayPaymentMethod(method) == "auto" || validGatewayPaymentMethod(method)
 }
 
 func normalizeGatewayPaymentMethod(method string) string {
@@ -203,6 +306,18 @@ func validateGatewaySnapshotAmount(value string, expected float64) error {
 		return ErrPaymentGatewaySettlementMismatch
 	}
 	if !actual.Equal(decimal.NewFromFloat(expected).Round(2)) {
+		return ErrPaymentGatewaySettlementMismatch
+	}
+	return nil
+}
+
+func validateGatewaySnapshotMinor(value string, expectedMinor int64) error {
+	actual, err := decimal.NewFromString(strings.TrimSpace(value))
+	if err != nil || actual.LessThanOrEqual(decimal.Zero) || expectedMinor <= 0 {
+		return ErrPaymentGatewaySettlementMismatch
+	}
+	expected := decimal.NewFromInt(expectedMinor).Div(decimal.NewFromInt(100))
+	if !actual.Equal(expected) {
 		return ErrPaymentGatewaySettlementMismatch
 	}
 	return nil

@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 const (
@@ -65,43 +66,52 @@ type HotPayGatewayClient struct {
 }
 
 type HotPayGatewayCreateOrderRequest struct {
-	MerchantOrderID       string         `json:"merchant_order_id"`
-	BusinessType          string         `json:"business_type"`
-	UserID                string         `json:"user_id"`
-	BuyerEmail            string         `json:"buyer_email,omitempty"`
-	ProductID             string         `json:"product_id,omitempty"`
-	AmountMinor           int64          `json:"amount_minor"`
-	Currency              string         `json:"currency"`
-	QuotaAmount           int64          `json:"quota_amount,omitempty"`
-	Provider              string         `json:"provider"`
-	PaymentMethod         string         `json:"payment_method"`
-	ProviderAccountID     string         `json:"provider_account_id,omitempty"`
-	Environment           string         `json:"environment,omitempty"`
-	CompatibilityProtocol string         `json:"compatibility_protocol,omitempty"`
-	MerchantNotifyURL     string         `json:"merchant_notify_url,omitempty"`
-	ReturnURL             string         `json:"return_url,omitempty"`
-	PriceSnapshot         map[string]any `json:"price_snapshot,omitempty"`
-	ExpiresAt             string         `json:"expires_at,omitempty"`
-	Description           string         `json:"description,omitempty"`
+	MerchantOrderID       string                         `json:"merchant_order_id"`
+	BusinessType          string                         `json:"business_type"`
+	UserID                string                         `json:"user_id"`
+	BuyerEmail            string                         `json:"buyer_email,omitempty"`
+	ProductID             string                         `json:"product_id,omitempty"`
+	AmountMinor           int64                          `json:"amount_minor"`
+	Currency              string                         `json:"currency"`
+	QuotaAmount           int64                          `json:"quota_amount,omitempty"`
+	Provider              string                         `json:"provider"`
+	PaymentMethod         string                         `json:"payment_method"`
+	ProviderAccountID     string                         `json:"provider_account_id,omitempty"`
+	Environment           string                         `json:"environment,omitempty"`
+	CompatibilityProtocol string                         `json:"compatibility_protocol,omitempty"`
+	MerchantNotifyURL     string                         `json:"merchant_notify_url,omitempty"`
+	ReturnURL             string                         `json:"return_url,omitempty"`
+	PriceSnapshot         map[string]any                 `json:"price_snapshot,omitempty"`
+	ExpiresAt             string                         `json:"expires_at,omitempty"`
+	Description           string                         `json:"description,omitempty"`
+	Fallback              *HotPayGatewayCheckoutFallback `json:"fallback,omitempty"`
+}
+
+type HotPayGatewayCheckoutFallback struct {
+	AmountMinor   int64          `json:"amount_minor"`
+	Currency      string         `json:"currency"`
+	PaymentMethod string         `json:"payment_method"`
+	PriceSnapshot map[string]any `json:"price_snapshot"`
 }
 
 type HotPayGatewayOrder struct {
-	ID                     string   `json:"id"`
-	MerchantOrderID        string   `json:"merchant_order_id"`
-	BusinessType           string   `json:"business_type"`
-	UserID                 string   `json:"user_id"`
-	AmountMinor            int64    `json:"amount_minor"`
-	Currency               string   `json:"currency"`
-	QuotaAmount            int64    `json:"quota_amount"`
-	Provider               string   `json:"provider"`
-	ProviderAccountID      string   `json:"provider_account_id"`
-	PaymentMethod          string   `json:"payment_method"`
-	ProviderPaymentMethods []string `json:"provider_payment_methods"`
-	ProviderOrderID        string   `json:"provider_order_id"`
-	Environment            string   `json:"environment"`
-	Status                 string   `json:"status"`
-	ExpiresAt              string   `json:"expires_at"`
-	CreatedAt              string   `json:"created_at"`
+	ID                     string         `json:"id"`
+	MerchantOrderID        string         `json:"merchant_order_id"`
+	BusinessType           string         `json:"business_type"`
+	UserID                 string         `json:"user_id"`
+	AmountMinor            int64          `json:"amount_minor"`
+	Currency               string         `json:"currency"`
+	QuotaAmount            int64          `json:"quota_amount"`
+	Provider               string         `json:"provider"`
+	ProviderAccountID      string         `json:"provider_account_id"`
+	PaymentMethod          string         `json:"payment_method"`
+	ProviderPaymentMethods []string       `json:"provider_payment_methods"`
+	ProviderOrderID        string         `json:"provider_order_id"`
+	Environment            string         `json:"environment"`
+	Status                 string         `json:"status"`
+	ExpiresAt              string         `json:"expires_at"`
+	CreatedAt              string         `json:"created_at"`
+	PriceSnapshot          map[string]any `json:"price_snapshot"`
 }
 
 type HotPayGatewayAttempt struct {
@@ -197,7 +207,7 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if request.Environment != "test" && request.Environment != "prod" {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("payment environment must be test or prod")
 	}
-	body, err := json.Marshal(request)
+	body, err := common.Marshal(request)
 	if err != nil {
 		return HotPayGatewayCreateOrderResponse{}, fmt.Errorf("marshal hotpay order: %w", err)
 	}
@@ -226,7 +236,7 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 		return HotPayGatewayCreateOrderResponse{}, decodeHotPayGatewayError(response.StatusCode, responseBody)
 	}
 	var result HotPayGatewayCreateOrderResponse
-	if err := json.Unmarshal(responseBody, &result); err != nil {
+	if err := common.Unmarshal(responseBody, &result); err != nil {
 		return HotPayGatewayCreateOrderResponse{}, fmt.Errorf("decode hotpay response: %w", err)
 	}
 	if strings.TrimSpace(result.Order.ID) == "" || strings.TrimSpace(result.Order.MerchantOrderID) == "" || result.Order.MerchantOrderID != request.MerchantOrderID || strings.TrimSpace(result.Attempt.CheckoutURL) == "" {
@@ -238,8 +248,9 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if strings.TrimSpace(request.UserID) != "" && (strings.TrimSpace(result.Order.UserID) == "" || result.Order.UserID != request.UserID) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response user does not match request")
 	}
-	if strings.TrimSpace(request.Currency) != "" && (strings.TrimSpace(result.Order.Currency) == "" || !strings.EqualFold(result.Order.Currency, request.Currency)) {
-		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response currency does not match request")
+	expectedAmountMinor, expectedCurrency, expectedPaymentMethod, expectedPriceSnapshot, usedFallback, matchErr := matchHotPayGatewayOrderVariant(result.Order, request)
+	if matchErr != nil {
+		return HotPayGatewayCreateOrderResponse{}, matchErr
 	}
 	if strings.TrimSpace(request.Provider) != "" && (strings.TrimSpace(result.Order.Provider) == "" || !strings.EqualFold(result.Order.Provider, request.Provider)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider does not match request")
@@ -250,15 +261,20 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if !strings.EqualFold(strings.TrimSpace(result.Order.Environment), request.Environment) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response environment does not match request")
 	}
-	requestPaymentMethod := strings.TrimSpace(request.PaymentMethod)
-	if requestPaymentMethod != "" && (strings.TrimSpace(result.Order.PaymentMethod) == "" || !strings.EqualFold(result.Order.PaymentMethod, requestPaymentMethod)) {
-		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response payment method does not match request")
-	}
-	if len(result.Order.ProviderPaymentMethods) == 0 || (requestPaymentMethod != "" && !containsFold(result.Order.ProviderPaymentMethods, requestPaymentMethod)) {
+	if len(result.Order.ProviderPaymentMethods) == 0 || (expectedPaymentMethod != "" && expectedPaymentMethod != "auto" && !containsFold(result.Order.ProviderPaymentMethods, expectedPaymentMethod)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider payment method whitelist is missing or does not contain request method")
 	}
-	if request.AmountMinor > 0 && result.Order.AmountMinor != request.AmountMinor {
+	if expectedAmountMinor > 0 && result.Order.AmountMinor != expectedAmountMinor {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response amount does not match request")
+	}
+	if !strings.EqualFold(result.Order.Currency, expectedCurrency) || normalizeGatewayPaymentMethod(result.Order.PaymentMethod) != normalizeGatewayPaymentMethod(expectedPaymentMethod) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response payment snapshot does not match request")
+	}
+	if !hotPayPriceSnapshotContains(result.Order.PriceSnapshot, expectedPriceSnapshot) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response price snapshot does not match request")
+	}
+	if usedFallback && !hotPayFallbackMarkersMatch(result.Order.PriceSnapshot, request) {
+		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response fallback snapshot does not match request")
 	}
 	if strings.TrimSpace(result.Order.Status) == "" || (result.Order.Status != "pending" && result.Order.Status != "processing") {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response order status is not payable")
@@ -305,8 +321,64 @@ func decodeHotPayGatewayError(status int, body []byte) error {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	_ = json.Unmarshal(body, &envelope)
+	_ = common.Unmarshal(body, &envelope)
 	return &HotPayGatewayError{StatusCode: status, Code: strings.TrimSpace(envelope.Error.Code), Message: strings.TrimSpace(envelope.Error.Message)}
+}
+
+func matchHotPayGatewayOrderVariant(order HotPayGatewayOrder, request HotPayGatewayCreateOrderRequest) (int64, string, string, map[string]any, bool, error) {
+	requestMethod := normalizeGatewayPaymentMethod(request.PaymentMethod)
+	if requestMethod == "" && strings.EqualFold(request.Provider, "waffo_pancake") {
+		requestMethod = "auto"
+	}
+	if order.AmountMinor == request.AmountMinor && strings.EqualFold(order.Currency, request.Currency) && normalizeGatewayPaymentMethod(order.PaymentMethod) == requestMethod {
+		return request.AmountMinor, request.Currency, requestMethod, request.PriceSnapshot, false, nil
+	}
+	if request.Fallback != nil && order.AmountMinor == request.Fallback.AmountMinor && strings.EqualFold(order.Currency, request.Fallback.Currency) && normalizeGatewayPaymentMethod(order.PaymentMethod) == normalizeGatewayPaymentMethod(request.Fallback.PaymentMethod) {
+		return request.Fallback.AmountMinor, request.Fallback.Currency, normalizeGatewayPaymentMethod(request.Fallback.PaymentMethod), request.Fallback.PriceSnapshot, true, nil
+	}
+	return 0, "", "", nil, false, errors.New("hotpay response amount, currency, or payment method does not match request")
+}
+
+func hotPayPriceSnapshotContains(actual, expected map[string]any) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	if len(actual) == 0 {
+		return false
+	}
+	for key, expectedValue := range expected {
+		actualValue, ok := actual[key]
+		if !ok || fmt.Sprint(actualValue) != fmt.Sprint(expectedValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func hotPayFallbackMarkersMatch(snapshot map[string]any, request HotPayGatewayCreateOrderRequest) bool {
+	currency, ok := snapshot["fallback_from_currency"].(string)
+	if !ok || !strings.EqualFold(currency, request.Currency) {
+		return false
+	}
+	amount, ok := gatewaySnapshotInt64(snapshot["fallback_from_amount_minor"])
+	if !ok || amount != request.AmountMinor {
+		return false
+	}
+	method, ok := snapshot["fallback_from_payment_method"].(string)
+	return ok && normalizeGatewayPaymentMethod(method) == normalizeGatewayPaymentMethod(request.PaymentMethod)
+}
+
+func gatewaySnapshotInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		return int64(typed), typed == float64(int64(typed))
+	default:
+		return 0, false
+	}
 }
 
 func hotPayGatewayTimeoutFromEnv() time.Duration {

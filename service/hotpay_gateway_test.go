@@ -40,6 +40,35 @@ func TestHotPayGatewayClientCreateOrder(t *testing.T) {
 	}
 }
 
+func TestHotPayGatewayClientAcceptsDeclaredFallbackOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"order":{"id":"ord_fallback","merchant_order_id":"trade_fallback","business_type":"wallet_topup","user_id":"7","amount_minor":100,"currency":"USD","quota_amount":500000,"provider":"waffo_pancake","provider_account_id":"store_1","payment_method":"wechat_pay","provider_payment_methods":["wechat"],"environment":"test","status":"pending","expires_at":"2026-08-18T00:00:00Z","price_snapshot":{"quota_amount":1,"provider_amount":"1.00","pricing_currency":"USD","display_currency":"CNY","provider_currency":"USD","fallback_from_currency":"CNY","fallback_from_amount_minor":700,"fallback_from_payment_method":"wechat_pay"}},"attempt":{"id":"attempt_fallback","provider_session_id":"sess_fallback","checkout_url":"https://checkout.example/fallback","status":"succeeded"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHotPayGatewayClient(HotPayGatewayConfig{BaseURL: server.URL, AllowedHosts: []string{"127.0.0.1"}, AllowHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.CreateOrder(context.Background(), "wallet-fallback", HotPayGatewayCreateOrderRequest{
+		MerchantOrderID: "trade_fallback", BusinessType: "wallet_topup", UserID: "7",
+		AmountMinor: 700, Currency: "CNY", QuotaAmount: 500000, Provider: "waffo_pancake",
+		ProviderAccountID: "store_1", PaymentMethod: "wechat_pay", Environment: "test",
+		PriceSnapshot: map[string]any{"quota_amount": int64(1), "provider_amount": "7.00", "pricing_currency": "CNY"},
+		Fallback: &HotPayGatewayCheckoutFallback{
+			AmountMinor: 100, Currency: "USD", PaymentMethod: "wechat_pay",
+			PriceSnapshot: map[string]any{"quota_amount": int64(1), "provider_amount": "1.00", "pricing_currency": "USD", "display_currency": "CNY", "provider_currency": "USD"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Order.Currency != "USD" || result.Order.AmountMinor != 100 || result.Order.PriceSnapshot["fallback_from_currency"] != "CNY" {
+		t.Fatalf("fallback result = %+v", result.Order)
+	}
+}
+
 func TestHotPayGatewayClientReturnsTypedError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

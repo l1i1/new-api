@@ -489,6 +489,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	gatewayEnabled := service.IsHotPayGatewayEnabled()
 	canonicalMethod := ""
 	amountMinor := int64(0)
+	var gatewayFallback *service.HotPayGatewayCheckoutFallback
 	if gatewayEnabled {
 		if route.ProviderMethod != "" {
 			canonicalMethod, err = hotPayWalletMethod(providerCurrency, string(route.ProviderMethod))
@@ -503,10 +504,25 @@ func RequestWaffoPancakePay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额超出支付网关限额"})
 			return
 		}
+		if route.AllowCNYToUSDFallback {
+			fallbackPayMoney := getWaffoPancakePaymentAmount(req.Amount, group, model.PaymentCurrencyUSD)
+			fallbackAmountMinor, fallbackErr := hotPayMinorAmount(fallbackPayMoney)
+			if fallbackPayMoney < 0.01 || fallbackErr != nil || validateHotPayAmountMinor(fallbackAmountMinor) != nil {
+				c.JSON(http.StatusOK, gin.H{"message": "error", "data": "USD 回退金额超出支付网关限额"})
+				return
+			}
+			gatewayFallback = &service.HotPayGatewayCheckoutFallback{
+				AmountMinor: fallbackAmountMinor, Currency: model.PaymentCurrencyUSD, PaymentMethod: "wechat_pay",
+				PriceSnapshot: hotPayWaffoWalletPriceSnapshot(
+					normalizeWaffoPancakeTopUpAmount(req.Amount), hotPayStringAmount(fallbackPayMoney), displayCurrency, model.PaymentCurrencyUSD,
+				),
+			}
+		}
 	}
+	normalizedTopUpAmount := normalizeWaffoPancakeTopUpAmount(req.Amount)
 	quotaAmount := int64(0)
 	if gatewayEnabled {
-		quotaAmount, err = hotPayQuotaAmount(normalizeWaffoPancakeTopUpAmount(req.Amount))
+		quotaAmount, err = hotPayQuotaAmount(normalizedTopUpAmount)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值额度超出系统上限"})
 			return
@@ -535,7 +551,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	}
 	topUp := &model.TopUp{
 		UserId:                   id,
-		Amount:                   normalizeWaffoPancakeTopUpAmount(req.Amount),
+		Amount:                   normalizedTopUpAmount,
 		Money:                    providerPayMoney,
 		TradeNo:                  tradeNo,
 		PaymentMethod:            paymentMethod,
@@ -547,7 +563,11 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		Status:                   common.TopUpStatusPending,
 	}
 	if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-		if existing.UserId != id || existing.PaymentCurrency != providerCurrency || existing.PaymentProvider != paymentProvider || existing.Money != providerPayMoney || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
+		primaryMatches := existing.PaymentCurrency == providerCurrency && existing.Money == providerPayMoney
+		existingAmountMinor, existingAmountErr := hotPayMinorAmount(existing.Money)
+		fallbackMatches := gatewayFallback != nil && existing.PaymentCurrency == gatewayFallback.Currency &&
+			existingAmountErr == nil && existingAmountMinor == gatewayFallback.AmountMinor
+		if existing.UserId != id || (!primaryMatches && !fallbackMatches) || existing.PaymentProvider != paymentProvider || existing.Amount != topUp.Amount || existing.PaymentMethod != paymentMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 			return
 		}
@@ -588,8 +608,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 				displayCurrency,
 				providerCurrency,
 			),
-			ExpiresAt:   hotPayExpiresAt(45 * 60),
-			Description: "Wallet top-up",
+			ExpiresAt: hotPayExpiresAt(45 * 60), Description: "Wallet top-up", Fallback: gatewayFallback,
 		})
 		if createErr != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))
@@ -600,7 +619,11 @@ func RequestWaffoPancakePay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": hotPayGatewayErrorMessage(createErr)})
 			return
 		}
-		if bindErr := model.BindPaymentGatewayOrderID(model.PaymentGatewayBusinessWallet, tradeNo, result.Order.ID); bindErr != nil {
+		if bindErr := model.BindPaymentGatewayWalletOrder(tradeNo, model.PaymentGatewayWalletOrderSnapshot{
+			OrderID: result.Order.ID, UserID: id, AmountMinor: result.Order.AmountMinor, Currency: result.Order.Currency,
+			QuotaAmount: result.Order.QuotaAmount, Provider: result.Order.Provider, ProviderAccountID: result.Order.ProviderAccountID,
+			Environment: result.Order.Environment, PaymentMethod: result.Order.PaymentMethod, PriceSnapshot: result.Order.PriceSnapshot,
+		}); bindErr != nil {
 			logger.LogError(c.Request.Context(), fmt.Sprintf("HotPay 钱包订单绑定 canonical order 失败 user_id=%d trade_no=%s error=%q", id, tradeNo, bindErr.Error()))
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付订单状态保存失败"})
 			return
