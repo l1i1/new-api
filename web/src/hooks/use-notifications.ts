@@ -45,7 +45,7 @@ function hashString(input: string): string {
 }
 
 /** Generate a stable key for an announcement revision. */
-function getAnnouncementKey(item: Record<string, unknown>): string {
+export function getAnnouncementKey(item: Record<string, unknown>): string {
   if (!item) return ''
 
   const fingerprint = JSON.stringify({
@@ -91,9 +91,8 @@ export function useNotifications(
   } = {}
 ) {
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'notice' | 'announcements'>(
-    'notice'
-  )
+  const [siteNoticeOpen, setSiteNoticeOpen] = useState(false)
+  const [autoOpenedPopover, setAutoOpenedPopover] = useState(false)
 
   // Fetch Notice from API
   const {
@@ -130,12 +129,17 @@ export function useNotifications(
   // Notification store
   const {
     lastReadNotice,
+    lastAutoOpenedPricingNotice,
     pendingAutoOpenKey,
     markNoticeRead,
     markPricingNoticeAutoOpened,
     markAnnouncementsRead,
     setPendingAutoOpenKey,
-    isAnnouncementRead,
+    lastObservedNotificationRevision,
+    setLastObservedNotificationRevision,
+    pendingSiteNoticeKey,
+    setPendingSiteNoticeKey,
+    readAnnouncementKeys,
   } = useNotificationStore()
 
   // Extract notice content
@@ -166,7 +170,7 @@ export function useNotifications(
     const announcementsUnread = announcements.filter(
       (item: Record<string, unknown>) => {
         const key = getAnnouncementKey(item)
-        return !isAnnouncementRead(key)
+        return !readAnnouncementKeys.includes(key)
       }
     ).length
 
@@ -175,7 +179,16 @@ export function useNotifications(
       announcements: announcementsUnread,
       total: noticeUnread + announcementsUnread,
     }
-  }, [noticeContent, lastReadNotice, announcements, isAnnouncementRead])
+  }, [noticeContent, lastReadNotice, announcements, readAnnouncementKeys])
+
+  const displayAnnouncements = useMemo(
+    () =>
+      announcements.map((item) => ({
+        ...item,
+        unread: !readAnnouncementKeys.includes(getAnnouncementKey(item)),
+      })),
+    [announcements, readAnnouncementKeys]
+  )
 
   const markAnnouncementsAsRead = useCallback(() => {
     if (announcements.length > 0) {
@@ -186,109 +199,128 @@ export function useNotifications(
     }
   }, [announcements, markAnnouncementsRead])
 
+  const markAllAsRead = useCallback(() => {
+    if (noticeContent) {
+      markNoticeRead(noticeContent)
+    }
+    markAnnouncementsAsRead()
+  }, [markAnnouncementsAsRead, markNoticeRead, noticeContent])
+
   // Handle popover open
   const handleOpenPopover = useCallback(
-    (tab?: 'notice' | 'announcements', markAsRead = true) => {
-      const nextTab = tab || activeTab
-
+    (markAsRead = true) => {
       if (markAsRead) {
-        if (noticeContent) {
-          markNoticeRead(noticeContent)
-        }
-        markAnnouncementsAsRead()
+        markAllAsRead()
         setPendingAutoOpenKey(null)
+        setAutoOpenedPopover(false)
       }
 
-      setActiveTab(nextTab)
       setPopoverOpen(true)
     },
-    [
-      activeTab,
-      markAnnouncementsAsRead,
-      markNoticeRead,
-      noticeContent,
-      setPendingAutoOpenKey,
-    ]
+    [markAllAsRead, setPendingAutoOpenKey]
   )
 
   useEffect(() => {
-    const autoOpenEnabled = options.autoOpenNotice || options.autoOpenPopover
-    if (!autoOpenEnabled || noticeFetching || statusLoading) return
+    if (!options.autoOpenNotice || noticeFetching || !noticeContent) return
 
-    const hasPendingRevision = pendingAutoOpenKey === notificationRevision
-    if (!hasPendingRevision && unreadCounts.total === 0) return
+    const hasPendingRevision = pendingSiteNoticeKey === noticeContent
+    const isNewNotice = noticeContent !== lastAutoOpenedPricingNotice
+    if (!hasPendingRevision && !isNewNotice) return
 
-    const nextTab =
-      unreadCounts.notice > 0 || announcements.length === 0
-        ? 'notice'
-        : 'announcements'
-
-    if (!hasPendingRevision) {
-      setPendingAutoOpenKey(notificationRevision)
-      if (noticeContent && options.autoOpenNotice) {
-        markPricingNoticeAutoOpened(noticeContent)
-      }
-      // Pricing swaps its PublicLayout after loading. Keep the revision
-      // pending there so the replacement header can reopen the surface; other
-      // routes can acknowledge automatic popovers immediately.
-      if (!options.autoOpenNotice) {
-        if (noticeContent) {
-          markNoticeRead(noticeContent)
-        }
-        markAnnouncementsAsRead()
-        setPendingAutoOpenKey(null)
-      }
+    if (isNewNotice) {
+      markPricingNoticeAutoOpened(noticeContent)
+      markNoticeRead(noticeContent)
     }
-
-    setActiveTab(nextTab)
-    setPopoverOpen(true)
+    if (!hasPendingRevision) {
+      setPendingSiteNoticeKey(noticeContent)
+    }
+    setSiteNoticeOpen(true)
   }, [
-    announcements.length,
-    markAnnouncementsAsRead,
+    lastAutoOpenedPricingNotice,
     markNoticeRead,
     markPricingNoticeAutoOpened,
     noticeContent,
     noticeFetching,
-    notificationRevision,
     options.autoOpenNotice,
+    pendingSiteNoticeKey,
+    setPendingSiteNoticeKey,
+  ])
+
+  useEffect(() => {
+    if (!options.autoOpenPopover || noticeFetching || statusLoading) return
+
+    if (!lastObservedNotificationRevision) {
+      setLastObservedNotificationRevision(notificationRevision)
+      if (unreadCounts.total > 0) {
+        setPendingAutoOpenKey(notificationRevision)
+        setAutoOpenedPopover(true)
+        setPopoverOpen(true)
+      } else {
+        setPendingAutoOpenKey(null)
+      }
+      return
+    }
+
+    const hasPendingRevision = pendingAutoOpenKey === notificationRevision
+    if (lastObservedNotificationRevision === notificationRevision) {
+      if (hasPendingRevision && !popoverOpen) {
+        setAutoOpenedPopover(true)
+        setPopoverOpen(true)
+      }
+      return
+    }
+
+    setLastObservedNotificationRevision(notificationRevision)
+    if (unreadCounts.total === 0) {
+      setPendingAutoOpenKey(null)
+      return
+    }
+    setPendingAutoOpenKey(notificationRevision)
+    setAutoOpenedPopover(true)
+    setPopoverOpen(true)
+  }, [
+    lastObservedNotificationRevision,
+    noticeFetching,
+    notificationRevision,
     options.autoOpenPopover,
     pendingAutoOpenKey,
+    popoverOpen,
+    setLastObservedNotificationRevision,
     setPendingAutoOpenKey,
     statusLoading,
-    unreadCounts.announcements,
-    unreadCounts.notice,
     unreadCounts.total,
   ])
 
   const handlePopoverOpenChange = (open: boolean) => {
     if (open) {
-      handleOpenPopover(activeTab)
+      handleOpenPopover()
       return
     }
 
     setPopoverOpen(false)
+    if (autoOpenedPopover) {
+      markAllAsRead()
+      setAutoOpenedPopover(false)
+    }
     if (pendingAutoOpenKey) {
-      if (noticeContent) {
-        markNoticeRead(noticeContent)
-      }
-      markAnnouncementsAsRead()
       setPendingAutoOpenKey(null)
     }
   }
 
-  // Handle tab change - mark announcements as read when switching to that tab
-  const handleTabChange = (tab: 'notice' | 'announcements') => {
-    setActiveTab(tab)
-
-    if (tab === 'announcements') {
-      markAnnouncementsAsRead()
+  const handleSiteNoticeOpenChange = (open: boolean) => {
+    setSiteNoticeOpen(open)
+    if (!open) {
+      if (noticeContent) {
+        markNoticeRead(noticeContent)
+      }
+      setPendingSiteNoticeKey(null)
     }
   }
 
   return {
     // Data
     notice: noticeContent,
-    announcements,
+    announcements: displayAnnouncements,
     loading: noticeLoading || statusLoading,
 
     // Unread counts
@@ -299,8 +331,8 @@ export function useNotifications(
     // Popover state
     popoverOpen,
     setPopoverOpen: handlePopoverOpenChange,
-    activeTab,
-    setActiveTab: handleTabChange,
+    siteNoticeOpen,
+    setSiteNoticeOpen: handleSiteNoticeOpenChange,
 
     // Actions
     openPopover: handleOpenPopover,

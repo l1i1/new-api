@@ -25,6 +25,7 @@ import { Dialog } from '@/components/dialog'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
+import { SiteNoticeDialog } from '@/components/site-notice-dialog'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -97,9 +98,7 @@ export function PublicHeader(props: PublicHeaderProps) {
   const autoOpenOptions = getNotificationAutoOpenOptions(pathname)
   const notifications = useNotifications({
     autoOpenNotice: showNotifications && autoOpenOptions.autoOpenNotice,
-    autoOpenPopover:
-      showNotifications &&
-      (autoOpenOptions.autoOpenPopover || autoOpenOptions.autoOpenNotice),
+    autoOpenPopover: showNotifications && autoOpenOptions.autoOpenPopover,
     pollAnnouncements: showNotifications,
   })
 
@@ -209,6 +208,11 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   return (
     <>
+      <SiteNoticeDialog
+        content={notifications.notice}
+        open={notifications.siteNoticeOpen}
+        onOpenChange={notifications.setSiteNoticeOpen}
+      />
       <header className='border-border bg-background/95 pointer-events-none fixed inset-x-0 top-0 z-50 border-b'>
         <div className='pointer-events-auto mx-auto max-w-7xl px-4 md:px-6'>
           <nav className='grid h-14 grid-cols-[minmax(0,1fr)_auto] items-center px-1 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-x-4'>

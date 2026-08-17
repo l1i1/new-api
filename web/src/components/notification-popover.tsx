@@ -41,6 +41,7 @@ interface AnnouncementItem {
   content?: string
   extra?: string
   publishDate?: string | Date
+  unread?: boolean
 }
 
 interface NotificationPopoverProps {
@@ -115,12 +116,19 @@ function getRelativeTime(publishDate: string | Date, t: TFunction): string {
 /**
  * Announcement status dot indicator
  */
-function AnnouncementDot({ type }: { type?: string }) {
+function AnnouncementDot({
+  type,
+  unread,
+}: {
+  type?: string
+  unread?: boolean
+}) {
   return (
     <span
       className={cn(
         'mt-1.5 inline-block size-2 shrink-0 rounded-full',
-        getAnnouncementColorClass(type)
+        getAnnouncementColorClass(type),
+        unread && 'ring-primary/40 ring-2 ring-offset-1'
       )}
     />
   )
@@ -164,7 +172,7 @@ function EmptyState({
   )
 }
 
-/** Render Notice and timeline entries in one announcement list. */
+/** Render the native New API announcement list with unread highlighting. */
 function AnnouncementListContent({
   notice,
   announcements,
@@ -210,9 +218,16 @@ function AnnouncementListContent({
           : ''
 
         return (
-          <div key={announcementKey} className='py-3'>
+          <div
+            key={announcementKey}
+            data-unread={item.unread ? 'true' : undefined}
+            className={cn(
+              'py-3',
+              item.unread && 'bg-primary/5 -mx-1 rounded-sm px-1'
+            )}
+          >
             <div className='flex items-start gap-3'>
-              <AnnouncementDot type={item.type} />
+              <AnnouncementDot type={item.type} unread={item.unread} />
               <div className='flex min-w-0 flex-1 flex-col gap-2'>
                 <div className='text-sm'>
                   <RichContent breaks content={item.content || ''} />

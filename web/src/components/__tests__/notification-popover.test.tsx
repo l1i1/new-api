@@ -56,6 +56,11 @@ for (const key of domGlobals) {
   })
 }
 
+Object.defineProperty(domWindow.HTMLElement.prototype, 'getAnimations', {
+  configurable: true,
+  value: () => [],
+})
+
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
@@ -86,6 +91,28 @@ async function renderWithI18n(element: React.ReactElement) {
   return { container, root }
 }
 
+function TestNotificationPopover() {
+  return (
+    <NotificationPopover
+      open
+      onOpenChange={() => undefined}
+      unreadCount={2}
+      notice='Current service notice'
+      announcements={[
+        {
+          id: 1,
+          content: 'Timeline release update',
+          extra: 'More release details',
+          publishDate: '2026-08-17T00:00:00Z',
+          type: 'success',
+          unread: true,
+        },
+      ]}
+      loading={false}
+    />
+  )
+}
+
 describe('announcement dialog', () => {
   afterEach(() => {
     document.body.replaceChildren()
@@ -95,25 +122,8 @@ describe('announcement dialog', () => {
     domWindow.close()
   })
 
-  test('renders the site notice and timeline entries in one list', async () => {
-    const rendered = await renderWithI18n(
-      <NotificationPopover
-        open
-        onOpenChange={() => undefined}
-        unreadCount={2}
-        notice='Current service notice'
-        announcements={[
-          {
-            id: 1,
-            content: 'Timeline release update',
-            extra: 'More release details',
-            publishDate: '2026-08-17T00:00:00Z',
-            type: 'success',
-          },
-        ]}
-        loading={false}
-      />
-    )
+  test('keeps the native announcement dialog and highlights unread timeline items', async () => {
+    const rendered = await renderWithI18n(<TestNotificationPopover />)
 
     assert.equal(
       document.body.textContent?.includes('Current service notice'),
@@ -127,6 +137,7 @@ describe('announcement dialog', () => {
       document.body.textContent?.includes('More release details'),
       true
     )
+    assert.ok(document.querySelector('[data-unread="true"]'))
     assert.ok(
       rendered.container.querySelector('[aria-label="Notifications"]'),
       'the navigation bell remains the dialog trigger'
