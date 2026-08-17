@@ -290,9 +290,10 @@ func Max(a int, b int) int {
 	}
 }
 
-func MessageWithRequestId(message string, id string) string {
+// StripRequestIdSuffixes removes trailing request IDs added by upstream New API
+// instances. The caller can add its own request ID separately when needed.
+func StripRequestIdSuffixes(message string) string {
 	message = strings.TrimSpace(message)
-	// Remove IDs added by upstream New API instances before adding the local ID.
 	const requestIdSuffix = " (request id: "
 	for strings.HasSuffix(message, ")") {
 		requestIdStart := strings.LastIndex(message, requestIdSuffix)
@@ -301,6 +302,12 @@ func MessageWithRequestId(message string, id string) string {
 		}
 		message = strings.TrimSpace(message[:requestIdStart])
 	}
+	return message
+}
+
+func MessageWithRequestId(message string, id string) string {
+	// Remove IDs added by upstream New API instances before adding the local ID.
+	message = StripRequestIdSuffixes(message)
 	return fmt.Sprintf("%s (request id: %s)", message, id)
 }
 

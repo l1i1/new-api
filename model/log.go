@@ -117,7 +117,7 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
 		if logs[i].Type == LogTypeError {
-			logs[i].Content = operation_setting.FilterErrorMessage(logs[i].Content)
+			logs[i].Content = common.StripRequestIdSuffixes(operation_setting.FilterErrorMessage(logs[i].Content))
 		}
 		logs[i].ChannelName = ""
 		var otherMap map[string]interface{}

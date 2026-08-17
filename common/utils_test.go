@@ -22,3 +22,13 @@ func TestMessageWithRequestIdKeepsMessagesWithoutRequestId(t *testing.T) {
 
 	require.Equal(t, "upstream error (request id: local-1)", MessageWithRequestId("upstream error", "local-1"))
 }
+
+func TestStripRequestIdSuffixes(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t,
+		"status_code=503, upstream unavailable",
+		StripRequestIdSuffixes("status_code=503, upstream unavailable (request id: upstream-1) (request id: upstream-2)"),
+	)
+	require.Equal(t, "upstream error", StripRequestIdSuffixes(" upstream error "))
+}

@@ -74,7 +74,7 @@ func TestFormatUserLogsFiltersErrorContentForNonAdminViews(t *testing.T) {
 	logs := []*Log{
 		{
 			Type:    LogTypeError,
-			Content: "status_code=503, auth_unavailable: no auth available (providers=private-provider, model=qwen3.8-max)",
+			Content: "status_code=503, auth_unavailable: no auth available (providers=private-provider, model=qwen3.8-max) (request id: upstream-1) (request id: upstream-2)",
 		},
 		{
 			Type:    LogTypeConsume,
