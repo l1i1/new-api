@@ -48,6 +48,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { toIntlLocale } from '@/i18n/languages'
+import { isHttpUrl } from '@/lib/content-format'
 import {
   formatCurrencyFromUSD,
   formatQuotaWithCurrency,
@@ -662,16 +663,33 @@ export function useChannelsColumns(
           const settings = parseChannelSettings(channel.setting)
           const isPassThrough = settings.pass_through_body_enabled === true
           const hasParamOverride = Boolean(channel.param_override?.trim())
+          const apiUrl = channel.base_url?.trim() || ''
+          const displayName = sensitiveVisible ? name : SENSITIVE_MASK
+          const nameContent = (
+            <TruncatedText
+              text={displayName}
+              className='font-medium'
+              maxWidth='max-w-full'
+            />
+          )
 
           return (
             <div className='flex max-w-full min-w-0 items-center gap-2'>
               <div className='flex max-w-full min-w-0 flex-col gap-1'>
                 <div className='flex max-w-full min-w-0 items-center gap-1.5'>
-                  <TruncatedText
-                    text={sensitiveVisible ? name : SENSITIVE_MASK}
-                    className='font-medium'
-                    maxWidth='max-w-full'
-                  />
+                  {sensitiveVisible && isHttpUrl(apiUrl) ? (
+                    <a
+                      href={apiUrl}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      title={apiUrl}
+                      className='focus-visible:ring-ring hover:text-primary min-w-0 rounded-sm outline-none hover:underline focus-visible:ring-2'
+                    >
+                      {nameContent}
+                    </a>
+                  ) : (
+                    nameContent
+                  )}
                   {isPassThrough && (
                     <TooltipProvider delay={100}>
                       <Tooltip>

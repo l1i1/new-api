@@ -482,14 +482,13 @@ export function OverviewDashboard() {
     saveSetupGuideExpanded(nextExpanded)
   }
 
-  // Collapse the guide the moment the final step completes, even if the user
-  // had manually expanded it earlier. A completion state present on first
-  // load is left to the saved/default visibility instead.
+  // Collapse once when completion is first confirmed, including when the
+  // dashboard loads after the final step was completed elsewhere.
   const wasSetupCompleteRef = useRef<boolean | null>(null)
   useEffect(() => {
     if (!setupStatusReady) return
     if (
-      wasSetupCompleteRef.current === false &&
+      wasSetupCompleteRef.current !== true &&
       setupComplete &&
       setupGuideExpanded
     ) {

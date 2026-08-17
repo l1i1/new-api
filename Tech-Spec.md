@@ -167,3 +167,44 @@ The existing Billing > Invoice Settings section exposes a multi-select editor. I
 
 - Hook tests cover route selection, excluded routes, changed Notice content, and no reopen after dismissal when content is unchanged.
 - Run the focused notification test, frontend typecheck, affected-file lint/format checks, and the production frontend build.
+
+## OpenAI Compact Model Alias Compatibility
+
+### Goal
+
+Accept a requested model ending in `-openai-compact` when the exact model is not available in the selected group but the same group exposes the model name with that suffix removed. For example, `gpt-5.6-sol-openai-compact` may route through `gpt-5.6-sol`.
+
+### Resolution Semantics
+
+- Exact available model names always win. An explicitly configured `gpt-5.5-openai-compact` is never replaced by `gpt-5.5` during channel selection.
+- Alias fallback is considered only for a non-empty model name ending in the exact, case-sensitive suffix `-openai-compact`.
+- The fallback target is the complete model name before the final suffix. Internal hyphens and version segments are preserved.
+- The fallback target must be available in the same effective group and support the current request path. Auto-group selection resolves the alias independently for each candidate group; Advanced Custom routes are filtered before exact-first precedence is applied.
+- Existing normalized model matching remains ahead of compact alias fallback.
+- Token model limits allow the alias when the exact alias is absent from the token allowlist and its base model is allowed.
+- The user-facing model name remains the compact alias for billing, rate limits, and request logs. Only channel selection and the upstream request model use the resolved base model.
+- A channel model mapping is applied after compact alias resolution, so a mapping keyed by the available base model continues to work.
+- Model discovery responses are unchanged; the server does not synthesize compact aliases into every model list.
+
+### Request and Retry Behavior
+
+- The distributor records the resolved base model only when alias fallback is actually used.
+- Channel affinity, initial channel selection, auto groups, retry selection, and specific-channel selection share the same path-aware resolution rule.
+- Relay request construction reads the resolved model and sends it upstream. Requests that select an exact compact model preserve existing behavior.
+- The existing `/v1/responses/compact` suffix behavior remains compatible: a base model in the request is still represented internally by its compact billing name while the upstream receives the base model.
+
+### Acceptance Criteria
+
+- `gpt-5.5-openai-compact` routes to `gpt-5.5` when only `gpt-5.5` is available.
+- `gpt-5.6-sol-openai-compact` routes to `gpt-5.6-sol` without version-specific code.
+- An exact compact model takes precedence when both exact and base models are available.
+- A compact alias does not fall back to a base model from another group.
+- Missing exact and base models retain the existing no-available-channel error.
+- The upstream request contains the resolved base model while billing and rate-limit identity retain the requested compact alias.
+- HTTP response compact handling and channel model mappings continue to work.
+
+### Verification
+
+- Unit tests cover suffix parsing, exact precedence, memory-cache and database selection, token-model permission fallback, auto-group resolution, and upstream request rewriting.
+- Run focused `go test` for `setting/ratio_setting`, `model`, `service`, `middleware`, and `relay/helper`.
+- Run `go test ./...`, targeted `go vet`, `gofmt`, and `git diff --check`.

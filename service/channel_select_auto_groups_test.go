@@ -142,3 +142,52 @@ func TestCacheGetRandomSatisfiedChannelUsesTokenOrderWithinGlobalAllowlist(t *te
 	assert.Nil(t, revoked)
 	assert.EqualError(t, err, "auto groups is not enabled")
 }
+
+func TestCacheGetRandomSatisfiedChannelResolvesCompactAliasPerAutoGroup(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	createChannelSelectAutoGroupsChannel(t, db, 2201, "vip", "gpt-5.6-sol")
+	model.InitChannelCache()
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip"]`))
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+
+	retry := 0
+	channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx:         ctx,
+		TokenGroup:  "auto",
+		ModelName:   "gpt-5.6-sol-openai-compact",
+		RequestPath: "/v1/responses/compact",
+		Retry:       &retry,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 2201, channel.Id)
+	assert.Equal(t, "vip", selectedGroup)
+	assert.Equal(t, "gpt-5.6-sol", common.GetContextKeyString(ctx, constant.ContextKeyResolvedModel))
+}
+
+func TestCacheGetRandomSatisfiedChannelPrefersExactCompactModel(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	createChannelSelectAutoGroupsChannel(t, db, 2301, "default", "gpt-5.5")
+	createChannelSelectAutoGroupsChannel(t, db, 2302, "default", "gpt-5.5-openai-compact")
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	retry := 0
+	channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx:         ctx,
+		TokenGroup:  "default",
+		ModelName:   "gpt-5.5-openai-compact",
+		RequestPath: "/v1/responses/compact",
+		Retry:       &retry,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 2302, channel.Id)
+	assert.Equal(t, "default", selectedGroup)
+	assert.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyResolvedModel))
+}
