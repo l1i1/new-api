@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "Все права защищены. Разработано участниками проекта.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Для каналов, добавленных после 10 мая 2025 г., не нужно удалять \".\" из имён моделей при развёртывании",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Для частных развертываний, формат: https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "Для каналов с несколькими ключами вводите по одному ключу в строке. Необязательный URL прокси указывайте в следующей непустой строке. Остальные непустые строки считаются ключами.",
     "Force a syntactically valid JSON response": "Принудительно возвращать синтаксически корректный JSON",
     "Force AUTH LOGIN": "Принудительный AUTH LOGIN",
     "Force Format": "Принудительный формат",
@@ -5661,6 +5662,9 @@
     "Navigation title": "Название навигации",
     "Navigation URL": "URL навигации",
     "Custom navigation items require a title and a safe URL.": "Для пользовательских пунктов навигации нужны название и безопасный URL.",
-    "Add navigation item": "Добавить пункт навигации"
+    "Add navigation item": "Добавить пункт навигации",
+    "Multi-key credentials are invalid": "Учетные данные с несколькими ключами недействительны",
+    "JSON credentials cannot use structured multi-key proxy input": "Учетные данные JSON не могут использовать структурированный прокси-ввод с несколькими ключами",
+    "Codex key append failed": "Не удалось добавить ключ Codex"
   }
 }

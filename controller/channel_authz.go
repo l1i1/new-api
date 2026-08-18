@@ -33,6 +33,9 @@ func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, re
 	if _, ok := requestData["key_mode"]; ok && channel.KeyMode != nil {
 		return true
 	}
+	if _, ok := requestData["multi_key_credentials"]; ok {
+		return true
+	}
 	// Fail closed: any field present in the request that is neither a known
 	// sensitive field (gated above) nor an explicitly classified non-sensitive
 	// field must be treated as sensitive. This keeps a newly added channel field
@@ -61,16 +64,17 @@ func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, re
 // channelHasSensitiveChanges with a precise old-vs-new comparison; this set is
 // used to exclude them from the fail-closed scan for unknown fields.
 var channelSensitiveFields = map[string]struct{}{
-	"type":                {},
-	"key":                 {},
-	"base_url":            {},
-	"openai_organization": {},
-	"header_override":     {},
-	"param_override":      {},
-	"setting":             {},
-	"other":               {},
-	"settings":            {},
-	"key_mode":            {},
+	"type":                  {},
+	"key":                   {},
+	"base_url":              {},
+	"openai_organization":   {},
+	"header_override":       {},
+	"param_override":        {},
+	"setting":               {},
+	"other":                 {},
+	"settings":              {},
+	"key_mode":              {},
+	"multi_key_credentials": {},
 }
 
 // channelOperationalFields lists fields managed by operation endpoints instead

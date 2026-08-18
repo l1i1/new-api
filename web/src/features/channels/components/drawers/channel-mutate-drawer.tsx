@@ -166,6 +166,7 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
+  supportsLineOrientedMultiKeyCredentials,
 } from '../../lib'
 import {
   collectInvalidStatusCodeEntries,
@@ -182,6 +183,7 @@ import {
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import { ModelMappingEditor } from '../model-mapping-editor'
+import { ChannelKeyRevealField } from './channel-key-reveal-field'
 import {
   ChannelAdvancedSection,
   ChannelApiAccessSection,
@@ -384,7 +386,7 @@ function CardHeading(props: {
           {props.icon}
         </IconBadge>
       )}
-      <h3 className='text-sm font-semibold '>{props.title}</h3>
+      <h3 className='text-sm font-semibold'>{props.title}</h3>
     </div>
   )
 }
@@ -401,7 +403,7 @@ function SubHeading(props: {
           {props.icon}
         </IconBadge>
       )}
-      <h4 className='text-muted-foreground text-xs font-medium tracking-wide '>
+      <h4 className='text-muted-foreground text-xs font-medium tracking-wide'>
         {props.title}
       </h4>
     </div>
@@ -852,9 +854,11 @@ export function ChannelMutateDrawer({
   // Helper computed values
   const isBatchMode =
     multiKeyMode === 'batch' || multiKeyMode === 'multi_to_single'
+  const isMultiKeyCredentialText =
+    supportsLineOrientedMultiKeyCredentials(currentType, vertexKeyType) &&
+    (multiKeyMode === 'multi_to_single' || isMultiKeyChannel)
   const isChannelDetailLoading = isEditing && isChannelLoading
-  const supportsMultiKeyAddMode =
-    currentType !== 57 && !(currentType === 41 && vertexKeyType === 'api_key')
+  const supportsMultiKeyAddMode = currentType !== 57
   const addModeOptions = useMemo(
     () =>
       supportsMultiKeyAddMode
@@ -2923,6 +2927,10 @@ export function ChannelMutateDrawer({
                                     keyPlaceholder = t(
                                       'Leave empty to keep existing key'
                                     )
+                                  } else if (isMultiKeyCredentialText) {
+                                    keyPlaceholder = t(
+                                      'For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.'
+                                    )
                                   } else if (
                                     currentType === 33 &&
                                     awsKeyType === 'api_key' &&
@@ -2970,7 +2978,9 @@ export function ChannelMutateDrawer({
                                     keyDescription = (
                                       <>
                                         {t(
-                                          'Enter new key to update, or leave empty to keep current key'
+                                          isMultiKeyCredentialText
+                                            ? 'For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.'
+                                            : 'Enter new key to update, or leave empty to keep current key'
                                         )}
                                         {isMultiKeyChannel && (
                                           <span className='text-warning mt-1 block'>
@@ -2978,6 +2988,10 @@ export function ChannelMutateDrawer({
                                           </span>
                                         )}
                                       </>
+                                    )
+                                  } else if (isMultiKeyCredentialText) {
+                                    keyDescription = t(
+                                      'For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.'
                                     )
                                   } else if (isBatchMode) {
                                     keyDescription = t(
@@ -2990,14 +3004,19 @@ export function ChannelMutateDrawer({
                                       <FormControl>
                                         <Textarea
                                           placeholder={keyPlaceholder}
-                                          rows={isBatchMode ? 8 : 4}
+                                          rows={
+                                            isBatchMode ||
+                                            isMultiKeyCredentialText
+                                              ? 8
+                                              : 4
+                                          }
                                           {...field}
                                         />
                                       </FormControl>
                                       <FormDescription>
                                         <div className='flex flex-col gap-2'>
                                           <span>{keyDescription}</span>
-                                          {isBatchMode && (
+                                          {multiKeyMode === 'batch' && (
                                             <Button
                                               type='button'
                                               variant='outline'
@@ -3061,13 +3080,12 @@ export function ChannelMutateDrawer({
                                               </Button>
                                             </div>
                                           </div>
-                                          <Input
-                                            readOnly
+                                          <ChannelKeyRevealField
+                                            isMultiKey={isMultiKeyChannel}
                                             value={channelKey ?? ''}
                                             placeholder={t(
                                               'Hidden — verify to reveal'
                                             )}
-                                            className='font-mono'
                                           />
                                         </div>
                                       )}
@@ -3483,7 +3501,7 @@ export function ChannelMutateDrawer({
                                             align='start'
                                             className='max-w-xs space-y-2 text-left'
                                           >
-                                            <p className='text-xs font-semibold tracking-wide '>
+                                            <p className='text-xs font-semibold tracking-wide'>
                                               {t('Request flow')}
                                             </p>
                                             <div className='space-y-1 font-mono text-xs'>
@@ -4244,9 +4262,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

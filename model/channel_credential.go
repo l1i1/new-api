@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -98,6 +99,91 @@ type ChannelCredentialPublic struct {
 	LastTestErrorClass   string `json:"last_test_error_class,omitempty"`
 	LastTestErrorMessage string `json:"last_test_error_message,omitempty"`
 	ConsecutiveFailures  int    `json:"consecutive_failures"`
+}
+
+// ChannelCredentialInput is the write-only credential shape used by channel
+// create/update requests. A non-empty ProxyURL is stored as a custom
+// per-credential proxy; an empty ProxyURL inherits the channel proxy.
+//
+// Secret and ProxyURL intentionally have no response use. They are accepted
+// only by sensitive channel mutation/reveal flows and must never be included
+// in ordinary channel or credential list responses.
+type ChannelCredentialInput struct {
+	Secret   string `json:"secret"`
+	ProxyURL string `json:"proxy_url,omitempty"`
+	// proxyMode is internal reconciliation state. Public request input supports
+	// only an optional custom URL; append needs this marker to preserve an
+	// already configured direct override without exposing another API field.
+	proxyMode string
+}
+
+// NormalizeMultiKeyCredentialInputs validates the structured multi-key input
+// at the model boundary. Duplicate secrets keep their first occurrence, which
+// matches the legacy newline editor's de-duplication behavior and prevents a
+// later duplicate from silently changing an existing proxy assignment.
+func NormalizeMultiKeyCredentialInputs(inputs []ChannelCredentialInput) ([]ChannelCredentialInput, error) {
+	normalized := make([]ChannelCredentialInput, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		secret := strings.TrimSpace(input.Secret)
+		if secret == "" || strings.ContainsAny(secret, "\r\n\u0085\u2028\u2029") {
+			return nil, ErrChannelCredentialInvalid
+		}
+		if _, ok := seen[secret]; ok {
+			continue
+		}
+		proxyMode := input.proxyMode
+		if proxyMode == "" {
+			if strings.TrimSpace(input.ProxyURL) != "" {
+				proxyMode = ChannelCredentialProxyModeCustom
+			} else {
+				proxyMode = ChannelCredentialProxyModeInherit
+			}
+		}
+		proxyMode, proxyURL, err := NormalizeChannelCredentialProxy(proxyMode, input.ProxyURL)
+		if err != nil {
+			return nil, ErrChannelCredentialProxyInvalid
+		}
+		internalMode := ""
+		if proxyMode == ChannelCredentialProxyModeDirect {
+			internalMode = ChannelCredentialProxyModeDirect
+		}
+		normalized = append(normalized, ChannelCredentialInput{Secret: secret, ProxyURL: proxyURL, proxyMode: internalMode})
+		seen[secret] = struct{}{}
+	}
+	if len(normalized) == 0 {
+		return nil, ErrChannelCredentialInvalid
+	}
+	return normalized, nil
+}
+
+// ParseMultiKeyCredentialText parses the newline editor format used by
+// ordinary multi-key channels. Blank lines are ignored. A strict proxy URL is
+// consumed only when it is the next non-empty line after a secret; every other
+// non-empty line remains a secret.
+// Vertex JSON credentials intentionally stay on their legacy parser path.
+func ParseMultiKeyCredentialText(raw string) ([]ChannelCredentialInput, error) {
+	rawLines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	inputs := make([]ChannelCredentialInput, 0, len(lines))
+	for index := 0; index < len(lines); index++ {
+		secret := lines[index]
+		input := ChannelCredentialInput{Secret: secret}
+		if index+1 < len(lines) {
+			candidate := lines[index+1]
+			if parsedURL, err := common.ParseProxyURLStrict(candidate); err == nil && parsedURL != nil {
+				input.ProxyURL = parsedURL.String()
+				index++
+			}
+		}
+		inputs = append(inputs, input)
+	}
+	return NormalizeMultiKeyCredentialInputs(inputs)
 }
 
 // NewChannelCredential creates a normalized credential without exposing the
@@ -693,6 +779,331 @@ func MigrateLegacyChannelCredentialsWithDB(db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+// InsertWithCredentialInputs creates a multi-key channel and persists the
+// structured secret/proxy pairs in one transaction. The legacy Channel.Key
+// column remains a newline list of secrets for relay compatibility.
+func (channel *Channel) InsertWithCredentialInputs(inputs []ChannelCredentialInput) error {
+	if channel == nil || DB == nil || !channel.ChannelInfo.IsMultiKey {
+		return ErrChannelCredentialInvalid
+	}
+	normalized, err := NormalizeMultiKeyCredentialInputs(inputs)
+	if err != nil {
+		return err
+	}
+	channel.Key = credentialInputSecrets(normalized)
+	channel.ChannelInfo.MultiKeySize = len(normalized)
+	channel.ChannelInfo.MultiKeyStatusList = nil
+	channel.ChannelInfo.MultiKeyDisabledReason = nil
+	channel.ChannelInfo.MultiKeyDisabledTime = nil
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		if _, _, err := reconcileStructuredChannelCredentials(tx, channel, normalized); err != nil {
+			return err
+		}
+		return channel.AddAbilities(tx)
+	})
+}
+
+// UpdateWithCredentialInputs atomically applies a structured multi-key edit.
+// append preserves all existing credential state and adds only new secrets;
+// replace reconciles the supplied list by fingerprint while applying each
+// supplied proxy policy (an omitted proxy resets that key to inherit).
+func (channel *Channel) UpdateWithCredentialInputs(inputs []ChannelCredentialInput, keyMode string) ([]string, []string, error) {
+	if channel == nil || DB == nil || !channel.ChannelInfo.IsMultiKey {
+		return nil, nil, ErrChannelCredentialInvalid
+	}
+	keyMode = strings.ToLower(strings.TrimSpace(keyMode))
+	if keyMode == "" {
+		keyMode = "replace"
+	}
+	if keyMode != "append" && keyMode != "replace" {
+		return nil, nil, ErrChannelCredentialInvalid
+	}
+	normalized, err := NormalizeMultiKeyCredentialInputs(inputs)
+	if err != nil {
+		return nil, nil, err
+	}
+	var oldProxies, newProxies []string
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var current Channel
+		if err := lockForUpdate(tx).First(&current, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		if err := migrateLegacyChannelCredentialsForChannel(tx, &current); err != nil {
+			return err
+		}
+
+		// reconcileStructuredChannelCredentials computes the final key order for
+		// append and updates channel.Key before the row update below.
+		finalInputs := normalized
+		if keyMode == "append" {
+			finalInputs, err = appendExistingCredentialInputs(tx, &current, normalized)
+			if err != nil {
+				return err
+			}
+		}
+		channel.Key = credentialInputSecrets(finalInputs)
+		channel.ChannelInfo.MultiKeySize = len(finalInputs)
+		if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(channel).Error; err != nil {
+			return err
+		}
+		var updated Channel
+		if err := tx.First(&updated, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		oldProxies, newProxies, err = reconcileStructuredChannelCredentials(tx, &updated, finalInputs)
+		if err != nil {
+			return err
+		}
+		if err := updated.UpdateAbilities(tx); err != nil {
+			return err
+		}
+		*channel = updated
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	loadChannelCredentials(channel)
+	return oldProxies, newProxies, nil
+}
+
+func credentialInputSecrets(inputs []ChannelCredentialInput) string {
+	secrets := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		secrets = append(secrets, input.Secret)
+	}
+	return strings.Join(secrets, "\n")
+}
+
+func appendExistingCredentialInputs(tx *gorm.DB, channel *Channel, inputs []ChannelCredentialInput) ([]ChannelCredentialInput, error) {
+	var credentials []ChannelCredential
+	if err := lockForUpdate(tx).Where("channel_id = ? AND position >= 0", channel.Id).Order("position ASC, id ASC").Find(&credentials).Error; err != nil {
+		return nil, err
+	}
+	final := make([]ChannelCredentialInput, 0, len(credentials)+len(inputs))
+	seen := make(map[string]struct{}, len(credentials)+len(inputs))
+	for _, credential := range credentials {
+		secret := strings.TrimSpace(credential.Secret)
+		if secret == "" {
+			continue
+		}
+		if _, exists := seen[secret]; exists {
+			continue
+		}
+		seen[secret] = struct{}{}
+		proxyMode := NormalizeCredentialProxyMode(credential.ProxyMode)
+		proxyURL := ""
+		if proxyMode == ChannelCredentialProxyModeCustom {
+			proxyURL = credential.ProxyURL
+		}
+		final = append(final, ChannelCredentialInput{Secret: secret, ProxyURL: proxyURL, proxyMode: proxyMode})
+	}
+	for _, input := range inputs {
+		if _, exists := seen[input.Secret]; exists {
+			continue
+		}
+		seen[input.Secret] = struct{}{}
+		final = append(final, input)
+	}
+	if len(final) == 0 {
+		return nil, ErrChannelCredentialInvalid
+	}
+	return final, nil
+}
+
+// reconcileStructuredChannelCredentials writes credentials for one channel.
+// It intentionally never stores a proxy URL in Channel.Key.
+func reconcileStructuredChannelCredentials(tx *gorm.DB, channel *Channel, inputs []ChannelCredentialInput) ([]string, []string, error) {
+	if tx == nil || channel == nil || channel.Id <= 0 {
+		return nil, nil, ErrChannelCredentialInvalid
+	}
+	normalized, err := NormalizeMultiKeyCredentialInputs(inputs)
+	if err != nil {
+		return nil, nil, err
+	}
+	var existing []ChannelCredential
+	if err := lockForUpdate(tx).Where("channel_id = ?", channel.Id).Order("position ASC, id ASC").Find(&existing).Error; err != nil {
+		return nil, nil, err
+	}
+	byFingerprint := make(map[string][]*ChannelCredential)
+	for index := range existing {
+		credential := &existing[index]
+		if credential.Position >= 0 {
+			byFingerprint[credential.Fingerprint] = append(byFingerprint[credential.Fingerprint], credential)
+		}
+	}
+	used := make(map[int]bool, len(existing))
+	active := make([]*ChannelCredential, 0, len(normalized))
+	oldProxies := make([]string, 0)
+	newProxies := make([]string, 0)
+	changed := false
+	for position, input := range normalized {
+		fingerprint := ChannelCredentialFingerprint(input.Secret)
+		var credential *ChannelCredential
+		for _, candidate := range byFingerprint[fingerprint] {
+			if !used[candidate.Id] {
+				credential = candidate
+				break
+			}
+		}
+		proxyMode := input.proxyMode
+		if proxyMode == "" {
+			if input.ProxyURL != "" {
+				proxyMode = ChannelCredentialProxyModeCustom
+			} else {
+				proxyMode = ChannelCredentialProxyModeInherit
+			}
+		}
+		proxyURL := input.ProxyURL
+		if credential == nil {
+			credential, err = NewChannelCredential(channel.Id, position, input.Secret)
+			if err != nil {
+				return nil, nil, err
+			}
+			credential.ProxyMode = proxyMode
+			credential.ProxyURL = proxyURL
+			if err := credential.NormalizeForPersistence(); err != nil {
+				return nil, nil, err
+			}
+			if err := tx.Create(credential).Error; err != nil {
+				return nil, nil, err
+			}
+			changed = true
+		} else {
+			used[credential.Id] = true
+			oldProxy := credential.ProxyURL
+			if oldProxy != "" {
+				oldProxies = append(oldProxies, oldProxy)
+			}
+			updates := map[string]interface{}{}
+			if credential.Position != position {
+				updates["position"] = position
+				credential.Position = position
+			}
+			if credential.Secret != input.Secret {
+				updates["secret"] = input.Secret
+				credential.Secret = input.Secret
+			}
+			if credential.Fingerprint != fingerprint {
+				updates["fingerprint"] = fingerprint
+				credential.Fingerprint = fingerprint
+			}
+			if credential.ProxyMode != proxyMode || credential.ProxyURL != proxyURL {
+				updates["proxy_mode"] = proxyMode
+				updates["proxy_url"] = proxyURL
+				credential.ProxyMode = proxyMode
+				credential.ProxyURL = proxyURL
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(credential).Updates(updates).Error; err != nil {
+					return nil, nil, err
+				}
+				changed = true
+			}
+		}
+		if credential.ProxyURL != "" {
+			newProxies = append(newProxies, credential.ProxyURL)
+		}
+		used[credential.Id] = true
+		active = append(active, credential)
+	}
+
+	for index := range existing {
+		credential := &existing[index]
+		if used[credential.Id] || credential.Position < 0 {
+			continue
+		}
+		if credential.ProxyURL != "" {
+			oldProxies = append(oldProxies, credential.ProxyURL)
+		}
+		updates := map[string]interface{}{
+			"status":          common.ChannelStatusManuallyDisabled,
+			"disabled_reason": ChannelCredentialDisabledReasonLegacyRemoved,
+			"disabled_at":     common.GetTimestamp(),
+			"position":        -credential.Id,
+		}
+		if err := tx.Model(credential).Updates(updates).Error; err != nil {
+			return nil, nil, err
+		}
+		changed = true
+	}
+
+	// Keep the legacy status maps in sync with stable credential state. The
+	// maps are still read by compatibility code and must use current positions.
+	statusList := make(map[int]int)
+	disabledReasons := make(map[int]string)
+	disabledTimes := make(map[int]int64)
+	for _, credential := range active {
+		if credential.Status == common.ChannelStatusEnabled || credential.Status == common.ChannelStatusUnknown {
+			continue
+		}
+		statusList[credential.Position] = credential.Status
+		disabledReasons[credential.Position] = credential.DisabledReason
+		disabledTimes[credential.Position] = credential.DisabledAt
+	}
+	channel.ChannelInfo.MultiKeySize = len(active)
+	channel.ChannelInfo.MultiKeyStatusList = statusList
+	channel.ChannelInfo.MultiKeyDisabledReason = disabledReasons
+	channel.ChannelInfo.MultiKeyDisabledTime = disabledTimes
+	if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(map[string]interface{}{
+		"channel_info": channel.ChannelInfo,
+	}).Error; err != nil {
+		return nil, nil, err
+	}
+	if changed {
+		currentRevision, err := getOrCreateCredentialRevisionForUpdate(tx, channel.Id)
+		if err != nil {
+			return nil, nil, err
+		}
+		nextRevision := currentRevision + 1
+		if err := tx.Model(&ChannelCredentialRevision{}).Where("channel_id = ?", channel.Id).Updates(map[string]interface{}{
+			"keys_revision": nextRevision,
+			"updated_at":    common.GetTimestamp(),
+		}).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	return oldProxies, newProxies, nil
+}
+
+// FormatChannelKeyForReveal returns the sensitive, administrator-only text
+// representation used by the existing verified channel-key endpoint. It is
+// the inverse of the structured editor format: a custom proxy follows its
+// credential on the next line, while inherited credentials emit only secret.
+func FormatChannelKeyForReveal(channel *Channel) string {
+	if channel == nil || !channel.ChannelInfo.IsMultiKey || len(channel.Credentials) == 0 {
+		if channel == nil {
+			return ""
+		}
+		return channel.Key
+	}
+	credentials := append([]ChannelCredential(nil), channel.Credentials...)
+	sort.SliceStable(credentials, func(i, j int) bool {
+		if credentials[i].Position == credentials[j].Position {
+			return credentials[i].Id < credentials[j].Id
+		}
+		return credentials[i].Position < credentials[j].Position
+	})
+	lines := make([]string, 0, len(credentials)*2)
+	for _, credential := range credentials {
+		if credential.Position < 0 || strings.TrimSpace(credential.Secret) == "" {
+			continue
+		}
+		lines = append(lines, credential.Secret)
+		if NormalizeCredentialProxyMode(credential.ProxyMode) == ChannelCredentialProxyModeCustom && credential.ProxyURL != "" {
+			lines = append(lines, credential.ProxyURL)
+		}
+	}
+	if len(lines) == 0 {
+		return channel.Key
+	}
+	return strings.Join(lines, "\n")
 }
 
 func migrateLegacyChannelCredentialsForChannel(tx *gorm.DB, channel *Channel) error {

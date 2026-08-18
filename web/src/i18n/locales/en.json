@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.",
     "Force a syntactically valid JSON response": "Force a syntactically valid JSON response",
     "Force AUTH LOGIN": "Force AUTH LOGIN",
     "Force Format": "Force Format",
@@ -5661,6 +5662,9 @@
     "Navigation title": "Navigation title",
     "Navigation URL": "Navigation URL",
     "Custom navigation items require a title and a safe URL.": "Custom navigation items require a title and a safe URL.",
-    "Add navigation item": "Add navigation item"
+    "Add navigation item": "Add navigation item",
+    "Multi-key credentials are invalid": "Multi-key credentials are invalid",
+    "JSON credentials cannot use structured multi-key proxy input": "JSON credentials cannot use structured multi-key proxy input",
+    "Codex key append failed": "Codex key append failed"
   }
 }

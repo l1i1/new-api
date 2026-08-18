@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -94,6 +95,114 @@ func TestChannelHasSensitiveChanges(t *testing.T) {
 			"response_time": updated.ResponseTime,
 		}))
 	})
+}
+
+func TestEffectiveChannelForCredentialParsingUsesUpdatedRepresentation(t *testing.T) {
+	vertexJSON := &model.Channel{
+		Type:          constant.ChannelTypeVertexAi,
+		OtherSettings: `{"vertex_key_type":"json"}`,
+	}
+
+	changedType := PatchChannel{Channel: *vertexJSON}
+	changedType.Type = constant.ChannelTypeOpenAI
+	effective := effectiveChannelForCredentialParsing(
+		&changedType,
+		vertexJSON,
+		map[string]any{"type": constant.ChannelTypeOpenAI},
+	)
+	assert.False(t, usesLegacyJSONMultiKeyCredentials(effective))
+
+	changedVertexKind := PatchChannel{Channel: *vertexJSON}
+	changedVertexKind.OtherSettings = `{"vertex_key_type":"api_key"}`
+	effective = effectiveChannelForCredentialParsing(
+		&changedVertexKind,
+		vertexJSON,
+		map[string]any{"settings": changedVertexKind.OtherSettings},
+	)
+	assert.False(t, usesLegacyJSONMultiKeyCredentials(effective))
+
+	ordinary := &model.Channel{Type: constant.ChannelTypeOpenAI}
+	changedToVertexJSON := PatchChannel{Channel: *ordinary}
+	changedToVertexJSON.Type = constant.ChannelTypeVertexAi
+	changedToVertexJSON.OtherSettings = `{"vertex_key_type":"json"}`
+	effective = effectiveChannelForCredentialParsing(
+		&changedToVertexJSON,
+		ordinary,
+		map[string]any{
+			"type":     constant.ChannelTypeVertexAi,
+			"settings": changedToVertexJSON.OtherSettings,
+		},
+	)
+	assert.True(t, usesLegacyJSONMultiKeyCredentials(effective))
+}
+
+func TestFormatChannelKeyForRevealPreservesLegacyJSONCredentials(t *testing.T) {
+	vertexJSON := &model.Channel{
+		Type: constant.ChannelTypeVertexAi,
+		Key:  `[{"project_id":"first"},{"project_id":"second"}]`,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+		Credentials: []model.ChannelCredential{
+			{Id: 1, Position: 0, Secret: `{"project_id":"first"}`},
+			{Id: 2, Position: 1, Secret: `{"project_id":"second"}`},
+		},
+	}
+	assert.Equal(t, vertexJSON.Key, formatChannelKeyForReveal(vertexJSON))
+
+	ordinary := &model.Channel{
+		Key: "key-one\nkey-two",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+		Credentials: []model.ChannelCredential{
+			{Id: 1, Position: 0, Secret: "key-one"},
+			{Id: 2, Position: 1, Secret: "key-two", ProxyMode: model.ChannelCredentialProxyModeCustom, ProxyURL: "http://proxy.example:8080"},
+		},
+	}
+	assert.Equal(
+		t,
+		"key-one\nkey-two\nhttp://proxy.example:8080",
+		formatChannelKeyForReveal(ordinary),
+	)
+}
+
+func TestMergeCodexMultiKeyCredentialsPreservesJSONObjects(t *testing.T) {
+	existing := `{"access_token":"token-a","account_id":"account-a"}`
+	incoming := "{\n  \"access_token\": \"token-b\",\n  \"account_id\": \"account-b\"\n}"
+
+	merged, err := mergeCodexMultiKeyCredentials(existing, incoming)
+	require.NoError(t, err)
+
+	var credentials []map[string]any
+	require.NoError(t, common.Unmarshal([]byte(merged), &credentials))
+	require.Len(t, credentials, 2)
+	assert.Equal(t, "token-a", credentials[0]["access_token"])
+	assert.Equal(t, "account-a", credentials[0]["account_id"])
+	assert.Equal(t, "token-b", credentials[1]["access_token"])
+	assert.Equal(t, "account-b", credentials[1]["account_id"])
+}
+
+func TestMergeCodexMultiKeyCredentialsRejectsInvalidJSON(t *testing.T) {
+	_, err := mergeCodexMultiKeyCredentials(
+		`{"access_token":"token-a","account_id":"account-a"}`,
+		"{\"access_token\":\"token-b\"}",
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "account_id")
+}
+
+func TestChannelHasSensitiveChangesRecognizesStructuredMultiKeyCredentials(t *testing.T) {
+	origin := &model.Channel{}
+	updated := PatchChannel{Channel: *origin}
+
+	assert.True(t, channelHasSensitiveChanges(
+		&updated,
+		origin,
+		map[string]any{
+			"multi_key_credentials": []any{map[string]any{"secret": "key-one"}},
+		},
+	))
 }
 
 func TestClearChannelReadOnlyFields(t *testing.T) {

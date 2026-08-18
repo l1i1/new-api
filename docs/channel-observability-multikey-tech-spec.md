@@ -33,6 +33,31 @@ Batch status/proxy operations lock the channel row, validate `keys_revision`, up
 
 `custom` credential proxy wins, `inherit` uses the channel proxy, and `direct` bypasses both. The resolved proxy is attached after credential selection and reused by common HTTP/SSE paths, the supported WebSocket adapters, and provider task fetches. Async tasks persist the credential reference so polling does not randomly select another credential. Proxy client caches are invalidated after changes.
 
+## Multi-key text input
+
+The create and update requests may include `multi_key_credentials`, an ordered
+array of `{secret, proxy_url?}` objects. This field applies only to ordinary
+newline-based multi-key channels. Vertex JSON arrays and other structured
+credential formats keep their existing input contract. `channels.key` stores
+only the normalized secrets joined by newlines; an optional `proxy_url` is
+validated by `common.ParseProxyURLStrict` and stored as the matching credential's
+`custom` proxy. A missing proxy uses `inherit`.
+
+The UI parses non-empty lines from top to bottom. A line that passes the same
+strict proxy URL rules belongs to the immediately preceding key and is consumed;
+otherwise it starts a new key. Supported schemes are `http`, `https`, `socks5`,
+and `socks5h`. Blank lines are ignored. Duplicate secrets keep their first
+occurrence. Append mode preserves existing credentials and their proxies and
+adds only new secrets. Replace mode uses the submitted order and resets a key to
+`inherit` when no proxy follows it.
+
+The server treats the structured field as the source of truth and revalidates
+every entry. Requests without the field retain the legacy behavior. General
+channel and multi-key status APIs never return secrets or full proxy URLs. The
+existing second-factor-protected channel-key reveal endpoint may return the
+authorized newline representation (`secret`, then optional `proxy_url`) for an
+ordinary multi-key channel.
+
 ## API contract
 
 - `GET /api/observability/channel-model`
@@ -52,6 +77,17 @@ Batch status/proxy operations lock the channel row, validate `keys_revision`, up
 - `PATCH /api/channel/:id/multi-key/proxy`
   - Selection: `credential_id`, `credential_ids`, or explicit `all=true`.
   - Modes: `inherit`, `direct`, `custom`; custom URL is write-only and is never returned.
+- `POST /api/channel`
+  - In `multi_to_single` mode, optional `multi_key_credentials` carries ordered
+    secrets and per-key proxy URLs. Legacy `channel.key` remains accepted when
+    this field is absent.
+- `PUT /api/channel/`
+  - For an existing ordinary multi-key channel, optional
+    `multi_key_credentials` follows `key_mode=append|replace` semantics.
+- `POST /api/channel/:id/key`
+  - After the existing second-factor verification, an ordinary multi-key
+    channel is revealed in key/proxy newline format. This is the only read path
+    that may return full independent proxy URLs.
 
 All routes use existing admin authentication and permission boundaries. Credential and proxy secrets are write-only and never returned.
 

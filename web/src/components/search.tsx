@@ -39,10 +39,10 @@ type SearchButtonProps = {
 export function SearchButton(props: SearchButtonProps) {
   return (
     <Button
-      variant='outline'
+      variant='ghost'
       size='icon'
       className={cn(
-        'bg-muted/25 text-muted-foreground hover:bg-accent hover:text-foreground size-8 shrink-0 rounded-md shadow-none',
+        'text-muted-foreground hover:bg-accent hover:text-foreground size-9 shrink-0 rounded-md shadow-none',
         props.className
       )}
       onClick={props.onOpen}

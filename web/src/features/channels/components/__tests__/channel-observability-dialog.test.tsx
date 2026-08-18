@@ -62,6 +62,8 @@ const { api } = await import('@/lib/api')
 const { ChannelsProvider, useChannels } = await import('../channels-provider')
 const { ChannelObservabilityDialog } =
   await import('../dialogs/channel-observability-dialog')
+const { MultiKeyManageDialog } =
+  await import('../dialogs/multi-key-manage-dialog')
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -82,6 +84,20 @@ function DialogHarness() {
   }, [setCurrentRow])
 
   return <ChannelObservabilityDialog open onOpenChange={() => undefined} />
+}
+
+function MultiKeyDialogHarness() {
+  const { setCurrentRow } = useChannels()
+
+  useEffect(() => {
+    setCurrentRow({
+      id: 94,
+      name: 'Multi-key channel',
+      channel_info: { multi_key_mode: 'random' },
+    } as Channel)
+  }, [setCurrentRow])
+
+  return <MultiKeyManageDialog open onOpenChange={() => undefined} />
 }
 
 describe('channel observability dialog layout', () => {
@@ -117,6 +133,72 @@ describe('channel observability dialog layout', () => {
           <I18nextProvider i18n={i18n}>
             <ChannelsProvider>
               <DialogHarness />
+            </ChannelsProvider>
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+
+    const content = document.querySelector<HTMLElement>(
+      '[data-slot="dialog-content"]'
+    )
+    assert.ok(content)
+    assert.equal(
+      content.classList.contains('sm:max-w-[min(96vw,1440px)]'),
+      true
+    )
+    assert.equal(content.classList.contains('sm:max-w-2xl'), false)
+
+    await act(async () => root.unmount())
+    queryClient.clear()
+  })
+
+  test('gives multi-key management the same responsive desktop width', async () => {
+    api.get = (async (url: string) => {
+      if (url.includes('/multi-key')) {
+        return {
+          data: {
+            success: true,
+            data: {
+              keys: [],
+              total: 0,
+              page: 1,
+              page_size: 10,
+              total_pages: 0,
+              enabled_count: 0,
+              manual_disabled_count: 0,
+              auto_disabled_count: 0,
+            },
+          },
+        }
+      }
+      return {
+        data: {
+          success: true,
+          data: {
+            items: [],
+            page: 1,
+            page_size: 200,
+            total: 0,
+            total_pages: 1,
+          },
+        },
+      }
+    }) as typeof api.get
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ChannelsProvider>
+              <MultiKeyDialogHarness />
             </ChannelsProvider>
           </I18nextProvider>
         </QueryClientProvider>

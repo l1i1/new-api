@@ -448,7 +448,7 @@ func GetChannelKey(c *gin.Context) {
 		"success": true,
 		"message": "获取成功",
 		"data": map[string]interface{}{
-			"key": channel.Key,
+			"key": formatChannelKeyForReveal(channel),
 		},
 	})
 }
@@ -468,6 +468,79 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 	}
 
 	return false
+}
+
+func validateCodexOAuthKey(raw string) error {
+	trimmedKey := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmedKey, "{") {
+		return fmt.Errorf("Codex key must be a valid JSON object")
+	}
+	var keyMap map[string]any
+	if err := common.Unmarshal([]byte(trimmedKey), &keyMap); err != nil {
+		return fmt.Errorf("Codex key must be a valid JSON object")
+	}
+	if v, ok := keyMap["access_token"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
+		return fmt.Errorf("Codex key JSON must include access_token")
+	}
+	if v, ok := keyMap["account_id"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
+		return fmt.Errorf("Codex key JSON must include account_id")
+	}
+	return nil
+}
+
+func mergeCodexMultiKeyCredentials(existingRaw, incomingRaw string) (string, error) {
+	parse := func(raw string) ([]string, error) {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return nil, nil
+		}
+		if !strings.HasPrefix(trimmed, "[") {
+			if err := validateCodexOAuthKey(trimmed); err != nil {
+				return nil, err
+			}
+			return []string{trimmed}, nil
+		}
+
+		var items []json.RawMessage
+		if err := common.Unmarshal([]byte(trimmed), &items); err != nil || len(items) == 0 {
+			return nil, fmt.Errorf("Codex key must be a non-empty JSON array")
+		}
+		keys := make([]string, 0, len(items))
+		for _, item := range items {
+			key := strings.TrimSpace(string(item))
+			if err := validateCodexOAuthKey(key); err != nil {
+				return nil, err
+			}
+			keys = append(keys, key)
+		}
+		return keys, nil
+	}
+
+	existingKeys, err := parse(existingRaw)
+	if err != nil {
+		return "", err
+	}
+	incomingKeys, err := parse(incomingRaw)
+	if err != nil {
+		return "", err
+	}
+	seen := make(map[string]struct{}, len(existingKeys)+len(incomingKeys))
+	allKeys := make([]json.RawMessage, 0, len(existingKeys)+len(incomingKeys))
+	for _, key := range append(existingKeys, incomingKeys...) {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		allKeys = append(allKeys, json.RawMessage(key))
+	}
+	if len(allKeys) == 0 {
+		return "", fmt.Errorf("Codex key must not be empty")
+	}
+	encoded, err := common.Marshal(allKeys)
+	if err != nil {
+		return "", fmt.Errorf("Codex key JSON encoding failed: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // validateChannel 通用的渠道校验函数
@@ -515,22 +588,22 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		}
 	}
 
-	// Codex OAuth key validation (optional, only when JSON object is provided)
+	// Codex OAuth key validation (single object or a multi-key JSON array)
 	if channel.Type == constant.ChannelTypeCodex {
 		trimmedKey := strings.TrimSpace(channel.Key)
 		if isAdd || trimmedKey != "" {
-			if !strings.HasPrefix(trimmedKey, "{") {
-				return fmt.Errorf("Codex key must be a valid JSON object")
-			}
-			var keyMap map[string]any
-			if err := common.Unmarshal([]byte(trimmedKey), &keyMap); err != nil {
-				return fmt.Errorf("Codex key must be a valid JSON object")
-			}
-			if v, ok := keyMap["access_token"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include access_token")
-			}
-			if v, ok := keyMap["account_id"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include account_id")
+			if strings.HasPrefix(trimmedKey, "[") {
+				var items []json.RawMessage
+				if err := common.Unmarshal([]byte(trimmedKey), &items); err != nil || len(items) == 0 {
+					return fmt.Errorf("Codex key must be a non-empty JSON array")
+				}
+				for _, item := range items {
+					if err := validateCodexOAuthKey(string(item)); err != nil {
+						return err
+					}
+				}
+			} else if err := validateCodexOAuthKey(trimmedKey); err != nil {
+				return err
 			}
 		}
 	}
@@ -575,6 +648,9 @@ type AddChannelRequest struct {
 	MultiKeyMode              constant.MultiKeyMode `json:"multi_key_mode"`
 	BatchAddSetKeyPrefix2Name bool                  `json:"batch_add_set_key_prefix_2_name"`
 	Channel                   *model.Channel        `json:"channel"`
+	// MultiKeyCredentials is the structured form of the newline editor. It is
+	// optional for compatibility with older clients that still send channel.key.
+	MultiKeyCredentials *[]model.ChannelCredentialInput `json:"multi_key_credentials,omitempty"`
 }
 
 func getVertexArrayKeys(keys string) ([]string, error) {
@@ -609,6 +685,51 @@ func getVertexArrayKeys(keys string) ([]string, error) {
 	return cleanKeys, nil
 }
 
+// usesLegacyJSONMultiKeyCredentials identifies credential formats whose
+// internal newlines are part of a JSON document rather than a key/proxy list.
+// They deliberately stay on the historical parser path.
+func usesLegacyJSONMultiKeyCredentials(channel *model.Channel) bool {
+	if channel == nil {
+		return false
+	}
+	if channel.Type == constant.ChannelTypeCodex {
+		return true
+	}
+	return channel.Type == constant.ChannelTypeVertexAi &&
+		channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey
+}
+
+func formatChannelKeyForReveal(channel *model.Channel) string {
+	if usesLegacyJSONMultiKeyCredentials(channel) {
+		return channel.Key
+	}
+	return model.FormatChannelKeyForReveal(channel)
+}
+
+// effectiveChannelForCredentialParsing overlays the fields that affect the
+// credential representation onto the persisted channel. Update requests may
+// change the channel type or Vertex credential kind in the same operation, so
+// parsing must follow the resulting configuration rather than the old row.
+func effectiveChannelForCredentialParsing(request *PatchChannel, origin *model.Channel, requestData map[string]any) *model.Channel {
+	if origin == nil {
+		return nil
+	}
+	effective := *origin
+	if request == nil {
+		return &effective
+	}
+	if _, ok := requestData["type"]; ok {
+		effective.Type = request.Type
+	}
+	if _, ok := requestData["other"]; ok {
+		effective.Other = request.Other
+	}
+	if _, ok := requestData["settings"]; ok {
+		effective.OtherSettings = request.OtherSettings
+	}
+	return &effective
+}
+
 func AddChannel(c *gin.Context) {
 	addChannelRequest := AddChannelRequest{}
 	err := c.ShouldBindJSON(&addChannelRequest)
@@ -626,6 +747,31 @@ func AddChannel(c *gin.Context) {
 				"message": "multi_key_mode must be random, polling, or affinity",
 			})
 			return
+		}
+	}
+	var credentialInputs []model.ChannelCredentialInput
+	if addChannelRequest.Mode == "multi_to_single" && addChannelRequest.Channel != nil {
+		usesJSONCredentials := usesLegacyJSONMultiKeyCredentials(addChannelRequest.Channel)
+		if usesJSONCredentials && addChannelRequest.MultiKeyCredentials != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "JSON credentials cannot use structured multi-key proxy input"})
+			return
+		}
+		if !usesJSONCredentials {
+			var parseErr error
+			if addChannelRequest.MultiKeyCredentials != nil {
+				credentialInputs, parseErr = model.NormalizeMultiKeyCredentialInputs(*addChannelRequest.MultiKeyCredentials)
+			} else {
+				credentialInputs, parseErr = model.ParseMultiKeyCredentialText(addChannelRequest.Channel.Key)
+			}
+			if parseErr != nil {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "multi-key credentials are invalid"})
+				return
+			}
+			secrets := make([]string, 0, len(credentialInputs))
+			for _, input := range credentialInputs {
+				secrets = append(secrets, input.Secret)
+			}
+			addChannelRequest.Channel.Key = strings.Join(secrets, "\n")
 		}
 	}
 
@@ -655,6 +801,10 @@ func AddChannel(c *gin.Context) {
 			}
 			addChannelRequest.Channel.ChannelInfo.MultiKeySize = len(array)
 			addChannelRequest.Channel.Key = strings.Join(array, "\n")
+		} else if credentialInputs != nil {
+			addChannelRequest.Channel.ChannelInfo.MultiKeySize = len(credentialInputs)
+			// Channel.Key was normalized above and intentionally contains secrets
+			// only; per-key proxies are persisted in channel_credentials.
 		} else {
 			cleanKeys := make([]string, 0)
 			for _, key := range strings.Split(addChannelRequest.Channel.Key, "\n") {
@@ -708,15 +858,19 @@ func AddChannel(c *gin.Context) {
 		}
 		channels = append(channels, *localChannel)
 	}
-	err = model.BatchInsertChannels(channels)
+	if credentialInputs != nil && len(channels) == 1 {
+		err = channels[0].InsertWithCredentialInputs(credentialInputs)
+	} else {
+		err = model.BatchInsertChannels(channels)
+		if err == nil {
+			err = model.MigrateLegacyChannelCredentialsWithDB(model.DB)
+		}
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if err := model.MigrateLegacyChannelCredentialsWithDB(model.DB); err != nil {
-		common.ApiError(c, err)
-		return
-	}
+	model.InitChannelCache()
 	recordManageAudit(c, "channel.create", map[string]interface{}{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -945,8 +1099,9 @@ func DeleteChannelBatch(c *gin.Context) {
 
 type PatchChannel struct {
 	model.Channel
-	MultiKeyMode *string `json:"multi_key_mode"`
-	KeyMode      *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	MultiKeyMode        *string                         `json:"multi_key_mode"`
+	KeyMode             *string                         `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	MultiKeyCredentials *[]model.ChannelCredentialInput `json:"multi_key_credentials,omitempty"`
 }
 
 type ChannelStatusRequest struct {
@@ -1027,12 +1182,49 @@ func UpdateChannel(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
 	}
 
-	// 处理多key模式下的密钥追加/覆盖逻辑
-	if channel.KeyMode != nil && channel.ChannelInfo.IsMultiKey {
+	var credentialInputs []model.ChannelCredentialInput
+	structuredCredentialUpdate := false
+	if channel.ChannelInfo.IsMultiKey {
+		effectiveChannel := effectiveChannelForCredentialParsing(&channel, originChannel, requestData)
+		usesJSONCredentials := usesLegacyJSONMultiKeyCredentials(effectiveChannel)
+		if channel.MultiKeyCredentials != nil {
+			if usesJSONCredentials {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "JSON credentials cannot use structured multi-key proxy input"})
+				return
+			}
+			credentialInputs, err = model.NormalizeMultiKeyCredentialInputs(*channel.MultiKeyCredentials)
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "multi-key credentials are invalid"})
+				return
+			}
+			structuredCredentialUpdate = true
+		} else if _, keyProvided := requestData["key"]; keyProvided && !usesJSONCredentials {
+			credentialInputs, err = model.ParseMultiKeyCredentialText(channel.Key)
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "multi-key credentials are invalid"})
+				return
+			}
+			structuredCredentialUpdate = true
+		}
+	}
+
+	// Legacy clients still send channel.key. Normalize that input into the same
+	// credential path so a proxy line cannot become an upstream secret.
+	if structuredCredentialUpdate {
+		secrets := make([]string, 0, len(credentialInputs))
+		for _, input := range credentialInputs {
+			secrets = append(secrets, input.Secret)
+		}
+		channel.Key = strings.Join(secrets, "\n")
+	}
+
+	// 处理多key模式下的密钥追加/覆盖逻辑 for legacy requests without the
+	// structured field. Structured requests are reconciled atomically below.
+	if !structuredCredentialUpdate && channel.KeyMode != nil && channel.ChannelInfo.IsMultiKey {
 		switch *channel.KeyMode {
 		case "append":
 			// 追加模式：将新密钥添加到现有密钥列表
-			if originChannel.Key != "" {
+			if channel.Type != constant.ChannelTypeCodex && originChannel.Key != "" {
 				var newKeys []string
 				var existingKeys []string
 
@@ -1103,19 +1295,41 @@ func UpdateChannel(c *gin.Context) {
 				allKeys := append(existingKeys, dedupedNewKeys...)
 				channel.Key = strings.Join(allKeys, "\n")
 			}
+			if channel.Type == constant.ChannelTypeCodex {
+				merged, mergeErr := mergeCodexMultiKeyCredentials(originChannel.Key, channel.Key)
+				if mergeErr != nil {
+					c.JSON(http.StatusOK, gin.H{
+						"success": false,
+						"message": "Codex key append failed: " + mergeErr.Error(),
+					})
+					return
+				}
+				channel.Key = merged
+			}
 		case "replace":
 			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
 		}
 	}
-	err = channel.Update()
+	var oldCredentialProxies, newCredentialProxies []string
+	if structuredCredentialUpdate {
+		keyMode := "replace"
+		if channel.KeyMode != nil && strings.TrimSpace(*channel.KeyMode) != "" {
+			keyMode = *channel.KeyMode
+		}
+		oldCredentialProxies, newCredentialProxies, err = channel.UpdateWithCredentialInputs(credentialInputs, keyMode)
+	} else {
+		err = channel.Update()
+		if err == nil && channel.ChannelInfo.IsMultiKey && channel.Key != originChannel.Key {
+			err = model.SyncChannelCredentialsForChannel(model.DB, channel.Id)
+		}
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if channel.ChannelInfo.IsMultiKey && channel.Key != originChannel.Key {
-		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
-			common.ApiError(c, err)
-			return
+	for _, proxy := range append(oldCredentialProxies, newCredentialProxies...) {
+		if proxy != "" {
+			service.InvalidateProxyClient(proxy)
 		}
 	}
 	model.InitChannelCache()
@@ -1145,6 +1359,7 @@ func UpdateChannel(c *gin.Context) {
 		"changed_fields": changedFields,
 	})
 	channel.Key = ""
+	channel.MultiKeyCredentials = nil
 	clearChannelInfo(&channel.Channel)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

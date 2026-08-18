@@ -139,8 +139,8 @@ describe('theme customization provider', () => {
     assert.equal(rendered.container.textContent, 'sunset-glow:none')
     assert.equal(document.body.dataset.themePreset, 'sunset-glow')
     assert.equal(document.body.dataset.themeRadius, 'none')
-    assert.doesNotMatch(document.cookie, /theme_preset=/)
-    assert.doesNotMatch(document.cookie, /theme_radius=/)
+    assert.doesNotMatch(document.cookie, /(?:^|;\s*)theme_preset=[^;]/)
+    assert.doesNotMatch(document.cookie, /(?:^|;\s*)theme_radius=[^;]/)
 
     await act(async () => rendered.root.unmount())
   })

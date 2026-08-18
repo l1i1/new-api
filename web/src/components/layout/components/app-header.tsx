@@ -18,12 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useRouterState } from '@tanstack/react-router'
 
-import { ConfigDrawer } from '@/components/config-drawer'
 import { CurrencyDisplaySwitcher } from '@/components/currency-display-switcher'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
+import { ThemeSwitch } from '@/components/theme-switch'
 import {
   getNotificationAutoOpenOptions,
   useNotifications,
@@ -38,7 +38,7 @@ import { TopNav } from './top-nav'
 
 /**
  * General application Header component
- * Integrates navigation bar, search, configuration and profile functions
+ * Integrates navigation bar, search, theme and profile functions
  *
  * @example
  * // Basic usage
@@ -88,10 +88,10 @@ type AppHeaderProps = {
    */
   showNotifications?: boolean
   /**
-   * Whether to show config drawer
+   * Whether to show the theme switch
    * @default true
    */
-  showConfigDrawer?: boolean
+  showThemeSwitch?: boolean
   /**
    * Whether to show profile dropdown
    * @default true
@@ -106,7 +106,7 @@ export function AppHeader({
   showSearch = true,
   rightContent,
   showNotifications = true,
-  showConfigDrawer = true,
+  showThemeSwitch = true,
   showProfileDropdown = true,
 }: AppHeaderProps) {
   // Prioritize dynamically generated links from backend
@@ -155,7 +155,7 @@ export function AppHeader({
           )}
           <CurrencyDisplaySwitcher />
           <LanguageSwitcher />
-          {showConfigDrawer && <ConfigDrawer />}
+          {showThemeSwitch && <ThemeSwitch />}
           {showProfileDropdown && <ProfileDropdown />}
         </div>
       )}

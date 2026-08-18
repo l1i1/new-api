@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "多密钥渠道每行输入一个密钥。可在密钥下一行输入可选的代理 URL。其他非空行将视为密钥。",
     "Force a syntactically valid JSON response": "强制返回语法合法的 JSON",
     "Force AUTH LOGIN": "强制 AUTH LOGIN",
     "Force Format": "强制格式化",
@@ -5661,6 +5662,9 @@
     "Navigation title": "导航标题",
     "Navigation URL": "导航 URL",
     "Custom navigation items require a title and a safe URL.": "自定义导航项必须填写标题和安全 URL。",
-    "Add navigation item": "添加导航项"
+    "Add navigation item": "添加导航项",
+    "Multi-key credentials are invalid": "多密钥凭据无效",
+    "JSON credentials cannot use structured multi-key proxy input": "JSON 凭据不能使用结构化多密钥代理输入",
+    "Codex key append failed": "Codex 密钥追加失败"
   }
 }

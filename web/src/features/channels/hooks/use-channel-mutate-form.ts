@@ -55,6 +55,13 @@ const SENSITIVE_UPDATE_FIELDS = [
   'other',
 ] satisfies (keyof Channel)[]
 
+const CHANNEL_MUTATION_ERROR_KEYS: Record<string, string> = {
+  'multi-key credentials are invalid': 'Multi-key credentials are invalid',
+  'JSON credentials cannot use structured multi-key proxy input':
+    'JSON credentials cannot use structured multi-key proxy input',
+}
+const CODEX_KEY_APPEND_ERROR_PREFIX = 'Codex key append failed:'
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -80,6 +87,15 @@ function getErrorMessage(error: unknown): string | undefined {
   return undefined
 }
 
+function getChannelMutationErrorKey(error: unknown): string | undefined {
+  const message = getErrorMessage(error)
+  if (!message) return undefined
+  if (message.startsWith(CODEX_KEY_APPEND_ERROR_PREFIX)) {
+    return 'Codex key append failed'
+  }
+  return CHANNEL_MUTATION_ERROR_KEYS[message] ?? message
+}
+
 export function useChannelMutateForm(props: UseChannelMutateFormParams) {
   const { t } = useTranslation()
   const currentUser = useAuthStore((s) => s.auth.user)
@@ -94,7 +110,8 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
       if (props.isEditing && props.currentRow) {
         const payload = transformFormDataToUpdatePayload(
           data,
-          props.currentRow.id
+          props.currentRow.id,
+          { isMultiKeyChannel: props.isMultiKeyChannel }
         )
         if (!data.key?.trim()) {
           delete payload.key
@@ -103,22 +120,11 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
           for (const field of SENSITIVE_UPDATE_FIELDS) {
             delete payload[field]
           }
+          delete payload.key_mode
+          delete payload.multi_key_credentials
         }
-        const payloadWithKeyMode =
-          canEditSensitive &&
-          props.isMultiKeyChannel &&
-          data.key?.trim() &&
-          data.key_mode
-            ? {
-                ...payload,
-                key_mode: data.key_mode,
-              }
-            : payload
 
-        const response = await updateChannel(
-          props.currentRow.id,
-          payloadWithKeyMode
-        )
+        const response = await updateChannel(props.currentRow.id, payload)
         if (!response.success) {
           throw new Error(response.message || t(ERROR_MESSAGES.UPDATE_FAILED))
         }
@@ -137,7 +143,8 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
       props.onSuccess()
     },
     onError: (error: unknown) => {
-      toast.error(getErrorMessage(error) || t(ERROR_MESSAGES.CREATE_FAILED))
+      const message = getChannelMutationErrorKey(error)
+      toast.error(message ? t(message) : t(ERROR_MESSAGES.CREATE_FAILED))
     },
   })
 }
