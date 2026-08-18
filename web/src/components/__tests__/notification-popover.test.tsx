@@ -109,6 +109,7 @@ function TestNotificationPopover() {
         },
       ]}
       loading={false}
+      onCloseToday={() => undefined}
     />
   )
 }
@@ -122,13 +123,21 @@ describe('announcement dialog', () => {
     domWindow.close()
   })
 
-  test('keeps the native announcement dialog and highlights unread timeline items', async () => {
+  test('separates the site notice from unread timeline announcements', async () => {
     const rendered = await renderWithI18n(<TestNotificationPopover />)
 
-    assert.equal(
-      document.body.textContent?.includes('Current service notice'),
-      true
+    const tabs = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    ]
+    const noticeTab = tabs.find((tab) => tab.textContent?.includes('Notice'))
+    const timelineTab = tabs.find((tab) =>
+      tab.textContent?.includes('Timeline')
     )
+
+    assert.ok(noticeTab)
+    assert.ok(timelineTab)
+    assert.equal(timelineTab.getAttribute('aria-selected'), 'true')
+    assert.equal(noticeTab.getAttribute('aria-selected'), 'false')
     assert.equal(
       document.body.textContent?.includes('Timeline release update'),
       true
@@ -138,6 +147,17 @@ describe('announcement dialog', () => {
       true
     )
     assert.ok(document.querySelector('[data-unread="true"]'))
+    assert.ok(rendered.container.querySelector('button'))
+    assert.equal(document.body.textContent?.includes('Close Today'), true)
+
+    await act(async () => noticeTab.click())
+
+    assert.equal(noticeTab.getAttribute('aria-selected'), 'true')
+    assert.equal(timelineTab.getAttribute('aria-selected'), 'false')
+    assert.equal(
+      document.body.textContent?.includes('Current service notice'),
+      true
+    )
     assert.ok(
       rendered.container.querySelector('[aria-label="Notifications"]'),
       'the navigation bell remains the dialog trigger'

@@ -140,6 +140,8 @@ export function useNotifications(
     pendingSiteNoticeKey,
     setPendingSiteNoticeKey,
     readAnnouncementKeys,
+    isNoticeClosed,
+    setClosedUntilDate,
   } = useNotificationStore()
 
   // Extract notice content
@@ -247,7 +249,14 @@ export function useNotifications(
   ])
 
   useEffect(() => {
-    if (!options.autoOpenPopover || noticeFetching || statusLoading) return
+    if (
+      !options.autoOpenPopover ||
+      noticeFetching ||
+      statusLoading ||
+      isNoticeClosed()
+    ) {
+      return
+    }
 
     if (!lastObservedNotificationRevision) {
       setLastObservedNotificationRevision(notificationRevision)
@@ -289,6 +298,7 @@ export function useNotifications(
     setPendingAutoOpenKey,
     statusLoading,
     unreadCounts.total,
+    isNoticeClosed,
   ])
 
   const handlePopoverOpenChange = (open: boolean) => {
@@ -306,6 +316,13 @@ export function useNotifications(
       setPendingAutoOpenKey(null)
     }
   }
+
+  const closeToday = useCallback(() => {
+    setClosedUntilDate(new Date().toDateString())
+    setPopoverOpen(false)
+    setAutoOpenedPopover(false)
+    setPendingAutoOpenKey(null)
+  }, [setClosedUntilDate, setPendingAutoOpenKey])
 
   const handleSiteNoticeOpenChange = (open: boolean) => {
     setSiteNoticeOpen(open)
@@ -337,6 +354,7 @@ export function useNotifications(
     // Actions
     openPopover: handleOpenPopover,
     closePopover: () => handlePopoverOpenChange(false),
+    closeToday,
     refetchNotice,
   }
 }

@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
-import { Bell } from 'lucide-react'
+import { Bell, Megaphone } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -31,6 +32,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from '@/components/ui/empty'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -51,8 +53,11 @@ interface NotificationPopoverProps {
   notice: string
   announcements: AnnouncementItem[]
   loading: boolean
+  onCloseToday: () => void
   className?: string
 }
+
+type AnnouncementTab = 'notice' | 'timeline'
 
 /**
  * Get relative time string from a date
@@ -172,43 +177,57 @@ function EmptyState({
   )
 }
 
-/** Render the native New API announcement list with unread highlighting. */
-function AnnouncementListContent({
+function NoticeContent({
   notice,
-  announcements,
   loading,
   t,
 }: {
   notice: string
-  announcements: AnnouncementItem[]
   loading: boolean
   t: TFunction
 }) {
-  if (loading) {
-    return <EmptyState icon={<Bell />} title={t('Loading...')} />
-  }
-
-  if (!notice && announcements.length === 0) {
+  if (loading) return <EmptyState icon={<Bell />} title={t('Loading...')} />
+  if (!notice) {
     return (
       <EmptyState icon={<Bell />} title={t('No announcements at this time')} />
     )
   }
 
   return (
-    <div className='divide-border max-h-[min(60vh,34rem)] divide-y overflow-y-auto pr-2'>
-      {notice ? (
-        <div className='py-3 first:pt-0'>
-          <div className='flex items-start gap-3'>
-            <Bell className='text-primary mt-0.5 size-4 shrink-0' />
-            <div className='min-w-0 flex-1'>
-              <div className='text-muted-foreground mb-1 text-xs font-medium'>
-                {t('Notice')}
-              </div>
-              <RichContent breaks content={notice} />
-            </div>
-          </div>
+    <div className='h-[min(50vh,34rem)] overflow-y-auto pr-2'>
+      <div className='flex items-start gap-3 py-3'>
+        <Bell className='text-primary mt-0.5 size-4 shrink-0' />
+        <div className='min-w-0 flex-1'>
+          <RichContent breaks content={notice} />
         </div>
-      ) : null}
+      </div>
+    </div>
+  )
+}
+
+function TimelineContent({
+  announcements,
+  loading,
+  t,
+}: {
+  announcements: AnnouncementItem[]
+  loading: boolean
+  t: TFunction
+}) {
+  if (loading) {
+    return <EmptyState icon={<Megaphone />} title={t('Loading...')} />
+  }
+  if (announcements.length === 0) {
+    return (
+      <EmptyState
+        icon={<Megaphone />}
+        title={t('No announcements at this time')}
+      />
+    )
+  }
+
+  return (
+    <div className='divide-border h-[min(50vh,34rem)] divide-y overflow-y-auto pr-2'>
       {announcements.map((item) => {
         const announcementKey = getAnnouncementRenderKey(item)
         const publishDate = item.publishDate ? new Date(item.publishDate) : null
@@ -264,9 +283,27 @@ export function NotificationPopover({
   notice,
   announcements,
   loading,
+  onCloseToday,
   className,
 }: NotificationPopoverProps) {
   const { t } = useTranslation()
+  const [activeTab, setActiveTab] = useState<AnnouncementTab>('notice')
+  const wasOpen = useRef(false)
+
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      let nextTab: AnnouncementTab = 'timeline'
+      if (
+        !announcements.some((announcement) => announcement.unread) &&
+        notice
+      ) {
+        nextTab = 'notice'
+      }
+      setActiveTab(nextTab)
+    }
+    wasOpen.current = open
+  }, [announcements, notice, open])
+
   return (
     <Dialog
       open={open}
@@ -290,17 +327,43 @@ export function NotificationPopover({
         </Button>
       }
       title={t('System Announcements')}
-      description={t('Latest platform updates and notices')}
       contentClassName='sm:max-w-2xl'
       contentHeight='auto'
-      footer={<Button onClick={() => onOpenChange(false)}>{t('Close')}</Button>}
+      footer={
+        <>
+          <Button variant='outline' onClick={onCloseToday}>
+            {t('Close Today')}
+          </Button>
+          <Button onClick={() => onOpenChange(false)}>{t('Close')}</Button>
+        </>
+      }
     >
-      <AnnouncementListContent
-        notice={notice}
-        announcements={announcements}
-        loading={loading}
-        t={t}
-      />
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as AnnouncementTab)}
+        className='w-full gap-3'
+      >
+        <TabsList className='grid w-full grid-cols-2'>
+          <TabsTrigger value='notice' className='gap-1.5'>
+            <Bell className='size-4' />
+            {t('Notice')}
+          </TabsTrigger>
+          <TabsTrigger value='timeline' className='gap-1.5'>
+            <Megaphone className='size-4' />
+            {t('Timeline')}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value='notice' className='mt-4'>
+          <NoticeContent notice={notice} loading={loading} t={t} />
+        </TabsContent>
+        <TabsContent value='timeline' className='mt-4'>
+          <TimelineContent
+            announcements={announcements}
+            loading={loading}
+            t={t}
+          />
+        </TabsContent>
+      </Tabs>
     </Dialog>
   )
 }
