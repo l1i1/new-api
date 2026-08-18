@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -477,13 +478,17 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 			quotaTooLow = true
 		}
 		if quotaTooLow {
-			prompt := "您的额度即将用尽"
+			lang := i18n.ResolveUserLang(relayInfo.UserId)
+			prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaExceedSubject)
 			topUpLink := PaymentReturnURL("/wallet")
+			data := map[string]any{
+				"Prompt":    prompt,
+				"Quota":     logger.FormatQuota(relayInfo.UserQuota),
+				"TopUpLink": topUpLink,
+			}
 
 			// 根据通知方式生成不同的内容格式
 			var content string
-			var values []interface{}
-
 			notifyType := userSetting.NotifyType
 			if notifyType == "" {
 				notifyType = dto.NotifyTypeEmail
@@ -491,18 +496,15 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 
 			if notifyType == dto.NotifyTypeBark {
 				// Bark推送使用简短文本，不支持HTML
-				content = "{{value}}，剩余额度：{{value}}，请及时充值"
-				values = []interface{}{prompt, logger.FormatQuota(relayInfo.UserQuota)}
+				content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBodyBark)
 			} else if notifyType == dto.NotifyTypeGotify {
-				content = "{{value}}，当前剩余额度为 {{value}}，请及时充值。"
-				values = []interface{}{prompt, logger.FormatQuota(relayInfo.UserQuota)}
+				content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBodyGotify)
 			} else {
 				// 默认内容格式，适用于Email和Webhook（支持HTML）
-				content = "{{value}}，当前剩余额度为 {{value}}，为了不影响您的使用，请及时充值。<br/>充值链接：<a href='{{value}}'>{{value}}</a>"
-				values = []interface{}{prompt, logger.FormatQuota(relayInfo.UserQuota), topUpLink, topUpLink}
+				content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBody)
 			}
 
-			err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
+			err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotifyWithData(dto.NotifyTypeQuotaExceed, prompt, content, data))
 			if err != nil {
 				common.SysError(fmt.Sprintf("failed to send quota notify to user %d: %s", relayInfo.UserId, err.Error()))
 			}
@@ -531,28 +533,30 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 			return
 		}
 
-		prompt := "您的订阅额度即将用尽"
+		lang := i18n.ResolveUserLang(relayInfo.UserId)
+		prompt := i18n.Translate(lang, i18n.MsgNotifySubscriptionQuotaExceedSubject)
 		topUpLink := PaymentReturnURL("/wallet")
+		data := map[string]any{
+			"Prompt":    prompt,
+			"Quota":     logger.FormatQuota(int(remaining)),
+			"TopUpLink": topUpLink,
+		}
 
 		var content string
-		var values []interface{}
 		notifyType := userSetting.NotifyType
 		if notifyType == "" {
 			notifyType = dto.NotifyTypeEmail
 		}
 
 		if notifyType == dto.NotifyTypeBark {
-			content = "{{value}}，剩余额度：{{value}}，请及时充值"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining))}
+			content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBodyBark)
 		} else if notifyType == dto.NotifyTypeGotify {
-			content = "{{value}}，当前剩余额度为 {{value}}，请及时充值。"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining))}
+			content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBodyGotify)
 		} else {
-			content = "{{value}}，当前剩余额度为 {{value}}，为了不影响您的使用，请及时充值。<br/>充值链接：<a href='{{value}}'>{{value}}</a>"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining)), topUpLink, topUpLink}
+			content = i18n.TranslateTemplate(lang, i18n.MsgNotifyQuotaExceedBody)
 		}
 
-		if err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values)); err != nil {
+		if err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotifyWithData(dto.NotifyTypeQuotaExceed, prompt, content, data)); err != nil {
 			common.SysError(fmt.Sprintf("failed to send subscription quota notify to user %d: %s", relayInfo.UserId, err.Error()))
 		}
 	})

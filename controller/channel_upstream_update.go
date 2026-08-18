@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/advancedcustom"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
@@ -559,6 +560,7 @@ func shouldSendUpstreamModelUpdateNotification(now int64, changedChannels int, f
 }
 
 func buildUpstreamModelUpdateTaskNotificationContent(
+	lang string,
 	checkedChannels int,
 	changedChannels int,
 	detectedAddModels int,
@@ -571,50 +573,62 @@ func buildUpstreamModelUpdateTaskNotificationContent(
 ) string {
 	var builder strings.Builder
 	failedChannels := len(failedChannelIDs)
-	builder.WriteString(fmt.Sprintf(
-		"上游模型巡检摘要：检测渠道 %d 个，发现变更 %d 个，新增 %d 个，删除 %d 个，自动同步新增 %d 个，失败 %d 个。",
-		checkedChannels,
-		changedChannels,
-		detectedAddModels,
-		detectedRemoveModels,
-		autoAddedModels,
-		failedChannels,
-	))
+	builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateSummary, map[string]any{
+		"CheckedChannels":      checkedChannels,
+		"ChangedChannels":      changedChannels,
+		"DetectedAddModels":    detectedAddModels,
+		"DetectedRemoveModels": detectedRemoveModels,
+		"AutoAddedModels":      autoAddedModels,
+		"FailedChannels":       failedChannels,
+	}))
 
 	if len(channelSummaries) > 0 {
 		displayCount := min(len(channelSummaries), channelUpstreamModelUpdateNotifyMaxChannelDetails)
-		builder.WriteString(fmt.Sprintf("\n\n变更渠道明细（展示 %d/%d）：", displayCount, len(channelSummaries)))
+		builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateChannelDetailsHeader, map[string]any{
+			"DisplayCount": displayCount,
+			"TotalCount":   len(channelSummaries),
+		}))
 		for _, summary := range channelSummaries[:displayCount] {
-			builder.WriteString(fmt.Sprintf("\n- %s (+%d / -%d)", summary.ChannelName, summary.AddCount, summary.RemoveCount))
+			builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateChannelDetailLine, map[string]any{
+				"ChannelName": summary.ChannelName,
+				"AddCount":    summary.AddCount,
+				"RemoveCount": summary.RemoveCount,
+			}))
 		}
 		if len(channelSummaries) > displayCount {
-			builder.WriteString(fmt.Sprintf("\n- 其余 %d 个渠道已省略", len(channelSummaries)-displayCount))
+			builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateChannelDetailsOmitted, map[string]any{
+				"Count": len(channelSummaries) - displayCount,
+			}))
 		}
 	}
 
 	normalizedAddModelSamples := normalizeModelNames(addModelSamples)
 	if len(normalizedAddModelSamples) > 0 {
 		displayCount := min(len(normalizedAddModelSamples), channelUpstreamModelUpdateNotifyMaxModelDetails)
-		builder.WriteString(fmt.Sprintf("\n\n新增模型示例（展示 %d/%d）：%s",
-			displayCount,
-			len(normalizedAddModelSamples),
-			strings.Join(normalizedAddModelSamples[:displayCount], ", "),
-		))
+		builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateAddModelsHeader, map[string]any{
+			"DisplayCount": displayCount,
+			"TotalCount":   len(normalizedAddModelSamples),
+			"Samples":      strings.Join(normalizedAddModelSamples[:displayCount], ", "),
+		}))
 		if len(normalizedAddModelSamples) > displayCount {
-			builder.WriteString(fmt.Sprintf("（其余 %d 个已省略）", len(normalizedAddModelSamples)-displayCount))
+			builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateAddModelsOmitted, map[string]any{
+				"Count": len(normalizedAddModelSamples) - displayCount,
+			}))
 		}
 	}
 
 	normalizedRemoveModelSamples := normalizeModelNames(removeModelSamples)
 	if len(normalizedRemoveModelSamples) > 0 {
 		displayCount := min(len(normalizedRemoveModelSamples), channelUpstreamModelUpdateNotifyMaxModelDetails)
-		builder.WriteString(fmt.Sprintf("\n\n删除模型示例（展示 %d/%d）：%s",
-			displayCount,
-			len(normalizedRemoveModelSamples),
-			strings.Join(normalizedRemoveModelSamples[:displayCount], ", "),
-		))
+		builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateRemoveModelsHeader, map[string]any{
+			"DisplayCount": displayCount,
+			"TotalCount":   len(normalizedRemoveModelSamples),
+			"Samples":      strings.Join(normalizedRemoveModelSamples[:displayCount], ", "),
+		}))
 		if len(normalizedRemoveModelSamples) > displayCount {
-			builder.WriteString(fmt.Sprintf("（其余 %d 个已省略）", len(normalizedRemoveModelSamples)-displayCount))
+			builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateRemoveModelsOmitted, map[string]any{
+				"Count": len(normalizedRemoveModelSamples) - displayCount,
+			}))
 		}
 	}
 
@@ -623,14 +637,15 @@ func buildUpstreamModelUpdateTaskNotificationContent(
 		displayIDs := lo.Map(failedChannelIDs[:displayCount], func(channelID int, _ int) string {
 			return fmt.Sprintf("%d", channelID)
 		})
-		builder.WriteString(fmt.Sprintf(
-			"\n\n失败渠道 ID（展示 %d/%d）：%s",
-			displayCount,
-			failedChannels,
-			strings.Join(displayIDs, ", "),
-		))
+		builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateFailedHeader, map[string]any{
+			"DisplayCount": displayCount,
+			"TotalCount":   failedChannels,
+			"IDs":          strings.Join(displayIDs, ", "),
+		}))
 		if failedChannels > displayCount {
-			builder.WriteString(fmt.Sprintf("（其余 %d 个已省略）", failedChannels-displayCount))
+			builder.WriteString(i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateFailedOmitted, map[string]any{
+				"Count": failedChannels - displayCount,
+			}))
 		}
 	}
 	return builder.String()
@@ -802,20 +817,21 @@ scanLoop:
 			))
 			return summary
 		}
-		service.NotifyUpstreamModelUpdateWatchers(
-			"上游模型巡检通知",
-			buildUpstreamModelUpdateTaskNotificationContent(
-				checkedChannels,
-				changedChannels,
-				detectedAddModels,
-				detectedRemoveModels,
-				autoAddedModels,
-				failedChannelIDs,
-				channelSummaries,
-				addModelSamples,
-				removeModelSamples,
-			),
-		)
+		service.NotifyUpstreamModelUpdateWatchersLocalized(func(lang string) (string, string) {
+			return i18n.Translate(lang, i18n.MsgNotifyUpstreamUpdateSubject),
+				buildUpstreamModelUpdateTaskNotificationContent(
+					lang,
+					checkedChannels,
+					changedChannels,
+					detectedAddModels,
+					detectedRemoveModels,
+					autoAddedModels,
+					failedChannelIDs,
+					channelSummaries,
+					addModelSamples,
+					removeModelSamples,
+				)
+		})
 	}
 	return summary
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -27,18 +28,29 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 
 	success := model.UpdateChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
 	if success {
-		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
-		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
-		NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
+		lang := i18n.ResolveUserLang(model.GetRootUser().Id)
+		data := map[string]any{
+			"ChannelName": channelError.ChannelName,
+			"ChannelId":   channelError.ChannelId,
+			"Reason":      reason,
+		}
+		subject := i18n.TranslateTemplate(lang, i18n.MsgNotifyChannelDisabledSubject)
+		content := i18n.TranslateTemplate(lang, i18n.MsgNotifyChannelDisabledBody)
+		NotifyRootUserWithData(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content, data)
 	}
 }
 
 func EnableChannel(channelId int, usingKey string, channelName string) {
 	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
 	if success {
-		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
-		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
-		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
+		lang := i18n.ResolveUserLang(model.GetRootUser().Id)
+		data := map[string]any{
+			"ChannelName": channelName,
+			"ChannelId":   channelId,
+		}
+		subject := i18n.TranslateTemplate(lang, i18n.MsgNotifyChannelEnabledSubject)
+		content := i18n.TranslateTemplate(lang, i18n.MsgNotifyChannelEnabledBody)
+		NotifyRootUserWithData(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content, data)
 	}
 }
 

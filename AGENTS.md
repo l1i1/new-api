@@ -43,7 +43,7 @@ web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
 
 ### Backend (`i18n/`)
 - Library: `nicksnyder/go-i18n/v2`
-- Languages: en, zh
+- Languages: en (base/fallback), zh-CN, zh-TW, fr, ru, ja, vi — key parity across all locales is enforced by `i18n/locales_test.go`
 
 ### Frontend (`web/src/i18n/`)
 - Library: `i18next` + `react-i18next` + `i18next-browser-languagedetector`
