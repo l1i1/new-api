@@ -173,6 +173,12 @@ export function SidebarModulesSection({
         title: t('Invoice Review'),
         description: t('Review and process user invoice applications.'),
       },
+      system_info: {
+        title: t('System Info'),
+        description: t(
+          'Nodes reporting from this deployment and their latest heartbeat.'
+        ),
+      },
     },
   }
   const formDefaults = useMemo(() => config, [config])

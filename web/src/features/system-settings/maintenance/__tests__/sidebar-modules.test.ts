@@ -53,4 +53,10 @@ describe('sidebar module configuration ordering', () => {
       'invoice',
     ])
   })
+
+  test('includes System Info as an administrator module', () => {
+    const parsed = parseSidebarModulesAdmin('')
+
+    assert.equal(parsed.admin.system_info, true)
+  })
 })

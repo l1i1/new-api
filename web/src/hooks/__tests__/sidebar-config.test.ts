@@ -152,4 +152,31 @@ describe('sidebar invoice feature gating', () => {
       ['Task Logs', 'Overview', 'Usage Logs']
     )
   })
+
+  test('orders System Info using the saved administrator module position', () => {
+    const groups: NavGroup[] = [
+      {
+        id: 'admin',
+        title: 'Admin',
+        items: [
+          { title: 'System Settings', url: '/system-settings/site' },
+          { title: 'System Info', url: '/system-info' },
+        ],
+      },
+    ]
+    const config = {
+      admin: {
+        enabled: true,
+        system_info: true,
+        setting: true,
+      },
+    }
+
+    const result = applySidebarNavigationConfig(groups, config, null, true)
+
+    assert.deepEqual(
+      result[0]?.items.map((item) => item.title),
+      ['System Info', 'System Settings']
+    )
+  })
 })
