@@ -192,6 +192,89 @@ func TestMergeCodexMultiKeyCredentialsRejectsInvalidJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "account_id")
 }
 
+func TestUpdateChannelAppendsJSONMultiKeyCredentialsWithoutType(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&model.Log{},
+		&model.ChannelCredential{},
+		&model.ChannelCredentialRevision{},
+	))
+
+	tests := []struct {
+		name        string
+		channelType int
+		other       string
+		existingKey string
+		incomingKey string
+		wantIDs     []string
+	}{
+		{
+			name:        "Codex",
+			channelType: constant.ChannelTypeCodex,
+			existingKey: `[{"access_token":"old","refresh_token":"refresh-old","account_id":"account-old"}]`,
+			incomingKey: `{"access_token":"new","refresh_token":"refresh-new","account_id":"account-new"}`,
+			wantIDs:     []string{"account-old", "account-new"},
+		},
+		{
+			name:        "Vertex JSON",
+			channelType: constant.ChannelTypeVertexAi,
+			other:       `{"default":"us-central1"}`,
+			existingKey: `[{"project_id":"project-old"}]`,
+			incomingKey: `{"project_id":"project-new"}`,
+			wantIDs:     []string{"project-old", "project-new"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &model.Channel{
+				Name:  test.name,
+				Type:  test.channelType,
+				Key:   test.existingKey,
+				Other: test.other,
+				ChannelInfo: model.ChannelInfo{
+					IsMultiKey: true,
+				},
+			}
+			require.NoError(t, db.Create(channel).Error)
+
+			body, err := common.Marshal(map[string]any{
+				"id":       channel.Id,
+				"key_mode": "append",
+				"key":      test.incomingKey,
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPut, "/api/channel/", bytes.NewReader(body))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			ctx.Set("id", 1)
+			ctx.Set("role", common.RoleRootUser)
+
+			UpdateChannel(ctx)
+
+			var response struct {
+				Success bool `json:"success"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			require.True(t, response.Success)
+
+			var stored model.Channel
+			require.NoError(t, db.First(&stored, channel.Id).Error)
+			var credentials []map[string]any
+			require.NoError(t, common.Unmarshal([]byte(stored.Key), &credentials))
+			require.Len(t, credentials, 2)
+			if test.channelType == constant.ChannelTypeCodex {
+				assert.Equal(t, test.wantIDs[0], credentials[0]["account_id"])
+				assert.Equal(t, test.wantIDs[1], credentials[1]["account_id"])
+			} else {
+				assert.Equal(t, test.wantIDs[0], credentials[0]["project_id"])
+				assert.Equal(t, test.wantIDs[1], credentials[1]["project_id"])
+			}
+		})
+	}
+}
+
 func TestChannelHasSensitiveChangesRecognizesStructuredMultiKeyCredentials(t *testing.T) {
 	origin := &model.Channel{}
 	updated := PatchChannel{Channel: *origin}

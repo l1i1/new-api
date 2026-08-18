@@ -19,14 +19,17 @@ import (
 const bucketSeconds int64 = 300
 
 const (
-	defaultQueryHours            = 24
-	maxQueryHours                = 24 * 30
-	defaultPageSize              = 50
-	maxPageSize                  = 200
-	MinimumReliableSamples int64 = 20
-	errorClassRedisPrefix        = "error_class:"
-	redisSketchQuantumMs   int64 = 10
-	redisSketchMaxMs       int64 = 60000
+	defaultQueryHours                = 24
+	maxQueryHours                    = 24 * 30
+	defaultPageSize                  = 50
+	maxPageSize                      = 200
+	MinimumReliableSamples     int64 = 20
+	errorClassRedisPrefix            = "error_class:"
+	redisSketchFineQuantumMs   int64 = 10
+	redisSketchMediumQuantumMs int64 = 100
+	redisSketchCoarseQuantumMs int64 = 1000
+	redisSketchFineLimitMs     int64 = 60 * 1000
+	redisSketchMediumLimitMs   int64 = 10 * 60 * 1000
 )
 
 type Usage struct {
@@ -964,11 +967,24 @@ func incrementRedisHistogram(pipe redis.Pipeliner, ctx context.Context, key, pre
 		}
 	}
 	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_%d", prefix, index), 1)
-	quantizedValue := ((valueMs + redisSketchQuantumMs/2) / redisSketchQuantumMs) * redisSketchQuantumMs
-	if quantizedValue > redisSketchMaxMs {
-		quantizedValue = redisSketchMaxMs
-	}
+	quantizedValue := quantizeRedisSketchValue(valueMs)
 	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_sample_%d", prefix, quantizedValue), 1)
+}
+
+// quantizeRedisSketchValue keeps active Redis histograms compact without
+// collapsing every long-running request into a synthetic 60-second sample.
+func quantizeRedisSketchValue(valueMs int64) int64 {
+	if valueMs <= redisSketchFineLimitMs {
+		return roundLatency(valueMs, redisSketchFineQuantumMs)
+	}
+	if valueMs <= redisSketchMediumLimitMs {
+		return roundLatency(valueMs, redisSketchMediumQuantumMs)
+	}
+	return roundLatency(valueMs, redisSketchCoarseQuantumMs)
+}
+
+func roundLatency(valueMs, quantumMs int64) int64 {
+	return ((valueMs + quantumMs/2) / quantumMs) * quantumMs
 }
 
 func redisValueToAggregate(key bucketKey, values map[string]string) model.ChannelModelPerfAggregate {

@@ -60,6 +60,10 @@ export function isStrictProxyURL(value: string | undefined): boolean {
   const trimmedValue = value?.trim() || ''
   if (!trimmedValue) return false
 
+  // URL normalizes a trailing `?` or `#` to an empty search/hash, while the
+  // backend correctly preserves and rejects both forms via ForceQuery/Fragment.
+  if (trimmedValue.includes('?') || trimmedValue.includes('#')) return false
+
   try {
     const parsedURL = new URL(trimmedValue)
     if (

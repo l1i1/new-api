@@ -61,7 +61,22 @@ describe('multi-key credential text', () => {
     assert.equal(isStrictProxyURL('socks4://proxy.example'), false)
     assert.equal(isStrictProxyURL('http://proxy.example/path'), false)
     assert.equal(isStrictProxyURL('http://proxy.example?token=1'), false)
+    assert.equal(isStrictProxyURL('http://proxy.example?'), false)
+    assert.equal(isStrictProxyURL('http://proxy.example#'), false)
+    assert.equal(isStrictProxyURL('http://proxy.example/?'), false)
+    assert.equal(isStrictProxyURL('http://proxy.example/#'), false)
     assert.equal(isStrictProxyURL('http://proxy.example:0'), false)
+  })
+
+  test('keeps strict proxy rejections as subsequent keys', () => {
+    assert.deepEqual(
+      parseMultiKeyCredentialText('key-one\nhttp://proxy.example?\nkey-two'),
+      [
+        { secret: 'key-one' },
+        { secret: 'http://proxy.example?' },
+        { secret: 'key-two' },
+      ]
+    )
   })
 
   test('keeps JSON credential channels outside the line-oriented parser', () => {

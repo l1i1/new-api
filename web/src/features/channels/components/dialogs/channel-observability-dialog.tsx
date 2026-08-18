@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { RefreshCw } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -64,30 +64,46 @@ export function ChannelObservabilityDialog(
   const [hours, setHours] = useState(24)
   const [rows, setRows] = useState<ChannelObservabilityResult[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const loadSequence = useRef(0)
 
   const load = async () => {
-    if (!currentRow) return
+    const channelId = currentRow?.id
+    if (!channelId) return
+    const requestSequence = ++loadSequence.current
+    const requestedHours = hours
     setIsLoading(true)
     try {
       const loadedRows = await getAllChannelObservability(
-        currentRow.id,
-        hours,
+        channelId,
+        requestedHours,
         {
           aggregate_by_model: true,
         }
       )
+      if (loadSequence.current !== requestSequence) return
       setRows(dedupeChannelObservabilityRows(loadedRows))
     } catch (error: unknown) {
+      if (loadSequence.current !== requestSequence) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
     } finally {
-      setIsLoading(false)
+      if (loadSequence.current === requestSequence) setIsLoading(false)
     }
   }
 
   useEffect(() => {
-    if (props.open) void load()
+    if (!props.open || !currentRow) {
+      loadSequence.current += 1
+      setRows([])
+      setIsLoading(false)
+      return
+    }
+    setRows([])
+    void load()
+    return () => {
+      loadSequence.current += 1
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.open, currentRow?.id, hours])
 

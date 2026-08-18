@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
@@ -16,11 +15,15 @@ func FetchCodexChannelModels(channel *model.Channel) ([]string, error) {
 	if channel == nil || channel.Type != constant.ChannelTypeCodex {
 		return nil, fmt.Errorf("channel type is not Codex")
 	}
-	if channel.ChannelInfo.IsMultiKey {
-		return nil, fmt.Errorf("codex channel does not support multi-key model discovery")
+	oauthKey, credentialIndex, err := selectCodexOAuthKey(channel)
+	if err != nil {
+		return nil, err
 	}
-
-	client, err := NewProxyHttpClient(channel.GetSetting().Proxy)
+	proxyURL, err := resolveCodexCredentialProxy(channel, credentialIndex)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewProxyHttpClient(proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -36,21 +39,18 @@ func FetchCodexChannelModels(channel *model.Channel) ([]string, error) {
 	if baseURL == "" {
 		baseURL = constant.ChannelBaseURLs[constant.ChannelTypeCodex]
 	}
-	return fetchCodexChannelModels(ctx, channel, baseURL, client, clientVersion)
+	return fetchCodexChannelModels(ctx, channel, oauthKey, credentialIndex, baseURL, client, clientVersion)
 }
 
 func fetchCodexChannelModels(
 	ctx context.Context,
 	channel *model.Channel,
+	oauthKey *CodexOAuthKey,
+	credentialIndex int,
 	baseURL string,
 	client *http.Client,
 	clientVersion string,
 ) ([]string, error) {
-	oauthKey, err := parseCodexOAuthKey(strings.TrimSpace(channel.Key))
-	if err != nil {
-		return nil, err
-	}
-
 	statusCode, models, err := FetchCodexModels(ctx, client, baseURL, oauthKey, clientVersion)
 	if err != nil {
 		return nil, err
@@ -62,7 +62,10 @@ func fetchCodexChannelModels(
 		refreshedKey, _, refreshErr := RefreshCodexChannelCredential(
 			ctx,
 			channel.Id,
-			CodexCredentialRefreshOptions{ResetCaches: true},
+			CodexCredentialRefreshOptions{
+				ResetCaches:     true,
+				CredentialIndex: &credentialIndex,
+			},
 		)
 		if refreshErr != nil {
 			return nil, fmt.Errorf("failed to refresh Codex channel credential: %w", refreshErr)

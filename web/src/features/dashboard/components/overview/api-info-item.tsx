@@ -64,7 +64,11 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
           <Tooltip>
             <TooltipTrigger
               render={
-                <span className='max-w-32 shrink-0 truncate font-mono text-xs font-medium sm:max-w-44' />
+                <button
+                  type='button'
+                  className='max-w-32 shrink-0 truncate font-mono text-xs font-medium outline-none focus-visible:underline sm:max-w-44'
+                  aria-label={`${route}: ${description}`}
+                />
               }
             >
               {route}

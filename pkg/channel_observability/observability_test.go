@@ -217,3 +217,23 @@ func TestRedisAggregateRestoresMillisecondSketchAndTTFTCount(t *testing.T) {
 	assert.Equal(t, int64(20), aggregate.TtftCount)
 	assert.Equal(t, int64(20), aggregate.TtftHistogram.SampleCount)
 }
+
+func TestQuantizeRedisSketchValuePreservesLongLatency(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int64
+		want  int64
+	}{
+		{name: "fine precision", input: 1234, want: 1230},
+		{name: "fine precision boundary", input: 60004, want: 60000},
+		{name: "medium precision after one minute", input: 61234, want: 61200},
+		{name: "coarse precision after ten minutes", input: 601499, want: 601000},
+		{name: "does not clip very long latency", input: 3723400, want: 3723000},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, quantizeRedisSketchValue(test.input))
+		})
+	}
+}
