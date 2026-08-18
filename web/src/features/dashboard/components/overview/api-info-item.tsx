@@ -23,6 +23,11 @@ import { CopyButton } from '@/components/copy-button'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   getLatencyColorClass,
   openExternalSpeedTest,
 } from '@/features/dashboard/lib/api-info'
@@ -48,24 +53,40 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
 
   if (props.compact) {
     return (
-      <div
-        className='group border-border/60 inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5'
-        title={[description || route, item.url].filter(Boolean).join('\n')}
-      >
+      <div className='group border-border/60 inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1'>
         <span
           className={cn(
             'inline-block size-1.5 shrink-0 rounded-full',
             getBgColorClass(item.color)
           )}
         />
-        <span className='max-w-24 truncate font-mono text-xs font-medium sm:max-w-28'>
-          {route}
-        </span>
-        {description && (
-          <span className='text-muted-foreground max-w-24 truncate text-[10px] sm:max-w-36'>
-            {description}
+        {description ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span className='max-w-32 shrink-0 truncate font-mono text-xs font-medium sm:max-w-44' />
+              }
+            >
+              {route}
+            </TooltipTrigger>
+            <TooltipContent>
+              <p className='max-w-xs break-words'>{description}</p>
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className='max-w-32 shrink-0 truncate font-mono text-xs font-medium sm:max-w-44'>
+            {route}
           </span>
         )}
+        <span className='text-muted-foreground/50 shrink-0' aria-hidden='true'>
+          |
+        </span>
+        <span
+          className='text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]'
+          title={item.url}
+        >
+          {item.url}
+        </span>
         {status.testing && (
           <StatusBadge
             label={t('Testing...')}

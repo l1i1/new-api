@@ -131,7 +131,7 @@ describe('API info item localization', () => {
     container.remove()
   })
 
-  test('compact items expose the node description and a copy action for the URL', async () => {
+  test('compact items expose the URL and a description tooltip', async () => {
     const item: ApiInfoItem = {
       route: 'Primary',
       description: 'Global acceleration',
@@ -165,7 +165,12 @@ describe('API info item localization', () => {
       )
     })
 
-    assert.equal(container.textContent?.includes('Global acceleration'), true)
+    assert.equal(container.textContent?.includes(item.url), true)
+    assert.equal(container.textContent?.includes('Global acceleration'), false)
+    assert.equal(
+      container.querySelector('[data-slot="tooltip-trigger"]')?.textContent,
+      item.route
+    )
     const copyButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Copy URL: Primary"]'
     )
