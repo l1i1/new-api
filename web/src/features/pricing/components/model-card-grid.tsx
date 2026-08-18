@@ -22,9 +22,21 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
 
-import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
+import {
+  DEFAULT_PRICING_PAGE_SIZE,
+  DEFAULT_TOKEN_UNIT,
+  PRICING_PAGE_SIZE_OPTIONS,
+} from '../constants'
 import type { PricingCurrency, PricingModel, TokenUnit } from '../types'
 import { ModelCard } from './model-card'
 import type { ModelPerfBadgeData } from './model-perf-badge'
@@ -43,7 +55,7 @@ export interface ModelCardGridProps {
 export function ModelCardGrid(props: ModelCardGridProps) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
-  const pageSize = DEFAULT_PRICING_PAGE_SIZE
+  const [pageSize, setPageSize] = useState(DEFAULT_PRICING_PAGE_SIZE)
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const totalPages = Math.max(1, Math.ceil(props.models.length / pageSize))
   const currentPage = Math.min(page, totalPages)
@@ -100,6 +112,40 @@ export function ModelCardGrid(props: ModelCardGridProps) {
             })}
           </p>
           <div className='flex items-center gap-2'>
+            <span className='text-muted-foreground hidden text-xs font-medium whitespace-nowrap sm:inline'>
+              {t('Rows per page')}
+            </span>
+            <Select
+              value={`${pageSize}`}
+              onValueChange={(value) => {
+                const nextPageSize = Number(value)
+                if (
+                  !PRICING_PAGE_SIZE_OPTIONS.some(
+                    (option) => option === nextPageSize
+                  )
+                ) {
+                  return
+                }
+                setPageSize(nextPageSize)
+                setPage(1)
+              }}
+            >
+              <SelectTrigger
+                className='h-8 w-[68px] font-medium tabular-nums'
+                aria-label={t('Rows per page')}
+              >
+                <SelectValue placeholder={pageSize} />
+              </SelectTrigger>
+              <SelectContent side='top' alignItemWithTrigger={false}>
+                <SelectGroup>
+                  {PRICING_PAGE_SIZE_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={`${option}`}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
             <Button
               type='button'
               variant='outline'
