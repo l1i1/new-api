@@ -22,6 +22,16 @@ import { describe, test } from 'node:test'
 import { getServerErrorMessageKey } from './server-error-message'
 
 describe('server error message mapping', () => {
+  test('maps email conflicts without relying on the server-localized message', () => {
+    assert.equal(
+      getServerErrorMessageKey({
+        code: 'user.email_already_taken',
+        message: '邮箱地址已被占用',
+      }),
+      'Email address is already in use'
+    )
+  })
+
   test('maps the active-session limit to recovery instructions', () => {
     const message = getServerErrorMessageKey({ code: 'AUTH_SESSION_LIMIT' })
 

@@ -1575,6 +1575,7 @@
     "Email": "メールアドレス",
     "Email (required for verification)": "メールアドレス（認証に必須）",
     "Email Address": "メールアドレス",
+    "Email address is already in use": "このメールアドレスはすでに使用されています。",
     "Email Alias Restriction": "メールエイリアスの制限",
     "Email bound successfully!": "メールが正常に紐付けられました！",
     "Email Domain Restriction": "メールドメインの制限",

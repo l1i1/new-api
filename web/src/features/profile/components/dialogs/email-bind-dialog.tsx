@@ -88,11 +88,9 @@ export function EmailBindDialog({
         startCountdown()
         setTurnstileToken('')
         setTurnstileWidgetKey((current) => current + 1)
-      } else {
-        toast.error(response.message || t('Failed to send verification code'))
       }
     } catch {
-      toast.error(t('Failed to send verification code'))
+      // Errors are handled by the global HTTP interceptor.
     } finally {
       setSendingCode(false)
     }
@@ -116,11 +114,9 @@ export function EmailBindDialog({
         setEmail('')
         setCode('')
         resetCountdown()
-      } else {
-        toast.error(response.message || t('Failed to bind email'))
       }
     } catch {
-      toast.error(t('Failed to bind email'))
+      // Errors are handled by the global HTTP interceptor.
     } finally {
       setLoading(false)
     }

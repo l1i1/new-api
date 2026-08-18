@@ -34,6 +34,26 @@ func providerParams(name string) map[string]any {
 	return map[string]any{"Provider": name}
 }
 
+// autoBindGitHubEmail fills an account's missing email from GitHub's verified
+// email endpoint. A conflict must not prevent the OAuth account from logging
+// in; the user can resolve it through the normal email binding flow.
+func autoBindGitHubEmail(user *model.User, oauthUser *oauth.OAuthUser) {
+	if user == nil || oauthUser == nil || user.Id == 0 || strings.TrimSpace(user.Email) != "" {
+		return
+	}
+	email := model.NormalizeEmail(oauthUser.Email)
+	if email == "" {
+		return
+	}
+	if err := model.BindEmailToUser(user, email); err != nil {
+		if errors.Is(err, model.ErrEmailAlreadyTaken) {
+			common.SysLog(fmt.Sprintf("[OAuth] email auto-bind skipped for user %d: address already belongs to another account", user.Id))
+			return
+		}
+		common.SysError(fmt.Sprintf("[OAuth] email auto-bind failed for user %d: %s", user.Id, err.Error()))
+	}
+}
+
 // GenerateOAuthCode generates a state code for OAuth CSRF protection
 func GenerateOAuthCode(c *gin.Context) {
 	var request oauthStateRequest
@@ -287,6 +307,9 @@ func handleOAuthBind(c *gin.Context, provider oauth.Provider, pendingFlow *model
 			return
 		}
 	}
+	if _, isGitHub := provider.(*oauth.GitHubProvider); isGitHub {
+		autoBindGitHubEmail(&user, oauthUser)
+	}
 
 	common.ApiSuccessI18n(c, i18n.MsgOAuthBindSuccess, gin.H{
 		"action": "bind",
@@ -307,6 +330,9 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 		if user.Id == 0 {
 			return nil, &OAuthUserDeletedError{}
 		}
+		if _, isGitHub := provider.(*oauth.GitHubProvider); isGitHub {
+			autoBindGitHubEmail(user, oauthUser)
+		}
 		return user, nil
 	}
 
@@ -324,6 +350,11 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 				if err := user.UpdateGitHubId(oauthUser.ProviderUserID); err != nil {
 					common.SysError(fmt.Sprintf("[OAuth] Failed to migrate user %d: %s", user.Id, err.Error()))
 					// Continue with login even if migration fails
+				}
+				// Keep the in-memory snapshot aligned before the email bind writes it.
+				user.GitHubId = oauthUser.ProviderUserID
+				if _, isGitHub := provider.(*oauth.GitHubProvider); isGitHub {
+					autoBindGitHubEmail(user, oauthUser)
 				}
 				return user, nil
 			}

@@ -597,6 +597,7 @@ export const STATIC_I18N_KEYS = [
   'Failed to load',
   'Expired at',
   'Cancelled at',
+  'Email address is already in use',
   'Too many active login sessions. On a device where you are already signed in, open Login sessions and use “Sign out other sessions” to revoke them. If you cannot access a signed-in device, reset your password to sign out all sessions.',
   'Too many login sessions were created recently. Please wait for the rolling window to pass, then try again.',
   'Telegram binding is disabled.',

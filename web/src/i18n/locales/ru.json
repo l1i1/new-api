@@ -1575,6 +1575,7 @@
     "Email": "Электронная почта",
     "Email (required for verification)": "Email (требуется для верификации)",
     "Email Address": "Адрес электронной почты",
+    "Email address is already in use": "Этот адрес электронной почты уже используется.",
     "Email Alias Restriction": "Ограничение по псевдониму Email",
     "Email bound successfully!": "Email успешно привязан!",
     "Email Domain Restriction": "Ограничение по домену Email",
