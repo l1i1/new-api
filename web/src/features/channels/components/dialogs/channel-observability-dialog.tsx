@@ -133,7 +133,7 @@ export function ChannelObservabilityDialog(
       description={t(
         'Requests, retries, cache behavior, p95 latency, and time to first token by model'
       )}
-      contentClassName='max-w-[min(96vw,1440px)]'
+      contentClassName='max-w-[min(96vw,1440px)] sm:max-w-[min(96vw,1440px)]'
       contentHeight='min(80vh, 760px)'
       bodyClassName='space-y-4'
     >
