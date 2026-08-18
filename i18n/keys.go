@@ -334,6 +334,7 @@ const (
 	MsgInvoiceEmailDeliveryFailed     = "invoice.email_delivery_failed"
 
 	MsgInvoiceEmailStatusSubject = "invoice.email.status_subject"
+	MsgInvoiceEmailStatusTitle   = "invoice.email.status_title"
 	MsgInvoiceEmailStatusBody    = "invoice.email.status_body"
 
 	MsgInvoiceStatusPending   = "invoice.status.pending"
@@ -378,4 +379,52 @@ const (
 	MsgCustomOAuthHasBindings       = "custom_oauth.has_bindings"
 	MsgCustomOAuthBindingNotFound   = "custom_oauth.binding_not_found"
 	MsgCustomOAuthProviderIdInvalid = "custom_oauth.provider_id_field_invalid"
+)
+
+// Branded email frame (shared header/signature/footer chrome)
+const (
+	MsgEmailFrameRegards      = "email.frame.regards"
+	MsgEmailFrameTeam         = "email.frame.team"
+	MsgEmailFrameSystemNotice = "email.frame.system_notice"
+	MsgEmailFrameCopyright    = "email.frame.copyright"
+)
+
+// Email notification templates (verification code / password reset)
+const (
+	MsgEmailVerificationSubject = "email.verification.subject"
+	MsgEmailVerificationTitle   = "email.verification.title"
+	MsgEmailVerificationBody    = "email.verification.body"
+
+	MsgEmailPasswordResetSubject = "email.password_reset.subject"
+	MsgEmailPasswordResetTitle   = "email.password_reset.title"
+	MsgEmailPasswordResetBody    = "email.password_reset.body"
+)
+
+// User notification templates (quota warning, channel status, tasks)
+const (
+	MsgNotifyQuotaExceedSubject             = "notify.quota_exceed.subject"
+	MsgNotifySubscriptionQuotaExceedSubject = "notify.subscription_quota_exceed.subject"
+	MsgNotifyQuotaExceedBody                = "notify.quota_exceed.body"
+	MsgNotifyQuotaExceedBodyBark            = "notify.quota_exceed.body_bark"
+	MsgNotifyQuotaExceedBodyGotify          = "notify.quota_exceed.body_gotify"
+
+	MsgNotifyChannelDisabledSubject = "notify.channel.disabled_subject"
+	MsgNotifyChannelDisabledBody    = "notify.channel.disabled_body"
+	MsgNotifyChannelEnabledSubject  = "notify.channel.enabled_subject"
+	MsgNotifyChannelEnabledBody     = "notify.channel.enabled_body"
+
+	MsgNotifyChannelTestSubject = "notify.channel_test.subject"
+	MsgNotifyChannelTestBody    = "notify.channel_test.body"
+
+	MsgNotifyUpstreamUpdateSubject               = "notify.upstream_update.subject"
+	MsgNotifyUpstreamUpdateSummary               = "notify.upstream_update.summary"
+	MsgNotifyUpstreamUpdateChannelDetailsHeader  = "notify.upstream_update.channel_details_header"
+	MsgNotifyUpstreamUpdateChannelDetailLine     = "notify.upstream_update.channel_detail_line"
+	MsgNotifyUpstreamUpdateChannelDetailsOmitted = "notify.upstream_update.channel_details_omitted"
+	MsgNotifyUpstreamUpdateAddModelsHeader       = "notify.upstream_update.add_models_header"
+	MsgNotifyUpstreamUpdateAddModelsOmitted      = "notify.upstream_update.add_models_omitted"
+	MsgNotifyUpstreamUpdateRemoveModelsHeader    = "notify.upstream_update.remove_models_header"
+	MsgNotifyUpstreamUpdateRemoveModelsOmitted   = "notify.upstream_update.remove_models_omitted"
+	MsgNotifyUpstreamUpdateFailedHeader          = "notify.upstream_update.failed_header"
+	MsgNotifyUpstreamUpdateFailedOmitted         = "notify.upstream_update.failed_omitted"
 )

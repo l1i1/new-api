@@ -70,7 +70,7 @@ restrict,command="/usr/local/sbin/tokeness-new-api-deploy" ssh-ed25519 ... token
 Install the reviewed command on every node with
 `bash deployment/tokeness/install-remote-command.sh`. The installer atomically
 replaces `/usr/local/sbin/tokeness-new-api-deploy`, verifies SHA-256, root
-ownership, mode `0755`, and command version `2026-08-17.3`. Fleet preflight
+ownership, mode `0755`, and command version `2026-08-17.4`. Fleet preflight
 rejects any node that reports another command version. The forced command
 permits only `verify` and `deploy ghcr.io/l1i1/new-api@sha256:<digest>`; it does
 not provide a general-purpose production shell.

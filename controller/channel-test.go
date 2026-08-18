@@ -16,6 +16,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -1058,7 +1059,11 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
 	summary := performChannelTests(ctx, selected, testUserID, allowDisable, report)
 	if notify && (ctx == nil || ctx.Err() == nil) {
-		service.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")
+		rootUser := model.GetRootUser()
+		lang := i18n.ResolveUserLang(rootUser.Id)
+		service.NotifyRootUser(dto.NotifyTypeChannelTest,
+			i18n.Translate(lang, i18n.MsgNotifyChannelTestSubject),
+			i18n.Translate(lang, i18n.MsgNotifyChannelTestBody))
 	}
 	return summary, nil
 }

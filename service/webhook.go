@@ -32,16 +32,12 @@ func generateSignature(secret string, payload []byte) string {
 
 // SendWebhookNotify 发送 webhook 通知
 func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error {
-	// 处理占位符
-	content := data.Content
-	for _, value := range data.Values {
-		content = fmt.Sprintf(content, value)
-	}
+	title, content := renderWebhookNotify(data)
 
 	// 构建 webhook 负载
 	payload := WebhookPayload{
 		Type:      data.Type,
-		Title:     data.Title,
+		Title:     title,
 		Content:   content,
 		Values:    data.Values,
 		Timestamp: time.Now().Unix(),
@@ -121,4 +117,18 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 	}
 
 	return nil
+}
+
+// renderWebhookNotify preserves the webhook Values formatting contract while
+// allowing newer callers to opt into structured template data.
+func renderWebhookNotify(data dto.Notify) (string, string) {
+	if data.TemplateData != nil {
+		return renderNotify(data)
+	}
+
+	content := data.Content
+	for _, value := range data.Values {
+		content = fmt.Sprintf(content, value)
+	}
+	return data.Title, content
 }

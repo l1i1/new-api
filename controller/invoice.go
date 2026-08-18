@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/mail"
@@ -14,7 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/shopspring/decimal"
 
 	"github.com/gin-gonic/gin"
@@ -593,25 +592,22 @@ func invoiceStatusLabelKey(status string) string {
 // language. Attachments are request-local and are never read from or written to
 // server storage.
 func sendInvoiceStatusEmail(inv *model.Invoice, statusLabelKey string, note string, attachments []common.EmailAttachment) error {
-	lang := model.GetUserLanguage(inv.UserId)
-	if lang == "" {
-		lang = i18n.DefaultLang
-	}
-	siteURL := strings.TrimRight(strings.TrimSpace(system_setting.ServerAddress), "/")
+	lang := i18n.ResolveUserLang(inv.UserId)
 	subject := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusSubject, map[string]any{
 		"SystemName": common.SystemName,
 		"Id":         inv.Id,
 	})
+	title := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusTitle)
 	statusLabel := i18n.Translate(lang, statusLabelKey)
-	body := i18n.Translate(lang, i18n.MsgInvoiceEmailStatusBody, map[string]any{
-		"SystemName": html.EscapeString(common.SystemName),
-		"SiteURL":    html.EscapeString(siteURL),
+	content := i18n.TranslateHTML(lang, i18n.MsgInvoiceEmailStatusBody, map[string]any{
+		"SystemName": common.SystemName,
 		"Id":         inv.Id,
 		"Amount":     inv.TotalAmount,
-		"Currency":   html.EscapeString(inv.Currency),
-		"Status":     html.EscapeString(statusLabel),
-		"Note":       strings.ReplaceAll(html.EscapeString(note), "\n", "<br>"),
+		"Currency":   inv.Currency,
+		"Status":     statusLabel,
+		"Note":       note,
 	})
+	body := service.RenderBrandedEmail(lang, title, content)
 	var err error
 	if len(attachments) > 0 {
 		err = common.SendEmailWithAttachments(subject, inv.Email, body, attachments)

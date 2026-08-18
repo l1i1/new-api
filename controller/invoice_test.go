@@ -31,6 +31,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -446,11 +448,14 @@ func TestCompleteIssueInvoiceRejectsOversizedAdminNote(t *testing.T) {
 
 func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	require.NoError(t, i18n.Init())
+	oldServerAddress := system_setting.ServerAddress
+	system_setting.ServerAddress = "https://tokeness.io"
+	defer func() { system_setting.ServerAddress = oldServerAddress }()
+
 	subjectKey := i18n.MsgInvoiceEmailStatusSubject
 	bodyKey := i18n.MsgInvoiceEmailStatusBody
 	args := map[string]any{
 		"SystemName": "Tokeness",
-		"SiteURL":    "https://tokeness.io",
 		"Id":         1,
 		"Amount":     100,
 		"Currency":   "CNY",
@@ -459,9 +464,15 @@ func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	}
 
 	enSubject := i18n.Translate(i18n.LangEn, subjectKey, args)
-	enBody := i18n.Translate(i18n.LangEn, bodyKey, args)
 	zhSubject := i18n.Translate(i18n.LangZhCN, subjectKey, args)
-	zhBody := i18n.Translate(i18n.LangZhCN, bodyKey, args)
+	// The branded frame carries the site link in its footer, so assert against
+	// the fully framed email the way sendInvoiceStatusEmail produces it.
+	enBody := service.RenderBrandedEmail(i18n.LangEn,
+		i18n.Translate(i18n.LangEn, i18n.MsgInvoiceEmailStatusTitle),
+		i18n.TranslateHTML(i18n.LangEn, bodyKey, args))
+	zhBody := service.RenderBrandedEmail(i18n.LangZhCN,
+		i18n.Translate(i18n.LangZhCN, i18n.MsgInvoiceEmailStatusTitle),
+		i18n.TranslateHTML(i18n.LangZhCN, bodyKey, args))
 
 	// The recipient-language rendering must differ between languages so the
 	// email is not silently sent in the operator's request language.
