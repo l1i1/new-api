@@ -224,6 +224,7 @@ func ApiErrorI18n(c *gin.Context, key string, args ...map[string]any) {
 	msg := TranslateMessage(c, key, args...)
 	c.JSON(http.StatusOK, gin.H{
 		"success": false,
+		"code":    key,
 		"message": msg,
 	})
 }

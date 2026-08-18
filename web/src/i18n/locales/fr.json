@@ -1575,6 +1575,7 @@
     "Email": "E-mail",
     "Email (required for verification)": "E-mail (requis pour la vérification)",
     "Email Address": "Adresse e-mail",
+    "Email address is already in use": "Cette adresse e-mail est déjà utilisée.",
     "Email Alias Restriction": "Restriction d'alias d'e-mail",
     "Email bound successfully!": "E-mail lié avec succès !",
     "Email Domain Restriction": "Restriction de domaine d'e-mail",

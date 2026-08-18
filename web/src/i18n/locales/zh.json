@@ -1575,6 +1575,7 @@
     "Email": "邮箱",
     "Email (required for verification)": "电子邮件（验证必需）",
     "Email Address": "电子邮件地址",
+    "Email address is already in use": "邮箱地址已被占用",
     "Email Alias Restriction": "电子邮件别名限制",
     "Email bound successfully!": "邮箱绑定成功！",
     "Email Domain Restriction": "电子邮件域限制",
