@@ -24,7 +24,7 @@ import {
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
 } from '../constants'
-import type { Channel } from '../types'
+import type { Channel, ChannelUpdatePayload } from '../types'
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   advancedCustomConfigUsesRelativeUpstreamPath,
@@ -33,41 +33,22 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import {
+  isStrictProxyURL,
+  parseMultiKeyCredentialText,
+  supportsLineOrientedMultiKeyCredentials,
+  toMultiKeyCredentialPayload,
+  type MultiKeyCredentialPayload,
+} from './multi-key-credentials'
 
 // ============================================================================
 // Form Validation Schema
 // ============================================================================
 
-const SUPPORTED_PROXY_PROTOCOLS = new Set([
-  'http:',
-  'https:',
-  'socks5:',
-  'socks5h:',
-])
-
 function isOptionalProxyURL(value: string | undefined): boolean {
   const trimmedValue = value?.trim() || ''
   if (!trimmedValue) return true
-
-  const schemeSeparatorIndex = trimmedValue.indexOf('://')
-  if (schemeSeparatorIndex <= 0) return false
-
-  const authorityAndSuffix = trimmedValue.slice(schemeSeparatorIndex + 3)
-  const suffixIndex = authorityAndSuffix.search(/[/?#]/)
-  if (suffixIndex >= 0 && authorityAndSuffix.slice(suffixIndex) !== '/') {
-    return false
-  }
-
-  try {
-    const parsedURL = new URL(trimmedValue)
-    return (
-      SUPPORTED_PROXY_PROTOCOLS.has(parsedURL.protocol) &&
-      Boolean(parsedURL.hostname) &&
-      parsedURL.port !== '0'
-    )
-  } catch {
-    return false
-  }
+  return isStrictProxyURL(trimmedValue)
 }
 
 export const HTTP_PROTOCOL_AUTO = 'auto'
@@ -361,19 +342,6 @@ export const channelFormSchema = z
       )
     }
 
-    if (
-      data.type === 41 &&
-      data.vertex_key_type === 'api_key' &&
-      data.multi_key_mode &&
-      data.multi_key_mode !== 'single'
-    ) {
-      addRequiredIssue(
-        ctx,
-        'multi_key_mode',
-        'Vertex AI API Key mode does not support batch creation'
-      )
-    }
-
     const protocol = normalizeHttpProtocol(data.http_protocol)
     const shards = data.http2_connection_shards ?? 1
     if (shards < 1 || shards > MAX_HTTP2_CONNECTION_SHARDS) {
@@ -487,8 +455,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -772,15 +739,27 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
   mode: 'single' | 'batch' | 'multi_to_single'
   multi_key_mode?: 'random' | 'polling' | 'affinity'
   batch_add_set_key_prefix_2_name?: boolean
+  multi_key_credentials?: MultiKeyCredentialPayload[]
   channel: Partial<Channel>
 } {
   const mode = formData.multi_key_mode || 'single'
+  const supportsMultiKeyText =
+    mode === 'multi_to_single' &&
+    supportsLineOrientedMultiKeyCredentials(
+      formData.type,
+      formData.vertex_key_type
+    )
+  const multiKeyCredentials = supportsMultiKeyText
+    ? toMultiKeyCredentialPayload(parseMultiKeyCredentialText(formData.key))
+    : undefined
 
   const channel: Partial<Channel> = {
     name: formData.name,
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
-    key: formData.key,
+    key: supportsMultiKeyText
+      ? multiKeyCredentials?.map((credential) => credential.secret).join('\n')
+      : formData.key,
     openai_organization: formData.openai_organization || null,
     models: formData.models,
     group: formatGroups(formData.group),
@@ -813,6 +792,9 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
       mode === 'multi_to_single' ? formData.multi_key_type : undefined,
     batch_add_set_key_prefix_2_name:
       mode === 'batch' ? formData.batch_add_set_key_prefix_2_name : undefined,
+    multi_key_credentials: supportsMultiKeyText
+      ? multiKeyCredentials
+      : undefined,
     channel,
   }
 }
@@ -822,8 +804,18 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
  */
 export function transformFormDataToUpdatePayload(
   formData: ChannelFormValues,
-  channelId: number
-): Partial<Channel> {
+  channelId: number,
+  options: { isMultiKeyChannel?: boolean } = {}
+): ChannelUpdatePayload {
+  const supportsMultiKeyText =
+    Boolean(options.isMultiKeyChannel) &&
+    supportsLineOrientedMultiKeyCredentials(
+      formData.type,
+      formData.vertex_key_type
+    )
+  const multiKeyCredentials = supportsMultiKeyText
+    ? toMultiKeyCredentialPayload(parseMultiKeyCredentialText(formData.key))
+    : undefined
   const payload: Partial<Channel> = {
     id: channelId,
     name: formData.name,
@@ -849,28 +841,42 @@ export function transformFormDataToUpdatePayload(
 
   // Only include key if it was changed (not empty)
   if (formData.key && formData.key.trim()) {
-    payload.key = formData.key
+    payload.key = supportsMultiKeyText
+      ? multiKeyCredentials?.map((credential) => credential.secret).join('\n')
+      : formData.key
+  }
+
+  const payloadWithCredentials = payload as ChannelUpdatePayload
+  if (supportsMultiKeyText && formData.key?.trim()) {
+    payloadWithCredentials.multi_key_credentials = multiKeyCredentials
+  }
+  if (options.isMultiKeyChannel && formData.key?.trim() && formData.key_mode) {
+    payloadWithCredentials.key_mode = formData.key_mode
   }
 
   // Clean up empty strings to null for optional fields
-  Object.keys(payload).forEach((key) => {
-    if (payload[key as keyof typeof payload] === '') {
-      ;(payload as Record<string, unknown>)[key] = null
+  Object.keys(payloadWithCredentials).forEach((key) => {
+    if (
+      payloadWithCredentials[key as keyof typeof payloadWithCredentials] === ''
+    ) {
+      ;(payloadWithCredentials as Record<string, unknown>)[key] = null
     }
   })
 
   // Send explicit empty strings for nullable fields so GORM updates can clear them.
-  payload.base_url = normalizeBaseUrl(formData.base_url) || ''
-  payload.openai_organization = formData.openai_organization || ''
-  payload.test_model = formData.test_model || ''
-  payload.tag = formData.tag || ''
-  payload.remark = formData.remark || ''
-  payload.model_mapping = formData.model_mapping || ''
-  payload.status_code_mapping = formData.status_code_mapping || ''
-  payload.param_override = formData.param_override || ''
-  payload.header_override = formData.header_override || ''
+  payloadWithCredentials.base_url = normalizeBaseUrl(formData.base_url) || ''
+  payloadWithCredentials.openai_organization =
+    formData.openai_organization || ''
+  payloadWithCredentials.test_model = formData.test_model || ''
+  payloadWithCredentials.tag = formData.tag || ''
+  payloadWithCredentials.remark = formData.remark || ''
+  payloadWithCredentials.model_mapping = formData.model_mapping || ''
+  payloadWithCredentials.status_code_mapping =
+    formData.status_code_mapping || ''
+  payloadWithCredentials.param_override = formData.param_override || ''
+  payloadWithCredentials.header_override = formData.header_override || ''
 
-  return payload
+  return payloadWithCredentials
 }
 
 // ============================================================================

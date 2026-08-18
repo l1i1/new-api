@@ -608,4 +608,7 @@ export const STATIC_I18N_KEYS = [
   'This user account is disabled.',
   'Telegram binding failed. Please try again.',
   'Verification scope is missing',
+  'Multi-key credentials are invalid',
+  'JSON credentials cannot use structured multi-key proxy input',
+  'Codex key append failed',
 ] as const

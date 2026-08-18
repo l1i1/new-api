@@ -125,6 +125,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     setting: true,
     subscription: true,
     invoice_admin: true,
+    system_info: true,
   },
 }
 

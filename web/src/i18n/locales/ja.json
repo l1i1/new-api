@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "2025 年 5 月 10 日以降に追加されたチャネルの場合、デプロイ時にモデル名から「.」を削除する必要はありません",
     "For private deployments, format: https://fastgpt.run/api/openapi": "プライベートデプロイメントの場合、形式: https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "複数キーのチャネルでは、1 行に 1 つのキーを入力します。任意のプロキシ URL は、そのキーの次の空白でない行に入力してください。それ以外の空白でない行はキーとして扱われます。",
     "Force a syntactically valid JSON response": "構文的に有効な JSON 応答を強制",
     "Force AUTH LOGIN": "AUTH LOGINを強制",
     "Force Format": "強制フォーマット",
@@ -5661,6 +5662,9 @@
     "Navigation title": "ナビゲーションタイトル",
     "Navigation URL": "ナビゲーション URL",
     "Custom navigation items require a title and a safe URL.": "カスタムナビゲーション項目にはタイトルと安全な URL が必要です。",
-    "Add navigation item": "ナビゲーション項目を追加"
+    "Add navigation item": "ナビゲーション項目を追加",
+    "Multi-key credentials are invalid": "複数キーの認証情報が無効です",
+    "JSON credentials cannot use structured multi-key proxy input": "JSON 認証情報では構造化された複数キーのプロキシ入力を使用できません",
+    "Codex key append failed": "Codex キーの追加に失敗しました"
   }
 }

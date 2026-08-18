@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Đối với các kênh được thêm sau ngày 10 tháng 5 năm 2025, không cần loại bỏ \".\" khỏi tên mô hình trong quá trình triển khai",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Đối với các triển khai riêng tư, định dạng: https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "Đối với kênh nhiều khóa, nhập mỗi khóa trên một dòng. Đặt URL proxy tùy chọn trên dòng không trống tiếp theo của khóa đó. Các dòng không trống khác được coi là khóa.",
     "Force a syntactically valid JSON response": "Buộc phản hồi JSON hợp lệ về cú pháp",
     "Force AUTH LOGIN": "Bắt buộc AUTH LOGIN",
     "Force Format": "Buộc định dạng",
@@ -5661,6 +5662,9 @@
     "Navigation title": "Tiêu đề điều hướng",
     "Navigation URL": "URL điều hướng",
     "Custom navigation items require a title and a safe URL.": "Mục điều hướng tùy chỉnh cần tiêu đề và URL an toàn.",
-    "Add navigation item": "Thêm mục điều hướng"
+    "Add navigation item": "Thêm mục điều hướng",
+    "Multi-key credentials are invalid": "Thông tin xác thực nhiều khóa không hợp lệ",
+    "JSON credentials cannot use structured multi-key proxy input": "Thông tin xác thực JSON không thể dùng dữ liệu nhập proxy nhiều khóa có cấu trúc",
+    "Codex key append failed": "Không thể thêm khóa Codex"
   }
 }

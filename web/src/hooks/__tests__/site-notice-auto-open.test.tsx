@@ -96,6 +96,13 @@ function NoticeProbe(props: AutoOpenOptions) {
       </button>
       <button
         type='button'
+        aria-label='close notifications today'
+        onClick={() => notifications.closeToday()}
+      >
+        Close notifications today
+      </button>
+      <button
+        type='button'
         aria-label='close site notice'
         onClick={() => notifications.setSiteNoticeOpen(false)}
       >
@@ -338,6 +345,39 @@ describe('notification popover automatic display', () => {
     assert.equal(
       useNotificationStore.getState().lastReadNotice,
       'Dashboard notice'
+    )
+
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: ['notice'] })
+    })
+    await waitForState(app.container, 'notification popover state', 'closed')
+
+    await destroyTestApp(app)
+  })
+
+  test('close today suppresses automatic notification reopening', async () => {
+    api.get = (async (url: string) => {
+      if (url === '/api/notice') {
+        return { data: { success: true, data: 'Dashboard notice' } }
+      }
+      throw new Error(`Unexpected API request: ${url}`)
+    }) as typeof api.get
+
+    const app = createTestApp({ autoOpenPopover: true })
+    await app.render()
+    await waitForState(app.container, 'notification popover state', 'open')
+
+    await act(async () => {
+      app.container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="close notifications today"]'
+        )
+        ?.click()
+    })
+    await waitForState(app.container, 'notification popover state', 'closed')
+    assert.equal(
+      useNotificationStore.getState().closedUntilDate,
+      new Date().toDateString()
     )
 
     await act(async () => {

@@ -23,6 +23,12 @@ Administrators cannot reliably compare a channel and model by request volume, at
 
 The channel list exposes an observability entry. A channel detail view groups metrics by requested and upstream model. The multi-key view shows only a fingerprint, status, masked proxy, last test result, latency, recent error, and 24-hour metrics. Administrators can test, enable, disable, and configure proxies for selected keys or the whole pool. Tests run as durable system tasks and can be observed until completion.
 
+When creating or editing a newline-based multi-key channel, administrators can
+enter an optional independent proxy directly below each key. A valid proxy line
+belongs only to the key immediately above it; every other non-empty line starts
+the next key. The same key/proxy line format is used when an authorized
+administrator reveals the saved credentials.
+
 ## Success criteria
 
 1. A retry from channel A to B produces an attempt sample for both channels and one final request outcome.
@@ -32,3 +38,6 @@ The channel list exposes an observability entry. A channel detail view groups me
 5. All keys disabled makes the channel unavailable; re-enabling a key restores channel selection and abilities.
 6. Per-key inherit/direct/custom proxy behavior is deterministic for HTTP, SSE, WebSocket, and async polling paths.
 7. Key tests never alter billing or user consume logs and never expose credentials.
+8. Creating, appending, replacing, and revealing newline-based multi-key
+   credentials preserve each key's optional independent proxy without storing a
+   proxy URL as a channel key.

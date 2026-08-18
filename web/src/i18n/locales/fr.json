@@ -2060,6 +2060,7 @@
     "footer.new\u0061pi.projectAttributionSuffix": "Tous droits réservés. Conçu et développé par les contributeurs du projet.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Pour les canaux ajoutés après le 10 mai 2025, pas besoin de supprimer \".\" des noms de modèles lors du déploiement",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Pour les déploiements privés, format : https://fastgpt.run/api/openapi",
+    "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "Pour les canaux à plusieurs clés, saisissez une clé par ligne. Placez l'URL de proxy facultative sur la ligne non vide suivante. Les autres lignes non vides sont traitées comme des clés.",
     "Force a syntactically valid JSON response": "Imposer une réponse JSON syntaxiquement valide",
     "Force AUTH LOGIN": "Forcer AUTH LOGIN",
     "Force Format": "Forcer le format",
@@ -5661,6 +5662,9 @@
     "Navigation title": "Titre de navigation",
     "Navigation URL": "URL de navigation",
     "Custom navigation items require a title and a safe URL.": "Les éléments de navigation personnalisés nécessitent un titre et une URL sûre.",
-    "Add navigation item": "Ajouter un élément de navigation"
+    "Add navigation item": "Ajouter un élément de navigation",
+    "Multi-key credentials are invalid": "Les identifiants multi-clés sont invalides",
+    "JSON credentials cannot use structured multi-key proxy input": "Les identifiants JSON ne peuvent pas utiliser une entrée de proxy multi-clés structurée",
+    "Codex key append failed": "Échec de l’ajout de clé Codex"
   }
 }

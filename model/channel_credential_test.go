@@ -24,7 +24,7 @@ func setupChannelCredentialSQLite(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
-	require.NoError(t, db.AutoMigrate(&Channel{}, &ChannelCredential{}, &ChannelCredentialRevision{}))
+	require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}, &ChannelCredential{}, &ChannelCredentialRevision{}))
 	t.Cleanup(func() {
 		DB = previousDB
 		common.SetMainDatabaseType(previousType)
@@ -129,6 +129,113 @@ func TestChannelCredentialProxyResolutionHonorsMode(t *testing.T) {
 
 	_, _, err = NormalizeChannelCredentialProxy(ChannelCredentialProxyModeCustom, "http://proxy.example.test/path")
 	assert.ErrorIs(t, err, ErrChannelCredentialProxyInvalid)
+}
+
+func TestParseMultiKeyCredentialTextPairsOnlyStrictProxyLines(t *testing.T) {
+	inputs, err := ParseMultiKeyCredentialText("key-a\n\nhttp://proxy-user:proxy-password@proxy-a.example.test:8080\nkey-b\nnot-a-proxy\nsocks5h://proxy-c.example.test:1080\n")
+	require.NoError(t, err)
+	require.Equal(t, []ChannelCredentialInput{
+		{Secret: "key-a", ProxyURL: "http://proxy-user:proxy-password@proxy-a.example.test:8080"},
+		{Secret: "key-b"},
+		{Secret: "not-a-proxy", ProxyURL: "socks5h://proxy-c.example.test:1080"},
+	}, inputs)
+}
+
+func TestStructuredMultiKeyCredentialsRejectEmbeddedLineSeparators(t *testing.T) {
+	for _, secret := range []string{
+		"key-a\nkey-b",
+		"key-a\rkey-b",
+		"key-a\u0085key-b",
+		"key-a\u2028key-b",
+		"key-a\u2029key-b",
+	} {
+		_, err := NormalizeMultiKeyCredentialInputs([]ChannelCredentialInput{{Secret: secret}})
+		assert.ErrorIs(t, err, ErrChannelCredentialInvalid)
+	}
+
+	db := setupChannelCredentialSQLite(t)
+	channel := &Channel{
+		Name:   "reject multiline secret",
+		Models: "test-model",
+		Group:  "default",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+	err := channel.InsertWithCredentialInputs([]ChannelCredentialInput{{Secret: "key-a\nkey-b"}})
+	assert.ErrorIs(t, err, ErrChannelCredentialInvalid)
+	var count int64
+	require.NoError(t, db.Model(&Channel{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestStructuredMultiKeyCredentialsPersistAndReconcileProxyPairs(t *testing.T) {
+	db := setupChannelCredentialSQLite(t)
+	channel := &Channel{
+		Name:   "structured credential channel",
+		Models: "test-model",
+		Group:  "default",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+	require.NoError(t, channel.InsertWithCredentialInputs([]ChannelCredentialInput{
+		{Secret: "key-a", ProxyURL: "http://proxy-a.example.test:8080"},
+		{Secret: "key-b"},
+	}))
+	require.Equal(t, "key-a\nkey-b", channel.Key)
+
+	credentials, err := ListChannelCredentials(db, channel.Id)
+	require.NoError(t, err)
+	require.Len(t, credentials, 2)
+	assert.Equal(t, ChannelCredentialProxyModeCustom, credentials[0].ProxyMode)
+	assert.Equal(t, "http://proxy-a.example.test:8080", credentials[0].ProxyURL)
+	assert.Equal(t, ChannelCredentialProxyModeInherit, credentials[1].ProxyMode)
+	firstID := credentials[0].Id
+	_, _, _, err = UpdateChannelCredentialProxy(db, channel.Id, credentials[1].Id, ChannelCredentialProxyModeDirect, "", 0)
+	require.NoError(t, err)
+
+	oldProxies, newProxies, err := channel.UpdateWithCredentialInputs([]ChannelCredentialInput{
+		{Secret: "key-c", ProxyURL: "socks5://proxy-c.example.test:1080"},
+	}, "append")
+	require.NoError(t, err)
+	assert.Contains(t, oldProxies, "http://proxy-a.example.test:8080")
+	assert.Contains(t, newProxies, "http://proxy-a.example.test:8080")
+	assert.Contains(t, newProxies, "socks5://proxy-c.example.test:1080")
+	require.Equal(t, "key-a\nkey-b\nkey-c", channel.Key)
+
+	credentials, err = ListChannelCredentials(db, channel.Id)
+	require.NoError(t, err)
+	require.Len(t, credentials, 3)
+	assert.Equal(t, firstID, credentials[0].Id)
+	assert.Equal(t, "http://proxy-a.example.test:8080", credentials[0].ProxyURL)
+	assert.Equal(t, ChannelCredentialProxyModeDirect, credentials[1].ProxyMode)
+
+	oldProxies, _, err = channel.UpdateWithCredentialInputs([]ChannelCredentialInput{
+		{Secret: "key-b"},
+		{Secret: "key-c", ProxyURL: "socks5://proxy-c.example.test:1080"},
+	}, "replace")
+	require.NoError(t, err)
+	assert.Contains(t, oldProxies, "http://proxy-a.example.test:8080")
+	require.Equal(t, "key-b\nkey-c", channel.Key)
+
+	credentials, err = ListChannelCredentials(db, channel.Id)
+	require.NoError(t, err)
+	require.Len(t, credentials, 3)
+	bySecret := make(map[string]ChannelCredential, len(credentials))
+	for _, credential := range credentials {
+		bySecret[credential.Secret] = credential
+	}
+	assert.Equal(t, ChannelCredentialProxyModeInherit, bySecret["key-b"].ProxyMode)
+	assert.Empty(t, bySecret["key-b"].ProxyURL)
+	assert.Equal(t, 0, bySecret["key-b"].Position)
+	assert.Equal(t, 1, bySecret["key-c"].Position)
+	assert.Equal(t, "socks5://proxy-c.example.test:1080", bySecret["key-c"].ProxyURL)
+	assert.Equal(t, -firstID, bySecret["key-a"].Position)
+
+	revealed, err := GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, "key-b\nkey-c\nsocks5://proxy-c.example.test:1080", FormatChannelKeyForReveal(revealed))
 }
 
 func TestMigrateLegacyChannelCredentialsPreservesIdentityAcrossReorderAndRemoval(t *testing.T) {

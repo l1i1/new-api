@@ -145,3 +145,6 @@ export type ViewMode = (typeof VIEW_MODES)[keyof typeof VIEW_MODES]
 
 /** Default page size for pricing table */
 export const DEFAULT_PRICING_PAGE_SIZE = 20
+
+/** Page size options shared by pricing views */
+export const PRICING_PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50, 100] as const

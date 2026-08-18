@@ -495,9 +495,20 @@ export interface ChannelFormData {
 // Add Channel Request (special structure)
 // ============================================================================
 
+export interface MultiKeyCredentialPayload {
+  secret: string
+  proxy_url?: string
+}
+
 export interface AddChannelRequest {
   mode: 'single' | 'batch' | 'multi_to_single'
   multi_key_mode?: 'random' | 'polling' | 'affinity'
   batch_add_set_key_prefix_2_name?: boolean
+  multi_key_credentials?: MultiKeyCredentialPayload[]
   channel: Partial<Channel>
+}
+
+export type ChannelUpdatePayload = Partial<Channel> & {
+  key_mode?: 'append' | 'replace'
+  multi_key_credentials?: MultiKeyCredentialPayload[]
 }

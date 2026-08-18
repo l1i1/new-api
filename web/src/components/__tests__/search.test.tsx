@@ -59,11 +59,22 @@ for (const key of domGlobals) {
   })
 }
 
+Object.defineProperty(domWindow, 'matchMedia', {
+  configurable: true,
+  value: () => ({
+    matches: false,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }),
+})
+
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
+const { ThemeProvider } = await import('@/context/theme-provider')
 const { SearchButton } = await import('../search')
+const { ThemeSwitch } = await import('../theme-switch')
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -107,12 +118,55 @@ describe('search trigger', () => {
     assert.ok(searchButton)
     assert.equal(searchButton.getAttribute('title'), 'Search')
     assert.equal(searchButton.querySelector('svg') !== null, true)
-    assert.equal(searchButton.classList.contains('size-8'), true)
+    assert.equal(searchButton.classList.contains('size-9'), true)
+    assert.equal(searchButton.classList.contains('border-border'), false)
+    assert.equal(searchButton.classList.contains('bg-background'), false)
 
     await act(async () => searchButton.click())
     assert.equal(opened, true)
 
     await act(async () => root.unmount())
     container.remove()
+  })
+
+  test('cycles light, dark, and system modes from one accessible button', async () => {
+    document.body.replaceChildren()
+    document.cookie = 'vite-ui-theme=; path=/; max-age=0'
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <I18nextProvider i18n={i18n}>
+          <ThemeProvider defaultTheme='light'>
+            <ThemeSwitch />
+          </ThemeProvider>
+        </I18nextProvider>
+      )
+    })
+
+    const themeButton = container.querySelector<HTMLButtonElement>('button')
+    assert.ok(themeButton)
+    assert.equal(themeButton.getAttribute('aria-label'), 'Theme: Light')
+    assert.equal(themeButton.getAttribute('title'), 'Theme: Light')
+    assert.ok(themeButton.querySelector('svg.lucide-sun'))
+    assert.equal(container.querySelector('[role="menu"]'), null)
+
+    await act(async () => themeButton.click())
+    assert.equal(themeButton.getAttribute('aria-label'), 'Theme: Dark')
+    assert.ok(themeButton.querySelector('svg.lucide-moon'))
+
+    await act(async () => themeButton.click())
+    assert.equal(themeButton.getAttribute('aria-label'), 'Theme: System')
+    assert.ok(themeButton.querySelector('svg.lucide-monitor'))
+
+    await act(async () => themeButton.click())
+    assert.equal(themeButton.getAttribute('aria-label'), 'Theme: Light')
+    assert.ok(themeButton.querySelector('svg.lucide-sun'))
+
+    await act(async () => root.unmount())
+    container.remove()
+    document.cookie = 'vite-ui-theme=; path=/; max-age=0'
   })
 })
