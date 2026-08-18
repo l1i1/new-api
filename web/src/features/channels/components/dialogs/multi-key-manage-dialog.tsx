@@ -26,7 +26,7 @@ import {
   Square,
   Trash2,
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -146,18 +146,52 @@ export function MultiKeyManageDialog({
     []
   )
   const [proxyBatch, setProxyBatch] = useState(false)
+  const activeChannelId = useRef<number | null>(null)
+  const loadSequence = useRef(0)
+
+  const resetChannelState = () => {
+    setIsLoading(false)
+    setKeys([])
+    setCurrentPage(1)
+    setPageSize(10)
+    setTotal(0)
+    setTotalPages(0)
+    setEnabledCount(0)
+    setManualDisabledCount(0)
+    setAutoDisabledCount(0)
+    setKeysRevision(undefined)
+    setStatusFilter(null)
+    setConfirmAction(null)
+    setIsPerformingAction(false)
+    setIsTestingKeys(false)
+    setTestTaskId(null)
+    setTestResults({})
+    setFailedCredentialIds([])
+    setFailedOnly(false)
+    setKeyMetrics({})
+    setProxyTarget(null)
+    setProxyMode('inherit')
+    setProxyUrl('')
+    setIsSavingProxy(false)
+    setSelectedCredentialIds([])
+    setProxyBatch(false)
+  }
+
+  const isCurrentChannel = (channelId: number) =>
+    activeChannelId.current === channelId
 
   // Reset and load data when dialog opens
   useEffect(() => {
     if (open && currentRow) {
-      setCurrentPage(1)
-      setStatusFilter(null)
-      setSelectedCredentialIds([])
-      setTestResults({})
-      setFailedCredentialIds([])
-      setFailedOnly(false)
-      loadKeyStatus(1, pageSize, null)
+      activeChannelId.current = currentRow.id
+      loadSequence.current += 1
+      resetChannelState()
+      void loadKeyStatus(1, 10, null)
+      return
     }
+    activeChannelId.current = null
+    loadSequence.current += 1
+    resetChannelState()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, currentRow?.id])
 
@@ -166,17 +200,22 @@ export function MultiKeyManageDialog({
     size: number = pageSize,
     status: number | null = statusFilter
   ) => {
-    if (!currentRow) return
+    const channelId = currentRow?.id
+    if (!channelId) return
+    const requestSequence = ++loadSequence.current
+    const isCurrentLoad = () =>
+      isCurrentChannel(channelId) && loadSequence.current === requestSequence
 
     setIsLoading(true)
     try {
       const response = await getMultiKeyStatus(
-        currentRow.id,
+        channelId,
         page,
         size,
         status === null ? undefined : status
       )
 
+      if (!isCurrentLoad()) return
       if (response.success && response.data) {
         setKeys(response.data.keys || [])
         setTotal(response.data.total || 0)
@@ -188,23 +227,23 @@ export function MultiKeyManageDialog({
         setAutoDisabledCount(response.data.auto_disabled_count || 0)
         setKeysRevision(response.data.keys_revision)
         try {
-          const metricsItems = await getAllChannelObservability(
-            currentRow.id,
-            24
-          )
+          const metricsItems = await getAllChannelObservability(channelId, 24)
+          if (!isCurrentLoad()) return
           setKeyMetrics(aggregateMultiKeyObservability(metricsItems))
         } catch {
+          if (!isCurrentLoad()) return
           setKeyMetrics({})
         }
       } else {
         toast.error(response.message || t('Failed to load key status'))
       }
     } catch (error: unknown) {
+      if (!isCurrentLoad()) return
       toast.error(
         error instanceof Error ? error.message : t('Failed to load key status')
       )
     } finally {
-      setIsLoading(false)
+      if (isCurrentLoad()) setIsLoading(false)
     }
   }
 
@@ -222,6 +261,8 @@ export function MultiKeyManageDialog({
 
   const performAction = async () => {
     if (!confirmAction || !currentRow) return
+    const channelId = currentRow.id
+    if (!isCurrentChannel(channelId)) return
     if (
       !canEditSensitive &&
       (confirmAction.type === 'delete' ||
@@ -238,25 +279,26 @@ export function MultiKeyManageDialog({
 
       // Execute the appropriate action
       if (type === 'enable-selected' || type === 'disable-selected') {
-        response = await updateMultiKeyStatus(currentRow.id, {
+        response = await updateMultiKeyStatus(channelId, {
           credential_ids: confirmAction.credentialIds,
           status: type === 'enable-selected' ? 'enabled' : 'manual_disabled',
           keys_revision: keysRevision,
         })
       } else if (type === 'enable' && keyIndex !== undefined) {
-        response = await enableMultiKey(currentRow.id, keyIndex)
+        response = await enableMultiKey(channelId, keyIndex)
       } else if (type === 'disable' && keyIndex !== undefined) {
-        response = await disableMultiKey(currentRow.id, keyIndex)
+        response = await disableMultiKey(channelId, keyIndex)
       } else if (type === 'delete' && keyIndex !== undefined) {
-        response = await deleteMultiKey(currentRow.id, keyIndex)
+        response = await deleteMultiKey(channelId, keyIndex)
       } else if (type === 'enable-all') {
-        response = await enableAllMultiKeys(currentRow.id)
+        response = await enableAllMultiKeys(channelId)
       } else if (type === 'disable-all') {
-        response = await disableAllMultiKeys(currentRow.id)
+        response = await disableAllMultiKeys(channelId)
       } else if (type === 'delete-disabled') {
-        response = await deleteDisabledMultiKeys(currentRow.id)
+        response = await deleteDisabledMultiKeys(channelId)
       }
 
+      if (!isCurrentChannel(channelId)) return
       if (response?.success) {
         toast.success(response.message || t('Operation successful'))
         queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
@@ -276,17 +318,22 @@ export function MultiKeyManageDialog({
         toast.error(response?.message || t('Operation failed'))
       }
     } catch (error: unknown) {
+      if (!isCurrentChannel(channelId)) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
     } finally {
-      setIsPerformingAction(false)
-      setConfirmAction(null)
+      if (isCurrentChannel(channelId)) {
+        setIsPerformingAction(false)
+        setConfirmAction(null)
+      }
     }
   }
 
   const runKeyTest = async (all: boolean) => {
     if (!currentRow || isTestingKeys) return
+    const channelId = currentRow.id
+    if (!isCurrentChannel(channelId)) return
     setIsTestingKeys(true)
     try {
       let selectedIds: number[] | undefined
@@ -302,7 +349,7 @@ export function MultiKeyManageDialog({
         toast.error(t('Select at least one key'))
         return
       }
-      const response = await testMultiKeys(currentRow.id, {
+      const response = await testMultiKeys(channelId, {
         all,
         include_disabled: all,
         credential_ids: all ? undefined : selectedIds,
@@ -310,16 +357,19 @@ export function MultiKeyManageDialog({
         timeout: 60,
       })
       if (!response.success) {
+        if (!isCurrentChannel(channelId)) return
         toast.error(response.message || t('Operation failed'))
         return
       }
       const taskId = response.data?.task_id
       if (!taskId) {
+        if (!isCurrentChannel(channelId)) return
         toast.error(t('Operation failed'))
         return
       }
+      if (!isCurrentChannel(channelId)) return
       setTestTaskId(taskId)
-      let taskResponse = await getMultiKeyTestTask(currentRow.id, taskId)
+      let taskResponse = await getMultiKeyTestTask(channelId, taskId)
       const deadline = Date.now() + 120_000
       while (
         taskResponse.data &&
@@ -328,8 +378,10 @@ export function MultiKeyManageDialog({
         Date.now() < deadline
       ) {
         await new Promise((resolve) => window.setTimeout(resolve, 500))
-        taskResponse = await getMultiKeyTestTask(currentRow.id, taskId)
+        if (!isCurrentChannel(channelId)) return
+        taskResponse = await getMultiKeyTestTask(channelId, taskId)
       }
+      if (!isCurrentChannel(channelId)) return
       const results = taskResponse.data?.result?.results || []
       const nextResults: Record<number, MultiKeyTestResult> = {}
       const nextFailedCredentialIds: number[] = []
@@ -350,21 +402,28 @@ export function MultiKeyManageDialog({
       }
       await loadKeyStatus(1, pageSize, statusFilter)
     } catch (error: unknown) {
+      if (!isCurrentChannel(channelId)) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
     } finally {
-      setTestTaskId(null)
-      setIsTestingKeys(false)
+      if (isCurrentChannel(channelId)) {
+        setTestTaskId(null)
+        setIsTestingKeys(false)
+      }
     }
   }
 
   const stopKeyTest = async () => {
     if (!currentRow || !testTaskId) return
+    const channelId = currentRow.id
+    if (!isCurrentChannel(channelId)) return
     try {
-      await cancelMultiKeyTestTask(currentRow.id, testTaskId)
+      await cancelMultiKeyTestTask(channelId, testTaskId)
+      if (!isCurrentChannel(channelId)) return
       toast.success(t('Stop requested'))
     } catch (error: unknown) {
+      if (!isCurrentChannel(channelId)) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
@@ -373,6 +432,8 @@ export function MultiKeyManageDialog({
 
   const disableFailedKeys = async () => {
     if (!currentRow) return
+    const channelId = currentRow.id
+    if (!isCurrentChannel(channelId)) return
     const failedIds = failedCredentialIds
     if (failedIds.length === 0) {
       toast.error(t('No failed keys'))
@@ -380,7 +441,7 @@ export function MultiKeyManageDialog({
     }
     setIsPerformingAction(true)
     try {
-      const response = await updateMultiKeyStatus(currentRow.id, {
+      const response = await updateMultiKeyStatus(channelId, {
         credential_ids: failedIds,
         status: 'manual_disabled',
         reason: 'failed credential test',
@@ -389,14 +450,16 @@ export function MultiKeyManageDialog({
       if (!response.success) {
         throw new Error(response.message || t('Operation failed'))
       }
+      if (!isCurrentChannel(channelId)) return
       toast.success(t('Disabled {{count}} keys', { count: failedIds.length }))
       await loadKeyStatus(currentPage, pageSize, statusFilter)
     } catch (error: unknown) {
+      if (!isCurrentChannel(channelId)) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
     } finally {
-      setIsPerformingAction(false)
+      if (isCurrentChannel(channelId)) setIsPerformingAction(false)
     }
   }
 
@@ -426,15 +489,18 @@ export function MultiKeyManageDialog({
 
   const saveProxy = async () => {
     if (!currentRow || (!proxyTarget?.credential_id && !proxyBatch)) return
+    const channelId = currentRow.id
+    if (!isCurrentChannel(channelId)) return
     setIsSavingProxy(true)
     try {
-      const response = await updateMultiKeyProxy(currentRow.id, {
+      const response = await updateMultiKeyProxy(channelId, {
         credential_id: proxyBatch ? undefined : proxyTarget?.credential_id,
         credential_ids: proxyBatch ? selectedCredentialIds : undefined,
         proxy_mode: proxyMode,
         proxy_url: proxyMode === 'custom' ? proxyUrl : undefined,
         keys_revision: keysRevision,
       })
+      if (!isCurrentChannel(channelId)) return
       if (!response.success) {
         toast.error(response.message || t('Operation failed'))
         return
@@ -443,11 +509,12 @@ export function MultiKeyManageDialog({
       setProxyTarget(null)
       await loadKeyStatus(currentPage, pageSize, statusFilter)
     } catch (error: unknown) {
+      if (!isCurrentChannel(channelId)) return
       toast.error(
         error instanceof Error ? error.message : t('Operation failed')
       )
     } finally {
-      setIsSavingProxy(false)
+      if (isCurrentChannel(channelId)) setIsSavingProxy(false)
     }
   }
 

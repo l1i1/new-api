@@ -171,6 +171,16 @@ describe('API info item localization', () => {
       container.querySelector('[data-slot="tooltip-trigger"]')?.textContent,
       item.route
     )
+    const descriptionTrigger = container.querySelector<HTMLButtonElement>(
+      'button[data-slot="tooltip-trigger"]'
+    )
+    assert.ok(descriptionTrigger)
+    await act(async () => descriptionTrigger.focus())
+    assert.equal(document.activeElement, descriptionTrigger)
+    assert.equal(
+      descriptionTrigger.getAttribute('aria-label'),
+      'Primary: Global acceleration'
+    )
     const copyButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Copy URL: Primary"]'
     )

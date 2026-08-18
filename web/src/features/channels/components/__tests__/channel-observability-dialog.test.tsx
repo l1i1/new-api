@@ -76,26 +76,32 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-function DialogHarness() {
+function DialogHarness({ channelId = 93 }: { channelId?: number }) {
   const { setCurrentRow } = useChannels()
 
   useEffect(() => {
-    setCurrentRow({ id: 93 } as Channel)
-  }, [setCurrentRow])
+    setCurrentRow({ id: channelId } as Channel)
+  }, [channelId, setCurrentRow])
 
   return <ChannelObservabilityDialog open onOpenChange={() => undefined} />
 }
 
-function MultiKeyDialogHarness() {
+function MultiKeyDialogHarness({
+  channelId = 94,
+  name = 'Multi-key channel',
+}: {
+  channelId?: number
+  name?: string
+}) {
   const { setCurrentRow } = useChannels()
 
   useEffect(() => {
     setCurrentRow({
-      id: 94,
-      name: 'Multi-key channel',
+      id: channelId,
+      name,
       channel_info: { multi_key_mode: 'random' },
     } as Channel)
-  }, [setCurrentRow])
+  }, [channelId, name, setCurrentRow])
 
   return <MultiKeyManageDialog open onOpenChange={() => undefined} />
 }
@@ -214,6 +220,172 @@ describe('channel observability dialog layout', () => {
       true
     )
     assert.equal(content.classList.contains('sm:max-w-2xl'), false)
+
+    await act(async () => root.unmount())
+    queryClient.clear()
+  })
+
+  test('ignores an older channel response after switching channels', async () => {
+    let resolveChannelA!: (value: unknown) => void
+    let resolveChannelB!: (value: unknown) => void
+    const channelA = new Promise((resolve) => {
+      resolveChannelA = resolve
+    })
+    const channelB = new Promise((resolve) => {
+      resolveChannelB = resolve
+    })
+    api.get = (async (_url: string, config?: { params?: { channel_id?: number } }) => {
+      return {
+        data: await (config?.params?.channel_id === 93 ? channelA : channelB),
+      }
+    }) as typeof api.get
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const response = (model: string) => ({
+      success: true,
+      data: {
+        items: [
+          {
+            requested_model: model,
+            upstream_model: model,
+            group: 'default',
+            protocol: 'openai',
+            credential_id: 0,
+            request_count: 1,
+            request_success_count: 1,
+            request_success_rate: 100,
+            attempt_count: 1,
+            attempt_success_rate: 100,
+            cache_hit_rate: 0,
+            p95_latency_ms: 123,
+            p95_ttft_ms: 10,
+            sample_coverage: 100,
+            sample_sufficient: true,
+            usage_sufficient: false,
+            ttft_available: false,
+          },
+        ],
+        page: 1,
+        page_size: 200,
+        total: 1,
+        total_pages: 1,
+      },
+    })
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ChannelsProvider>
+              <DialogHarness channelId={93} />
+            </ChannelsProvider>
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+    await act(async () => {})
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ChannelsProvider>
+              <DialogHarness channelId={94} />
+            </ChannelsProvider>
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+    await act(async () => {})
+    resolveChannelB(response('model-b'))
+    await act(async () => {})
+    resolveChannelA(response('model-a'))
+    await act(async () => {})
+
+    assert.equal(document.body.textContent?.includes('model-b'), true)
+    assert.equal(document.body.textContent?.includes('model-a'), false)
+
+    await act(async () => root.unmount())
+    queryClient.clear()
+  })
+
+  test('clears key rows and ignores a stale multi-key response after channel switch', async () => {
+    let resolveChannelA!: (value: unknown) => void
+    let resolveChannelB!: (value: unknown) => void
+    const channelA = new Promise((resolve) => {
+      resolveChannelA = resolve
+    })
+    const channelB = new Promise((resolve) => {
+      resolveChannelB = resolve
+    })
+    api.get = (async (url: string) => ({
+      data: await (url.includes('/channel/94/multi-key')
+        ? channelA
+        : channelB),
+    })) as typeof api.get
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const keyStatus = {
+      success: true,
+      data: {
+        keys: [
+          {
+            credential_id: 41,
+            index: 0,
+            fingerprint: 'channel-a-key',
+            status: 1,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 10,
+        total_pages: 1,
+        enabled_count: 1,
+        manual_disabled_count: 0,
+        auto_disabled_count: 0,
+      },
+    }
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ChannelsProvider>
+              <MultiKeyDialogHarness channelId={94} name='Channel A' />
+            </ChannelsProvider>
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+    await act(async () => {})
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ChannelsProvider>
+              <MultiKeyDialogHarness channelId={95} name='Channel B' />
+            </ChannelsProvider>
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+    await act(async () => {})
+    resolveChannelB({ success: false, message: 'Channel B unavailable' })
+    await act(async () => {})
+    resolveChannelA(keyStatus)
+    await act(async () => {})
+
+    assert.equal(document.body.textContent?.includes('Channel B'), true)
+    assert.equal(document.body.textContent?.includes('channel-a-key'), false)
 
     await act(async () => root.unmount())
     queryClient.clear()

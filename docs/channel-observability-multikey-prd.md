@@ -36,8 +36,12 @@ administrator reveals the saved credentials.
 3. Cache rates exclude requests without reliable cache usage fields.
 4. Key deletion/reordering cannot attach a historical test or metric to another key.
 5. All keys disabled makes the channel unavailable; re-enabling a key restores channel selection and abilities.
-6. Per-key inherit/direct/custom proxy behavior is deterministic for HTTP, SSE, WebSocket, and async polling paths.
+6. Per-key inherit/direct/custom proxy behavior is deterministic for HTTP, SSE, WebSocket, async polling, Codex model discovery, and credential refresh paths.
 7. Key tests never alter billing or user consume logs and never expose credentials.
 8. Creating, appending, replacing, and revealing newline-based multi-key
    credentials preserve each key's optional independent proxy without storing a
    proxy URL as a channel key.
+9. Long-running samples retain a distinguishable P95 value; an active Redis
+   bucket must never collapse every latency above 60 seconds into `60000 ms`.
+10. Codex JSON multi-key credentials preserve their JSON representation across
+    partial updates, refresh, and model discovery.

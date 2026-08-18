@@ -15,11 +15,25 @@
 - Cache hit rate is cache-hit requests divided by cache-observable requests.
 - Cache token rate is cache-read tokens divided by normalized input tokens.
 - TTFT is the first actual downstream content flush; upstream FRT is the first upstream data event.
-- P95 is computed by merging fixed histogram buckets: 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000 ms, plus overflow.
+- P95 is computed from the mergeable quantile sketch when available, with the
+  fixed histogram buckets (10, 25, 50, 100, 250, 500, 1000, 2500, 5000,
+  10000, 30000, 60000 ms, plus overflow) retained as a compatibility fallback.
+  Active Redis buckets quantize samples by latency band to bound hash-field
+  growth, but never clip all values above 60000 ms to that value.
 
 ## Observation pipeline
 
 Relay attempts emit a lightweight observation lifecycle. In-process buckets are updated synchronously; Redis stores the current bucket; completed buckets are persisted to the main database. Queries merge persisted buckets and Redis active buckets. Metric failures are logged and sampled but never fail an API request.
+
+Codex JSON multi-key credentials are an ordered JSON array. Partial updates
+derive the channel type and JSON representation from the persisted channel when
+the request omits unchanged fields. Refresh and model discovery parse the same
+array representation and preserve its order and objects when replacing a
+refreshed credential. Both operations resolve the selected credential's
+inherit/direct/custom proxy policy. A refresh writes the channel JSON and every
+affected credential secret/fingerprint in one transaction; its conditional
+channel-key update rejects a concurrent administrator edit rather than
+overwriting it.
 
 ## Key testing
 

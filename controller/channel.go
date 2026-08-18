@@ -1184,8 +1184,8 @@ func UpdateChannel(c *gin.Context) {
 
 	var credentialInputs []model.ChannelCredentialInput
 	structuredCredentialUpdate := false
+	effectiveChannel := effectiveChannelForCredentialParsing(&channel, originChannel, requestData)
 	if channel.ChannelInfo.IsMultiKey {
-		effectiveChannel := effectiveChannelForCredentialParsing(&channel, originChannel, requestData)
 		usesJSONCredentials := usesLegacyJSONMultiKeyCredentials(effectiveChannel)
 		if channel.MultiKeyCredentials != nil {
 			if usesJSONCredentials {
@@ -1224,7 +1224,7 @@ func UpdateChannel(c *gin.Context) {
 		switch *channel.KeyMode {
 		case "append":
 			// 追加模式：将新密钥添加到现有密钥列表
-			if channel.Type != constant.ChannelTypeCodex && originChannel.Key != "" {
+			if effectiveChannel.Type != constant.ChannelTypeCodex && originChannel.Key != "" {
 				var newKeys []string
 				var existingKeys []string
 
@@ -1244,7 +1244,7 @@ func UpdateChannel(c *gin.Context) {
 				}
 
 				// 处理 Vertex AI 的特殊情况
-				if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
+				if effectiveChannel.Type == constant.ChannelTypeVertexAi && effectiveChannel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
 					// 尝试解析新密钥为JSON数组
 					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
 						array, err := getVertexArrayKeys(channel.Key)
@@ -1293,9 +1293,32 @@ func UpdateChannel(c *gin.Context) {
 				}
 
 				allKeys := append(existingKeys, dedupedNewKeys...)
-				channel.Key = strings.Join(allKeys, "\n")
+				if usesLegacyJSONMultiKeyCredentials(effectiveChannel) {
+					jsonKeys := make([]json.RawMessage, 0, len(allKeys))
+					for _, key := range allKeys {
+						if !json.Valid([]byte(key)) {
+							c.JSON(http.StatusOK, gin.H{
+								"success": false,
+								"message": "JSON multi-key append requires valid JSON credentials",
+							})
+							return
+						}
+						jsonKeys = append(jsonKeys, json.RawMessage(key))
+					}
+					encoded, marshalErr := common.Marshal(jsonKeys)
+					if marshalErr != nil {
+						c.JSON(http.StatusOK, gin.H{
+							"success": false,
+							"message": "JSON multi-key append encoding failed",
+						})
+						return
+					}
+					channel.Key = string(encoded)
+				} else {
+					channel.Key = strings.Join(allKeys, "\n")
+				}
 			}
-			if channel.Type == constant.ChannelTypeCodex {
+			if effectiveChannel.Type == constant.ChannelTypeCodex {
 				merged, mergeErr := mergeCodexMultiKeyCredentials(originChannel.Key, channel.Key)
 				if mergeErr != nil {
 					c.JSON(http.StatusOK, gin.H{
