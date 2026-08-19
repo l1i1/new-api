@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -506,6 +507,30 @@ func TestBillingSessionReserveWalletTopUpDecrementsBalance(t *testing.T) {
 	userQuota, err := model.GetUserQuota(userID, false)
 	require.NoError(t, err)
 	assert.Equal(t, 450_000, userQuota)
+}
+
+func TestBillingSessionPreConsumeReportsAuthoritativeWalletBalance(t *testing.T) {
+	truncate(t)
+
+	const userID = 703
+	seedUser(t, userID, 20_000)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		UserId:         userID,
+		IsPlayground:   true,
+		TokenUnlimited: true,
+	}
+	session := &BillingSession{
+		relayInfo: relayInfo,
+		funding:   &WalletFunding{userId: userID},
+	}
+
+	apiErr := session.preConsume(c, 30_000)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, types.ErrorCodeInsufficientUserQuota, apiErr.GetErrorCode())
+	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Error(), "用户剩余额度")
+	assert.Contains(t, apiErr.Error(), "需要预扣费额度")
 }
 
 func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {

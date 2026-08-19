@@ -215,8 +215,13 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.tokenConsumed = 0
 		}
 		if errors.Is(err, model.ErrInsufficientUserQuota) {
+			message := "预扣费额度失败, 用户额度不足"
+			if userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, true); quotaErr == nil {
+				message = fmt.Sprintf("预扣费额度失败, 用户剩余额度: %s, 需要预扣费额度: %s",
+					logger.FormatQuota(userQuota), logger.FormatQuota(effectiveQuota))
+			}
 			return types.NewErrorWithStatusCode(
-				fmt.Errorf("预扣费额度失败, 用户额度不足"),
+				errors.New(message),
 				types.ErrorCodeInsufficientUserQuota,
 				http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(),
@@ -365,9 +370,10 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
 
-	// 钱包路径需要先检查用户额度
+	// 钱包路径需要先检查用户额度。预扣费是安全敏感路径，不能使用可能滞后的
+	// Redis 余额缓存，否则充值/退款或其他节点刚更新余额时会被提前判定为不足。
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
-		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+		userQuota, err := model.GetUserQuota(relayInfo.UserId, true)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}

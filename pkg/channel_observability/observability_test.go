@@ -4,9 +4,18 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRecordRequestSkipsUninitializedChannelMeta(t *testing.T) {
+	info := &relaycommon.RelayInfo{OriginModelName: "opus5"}
+
+	require.NotPanics(t, func() {
+		RecordRequest(info, false, Usage{})
+	})
+}
 
 func TestRedisObservationKeyRoundTripPreservesSeparators(t *testing.T) {
 	input := bucketKey{
