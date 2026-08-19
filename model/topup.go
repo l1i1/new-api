@@ -56,12 +56,67 @@ const (
 )
 
 var (
-	ErrPaymentMethodMismatch = errors.New("payment method mismatch")
-	ErrPaymentAmountInvalid  = errors.New("payment amount invalid")
-	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
-	ErrTopUpNotFound         = errors.New("topup not found")
-	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
+	ErrPaymentMethodMismatch   = errors.New("payment method mismatch")
+	ErrPaymentAmountInvalid    = errors.New("payment amount invalid")
+	ErrPaymentAmountMismatch   = errors.New("payment amount mismatch")
+	ErrTopUpNotFound           = errors.New("topup not found")
+	ErrTopUpStatusInvalid      = errors.New("topup status invalid")
+	ErrInvalidTopUpQuota       = errors.New("invalid top-up quota")
+	ErrTopUpQuotaLimitExceeded = errors.New("top-up quota limit exceeded")
 )
+
+func topUpQuotaMaxCurrent(creditedQuota int) (int, error) {
+	if creditedQuota <= 0 || creditedQuota >= common.MaxQuota {
+		return 0, ErrInvalidTopUpQuota
+	}
+	return common.MaxQuota - 1 - creditedQuota, nil
+}
+
+// ValidateTopUpQuotaCapacity provides an early checkout guard. Settlement
+// repeats the invariant atomically because the balance can change meanwhile.
+func ValidateTopUpQuotaCapacity(userID int, creditedQuota int) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
+	if err != nil {
+		return err
+	}
+	var user User
+	if err := DB.Select("quota").Where("id = ?", userID).First(&user).Error; err != nil {
+		return err
+	}
+	if user.Quota > maxCurrentQuota {
+		return ErrTopUpQuotaLimitExceeded
+	}
+	return nil
+}
+
+// creditTopUpQuota keeps the ceiling predicate and increment in one statement
+// so concurrent payment callbacks cannot overflow the persisted quota.
+func creditTopUpQuota(tx *gorm.DB, userID int, creditedQuota int, updates map[string]interface{}) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
+	if err != nil {
+		return err
+	}
+	updateFields := make(map[string]interface{}, len(updates)+1)
+	for key, value := range updates {
+		updateFields[key] = value
+	}
+	updateFields["quota"] = gorm.Expr("quota + ?", creditedQuota)
+	result := tx.Model(&User{}).Where("id = ? AND quota <= ?", userID, maxCurrentQuota).Updates(updateFields)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	var count int64
+	if err := tx.Model(&User{}).Where("id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return ErrTopUpQuotaLimitExceeded
+}
 
 func validateEpayPaidAmount(expected float64, actual string) error {
 	actualAmount, err := decimal.NewFromString(actual)
@@ -191,13 +246,8 @@ func CompleteEpayTopUp(tradeNo string, actualPaymentMethod string, paidMoney str
 			return err
 		}
 
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).
-			Update("quota", gorm.Expr("quota + ?", quotaToAdd))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return errors.New("topup user not found")
+		if err := creditTopUpQuota(tx, topUp.UserId, quotaToAdd, nil); err != nil {
+			return err
 		}
 
 		completedTopUp = topUp
@@ -227,6 +277,70 @@ func CompleteEpayTopUp(tradeNo string, actualPaymentMethod string, paidMoney str
 		PaymentProviderEpay,
 	)
 	return nil
+}
+
+// RechargeEpay settles legacy EPay callbacks that do not carry a signed paid
+// amount. It keeps the upstream idempotent return value for existing callers.
+func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (bool, error) {
+	if tradeNo == "" {
+		return false, errors.New("未提供支付单号")
+	}
+	refCol := "`trade_no`"
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		refCol = `"trade_no"`
+	}
+	var topUp TopUp
+	var quota int
+	completed := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&topUp).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrTopUpNotFound
+			}
+			return err
+		}
+		if topUp.PaymentProvider != PaymentProviderEpay {
+			return ErrPaymentMethodMismatch
+		}
+		if topUp.Status == common.TopUpStatusSuccess {
+			return nil
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+		var err error
+		quota, err = common.QuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+		if err != nil || quota <= 0 {
+			return ErrInvalidTopUpQuota
+		}
+		if actualPaymentMethod != "" {
+			topUp.PaymentMethod = actualPaymentMethod
+		}
+		topUp.Status = common.TopUpStatusSuccess
+		topUp.CompleteTime = common.GetTimestamp()
+		topUp.CreditedQuota = quota
+		if err := prepareInviteFirstTopUpRewardTx(tx, &topUp, quota); err != nil {
+			return err
+		}
+		if err := tx.Save(&topUp).Error; err != nil {
+			return err
+		}
+		if err := creditTopUpQuota(tx, topUp.UserId, quota, nil); err != nil {
+			return err
+		}
+		completed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if !completed {
+		return true, nil
+	}
+	processInviteFirstTopUpRewardAfterSettlement(topUp.Id)
+	syncCreditUserQuotaCache(topUp.UserId, quota, "epay topup")
+	RecordTopupLog(topUp.UserId, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quota), topUp.Money), callerIp, topUp.PaymentMethod, PaymentProviderEpay)
+	return false, nil
 }
 
 func Recharge(referenceId string, customerId string, callerIp string) (err error) {
@@ -278,12 +392,8 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return err
 		}
 
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(map[string]interface{}{"stripe_customer": customerId, "quota": gorm.Expr("quota + ?", quota)})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return errors.New("topup user not found")
+		if err := creditTopUpQuota(tx, topUp.UserId, quota, map[string]interface{}{"stripe_customer": customerId}); err != nil {
+			return err
 		}
 
 		completed = true
@@ -535,12 +645,8 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 			}
 		}
 
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(updateFields)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return errors.New("topup user not found")
+		if err := creditTopUpQuota(tx, topUp.UserId, quota, updateFields); err != nil {
+			return err
 		}
 
 		completed = true
@@ -616,12 +722,8 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 			return err
 		}
 
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return errors.New("topup user not found")
+		if err := creditTopUpQuota(tx, topUp.UserId, quotaToAdd, nil); err != nil {
+			return err
 		}
 
 		completed = true
@@ -697,12 +799,8 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 			return err
 		}
 
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return errors.New("topup user not found")
+		if err := creditTopUpQuota(tx, topUp.UserId, quotaToAdd, nil); err != nil {
+			return err
 		}
 
 		completed = true

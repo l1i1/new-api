@@ -85,7 +85,4 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: |
-          while IFS= read -r test_file; do
-            bun test "$test_file"
-          done < <(find src -type f \( -name '*.test.ts' -o -name '*.test.tsx' \) -print | sort)
+        run: bun run test

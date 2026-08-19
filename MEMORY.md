@@ -1,5 +1,18 @@
 # New API Fork Memory
 
+- On 2026-08-19, the Tokeness branch integrated upstream `v1.0.0-rc.25` in a
+  review-only merge candidate. Atomic wallet quota ceilings and Redis/DB
+  reservation fallback are combined with HotPay, Waffo Pancake, Stripe, Creem,
+  Waffo, and EPay settlement guards; compact alias routing, Midjourney
+  credential/proxy snapshots, and local channel observability remain intact.
+  Channel `used_quota` intentionally bypasses process batching so transactional
+  reset reads the current value. Frontend Vitest and the existing Bun
+  `node:test` suite are run as separate runners. Full backend, relaykit,
+  frontend typecheck/build/tests, i18n sync, and vet checks passed; the Windows
+  HTTP/2 graceful-GOAWAY loopback test is skipped because the platform
+  transport cannot reliably reconnect after GOAWAY. No image was published or
+  production deployment performed.
+
 - On 2026-08-18, ordinary newline-based multi-key channel creation and editing gained an optional per-key proxy line format: a strict `http`, `https`, `socks5`, or `socks5h` URL on the next non-empty line belongs to the preceding key. The frontend sends ordered `multi_key_credentials` while `channels.key` stores secrets only; the backend also parses legacy raw text, persists proxies atomically in `channel_credentials`, preserves existing proxy modes on append, resets omitted proxies to inherit on replace, and reveals the same multiline format only through the existing root plus second-factor protected key endpoint. Vertex/Codex JSON credential formats remain on their legacy paths.
 - On 2026-08-18, legacy Codex OAuth multi-key updates preserve each credential as one JSON object: append accepts valid objects or object arrays and stores the merged set as a JSON array, so formatted JSON cannot be split on its internal newlines. The channel mutation UI maps structured multi-key and Codex append validation failures through all supported locales.
 - On 2026-08-18, `/system-info` was added to the administrator sidebar module contract as `admin.system_info`, including editor metadata, default configuration, and URL-to-module ordering. It can now be enabled, hidden, and moved from `/system-settings/site/sidebar-modules`; regression tests cover default presence and saved ordering.

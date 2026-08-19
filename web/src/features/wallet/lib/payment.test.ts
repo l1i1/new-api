@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { PAYMENT_TYPES } from '../constants'
 import {
@@ -99,8 +99,8 @@ describe('payment dispatch', () => {
       }
     )
 
-    assert.equal(success, true)
-    assert.deepEqual(calls, ['waffo:120:3'])
+    expect(success).toBe(true)
+    expect(calls).toEqual(['waffo:120:3'])
   })
 
   test('does not create a Waffo order without a selected method index', async () => {
@@ -119,7 +119,7 @@ describe('payment dispatch', () => {
       }
     )
 
-    assert.equal(success, false)
-    assert.equal(called, false)
+    expect(success).toBe(false)
+    expect(called).toBe(false)
   })
 })
