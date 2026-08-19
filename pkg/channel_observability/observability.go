@@ -141,7 +141,9 @@ func normalizeErrorClass(raw string, success bool) string {
 }
 
 func RecordRequest(info *relaycommon.RelayInfo, success bool, usage Usage) {
-	if info == nil || info.IsChannelTest || info.OriginModelName == "" {
+	// Billing and validation can fail before a channel is selected, so the
+	// embedded ChannelMeta may still be nil when the request defer runs.
+	if info == nil || info.IsChannelTest || info.OriginModelName == "" || info.ChannelMeta == nil {
 		return
 	}
 	start := info.StartTime
