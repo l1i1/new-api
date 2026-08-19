@@ -145,7 +145,17 @@ func reserveUserQuotaDB(id int, quota int) (bool, error) {
 	result := DB.Model(&User{}).
 		Where("id = ? AND quota >= ?", id, quota).
 		Update("quota", gorm.Expr("quota - ?", quota))
-	return result.RowsAffected == 1, result.Error
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var exists int64
+	if err := DB.Model(&User{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		return false, err
+	}
+	if exists == 0 {
+		return false, gorm.ErrRecordNotFound
+	}
+	return false, nil
 }
 
 func reserveTokenQuotaDB(id int, quota int) (bool, error) {
@@ -156,7 +166,45 @@ func reserveTokenQuotaDB(id int, quota int) (bool, error) {
 			"used_quota":    gorm.Expr("used_quota + ?", quota),
 			"accessed_time": common.GetTimestamp(),
 		})
-	return result.RowsAffected == 1, result.Error
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var exists int64
+	if err := DB.Model(&Token{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		return false, err
+	}
+	if exists == 0 {
+		return false, gorm.ErrRecordNotFound
+	}
+	return false, nil
+}
+
+func syncReservedUserQuotaCache(id int, quota int) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	go func() {
+		result, err := cacheApplyUserQuotaDelta(id, int64(-quota))
+		if err != nil || result != cacheQuotaOK {
+			if invalidateErr := invalidateUserCache(id); invalidateErr != nil {
+				common.SysLog(fmt.Sprintf("failed to invalidate user quota cache after DB reservation: %v", invalidateErr))
+			}
+		}
+	}()
+}
+
+func syncReservedTokenQuotaCache(id int, key string, quota int) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	go func() {
+		result, err := cacheApplyTokenQuotaDelta(id, key, int64(-quota))
+		if err != nil || result != cacheQuotaOK {
+			if invalidateErr := invalidateTokenCacheForMutation(key); invalidateErr != nil {
+				common.SysLog(fmt.Sprintf("failed to invalidate token quota cache after DB reservation: %v", invalidateErr))
+			}
+		}
+	}()
 }
 
 // TryReserveUserQuota atomically checks and deducts a user's wallet quota.
@@ -169,32 +217,11 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 	if quota == 0 {
 		return true, nil
 	}
-	if !common.RedisEnabled {
-		return reserveUserQuotaDB(id, quota)
+	reserved, err := reserveUserQuotaDB(id, quota)
+	if err != nil || !reserved {
+		return reserved, err
 	}
-
-	result, err := cacheTryReserveUserQuota(id, int64(quota))
-	if err == nil && result == cacheQuotaMiss {
-		if _, hydrateErr := GetUserCache(id); hydrateErr == nil {
-			result, err = cacheTryReserveUserQuota(id, int64(quota))
-		}
-	}
-	if err != nil || result == cacheQuotaMiss {
-		if err != nil {
-			common.SysLog("user quota cache reserve unavailable, falling back to database: " + err.Error())
-		}
-		return reserveUserQuotaDB(id, quota)
-	}
-	if result == cacheQuotaInsufficient {
-		return false, nil
-	}
-	if err = persistUserQuotaDelta(id, -quota); err != nil {
-		compensated, compensateErr := cacheApplyUserQuotaDelta(id, int64(quota))
-		if compensateErr != nil || compensated != cacheQuotaOK {
-			common.SysError(fmt.Sprintf("failed to compensate reserved user quota: result=%d error=%v", compensated, compensateErr))
-		}
-		return false, err
-	}
+	syncReservedUserQuotaCache(id, quota)
 	return true, nil
 }
 
@@ -210,31 +237,10 @@ func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, 
 	if unlimited {
 		return true, DecreaseTokenQuota(id, key, quota)
 	}
-	if !common.RedisEnabled {
-		return reserveTokenQuotaDB(id, quota)
+	reserved, err := reserveTokenQuotaDB(id, quota)
+	if err != nil || !reserved {
+		return reserved, err
 	}
-
-	result, err := cacheTryReserveTokenQuota(id, key, int64(quota))
-	if err == nil && result == cacheQuotaMiss {
-		if _, hydrateErr := GetTokenByKey(key, true); hydrateErr == nil {
-			result, err = cacheTryReserveTokenQuota(id, key, int64(quota))
-		}
-	}
-	if err != nil || result == cacheQuotaMiss {
-		if err != nil {
-			common.SysLog("token quota cache reserve unavailable, falling back to database: " + err.Error())
-		}
-		return reserveTokenQuotaDB(id, quota)
-	}
-	if result == cacheQuotaInsufficient {
-		return false, nil
-	}
-	if err = persistTokenQuotaDelta(id, -quota); err != nil {
-		compensated, compensateErr := cacheApplyTokenQuotaDelta(id, key, int64(quota))
-		if compensateErr != nil || compensated != cacheQuotaOK {
-			common.SysError(fmt.Sprintf("failed to compensate reserved token quota: result=%d error=%v", compensated, compensateErr))
-		}
-		return false, err
-	}
+	syncReservedTokenQuotaCache(id, key, quota)
 	return true, nil
 }

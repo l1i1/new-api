@@ -84,6 +84,7 @@ func batchUpdate() {
 				err := increaseTokenQuota(key, value)
 				if err != nil {
 					common.SysLog("failed to batch update token quota: " + err.Error())
+					addNewRecord(BatchUpdateTypeTokenQuota, key, value)
 				}
 			}
 		}
@@ -104,7 +105,13 @@ func batchUpdate() {
 		userIDs[key] = struct{}{}
 	}
 	for key := range userIDs {
-		updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key])
+		quota, usedQuota, requestCount := userQuotaStore[key], usedQuotaStore[key], requestCountStore[key]
+		if err := updateUserQuotaUsedQuotaAndRequestCount(key, quota, usedQuota, requestCount); err != nil {
+			common.SysLog("failed to batch update user counters: " + err.Error())
+			addNewRecord(BatchUpdateTypeUserQuota, key, quota)
+			addNewRecord(BatchUpdateTypeUsedQuota, key, usedQuota)
+			addNewRecord(BatchUpdateTypeRequestCount, key, requestCount)
+		}
 	}
 	common.SysLog("batch update finished")
 }

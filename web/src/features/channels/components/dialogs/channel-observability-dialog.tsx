@@ -24,6 +24,14 @@ import { toast } from 'sonner'
 import { StaticDataTable } from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 import { getAllChannelObservability } from '../../api'
 import { dedupeChannelObservabilityRows } from '../../lib/channel-observability'
@@ -63,6 +71,8 @@ export function ChannelObservabilityDialog(
   const { currentRow } = useChannels()
   const [hours, setHours] = useState(24)
   const [rows, setRows] = useState<ChannelObservabilityResult[]>([])
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
   const [isLoading, setIsLoading] = useState(false)
   const loadSequence = useRef(0)
 
@@ -82,6 +92,7 @@ export function ChannelObservabilityDialog(
       )
       if (loadSequence.current !== requestSequence) return
       setRows(dedupeChannelObservabilityRows(loadedRows))
+      setPage(1)
     } catch (error: unknown) {
       if (loadSequence.current !== requestSequence) return
       toast.error(
@@ -151,7 +162,7 @@ export function ChannelObservabilityDialog(
       )}
       contentClassName='max-w-[min(96vw,1440px)] sm:max-w-[min(96vw,1440px)]'
       contentHeight='min(80vh, 760px)'
-      bodyClassName='space-y-4'
+      bodyClassName='flex min-h-0 flex-col gap-4 overflow-hidden'
     >
       <div className='flex items-center justify-between gap-3'>
         <div className='flex gap-2'>
@@ -195,14 +206,15 @@ export function ChannelObservabilityDialog(
         />
       </div>
 
-      <div className='min-h-0 overflow-y-auto rounded-md border [&_[data-slot=table-container]]:overflow-x-hidden'>
+      <div className='flex min-h-0 flex-1 flex-col gap-2'>
+        <div className='min-h-0 flex-1 overflow-auto rounded-md border [&_[data-slot=table-container]]:overflow-x-hidden'>
         {rows.length === 0 && !isLoading ? (
           <div className='text-muted-foreground py-12 text-center'>
             {t('No observability data available')}
           </div>
         ) : (
           <StaticDataTable
-            data={rows}
+            data={rows.slice((page - 1) * pageSize, page * pageSize)}
             getRowKey={(row) =>
               `${row.requested_model}-${row.group}-${row.protocol}-${row.credential_id}`
             }
@@ -296,6 +308,63 @@ export function ChannelObservabilityDialog(
               },
             ]}
           />
+        )}
+        </div>
+        {rows.length > 0 && (
+          <div className='flex shrink-0 items-center justify-between gap-3'>
+            <span className='text-muted-foreground text-sm'>
+              {t('Page {{current}} of {{total}}', {
+                current: page,
+                total: Math.ceil(rows.length / pageSize),
+              })}
+            </span>
+            <div className='flex items-center gap-2'>
+              <Select
+                items={[10, 25, 50, 100].map((value) => ({
+                  value: `${value}`,
+                  label: `${value}`,
+                }))}
+                value={`${pageSize}`}
+                onValueChange={(value) => {
+                  setPageSize(Number(value))
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger className='h-8 w-20'>
+                  <SelectValue placeholder={pageSize} />
+                </SelectTrigger>
+                <SelectContent side='top' alignItemWithTrigger={false}>
+                  <SelectGroup>
+                    {[10, 25, 50, 100].map((value) => (
+                      <SelectItem key={value} value={`${value}`}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+                disabled={page === 1}
+              >
+                {t('Previous')}
+              </Button>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() =>
+                  setPage((value) =>
+                    Math.min(Math.ceil(rows.length / pageSize), value + 1)
+                  )
+                }
+                disabled={page >= Math.ceil(rows.length / pageSize)}
+              >
+                {t('Next')}
+              </Button>
+            </div>
+          </div>
         )}
       </div>
     </Dialog>

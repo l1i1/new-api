@@ -41,10 +41,7 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 		}
 
 		// 支持链式模型重定向，最终使用链尾的模型
-		currentModel := info.OriginModelName
-		if compactAliasApplied {
-			currentModel = mappingModelName
-		}
+		currentModel := mappingModelName
 		visitedModels := map[string]bool{
 			currentModel: true,
 		}

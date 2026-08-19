@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -99,13 +100,13 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
 // 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取）。
-func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
+func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) error {
 	if task.PrivateData.TokenId <= 0 || delta == 0 {
-		return
+		return nil
 	}
 	tokenKey := resolveTokenKey(ctx, task.PrivateData.TokenId, task.TaskID)
 	if tokenKey == "" {
-		return
+		return errors.New("token key unavailable")
 	}
 	var err error
 	if delta > 0 {
@@ -116,6 +117,7 @@ func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
 	if err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("调整令牌额度失败 (delta=%d, task=%s): %s", delta, task.TaskID, err.Error()))
 	}
+	return err
 }
 
 // taskBillingOther 从 task 的 BillingContext 构建日志 Other 字段。
@@ -176,7 +178,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	}
 
 	// 2. 退还令牌额度
-	taskAdjustTokenQuota(ctx, task, -quota)
+	if err := taskAdjustTokenQuota(ctx, task, -quota); err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("退还令牌额度失败 task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
 
 	// 3. 回减预扣时累计的用户和渠道用量，请求次数保持不变
 	model.UpdateUserUsedQuota(task.UserId, -quota)

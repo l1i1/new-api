@@ -106,27 +106,36 @@ func CreateUserOAuthBindingWithTx(tx *gorm.DB, binding *UserOAuthBinding) error 
 
 // UpdateUserOAuthBinding updates an existing OAuth binding (e.g., rebind to different OAuth account)
 func UpdateUserOAuthBinding(userId, providerId int, newProviderUserId string) error {
-	// Check if the new provider user ID is already taken by another user
-	var existingBinding UserOAuthBinding
-	err := DB.Where("provider_id = ? AND provider_user_id = ?", providerId, newProviderUserId).First(&existingBinding).Error
-	if err == nil && existingBinding.UserId != userId {
-		return errors.New("this OAuth account is already bound to another user")
-	}
-
-	// Check if user already has a binding for this provider
-	var binding UserOAuthBinding
-	err = DB.Where("user_id = ? AND provider_id = ?", userId, providerId).First(&binding).Error
-	if err != nil {
-		// No existing binding, create new one
-		return CreateUserOAuthBinding(&UserOAuthBinding{
-			UserId:         userId,
-			ProviderId:     providerId,
-			ProviderUserId: newProviderUserId,
-		})
-	}
-
-	// Update existing binding
-	return DB.Model(&binding).Update("provider_user_id", newProviderUserId).Error
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Select("id").Where("id = ?", userId).First(&user).Error; err != nil {
+			return err
+		}
+		var existingBinding UserOAuthBinding
+		err := tx.Where("provider_id = ? AND provider_user_id = ?", providerId, newProviderUserId).First(&existingBinding).Error
+		if err == nil && existingBinding.UserId != userId {
+			return errors.New("this OAuth account is already bound to another user")
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var binding UserOAuthBinding
+		err = tx.Where("user_id = ? AND provider_id = ?", userId, providerId).First(&binding).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return CreateUserOAuthBindingWithTx(tx, &UserOAuthBinding{UserId: userId, ProviderId: providerId, ProviderUserId: newProviderUserId})
+		}
+		if err != nil {
+			return err
+		}
+		result := tx.Model(&binding).Update("provider_user_id", newProviderUserId)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
 }
 
 // DeleteUserOAuthBinding deletes an OAuth binding

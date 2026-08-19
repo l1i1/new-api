@@ -82,6 +82,19 @@ func SettleMidjourneyTaskBilling(relayInfo *relaycommon.RelayInfo, task *model.M
 		}
 		return false, billingErr
 	}
+	if !result.TokenApplied {
+		compensationErr := model.IncreaseUserQuota(relayInfo.UserId, task.Quota, false)
+		if compensationErr != nil {
+			return false, errors.Join(billingErr, errors.New("token quota settlement failed"), fmt.Errorf("funding compensation failed: %w", compensationErr))
+		}
+		task.Quota = 0
+		task.TokenId = 0
+		task.BillingChannelId = 0
+		if updateErr := task.UpdateBillingState(); updateErr != nil {
+			return false, errors.Join(billingErr, errors.New("token quota settlement failed"), fmt.Errorf("clear Midjourney billing state: %w", updateErr))
+		}
+		return false, errors.Join(billingErr, errors.New("token quota settlement failed"))
+	}
 
 	task.TokenId = 0
 	if result.TokenApplied {
@@ -107,10 +120,13 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 
 	if task.TokenId > 0 {
 		tokenKey := resolveTokenKey(ctx, task.TokenId, task.MjId)
-		if tokenKey != "" {
-			if err := model.IncreaseTokenQuota(task.TokenId, tokenKey, quota); err != nil {
-				logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 令牌额度失败 task %s: %s", task.MjId, err.Error()))
-			}
+		if tokenKey == "" {
+			logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 令牌额度失败 task %s: token key unavailable", task.MjId))
+			return false
+		}
+		if err := model.IncreaseTokenQuota(task.TokenId, tokenKey, quota); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 令牌额度失败 task %s: %s", task.MjId, err.Error()))
+			return false
 		}
 	}
 

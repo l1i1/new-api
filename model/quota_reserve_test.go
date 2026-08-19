@@ -112,7 +112,7 @@ func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	reserved, err := TryReserveUserQuota(user.Id, 8)
 	require.NoError(t, err)
 	assert.True(t, reserved)
-	assert.Equal(t, 10, getUserQuotaFromDB(t, user.Id), "batch delta is not flushed yet")
+	assert.Equal(t, 2, getUserQuotaFromDB(t, user.Id), "reservation is persisted before cache synchronization")
 
 	reserved, err = TryReserveUserQuota(user.Id, 3)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	reserved, err = TryReserveTokenQuota(token.Id, token.Key, 3, false)
 	require.NoError(t, err)
 	assert.False(t, reserved)
-	assert.Equal(t, 9, getTokenFromDB(t, token.Id).RemainQuota)
+	assert.Equal(t, 2, getTokenFromDB(t, token.Id).RemainQuota)
 
 	batchUpdate()
 	assert.Equal(t, 2, getUserQuotaFromDB(t, user.Id))

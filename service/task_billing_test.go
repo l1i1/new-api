@@ -507,10 +507,8 @@ func TestSettleMidjourneyTaskBillingFundingFailureClearsMarkers(t *testing.T) {
 	assert.Zero(t, countLogs(t))
 }
 
-func TestSettleMidjourneyTaskBillingTokenFailureKeepsFundingRefundable(t *testing.T) {
+func TestSettleMidjourneyTaskBillingTokenFailureCompensatesFunding(t *testing.T) {
 	truncate(t)
-	ctx := context.Background()
-
 	const userID, tokenID, channelID = 53, 53, 53
 	const initialUserQuota, initialTokenQuota, chargedQuota = 10000, 5000, 3000
 	seedUser(t, userID, initialUserQuota)
@@ -547,26 +545,21 @@ func TestSettleMidjourneyTaskBillingTokenFailureKeepsFundingRefundable(t *testin
 	billed, err := SettleMidjourneyTaskBilling(relayInfo, task, prepared)
 
 	require.Error(t, err)
-	require.True(t, billed)
-	assert.Equal(t, initialUserQuota-chargedQuota, getUserQuota(t, userID))
+	require.False(t, billed)
+	assert.Equal(t, initialUserQuota, getUserQuota(t, userID))
 	assert.Equal(t, initialTokenQuota, getTokenRemainQuota(t, tokenID))
 	assert.Zero(t, getTokenUsedQuota(t, tokenID))
 	persisted := getMidjourneyTask(t, task.Id)
-	assert.Equal(t, chargedQuota, persisted.Quota)
+	assert.Zero(t, persisted.Quota)
 	assert.Zero(t, persisted.TokenId)
-	assert.Equal(t, channelID, persisted.BillingChannelId)
+	assert.Zero(t, persisted.BillingChannelId)
 
-	seedChargedAccounting(t, userID, channelID, 0, chargedQuota, 1)
-	assert.True(t, RefundMidjourneyQuota(ctx, task, "token settlement failed"))
-	assert.Equal(t, initialUserQuota, getUserQuota(t, userID))
-	assert.Equal(t, initialTokenQuota, getTokenRemainQuota(t, tokenID))
 	usedQuota, requestCount := getUserUsageAccounting(t, userID)
 	assert.Zero(t, usedQuota)
-	assert.Equal(t, 1, requestCount)
+	assert.Zero(t, requestCount)
 	assert.Zero(t, getChannelUsedQuota(t, channelID))
 	log := getLastLog(t)
-	require.NotNil(t, log)
-	assert.Zero(t, log.TokenId)
+	assert.Nil(t, log)
 }
 
 func TestPrepareMidjourneyTaskBillingRejectsSubscriptionBeforeCharge(t *testing.T) {

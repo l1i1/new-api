@@ -335,6 +335,7 @@ export function MultiKeyManageDialog({
     const channelId = currentRow.id
     if (!isCurrentChannel(channelId)) return
     setIsTestingKeys(true)
+    let keepTaskVisible = false
     try {
       let selectedIds: number[] | undefined
       if (!all) {
@@ -370,7 +371,9 @@ export function MultiKeyManageDialog({
       if (!isCurrentChannel(channelId)) return
       setTestTaskId(taskId)
       let taskResponse = await getMultiKeyTestTask(channelId, taskId)
-      const deadline = Date.now() + 120_000
+      const requestedKeyCount = all ? Math.max(keys.length, 1) : Math.max(selectedIds?.length || 0, 1)
+      const estimatedBatches = Math.ceil(requestedKeyCount / 4)
+      const deadline = Date.now() + Math.max(120_000, estimatedBatches * 60_000 + 30_000)
       while (
         taskResponse.data &&
         (taskResponse.data.status === 'pending' ||
@@ -382,6 +385,14 @@ export function MultiKeyManageDialog({
         taskResponse = await getMultiKeyTestTask(channelId, taskId)
       }
       if (!isCurrentChannel(channelId)) return
+      if (
+        taskResponse.data &&
+        (taskResponse.data.status === 'pending' || taskResponse.data.status === 'running')
+      ) {
+        keepTaskVisible = true
+        toast.error(t('Test is still running in the background'))
+        return
+      }
       const results = taskResponse.data?.result?.results || []
       const nextResults: Record<number, MultiKeyTestResult> = {}
       const nextFailedCredentialIds: number[] = []
@@ -408,8 +419,10 @@ export function MultiKeyManageDialog({
       )
     } finally {
       if (isCurrentChannel(channelId)) {
-        setTestTaskId(null)
-        setIsTestingKeys(false)
+        if (!keepTaskVisible) {
+          setTestTaskId(null)
+          setIsTestingKeys(false)
+        }
       }
     }
   }
@@ -421,6 +434,8 @@ export function MultiKeyManageDialog({
     try {
       await cancelMultiKeyTestTask(channelId, testTaskId)
       if (!isCurrentChannel(channelId)) return
+      setTestTaskId(null)
+      setIsTestingKeys(false)
       toast.success(t('Stop requested'))
     } catch (error: unknown) {
       if (!isCurrentChannel(channelId)) return
@@ -582,7 +597,7 @@ export function MultiKeyManageDialog({
         contentClassName='flex max-h-[90vh] max-w-[min(96vw,1440px)] flex-col sm:max-w-[min(96vw,1440px)]'
         titleClassName='flex items-center gap-2'
         contentHeight='min(72vh, 720px)'
-        bodyClassName='space-y-4'
+        bodyClassName='flex min-h-0 flex-1 flex-col overflow-hidden'
       >
         <div className='flex min-h-0 flex-1 flex-col space-y-4 overflow-hidden'>
           {/* Statistics */}
@@ -981,7 +996,7 @@ export function MultiKeyManageDialog({
           </div>
 
           {/* Pagination */}
-          {totalPages > 1 && (
+          {(totalPages > 1 || total > 0) && (
             <div className='flex shrink-0 items-center justify-between'>
               <div className='text-muted-foreground text-sm'>
                 {t('Page {{current}} of {{total}}', {
@@ -989,7 +1004,33 @@ export function MultiKeyManageDialog({
                   total: totalPages,
                 })}
               </div>
-              <div className='flex gap-2'>
+              <div className='flex items-center gap-2'>
+                <Select
+                  items={[10, 25, 50, 100].map((value) => ({
+                    value: `${value}`,
+                    label: `${value}`,
+                  }))}
+                  value={`${pageSize}`}
+                  onValueChange={(value) => {
+                    const nextPageSize = Number(value)
+                    setPageSize(nextPageSize)
+                    setCurrentPage(1)
+                    void loadKeyStatus(1, nextPageSize, statusFilter)
+                  }}
+                >
+                  <SelectTrigger className='h-8 w-20'>
+                    <SelectValue placeholder={pageSize} />
+                  </SelectTrigger>
+                  <SelectContent side='top' alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      {[10, 25, 50, 100].map((value) => (
+                        <SelectItem key={value} value={`${value}`}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
                 <Button
                   variant='outline'
                   size='sm'

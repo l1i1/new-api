@@ -238,13 +238,19 @@ func (midjourney *Midjourney) GetBillingChannelId() int {
 	return midjourney.ChannelId
 }
 
-// UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
-// Returns (true, nil) if this caller won the update, (false, nil) if
-// another process already moved the task out of fromStatus.
-// UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
-// Uses Model().Select("*").Updates() to avoid GORM Save()'s INSERT fallback.
+// UpdateWithStatus performs a conditional status update without touching billing
+// markers. Pollers operate on stale task snapshots, so quota/token fields must
+// never be included in their writes.
 func (midjourney *Midjourney) UpdateWithStatus(fromStatus string) (bool, error) {
-	result := DB.Model(midjourney).Where("status = ?", fromStatus).Select("*").Updates(midjourney)
+	result := DB.Model(midjourney).Where("status = ?", fromStatus).Updates(map[string]any{
+		"code": midjourney.Code, "description": midjourney.Description,
+		"state": midjourney.State, "start_time": midjourney.StartTime,
+		"finish_time": midjourney.FinishTime, "image_url": midjourney.ImageUrl,
+		"video_url": midjourney.VideoUrl, "video_urls": midjourney.VideoUrls,
+		"status": midjourney.Status, "progress": midjourney.Progress,
+		"fail_reason": midjourney.FailReason, "buttons": midjourney.Buttons,
+		"properties": midjourney.Properties,
+	})
 	if result.Error != nil {
 		return false, result.Error
 	}

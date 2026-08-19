@@ -211,7 +211,14 @@ func UpdateUserBindColumn(userId int, column string, value string) error {
 	if !userBindColumns[column] {
 		return fmt.Errorf("invalid user bind column: %s", column)
 	}
-	return DB.Model(&User{}).Where("id = ?", userId).Update(column, value).Error
+	result := DB.Model(&User{}).Where("id = ?", userId).Update(column, value)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // 根据用户角色生成默认的边栏配置
@@ -1405,21 +1412,25 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	//}
 }
 
-func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) {
+func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) error {
 	if quota == 0 && usedQuota == 0 && requestCount == 0 {
-		return
+		return nil
 	}
 
-	err := DB.Model(&User{}).Where("id = ?", id).Updates(
+	result := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
 			"quota":         gorm.Expr("quota + ?", quota),
 			"used_quota":    gorm.Expr("used_quota + ?", usedQuota),
 			"request_count": gorm.Expr("request_count + ?", requestCount),
 		},
-	).Error
-	if err != nil {
-		common.SysLog("failed to batch update user quota, used quota and request count: " + err.Error())
+	)
+	if result.Error != nil {
+		return result.Error
 	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // GetUsernameById gets username from Redis first, falls back to DB if needed

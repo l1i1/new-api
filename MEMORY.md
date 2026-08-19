@@ -1,5 +1,8 @@
 # New API Fork Memory
 
+- On 2026-08-19, the rc25 audit fixes were completed in the candidate branch. Wallet and token reservations now use conditional SQL decrements as the authorization source; Redis is only an asynchronous mirror and is invalidated on synchronization failure. Batch quota flushes re-enqueue failed writes. Compact model aliases, wildcard pricing/ratio fallbacks, and Codex compact mappings were restored. Multi-key credential tests use a bounded job buffer so cancellation cannot strand the producer behind exited workers; the UI keeps the cancel action while a timed-out task remains pending/running and derives its polling budget from key count. OAuth binding updates validate the target user and require one affected row inside a transaction. Async task refunds now keep the quota marker when token-quota restoration fails. No commit, image publication, or deployment was performed.
+- On 2026-08-19, Midjourney billing hardening was added before production preparation. Asynchronous status polling now updates only task/result fields and cannot overwrite quota, token, or billing-channel markers from a stale snapshot. Legacy settlement compensates a successful wallet charge when token charging fails, clears billing state only after compensation, and reports billing success only when both funding and token stages succeed. Midjourney refunds now retain the durable quota marker when token restoration cannot be completed. Regression coverage verifies the partial-settlement compensation path.
+
 - On 2026-08-19, the Tokeness branch integrated upstream `v1.0.0-rc.25` in a
   review-only merge candidate. Atomic wallet quota ceilings and Redis/DB
   reservation fallback are combined with HotPay, Waffo Pancake, Stripe, Creem,

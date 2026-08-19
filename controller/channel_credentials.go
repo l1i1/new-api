@@ -400,7 +400,7 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 	jobs := make(chan struct {
 		order      int
 		credential model.ChannelCredential
-	})
+	}, len(selected))
 	results := make(chan completedResult, len(selected))
 	workerCount := len(selected)
 	if payload.Concurrency <= 0 {
@@ -442,16 +442,11 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 			}
 		}()
 	}
-enqueue:
 	for order, credential := range selected {
-		select {
-		case jobs <- struct {
+		jobs <- struct {
 			order      int
 			credential model.ChannelCredential
-		}{order: order, credential: credential}:
-		case <-ctx.Done():
-			break enqueue
-		}
+		}{order: order, credential: credential}
 	}
 	close(jobs)
 	workers.Wait()
