@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -190,6 +191,50 @@ func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T)
 	require.Contains(t, recorder.Body.String(), "content_policy_violation")
 }
 
+func TestRelayContentModerationPreBlockReturnsOverloadStatusWhenCapacityIsExhausted(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"max_in_flight_per_key":1,"queue_wait_ms":20,"overload_status":503}`)
+
+	firstContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	firstContext.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"hold"}]}`))
+	firstInfo := &relaycommon.RelayInfo{UserId: 1, OriginModelName: "gpt-test", RequestId: "capacity-owner"}
+	firstDone := make(chan *service.ContentModerationDecision, 1)
+	go func() {
+		firstDone <- checkRelayContentModeration(firstContext, types.RelayFormatOpenAI, firstInfo)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first moderation request did not start")
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"overflow"}]}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(context, constant.ContextKeyOriginalModel, "gpt-test")
+	context.Set(common.RequestIdKey, "relay-capacity-overload")
+
+	Relay(context, types.RelayFormatOpenAI)
+	common.CleanupBodyStorage(context)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "content_moderation_overloaded")
+	require.NotContains(t, recorder.Body.String(), "content_policy_violation")
+
+	close(release)
+	require.NotNil(t, <-firstDone)
+	common.CleanupBodyStorage(firstContext)
+}
+
 func TestRelayContentModerationPreBlockRejectsInvalidImageWithoutProviderCall(t *testing.T) {
 	moderationCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -269,7 +314,11 @@ func TestUpdateContentModerationConfigCanExplicitlyClearAPIKeys(t *testing.T) {
 		"clear_api_keys": true,
 		"sample_rate": 1,
 		"all_groups": true,
-		"all_models": true
+		"all_models": true,
+		"max_in_flight_per_key": 2,
+		"queue_wait_ms": 250,
+		"overload_status": 429,
+		"key_cooldown_ms": 1500
 	}`))
 	context.Request.Header.Set("Content-Type", "application/json")
 
@@ -280,6 +329,10 @@ func TestUpdateContentModerationConfigCanExplicitlyClearAPIKeys(t *testing.T) {
 	require.Empty(t, stored.APIKey)
 	require.Empty(t, stored.APIKeys)
 	require.False(t, stored.ClearAPIKeys)
+	require.Equal(t, 2, stored.MaxInFlightPerKey)
+	require.Equal(t, 250, stored.QueueWaitMS)
+	require.Equal(t, http.StatusTooManyRequests, stored.OverloadStatus)
+	require.Equal(t, 1500, stored.KeyCooldownMS)
 }
 
 func TestUnbanContentModerationUserIsIdempotent(t *testing.T) {

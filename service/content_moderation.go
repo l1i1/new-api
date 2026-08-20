@@ -36,34 +36,49 @@ import (
 )
 
 const (
-	ContentModerationOptionKey               = model.ContentModerationOptionKey
-	ContentModerationProtocolOpenAIChat      = "openai_chat"
-	ContentModerationProtocolOpenAIResponses = "openai_responses"
-	ContentModerationProtocolAnthropic       = "anthropic_messages"
-	ContentModerationProtocolGemini          = "gemini"
-	contentModerationDefaultBaseURL          = "https://api.openai.com"
-	contentModerationDefaultModel            = "omni-moderation-latest"
-	contentModerationDefaultTimeout          = 1500
-	contentModerationDefaultRetries          = 1
-	contentModerationDefaultBlockCode        = http.StatusForbidden
-	contentModerationMaxInputRunes           = 16000
-	contentModerationMaxInputImages          = 1
-	contentModerationMaxCandidateImages      = 16
-	contentModerationMaxImageBytes           = 20 << 20
-	contentModerationMaxImageURLBytes        = 8 << 10
-	contentModerationMaxKeys                 = 64
-	contentModerationAffinityCacheNamespace  = "new-api:content_moderation_affinity:v2"
-	contentModerationAffinityLeaseNamespace  = "new-api:content_moderation_affinity_lease:v1"
-	contentModerationAffinityCacheCapacity   = 100_000
-	contentModerationAffinityPollInterval    = 25 * time.Millisecond
-	contentModerationMaxViolationWindowHours = 24 * 365
-	contentModerationEmailSendTimeout        = 15 * time.Second
-	contentModerationConfigRefreshInterval   = time.Second
+	ContentModerationOptionKey                 = model.ContentModerationOptionKey
+	ContentModerationProtocolOpenAIChat        = "openai_chat"
+	ContentModerationProtocolOpenAIResponses   = "openai_responses"
+	ContentModerationProtocolAnthropic         = "anthropic_messages"
+	ContentModerationProtocolGemini            = "gemini"
+	contentModerationDefaultBaseURL            = "https://api.openai.com"
+	contentModerationDefaultModel              = "omni-moderation-latest"
+	contentModerationDefaultTimeout            = 1500
+	contentModerationDefaultRetries            = 1
+	contentModerationDefaultBlockCode          = http.StatusForbidden
+	contentModerationDefaultMaxInFlight        = 1
+	contentModerationDefaultQueueWaitMS        = 200
+	contentModerationDefaultOverloadStatus     = http.StatusServiceUnavailable
+	contentModerationDefaultKeyCooldownMS      = 5000
+	contentModerationMaxInputRunes             = 16000
+	contentModerationMaxInputImages            = 1
+	contentModerationMaxCandidateImages        = 16
+	contentModerationMaxImageBytes             = 20 << 20
+	contentModerationMaxImageURLBytes          = 8 << 10
+	contentModerationMaxKeys                   = 64
+	contentModerationAffinityCacheNamespace    = "new-api:content_moderation_affinity:v2"
+	contentModerationAffinityLeaseNamespace    = "new-api:content_moderation_affinity_lease:v1"
+	contentModerationAllowCacheNamespace       = "new-api:content_moderation_allow:v1"
+	contentModerationAllowLeaseNamespace       = "new-api:content_moderation_allow_lease:v1"
+	contentModerationProviderSlotNamespace     = "new-api:content_moderation_provider_slot:v1"
+	contentModerationProviderCooldownNamespace = "new-api:content_moderation_provider_cooldown:v1"
+	contentModerationAffinityCacheCapacity     = 100_000
+	contentModerationAllowCacheCapacity        = 100_000
+	contentModerationAllowDedupMaxRunes        = 256
+	contentModerationAllowDedupTTL             = 30 * time.Second
+	contentModerationAffinityPollInterval      = 25 * time.Millisecond
+	contentModerationRedisOperationTimeout     = 100 * time.Millisecond
+	contentModerationMaxViolationWindowHours   = 24 * 365
+	contentModerationEmailSendTimeout          = 15 * time.Second
+	contentModerationConfigRefreshInterval     = time.Second
 )
 
 var contentModerationHTTPClient = &http.Client{}
 
-var ErrContentModerationConfigPersistence = errors.New("content moderation configuration persistence failed")
+var (
+	ErrContentModerationConfigPersistence = errors.New("content moderation configuration persistence failed")
+	ErrContentModerationCapacity          = errors.New("content moderation capacity exhausted")
+)
 
 type contentModerationEmailSendFunc func(context.Context, string, dto.Notify, int) error
 
@@ -75,11 +90,19 @@ var (
 	contentModerationAffinityCacheOnce sync.Once
 	contentModerationAffinityCache     *cachex.HybridCache[contentModerationAffinityCacheEntry]
 	contentModerationAffinityFlight    singleflight.Group
+	contentModerationAllowCacheOnce    sync.Once
+	contentModerationAllowCache        *cachex.HybridCache[bool]
+	contentModerationAllowFlight       singleflight.Group
 	contentModerationConfigCacheMu     sync.Mutex
 	contentModerationConfigCacheRaw    string
 	contentModerationConfigCacheValue  ContentModerationConfig
 	contentModerationConfigCacheAt     time.Time
 	contentModerationConfigRefresh     singleflight.Group
+	contentModerationCapacityState     = contentModerationLocalCapacityState{
+		inFlight:      make(map[string]int),
+		cooldown:      make(map[string]time.Time),
+		degradedUntil: time.Time{},
+	}
 )
 
 var defaultContentModerationThresholds = map[string]float64{
@@ -119,6 +142,10 @@ type ContentModerationConfig struct {
 	SampleRate           float64            `json:"sample_rate"`
 	TimeoutMS            int                `json:"timeout_ms"`
 	RetryCount           int                `json:"retry_count"`
+	MaxInFlightPerKey    int                `json:"max_in_flight_per_key"`
+	QueueWaitMS          int                `json:"queue_wait_ms"`
+	OverloadStatus       int                `json:"overload_status"`
+	KeyCooldownMS        int                `json:"key_cooldown_ms"`
 	RecordNonHits        bool               `json:"record_non_hits"`
 	RecordLogs           bool               `json:"record_logs"`
 	BlockStatus          int                `json:"block_status"`
@@ -145,6 +172,10 @@ type ContentModerationConfigView struct {
 	SampleRate           float64            `json:"sample_rate"`
 	TimeoutMS            int                `json:"timeout_ms"`
 	RetryCount           int                `json:"retry_count"`
+	MaxInFlightPerKey    int                `json:"max_in_flight_per_key"`
+	QueueWaitMS          int                `json:"queue_wait_ms"`
+	OverloadStatus       int                `json:"overload_status"`
+	KeyCooldownMS        int                `json:"key_cooldown_ms"`
 	RecordNonHits        bool               `json:"record_non_hits"`
 	RecordLogs           bool               `json:"record_logs"`
 	BlockStatus          int                `json:"block_status"`
@@ -227,6 +258,7 @@ type ContentModerationDecision struct {
 	Cached         bool
 	Flagged        bool
 	Blocked        bool
+	Overloaded     bool
 	Category       string
 	Score          float64
 	CategoryScores map[string]float64
@@ -248,6 +280,26 @@ type contentModerationLease struct {
 	Token string
 	TTL   time.Duration
 	Redis *redis.Client
+}
+
+type contentModerationLocalCapacityState struct {
+	mu            sync.Mutex
+	inFlight      map[string]int
+	cooldown      map[string]time.Time
+	degradedUntil time.Time
+}
+
+type contentModerationProviderCredential struct {
+	APIKey      string
+	Fingerprint string
+}
+
+type contentModerationProviderSlot struct {
+	Fingerprint string
+	Local       bool
+	Redis       *redis.Client
+	RedisKey    string
+	Token       string
 }
 
 const contentModerationReleaseLeaseScript = `
@@ -293,6 +345,10 @@ func defaultContentModerationConfig() ContentModerationConfig {
 		SampleRate:           1,
 		TimeoutMS:            contentModerationDefaultTimeout,
 		RetryCount:           contentModerationDefaultRetries,
+		MaxInFlightPerKey:    contentModerationDefaultMaxInFlight,
+		QueueWaitMS:          contentModerationDefaultQueueWaitMS,
+		OverloadStatus:       contentModerationDefaultOverloadStatus,
+		KeyCooldownMS:        contentModerationDefaultKeyCooldownMS,
 		BlockStatus:          contentModerationDefaultBlockCode,
 		BlockMessage:         "Request blocked by content policy",
 		BanThreshold:         10,
@@ -341,6 +397,26 @@ func getContentModerationAffinityCache() *cachex.HybridCache[contentModerationAf
 	return contentModerationAffinityCache
 }
 
+func getContentModerationAllowCache() *cachex.HybridCache[bool] {
+	contentModerationAllowCacheOnce.Do(func() {
+		contentModerationAllowCache = cachex.NewHybridCache[bool](cachex.HybridCacheConfig[bool]{
+			Namespace:  cachex.Namespace(contentModerationAllowCacheNamespace),
+			Redis:      common.RDB,
+			RedisCodec: cachex.JSONCodec[bool]{},
+			RedisEnabled: func() bool {
+				return common.RedisEnabled && common.RDB != nil
+			},
+			Memory: func() *hot.HotCache[string, bool] {
+				return hot.NewHotCache[string, bool](hot.LRU, contentModerationAllowCacheCapacity).
+					WithTTL(contentModerationAllowDedupTTL).
+					WithJanitor().
+					Build()
+			},
+		})
+	})
+	return contentModerationAllowCache
+}
+
 func contentModerationAffinityCacheKey(input ContentModerationRequest, configs ...ContentModerationConfig) string {
 	if (input.AffinityCacheIdentity == "" && input.AffinityKeyFingerprint == "") || input.AffinityTTLSeconds <= 0 || input.AffinityChannelID <= 0 {
 		return ""
@@ -360,6 +436,26 @@ func contentModerationAffinityCacheKey(input ContentModerationRequest, configs .
 	return hex.EncodeToString(digest[:])
 }
 
+func contentModerationAllowCacheKey(input ContentModerationRequest, config ContentModerationConfig, content ContentModerationInput) string {
+	content.normalize()
+	if input.UserID <= 0 || content.ValidationError != nil || len(content.Images) > 0 || content.Text == "" {
+		return ""
+	}
+	if len([]rune(content.Text)) > contentModerationAllowDedupMaxRunes {
+		return ""
+	}
+	seed := fmt.Sprintf(
+		"%d\x00%s\x00%s\x00%s\x00%s",
+		input.UserID,
+		strings.TrimSpace(input.Group),
+		strings.TrimSpace(input.Protocol),
+		content.hash(),
+		contentModerationPolicyFingerprint(config),
+	)
+	digest := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(digest[:])
+}
+
 func contentModerationPolicyFingerprint(config ContentModerationConfig) string {
 	policy := struct {
 		Enabled              bool               `json:"enabled"`
@@ -375,6 +471,10 @@ func contentModerationPolicyFingerprint(config ContentModerationConfig) string {
 		SampleRate           float64            `json:"sample_rate"`
 		TimeoutMS            int                `json:"timeout_ms"`
 		RetryCount           int                `json:"retry_count"`
+		MaxInFlightPerKey    int                `json:"max_in_flight_per_key"`
+		QueueWaitMS          int                `json:"queue_wait_ms"`
+		OverloadStatus       int                `json:"overload_status"`
+		KeyCooldownMS        int                `json:"key_cooldown_ms"`
 		RecordNonHits        bool               `json:"record_non_hits"`
 		RecordLogs           bool               `json:"record_logs"`
 		BlockStatus          int                `json:"block_status"`
@@ -389,6 +489,8 @@ func contentModerationPolicyFingerprint(config ContentModerationConfig) string {
 		GroupIDs: append([]string(nil), config.GroupIDs...), AllModels: config.AllModels,
 		Models: append([]string(nil), config.Models...), ModelFilters: append([]string(nil), config.ModelFilters...),
 		SampleRate: config.SampleRate, TimeoutMS: config.TimeoutMS, RetryCount: config.RetryCount,
+		MaxInFlightPerKey: config.MaxInFlightPerKey, QueueWaitMS: config.QueueWaitMS,
+		OverloadStatus: config.OverloadStatus, KeyCooldownMS: config.KeyCooldownMS,
 		RecordNonHits: config.RecordNonHits, RecordLogs: config.RecordLogs, BlockStatus: config.BlockStatus,
 		BlockMessage: config.BlockMessage, EmailOnHit: config.EmailOnHit, AutoBanEnabled: config.AutoBanEnabled,
 		BanThreshold: config.BanThreshold, ViolationWindowHours: config.ViolationWindowHours,
@@ -427,7 +529,11 @@ func contentModerationAffinityLeaseKey(cacheKey string) string {
 	return cachex.Namespace(contentModerationAffinityLeaseNamespace).FullKey(cacheKey)
 }
 
-func tryAcquireContentModerationLease(ctx context.Context, client *redis.Client, cacheKey string, config ContentModerationConfig) (contentModerationLease, bool, error) {
+func contentModerationAllowLeaseKey(cacheKey string) string {
+	return cachex.Namespace(contentModerationAllowLeaseNamespace).FullKey(cacheKey)
+}
+
+func tryAcquireContentModerationLease(ctx context.Context, client *redis.Client, leaseKey string, config ContentModerationConfig) (contentModerationLease, bool, error) {
 	lease := contentModerationLease{Token: common.NewRequestId(), TTL: contentModerationLeaseTTL(config), Redis: client}
 	if ctx == nil {
 		ctx = context.Background()
@@ -435,7 +541,7 @@ func tryAcquireContentModerationLease(ctx context.Context, client *redis.Client,
 	if client == nil {
 		return lease, false, errors.New("redis is not initialized")
 	}
-	acquired, err := client.SetNX(ctx, contentModerationAffinityLeaseKey(cacheKey), lease.Token, lease.TTL).Result()
+	acquired, err := client.SetNX(ctx, leaseKey, lease.Token, lease.TTL).Result()
 	return lease, acquired, err
 }
 
@@ -493,7 +599,14 @@ func keepContentModerationLeaseAlive(leaseKey string, lease contentModerationLea
 	}
 }
 
-func runContentModerationWithAffinityLease(ctx context.Context, input ContentModerationRequest, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision) *ContentModerationDecision {
+func runContentModerationWithLease(
+	ctx context.Context,
+	config ContentModerationConfig,
+	leaseKey string,
+	leaseLabel string,
+	getCached func() (*ContentModerationDecision, bool),
+	check func() *ContentModerationDecision,
+) *ContentModerationDecision {
 	client := common.RDB
 	if !common.RedisEnabled || client == nil {
 		return check()
@@ -501,18 +614,17 @@ func runContentModerationWithAffinityLease(ctx context.Context, input ContentMod
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	leaseKey := contentModerationAffinityLeaseKey(cacheKey)
 	for {
-		lease, acquired, err := tryAcquireContentModerationLease(ctx, client, cacheKey, config)
+		lease, acquired, err := tryAcquireContentModerationLease(ctx, client, leaseKey, config)
 		if err != nil {
-			common.SysLog("failed to acquire content moderation affinity lease; using local singleflight: " + err.Error())
+			common.SysLog("failed to acquire content moderation " + leaseLabel + " lease; using local singleflight: " + err.Error())
 			return check()
 		}
 		if acquired {
 			defer releaseContentModerationLease(leaseKey, lease)
 			stopRenewal := keepContentModerationLeaseAlive(leaseKey, lease)
 			defer stopRenewal()
-			if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+			if cachedDecision, found := getCached(); found {
 				return cachedDecision
 			}
 			return check()
@@ -535,7 +647,7 @@ func runContentModerationWithAffinityLease(ctx context.Context, input ContentMod
 				ticker.Stop()
 				goto retryLease
 			case <-ticker.C:
-				if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+				if cachedDecision, found := getCached(); found {
 					ticker.Stop()
 					if !deadline.Stop() {
 						select {
@@ -554,7 +666,7 @@ func runContentModerationWithAffinityLease(ctx context.Context, input ContentMod
 						default:
 						}
 					}
-					common.SysLog("failed to wait for content moderation affinity lease; using local singleflight: " + existsErr.Error())
+					common.SysLog("failed to wait for content moderation " + leaseLabel + " lease; using local singleflight: " + existsErr.Error())
 					return check()
 				}
 				if exists == 0 {
@@ -571,6 +683,32 @@ func runContentModerationWithAffinityLease(ctx context.Context, input ContentMod
 		}
 	retryLease:
 	}
+}
+
+func runContentModerationWithAffinityLease(ctx context.Context, input ContentModerationRequest, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision) *ContentModerationDecision {
+	return runContentModerationWithLease(
+		ctx,
+		config,
+		contentModerationAffinityLeaseKey(cacheKey),
+		"affinity",
+		func() (*ContentModerationDecision, bool) {
+			return getCachedContentModerationDecision(input, config)
+		},
+		check,
+	)
+}
+
+func runContentModerationWithAllowLease(ctx context.Context, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision) *ContentModerationDecision {
+	return runContentModerationWithLease(
+		ctx,
+		config,
+		contentModerationAllowLeaseKey(cacheKey),
+		"allow de-duplication",
+		func() (*ContentModerationDecision, bool) {
+			return getCachedContentModerationAllowDecision(cacheKey)
+		},
+		check,
+	)
 }
 
 func getCachedContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig) (*ContentModerationDecision, bool) {
@@ -630,9 +768,36 @@ func cacheContentModerationDecision(input ContentModerationRequest, config Conte
 	}
 }
 
-func clearContentModerationAffinityCache() {
+func getCachedContentModerationAllowDecision(cacheKey string) (*ContentModerationDecision, bool) {
+	if cacheKey == "" {
+		return nil, false
+	}
+	allowed, found, err := getContentModerationAllowCache().Get(cacheKey)
+	if err != nil {
+		common.SysLog("failed to read content moderation allow cache: " + err.Error())
+		return nil, false
+	}
+	if !found || !allowed {
+		return nil, false
+	}
+	return &ContentModerationDecision{Checked: true, Cached: true}, true
+}
+
+func cacheContentModerationAllowDecision(cacheKey string) {
+	if cacheKey == "" {
+		return
+	}
+	if err := getContentModerationAllowCache().SetWithTTL(cacheKey, true, contentModerationAllowDedupTTL); err != nil {
+		common.SysLog("failed to write content moderation allow cache: " + err.Error())
+	}
+}
+
+func clearContentModerationCaches() {
 	if err := getContentModerationAffinityCache().Purge(); err != nil {
 		common.SysLog("failed to clear content moderation affinity cache: " + err.Error())
+	}
+	if err := getContentModerationAllowCache().Purge(); err != nil {
+		common.SysLog("failed to clear content moderation allow cache: " + err.Error())
 	}
 }
 
@@ -675,6 +840,239 @@ func moderationAPIKeys(config ContentModerationConfig) []string {
 		}
 	}
 	return keys
+}
+
+func contentModerationProviderKeyFingerprint(config ContentModerationConfig, apiKey string) string {
+	identity := apiKey
+	if identity == "" {
+		identity = "anonymous\x00" + config.BaseURL + "\x00" + config.Model
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:])
+}
+
+func contentModerationProviderCredentials(config ContentModerationConfig) []contentModerationProviderCredential {
+	keys := moderationAPIKeys(config)
+	if len(keys) == 0 {
+		return []contentModerationProviderCredential{{
+			Fingerprint: contentModerationProviderKeyFingerprint(config, ""),
+		}}
+	}
+	credentials := make([]contentModerationProviderCredential, 0, len(keys))
+	for _, apiKey := range keys {
+		credentials = append(credentials, contentModerationProviderCredential{
+			APIKey:      apiKey,
+			Fingerprint: contentModerationProviderKeyFingerprint(config, apiKey),
+		})
+	}
+	return credentials
+}
+
+func contentModerationProviderLeaseTTL(config ContentModerationConfig) time.Duration {
+	ttl := time.Duration(config.TimeoutMS+config.QueueWaitMS)*time.Millisecond + 5*time.Second
+	if ttl < 5*time.Second {
+		return 5 * time.Second
+	}
+	if ttl > 135*time.Second {
+		return 135 * time.Second
+	}
+	return ttl
+}
+
+func contentModerationProviderSlotKey(fingerprint string, slot int) string {
+	return cachex.Namespace(contentModerationProviderSlotNamespace).FullKey(fmt.Sprintf("%s:%d", fingerprint, slot))
+}
+
+func contentModerationProviderCooldownKey(fingerprint string) string {
+	return cachex.Namespace(contentModerationProviderCooldownNamespace).FullKey(fingerprint)
+}
+
+func contentModerationProviderCapacityDegraded() bool {
+	contentModerationCapacityState.mu.Lock()
+	defer contentModerationCapacityState.mu.Unlock()
+	return time.Now().Before(contentModerationCapacityState.degradedUntil)
+}
+
+func markContentModerationProviderCapacityDegraded() {
+	contentModerationCapacityState.mu.Lock()
+	contentModerationCapacityState.degradedUntil = time.Now().Add(time.Second)
+	contentModerationCapacityState.mu.Unlock()
+}
+
+func tryAcquireLocalContentModerationProviderSlot(fingerprint string, limit int) bool {
+	contentModerationCapacityState.mu.Lock()
+	defer contentModerationCapacityState.mu.Unlock()
+	if contentModerationCapacityState.inFlight[fingerprint] >= limit {
+		return false
+	}
+	contentModerationCapacityState.inFlight[fingerprint]++
+	return true
+}
+
+func releaseLocalContentModerationProviderSlot(fingerprint string) {
+	contentModerationCapacityState.mu.Lock()
+	defer contentModerationCapacityState.mu.Unlock()
+	remaining := contentModerationCapacityState.inFlight[fingerprint] - 1
+	if remaining <= 0 {
+		delete(contentModerationCapacityState.inFlight, fingerprint)
+		return
+	}
+	contentModerationCapacityState.inFlight[fingerprint] = remaining
+}
+
+func contentModerationProviderKeyCoolingDown(ctx context.Context, fingerprint string) (bool, bool) {
+	now := time.Now()
+	contentModerationCapacityState.mu.Lock()
+	localUntil := contentModerationCapacityState.cooldown[fingerprint]
+	if !localUntil.IsZero() && !now.Before(localUntil) {
+		delete(contentModerationCapacityState.cooldown, fingerprint)
+		localUntil = time.Time{}
+	}
+	contentModerationCapacityState.mu.Unlock()
+	if !localUntil.IsZero() {
+		return true, false
+	}
+	if !common.RedisEnabled || common.RDB == nil {
+		return false, false
+	}
+	if contentModerationProviderCapacityDegraded() {
+		return false, true
+	}
+	exists, err := common.RDB.Exists(ctx, contentModerationProviderCooldownKey(fingerprint)).Result()
+	if err != nil {
+		markContentModerationProviderCapacityDegraded()
+		return false, true
+	}
+	return exists > 0, false
+}
+
+func markContentModerationProviderKeyCooldown(config ContentModerationConfig, fingerprint string) {
+	cooldown := time.Duration(config.KeyCooldownMS) * time.Millisecond
+	contentModerationCapacityState.mu.Lock()
+	contentModerationCapacityState.cooldown[fingerprint] = time.Now().Add(cooldown)
+	contentModerationCapacityState.mu.Unlock()
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), contentModerationRedisOperationTimeout)
+	defer cancel()
+	if err := common.RDB.Set(ctx, contentModerationProviderCooldownKey(fingerprint), "1", cooldown).Err(); err != nil {
+		common.SysLog("content moderation capacity control degraded to local key cooldown")
+	}
+}
+
+func tryAcquireContentModerationProviderSlot(ctx context.Context, config ContentModerationConfig, credential contentModerationProviderCredential) (contentModerationProviderSlot, bool, bool) {
+	if !tryAcquireLocalContentModerationProviderSlot(credential.Fingerprint, config.MaxInFlightPerKey) {
+		return contentModerationProviderSlot{}, false, false
+	}
+	slot := contentModerationProviderSlot{Fingerprint: credential.Fingerprint, Local: true}
+	if !common.RedisEnabled || common.RDB == nil {
+		return slot, true, false
+	}
+	if contentModerationProviderCapacityDegraded() {
+		return slot, true, true
+	}
+	token := common.NewRequestId()
+	ttl := contentModerationProviderLeaseTTL(config)
+	for slotIndex := 0; slotIndex < config.MaxInFlightPerKey; slotIndex++ {
+		leaseKey := contentModerationProviderSlotKey(credential.Fingerprint, slotIndex)
+		acquired, err := common.RDB.SetNX(ctx, leaseKey, token, ttl).Result()
+		if err != nil {
+			markContentModerationProviderCapacityDegraded()
+			return slot, true, true
+		}
+		if acquired {
+			slot.Redis = common.RDB
+			slot.RedisKey = leaseKey
+			slot.Token = token
+			return slot, true, false
+		}
+	}
+	releaseLocalContentModerationProviderSlot(credential.Fingerprint)
+	return contentModerationProviderSlot{}, false, false
+}
+
+func (slot contentModerationProviderSlot) release() {
+	if slot.Redis != nil && slot.RedisKey != "" && slot.Token != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), contentModerationRedisOperationTimeout)
+		if err := slot.Redis.Eval(ctx, contentModerationReleaseLeaseScript, []string{slot.RedisKey}, slot.Token).Err(); err != nil {
+			common.SysLog("failed to release content moderation provider capacity lease")
+		}
+		cancel()
+	}
+	if slot.Local {
+		releaseLocalContentModerationProviderSlot(slot.Fingerprint)
+	}
+}
+
+func contentModerationProviderCredentialStart(content ContentModerationInput, count int) int {
+	if count <= 1 {
+		return 0
+	}
+	digest := sha256.Sum256([]byte(content.hash()))
+	return int(binary.BigEndian.Uint64(digest[:8]) % uint64(count))
+}
+
+func acquireContentModerationProviderSlot(ctx context.Context, config ContentModerationConfig, content ContentModerationInput, attempt int) (contentModerationProviderCredential, contentModerationProviderSlot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	credentials := contentModerationProviderCredentials(config)
+	start := (contentModerationProviderCredentialStart(content, len(credentials)) + attempt) % len(credentials)
+	deadline := time.Now().Add(time.Duration(config.QueueWaitMS) * time.Millisecond)
+	capacityContext, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	degradationLogged := false
+	for {
+		if ctx.Err() != nil {
+			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, ctx.Err()
+		}
+		for offset := 0; offset < len(credentials); offset++ {
+			credential := credentials[(start+offset)%len(credentials)]
+			coolingDown, degraded := contentModerationProviderKeyCoolingDown(capacityContext, credential.Fingerprint)
+			if degraded && !degradationLogged {
+				common.SysLog("content moderation capacity control degraded to local limiter")
+				degradationLogged = true
+			}
+			if coolingDown {
+				continue
+			}
+			slot, acquired, degraded := tryAcquireContentModerationProviderSlot(capacityContext, config, credential)
+			if degraded && !degradationLogged {
+				common.SysLog("content moderation capacity control degraded to local limiter")
+				degradationLogged = true
+			}
+			if acquired {
+				return credential, slot, nil
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, fmt.Errorf("%w after %dms", ErrContentModerationCapacity, config.QueueWaitMS)
+		}
+		wait := contentModerationAffinityPollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-capacityContext.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return contentModerationProviderCredential{}, contentModerationProviderSlot{}, ctx.Err()
+			}
+			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, fmt.Errorf("%w after %dms", ErrContentModerationCapacity, config.QueueWaitMS)
+		case <-timer.C:
+		}
+	}
+}
+
+func resetContentModerationCapacityState() {
+	contentModerationCapacityState.mu.Lock()
+	contentModerationCapacityState.inFlight = make(map[string]int)
+	contentModerationCapacityState.cooldown = make(map[string]time.Time)
+	contentModerationCapacityState.degradedUntil = time.Time{}
+	contentModerationCapacityState.mu.Unlock()
 }
 
 func NormalizeContentModerationConfig(input ContentModerationConfig) (ContentModerationConfig, error) {
@@ -754,6 +1152,30 @@ func NormalizeContentModerationConfig(input ContentModerationConfig) (ContentMod
 	}
 	if config.RetryCount > 5 {
 		return ContentModerationConfig{}, errors.New("retry_count must not exceed 5")
+	}
+	if config.MaxInFlightPerKey <= 0 {
+		config.MaxInFlightPerKey = contentModerationDefaultMaxInFlight
+	}
+	if config.MaxInFlightPerKey > 64 {
+		return ContentModerationConfig{}, errors.New("max_in_flight_per_key must not exceed 64")
+	}
+	if config.QueueWaitMS <= 0 {
+		config.QueueWaitMS = contentModerationDefaultQueueWaitMS
+	}
+	if config.QueueWaitMS > 10000 {
+		return ContentModerationConfig{}, errors.New("queue_wait_ms must not exceed 10000")
+	}
+	if config.OverloadStatus == 0 {
+		config.OverloadStatus = contentModerationDefaultOverloadStatus
+	}
+	if config.OverloadStatus != http.StatusTooManyRequests && config.OverloadStatus != http.StatusServiceUnavailable {
+		return ContentModerationConfig{}, errors.New("overload_status must be 429 or 503")
+	}
+	if config.KeyCooldownMS == 0 {
+		config.KeyCooldownMS = contentModerationDefaultKeyCooldownMS
+	}
+	if config.KeyCooldownMS < 100 || config.KeyCooldownMS > 300000 {
+		return ContentModerationConfig{}, errors.New("key_cooldown_ms must be between 100 and 300000")
 	}
 	if config.BlockStatus == 0 {
 		config.BlockStatus = contentModerationDefaultBlockCode
@@ -919,6 +1341,10 @@ func GetContentModerationConfigView() ContentModerationConfigView {
 		SampleRate:           config.SampleRate,
 		TimeoutMS:            config.TimeoutMS,
 		RetryCount:           config.RetryCount,
+		MaxInFlightPerKey:    config.MaxInFlightPerKey,
+		QueueWaitMS:          config.QueueWaitMS,
+		OverloadStatus:       config.OverloadStatus,
+		KeyCooldownMS:        config.KeyCooldownMS,
 		RecordNonHits:        config.RecordNonHits,
 		RecordLogs:           config.RecordLogs,
 		BlockStatus:          config.BlockStatus,
@@ -942,7 +1368,7 @@ func UpdateContentModerationConfig(input ContentModerationConfig) error {
 	if err := model.UpdateOption(ContentModerationOptionKey, string(raw)); err != nil {
 		return fmt.Errorf("%w: %v", ErrContentModerationConfigPersistence, err)
 	}
-	clearContentModerationAffinityCache()
+	clearContentModerationCaches()
 	return nil
 }
 
@@ -1036,7 +1462,12 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		return decision, nil
 	}
 	content.Images = limitContentModerationImages(content.Images)
+	allowCacheKey := contentModerationAllowCacheKey(input, config, content)
 	if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+		return cachedDecision, nil
+	}
+	if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
+		cacheContentModerationDecision(input, config, *cachedDecision, true)
 		return cachedDecision, nil
 	}
 	if !shouldModerateContent(config, input, content) {
@@ -1044,6 +1475,10 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 	}
 	check := func() *ContentModerationDecision {
 		if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+			return cachedDecision
+		}
+		if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
+			cacheContentModerationDecision(input, config, *cachedDecision, true)
 			return cachedDecision
 		}
 		decision := &ContentModerationDecision{Checked: true}
@@ -1057,6 +1492,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		scores, apiFlagged, callErr := callModeration(requestContext, config, content)
 		latency := time.Since(started).Milliseconds()
 		decision.CategoryScores = scores
+		capacitySkipped := errors.Is(callErr, ErrContentModerationCapacity)
 		if callErr != nil {
 			decision.Error = callErr.Error()
 		}
@@ -1072,11 +1508,23 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 			decision.StatusCode = config.BlockStatus
 			decision.Message = config.BlockMessage
 		}
+		if capacitySkipped {
+			decision.Overloaded = true
+			decision.Blocked = config.Mode == "pre_block"
+			if decision.Blocked {
+				decision.StatusCode = config.OverloadStatus
+				decision.Message = "Content moderation capacity is temporarily unavailable"
+			}
+		}
 
 		logComplete := true
 		sideEffectsComplete := true
-		if flagged || config.RecordNonHits {
+		if capacitySkipped || flagged || config.RecordNonHits {
 			categoryScores, _ := common.Marshal(scores)
+			action := moderationAction(config.Mode, flagged)
+			if capacitySkipped {
+				action = "skipped_capacity"
+			}
 			entry := &model.ContentModerationLog{
 				UserID:         input.UserID,
 				GroupName:      strings.TrimSpace(input.Group),
@@ -1085,7 +1533,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 				RequestPath:    strings.TrimSpace(input.RequestPath),
 				RequestID:      strings.TrimSpace(input.RequestID),
 				Mode:           config.Mode,
-				Action:         moderationAction(config.Mode, flagged),
+				Action:         action,
 				Flagged:        flagged,
 				Blocked:        decision.Blocked,
 				Category:       category,
@@ -1114,16 +1562,33 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		}
 		if callErr == nil && logComplete {
 			cacheContentModerationDecision(input, config, *decision, sideEffectsComplete)
+			if !decision.Flagged && !apiFlagged && len(scores) > 0 {
+				cacheContentModerationAllowDecision(allowCacheKey)
+			}
 		}
 		return decision
 	}
 
-	cacheKey := contentModerationAffinityCacheKey(input, config)
-	if cacheKey == "" {
-		return check(), nil
+	runAllowDedup := func() *ContentModerationDecision {
+		if allowCacheKey == "" {
+			return check()
+		}
+		result, _, _ := contentModerationAllowFlight.Do(allowCacheKey, func() (interface{}, error) {
+			return runContentModerationWithAllowLease(ctx, config, allowCacheKey, check), nil
+		})
+		return result.(*ContentModerationDecision)
 	}
-	result, _, _ := contentModerationAffinityFlight.Do(cacheKey, func() (interface{}, error) {
-		return runContentModerationWithAffinityLease(ctx, input, config, cacheKey, check), nil
+
+	affinityCacheKey := contentModerationAffinityCacheKey(input, config)
+	if affinityCacheKey == "" {
+		return runAllowDedup(), nil
+	}
+	result, _, _ := contentModerationAffinityFlight.Do(affinityCacheKey, func() (interface{}, error) {
+		decision := runContentModerationWithAffinityLease(ctx, input, config, affinityCacheKey, runAllowDedup)
+		if decision.Checked && decision.Error == "" && !decision.Flagged {
+			cacheContentModerationDecision(input, config, *decision, true)
+		}
+		return decision, nil
 	})
 	return result.(*ContentModerationDecision), nil
 }
@@ -1294,35 +1759,41 @@ func EvaluateContentModerationScores(scores, thresholds map[string]float64) (boo
 }
 
 func callModeration(ctx context.Context, config ContentModerationConfig, content ContentModerationInput) (map[string]float64, bool, error) {
-	keys := moderationAPIKeys(config)
 	payloadInput, expectedResults, err := buildContentModerationAPIInput(content)
 	if err != nil {
 		return nil, false, err
 	}
+	payload, err := common.Marshal(map[string]any{
+		"model": config.Model,
+		"input": payloadInput,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	endpoint := strings.TrimRight(config.BaseURL, "/") + "/v1/moderations"
 	attempts := config.RetryCount + 1
 	if attempts < 1 {
 		attempts = 1
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		payload, err := common.Marshal(map[string]any{
-			"model": config.Model,
-			"input": payloadInput,
-		})
+		credential, slot, err := acquireContentModerationProviderSlot(ctx, config, content, attempt)
 		if err != nil {
 			return nil, false, err
 		}
-		endpoint := strings.TrimRight(config.BaseURL, "/") + "/v1/moderations"
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
 		if err != nil {
+			slot.release()
 			return nil, false, err
 		}
 		request.Header.Set("Content-Type", "application/json")
-		if len(keys) > 0 {
-			request.Header.Set("Authorization", "Bearer "+keys[attempt%len(keys)])
+		if credential.APIKey != "" {
+			request.Header.Set("Authorization", "Bearer "+credential.APIKey)
 		}
 		response, err := contentModerationHTTPClient.Do(request)
 		if err != nil {
+			slot.release()
+			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
 			var requestErr *url.Error
 			if errors.As(err, &requestErr) {
 				// url.Error includes the complete request URL. Only retain the
@@ -1339,7 +1810,9 @@ func callModeration(ctx context.Context, config ContentModerationConfig, content
 		}
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 		response.Body.Close()
+		slot.release()
 		if readErr != nil {
+			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
 			lastErr = fmt.Errorf("read moderation response failed: %w", readErr)
 			continue
 		}
@@ -1348,6 +1821,7 @@ func callModeration(ctx context.Context, config ContentModerationConfig, content
 			if response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
 				return nil, false, lastErr
 			}
+			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
 			continue
 		}
 		var parsed moderationAPIResponse

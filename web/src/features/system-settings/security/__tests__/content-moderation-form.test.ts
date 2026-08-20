@@ -40,6 +40,10 @@ const config = {
   sample_rate: 0.5,
   timeout_ms: 1500,
   retry_count: 1,
+  max_in_flight_per_key: 1,
+  queue_wait_ms: 200,
+  overload_status: 503 as const,
+  key_cooldown_ms: 5000,
   record_non_hits: false,
   block_status: 451,
   block_message: 'Blocked',
@@ -58,6 +62,10 @@ describe('content moderation form mapping', () => {
     expect(request.group_ids).toEqual(['pro', 'safe'])
     expect(request.model_filters).toEqual(['claude-*'])
     expect(request.sample_rate).toBe(0.5)
+    expect(request.max_in_flight_per_key).toBe(1)
+    expect(request.queue_wait_ms).toBe(200)
+    expect(request.overload_status).toBe(503)
+    expect(request.key_cooldown_ms).toBe(5000)
     expect(request).not.toHaveProperty('record_logs')
   })
 
@@ -91,6 +99,15 @@ describe('content moderation form mapping', () => {
       contentModerationSchema.safeParse({
         ...toContentModerationFormValues(config),
         violation_window_hours: '8761',
+      }).success
+    ).toBe(false)
+  })
+
+  test('rejects unsupported overload statuses', () => {
+    expect(
+      contentModerationSchema.safeParse({
+        ...toContentModerationFormValues(config),
+        overload_status: '403',
       }).success
     ).toBe(false)
   })

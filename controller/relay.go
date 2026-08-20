@@ -136,7 +136,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if statusCode < 400 || statusCode > 599 {
 			statusCode = http.StatusForbidden
 		}
-		newAPIError = types.NewErrorWithStatusCode(errors.New(message), types.ErrorCode("content_policy_violation"), statusCode, types.ErrOptionWithSkipRetry())
+		errorCode := types.ErrorCode("content_policy_violation")
+		if decision.Overloaded {
+			errorCode = types.ErrorCode("content_moderation_overloaded")
+		}
+		newAPIError = types.NewErrorWithStatusCode(errors.New(message), errorCode, statusCode, types.ErrOptionWithSkipRetry())
 		return
 	}
 	if relayFormat != types.RelayFormatOpenAIRealtime {
@@ -336,8 +340,13 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	}
 	decision, _ := service.CheckContentModeration(c.Request.Context(), moderationRequest)
 	if decision != nil && decision.Error != "" {
+		logLabel := "content moderation fail-open"
+		if decision.Overloaded {
+			logLabel = "content moderation overloaded"
+		}
 		logger.LogError(c, fmt.Sprintf(
-			"content moderation fail-open user_id=%d request_id=%q protocol=%s path=%q: %s",
+			"%s user_id=%d request_id=%q protocol=%s path=%q: %s",
+			logLabel,
 			info.UserId,
 			info.RequestId,
 			protocol,

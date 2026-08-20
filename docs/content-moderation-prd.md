@@ -14,6 +14,8 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 - Admin endpoints for configuration and paginated logs, protected by root authentication.
 - Optional user notification through the existing notification service and optional automatic user disable after a configurable rolling count.
 - Channel-affinity conversation de-duplication: when the distributor resolves a channel-affinity key, the same affinity conversation is moderated once per selected channel for the affinity TTL; later requests reuse the decision without a second API call or duplicate side effects.
+- Repeated short-text allow de-duplication: the first in-scope request is still moderated, but a successful allow decision for the same normalized pure text may be reused briefly for the same user/group/protocol across target models. Flagged decisions, provider failures, image inputs, and long text are never eligible for this cache.
+- Provider-capacity protection: each moderation API key has a bounded in-flight pool shared by all gateway nodes through Redis, with a short synchronous wait budget, process-local fallback protection, and per-key cooldown after transient provider failures.
 
 ## Non-goals
 
@@ -53,6 +55,17 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 27. Image URLs and Base64 data are never stored in moderation logs. The stored input hash includes image identity through SHA-256 only.
 28. Multiple images in one latest user turn do not create multiple moderation calls or results; one image is selected for the conversation-level audit, matching the bounded Sub2API behavior.
 29. Only the final conversation item is eligible for extraction. Assistant/model turns, Responses function outputs, Anthropic `tool_result`, and Gemini `functionResponse` turns do not fall back to an older user request.
+30. A generic request-size or character-count threshold never bypasses the first moderation check. Short harmful prompts remain auditable.
+31. Repeated eligible short pure-text requests from the same user/group/protocol and policy call the provider once within the bounded de-duplication TTL even when target model names differ.
+32. Only a successful provider response whose raw `flagged` value is false, with non-empty category scores, evaluated as allow by the configured local thresholds and durably persisted when required, enters the repeated-content cache. Flagged decisions, errors, malformed or partial responses, and failed log persistence remain independently auditable and retryable.
+33. In-process singleflight and a Redis owner lease merge concurrent first checks for the same eligible text across gateway nodes. The cache key contains only SHA-256-derived content identity and policy/request metadata, never raw text.
+34. With Redis available, active moderation provider calls never exceed `max_in_flight_per_key` for any API key across gateway nodes. Redis keys contain only a full SHA-256 credential fingerprint, a bounded slot index, and a random lease token.
+35. Every provider slot is released after the call completes. A crashed owner cannot hold capacity beyond the lease TTL, which is longer than the configured moderation timeout.
+36. Redis failure falls back to the same per-key process-local limit and emits a safe degradation log without an API key, prompt, image reference, or credential-bearing URL.
+37. Capacity acquisition considers every non-cooled-down key before waiting. A 429, timeout, transport failure, response-read failure, or 5xx response places only the affected key into a bounded cooldown, and a retry may use another healthy key without exceeding the existing retry budget.
+38. When the queue wait budget expires in `observe`, the relay remains fail-open but always persists an audit row with action `skipped_capacity`. It is never represented as a successful allow or cached decision.
+39. When the queue wait budget expires in `pre_block`, the relay does not contact the model provider and returns the configured 429 or 503 with error code `content_moderation_overloaded`, distinct from a content-policy violation.
+40. Affinity-cache and repeated-allow-cache hits do not acquire provider capacity because they do not call the moderation provider.
 
 ## Risks and controls
 
@@ -67,3 +80,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 - Image privacy and size: image content is forwarded only to the configured moderation provider and is never persisted locally. Data URLs are restricted to PNG, JPEG, WEBP, or GIF, validated as strict Base64, and limited to 20 MB decoded bytes; image URLs are limited to 8 KiB and must be valid HTTP(S) URLs without embedded user info. More than 16 distinct candidate images is rejected before sampling one image. These limits follow the official OpenAI moderation 20 MB image boundary while bounding local parsing and provider payload cost.
 - Side-effect idempotency: auto-ban uses a conditional status transition, and notification email uses a durable per-log claim. SMTP cannot provide exactly-once delivery after an ambiguous connection failure, so ambiguous claims require operator review instead of an automatic resend.
 - Conversation semantics: both allow and flagged decisions are intentionally reused for the affinity TTL. This feature is a conversation-level gate; request-level enforcement requires an affinity key that advances when the auditable user-content revision changes.
+- Short-request bypass: raw body size and text length are not trust signals because harmful prompts can be only a few characters. Length is used only to bound eligibility for allow-result reuse after one successful moderation check.
+- Repeated-content correctness: the short-lived cache is scoped by user, group, protocol, normalized content hash, and normalized policy version, while intentionally excluding the target model. It stores only responses whose raw provider flag is false, whose category scores are non-empty, and which are allowed by local thresholds, so repeated flagged requests continue to produce their normal audit and account side effects. When non-hit persistence is enabled, a repeated allow cache hit intentionally does not create another allow log.
+- Capacity correctness: sample rate controls which requests are audited, not instantaneous concurrency. The hard per-key limit is the resource boundary; the short wait budget bounds relay latency, cooldown prevents a failing credential from consuming retries, and lease expiry restores capacity after node failure.
+- Degraded coordination: without Redis, each node still enforces the configured per-key limit locally, but the fleet-wide limit can temporarily rise to the number of active nodes multiplied by that value. Operators must treat the safe degradation log as an alert condition.

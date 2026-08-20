@@ -141,6 +141,10 @@ export function ContentModerationSection(
       sample_rate: 1,
       timeout_ms: 1500,
       retry_count: 1,
+      max_in_flight_per_key: 1,
+      queue_wait_ms: 200,
+      overload_status: 503,
+      key_cooldown_ms: 5000,
       record_non_hits: false,
       block_status: 403,
       block_message: 'Request blocked by content policy',
@@ -310,6 +314,103 @@ export function ContentModerationSection(
                       {t(
                         'One key per line. Existing keys are never returned; current count: {{count}}.',
                         { count: configQuery.data?.data.api_key_count ?? 0 }
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </SettingsFormGrid>
+
+            <SettingsFormGrid>
+              <FormField
+                control={form.control}
+                name='max_in_flight_per_key'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Max in-flight per key')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={64}
+                        step={1}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Hard provider concurrency limit for each moderation API key.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='queue_wait_ms'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Capacity wait (ms)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={10000}
+                        step={10}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('Maximum time to wait for a free moderation slot.')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='overload_status'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Overload status')}</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value='503'>503</SelectItem>
+                        <SelectItem value='429'>429</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {t('Returned only when pre-block capacity is exhausted.')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='key_cooldown_ms'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Key cooldown (ms)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={100}
+                        max={300000}
+                        step={100}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Temporarily avoid a key after rate limits or transient failures.'
                       )}
                     </FormDescription>
                     <FormMessage />

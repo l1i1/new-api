@@ -64,6 +64,22 @@ export const contentModerationSchema = z.object({
     const parsed = Number(value)
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 5
   }),
+  max_in_flight_per_key: z.string().refine((value) => {
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 64
+  }),
+  queue_wait_ms: z.string().refine((value) => {
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 10000
+  }),
+  overload_status: z.string().refine((value) => {
+    const parsed = Number(value)
+    return parsed === 429 || parsed === 503
+  }),
+  key_cooldown_ms: z.string().refine((value) => {
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed >= 100 && parsed <= 300000
+  }),
   record_non_hits: z.boolean(),
   block_status: z.string().refine((value) => {
     const parsed = Number(value)
@@ -114,6 +130,10 @@ export function toContentModerationFormValues(
     sample_rate: String(config.sample_rate),
     timeout_ms: String(config.timeout_ms),
     retry_count: String(config.retry_count),
+    max_in_flight_per_key: String(config.max_in_flight_per_key),
+    queue_wait_ms: String(config.queue_wait_ms),
+    overload_status: String(config.overload_status),
+    key_cooldown_ms: String(config.key_cooldown_ms),
     record_non_hits: config.record_non_hits,
     block_status: String(config.block_status),
     block_message: config.block_message,
@@ -141,6 +161,10 @@ export function toContentModerationRequest(
     sample_rate: Number(values.sample_rate),
     timeout_ms: Number(values.timeout_ms),
     retry_count: Number(values.retry_count),
+    max_in_flight_per_key: Number(values.max_in_flight_per_key),
+    queue_wait_ms: Number(values.queue_wait_ms),
+    overload_status: Number(values.overload_status) as 429 | 503,
+    key_cooldown_ms: Number(values.key_cooldown_ms),
     record_non_hits: values.record_non_hits,
     block_status: Number(values.block_status),
     block_message: values.block_message.trim(),

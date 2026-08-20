@@ -34,6 +34,10 @@ export type ContentModerationConfig = {
   sample_rate: number
   timeout_ms: number
   retry_count: number
+  max_in_flight_per_key: number
+  queue_wait_ms: number
+  overload_status: 429 | 503
+  key_cooldown_ms: number
   record_non_hits: boolean
   block_status: number
   block_message: string
@@ -96,6 +100,10 @@ export type UpdateContentModerationConfig = {
   sample_rate: number
   timeout_ms: number
   retry_count: number
+  max_in_flight_per_key: number
+  queue_wait_ms: number
+  overload_status: 429 | 503
+  key_cooldown_ms: number
   record_non_hits: boolean
   block_status: number
   block_message: string

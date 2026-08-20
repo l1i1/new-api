@@ -677,7 +677,7 @@ func TestCheckContentModerationImageTimeoutIsRetryable(t *testing.T) {
 		<-request.Context().Done()
 		return nil, request.Context().Err()
 	})}
-	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"https://moderation.example.test","timeout_ms":1,"retry_count":0,"sample_rate":1,"all_groups":true,"all_models":true}`)
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"https://moderation.example.test","timeout_ms":1,"retry_count":0,"sample_rate":1,"all_groups":true,"all_models":true,"key_cooldown_ms":100}`)
 
 	config := GetContentModerationConfig()
 	input := ContentModerationRequest{
@@ -688,12 +688,15 @@ func TestCheckContentModerationImageTimeoutIsRetryable(t *testing.T) {
 	key := contentModerationAffinityCacheKey(input, config)
 	t.Cleanup(func() { _, _ = getContentModerationAffinityCache().DeleteMany([]string{key}) })
 
-	for range 2 {
+	for attempt := range 2 {
 		decision, err := CheckContentModeration(context.Background(), input)
 		require.NoError(t, err)
 		require.Contains(t, decision.Error, "moderation request failed")
 		require.False(t, decision.Cached)
 		require.False(t, decision.Blocked)
+		if attempt == 0 {
+			time.Sleep(125 * time.Millisecond)
+		}
 	}
 	require.Equal(t, 2, requestCount)
 }
@@ -761,6 +764,502 @@ func TestCheckContentModerationRotatesKeysAfterTransientFailure(t *testing.T) {
 	require.Equal(t, []string{"Bearer first-key", "Bearer second-key"}, authorization)
 }
 
+func TestCallModerationAvoidsCooledDownKey(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+	resetContentModerationCapacityState()
+	defer resetContentModerationCapacityState()
+
+	var authorization []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		authorization = append(authorization, request.Header.Get("Authorization"))
+		if request.Header.Get("Authorization") == "Bearer first-key" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+
+	config := defaultContentModerationConfig()
+	config.Enabled = true
+	config.BaseURL = server.URL
+	config.APIKey = "first-key\nsecond-key"
+	config.RetryCount = 1
+	config.KeyCooldownMS = 1000
+	content := ContentModerationInput{Text: "cooldown-probe"}
+	for contentModerationProviderCredentialStart(content, 2) != 0 {
+		content.Text += "x"
+	}
+
+	_, _, err := callModeration(context.Background(), config, content)
+	require.NoError(t, err)
+	config.RetryCount = 0
+	_, _, err = callModeration(context.Background(), config, content)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"Bearer first-key",
+		"Bearer second-key",
+		"Bearer second-key",
+	}, authorization)
+}
+
+func TestCallModerationReportsCapacityExhaustionAfterTransientFailure(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+	resetContentModerationCapacityState()
+	defer resetContentModerationCapacityState()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+
+	config := defaultContentModerationConfig()
+	config.BaseURL = server.URL
+	config.APIKey = "first-key\nsecond-key"
+	config.RetryCount = 1
+	config.QueueWaitMS = 20
+	credentials := contentModerationProviderCredentials(config)
+	require.True(t, tryAcquireLocalContentModerationProviderSlot(credentials[1].Fingerprint, 1))
+	defer releaseLocalContentModerationProviderSlot(credentials[1].Fingerprint)
+	content := ContentModerationInput{Text: "capacity-after-failure"}
+	for contentModerationProviderCredentialStart(content, 2) != 0 {
+		content.Text += "x"
+	}
+
+	_, _, err := callModeration(context.Background(), config, content)
+	require.ErrorIs(t, err, ErrContentModerationCapacity)
+}
+
+func TestCheckContentModerationLimitsLocalConcurrencyPerKey(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		current := active.Add(1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		time.Sleep(40 * time.Millisecond)
+		active.Add(-1)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","api_key":"one-key","sample_rate":1,"all_groups":true,"all_models":true,"max_in_flight_per_key":1,"queue_wait_ms":1000}`)
+
+	const requests = 6
+	start := make(chan struct{})
+	results := make(chan *ContentModerationDecision, requests)
+	var waitGroup sync.WaitGroup
+	for index := range requests {
+		index := index
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+				UserID: 750000 + index, Group: "default", Model: "model-a",
+				Protocol: ContentModerationProtocolOpenAIChat, Text: fmt.Sprintf("probe-%d", index),
+			})
+			require.NoError(t, err)
+			results <- decision
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+	close(results)
+	for decision := range results {
+		require.True(t, decision.Checked)
+		require.False(t, decision.Overloaded)
+	}
+	require.EqualValues(t, requests, calls.Load())
+	require.EqualValues(t, 1, maximum.Load())
+}
+
+func TestCheckContentModerationUsesAvailableCapacityAcrossKeys(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	var mutex sync.Mutex
+	activeByKey := map[string]int{}
+	maximumByKey := map[string]int{}
+	globalActive := 0
+	globalMaximum := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		key := request.Header.Get("Authorization")
+		mutex.Lock()
+		activeByKey[key]++
+		if activeByKey[key] > maximumByKey[key] {
+			maximumByKey[key] = activeByKey[key]
+		}
+		globalActive++
+		if globalActive > globalMaximum {
+			globalMaximum = globalActive
+		}
+		mutex.Unlock()
+
+		time.Sleep(60 * time.Millisecond)
+
+		mutex.Lock()
+		activeByKey[key]--
+		globalActive--
+		mutex.Unlock()
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","api_key":"first-key\nsecond-key","sample_rate":1,"all_groups":true,"all_models":true,"max_in_flight_per_key":1,"queue_wait_ms":1000}`)
+
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	for index := range 4 {
+		index := index
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+				UserID: 751000 + index, Group: "default", Model: "model-a",
+				Protocol: ContentModerationProtocolOpenAIChat, Text: fmt.Sprintf("parallel-%d", index),
+			})
+			require.NoError(t, err)
+			require.False(t, decision.Overloaded)
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	require.Equal(t, 1, maximumByKey["Bearer first-key"])
+	require.Equal(t, 1, maximumByKey["Bearer second-key"])
+	require.Equal(t, 2, globalMaximum)
+}
+
+func TestCheckContentModerationObservePersistsCapacitySkip(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","api_key":"one-key","sample_rate":1,"all_groups":true,"all_models":true,"max_in_flight_per_key":1,"queue_wait_ms":20}`)
+
+	const firstUserID = 752001
+	const secondUserID = 752002
+	t.Cleanup(func() {
+		_ = model.DB.Where("user_id IN ?", []int{firstUserID, secondUserID}).Delete(&model.ContentModerationLog{}).Error
+	})
+	firstResult := make(chan *ContentModerationDecision, 1)
+	go func() {
+		decision, _ := CheckContentModeration(context.Background(), ContentModerationRequest{
+			UserID: firstUserID, Group: "default", Model: "model-a",
+			Protocol: ContentModerationProtocolOpenAIChat, Text: "hold",
+		})
+		firstResult <- decision
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first moderation request did not start")
+	}
+	defer func() {
+		close(release)
+		require.NotNil(t, <-firstResult)
+	}()
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		UserID: secondUserID, Group: "default", Model: "model-a", RequestID: "observe-capacity-skip",
+		Protocol: ContentModerationProtocolOpenAIChat, Text: "overflow",
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Checked)
+	require.True(t, decision.Overloaded)
+	require.False(t, decision.Blocked)
+	require.Contains(t, decision.Error, ErrContentModerationCapacity.Error())
+	require.NotZero(t, decision.LogID)
+	entry, err := model.GetContentModerationLog(decision.LogID)
+	require.NoError(t, err)
+	require.Equal(t, "skipped_capacity", entry.Action)
+	require.False(t, entry.Flagged)
+	require.False(t, entry.Blocked)
+
+}
+
+func TestCheckContentModerationPreBlockUsesOverloadStatus(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"one-key","sample_rate":1,"all_groups":true,"all_models":true,"max_in_flight_per_key":1,"queue_wait_ms":20,"overload_status":429}`)
+
+	firstResult := make(chan *ContentModerationDecision, 1)
+	go func() {
+		decision, _ := CheckContentModeration(context.Background(), ContentModerationRequest{
+			UserID: 753001, Group: "default", Model: "model-a",
+			Protocol: ContentModerationProtocolOpenAIChat, Text: "hold",
+		})
+		firstResult <- decision
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first moderation request did not start")
+	}
+	defer func() {
+		close(release)
+		require.NotNil(t, <-firstResult)
+	}()
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		UserID: 753002, Group: "default", Model: "model-a",
+		Protocol: ContentModerationProtocolOpenAIChat, Text: "overflow",
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Overloaded)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusTooManyRequests, decision.StatusCode)
+	require.Equal(t, "Content moderation capacity is temporarily unavailable", decision.Message)
+
+}
+
+func TestContentModerationProviderSlotUsesRedisFingerprintLease(t *testing.T) {
+	server := withContentModerationRedis(t)
+	config := defaultContentModerationConfig()
+	config.MaxInFlightPerKey = 1
+	credential := contentModerationProviderCredential{
+		APIKey:      "super-secret-key",
+		Fingerprint: contentModerationProviderKeyFingerprint(config, "super-secret-key"),
+	}
+
+	first, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.True(t, acquired)
+	require.False(t, degraded)
+	keys := server.Keys()
+	require.Len(t, keys, 1)
+	require.Contains(t, keys[0], credential.Fingerprint)
+	require.NotContains(t, keys[0], credential.APIKey)
+
+	resetContentModerationCapacityState()
+	_, acquired, degraded = tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.False(t, acquired)
+	require.False(t, degraded)
+
+	server.FastForward(contentModerationProviderLeaseTTL(config) + time.Millisecond)
+	third, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.True(t, acquired)
+	require.False(t, degraded)
+	third.release()
+	require.Empty(t, server.Keys())
+	first.Local = false
+
+	markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
+	keys = server.Keys()
+	require.Len(t, keys, 1)
+	require.Contains(t, keys[0], credential.Fingerprint)
+	require.NotContains(t, keys[0], credential.APIKey)
+	resetContentModerationCapacityState()
+	coolingDown, degraded := contentModerationProviderKeyCoolingDown(context.Background(), credential.Fingerprint)
+	require.True(t, coolingDown)
+	require.False(t, degraded)
+}
+
+func TestContentModerationProviderSlotFallsBackToLocalWhenRedisFails(t *testing.T) {
+	server := withContentModerationRedis(t)
+	server.SetError("capacity-redis-unavailable")
+
+	config := defaultContentModerationConfig()
+	credential := contentModerationProviderCredential{
+		Fingerprint: contentModerationProviderKeyFingerprint(config, "fallback-key"),
+	}
+
+	first, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.True(t, acquired)
+	require.True(t, degraded)
+
+	_, acquired, degraded = tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.False(t, acquired)
+	require.False(t, degraded)
+	first.release()
+}
+
+func TestNormalizeContentModerationConfigValidatesCapacitySettings(t *testing.T) {
+	config := defaultContentModerationConfig()
+	require.Equal(t, 1, config.MaxInFlightPerKey)
+	require.Equal(t, 200, config.QueueWaitMS)
+	require.Equal(t, http.StatusServiceUnavailable, config.OverloadStatus)
+	require.Equal(t, 5000, config.KeyCooldownMS)
+
+	config.OverloadStatus = http.StatusForbidden
+	_, err := NormalizeContentModerationConfig(config)
+	require.EqualError(t, err, "overload_status must be 429 or 503")
+}
+
+func TestCheckContentModerationDeduplicatesConcurrentShortAllowAcrossModels(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	base := ContentModerationRequest{
+		UserID: 741001, Group: "default", Protocol: ContentModerationProtocolOpenAIChat,
+		Text: "hi",
+	}
+	config := GetContentModerationConfig()
+	content := ContentModerationInput{Text: base.Text}
+	key := contentModerationAllowCacheKey(base, config, content)
+	require.NotEmpty(t, key)
+	t.Cleanup(func() { _, _ = getContentModerationAllowCache().DeleteMany([]string{key}) })
+
+	start := make(chan struct{})
+	results := make(chan *ContentModerationDecision, 2)
+	var waitGroup sync.WaitGroup
+	for _, modelName := range []string{"model-a", "model-b"} {
+		modelName := modelName
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			input := base
+			input.Model = modelName
+			decision, err := CheckContentModeration(context.Background(), input)
+			require.NoError(t, err)
+			results <- decision
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+	close(results)
+	for decision := range results {
+		require.True(t, decision.Checked)
+		require.False(t, decision.Flagged)
+	}
+	require.EqualValues(t, 1, requestCount.Load())
+
+	third := base
+	third.Model = "model-c"
+	decision, err := CheckContentModeration(context.Background(), third)
+	require.NoError(t, err)
+	require.True(t, decision.Cached)
+	require.EqualValues(t, 1, requestCount.Load())
+}
+
+func TestCheckContentModerationShortAllowDedupKeepsUserGroupAndTextIsolation(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	requests := []ContentModerationRequest{
+		{UserID: 741101, Group: "default", Model: "model-a", Protocol: ContentModerationProtocolOpenAIChat, Text: "hi"},
+		{UserID: 741102, Group: "default", Model: "model-b", Protocol: ContentModerationProtocolOpenAIChat, Text: "hi"},
+		{UserID: 741101, Group: "vip", Model: "model-c", Protocol: ContentModerationProtocolOpenAIChat, Text: "hi"},
+		{UserID: 741101, Group: "default", Model: "model-d", Protocol: ContentModerationProtocolOpenAIChat, Text: "hello"},
+		{UserID: 741101, Group: "default", Model: "model-e", Protocol: ContentModerationProtocolOpenAIChat, Text: "hi"},
+	}
+	config := GetContentModerationConfig()
+	keys := make([]string, 0, len(requests))
+	for _, input := range requests {
+		keys = append(keys, contentModerationAllowCacheKey(input, config, ContentModerationInput{Text: input.Text}))
+	}
+	t.Cleanup(func() { _, _ = getContentModerationAllowCache().DeleteMany(keys) })
+
+	wantCalls := []int32{1, 2, 3, 4, 4}
+	for index, input := range requests {
+		decision, err := CheckContentModeration(context.Background(), input)
+		require.NoError(t, err)
+		require.True(t, decision.Checked)
+		require.EqualValues(t, wantCalls[index], requestCount.Load())
+	}
+}
+
+func TestCheckContentModerationDoesNotDeduplicateFlaggedShortTextAcrossModels(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.9}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	const userID = 741201
+	t.Cleanup(func() { _ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error })
+	for _, modelName := range []string{"model-a", "model-b"} {
+		decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+			UserID: userID, Group: "default", Model: modelName,
+			Protocol: ContentModerationProtocolOpenAIChat, Text: "bad",
+		})
+		require.NoError(t, err)
+		require.True(t, decision.Flagged)
+	}
+	require.EqualValues(t, 2, requestCount.Load())
+}
+
+func TestCheckContentModerationAllowDedupEligibilityExcludesLongTextAndImages(t *testing.T) {
+	config := defaultContentModerationConfig()
+	config.Enabled = true
+	base := ContentModerationRequest{UserID: 741301, Group: "default", Protocol: ContentModerationProtocolOpenAIChat}
+
+	longText := ContentModerationInput{Text: strings.Repeat("a", contentModerationAllowDedupMaxRunes+1)}
+	require.Empty(t, contentModerationAllowCacheKey(base, config, longText))
+
+	imageInput := ContentModerationInput{Text: "hi", Images: []string{"https://img.test/probe.png"}}
+	require.Empty(t, contentModerationAllowCacheKey(base, config, imageInput))
+
+	shortText := ContentModerationInput{Text: "hi"}
+	require.NotEmpty(t, contentModerationAllowCacheKey(base, config, shortText))
+}
+
 func TestCheckContentModerationDoesNotCacheEmptyAPIResults(t *testing.T) {
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
@@ -791,6 +1290,74 @@ func TestCheckContentModerationDoesNotCacheEmptyAPIResults(t *testing.T) {
 	second, err := CheckContentModeration(context.Background(), input)
 	require.NoError(t, err)
 	require.False(t, second.Cached)
+	require.Equal(t, 2, requestCount)
+}
+
+func TestCheckContentModerationDoesNotDeduplicateResponseWithoutCategoryScores(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"categories":{"sexual":false}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	base := ContentModerationRequest{
+		UserID: 741401, Group: "default", Protocol: ContentModerationProtocolOpenAIChat,
+		Text: "hi",
+	}
+	config := GetContentModerationConfig()
+	key := contentModerationAllowCacheKey(base, config, ContentModerationInput{Text: base.Text})
+	require.NotEmpty(t, key)
+	t.Cleanup(func() { _, _ = getContentModerationAllowCache().DeleteMany([]string{key}) })
+
+	for _, modelName := range []string{"model-a", "model-b"} {
+		input := base
+		input.Model = modelName
+		decision, err := CheckContentModeration(context.Background(), input)
+		require.NoError(t, err)
+		require.True(t, decision.Checked)
+		require.False(t, decision.Flagged)
+		require.False(t, decision.Cached)
+	}
+	require.Equal(t, 2, requestCount)
+}
+
+func TestCheckContentModerationDoesNotDeduplicateRawProviderFlag(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		_, _ = w.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.9}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true,"thresholds":{"sexual":0.95}}`)
+
+	base := ContentModerationRequest{
+		UserID: 741402, Group: "default", Protocol: ContentModerationProtocolOpenAIChat,
+		Text: "hi",
+	}
+	config := GetContentModerationConfig()
+	key := contentModerationAllowCacheKey(base, config, ContentModerationInput{Text: base.Text})
+	require.NotEmpty(t, key)
+	t.Cleanup(func() { _, _ = getContentModerationAllowCache().DeleteMany([]string{key}) })
+
+	for _, modelName := range []string{"model-a", "model-b"} {
+		input := base
+		input.Model = modelName
+		decision, err := CheckContentModeration(context.Background(), input)
+		require.NoError(t, err)
+		require.True(t, decision.Checked)
+		require.False(t, decision.Flagged)
+		require.False(t, decision.Cached)
+	}
 	require.Equal(t, 2, requestCount)
 }
 
@@ -952,6 +1519,38 @@ func TestContentModerationAffinityLeaseAllowsOnlyOneOwner(t *testing.T) {
 		go func() {
 			defer waitGroup.Done()
 			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check)
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+	for decision := range results {
+		require.True(t, decision.Checked)
+	}
+	require.EqualValues(t, 1, checks.Load())
+}
+
+func TestContentModerationAllowLeaseAllowsOnlyOneOwner(t *testing.T) {
+	withContentModerationRedis(t)
+	config := defaultContentModerationConfig()
+	config.Enabled = true
+	config.TimeoutMS = 100
+	key := "allow-lease-test"
+	t.Cleanup(func() { _, _ = getContentModerationAllowCache().DeleteMany([]string{key}) })
+
+	var checks atomic.Int32
+	check := func() *ContentModerationDecision {
+		checks.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		cacheContentModerationAllowDecision(key)
+		return &ContentModerationDecision{Checked: true}
+	}
+	results := make(chan *ContentModerationDecision, 2)
+	var waitGroup sync.WaitGroup
+	for range 2 {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			results <- runContentModerationWithAllowLease(context.Background(), config, key, check)
 		}()
 	}
 	waitGroup.Wait()
@@ -1307,8 +1906,9 @@ func TestContentModerationAutoBanPublishesDisabledAuthCache(t *testing.T) {
 	require.EqualValues(t, 2, cachedAfter.AuthVersion)
 }
 
-func withContentModerationRedis(t *testing.T) {
+func withContentModerationRedis(t *testing.T) *miniredis.Miniredis {
 	t.Helper()
+	resetContentModerationCapacityState()
 	previousRedisEnabled := common.RedisEnabled
 	previousRDB := common.RDB
 	server := miniredis.RunT(t)
@@ -1317,22 +1917,30 @@ func withContentModerationRedis(t *testing.T) {
 	common.RDB = client
 	contentModerationAffinityCacheOnce = sync.Once{}
 	contentModerationAffinityCache = nil
+	contentModerationAllowCacheOnce = sync.Once{}
+	contentModerationAllowCache = nil
 	t.Cleanup(func() {
+		resetContentModerationCapacityState()
 		_ = client.Close()
 		common.RedisEnabled = previousRedisEnabled
 		common.RDB = previousRDB
 		contentModerationAffinityCacheOnce = sync.Once{}
 		contentModerationAffinityCache = nil
+		contentModerationAllowCacheOnce = sync.Once{}
+		contentModerationAllowCache = nil
 	})
+	return server
 }
 
 func withContentModerationOption(t *testing.T, value string) {
 	t.Helper()
+	resetContentModerationCapacityState()
 	common.OptionMapRWMutex.Lock()
 	previous := common.OptionMap
 	common.OptionMap = map[string]string{ContentModerationOptionKey: value}
 	common.OptionMapRWMutex.Unlock()
 	t.Cleanup(func() {
+		resetContentModerationCapacityState()
 		common.OptionMapRWMutex.Lock()
 		common.OptionMap = previous
 		common.OptionMapRWMutex.Unlock()

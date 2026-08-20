@@ -52,6 +52,12 @@ The required production behavior is:
 - a cached flagged decision remains blocking in `pre_block`;
 - request-time moderation API, Redis, configuration-read, and audit persistence
   failures remain fail-open and produce safe request-scoped logs;
+- provider concurrency is limited per moderation API key across gateway nodes
+  through Redis slot leases, with a process-local limit retained during Redis
+  degradation;
+- capacity exhaustion is always recorded as `skipped_capacity`; `observe`
+  remains fail-open, while `pre_block` returns only the configured 429 or 503
+  overload response and never a content-violation 403;
 - no raw prompt or API key is written to the audit log, admin API, workflow
   output, or deployment log.
 
@@ -118,10 +124,13 @@ Stop the rollout if any gate below is unresolved.
 4. **Redis and affinity**
 
    All gateway nodes must use the same Redis instance with working ACLs,
-   connectivity, and expiration commands. Without Redis, only process-local
-   singleflight deduplicates concurrent first requests; cross-node duplicate
-   moderation calls are then expected. A Redis outage is fail-open, but it is
-   a rollout incident for `pre_block` and must be visible in operations.
+   connectivity, conditional release scripts, and expiration commands. Redis
+   coordinates both first-audit de-duplication and the per-key provider slot
+   leases. Without Redis, each process keeps the configured local per-key
+   limit, but fleet-wide concurrency can temporarily rise to the number of
+   active gateway nodes multiplied by `max_in_flight_per_key`. A Redis outage
+   is therefore a capacity-control incident and must be visible before broad
+   `pre_block` use.
 
 5. **Conversation semantics**
 
@@ -225,6 +234,8 @@ Set and verify, before enabling traffic:
 - one or more provider keys, entered out-of-band;
 - default category thresholds unless the policy owner has approved changes;
 - `timeout_ms=1500` and `retry_count=1` as the initial bounded budget;
+- `max_in_flight_per_key=1`, `queue_wait_ms=200`,
+  `overload_status=503`, and `key_cooldown_ms=5000`;
 - `email_on_hit=false` and `auto_ban_enabled=false`;
 - `record_non_hits=false` unless a specific capacity/retention budget exists;
 - a documented affinity rule and TTL for every canary group/model.
@@ -252,6 +263,10 @@ policy is:
   "auto_ban_enabled": false,
   "timeout_ms": 1500,
   "retry_count": 1,
+  "max_in_flight_per_key": 1,
+  "queue_wait_ms": 200,
+  "overload_status": 503,
+  "key_cooldown_ms": 5000,
   "block_status": 403,
   "block_message": "Request blocked by content policy",
   "ban_threshold": 10,
