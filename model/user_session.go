@@ -212,7 +212,7 @@ func GetUserSessionCached(sid string) (*UserSession, error) {
 	if sid == "" {
 		return nil, ErrUserSessionInvalid
 	}
-	if common.RedisEnabled {
+	if common.RedisAvailable() {
 		entry, err := getUserSessionCache(sid)
 		if err == nil {
 			return entry.session(), nil
@@ -229,14 +229,14 @@ func GetUserSessionCached(sid string) (*UserSession, error) {
 	}
 	now := time.Now().Unix()
 	if session.Status != UserSessionStatusActive || session.RevokedAt != 0 || session.ExpiresAt <= now {
-		if common.RedisEnabled {
+		if common.RedisAvailable() {
 			entry := session.cacheEntry()
 			entry.Status = UserSessionStatusRevoked
 			_ = writeUserSessionCache(entry, time.Time{})
 		}
 		return nil, ErrUserSessionInactive
 	}
-	if common.RedisEnabled {
+	if common.RedisAvailable() {
 		if err := writeUserSessionCache(session.cacheEntry(), cacheDeadline); err != nil {
 			if errors.Is(err, errUserSessionCacheObservationStale) {
 				if confirmErr := confirmUserSessionActiveSnapshot(session); confirmErr != nil {
@@ -274,7 +274,7 @@ func getUserSessionCache(sid string) (*userSessionCacheEntry, error) {
 // reactivate a revoked Session after the tombstone expires. Deny states pass a
 // zero deadline because their TTL starts when they are published.
 func writeUserSessionCache(entry *userSessionCacheEntry, cacheDeadline time.Time) error {
-	if entry == nil || !common.RedisEnabled {
+	if entry == nil || !common.RedisAvailable() {
 		return nil
 	}
 	now := time.Now()
@@ -382,7 +382,7 @@ func confirmUserSessionActiveSnapshot(session *UserSession) error {
 }
 
 func writeUserSessionDenyFence(session *UserSession, status string, now int64, reason string) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	entry := session.cacheEntry()

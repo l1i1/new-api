@@ -46,7 +46,7 @@ func userAuthFenceTTLSeconds() int {
 }
 
 func writeUserCache(user *UserBase, includeQuota bool) error {
-	if user == nil || user.Id <= 0 || !common.RedisEnabled {
+	if user == nil || user.Id <= 0 || !common.RedisAvailable() {
 		return nil
 	}
 	user.CacheSchema = userCacheSchemaVersion
@@ -102,6 +102,9 @@ func getUserAuthVersionFloor(userId int) (int64, error) {
 	if !common.RedisEnabled {
 		return 0, nil
 	}
+	if common.RDB == nil {
+		return 0, fmt.Errorf("redis client is unavailable")
+	}
 	values, err := common.RDB.MGet(context.Background(), getUserAuthFenceKey(userId), getUserAuthVersionKey(userId)).Result()
 	if err != nil {
 		return 0, err
@@ -130,6 +133,9 @@ func SetUserAuthVersionFence(userId int, authVersion int64) error {
 	if !common.RedisEnabled {
 		return nil
 	}
+	if common.RDB == nil {
+		return fmt.Errorf("redis client is unavailable")
+	}
 	if userId <= 0 || authVersion <= 0 {
 		return fmt.Errorf("invalid user auth fence")
 	}
@@ -153,6 +159,9 @@ return 1`
 func publishCommittedUserAuthVersion(userId int, authVersion int64) error {
 	if !common.RedisEnabled {
 		return nil
+	}
+	if common.RDB == nil {
+		return fmt.Errorf("redis client is unavailable")
 	}
 	if userId <= 0 || authVersion <= 0 {
 		return fmt.Errorf("invalid committed user auth version")
@@ -224,6 +233,68 @@ func BumpUserAuthVersion(userId int) (int64, error) {
 	return next, nil
 }
 
+// DisableUserWithAuthVersion atomically applies a restrictive user-status
+// transition without writing an unrelated, potentially stale user snapshot.
+// A committed transition whose Redis publication failed remains protected by
+// the pending auth-version fence and can be completed by calling this helper
+// again after the user is already disabled.
+func DisableUserWithAuthVersion(userId int, reason string) (bool, error) {
+	if DB == nil || userId <= 0 {
+		return false, fmt.Errorf("invalid user disable operation")
+	}
+	var changed bool
+	var authVersion int64
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockForUpdate(tx).Select("id", "status", "auth_version").Where("id = ?", userId).First(&user).Error; err != nil {
+			return err
+		}
+		authVersion = user.AuthVersion
+		if user.Status == common.UserStatusDisabled {
+			return nil
+		}
+		current := user.AuthVersion
+		if current < 1 {
+			current = 1
+		}
+		next := current + 1
+		if err := SetUserAuthVersionFence(userId, next); err != nil {
+			return err
+		}
+		result := tx.Model(&User{}).
+			Where("id = ? AND status <> ? AND auth_version = ?", userId, common.UserStatusDisabled, user.AuthVersion).
+			Updates(map[string]interface{}{
+				"status":       common.UserStatusDisabled,
+				"auth_version": next,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrUserAuthVersionConflict
+		}
+		authVersion = next
+		changed = true
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	if authVersion <= 0 {
+		return changed, fmt.Errorf("invalid committed user auth version")
+	}
+	if err := PublishUserAuthCache(userId); err != nil {
+		return changed, err
+	}
+	// Revoke on every successful retry, including when the database was already
+	// disabled by an earlier attempt whose cache publication failed before it
+	// could clean up session rows. The update is conditional on active status,
+	// so repeated calls remain idempotent.
+	if _, err := RevokeAllUserSessions(userId, reason); err != nil {
+		return changed, err
+	}
+	return changed, nil
+}
+
 // PublishUserAuthCache refreshes the current database state after a successful
 // auth-sensitive transaction without touching the cached quota field.
 func PublishUserAuthCache(userId int) error {
@@ -241,7 +312,7 @@ func InitializeUserAuthVersions() error {
 }
 
 func updateUserCacheFieldAtVersion(userId int, field string, value interface{}, authVersion int64) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	if userId <= 0 || authVersion <= 0 {

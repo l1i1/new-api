@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	htmltemplate "html/template"
 	"net/http"
@@ -136,10 +137,14 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 }
 
 func sendEmailNotify(userEmail string, data dto.Notify, userId int) error {
+	return sendEmailNotifyContext(context.Background(), userEmail, data, userId)
+}
+
+func sendEmailNotifyContext(ctx context.Context, userEmail string, data dto.Notify, userId int) error {
 	title, _ := renderNotify(data)
 	content := renderNotifyHTML(data)
 	lang := i18n.ResolveUserLang(userId)
-	return common.SendEmail(title, userEmail, RenderBrandedEmail(lang, title, content))
+	return common.SendEmailWithAttachmentsContext(ctx, title, userEmail, RenderBrandedEmail(lang, title, content), nil)
 }
 
 func sendBarkNotify(barkURL string, data dto.Notify) error {

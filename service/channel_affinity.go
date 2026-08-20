@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"regexp"
@@ -57,10 +58,11 @@ type channelAffinityMeta struct {
 }
 
 type ChannelAffinityStatsContext struct {
-	RuleName       string
-	UsingGroup     string
-	KeyFingerprint string
-	TTLSeconds     int64
+	RuleName              string
+	UsingGroup            string
+	KeyFingerprint        string
+	AffinityCacheIdentity string
+	TTLSeconds            int64
 }
 
 const (
@@ -403,10 +405,11 @@ func GetChannelAffinityStatsContext(c *gin.Context) (ChannelAffinityStatsContext
 		return ChannelAffinityStatsContext{}, false
 	}
 	return ChannelAffinityStatsContext{
-		RuleName:       ruleName,
-		UsingGroup:     usingGroup,
-		KeyFingerprint: keyFp,
-		TTLSeconds:     ttlSeconds,
+		RuleName:              ruleName,
+		UsingGroup:            usingGroup,
+		KeyFingerprint:        keyFp,
+		AffinityCacheIdentity: channelAffinityCacheIdentity(meta.CacheKey),
+		TTLSeconds:            ttlSeconds,
 	}, true
 }
 
@@ -414,11 +417,17 @@ func affinityFingerprint(s string) string {
 	if s == "" {
 		return ""
 	}
-	hex := common.Sha1([]byte(s))
-	if len(hex) >= 8 {
-		return hex[:8]
+	return hex.EncodeToString(common.Sha256Raw([]byte(s)))
+}
+
+// channelAffinityCacheIdentity hashes the resolved cache key before it crosses
+// into consumers such as content moderation. Hashing the full key preserves
+// the rule's include_* semantics without exposing the raw affinity value.
+func channelAffinityCacheIdentity(cacheKey string) string {
+	if cacheKey == "" {
+		return ""
 	}
-	return hex
+	return hex.EncodeToString(common.Sha256Raw([]byte(cacheKey)))
 }
 
 func buildChannelAffinityKeyHint(s string) string {

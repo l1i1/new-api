@@ -61,14 +61,19 @@ func userCacheTTLSeconds() int {
 
 // invalidateUserCache clears user cache
 func invalidateUserCache(userId int) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	return common.RedisDelKey(getUserCacheKey(userId))
 }
 
+// InvalidateUserCache clears the cached authorization snapshot for a user.
+func InvalidateUserCache(userId int) error {
+	return invalidateUserCache(userId)
+}
+
 func populateUserCache(user User) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	return writeUserCache(user.ToBaseUser(), true)
@@ -78,7 +83,7 @@ func populateUserCache(user User) error {
 // Quota is maintained by atomic quota delta paths and must not be overwritten
 // by stale user snapshots from profile/settings updates.
 func updateUserCache(user User) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	return writeUserCache(user.ToBaseUser(), false)
@@ -99,7 +104,7 @@ func GetUserCache(userId int) (*UserBase, error) {
 	if err != nil {
 		return nil, err
 	}
-	if common.RedisEnabled {
+	if common.RedisAvailable() {
 		floor, floorErr := getUserAuthVersionFloor(userId)
 		if floorErr == nil && floor > user.AuthVersion {
 			return nil, ErrUserAuthCachePending
@@ -115,7 +120,7 @@ func GetUserCache(userId int) (*UserBase, error) {
 }
 
 func cacheGetUserBase(userId int) (*UserBase, error) {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil, fmt.Errorf("redis is not enabled")
 	}
 	var userCache UserBase
@@ -141,7 +146,7 @@ func cacheGetUserBase(userId int) (*UserBase, error) {
 // 通过守卫式 Lua 脚本执行：哈希不存在时直接跳过（下次读取会从数据库水合），
 // 不会像裸 HINCRBY 那样创建只含 Quota 字段的残缺哈希。
 func cacheIncrUserQuota(userId int, delta int64) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	_, err := cacheApplyUserQuotaDelta(userId, delta)
@@ -200,7 +205,7 @@ func getUserSettingCache(userId int) (dto.UserSetting, error) {
 // RefreshUserGroupCache writes the database-authoritative group into an
 // existing user hash without changing the user's authentication version.
 func RefreshUserGroupCache(userId int) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	if userId <= 0 {
@@ -254,7 +259,7 @@ func updateUserSettingCache(userId int, setting string) error {
 // auth-version fence. It intentionally does nothing when the complete hash is
 // absent; the next GetUserCache call will repopulate it from the database.
 func updateUserCacheField(userId int, field string, value interface{}) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	var user User

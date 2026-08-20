@@ -1,0 +1,1503 @@
+package service
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/url"
+	"path"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/samber/hot"
+	"github.com/tidwall/gjson"
+	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
+)
+
+const (
+	ContentModerationOptionKey               = model.ContentModerationOptionKey
+	ContentModerationProtocolOpenAIChat      = "openai_chat"
+	ContentModerationProtocolOpenAIResponses = "openai_responses"
+	ContentModerationProtocolAnthropic       = "anthropic_messages"
+	ContentModerationProtocolGemini          = "gemini"
+	contentModerationDefaultBaseURL          = "https://api.openai.com"
+	contentModerationDefaultModel            = "omni-moderation-latest"
+	contentModerationDefaultTimeout          = 1500
+	contentModerationDefaultRetries          = 1
+	contentModerationDefaultBlockCode        = http.StatusForbidden
+	contentModerationMaxInputRunes           = 16000
+	contentModerationMaxKeys                 = 64
+	contentModerationAffinityCacheNamespace  = "new-api:content_moderation_affinity:v2"
+	contentModerationAffinityLeaseNamespace  = "new-api:content_moderation_affinity_lease:v1"
+	contentModerationAffinityCacheCapacity   = 100_000
+	contentModerationAffinityPollInterval    = 25 * time.Millisecond
+	contentModerationMaxViolationWindowHours = 24 * 365
+	contentModerationEmailSendTimeout        = 15 * time.Second
+	contentModerationConfigRefreshInterval   = time.Second
+)
+
+var contentModerationHTTPClient = &http.Client{}
+
+var ErrContentModerationConfigPersistence = errors.New("content moderation configuration persistence failed")
+
+type contentModerationEmailSendFunc func(context.Context, string, dto.Notify, int) error
+
+var contentModerationEmailSender contentModerationEmailSendFunc = func(ctx context.Context, email string, notification dto.Notify, userID int) error {
+	return sendEmailNotifyContext(ctx, email, notification, userID)
+}
+
+var (
+	contentModerationAffinityCacheOnce sync.Once
+	contentModerationAffinityCache     *cachex.HybridCache[contentModerationAffinityCacheEntry]
+	contentModerationAffinityFlight    singleflight.Group
+	contentModerationConfigCacheMu     sync.Mutex
+	contentModerationConfigCacheRaw    string
+	contentModerationConfigCacheValue  ContentModerationConfig
+	contentModerationConfigCacheAt     time.Time
+	contentModerationConfigRefresh     singleflight.Group
+)
+
+var defaultContentModerationThresholds = map[string]float64{
+	"harassment":             0.98,
+	"harassment/threatening": 0.90,
+	"hate":                   0.65,
+	"hate/threatening":       0.65,
+	"illicit":                0.95,
+	"illicit/violent":        0.95,
+	"self-harm":              0.65,
+	"self-harm/intent":       0.85,
+	"self-harm/instructions": 0.65,
+	"sexual":                 0.65,
+	"sexual/minors":          0.65,
+	"violence":               0.95,
+	"violence/graphic":       0.95,
+}
+
+// ContentModerationConfig is stored as one JSON value in the Option table.
+// APIKey is accepted as a newline-separated list for compatibility with the
+// admin UI; APIKeys is an input convenience and is normalized away before
+// persistence.
+type ContentModerationConfig struct {
+	Enabled              bool               `json:"enabled"`
+	Mode                 string             `json:"mode"`
+	BaseURL              string             `json:"base_url"`
+	Model                string             `json:"model"`
+	APIKey               string             `json:"api_key,omitempty"`
+	APIKeys              []string           `json:"api_keys,omitempty"`
+	ClearAPIKeys         bool               `json:"clear_api_keys,omitempty"`
+	Thresholds           map[string]float64 `json:"thresholds"`
+	AllGroups            bool               `json:"all_groups"`
+	GroupIDs             []string           `json:"group_ids,omitempty"`
+	AllModels            bool               `json:"all_models"`
+	Models               []string           `json:"models,omitempty"`
+	ModelFilters         []string           `json:"model_filters,omitempty"`
+	SampleRate           float64            `json:"sample_rate"`
+	TimeoutMS            int                `json:"timeout_ms"`
+	RetryCount           int                `json:"retry_count"`
+	RecordNonHits        bool               `json:"record_non_hits"`
+	RecordLogs           bool               `json:"record_logs"`
+	BlockStatus          int                `json:"block_status"`
+	BlockMessage         string             `json:"block_message,omitempty"`
+	EmailOnHit           bool               `json:"email_on_hit"`
+	AutoBanEnabled       bool               `json:"auto_ban_enabled"`
+	BanThreshold         int                `json:"ban_threshold"`
+	ViolationWindowHours int                `json:"violation_window_hours"`
+}
+
+type ContentModerationConfigView struct {
+	Enabled              bool               `json:"enabled"`
+	Mode                 string             `json:"mode"`
+	BaseURL              string             `json:"base_url"`
+	Model                string             `json:"model"`
+	APIKeyCount          int                `json:"api_key_count"`
+	APIKeySuffixes       []string           `json:"api_key_suffixes,omitempty"`
+	Thresholds           map[string]float64 `json:"thresholds"`
+	AllGroups            bool               `json:"all_groups"`
+	GroupIDs             []string           `json:"group_ids,omitempty"`
+	AllModels            bool               `json:"all_models"`
+	Models               []string           `json:"models,omitempty"`
+	ModelFilters         []string           `json:"model_filters,omitempty"`
+	SampleRate           float64            `json:"sample_rate"`
+	TimeoutMS            int                `json:"timeout_ms"`
+	RetryCount           int                `json:"retry_count"`
+	RecordNonHits        bool               `json:"record_non_hits"`
+	RecordLogs           bool               `json:"record_logs"`
+	BlockStatus          int                `json:"block_status"`
+	BlockMessage         string             `json:"block_message,omitempty"`
+	EmailOnHit           bool               `json:"email_on_hit"`
+	AutoBanEnabled       bool               `json:"auto_ban_enabled"`
+	BanThreshold         int                `json:"ban_threshold"`
+	ViolationWindowHours int                `json:"violation_window_hours"`
+}
+
+type ContentModerationRequest struct {
+	UserID                 int
+	Group                  string
+	Model                  string
+	Protocol               string
+	RequestPath            string
+	RequestID              string
+	Body                   []byte
+	Text                   string
+	Meta                   *relaytypes.TokenCountMeta
+	AffinityRuleName       string
+	AffinityKeyFingerprint string
+	AffinityCacheIdentity  string
+	AffinityTTLSeconds     int
+	AffinityChannelID      int
+}
+
+type ContentModerationDecision struct {
+	Checked        bool
+	Cached         bool
+	Flagged        bool
+	Blocked        bool
+	Category       string
+	Score          float64
+	CategoryScores map[string]float64
+	Error          string
+	Message        string
+	LogID          int
+	StatusCode     int
+}
+
+type contentModerationAffinityCacheEntry struct {
+	Flagged     bool    `json:"flagged"`
+	Category    string  `json:"category,omitempty"`
+	Score       float64 `json:"score,omitempty"`
+	LogID       int     `json:"log_id,omitempty"`
+	SideEffects bool    `json:"side_effects"`
+}
+
+type contentModerationLease struct {
+	Token string
+	TTL   time.Duration
+	Redis *redis.Client
+}
+
+const contentModerationReleaseLeaseScript = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0`
+
+const contentModerationRenewLeaseScript = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0`
+
+type moderationAPIResult struct {
+	Flagged        bool               `json:"flagged"`
+	Categories     map[string]bool    `json:"categories"`
+	CategoryScores map[string]float64 `json:"category_scores"`
+}
+
+type moderationAPIResponse struct {
+	Results []moderationAPIResult `json:"results"`
+}
+
+func defaultContentModerationConfig() ContentModerationConfig {
+	return ContentModerationConfig{
+		Mode:                 "observe",
+		BaseURL:              contentModerationDefaultBaseURL,
+		Model:                contentModerationDefaultModel,
+		Thresholds:           cloneModerationThresholds(defaultContentModerationThresholds),
+		AllGroups:            true,
+		AllModels:            true,
+		SampleRate:           1,
+		TimeoutMS:            contentModerationDefaultTimeout,
+		RetryCount:           contentModerationDefaultRetries,
+		BlockStatus:          contentModerationDefaultBlockCode,
+		BlockMessage:         "Request blocked by content policy",
+		BanThreshold:         10,
+		ViolationWindowHours: 24,
+	}
+}
+
+func cloneModerationThresholds(input map[string]float64) map[string]float64 {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]float64, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+func cloneContentModerationConfig(input ContentModerationConfig) ContentModerationConfig {
+	cloned := input
+	cloned.APIKeys = append([]string(nil), input.APIKeys...)
+	cloned.Thresholds = cloneModerationThresholds(input.Thresholds)
+	cloned.GroupIDs = append([]string(nil), input.GroupIDs...)
+	cloned.Models = append([]string(nil), input.Models...)
+	cloned.ModelFilters = append([]string(nil), input.ModelFilters...)
+	return cloned
+}
+
+func getContentModerationAffinityCache() *cachex.HybridCache[contentModerationAffinityCacheEntry] {
+	contentModerationAffinityCacheOnce.Do(func() {
+		contentModerationAffinityCache = cachex.NewHybridCache[contentModerationAffinityCacheEntry](cachex.HybridCacheConfig[contentModerationAffinityCacheEntry]{
+			Namespace:  cachex.Namespace(contentModerationAffinityCacheNamespace),
+			Redis:      common.RDB,
+			RedisCodec: cachex.JSONCodec[contentModerationAffinityCacheEntry]{},
+			RedisEnabled: func() bool {
+				return common.RedisEnabled && common.RDB != nil
+			},
+			Memory: func() *hot.HotCache[string, contentModerationAffinityCacheEntry] {
+				return hot.NewHotCache[string, contentModerationAffinityCacheEntry](hot.LRU, contentModerationAffinityCacheCapacity).
+					WithTTL(time.Hour).
+					WithJanitor().
+					Build()
+			},
+		})
+	})
+	return contentModerationAffinityCache
+}
+
+func contentModerationAffinityCacheKey(input ContentModerationRequest, configs ...ContentModerationConfig) string {
+	if (input.AffinityCacheIdentity == "" && input.AffinityKeyFingerprint == "") || input.AffinityTTLSeconds <= 0 || input.AffinityChannelID <= 0 {
+		return ""
+	}
+	// Keep moderation affinity at channel scope; multi-key credentials can rotate
+	// within a channel and must not cause the same conversation to be re-audited.
+	affinityIdentity := input.AffinityCacheIdentity
+	if affinityIdentity == "" {
+		affinityIdentity = input.AffinityKeyFingerprint
+	}
+	policyFingerprint := ""
+	if len(configs) > 0 {
+		policyFingerprint = contentModerationPolicyFingerprint(configs[0])
+	}
+	seed := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%d\x00%s\x00%s", input.UserID, input.Group, input.Model, input.Protocol, input.AffinityRuleName, input.AffinityChannelID, affinityIdentity, policyFingerprint)
+	digest := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(digest[:])
+}
+
+func contentModerationPolicyFingerprint(config ContentModerationConfig) string {
+	policy := struct {
+		Enabled              bool               `json:"enabled"`
+		Mode                 string             `json:"mode"`
+		BaseURL              string             `json:"base_url"`
+		Model                string             `json:"model"`
+		Thresholds           map[string]float64 `json:"thresholds"`
+		AllGroups            bool               `json:"all_groups"`
+		GroupIDs             []string           `json:"group_ids"`
+		AllModels            bool               `json:"all_models"`
+		Models               []string           `json:"models"`
+		ModelFilters         []string           `json:"model_filters"`
+		SampleRate           float64            `json:"sample_rate"`
+		TimeoutMS            int                `json:"timeout_ms"`
+		RetryCount           int                `json:"retry_count"`
+		RecordNonHits        bool               `json:"record_non_hits"`
+		RecordLogs           bool               `json:"record_logs"`
+		BlockStatus          int                `json:"block_status"`
+		BlockMessage         string             `json:"block_message"`
+		EmailOnHit           bool               `json:"email_on_hit"`
+		AutoBanEnabled       bool               `json:"auto_ban_enabled"`
+		BanThreshold         int                `json:"ban_threshold"`
+		ViolationWindowHours int                `json:"violation_window_hours"`
+	}{
+		Enabled: config.Enabled, Mode: config.Mode, BaseURL: config.BaseURL, Model: config.Model,
+		Thresholds: cloneModerationThresholds(config.Thresholds), AllGroups: config.AllGroups,
+		GroupIDs: append([]string(nil), config.GroupIDs...), AllModels: config.AllModels,
+		Models: append([]string(nil), config.Models...), ModelFilters: append([]string(nil), config.ModelFilters...),
+		SampleRate: config.SampleRate, TimeoutMS: config.TimeoutMS, RetryCount: config.RetryCount,
+		RecordNonHits: config.RecordNonHits, RecordLogs: config.RecordLogs, BlockStatus: config.BlockStatus,
+		BlockMessage: config.BlockMessage, EmailOnHit: config.EmailOnHit, AutoBanEnabled: config.AutoBanEnabled,
+		BanThreshold: config.BanThreshold, ViolationWindowHours: config.ViolationWindowHours,
+	}
+	raw, _ := common.Marshal(policy)
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func contentModerationAffinityCacheTTL(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	// Channel-affinity settings are operator-controlled, but cap the duration
+	// before converting to time.Duration so a malformed large value cannot
+	// overflow into a negative Redis TTL.
+	const maxSeconds = int((365 * 24 * time.Hour) / time.Second)
+	if seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func contentModerationLeaseTTL(config ContentModerationConfig) time.Duration {
+	ttl := time.Duration(config.TimeoutMS)*time.Millisecond + 5*time.Second
+	if ttl < 5*time.Second {
+		return 5 * time.Second
+	}
+	if ttl > 125*time.Second {
+		return 125 * time.Second
+	}
+	return ttl
+}
+
+func contentModerationAffinityLeaseKey(cacheKey string) string {
+	return cachex.Namespace(contentModerationAffinityLeaseNamespace).FullKey(cacheKey)
+}
+
+func tryAcquireContentModerationLease(ctx context.Context, client *redis.Client, cacheKey string, config ContentModerationConfig) (contentModerationLease, bool, error) {
+	lease := contentModerationLease{Token: common.NewRequestId(), TTL: contentModerationLeaseTTL(config), Redis: client}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		return lease, false, errors.New("redis is not initialized")
+	}
+	acquired, err := client.SetNX(ctx, contentModerationAffinityLeaseKey(cacheKey), lease.Token, lease.TTL).Result()
+	return lease, acquired, err
+}
+
+func releaseContentModerationLease(leaseKey string, lease contentModerationLease) {
+	if lease.Redis == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := lease.Redis.Eval(ctx, contentModerationReleaseLeaseScript, []string{leaseKey}, lease.Token).Err(); err != nil && !errors.Is(err, redis.Nil) {
+		common.SysLog("failed to release content moderation affinity lease: " + err.Error())
+	}
+}
+
+func renewContentModerationLease(leaseKey string, lease contentModerationLease) (bool, error) {
+	if lease.Redis == nil {
+		return false, errors.New("redis is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := lease.Redis.Eval(ctx, contentModerationRenewLeaseScript, []string{leaseKey}, lease.Token, lease.TTL.Milliseconds()).Int64()
+	return result == 1, err
+}
+
+func keepContentModerationLeaseAlive(leaseKey string, lease contentModerationLease) func() {
+	interval := lease.TTL / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				renewed, err := renewContentModerationLease(leaseKey, lease)
+				if err != nil {
+					common.SysLog("failed to renew content moderation affinity lease: " + err.Error())
+					continue
+				}
+				if !renewed {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func runContentModerationWithAffinityLease(ctx context.Context, input ContentModerationRequest, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision) *ContentModerationDecision {
+	client := common.RDB
+	if !common.RedisEnabled || client == nil {
+		return check()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	leaseKey := contentModerationAffinityLeaseKey(cacheKey)
+	for {
+		lease, acquired, err := tryAcquireContentModerationLease(ctx, client, cacheKey, config)
+		if err != nil {
+			common.SysLog("failed to acquire content moderation affinity lease; using local singleflight: " + err.Error())
+			return check()
+		}
+		if acquired {
+			defer releaseContentModerationLease(leaseKey, lease)
+			stopRenewal := keepContentModerationLeaseAlive(leaseKey, lease)
+			defer stopRenewal()
+			if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+				return cachedDecision
+			}
+			return check()
+		}
+
+		ticker := time.NewTicker(contentModerationAffinityPollInterval)
+		deadline := time.NewTimer(contentModerationLeaseTTL(config))
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				return &ContentModerationDecision{Checked: true, Error: ctx.Err().Error()}
+			case <-deadline.C:
+				ticker.Stop()
+				goto retryLease
+			case <-ticker.C:
+				if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+					ticker.Stop()
+					if !deadline.Stop() {
+						select {
+						case <-deadline.C:
+						default:
+						}
+					}
+					return cachedDecision
+				}
+				exists, existsErr := client.Exists(ctx, leaseKey).Result()
+				if existsErr != nil {
+					ticker.Stop()
+					if !deadline.Stop() {
+						select {
+						case <-deadline.C:
+						default:
+						}
+					}
+					common.SysLog("failed to wait for content moderation affinity lease; using local singleflight: " + existsErr.Error())
+					return check()
+				}
+				if exists == 0 {
+					ticker.Stop()
+					if !deadline.Stop() {
+						select {
+						case <-deadline.C:
+						default:
+						}
+					}
+					goto retryLease
+				}
+			}
+		}
+	retryLease:
+	}
+}
+
+func getCachedContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig) (*ContentModerationDecision, bool) {
+	key := contentModerationAffinityCacheKey(input, config)
+	if key == "" {
+		return nil, false
+	}
+	entry, found, err := getContentModerationAffinityCache().Get(key)
+	if err != nil {
+		common.SysLog("failed to read content moderation affinity cache: " + err.Error())
+		return nil, false
+	}
+	if !found {
+		return nil, false
+	}
+	decision := &ContentModerationDecision{
+		Checked:  true,
+		Cached:   true,
+		Flagged:  entry.Flagged,
+		Category: entry.Category,
+		Score:    entry.Score,
+	}
+	if entry.Flagged && !entry.SideEffects && entry.LogID > 0 {
+		entryLog, err := model.GetContentModerationLog(entry.LogID)
+		if err == nil {
+			if applyContentModerationSideEffects(input, config, entryLog) {
+				entry.SideEffects = true
+				if ttl := contentModerationAffinityCacheTTL(input.AffinityTTLSeconds); ttl > 0 {
+					_ = getContentModerationAffinityCache().SetWithTTL(key, entry, ttl)
+				}
+			}
+		}
+	}
+	if decision.Flagged && config.Mode == "pre_block" {
+		decision.Blocked = true
+		decision.StatusCode = config.BlockStatus
+		decision.Message = config.BlockMessage
+	}
+	return decision, true
+}
+
+func cacheContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig, decision ContentModerationDecision, sideEffects bool) {
+	key := contentModerationAffinityCacheKey(input, config)
+	ttl := contentModerationAffinityCacheTTL(input.AffinityTTLSeconds)
+	if key == "" || ttl <= 0 {
+		return
+	}
+	entry := contentModerationAffinityCacheEntry{
+		Flagged:     decision.Flagged,
+		Category:    decision.Category,
+		Score:       decision.Score,
+		LogID:       decision.LogID,
+		SideEffects: sideEffects,
+	}
+	if err := getContentModerationAffinityCache().SetWithTTL(key, entry, ttl); err != nil {
+		common.SysLog("failed to write content moderation affinity cache: " + err.Error())
+	}
+}
+
+func clearContentModerationAffinityCache() {
+	if err := getContentModerationAffinityCache().Purge(); err != nil {
+		common.SysLog("failed to clear content moderation affinity cache: " + err.Error())
+	}
+}
+
+func normalizeModerationStringList(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func moderationAPIKeys(config ContentModerationConfig) []string {
+	values := make([]string, 0, len(config.APIKeys)+1)
+	values = append(values, strings.Split(config.APIKey, "\n")...)
+	values = append(values, config.APIKeys...)
+	seen := make(map[string]struct{}, len(values))
+	keys := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		keys = append(keys, value)
+		if len(keys) == contentModerationMaxKeys {
+			break
+		}
+	}
+	return keys
+}
+
+func NormalizeContentModerationConfig(input ContentModerationConfig) (ContentModerationConfig, error) {
+	config := input
+	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
+	if config.Mode == "" {
+		config.Mode = "observe"
+	}
+	if config.Mode != "observe" && config.Mode != "pre_block" {
+		return ContentModerationConfig{}, errors.New("mode must be observe or pre_block")
+	}
+
+	config.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
+	if config.BaseURL == "" {
+		config.BaseURL = contentModerationDefaultBaseURL
+	}
+	parsedURL, err := url.Parse(config.BaseURL)
+	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return ContentModerationConfig{}, errors.New("base_url must be an HTTP or HTTPS URL")
+	}
+	if config.Model = strings.TrimSpace(config.Model); config.Model == "" {
+		config.Model = contentModerationDefaultModel
+	}
+
+	keys := moderationAPIKeys(config)
+	config.APIKey = strings.Join(keys, "\n")
+	config.APIKeys = nil
+
+	if config.Thresholds == nil {
+		config.Thresholds = cloneModerationThresholds(defaultContentModerationThresholds)
+	} else {
+		normalizedThresholds := cloneModerationThresholds(defaultContentModerationThresholds)
+		for category, threshold := range config.Thresholds {
+			category = strings.TrimSpace(category)
+			if category == "" || math.IsNaN(threshold) || math.IsInf(threshold, 0) || threshold < 0 || threshold > 1 {
+				return ContentModerationConfig{}, fmt.Errorf("threshold for %q must be between 0 and 1", category)
+			}
+			normalizedThresholds[category] = threshold
+		}
+		config.Thresholds = normalizedThresholds
+	}
+
+	config.GroupIDs = normalizeModerationStringList(config.GroupIDs)
+	if !config.AllModels && len(config.Models) == 0 && len(config.ModelFilters) == 0 {
+		// Keep the upgrade-compatible default when all_models was omitted from an
+		// older configuration payload.
+		config.AllModels = true
+	}
+	config.Models = normalizeModerationStringList(config.Models)
+	config.ModelFilters = normalizeModerationStringList(config.ModelFilters)
+	if !config.AllGroups && len(config.GroupIDs) == 0 {
+		// An omitted all_groups field should retain the safe default. An explicit
+		// empty scope is not useful and would silently disable the feature.
+		config.AllGroups = true
+	}
+
+	if config.SampleRate <= 0 {
+		config.SampleRate = 1
+	}
+	if config.SampleRate > 1 && config.SampleRate <= 100 {
+		config.SampleRate /= 100
+	}
+	if config.SampleRate > 1 || math.IsNaN(config.SampleRate) || math.IsInf(config.SampleRate, 0) {
+		return ContentModerationConfig{}, errors.New("sample_rate must be between 0 and 1")
+	}
+	if config.TimeoutMS <= 0 {
+		config.TimeoutMS = contentModerationDefaultTimeout
+	}
+	if config.TimeoutMS > 120000 {
+		return ContentModerationConfig{}, errors.New("timeout_ms must not exceed 120000")
+	}
+	if config.RetryCount < 0 {
+		return ContentModerationConfig{}, errors.New("retry_count must not be negative")
+	}
+	if config.RetryCount == 0 {
+		config.RetryCount = contentModerationDefaultRetries
+	}
+	if config.RetryCount > 5 {
+		return ContentModerationConfig{}, errors.New("retry_count must not exceed 5")
+	}
+	if config.BlockStatus == 0 {
+		config.BlockStatus = contentModerationDefaultBlockCode
+	} else if config.BlockStatus < 400 || config.BlockStatus > 599 {
+		return ContentModerationConfig{}, errors.New("block_status must be between 400 and 599")
+	}
+	if strings.TrimSpace(config.BlockMessage) == "" {
+		config.BlockMessage = "Request blocked by content policy"
+	}
+	if config.BanThreshold < 0 {
+		return ContentModerationConfig{}, errors.New("ban_threshold must not be negative")
+	}
+	if config.BanThreshold == 0 {
+		config.BanThreshold = 10
+	}
+	if config.ViolationWindowHours < 0 {
+		return ContentModerationConfig{}, errors.New("violation_window_hours must not be negative")
+	}
+	if config.ViolationWindowHours == 0 {
+		config.ViolationWindowHours = 24
+	}
+	if config.ViolationWindowHours > contentModerationMaxViolationWindowHours {
+		return ContentModerationConfig{}, fmt.Errorf("violation_window_hours must not exceed %d", contentModerationMaxViolationWindowHours)
+	}
+	if config.RecordLogs {
+		config.RecordNonHits = true
+		config.RecordLogs = false
+	}
+	config.ClearAPIKeys = false
+	return config, nil
+}
+
+func readContentModerationConfig() (ContentModerationConfig, error) {
+	defaults := defaultContentModerationConfig()
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap[ContentModerationOptionKey]
+	common.OptionMapRWMutex.RUnlock()
+
+	contentModerationConfigCacheMu.Lock()
+	cachedAvailable := !contentModerationConfigCacheAt.IsZero()
+	cachedRaw := contentModerationConfigCacheRaw
+	cachedConfig := cloneContentModerationConfig(contentModerationConfigCacheValue)
+	if raw != cachedRaw {
+		contentModerationConfigCacheMu.Unlock()
+		return parseAndCacheContentModerationConfig(raw, defaults)
+	}
+	if cachedAvailable && time.Since(contentModerationConfigCacheAt) < contentModerationConfigRefreshInterval {
+		contentModerationConfigCacheMu.Unlock()
+		return cachedConfig, nil
+	}
+	contentModerationConfigCacheMu.Unlock()
+
+	result, err, _ := contentModerationConfigRefresh.Do("config", func() (interface{}, error) {
+		refreshRaw := raw
+		loadedFromDatabase := false
+		if model.DB != nil {
+			var option model.Option
+			if err := model.DB.First(&option, "key = ?", ContentModerationOptionKey).Error; err == nil {
+				refreshRaw = option.Value
+				loadedFromDatabase = true
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return ContentModerationConfig{}, fmt.Errorf("load content moderation config: %w", err)
+			}
+		}
+		config, err := parseAndCacheContentModerationConfig(refreshRaw, defaults)
+		if err != nil {
+			return ContentModerationConfig{}, err
+		}
+		if loadedFromDatabase {
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap[ContentModerationOptionKey] = refreshRaw
+			common.OptionMapRWMutex.Unlock()
+		}
+		return config, nil
+	})
+	if err != nil {
+		if cachedAvailable {
+			contentModerationConfigCacheMu.Lock()
+			if contentModerationConfigCacheRaw == cachedRaw {
+				contentModerationConfigCacheAt = time.Now()
+			} else {
+				cachedConfig = cloneContentModerationConfig(contentModerationConfigCacheValue)
+			}
+			contentModerationConfigCacheMu.Unlock()
+			common.SysLog("failed to refresh content moderation config; using last known policy: " + err.Error())
+			return cachedConfig, nil
+		}
+		return ContentModerationConfig{}, err
+	}
+	return cloneContentModerationConfig(result.(ContentModerationConfig)), nil
+}
+
+func parseAndCacheContentModerationConfig(raw string, defaults ContentModerationConfig) (ContentModerationConfig, error) {
+	var config ContentModerationConfig
+	if strings.TrimSpace(raw) == "" {
+		config = defaults
+	} else {
+		var stored ContentModerationConfig
+		if err := common.UnmarshalJsonStr(raw, &stored); err != nil {
+			return ContentModerationConfig{}, fmt.Errorf("invalid content moderation config: %w", err)
+		}
+		normalized, err := NormalizeContentModerationConfig(stored)
+		if err != nil {
+			return ContentModerationConfig{}, err
+		}
+		config = normalized
+	}
+	contentModerationConfigCacheMu.Lock()
+	contentModerationConfigCacheRaw = raw
+	contentModerationConfigCacheValue = cloneContentModerationConfig(config)
+	contentModerationConfigCacheAt = time.Now()
+	contentModerationConfigCacheMu.Unlock()
+	return cloneContentModerationConfig(config), nil
+}
+
+func GetContentModerationConfig() ContentModerationConfig {
+	config, err := readContentModerationConfig()
+	if err != nil {
+		return defaultContentModerationConfig()
+	}
+	return config
+}
+
+// ContentModerationEnabled lets request handlers skip input extraction while
+// preserving configuration errors for fail-open observability.
+func ContentModerationEnabled() (bool, error) {
+	config, err := readContentModerationConfig()
+	if err != nil {
+		return false, err
+	}
+	return config.Enabled, nil
+}
+
+func IsContentModerationEnabled() bool {
+	enabled, _ := ContentModerationEnabled()
+	return enabled
+}
+
+func GetContentModerationConfigView() ContentModerationConfigView {
+	config := GetContentModerationConfig()
+	keys := moderationAPIKeys(config)
+	suffixes := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if len(key) <= 4 {
+			suffixes = append(suffixes, "****")
+			continue
+		}
+		suffixes = append(suffixes, "..."+key[len(key)-4:])
+	}
+	return ContentModerationConfigView{
+		Enabled:              config.Enabled,
+		Mode:                 config.Mode,
+		BaseURL:              config.BaseURL,
+		Model:                config.Model,
+		APIKeyCount:          len(keys),
+		APIKeySuffixes:       suffixes,
+		Thresholds:           cloneModerationThresholds(config.Thresholds),
+		AllGroups:            config.AllGroups,
+		GroupIDs:             append([]string(nil), config.GroupIDs...),
+		AllModels:            config.AllModels,
+		Models:               append([]string(nil), config.Models...),
+		ModelFilters:         append([]string(nil), config.ModelFilters...),
+		SampleRate:           config.SampleRate,
+		TimeoutMS:            config.TimeoutMS,
+		RetryCount:           config.RetryCount,
+		RecordNonHits:        config.RecordNonHits,
+		RecordLogs:           config.RecordLogs,
+		BlockStatus:          config.BlockStatus,
+		BlockMessage:         config.BlockMessage,
+		EmailOnHit:           config.EmailOnHit,
+		AutoBanEnabled:       config.AutoBanEnabled,
+		BanThreshold:         config.BanThreshold,
+		ViolationWindowHours: config.ViolationWindowHours,
+	}
+}
+
+func UpdateContentModerationConfig(input ContentModerationConfig) error {
+	normalized, err := NormalizeContentModerationConfig(input)
+	if err != nil {
+		return err
+	}
+	raw, err := common.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	if err := model.UpdateOption(ContentModerationOptionKey, string(raw)); err != nil {
+		return fmt.Errorf("%w: %v", ErrContentModerationConfigPersistence, err)
+	}
+	clearContentModerationAffinityCache()
+	return nil
+}
+
+func shouldModerateContent(config ContentModerationConfig, input ContentModerationRequest, text string) bool {
+	if !contentModerationInScope(config, input, text) {
+		return false
+	}
+	if config.SampleRate >= 1 {
+		return true
+	}
+	if config.SampleRate <= 0 {
+		return false
+	}
+	seed := input.RequestID + "\x00" + input.Model + "\x00" + input.Group + "\x00" + text
+	affinityIdentity := input.AffinityCacheIdentity
+	if affinityIdentity == "" {
+		affinityIdentity = input.AffinityKeyFingerprint
+	}
+	if affinityIdentity != "" {
+		seed = affinityIdentity + "\x00" + input.Model + "\x00" + input.Group
+	}
+	digest := sha256.Sum256([]byte(seed))
+	value := float64(binary.BigEndian.Uint64(digest[:8])) / float64(^uint64(0))
+	return value < config.SampleRate
+}
+
+func contentModerationInScope(config ContentModerationConfig, input ContentModerationRequest, text string) bool {
+	if !config.Enabled || strings.TrimSpace(text) == "" {
+		return false
+	}
+	if !config.AllGroups {
+		groupMatched := false
+		for _, group := range config.GroupIDs {
+			if group == strings.TrimSpace(input.Group) {
+				groupMatched = true
+				break
+			}
+		}
+		if !groupMatched {
+			return false
+		}
+	}
+	filters := append(append([]string(nil), config.Models...), config.ModelFilters...)
+	if !config.AllModels {
+		modelMatched := false
+		for _, filter := range filters {
+			matched, err := path.Match(filter, input.Model)
+			if (err == nil && matched) || filter == input.Model {
+				modelMatched = true
+				break
+			}
+		}
+		if !modelMatched {
+			return false
+		}
+	}
+	return true
+}
+
+func CheckContentModeration(ctx context.Context, input ContentModerationRequest) (*ContentModerationDecision, error) {
+	decision := &ContentModerationDecision{}
+	config, configErr := readContentModerationConfig()
+	if configErr != nil {
+		decision.Error = configErr.Error()
+		return decision, nil
+	}
+	text := normalizeContentModerationText(input.Text)
+	if text == "" {
+		text = ExtractContentModerationInput(input.Meta, input.Body, input.Protocol)
+	}
+	if !contentModerationInScope(config, input, text) {
+		return decision, nil
+	}
+	if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+		return cachedDecision, nil
+	}
+	if !shouldModerateContent(config, input, text) {
+		return decision, nil
+	}
+	check := func() *ContentModerationDecision {
+		if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
+			return cachedDecision
+		}
+		decision := &ContentModerationDecision{Checked: true}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		requestContext, cancel := context.WithTimeout(ctx, time.Duration(config.TimeoutMS)*time.Millisecond)
+		defer cancel()
+
+		started := time.Now()
+		scores, apiFlagged, callErr := callModeration(requestContext, config, text)
+		latency := time.Since(started).Milliseconds()
+		decision.CategoryScores = scores
+		if callErr != nil {
+			decision.Error = callErr.Error()
+		}
+		flagged, category, score := EvaluateContentModerationScores(scores, config.Thresholds)
+		if !flagged && apiFlagged && len(scores) == 0 {
+			flagged = true
+		}
+		decision.Flagged = flagged
+		decision.Category = category
+		decision.Score = score
+		decision.Blocked = flagged && config.Mode == "pre_block"
+		if decision.Blocked {
+			decision.StatusCode = config.BlockStatus
+			decision.Message = config.BlockMessage
+		}
+
+		logComplete := true
+		sideEffectsComplete := true
+		if flagged || config.RecordNonHits {
+			categoryScores, _ := common.Marshal(scores)
+			entry := &model.ContentModerationLog{
+				UserID:         input.UserID,
+				GroupName:      strings.TrimSpace(input.Group),
+				ModelName:      strings.TrimSpace(input.Model),
+				Protocol:       strings.TrimSpace(input.Protocol),
+				RequestPath:    strings.TrimSpace(input.RequestPath),
+				RequestID:      strings.TrimSpace(input.RequestID),
+				Mode:           config.Mode,
+				Action:         moderationAction(config.Mode, flagged),
+				Flagged:        flagged,
+				Blocked:        decision.Blocked,
+				Category:       category,
+				Score:          score,
+				CategoryScores: string(categoryScores),
+				Excerpt:        redactedModerationExcerpt(text),
+				ExcerptHash:    moderationTextHash(text),
+				LatencyMS:      latency,
+			}
+			if callErr != nil {
+				entry.Error = callErr.Error()
+			}
+			if err := model.CreateContentModerationLog(entry); err != nil {
+				logComplete = false
+				if decision.Error == "" {
+					decision.Error = err.Error()
+				} else {
+					decision.Error += "; log: " + err.Error()
+				}
+			} else {
+				decision.LogID = entry.ID
+				if flagged {
+					sideEffectsComplete = applyContentModerationSideEffects(input, config, entry)
+				}
+			}
+		}
+		if callErr == nil && logComplete {
+			cacheContentModerationDecision(input, config, *decision, sideEffectsComplete)
+		}
+		return decision
+	}
+
+	cacheKey := contentModerationAffinityCacheKey(input, config)
+	if cacheKey == "" {
+		return check(), nil
+	}
+	result, _, _ := contentModerationAffinityFlight.Do(cacheKey, func() (interface{}, error) {
+		return runContentModerationWithAffinityLease(ctx, input, config, cacheKey, check), nil
+	})
+	return result.(*ContentModerationDecision), nil
+}
+
+func applyContentModerationSideEffects(input ContentModerationRequest, config ContentModerationConfig, entry *model.ContentModerationLog) bool {
+	if input.UserID <= 0 || entry == nil {
+		return false
+	}
+	count, countErr := model.CountFlaggedContentModerationByUserSince(input.UserID, time.Now().Add(-time.Duration(config.ViolationWindowHours)*time.Hour))
+	if countErr != nil {
+		common.SysLog("failed to count content moderation violations: " + countErr.Error())
+		return false
+	}
+	if config.AutoBanEnabled && countErr == nil && count >= int64(config.BanThreshold) {
+		if _, err := model.DisableUserWithAuthVersion(input.UserID, "content_moderation_auto_ban"); err != nil {
+			common.SysLog(fmt.Sprintf("failed to auto-ban content moderation user %d: %v", input.UserID, err))
+			return false
+		}
+		if err := model.InvalidateUserTokensCache(input.UserID); err != nil {
+			common.SysLog(fmt.Sprintf("failed to invalidate content moderation user %d token cache after auto-ban: %v", input.UserID, err))
+		}
+	}
+	if !config.EmailOnHit {
+		return true
+	}
+	if entry.EmailSent {
+		return true
+	}
+	user, err := model.GetUserById(input.UserID, false)
+	if err != nil {
+		return false
+	}
+	userSetting := user.GetSetting()
+	email := strings.TrimSpace(userSetting.NotificationEmail)
+	if email == "" {
+		email = strings.TrimSpace(user.Email)
+	}
+	if email == "" {
+		return true
+	}
+	lang := i18n.ResolveUserLang(user.Id)
+	data := map[string]any{
+		"SystemName": common.SystemName,
+		"Category":   entry.Category,
+		"Score":      fmt.Sprintf("%.3f", entry.Score),
+		"Count":      count,
+		"Threshold":  config.BanThreshold,
+	}
+	notification := dto.NewNotifyWithData(
+		"content_moderation",
+		i18n.TranslateTemplate(lang, i18n.MsgNotifyContentModerationSubject),
+		i18n.TranslateTemplate(lang, i18n.MsgNotifyContentModerationBody),
+		data,
+	)
+	if email == "" {
+		return true
+	}
+
+	claimToken := common.NewRequestId()
+	claimed, claimErr := model.ClaimContentModerationEmail(entry.ID, claimToken)
+	if claimErr != nil {
+		common.SysLog("failed to claim content moderation email: " + claimErr.Error())
+		return false
+	}
+	if !claimed {
+		latest, err := model.GetContentModerationLog(entry.ID)
+		if err == nil && latest.EmailSent {
+			entry.EmailSent = true
+			return true
+		}
+		return false
+	}
+
+	sender := contentModerationEmailSender
+	go sendClaimedContentModerationEmail(sender, email, notification, user.Id, entry.ID, claimToken, input, config)
+	return false
+}
+
+func sendClaimedContentModerationEmail(sender contentModerationEmailSendFunc, email string, notification dto.Notify, userID int, logID int, claimToken string, input ContentModerationRequest, config ContentModerationConfig) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			// A panic can happen after SMTP accepted the message. Keep the durable
+			// claim so another node cannot issue an unsafe duplicate delivery.
+			common.SysLog(fmt.Sprintf("content moderation email worker panicked: %v", recovered))
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), contentModerationEmailSendTimeout)
+	defer cancel()
+	if err := sender(ctx, email, notification, userID); err != nil {
+		if common.IsEmailDeliveryRetrySafe(err) {
+			if releaseErr := model.ReleaseContentModerationEmailClaim(logID, claimToken); releaseErr != nil {
+				common.SysLog("failed to release content moderation email claim: " + releaseErr.Error())
+			}
+		}
+		common.SysLog("failed to send content moderation email: " + err.Error())
+		return
+	}
+	if err := model.MarkContentModerationEmailSent(logID, claimToken); err != nil {
+		// Keep the claim for operator review if SMTP succeeded but the completion
+		// write failed; retrying automatically could duplicate mail.
+		common.SysLog("content moderation email sent but completion write failed: " + err.Error())
+		return
+	}
+	key := contentModerationAffinityCacheKey(input, config)
+	if key == "" {
+		return
+	}
+	entry, found, err := getContentModerationAffinityCache().Get(key)
+	if err != nil || !found || entry.LogID != logID {
+		return
+	}
+	entry.SideEffects = true
+	if ttl := contentModerationAffinityCacheTTL(input.AffinityTTLSeconds); ttl > 0 {
+		if err := getContentModerationAffinityCache().SetWithTTL(key, entry, ttl); err != nil {
+			common.SysLog("failed to update content moderation affinity side effects: " + err.Error())
+		}
+	}
+}
+
+func moderationAction(mode string, flagged bool) string {
+	if !flagged {
+		return "allow"
+	}
+	if mode == "pre_block" {
+		return "block"
+	}
+	return "observe"
+}
+
+func moderationTextHash(text string) string {
+	digest := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(digest[:])
+}
+
+func redactedModerationExcerpt(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return "[redacted]"
+}
+
+func EvaluateContentModerationScores(scores, thresholds map[string]float64) (bool, string, float64) {
+	if len(scores) == 0 {
+		return false, "", 0
+	}
+	categories := make([]string, 0, len(scores))
+	for category := range scores {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+	flagged := false
+	bestCategory := ""
+	bestScore := 0.0
+	for _, category := range categories {
+		score := scores[category]
+		if math.IsNaN(score) || math.IsInf(score, 0) {
+			continue
+		}
+		threshold := 0.65
+		if configured, ok := thresholds[category]; ok {
+			threshold = configured
+		}
+		if score < threshold {
+			continue
+		}
+		if !flagged || score > bestScore {
+			bestCategory = category
+			bestScore = score
+		}
+		flagged = true
+	}
+	return flagged, bestCategory, bestScore
+}
+
+func callModeration(ctx context.Context, config ContentModerationConfig, text string) (map[string]float64, bool, error) {
+	keys := moderationAPIKeys(config)
+	inputs := splitContentModerationInputs(text)
+	if len(inputs) == 0 {
+		return nil, false, errors.New("moderation input is empty")
+	}
+	var payloadInput any = inputs[0]
+	if len(inputs) > 1 {
+		payloadInput = inputs
+	}
+	attempts := config.RetryCount + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		payload, err := common.Marshal(map[string]any{
+			"model": config.Model,
+			"input": payloadInput,
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		endpoint := strings.TrimRight(config.BaseURL, "/") + "/v1/moderations"
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, false, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if len(keys) > 0 {
+			request.Header.Set("Authorization", "Bearer "+keys[attempt%len(keys)])
+		}
+		response, err := contentModerationHTTPClient.Do(request)
+		if err != nil {
+			var requestErr *url.Error
+			if errors.As(err, &requestErr) {
+				// url.Error includes the complete request URL. Only retain the
+				// transport cause so credentials accidentally placed in BaseURL
+				// cannot be copied into logs or persisted moderation errors.
+				lastErr = fmt.Errorf("moderation request failed: %w", requestErr.Err)
+			} else {
+				lastErr = errors.New("moderation request failed")
+			}
+			if ctx.Err() != nil {
+				return nil, false, lastErr
+			}
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read moderation response failed: %w", readErr)
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			lastErr = fmt.Errorf("moderation API returned status %d", response.StatusCode)
+			if response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
+				return nil, false, lastErr
+			}
+			continue
+		}
+		var parsed moderationAPIResponse
+		if err := common.Unmarshal(body, &parsed); err != nil {
+			return nil, false, fmt.Errorf("decode moderation response failed: %w", err)
+		}
+		if len(parsed.Results) == 0 {
+			return nil, false, errors.New("moderation API response has no results")
+		}
+		if len(parsed.Results) != len(inputs) {
+			return nil, false, fmt.Errorf("moderation API response result count %d does not match input count %d", len(parsed.Results), len(inputs))
+		}
+		scores := make(map[string]float64)
+		flagged := false
+		for _, result := range parsed.Results {
+			flagged = flagged || result.Flagged
+			for category, score := range result.CategoryScores {
+				if current, exists := scores[category]; !exists || score > current {
+					scores[category] = score
+				}
+			}
+			for category, categoryFlagged := range result.Categories {
+				if categoryFlagged {
+					if _, exists := scores[category]; !exists {
+						scores[category] = 1
+					}
+				}
+			}
+		}
+		return scores, flagged, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("moderation API request failed")
+	}
+	return nil, false, lastErr
+}
+
+// ExtractContentModerationInput extracts only the latest user turn. The typed
+// token metadata remains a fallback for request formats that do not expose a
+// standard JSON message array or when the body is unavailable.
+func ExtractContentModerationInput(meta *relaytypes.TokenCountMeta, body []byte, protocol string) string {
+	if len(body) > 0 {
+		if text := extractLatestUserText(body, protocol); text != "" {
+			return normalizeContentModerationText(text)
+		}
+	}
+	if meta == nil {
+		return ""
+	}
+	return normalizeContentModerationText(meta.CombineText)
+}
+
+// ExtractContentModerationText reads the already decoded relay request. Relay
+// handlers call this after validation, so moderation does not materialize a
+// disk-backed body again and remains aligned with protocol DTOs.
+func ExtractContentModerationText(request dto.Request, protocol string) string {
+	if request == nil {
+		return ""
+	}
+	var text string
+	switch value := request.(type) {
+	case *dto.GeneralOpenAIRequest:
+		for index := len(value.Messages) - 1; index >= 0; index-- {
+			if strings.EqualFold(value.Messages[index].Role, "user") {
+				text = moderationTextFromTypedContent(value.Messages[index].Content)
+				break
+			}
+		}
+	case *dto.ClaudeRequest:
+		for index := len(value.Messages) - 1; index >= 0; index-- {
+			if strings.EqualFold(value.Messages[index].Role, "user") {
+				text = moderationTextFromTypedContent(value.Messages[index].Content)
+				break
+			}
+		}
+	case *dto.GeminiChatRequest:
+		for index := len(value.Contents) - 1; index >= 0; index-- {
+			if strings.EqualFold(value.Contents[index].Role, "model") {
+				continue
+			}
+			parts := make([]string, 0, len(value.Contents[index].Parts))
+			for _, part := range value.Contents[index].Parts {
+				if strings.TrimSpace(part.Text) != "" && !strings.HasPrefix(strings.TrimSpace(part.Text), "<system-reminder>") {
+					parts = append(parts, part.Text)
+				}
+			}
+			text = strings.Join(parts, "\n")
+			break
+		}
+	case *dto.OpenAIResponsesRequest:
+		text = extractLatestResponsesInputText(value.Input)
+	}
+	return normalizeContentModerationText(text)
+}
+
+func moderationTextFromTypedContent(content any) string {
+	if content == nil {
+		return ""
+	}
+	if text, ok := content.(string); ok {
+		return text
+	}
+	raw, err := common.Marshal(content)
+	if err != nil || !gjson.ValidBytes(raw) {
+		return ""
+	}
+	return moderationTextFromValue(gjson.ParseBytes(raw))
+}
+
+func extractLatestResponsesInputText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	root := gjson.ParseBytes(raw)
+	if root.Type == gjson.String {
+		return root.String()
+	}
+	if !gjson.ValidBytes(raw) || !root.IsArray() {
+		return ""
+	}
+	return latestUserArrayText(root, false)
+}
+
+func normalizeContentModerationText(text string) string {
+	text = strings.TrimSpace(text)
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func splitContentModerationInputs(text string) []string {
+	runes := []rune(normalizeContentModerationText(text))
+	if len(runes) == 0 {
+		return nil
+	}
+	inputs := make([]string, 0, (len(runes)+contentModerationMaxInputRunes-1)/contentModerationMaxInputRunes)
+	for start := 0; start < len(runes); start += contentModerationMaxInputRunes {
+		end := start + contentModerationMaxInputRunes
+		if end > len(runes) {
+			end = len(runes)
+		}
+		inputs = append(inputs, string(runes[start:end]))
+	}
+	return inputs
+}
+
+func extractLatestUserText(body []byte, protocol string) string {
+	if !gjson.ValidBytes(body) {
+		return ""
+	}
+	protocol = strings.ToLower(protocol)
+	if strings.Contains(protocol, "gemini") {
+		// Gemini omits role for user contents in some compatible clients; an
+		// empty role is treated as user while model turns remain excluded.
+		if text := latestUserArrayText(gjson.GetBytes(body, "contents"), false); text != "" {
+			return text
+		}
+	}
+	if text := latestUserArrayText(gjson.GetBytes(body, "messages"), true); text != "" {
+		return text
+	}
+	if strings.Contains(protocol, "responses") || protocol == "" {
+		input := gjson.GetBytes(body, "input")
+		if input.Type == gjson.String {
+			return input.String()
+		}
+		if text := latestUserArrayText(input, false); text != "" {
+			return text
+		}
+	}
+	if prompt := gjson.GetBytes(body, "prompt"); prompt.Type == gjson.String {
+		return prompt.String()
+	}
+	return ""
+}
+
+func latestUserArrayText(value gjson.Result, requireUserRole bool) string {
+	if value.Type != gjson.JSON {
+		return ""
+	}
+	items := value.Array()
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+		if requireUserRole && role != "user" {
+			continue
+		}
+		if !requireUserRole && role != "" && role != "user" {
+			continue
+		}
+		for _, key := range []string{"content", "parts", "text", "input_text"} {
+			if text := moderationTextFromValue(item.Get(key)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func moderationTextFromValue(value gjson.Result) string {
+	return strings.Join(moderationTextsFromValue(value), "\n")
+}
+
+func moderationTextsFromValue(value gjson.Result) []string {
+	if !value.Exists() {
+		return nil
+	}
+	if value.IsArray() {
+		var texts []string
+		for _, item := range value.Array() {
+			texts = append(texts, moderationTextsFromValue(item)...)
+		}
+		return texts
+	}
+	switch value.Type {
+	case gjson.String:
+		text := strings.TrimSpace(value.String())
+		if strings.HasPrefix(text, "<system-reminder>") {
+			return nil
+		}
+		if text == "" {
+			return nil
+		}
+		return []string{text}
+	case gjson.JSON:
+		for _, key := range []string{"text", "input_text", "content", "parts", "value"} {
+			if texts := moderationTextsFromValue(value.Get(key)); len(texts) > 0 {
+				return texts
+			}
+		}
+	}
+	return nil
+}

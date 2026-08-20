@@ -345,6 +345,8 @@ notify.subscription_quota_exceed.subject: "Your subscription quota is about to r
 notify.quota_exceed.body: "{{.Prompt}}, your remaining quota is {{.Quota}}. Please top up in time to avoid interruptions.<br>Top-up link: <a href='{{.TopUpLink}}' style='color:#f05260;'>{{.TopUpLink}}</a>"
 notify.quota_exceed.body_bark: "{{.Prompt}}, remaining quota: {{.Quota}}. Please top up in time"
 notify.quota_exceed.body_gotify: "{{.Prompt}}, your remaining quota is {{.Quota}}. Please top up in time."
+notify.content_moderation.subject: "[{{.SystemName}}] Risk Control Notice"
+notify.content_moderation.body: "Your API request triggered the platform content moderation policy.\n\nCategory / score: {{.Category}} / {{.Score}}\nCumulative triggers: {{.Count}} / {{.Threshold}}\n\nPlease review the request content."
 notify.channel.disabled_subject: "Channel \"{{.ChannelName}}\" (#{{.ChannelId}}) has been disabled"
 notify.channel.disabled_body: "Channel \"{{.ChannelName}}\" (#{{.ChannelId}}) has been disabled, reason: {{.Reason}}"
 notify.channel.enabled_subject: "Channel \"{{.ChannelName}}\" (#{{.ChannelId}}) has been enabled"

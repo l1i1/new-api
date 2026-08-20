@@ -345,6 +345,8 @@ notify.subscription_quota_exceed.subject: "Votre quota d'abonnement est sur le p
 notify.quota_exceed.body: "{{.Prompt}}, votre quota restant est de {{.Quota}}. Veuillez recharger à temps pour éviter toute interruption.<br>Lien de rechargement : <a href='{{.TopUpLink}}' style='color:#f05260;'>{{.TopUpLink}}</a>"
 notify.quota_exceed.body_bark: "{{.Prompt}}, quota restant : {{.Quota}}. Veuillez recharger à temps"
 notify.quota_exceed.body_gotify: "{{.Prompt}}, votre quota restant est de {{.Quota}}. Veuillez recharger à temps."
+notify.content_moderation.subject: "[{{.SystemName}}] Alerte de contrôle des risques"
+notify.content_moderation.body: "Votre requête API a déclenché la politique de modération du contenu de la plateforme.\n\nCatégorie / score : {{.Category}} / {{.Score}}\nDéclenchements cumulés : {{.Count}} / {{.Threshold}}\n\nVeuillez vérifier le contenu de la requête."
 notify.channel.disabled_subject: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été désactivé"
 notify.channel.disabled_body: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été désactivé, raison : {{.Reason}}"
 notify.channel.enabled_subject: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été activé"

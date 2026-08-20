@@ -2,6 +2,7 @@ package common
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -488,6 +489,73 @@ func TestSendEmailSkipsAuthWhenCredentialsAreEmpty(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SMTP DATA")
 	}
+}
+
+func TestSendEmailContextBoundsSMTPGreetingWait(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	}()
+
+	withSMTPSettings(t)
+	address := listener.Addr().(*net.TCPAddr)
+	SMTPServer = address.IP.String()
+	SMTPPort = address.Port
+	SMTPFrom = "sender@example.com"
+	SystemName = "New API"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err = SendEmailWithAttachmentsContext(ctx, "Verification", "receiver@example.com", "<p>123456</p>", nil)
+	require.Error(t, err)
+	require.True(t, IsEmailDeliveryRetrySafe(err))
+	require.Less(t, time.Since(started), time.Second)
+}
+
+func TestSendEmailContextCancellationInterruptsSMTPGreetingWait(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	}()
+
+	withSMTPSettings(t)
+	address := listener.Addr().(*net.TCPAddr)
+	SMTPServer = address.IP.String()
+	SMTPPort = address.Port
+	SMTPFrom = "sender@example.com"
+	SystemName = "New API"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	started := time.Now()
+	err = SendEmailWithAttachmentsContext(ctx, "Verification", "receiver@example.com", "<p>123456</p>", nil)
+	require.Error(t, err)
+	require.True(t, IsEmailDeliveryRetrySafe(err))
+	require.Less(t, time.Since(started), time.Second)
 }
 
 func TestSendEmailSkipsAuthWhenCredentialsAreIncomplete(t *testing.T) {

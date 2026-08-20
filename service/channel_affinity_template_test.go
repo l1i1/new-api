@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -188,6 +190,54 @@ func TestExtractChannelAffinityValue_RequestHeader(t *testing.T) {
 	})
 
 	require.Equal(t, "tenant-123", value)
+}
+
+func TestAffinityFingerprintUsesFullSHA256(t *testing.T) {
+	value := "tenant-123"
+	digest := sha256.Sum256([]byte(value))
+
+	require.Equal(t, hex.EncodeToString(digest[:]), affinityFingerprint(value))
+	require.Len(t, affinityFingerprint(value), sha256.Size*2)
+	require.Empty(t, affinityFingerprint(""))
+}
+
+func TestChannelAffinityIdentityUsesActualCacheKeyAndIncludeSemantics(t *testing.T) {
+	affinityValue := "tenant-secret"
+	baseRule := operation_setting.ChannelAffinityRule{
+		Name:              "conversation",
+		IncludeRuleName:   true,
+		IncludeModelName:  true,
+		IncludeUsingGroup: true,
+	}
+
+	keyA := channelAffinityCacheNamespace + ":" + buildChannelAffinityCacheKeySuffix(baseRule, "gpt-5", "default", affinityValue)
+	keyB := channelAffinityCacheNamespace + ":" + buildChannelAffinityCacheKeySuffix(baseRule, "gpt-4", "default", affinityValue)
+	require.NotEqual(t, keyA, keyB)
+	require.NotEqual(t, channelAffinityCacheIdentity(keyA), channelAffinityCacheIdentity(keyB))
+
+	excludedRule := baseRule
+	excludedRule.IncludeModelName = false
+	excludedRule.IncludeUsingGroup = false
+	keyC := channelAffinityCacheNamespace + ":" + buildChannelAffinityCacheKeySuffix(excludedRule, "gpt-5", "default", affinityValue)
+	keyD := channelAffinityCacheNamespace + ":" + buildChannelAffinityCacheKeySuffix(excludedRule, "gpt-4", "other", affinityValue)
+	require.Equal(t, keyC, keyD)
+	require.Equal(t, channelAffinityCacheIdentity(keyC), channelAffinityCacheIdentity(keyD))
+
+	digest := sha256.Sum256([]byte(keyA))
+	require.Equal(t, hex.EncodeToString(digest[:]), channelAffinityCacheIdentity(keyA))
+	require.Len(t, channelAffinityCacheIdentity(keyA), sha256.Size*2)
+	require.NotContains(t, channelAffinityCacheIdentity(keyA), affinityValue)
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:       keyA,
+		RuleName:       baseRule.Name,
+		UsingGroup:     "default",
+		KeyFingerprint: affinityFingerprint(affinityValue),
+		TTLSeconds:     60,
+	})
+	stats, ok := GetChannelAffinityStatsContext(ctx)
+	require.True(t, ok)
+	require.Equal(t, channelAffinityCacheIdentity(keyA), stats.AffinityCacheIdentity)
 }
 
 func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {

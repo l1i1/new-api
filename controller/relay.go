@@ -127,6 +127,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	if decision := checkRelayContentModeration(c, relayFormat, relayInfo); decision != nil && decision.Blocked {
+		message := decision.Message
+		if message == "" {
+			message = "Request blocked by content policy"
+		}
+		statusCode := decision.StatusCode
+		if statusCode < 400 || statusCode > 599 {
+			statusCode = http.StatusForbidden
+		}
+		newAPIError = types.NewErrorWithStatusCode(errors.New(message), types.ErrorCode("content_policy_violation"), statusCode, types.ErrOptionWithSkipRetry())
+		return
+	}
 	if relayFormat != types.RelayFormatOpenAIRealtime {
 		originalWriter := c.Writer
 		c.Writer = &relayObservationWriter{ResponseWriter: originalWriter, info: relayInfo}
@@ -277,6 +289,79 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 }
 
+func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, info *relaycommon.RelayInfo) *service.ContentModerationDecision {
+	if c == nil || c.Request == nil || info == nil || relayFormat == types.RelayFormatOpenAIRealtime {
+		return nil
+	}
+	enabled, configErr := service.ContentModerationEnabled()
+	if configErr != nil {
+		logger.LogError(c, fmt.Sprintf("content moderation fail-open user_id=%d request_id=%q: %s", info.UserId, info.RequestId, common.LocalLogPreview(configErr.Error())))
+		return nil
+	}
+	if !enabled {
+		return nil
+	}
+	if relayconstant.Path2RelayMode(c.Request.URL.Path) == relayconstant.RelayModeModerations {
+		return nil
+	}
+	protocol := ContentModerationProtocolForRelayFormat(relayFormat)
+	if protocol == "" {
+		return nil
+	}
+	group := info.UsingGroup
+	if group == "" {
+		group = info.TokenGroup
+	}
+	moderationRequest := service.ContentModerationRequest{
+		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
+		RequestPath: c.Request.URL.Path, RequestID: info.RequestId,
+		Text: service.ExtractContentModerationText(info.Request, protocol),
+	}
+	// Direct unit-test callers and legacy handlers may not expose a typed
+	// request. The normal Relay path never takes this body fallback.
+	if moderationRequest.Text == "" && info.Request == nil {
+		if storage, storageErr := common.GetBodyStorage(c); storageErr == nil {
+			if body, bodyErr := storage.Bytes(); bodyErr == nil {
+				moderationRequest.Body = body
+			}
+		}
+	}
+	if affinity, ok := service.GetChannelAffinityStatsContext(c); ok {
+		moderationRequest.AffinityRuleName = affinity.RuleName
+		moderationRequest.AffinityKeyFingerprint = affinity.KeyFingerprint
+		moderationRequest.AffinityCacheIdentity = affinity.AffinityCacheIdentity
+		moderationRequest.AffinityTTLSeconds = int(affinity.TTLSeconds)
+		moderationRequest.AffinityChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	}
+	decision, _ := service.CheckContentModeration(c.Request.Context(), moderationRequest)
+	if decision != nil && decision.Error != "" {
+		logger.LogError(c, fmt.Sprintf(
+			"content moderation fail-open user_id=%d request_id=%q protocol=%s path=%q: %s",
+			info.UserId,
+			info.RequestId,
+			protocol,
+			c.Request.URL.Path,
+			common.LocalLogPreview(decision.Error),
+		))
+	}
+	return decision
+}
+
+func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) string {
+	switch relayFormat {
+	case types.RelayFormatOpenAI:
+		return service.ContentModerationProtocolOpenAIChat
+	case types.RelayFormatOpenAIResponses:
+		return service.ContentModerationProtocolOpenAIResponses
+	case types.RelayFormatClaude:
+		return service.ContentModerationProtocolAnthropic
+	case types.RelayFormatGemini:
+		return service.ContentModerationProtocolGemini
+	default:
+		return ""
+	}
+}
+
 type relayObservationWriter struct {
 	gin.ResponseWriter
 	info *relaycommon.RelayInfo
@@ -352,7 +437,36 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			AutoBan: &autoBanInt,
 		}, nil
 	}
-	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
+	var (
+		channel     *model.Channel
+		selectGroup string
+		err         error
+	)
+	if retryParam.GetRetry() == 0 {
+		if _, affinityEnabled := service.GetChannelAffinityStatsContext(c); affinityEnabled {
+			selectedChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+			if selectedChannelID > 0 {
+				channel, err = model.CacheGetChannel(selectedChannelID)
+				if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled {
+					channel = nil
+					err = nil
+				} else {
+					selectGroup = info.UsingGroup
+					if selectGroup == "" {
+						selectGroup = info.TokenGroup
+					}
+					if selectGroup == "auto" {
+						if autoGroup := common.GetContextKeyString(c, constant.ContextKeyAutoGroup); autoGroup != "" {
+							selectGroup = autoGroup
+						}
+					}
+				}
+			}
+		}
+	}
+	if channel == nil {
+		channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(retryParam)
+	}
 	if err != nil {
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}

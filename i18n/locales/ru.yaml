@@ -345,6 +345,8 @@ notify.subscription_quota_exceed.subject: "Ваша квота подписки 
 notify.quota_exceed.body: "{{.Prompt}}, ваш остаток квоты: {{.Quota}}. Пополните вовремя, чтобы избежать перерывов.<br>Ссылка на пополнение: <a href='{{.TopUpLink}}' style='color:#f05260;'>{{.TopUpLink}}</a>"
 notify.quota_exceed.body_bark: "{{.Prompt}}, остаток квоты: {{.Quota}}. Пополните вовремя"
 notify.quota_exceed.body_gotify: "{{.Prompt}}, ваш остаток квоты: {{.Quota}}. Пополните вовремя."
+notify.content_moderation.subject: "[{{.SystemName}}] Уведомление о контроле рисков"
+notify.content_moderation.body: "Ваш API-запрос нарушил политику модерации контента платформы.\n\nКатегория / оценка: {{.Category}} / {{.Score}}\nВсего срабатываний: {{.Count}} / {{.Threshold}}\n\nПроверьте содержимое запроса."
 notify.channel.disabled_subject: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) отключён"
 notify.channel.disabled_body: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) отключён, причина: {{.Reason}}"
 notify.channel.enabled_subject: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) включён"

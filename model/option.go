@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -184,6 +185,7 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	common.OptionMap["StopOnSensitiveEnabled"] = strconv.FormatBool(setting.StopOnSensitiveEnabled)
+	common.OptionMap["content_moderation.config"] = `{"enabled":false,"mode":"observe","base_url":"https://api.openai.com","model":"omni-moderation-latest","timeout_ms":1500,"sample_rate":1,"all_groups":true,"all_models":true,"record_non_hits":false,"retry_count":1,"block_status":403,"block_message":"Request blocked by content policy","email_on_hit":false,"auto_ban_enabled":false,"ban_threshold":10,"violation_window_hours":24}`
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
@@ -245,17 +247,21 @@ func UpdateOption(key string, value string) error {
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
-	// Save to database first
-	option := Option{
-		Key: key,
+	if DB == nil {
+		return errors.New("database is not initialized")
 	}
-	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
-	option.Value = value
-	// Save is a combination function.
-	// If save value does not contain primary key, it will execute Create,
-	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	// Persist atomically before publishing the in-memory value. A failed Save
+	// must not leave a newly created empty option row behind.
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		option := Option{Key: key}
+		if result := tx.FirstOrCreate(&option, Option{Key: key}); result.Error != nil {
+			return result.Error
+		}
+		option.Value = value
+		return tx.Save(&option).Error
+	}); err != nil {
+		return err
+	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
 }

@@ -80,24 +80,36 @@ func quotaResultFromLua(result int, err error) (cacheQuotaResult, error) {
 }
 
 func cacheTryReserveUserQuota(userID int, amount int64) (cacheQuotaResult, error) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return cacheQuotaMiss, errors.New("redis is unavailable")
+	}
 	result, err := common.RDB.Eval(context.Background(), userQuotaReserveScript,
 		[]string{getUserCacheKey(userID)}, amount, userID, userCacheSchemaVersion).Int()
 	return quotaResultFromLua(result, err)
 }
 
 func cacheApplyUserQuotaDelta(userID int, delta int64) (cacheQuotaResult, error) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return cacheQuotaMiss, errors.New("redis is unavailable")
+	}
 	result, err := common.RDB.Eval(context.Background(), userQuotaDeltaScript,
 		[]string{getUserCacheKey(userID)}, delta, userID, userCacheSchemaVersion).Int()
 	return quotaResultFromLua(result, err)
 }
 
 func cacheTryReserveTokenQuota(id int, key string, amount int64) (cacheQuotaResult, error) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return cacheQuotaMiss, errors.New("redis is unavailable")
+	}
 	result, err := common.RDB.Eval(context.Background(), tokenQuotaReserveScript,
 		[]string{getTokenCacheKey(key)}, amount, id, common.GetTimestamp()).Int()
 	return quotaResultFromLua(result, err)
 }
 
 func cacheApplyTokenQuotaDelta(id int, key string, delta int64) (cacheQuotaResult, error) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return cacheQuotaMiss, errors.New("redis is unavailable")
+	}
 	result, err := common.RDB.Eval(context.Background(), tokenQuotaDeltaScript,
 		[]string{getTokenCacheKey(key)}, delta, id, common.GetTimestamp()).Int()
 	return quotaResultFromLua(result, err)

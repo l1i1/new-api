@@ -32,6 +32,135 @@ func useUserCacheMiniRedis(t *testing.T) *miniredis.Miniredis {
 	return server
 }
 
+func TestUserCacheTreatsNilRedisClientAsUnavailable(t *testing.T) {
+	truncateTables(t)
+	oldRedisEnabled := common.RedisEnabled
+	oldRDB := common.RDB
+	common.RedisEnabled = true
+	common.RDB = nil
+	t.Cleanup(func() {
+		common.RedisEnabled = oldRedisEnabled
+		common.RDB = oldRDB
+	})
+
+	user := User{
+		Username:    "nil-redis-user-cache",
+		Password:    "password",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, updateUserCache(user))
+	require.ErrorContains(t, SetUserAuthVersionFence(user.Id, 2), "redis client is unavailable")
+
+	cached, err := GetUserCache(user.Id)
+	require.NoError(t, err)
+	require.Equal(t, user.Id, cached.Id)
+	require.Equal(t, common.UserStatusEnabled, cached.Status)
+}
+
+func TestDisableUserWithAuthVersionOnlyChangesAuthorizationState(t *testing.T) {
+	truncateTables(t)
+	oldRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedisEnabled })
+
+	user := User{
+		Username:    "auth-version-disable",
+		Password:    "password",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		Remark:      "preserve-me",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	now := time.Now().Unix()
+	require.NoError(t, DB.Create(&UserSession{
+		SID: "auth-version-disable-session", UserID: user.Id, Version: 1, UserAuthVersion: 1,
+		Status: UserSessionStatusActive, RefreshHash: "refresh-hash", LoginMethod: "password",
+		LastActiveAt: now, ExpiresAt: now + 3600,
+	}).Error)
+
+	changed, err := DisableUserWithAuthVersion(user.Id, "test_disable")
+	require.NoError(t, err)
+	require.True(t, changed)
+	changed, err = DisableUserWithAuthVersion(user.Id, "test_disable")
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	var stored User
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	require.Equal(t, common.UserStatusDisabled, stored.Status)
+	require.EqualValues(t, 2, stored.AuthVersion)
+	require.Equal(t, "preserve-me", stored.Remark)
+	var session UserSession
+	require.NoError(t, DB.First(&session, "sid = ?", "auth-version-disable-session").Error)
+	require.Equal(t, UserSessionStatusRevoked, session.Status)
+	require.Equal(t, "test_disable", session.RevokedReason)
+}
+
+func TestDisableUserWithAuthVersionRetriesSessionRevokeAfterCachePublishFailure(t *testing.T) {
+	truncateTables(t)
+	server := useUserCacheMiniRedis(t)
+
+	user := User{
+		Username:    "auth-version-disable-retry",
+		Password:    "password",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	now := time.Now().Unix()
+	require.NoError(t, DB.Create(&UserSession{
+		SID: "auth-version-disable-retry-session", UserID: user.Id, Version: 1, UserAuthVersion: 1,
+		Status: UserSessionStatusActive, RefreshHash: "refresh-hash", LoginMethod: "password",
+		LastActiveAt: now, ExpiresAt: now + 3600,
+	}).Error)
+
+	var redisClosed atomic.Bool
+	const callbackName = "test:close_redis_after_user_disable"
+	require.NoError(t, DB.Callback().Update().After("gorm:update").Register(callbackName, func(*gorm.DB) {
+		if redisClosed.CompareAndSwap(false, true) {
+			_ = common.RDB.Close()
+		}
+	}))
+	callbackRegistered := true
+	t.Cleanup(func() {
+		if callbackRegistered {
+			_ = DB.Callback().Update().Remove(callbackName)
+		}
+	})
+
+	changed, err := DisableUserWithAuthVersion(user.Id, "test_disable_retry")
+	require.Error(t, err)
+	require.True(t, changed)
+	require.True(t, redisClosed.Load())
+
+	var stored User
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	require.Equal(t, common.UserStatusDisabled, stored.Status)
+	require.EqualValues(t, 2, stored.AuthVersion)
+	var session UserSession
+	require.NoError(t, DB.First(&session, "sid = ?", "auth-version-disable-retry-session").Error)
+	require.Equal(t, UserSessionStatusActive, session.Status)
+
+	require.NoError(t, DB.Callback().Update().Remove(callbackName))
+	callbackRegistered = false
+	common.RDB = redis.NewClient(&redis.Options{Addr: server.Addr()})
+
+	changed, err = DisableUserWithAuthVersion(user.Id, "test_disable_retry")
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.NoError(t, DB.First(&session, "sid = ?", "auth-version-disable-retry-session").Error)
+	require.Equal(t, UserSessionStatusRevoked, session.Status)
+	require.Equal(t, "test_disable_retry", session.RevokedReason)
+}
+
 func TestUserAuthFenceRollbackExpiresAndRecovers(t *testing.T) {
 	truncateTables(t)
 	server := useUserCacheMiniRedis(t)

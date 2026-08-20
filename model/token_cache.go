@@ -36,7 +36,7 @@ const tokenCacheFenceSeconds = 10
 // writes to the database: it raises the fence and drops the cached hash so no
 // reader can act on (or re-publish) the pre-mutation state.
 func invalidateTokenCacheForMutation(key string) error {
-	if !common.RedisEnabled || key == "" {
+	if !common.RedisAvailable() || key == "" {
 		return nil
 	}
 	ctx := context.Background()
@@ -54,7 +54,7 @@ func invalidateTokenCacheForMutation(key string) error {
 // field of a live hash.
 // 返回值：0=被 fence 拦截，1=完成初始化，2=哈希已存在，仅刷新 TTL。
 func cacheInitToken(token Token) (int, error) {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return 0, nil
 	}
 	allowIps := ""
@@ -92,7 +92,7 @@ return 1`
 
 // cacheGetTokenByKey 从缓存读取 token；不完整的哈希（如仅有配额字段）会被拒绝。
 func cacheGetTokenByKey(key string) (*Token, error) {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil, fmt.Errorf("redis is not enabled")
 	}
 	var token Token

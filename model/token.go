@@ -482,7 +482,7 @@ func GetTokenKeysByIds(ids []int, userId int) ([]Token, error) {
 // 配合 InvalidateUserCache 使用，可在用户被禁用/删除时立即阻断其令牌的请求。
 // 下一次请求将从数据库重新加载令牌及用户状态，从而立即识别出被禁用的用户。
 func InvalidateUserTokensCache(userId int) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	if userId <= 0 {
@@ -499,7 +499,7 @@ func InvalidateUserTokensCache(userId int) error {
 }
 
 func invalidateTokensCache(tokens []Token) error {
-	if !common.RedisEnabled {
+	if !common.RedisAvailable() {
 		return nil
 	}
 	var firstErr error

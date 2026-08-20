@@ -345,6 +345,8 @@ notify.subscription_quota_exceed.subject: "サブスクリプションの残り�
 notify.quota_exceed.body: "{{.Prompt}}、現在の残りクォータは {{.Quota}} です。利用が中断されないよう、速やかにチャージしてください。<br>チャージリンク：<a href='{{.TopUpLink}}' style='color:#f05260;'>{{.TopUpLink}}</a>"
 notify.quota_exceed.body_bark: "{{.Prompt}}、残りクォータ：{{.Quota}}、速やかにチャージしてください"
 notify.quota_exceed.body_gotify: "{{.Prompt}}、現在の残りクォータは {{.Quota}} です。速やかにチャージしてください。"
+notify.content_moderation.subject: "[{{.SystemName}}] リスク管理のお知らせ"
+notify.content_moderation.body: "API リクエストがプラットフォームのコンテンツモデレーションポリシーに抵触しました。\n\nカテゴリ / スコア：{{.Category}} / {{.Score}}\n累計検知回数：{{.Count}} / {{.Threshold}}\n\nリクエスト内容を確認してください。"
 notify.channel.disabled_subject: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が無効化されました"
 notify.channel.disabled_body: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が無効化されました。理由：{{.Reason}}"
 notify.channel.enabled_subject: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が有効化されました"

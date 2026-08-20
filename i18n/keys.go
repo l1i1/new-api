@@ -407,6 +407,8 @@ const (
 	MsgNotifyQuotaExceedBody                = "notify.quota_exceed.body"
 	MsgNotifyQuotaExceedBodyBark            = "notify.quota_exceed.body_bark"
 	MsgNotifyQuotaExceedBodyGotify          = "notify.quota_exceed.body_gotify"
+	MsgNotifyContentModerationSubject       = "notify.content_moderation.subject"
+	MsgNotifyContentModerationBody          = "notify.content_moderation.body"
 
 	MsgNotifyChannelDisabledSubject = "notify.channel.disabled_subject"
 	MsgNotifyChannelDisabledBody    = "notify.channel.disabled_body"

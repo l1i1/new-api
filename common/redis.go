@@ -16,6 +16,10 @@ import (
 var RDB *redis.Client
 var RedisEnabled = true
 
+func RedisAvailable() bool {
+	return RedisEnabled && RDB != nil
+}
+
 func RedisKeyCacheSeconds() int {
 	return SyncFrequency
 }

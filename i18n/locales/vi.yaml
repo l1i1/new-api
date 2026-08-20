@@ -345,6 +345,8 @@ notify.subscription_quota_exceed.subject: "Hạn mức gói đăng ký của b�
 notify.quota_exceed.body: "{{.Prompt}}, hạn mức còn lại của bạn là {{.Quota}}. Vui lòng nạp tiền kịp thời để tránh gián đoạn.<br>Liên kết nạp: <a href='{{.TopUpLink}}' style='color:#f05260;'>{{.TopUpLink}}</a>"
 notify.quota_exceed.body_bark: "{{.Prompt}}, hạn mức còn lại: {{.Quota}}. Vui lòng nạp tiền kịp thời"
 notify.quota_exceed.body_gotify: "{{.Prompt}}, hạn mức còn lại của bạn là {{.Quota}}. Vui lòng nạp tiền kịp thời."
+notify.content_moderation.subject: "[{{.SystemName}}] Thông báo kiểm soát rủi ro"
+notify.content_moderation.body: "Yêu cầu API của bạn đã kích hoạt chính sách kiểm duyệt nội dung của nền tảng.\n\nDanh mục / điểm số: {{.Category}} / {{.Score}}\nSố lần kích hoạt tích lũy: {{.Count}} / {{.Threshold}}\n\nVui lòng kiểm tra nội dung yêu cầu."
 notify.channel.disabled_subject: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã bị vô hiệu hóa"
 notify.channel.disabled_body: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã bị vô hiệu hóa, lý do: {{.Reason}}"
 notify.channel.enabled_subject: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã được kích hoạt"

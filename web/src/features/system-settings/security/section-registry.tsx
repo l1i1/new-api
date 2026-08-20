@@ -22,6 +22,7 @@ import { SSRFSection } from '../request-limits/ssrf-section'
 import { TokenLimitSection } from '../request-limits/token-limit-section'
 import type { SecuritySettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { ContentModerationSection } from './content-moderation-section'
 
 const SECURITY_SECTIONS = [
   {
@@ -89,6 +90,11 @@ const SECURITY_SECTIONS = [
         }}
       />
     ),
+  },
+  {
+    id: 'content-moderation',
+    titleKey: 'Content Moderation',
+    build: () => <ContentModerationSection defaultValues={{}} />,
   },
 ] as const
 
