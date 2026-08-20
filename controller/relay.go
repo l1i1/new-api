@@ -316,7 +316,7 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	moderationRequest := service.ContentModerationRequest{
 		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
 		RequestPath: c.Request.URL.Path, RequestID: info.RequestId,
-		Text: content.Text, Images: content.Images,
+		Text: content.Text, Images: content.Images, ContentValidationError: content.ValidationError, ContentValidated: content.IsValidated(),
 	}
 	// Direct unit-test callers and legacy handlers may not expose a typed
 	// request. The normal Relay path never takes this body fallback.
@@ -352,7 +352,7 @@ func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) stri
 	switch relayFormat {
 	case types.RelayFormatOpenAI:
 		return service.ContentModerationProtocolOpenAIChat
-	case types.RelayFormatOpenAIResponses:
+	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
 		return service.ContentModerationProtocolOpenAIResponses
 	case types.RelayFormatClaude:
 		return service.ContentModerationProtocolAnthropic

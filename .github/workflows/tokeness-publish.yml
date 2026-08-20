@@ -51,7 +51,14 @@ jobs:
 
       - name: Run release regression tests
         run: |
-          go test ./model ./middleware ./relay/...
+          mkdir -p web/dist
+          touch web/dist/index.html
+          go test ./...
+          go vet ./...
+          (
+            cd relaykit
+            GOWORK=off go test ./...
+          )
           bash scripts/publish-web-dist-test.sh
 
       - name: Set up Docker Buildx

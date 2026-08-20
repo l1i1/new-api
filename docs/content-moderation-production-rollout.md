@@ -3,8 +3,9 @@
 Status: release planning, 2026-08-20
 
 This runbook covers the production release and staged enablement of the
-affinity-aware content moderation gate. It does not authorize a production
-deployment. A release operator must approve each external action separately.
+affinity-aware multimodal content moderation gate. It does not authorize a
+production deployment. A release operator must approve each external action
+separately.
 
 ## Release decision
 
@@ -12,10 +13,12 @@ The implementation is safe to release with the gate disabled, then enable in
 progressive stages. Do not start with broad `pre_block`, email notification, or
 automatic account disablement.
 
-The current candidate is commit `22cdb25b5bd172c295205b20e60ae72c19d7aa43`
-on `codex/sync-upstream-rc25`. The publish workflow checks out
-`tokeness/main`, so this commit must first pass review and be merged into that
-branch. The candidate has not been published or deployed.
+The moderation implementation candidate ends at commit
+`1d4b751eaa77ec2f46a20f6b1f7847c1b0ef0451` on
+`codex/sync-upstream-rc25`. The publish workflow checks out `tokeness/main`, so
+the implementation and its release-preparation changes must first pass review
+and be merged into that branch. The candidate has not been published or
+deployed.
 
 The required production behavior is:
 
@@ -24,6 +27,11 @@ The required production behavior is:
 - a stable channel-affinity conversation is audited once per selected channel
   and affinity TTL, excluding rotating multi-key credentials from the cache
   identity;
+- the final eligible conversation item can contain text, HTTP(S) images, or
+  `data:image/*` images; duplicate images are removed and at most one image is
+  sent in the OpenAI-compatible multimodal moderation request;
+- assistant/model turns and tool/function responses do not fall back to an
+  older user request;
 - a cached flagged decision remains blocking in `pre_block`;
 - request-time moderation API, Redis, configuration-read, and audit persistence
   failures remain fail-open and produce safe request-scoped logs;
@@ -48,9 +56,9 @@ Stop the rollout if any gate below is unresolved.
    (cd web && bun run test && bun run typecheck && bun run build)
    ```
 
-   The publish workflow currently runs only `model`, `middleware`, and
-   `relay/...` regressions. The full service/controller checks above are an
-   additional release gate, not a substitute for the workflow.
+   The publish workflow runs the full Go test suite, `go vet`, standalone
+   RelayKit tests, and frontend distribution regression checks. Race tests and
+   the complete frontend suite above remain additional release gates.
 
 2. **Moderation provider boundary**
 
@@ -58,7 +66,19 @@ Stop the rollout if any gate below is unresolved.
    application appends `/v1/moderations` to `base_url`; do not put credentials
    in the URL query or path. Verify TLS, DNS, provider model availability,
    rate limits, timeout behavior, retry behavior, and the exact OpenAI
-   moderation response contract before enabling the feature.
+   moderation response contract before enabling the feature. The provider must
+   accept the OpenAI multimodal input contract, including one aggregate result
+   for text-plus-image and image-only requests. Verify the contract with all
+   four supported protocols; a text-only smoke test is not sufficient.
+
+   Confirm the provider's image retention, logging, training-use, and data
+   residency terms. Image URLs, including query strings, and Base64 image data
+   are disclosed to the provider even though they are not persisted by New
+   API. If long-lived credential-bearing signed URLs are possible in the
+   enabled scope, add a sanitization/proxy boundary or explicitly accept that
+   disclosure in the privacy review. The application currently accepts
+   client-supplied `http://` image URLs; either accept that policy or add an
+   HTTPS-only restriction before enablement.
 
    The current configuration accepts arbitrary HTTP(S) URLs and stores API
    keys in the existing `Option` JSON value. Enter keys only through the
@@ -96,16 +116,29 @@ Stop the rollout if any gate below is unresolved.
    must include a message/revision identity; that is a different product
    behavior and defeats this rollout's de-duplication goal.
 
-6. **Known protocol gap**
+6. **Protocol scope**
 
-   `/v1/responses/compact` is not included in the current moderation protocol
-   mapping. Before broad `pre_block`, explicitly choose one of:
+   OpenAI Chat, OpenAI Responses (including `/v1/responses/compact`),
+   Anthropic Messages, and Gemini conversation requests are covered. OpenAI
+   Images, Realtime, Audio, and other non-conversation routes remain outside
+   this release. Multimodal conversation moderation is not full coverage of
+   every image-capable endpoint; exclude those routes from enforcement claims.
 
-   - add and test compaction extraction/moderation; or
-   - document compaction as an accepted bypass and exclude those models/routes
-     from the production moderation scope.
+7. **Image capacity and latency**
 
-   Do not claim full conversation coverage while this decision is open.
+   Record the ingress request-body limit and the provider's supported image
+   formats, dimensions, and byte limits. Define an accepted maximum for data
+   URLs and the complete moderation payload, plus egress bandwidth and memory
+   budgets. The service enforces a 20 MB decoded data-image limit, supports
+   strict Base64 PNG/JPEG/WEBP/GIF data URLs, caps image URLs at 8 KiB, rejects
+   embedded URL user info, accepts at most 16 distinct candidates, and sends at
+   most one selected image. The provider may impose stricter format,
+   dimension, fetch, or aggregate-payload limits; validate those separately.
+
+   Measure image-only and mixed-request p50/p95/p99 moderation latency, retry
+   rate, provider 4xx/5xx/timeout rate, and fail-open rate. Stop before
+   enablement if the configured timeout and retry budget cannot bound relay
+   latency under representative image sizes.
 
 ## Release and deployment sequence
 
@@ -215,22 +248,39 @@ admin endpoint retains an existing key when `api_key` is omitted.
 Run the following canary checks using provider-approved test fixtures and
 non-sensitive traffic:
 
-- OpenAI Chat, OpenAI Responses, Anthropic Messages, and Gemini requests reach
-  the moderation provider and then the upstream in `observe` mode;
+- OpenAI Chat URL/data images, OpenAI Responses `input_image`, Anthropic
+  URL/Base64 images, and Gemini `inlineData`/`fileData` reach the moderation
+  provider and then the upstream in `observe` mode;
+- text-only, text-plus-image, and image-only requests use the expected provider
+  contract; multimodal requests return exactly one result and multi-image
+  requests forward no more than one deduplicated image;
+- an assistant/model final turn or a tool/function response does not re-audit
+  an older user request;
 - a flagged fixture is logged but still reaches upstream in `observe`;
 - two requests with the same user/group/model/protocol/rule/channel affinity
-  produce one provider call and one persisted audit decision;
+  produce one provider call and one persisted audit decision, even if the
+  later request changes text or images;
 - rotating the selected multi-key credential does not create another audit;
 - changing the selected channel creates an independent audit;
 - Redis-backed concurrent first requests produce one lease owner across nodes;
 - provider timeout, malformed response, Redis failure, and log-write failure
   are fail-open, safe-log, and retryable rather than cached as allow;
-- raw text, keys, and credential-bearing URLs do not appear in logs or admin
-  responses.
+- raw text, image URLs, image Base64, keys, and credential-bearing URLs do not
+  appear in application logs, audit logs, or admin responses;
+- provider rejection of unsupported, oversized, or unreachable images is
+  fail-open, not cached as allow, and remains within the approved latency
+  budget.
 
 Observe at least one complete traffic peak and compare provider calls with
 affinity conversations, moderation latency with relay latency, flagged rate by
 category/score, error rate, and database write volume.
+
+Break image observations down by protocol and `text_only`, `mixed`, and
+`image_only`, plus URL versus data URL. Track provider calls, cache hits, lease
+waits, retries, 4xx/5xx/timeouts, safe payload-size buckets, fail-open rate,
+and relay latency delta. The audit table does not store modality or payload
+size, so use provider-side or privacy-safe application metrics without logging
+raw URLs or Base64 data.
 
 ### 5. Expand observe scope
 
@@ -267,6 +317,14 @@ Enable `auto_ban_enabled` last, with the approved rolling window and threshold
 unban endpoint, authentication-version fence, token/session invalidation, and
 the manual process for ambiguous email claims. Keep an operator on call for
 false-positive review.
+
+Immediately stop scope expansion and set `enabled=false` if image URLs/Base64
+appear in logs, provider image retention is unacceptable, multimodal 4xx/5xx
+or timeout rates exceed the approved budget, image p95 latency or resource use
+exceeds the release budget, image-only/data URL handling is incompatible, or
+new images incorrectly reuse an allow decision under an affinity policy that
+requires per-image review. There is no separate image switch; `observe` still
+sends images to the provider.
 
 ## Observability and retention
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -47,6 +48,9 @@ const (
 	contentModerationDefaultBlockCode        = http.StatusForbidden
 	contentModerationMaxInputRunes           = 16000
 	contentModerationMaxInputImages          = 1
+	contentModerationMaxCandidateImages      = 16
+	contentModerationMaxImageBytes           = 20 << 20
+	contentModerationMaxImageURLBytes        = 8 << 10
 	contentModerationMaxKeys                 = 64
 	contentModerationAffinityCacheNamespace  = "new-api:content_moderation_affinity:v2"
 	contentModerationAffinityLeaseNamespace  = "new-api:content_moderation_affinity_lease:v1"
@@ -161,6 +165,8 @@ type ContentModerationRequest struct {
 	Body                   []byte
 	Text                   string
 	Images                 []string
+	ContentValidationError *ContentModerationValidationError
+	ContentValidated       bool
 	Meta                   *relaytypes.TokenCountMeta
 	AffinityRuleName       string
 	AffinityKeyFingerprint string
@@ -170,20 +176,37 @@ type ContentModerationRequest struct {
 }
 
 type ContentModerationInput struct {
-	Text   string
-	Images []string
+	Text            string
+	Images          []string
+	ValidationError *ContentModerationValidationError
+	validated       bool
+}
+
+type ContentModerationValidationError struct {
+	StatusCode int
+	Message    string
 }
 
 func (input *ContentModerationInput) normalize() {
 	if input == nil {
 		return
 	}
+	if input.validated {
+		return
+	}
 	input.Text = normalizeContentModerationText(input.Text)
-	input.Images = normalizeContentModerationImages(input.Images)
+	if input.ValidationError == nil {
+		input.Images, input.ValidationError = normalizeContentModerationImages(input.Images)
+	}
+	input.validated = true
+}
+
+func (input ContentModerationInput) IsValidated() bool {
+	return input.validated
 }
 
 func (input ContentModerationInput) isEmpty() bool {
-	return strings.TrimSpace(input.Text) == "" && len(input.Images) == 0
+	return input.ValidationError == nil && strings.TrimSpace(input.Text) == "" && len(input.Images) == 0
 }
 
 func (input ContentModerationInput) hash() string {
@@ -986,7 +1009,12 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		decision.Error = configErr.Error()
 		return decision, nil
 	}
-	content := ContentModerationInput{Text: input.Text, Images: input.Images}
+	content := ContentModerationInput{
+		Text:            input.Text,
+		Images:          input.Images,
+		ValidationError: input.ContentValidationError,
+		validated:       input.ContentValidated,
+	}
 	content.normalize()
 	if content.isEmpty() {
 		content = ExtractContentModerationInput(input.Meta, input.Body, input.Protocol)
@@ -994,6 +1022,20 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 	if !contentModerationInScope(config, input, content) {
 		return decision, nil
 	}
+	if content.ValidationError != nil {
+		decision := &ContentModerationDecision{
+			Checked:    true,
+			Message:    content.ValidationError.Message,
+			StatusCode: content.ValidationError.StatusCode,
+		}
+		if config.Mode == "pre_block" {
+			decision.Blocked = true
+		} else {
+			decision.Error = content.ValidationError.Message
+		}
+		return decision, nil
+	}
+	content.Images = limitContentModerationImages(content.Images)
 	if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
 		return cachedDecision, nil
 	}
@@ -1452,6 +1494,8 @@ func ExtractContentModerationContent(request dto.Request, protocol string) Conte
 		}
 	case *dto.OpenAIResponsesRequest:
 		input = extractLatestResponsesInput(value.Input)
+	case *dto.OpenAIResponsesCompactionRequest:
+		input = extractLatestResponsesInput(value.Input)
 	}
 	input.normalize()
 	return input
@@ -1572,18 +1616,36 @@ func latestResponsesArrayInput(value gjson.Result) ContentModerationInput {
 	last := items[len(items)-1]
 	role := strings.ToLower(strings.TrimSpace(last.Get("role").String()))
 	typeName := strings.ToLower(strings.TrimSpace(last.Get("type").String()))
-	if (role != "" && role != "user") || isContentModerationToolType(typeName) {
+	if role != "" {
+		if role != "user" || isContentModerationToolType(typeName) {
+			return ContentModerationInput{}
+		}
+		return moderationInputFromValue(last)
+	}
+	if isContentModerationToolType(typeName) {
 		return ContentModerationInput{}
 	}
-	if role != "" || typeName == "message" || last.Get("content").Exists() {
-		return moderationInputFromValue(last)
+	if typeName == "message" || last.Get("content").Exists() {
+		return ContentModerationInput{}
 	}
 
 	var input ContentModerationInput
 	for _, item := range items {
+		if !isDirectResponsesInputPart(strings.ToLower(strings.TrimSpace(item.Get("type").String()))) {
+			return ContentModerationInput{}
+		}
 		input.append(moderationInputFromValue(item))
 	}
 	return input
+}
+
+func isDirectResponsesInputPart(typeName string) bool {
+	switch typeName {
+	case "input_text", "input_image", "input_file":
+		return true
+	default:
+		return false
+	}
 }
 
 func (input *ContentModerationInput) append(other ContentModerationInput) {
@@ -1652,7 +1714,7 @@ func moderationImagesFromValue(value gjson.Result, allowDirectURL bool) []string
 	}
 	images := make([]string, 0, 4)
 	addContentModerationImage(&images, value.Get("image_url.url").String())
-	addContentModerationImage(&images, value.Get("image_url").String())
+	addContentModerationImageResult(&images, value.Get("image_url"))
 	if allowDirectURL {
 		addContentModerationImage(&images, value.Get("url").String())
 	}
@@ -1667,6 +1729,12 @@ func moderationImagesFromValue(value gjson.Result, allowDirectURL bool) []string
 	addContentModerationFileImage(&images, value.Get("file_data.mime_type").String(), value.Get("file_data.file_uri").String())
 	addContentModerationFileImage(&images, value.Get("fileData.mimeType").String(), value.Get("fileData.fileUri").String())
 	return images
+}
+
+func addContentModerationImageResult(images *[]string, value gjson.Result) {
+	if value.Type == gjson.String {
+		addContentModerationImage(images, value.String())
+	}
 }
 
 func addContentModerationImageData(images *[]string, mimeType string, data string) {
@@ -1692,28 +1760,88 @@ func addContentModerationFileImage(images *[]string, mimeType string, image stri
 
 func addContentModerationImage(images *[]string, image string) {
 	image = strings.TrimSpace(image)
-	lower := strings.ToLower(image)
-	if image == "" || (!strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:image/")) {
+	if image == "" {
 		return
 	}
 	*images = append(*images, image)
 }
 
-func normalizeContentModerationImages(images []string) []string {
+func normalizeContentModerationImages(images []string) ([]string, *ContentModerationValidationError) {
 	normalized := make([]string, 0, len(images))
-	seen := make(map[string]struct{}, len(images))
+	seen := make(map[[sha256.Size]byte]struct{}, len(images))
 	for _, image := range images {
-		candidate := make([]string, 0, 1)
-		addContentModerationImage(&candidate, image)
-		if len(candidate) == 0 {
+		image = strings.TrimSpace(image)
+		if image == "" {
 			continue
 		}
-		image = candidate[0]
-		if _, ok := seen[image]; ok {
+		if validationErr := validateContentModerationImage(image); validationErr != nil {
+			return nil, validationErr
+		}
+		fingerprint := sha256.Sum256([]byte(image))
+		if _, ok := seen[fingerprint]; ok {
 			continue
 		}
-		seen[image] = struct{}{}
+		if len(normalized) >= contentModerationMaxCandidateImages {
+			return nil, &ContentModerationValidationError{StatusCode: http.StatusRequestEntityTooLarge, Message: "Too many images for content moderation"}
+		}
+		seen[fingerprint] = struct{}{}
 		normalized = append(normalized, image)
 	}
-	return normalized
+	return normalized, nil
+}
+
+func validateContentModerationImage(image string) *ContentModerationValidationError {
+	lower := strings.ToLower(image)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		if len(image) > contentModerationMaxImageURLBytes {
+			return &ContentModerationValidationError{StatusCode: http.StatusRequestEntityTooLarge, Message: "Image URL exceeds the content moderation limit"}
+		}
+		parsed, err := url.Parse(image)
+		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Invalid image URL for content moderation"}
+		}
+		return nil
+	}
+	if !strings.HasPrefix(lower, "data:image/") {
+		return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Unsupported image source for content moderation"}
+	}
+
+	header, encoded, found := strings.Cut(image, ",")
+	if !found || encoded == "" {
+		return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Invalid image data for content moderation"}
+	}
+	headerParts := strings.Split(strings.ToLower(header[len("data:"):]), ";")
+	if len(headerParts) < 2 || !supportedContentModerationImageMIME(headerParts[0]) {
+		return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Unsupported image format for content moderation"}
+	}
+	base64Encoded := false
+	for _, parameter := range headerParts[1:] {
+		if parameter == "base64" {
+			base64Encoded = true
+			break
+		}
+	}
+	if !base64Encoded || strings.ContainsAny(encoded, " \t\r\n") {
+		return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Invalid image data for content moderation"}
+	}
+	if len(encoded) > base64.StdEncoding.EncodedLen(contentModerationMaxImageBytes) {
+		return &ContentModerationValidationError{StatusCode: http.StatusRequestEntityTooLarge, Message: "Image exceeds the 20 MB content moderation limit"}
+	}
+	decoded, err := io.Copy(io.Discard, io.LimitReader(base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(encoded)), contentModerationMaxImageBytes+1))
+	if err != nil {
+		return &ContentModerationValidationError{StatusCode: http.StatusBadRequest, Message: "Invalid image data for content moderation"}
+	}
+	if decoded > contentModerationMaxImageBytes {
+		return &ContentModerationValidationError{StatusCode: http.StatusRequestEntityTooLarge, Message: "Image exceeds the 20 MB content moderation limit"}
+	}
+	return nil
+}
+
+func supportedContentModerationImageMIME(mimeType string) bool {
+	switch mimeType {
+	case "image/png", "image/jpeg", "image/webp", "image/gif":
+		return true
+	default:
+		return false
+	}
 }

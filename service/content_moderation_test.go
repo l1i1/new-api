@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -154,6 +156,16 @@ func TestExtractContentModerationInputDoesNotReauditHistoricalOrToolTurns(t *tes
 			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"historical danger"}]},{"type":"function_call_output","output":"untrusted tool output"}]}`,
 		},
 		{
+			name:     "responses unknown final item",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"historical danger"}]},{"id":"opaque-history-item"}]}`,
+		},
+		{
+			name:     "responses unroled message",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"historical danger"}]},{"type":"message","content":[{"type":"input_text","text":"ambiguous"}]}]}`,
+		},
+		{
 			name:     "gemini function response",
 			protocol: ContentModerationProtocolGemini,
 			body:     `{"contents":[{"role":"user","parts":[{"text":"historical danger"}]},{"role":"model","parts":[{"functionCall":{"name":"lookup"}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"value":"untrusted tool output"}}}]}]}`,
@@ -166,6 +178,94 @@ func TestExtractContentModerationInputDoesNotReauditHistoricalOrToolTurns(t *tes
 			require.True(t, got.isEmpty(), "%+v", got)
 		})
 	}
+}
+
+func TestExtractContentModerationInputSupportsFlatResponsesParts(t *testing.T) {
+	body := []byte(`{"input":[{"type":"input_text","text":"inspect"},{"type":"input_image","image_url":"https://img.test/responses.png"}]}`)
+	got := ExtractContentModerationInput(nil, body, ContentModerationProtocolOpenAIResponses)
+	require.Equal(t, "inspect", got.Text)
+	require.Equal(t, []string{"https://img.test/responses.png"}, got.Images)
+}
+
+func TestExtractContentModerationInputRejectsInvalidImages(t *testing.T) {
+	tests := []struct {
+		name   string
+		image  string
+		status int
+	}{
+		{name: "unsupported source", image: "file:///private/image.png", status: http.StatusBadRequest},
+		{name: "unsupported data type", image: "data:image/svg+xml;base64,PHN2Zz4=", status: http.StatusBadRequest},
+		{name: "invalid base64", image: "data:image/png;base64,***", status: http.StatusBadRequest},
+		{name: "oversized url", image: "https://img.test/" + strings.Repeat("a", contentModerationMaxImageURLBytes), status: http.StatusRequestEntityTooLarge},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := common.Marshal(map[string]any{
+				"messages": []any{map[string]any{
+					"role":    "user",
+					"content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": test.image}}},
+				}},
+			})
+			require.NoError(t, err)
+			got := ExtractContentModerationInput(nil, body, ContentModerationProtocolOpenAIChat)
+			require.NotNil(t, got.ValidationError)
+			require.Equal(t, test.status, got.ValidationError.StatusCode)
+			require.NotEmpty(t, got.ValidationError.Message)
+			require.NotContains(t, got.ValidationError.Message, test.image)
+			require.Empty(t, got.Images)
+		})
+	}
+}
+
+func TestExtractContentModerationInputRejectsOversizedImageData(t *testing.T) {
+	encoded := strings.Repeat("A", base64.StdEncoding.EncodedLen(contentModerationMaxImageBytes)+4)
+	got := ContentModerationInput{Images: []string{"data:image/png;base64," + encoded}}
+	got.normalize()
+	require.NotNil(t, got.ValidationError)
+	require.Equal(t, http.StatusRequestEntityTooLarge, got.ValidationError.StatusCode)
+	require.Equal(t, "Image exceeds the 20 MB content moderation limit", got.ValidationError.Message)
+}
+
+func TestExtractContentModerationInputRejectsTooManyDistinctImages(t *testing.T) {
+	content := make([]any, 0, contentModerationMaxCandidateImages+1)
+	for index := range contentModerationMaxCandidateImages + 1 {
+		content = append(content, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": fmt.Sprintf("https://img.test/%d.png", index)},
+		})
+	}
+	body, err := common.Marshal(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": content}},
+	})
+	require.NoError(t, err)
+
+	got := ExtractContentModerationInput(nil, body, ContentModerationProtocolOpenAIChat)
+	require.NotNil(t, got.ValidationError)
+	require.Equal(t, http.StatusRequestEntityTooLarge, got.ValidationError.StatusCode)
+	require.Equal(t, "Too many images for content moderation", got.ValidationError.Message)
+}
+
+func TestCheckContentModerationPreBlockRejectsInvalidImageWithoutProviderCall(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	providerCalls := 0
+	contentModerationHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return nil, errors.New("provider must not be called")
+	})}
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"https://moderation.example.test","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		Images: []string{"data:image/svg+xml;base64,PHN2Zz4="},
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Checked)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusBadRequest, decision.StatusCode)
+	require.Equal(t, 0, providerCalls)
 }
 
 func TestExtractContentModerationContentSupportsTypedConversationImages(t *testing.T) {
@@ -212,6 +312,15 @@ func TestExtractContentModerationContentSupportsTypedConversationImages(t *testi
 			require.Equal(t, test.images, got.Images)
 		})
 	}
+}
+
+func TestExtractContentModerationContentSupportsResponsesCompaction(t *testing.T) {
+	request := &dto.OpenAIResponsesCompactionRequest{}
+	require.NoError(t, common.Unmarshal([]byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"compact"},{"type":"input_image","image_url":"https://img.test/compact.png"}]}]}`), request))
+
+	got := ExtractContentModerationContent(request, ContentModerationProtocolOpenAIResponses)
+	require.Equal(t, "compact", got.Text)
+	require.Equal(t, []string{"https://img.test/compact.png"}, got.Images)
 }
 
 func TestContentModerationAffinitySamplingIsStable(t *testing.T) {

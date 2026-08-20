@@ -29,6 +29,7 @@ func TestContentModerationProtocolForRelayFormatScopesConversationFormats(t *tes
 	}{
 		{types.RelayFormatOpenAI, service.ContentModerationProtocolOpenAIChat},
 		{types.RelayFormatOpenAIResponses, service.ContentModerationProtocolOpenAIResponses},
+		{types.RelayFormatOpenAIResponsesCompaction, service.ContentModerationProtocolOpenAIResponses},
 		{types.RelayFormatClaude, service.ContentModerationProtocolAnthropic},
 		{types.RelayFormatGemini, service.ContentModerationProtocolGemini},
 	}
@@ -39,7 +40,6 @@ func TestContentModerationProtocolForRelayFormatScopesConversationFormats(t *tes
 	}
 
 	for _, format := range []types.RelayFormat{
-		types.RelayFormatOpenAIResponsesCompaction,
 		types.RelayFormatOpenAIAlphaSearch,
 		types.RelayFormatOpenAIAudio,
 		types.RelayFormatOpenAIImage,
@@ -111,6 +111,10 @@ func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing
 			path: "/v1/responses", body: `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://img.test/responses.png"}]}]}`,
 		},
 		{
+			name: "responses compact", format: types.RelayFormatOpenAIResponsesCompaction, protocol: service.ContentModerationProtocolOpenAIResponses,
+			path: "/v1/responses/compact", body: `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://img.test/compact.png"}]}]}`,
+		},
+		{
 			name: "anthropic", format: types.RelayFormatClaude, protocol: service.ContentModerationProtocolAnthropic,
 			path: "/v1/messages", body: `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YW50aHJvcGlj"}}]}]}`,
 		},
@@ -142,9 +146,14 @@ func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing
 			body := &unreadableRequestBody{}
 			context, _ := gin.CreateTestContext(httptest.NewRecorder())
 			context.Request = httptest.NewRequest(http.MethodPost, test.path, body)
+			typedRequest := decodeControllerContentModerationRequest(t, test.protocol, test.body)
+			if test.format == types.RelayFormatOpenAIResponsesCompaction {
+				typedRequest = &dto.OpenAIResponsesCompactionRequest{}
+				require.NoError(t, common.Unmarshal([]byte(test.body), typedRequest))
+			}
 			info := &relaycommon.RelayInfo{
 				UserId: 1, OriginModelName: "gpt-test", RequestId: "typed-" + test.name,
-				Request: decodeControllerContentModerationRequest(t, test.protocol, test.body),
+				Request: typedRequest,
 			}
 			decision := checkRelayContentModeration(context, test.format, info)
 
@@ -178,6 +187,30 @@ func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T)
 
 	require.Equal(t, http.StatusUnavailableForLegalReasons, recorder.Code)
 	require.Equal(t, 1, moderationCalls)
+	require.Contains(t, recorder.Body.String(), "content_policy_violation")
+}
+
+func TestRelayContentModerationPreBlockRejectsInvalidImageWithoutProviderCall(t *testing.T) {
+	moderationCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		moderationCalls++
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":[{"type":"image_url","image_url":"data:image/svg+xml;base64,PHN2Zz4="}]}]}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(context, constant.ContextKeyOriginalModel, "gpt-test")
+	context.Set(common.RequestIdKey, "relay-invalid-image-test")
+
+	Relay(context, types.RelayFormatOpenAI)
+	common.CleanupBodyStorage(context)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Equal(t, 0, moderationCalls)
 	require.Contains(t, recorder.Body.String(), "content_policy_violation")
 }
 
