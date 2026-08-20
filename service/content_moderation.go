@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"path"
@@ -44,6 +46,7 @@ const (
 	contentModerationDefaultRetries          = 1
 	contentModerationDefaultBlockCode        = http.StatusForbidden
 	contentModerationMaxInputRunes           = 16000
+	contentModerationMaxInputImages          = 1
 	contentModerationMaxKeys                 = 64
 	contentModerationAffinityCacheNamespace  = "new-api:content_moderation_affinity:v2"
 	contentModerationAffinityLeaseNamespace  = "new-api:content_moderation_affinity_lease:v1"
@@ -157,12 +160,43 @@ type ContentModerationRequest struct {
 	RequestID              string
 	Body                   []byte
 	Text                   string
+	Images                 []string
 	Meta                   *relaytypes.TokenCountMeta
 	AffinityRuleName       string
 	AffinityKeyFingerprint string
 	AffinityCacheIdentity  string
 	AffinityTTLSeconds     int
 	AffinityChannelID      int
+}
+
+type ContentModerationInput struct {
+	Text   string
+	Images []string
+}
+
+func (input *ContentModerationInput) normalize() {
+	if input == nil {
+		return
+	}
+	input.Text = normalizeContentModerationText(input.Text)
+	input.Images = normalizeContentModerationImages(input.Images)
+}
+
+func (input ContentModerationInput) isEmpty() bool {
+	return strings.TrimSpace(input.Text) == "" && len(input.Images) == 0
+}
+
+func (input ContentModerationInput) hash() string {
+	input.normalize()
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("text:"))
+	_, _ = digest.Write([]byte(input.Text))
+	for _, image := range input.Images {
+		imageDigest := sha256.Sum256([]byte(image))
+		_, _ = digest.Write([]byte("\nimage:"))
+		_, _ = digest.Write([]byte(hex.EncodeToString(imageDigest[:])))
+	}
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 type ContentModerationDecision struct {
@@ -213,6 +247,16 @@ type moderationAPIResult struct {
 
 type moderationAPIResponse struct {
 	Results []moderationAPIResult `json:"results"`
+}
+
+type moderationAPIInputPart struct {
+	Type     string                     `json:"type"`
+	Text     string                     `json:"text,omitempty"`
+	ImageURL *moderationAPIImageURLPart `json:"image_url,omitempty"`
+}
+
+type moderationAPIImageURLPart struct {
+	URL string `json:"url"`
 }
 
 func defaultContentModerationConfig() ContentModerationConfig {
@@ -879,8 +923,8 @@ func UpdateContentModerationConfig(input ContentModerationConfig) error {
 	return nil
 }
 
-func shouldModerateContent(config ContentModerationConfig, input ContentModerationRequest, text string) bool {
-	if !contentModerationInScope(config, input, text) {
+func shouldModerateContent(config ContentModerationConfig, input ContentModerationRequest, content ContentModerationInput) bool {
+	if !contentModerationInScope(config, input, content) {
 		return false
 	}
 	if config.SampleRate >= 1 {
@@ -889,7 +933,7 @@ func shouldModerateContent(config ContentModerationConfig, input ContentModerati
 	if config.SampleRate <= 0 {
 		return false
 	}
-	seed := input.RequestID + "\x00" + input.Model + "\x00" + input.Group + "\x00" + text
+	seed := input.RequestID + "\x00" + input.Model + "\x00" + input.Group + "\x00" + content.hash()
 	affinityIdentity := input.AffinityCacheIdentity
 	if affinityIdentity == "" {
 		affinityIdentity = input.AffinityKeyFingerprint
@@ -902,8 +946,8 @@ func shouldModerateContent(config ContentModerationConfig, input ContentModerati
 	return value < config.SampleRate
 }
 
-func contentModerationInScope(config ContentModerationConfig, input ContentModerationRequest, text string) bool {
-	if !config.Enabled || strings.TrimSpace(text) == "" {
+func contentModerationInScope(config ContentModerationConfig, input ContentModerationRequest, content ContentModerationInput) bool {
+	if !config.Enabled || content.isEmpty() {
 		return false
 	}
 	if !config.AllGroups {
@@ -942,17 +986,18 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		decision.Error = configErr.Error()
 		return decision, nil
 	}
-	text := normalizeContentModerationText(input.Text)
-	if text == "" {
-		text = ExtractContentModerationInput(input.Meta, input.Body, input.Protocol)
+	content := ContentModerationInput{Text: input.Text, Images: input.Images}
+	content.normalize()
+	if content.isEmpty() {
+		content = ExtractContentModerationInput(input.Meta, input.Body, input.Protocol)
 	}
-	if !contentModerationInScope(config, input, text) {
+	if !contentModerationInScope(config, input, content) {
 		return decision, nil
 	}
 	if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
 		return cachedDecision, nil
 	}
-	if !shouldModerateContent(config, input, text) {
+	if !shouldModerateContent(config, input, content) {
 		return decision, nil
 	}
 	check := func() *ContentModerationDecision {
@@ -967,7 +1012,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		defer cancel()
 
 		started := time.Now()
-		scores, apiFlagged, callErr := callModeration(requestContext, config, text)
+		scores, apiFlagged, callErr := callModeration(requestContext, config, content)
 		latency := time.Since(started).Milliseconds()
 		decision.CategoryScores = scores
 		if callErr != nil {
@@ -1004,8 +1049,8 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 				Category:       category,
 				Score:          score,
 				CategoryScores: string(categoryScores),
-				Excerpt:        redactedModerationExcerpt(text),
-				ExcerptHash:    moderationTextHash(text),
+				Excerpt:        redactedModerationExcerpt(content.Text),
+				ExcerptHash:    content.hash(),
 				LatencyMS:      latency,
 			}
 			if callErr != nil {
@@ -1166,11 +1211,6 @@ func moderationAction(mode string, flagged bool) string {
 	return "observe"
 }
 
-func moderationTextHash(text string) string {
-	digest := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(digest[:])
-}
-
 func redactedModerationExcerpt(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -1211,15 +1251,11 @@ func EvaluateContentModerationScores(scores, thresholds map[string]float64) (boo
 	return flagged, bestCategory, bestScore
 }
 
-func callModeration(ctx context.Context, config ContentModerationConfig, text string) (map[string]float64, bool, error) {
+func callModeration(ctx context.Context, config ContentModerationConfig, content ContentModerationInput) (map[string]float64, bool, error) {
 	keys := moderationAPIKeys(config)
-	inputs := splitContentModerationInputs(text)
-	if len(inputs) == 0 {
-		return nil, false, errors.New("moderation input is empty")
-	}
-	var payloadInput any = inputs[0]
-	if len(inputs) > 1 {
-		payloadInput = inputs
+	payloadInput, expectedResults, err := buildContentModerationAPIInput(content)
+	if err != nil {
+		return nil, false, err
 	}
 	attempts := config.RetryCount + 1
 	if attempts < 1 {
@@ -1279,8 +1315,8 @@ func callModeration(ctx context.Context, config ContentModerationConfig, text st
 		if len(parsed.Results) == 0 {
 			return nil, false, errors.New("moderation API response has no results")
 		}
-		if len(parsed.Results) != len(inputs) {
-			return nil, false, fmt.Errorf("moderation API response result count %d does not match input count %d", len(parsed.Results), len(inputs))
+		if len(parsed.Results) != expectedResults {
+			return nil, false, fmt.Errorf("moderation API response result count %d does not match input count %d", len(parsed.Results), expectedResults)
 		}
 		scores := make(map[string]float64)
 		flagged := false
@@ -1307,90 +1343,150 @@ func callModeration(ctx context.Context, config ContentModerationConfig, text st
 	return nil, false, lastErr
 }
 
+func buildContentModerationAPIInput(content ContentModerationInput) (any, int, error) {
+	content.normalize()
+	textInputs := splitContentModerationInputs(content.Text)
+	images := limitContentModerationImages(content.Images)
+	if len(images) == 0 {
+		if len(textInputs) == 0 {
+			return nil, 0, errors.New("moderation input is empty")
+		}
+		if len(textInputs) == 1 {
+			return textInputs[0], 1, nil
+		}
+		return textInputs, len(textInputs), nil
+	}
+	parts := make([]moderationAPIInputPart, 0, len(textInputs)+len(images))
+	for _, text := range textInputs {
+		parts = append(parts, moderationAPIInputPart{Type: "text", Text: text})
+	}
+	for _, image := range images {
+		parts = append(parts, moderationAPIInputPart{
+			Type:     "image_url",
+			ImageURL: &moderationAPIImageURLPart{URL: image},
+		})
+	}
+	return parts, 1, nil
+}
+
+func limitContentModerationImages(images []string) []string {
+	if len(images) <= contentModerationMaxInputImages {
+		return images
+	}
+	index, err := rand.Int(rand.Reader, big.NewInt(int64(len(images))))
+	if err != nil {
+		return images[:contentModerationMaxInputImages]
+	}
+	return []string{images[index.Int64()]}
+}
+
 // ExtractContentModerationInput extracts only the latest user turn. The typed
 // token metadata remains a fallback for request formats that do not expose a
 // standard JSON message array or when the body is unavailable.
-func ExtractContentModerationInput(meta *relaytypes.TokenCountMeta, body []byte, protocol string) string {
+func ExtractContentModerationInput(meta *relaytypes.TokenCountMeta, body []byte, protocol string) ContentModerationInput {
 	if len(body) > 0 {
-		if text := extractLatestUserText(body, protocol); text != "" {
-			return normalizeContentModerationText(text)
+		if input, recognized := extractLatestUserInput(body, protocol); recognized {
+			input.normalize()
+			return input
 		}
 	}
 	if meta == nil {
-		return ""
+		return ContentModerationInput{}
 	}
-	return normalizeContentModerationText(meta.CombineText)
+	input := ContentModerationInput{Text: meta.CombineText}
+	for _, file := range meta.Files {
+		if file == nil || file.FileType != relaytypes.FileTypeImage || file.Source == nil {
+			continue
+		}
+		if file.Source.IsURL() {
+			input.Images = append(input.Images, file.Source.GetRawData())
+			continue
+		}
+		if source, ok := file.Source.(*relaytypes.Base64Source); ok {
+			if strings.HasPrefix(strings.ToLower(source.Base64Data), "data:image/") {
+				input.Images = append(input.Images, source.Base64Data)
+			} else if strings.HasPrefix(strings.ToLower(source.MimeType), "image/") {
+				input.Images = append(input.Images, "data:"+source.MimeType+";base64,"+source.Base64Data)
+			}
+		}
+	}
+	input.normalize()
+	return input
 }
 
-// ExtractContentModerationText reads the already decoded relay request. Relay
+// ExtractContentModerationContent reads the already decoded relay request. Relay
 // handlers call this after validation, so moderation does not materialize a
 // disk-backed body again and remains aligned with protocol DTOs.
-func ExtractContentModerationText(request dto.Request, protocol string) string {
+func ExtractContentModerationContent(request dto.Request, protocol string) ContentModerationInput {
 	if request == nil {
-		return ""
+		return ContentModerationInput{}
 	}
-	var text string
+	var input ContentModerationInput
 	switch value := request.(type) {
 	case *dto.GeneralOpenAIRequest:
-		for index := len(value.Messages) - 1; index >= 0; index-- {
-			if strings.EqualFold(value.Messages[index].Role, "user") {
-				text = moderationTextFromTypedContent(value.Messages[index].Content)
-				break
-			}
+		if len(value.Messages) > 0 && strings.EqualFold(value.Messages[len(value.Messages)-1].Role, "user") {
+			input = moderationInputFromTypedContent(value.Messages[len(value.Messages)-1].Content)
 		}
 	case *dto.ClaudeRequest:
-		for index := len(value.Messages) - 1; index >= 0; index-- {
-			if strings.EqualFold(value.Messages[index].Role, "user") {
-				text = moderationTextFromTypedContent(value.Messages[index].Content)
-				break
-			}
+		if len(value.Messages) > 0 && strings.EqualFold(value.Messages[len(value.Messages)-1].Role, "user") {
+			input = moderationInputFromTypedContent(value.Messages[len(value.Messages)-1].Content)
 		}
 	case *dto.GeminiChatRequest:
-		for index := len(value.Contents) - 1; index >= 0; index-- {
-			if strings.EqualFold(value.Contents[index].Role, "model") {
-				continue
+		if len(value.Contents) > 0 {
+			latest := value.Contents[len(value.Contents)-1]
+			role := strings.ToLower(strings.TrimSpace(latest.Role))
+			if role != "" && role != "user" {
+				break
 			}
-			parts := make([]string, 0, len(value.Contents[index].Parts))
-			for _, part := range value.Contents[index].Parts {
+			for _, part := range latest.Parts {
 				if strings.TrimSpace(part.Text) != "" && !strings.HasPrefix(strings.TrimSpace(part.Text), "<system-reminder>") {
-					parts = append(parts, part.Text)
+					input.Text += "\n" + part.Text
+				}
+				if part.InlineData != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.InlineData.MimeType)), "image/") && strings.TrimSpace(part.InlineData.Data) != "" {
+					input.Images = append(input.Images, "data:"+strings.TrimSpace(part.InlineData.MimeType)+";base64,"+strings.TrimSpace(part.InlineData.Data))
+				}
+				if part.FileData != nil {
+					addContentModerationFileImage(&input.Images, part.FileData.MimeType, part.FileData.FileUri)
 				}
 			}
-			text = strings.Join(parts, "\n")
-			break
 		}
 	case *dto.OpenAIResponsesRequest:
-		text = extractLatestResponsesInputText(value.Input)
+		input = extractLatestResponsesInput(value.Input)
 	}
-	return normalizeContentModerationText(text)
+	input.normalize()
+	return input
 }
 
-func moderationTextFromTypedContent(content any) string {
+func ExtractContentModerationText(request dto.Request, protocol string) string {
+	return ExtractContentModerationContent(request, protocol).Text
+}
+
+func moderationInputFromTypedContent(content any) ContentModerationInput {
 	if content == nil {
-		return ""
+		return ContentModerationInput{}
 	}
 	if text, ok := content.(string); ok {
-		return text
+		return ContentModerationInput{Text: text}
 	}
 	raw, err := common.Marshal(content)
 	if err != nil || !gjson.ValidBytes(raw) {
-		return ""
+		return ContentModerationInput{}
 	}
-	return moderationTextFromValue(gjson.ParseBytes(raw))
+	return moderationInputFromValue(gjson.ParseBytes(raw))
 }
 
-func extractLatestResponsesInputText(raw json.RawMessage) string {
+func extractLatestResponsesInput(raw json.RawMessage) ContentModerationInput {
 	if len(raw) == 0 {
-		return ""
+		return ContentModerationInput{}
 	}
 	root := gjson.ParseBytes(raw)
 	if root.Type == gjson.String {
-		return root.String()
+		return ContentModerationInput{Text: root.String()}
 	}
 	if !gjson.ValidBytes(raw) || !root.IsArray() {
-		return ""
+		return ContentModerationInput{}
 	}
-	return latestUserArrayText(root, false)
+	return latestResponsesArrayInput(root)
 }
 
 func normalizeContentModerationText(text string) string {
@@ -1414,90 +1510,210 @@ func splitContentModerationInputs(text string) []string {
 	return inputs
 }
 
-func extractLatestUserText(body []byte, protocol string) string {
+func extractLatestUserInput(body []byte, protocol string) (ContentModerationInput, bool) {
 	if !gjson.ValidBytes(body) {
-		return ""
+		return ContentModerationInput{}, false
 	}
 	protocol = strings.ToLower(protocol)
 	if strings.Contains(protocol, "gemini") {
 		// Gemini omits role for user contents in some compatible clients; an
 		// empty role is treated as user while model turns remain excluded.
-		if text := latestUserArrayText(gjson.GetBytes(body, "contents"), false); text != "" {
-			return text
+		contents := gjson.GetBytes(body, "contents")
+		if contents.Exists() {
+			return latestUserArrayInput(contents, false), true
 		}
 	}
-	if text := latestUserArrayText(gjson.GetBytes(body, "messages"), true); text != "" {
-		return text
+	messages := gjson.GetBytes(body, "messages")
+	if messages.Exists() {
+		return latestUserArrayInput(messages, true), true
 	}
 	if strings.Contains(protocol, "responses") || protocol == "" {
 		input := gjson.GetBytes(body, "input")
 		if input.Type == gjson.String {
-			return input.String()
+			return ContentModerationInput{Text: input.String()}, true
 		}
-		if text := latestUserArrayText(input, false); text != "" {
-			return text
+		if input.Exists() {
+			return latestResponsesArrayInput(input), true
 		}
 	}
 	if prompt := gjson.GetBytes(body, "prompt"); prompt.Type == gjson.String {
-		return prompt.String()
+		return ContentModerationInput{Text: prompt.String()}, true
 	}
-	return ""
+	return ContentModerationInput{}, false
 }
 
-func latestUserArrayText(value gjson.Result, requireUserRole bool) string {
+func latestUserArrayInput(value gjson.Result, requireUserRole bool) ContentModerationInput {
 	if value.Type != gjson.JSON {
-		return ""
+		return ContentModerationInput{}
 	}
 	items := value.Array()
-	for index := len(items) - 1; index >= 0; index-- {
-		item := items[index]
-		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
-		if requireUserRole && role != "user" {
-			continue
-		}
-		if !requireUserRole && role != "" && role != "user" {
-			continue
-		}
-		for _, key := range []string{"content", "parts", "text", "input_text"} {
-			if text := moderationTextFromValue(item.Get(key)); text != "" {
-				return text
-			}
-		}
+	if len(items) == 0 {
+		return ContentModerationInput{}
 	}
-	return ""
+	item := items[len(items)-1]
+	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+	if requireUserRole && role != "user" {
+		return ContentModerationInput{}
+	}
+	if !requireUserRole && role != "" && role != "user" {
+		return ContentModerationInput{}
+	}
+	return moderationInputFromValue(item)
 }
 
-func moderationTextFromValue(value gjson.Result) string {
-	return strings.Join(moderationTextsFromValue(value), "\n")
+func latestResponsesArrayInput(value gjson.Result) ContentModerationInput {
+	if value.Type != gjson.JSON || !value.IsArray() {
+		return ContentModerationInput{}
+	}
+	items := value.Array()
+	if len(items) == 0 {
+		return ContentModerationInput{}
+	}
+	last := items[len(items)-1]
+	role := strings.ToLower(strings.TrimSpace(last.Get("role").String()))
+	typeName := strings.ToLower(strings.TrimSpace(last.Get("type").String()))
+	if (role != "" && role != "user") || isContentModerationToolType(typeName) {
+		return ContentModerationInput{}
+	}
+	if role != "" || typeName == "message" || last.Get("content").Exists() {
+		return moderationInputFromValue(last)
+	}
+
+	var input ContentModerationInput
+	for _, item := range items {
+		input.append(moderationInputFromValue(item))
+	}
+	return input
 }
 
-func moderationTextsFromValue(value gjson.Result) []string {
+func (input *ContentModerationInput) append(other ContentModerationInput) {
+	if input == nil {
+		return
+	}
+	if strings.TrimSpace(other.Text) != "" {
+		if strings.TrimSpace(input.Text) != "" {
+			input.Text += "\n"
+		}
+		input.Text += other.Text
+	}
+	input.Images = append(input.Images, other.Images...)
+}
+
+func moderationInputFromValue(value gjson.Result) ContentModerationInput {
+	var input ContentModerationInput
 	if !value.Exists() {
-		return nil
+		return input
 	}
 	if value.IsArray() {
-		var texts []string
 		for _, item := range value.Array() {
-			texts = append(texts, moderationTextsFromValue(item)...)
+			input.append(moderationInputFromValue(item))
 		}
-		return texts
+		return input
 	}
 	switch value.Type {
 	case gjson.String:
 		text := strings.TrimSpace(value.String())
-		if strings.HasPrefix(text, "<system-reminder>") {
-			return nil
+		if strings.HasPrefix(text, "<system-reminder>") || text == "" {
+			return input
 		}
-		if text == "" {
-			return nil
-		}
-		return []string{text}
+		input.Text = text
 	case gjson.JSON:
-		for _, key := range []string{"text", "input_text", "content", "parts", "value"} {
-			if texts := moderationTextsFromValue(value.Get(key)); len(texts) > 0 {
-				return texts
-			}
+		typeName := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
+		if isContentModerationToolType(typeName) {
+			return input
+		}
+		switch typeName {
+		case "text", "input_text":
+			input.append(moderationInputFromValue(value.Get("text")))
+		case "image", "image_url", "input_image":
+			input.Images = append(input.Images, moderationImagesFromValue(value, true)...)
+		case "", "message":
+			input.Images = append(input.Images, moderationImagesFromValue(value, false)...)
+			input.append(moderationInputFromValue(value.Get("text")))
+			input.append(moderationInputFromValue(value.Get("content")))
+			input.append(moderationInputFromValue(value.Get("parts")))
 		}
 	}
-	return nil
+	return input
+}
+
+func isContentModerationToolType(typeName string) bool {
+	switch typeName {
+	case "tool", "tool_call", "tool_result", "function", "function_call", "function_call_output", "function_response", "functionresponse", "computer_call", "computer_call_output":
+		return true
+	default:
+		return false
+	}
+}
+
+func moderationImagesFromValue(value gjson.Result, allowDirectURL bool) []string {
+	if !value.IsObject() {
+		return nil
+	}
+	images := make([]string, 0, 4)
+	addContentModerationImage(&images, value.Get("image_url.url").String())
+	addContentModerationImage(&images, value.Get("image_url").String())
+	if allowDirectURL {
+		addContentModerationImage(&images, value.Get("url").String())
+	}
+	addContentModerationImage(&images, value.Get("source.url").String())
+	addContentModerationImageData(&images, value.Get("source.media_type").String(), value.Get("source.data").String())
+	addContentModerationImageData(&images, value.Get("source.mediaType").String(), value.Get("source.data").String())
+	addContentModerationImageData(&images, value.Get("media_type").String(), value.Get("data").String())
+	addContentModerationImageData(&images, value.Get("mime_type").String(), value.Get("data").String())
+	addContentModerationImageData(&images, value.Get("mimeType").String(), value.Get("data").String())
+	addContentModerationImageData(&images, value.Get("inline_data.mime_type").String(), value.Get("inline_data.data").String())
+	addContentModerationImageData(&images, value.Get("inlineData.mimeType").String(), value.Get("inlineData.data").String())
+	addContentModerationFileImage(&images, value.Get("file_data.mime_type").String(), value.Get("file_data.file_uri").String())
+	addContentModerationFileImage(&images, value.Get("fileData.mimeType").String(), value.Get("fileData.fileUri").String())
+	return images
+}
+
+func addContentModerationImageData(images *[]string, mimeType string, data string) {
+	mimeType = strings.TrimSpace(mimeType)
+	data = strings.TrimSpace(data)
+	if strings.HasPrefix(strings.ToLower(data), "data:image/") {
+		addContentModerationImage(images, data)
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") || data == "" {
+		return
+	}
+	addContentModerationImage(images, "data:"+mimeType+";base64,"+data)
+}
+
+func addContentModerationFileImage(images *[]string, mimeType string, image string) {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	if mimeType != "" && !strings.HasPrefix(mimeType, "image/") {
+		return
+	}
+	addContentModerationImage(images, image)
+}
+
+func addContentModerationImage(images *[]string, image string) {
+	image = strings.TrimSpace(image)
+	lower := strings.ToLower(image)
+	if image == "" || (!strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "data:image/")) {
+		return
+	}
+	*images = append(*images, image)
+}
+
+func normalizeContentModerationImages(images []string) []string {
+	normalized := make([]string, 0, len(images))
+	seen := make(map[string]struct{}, len(images))
+	for _, image := range images {
+		candidate := make([]string, 0, 1)
+		addContentModerationImage(&candidate, image)
+		if len(candidate) == 0 {
+			continue
+		}
+		image = candidate[0]
+		if _, ok := seen[image]; ok {
+			continue
+		}
+		seen[image] = struct{}{}
+		normalized = append(normalized, image)
+	}
+	return normalized
 }

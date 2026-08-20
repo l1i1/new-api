@@ -312,14 +312,15 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	if group == "" {
 		group = info.TokenGroup
 	}
+	content := service.ExtractContentModerationContent(info.Request, protocol)
 	moderationRequest := service.ContentModerationRequest{
 		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
 		RequestPath: c.Request.URL.Path, RequestID: info.RequestId,
-		Text: service.ExtractContentModerationText(info.Request, protocol),
+		Text: content.Text, Images: content.Images,
 	}
 	// Direct unit-test callers and legacy handlers may not expose a typed
 	// request. The normal Relay path never takes this body fallback.
-	if moderationRequest.Text == "" && info.Request == nil {
+	if moderationRequest.Text == "" && len(moderationRequest.Images) == 0 && info.Request == nil {
 		if storage, storageErr := common.GetBodyStorage(c); storageErr == nil {
 			if body, bodyErr := storage.Bytes(); bodyErr == nil {
 				moderationRequest.Body = body

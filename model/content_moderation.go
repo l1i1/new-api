@@ -10,7 +10,7 @@ const ContentModerationOptionKey = "content_moderation.config"
 
 // ContentModerationLog stores an audit decision without retaining the request
 // body. Excerpt is intentionally redacted by the service; ExcerptHash is the
-// stable operator-side correlation value for the submitted text.
+// stable operator-side correlation value for the submitted multimodal input.
 type ContentModerationLog struct {
 	ID                int     `json:"id" gorm:"primaryKey"`
 	UserID            int     `json:"user_id" gorm:"index"`

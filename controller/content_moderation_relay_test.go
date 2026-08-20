@@ -94,26 +94,66 @@ func TestCheckRelayContentModerationObserveDoesNotBlock(t *testing.T) {
 	require.False(t, decision.Blocked)
 }
 
-func TestCheckRelayContentModerationUsesTypedRequestWithoutReadingBody(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
-	}))
-	defer server.Close()
-	withControllerContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
-
-	body := &unreadableRequestBody{}
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body)
-	info := &relaycommon.RelayInfo{
-		UserId: 1, OriginModelName: "gpt-test", RequestId: "typed-request",
-		Request: &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "typed content"}}},
+func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing.T) {
+	formats := []struct {
+		name     string
+		format   types.RelayFormat
+		protocol string
+		path     string
+		body     string
+	}{
+		{
+			name: "openai chat", format: types.RelayFormatOpenAI, protocol: service.ContentModerationProtocolOpenAIChat,
+			path: "/v1/chat/completions", body: `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://img.test/chat.png"}}]}]}`,
+		},
+		{
+			name: "responses", format: types.RelayFormatOpenAIResponses, protocol: service.ContentModerationProtocolOpenAIResponses,
+			path: "/v1/responses", body: `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://img.test/responses.png"}]}]}`,
+		},
+		{
+			name: "anthropic", format: types.RelayFormatClaude, protocol: service.ContentModerationProtocolAnthropic,
+			path: "/v1/messages", body: `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YW50aHJvcGlj"}}]}]}`,
+		},
+		{
+			name: "gemini", format: types.RelayFormatGemini, protocol: service.ContentModerationProtocolGemini,
+			path: "/v1beta/models/gemini:generateContent", body: `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"Z2VtaW5p"}}]}]}`,
+		},
 	}
-	decision := checkRelayContentModeration(context, types.RelayFormatOpenAI, info)
 
-	require.NotNil(t, decision)
-	require.True(t, decision.Checked)
-	require.Zero(t, body.reads)
+	for _, test := range formats {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				calls++
+				var payload struct {
+					Input []struct {
+						Type string `json:"type"`
+					} `json:"input"`
+				}
+				require.NoError(t, common.DecodeJson(request.Body, &payload))
+				require.Len(t, payload.Input, 1)
+				require.Equal(t, "image_url", payload.Input[0].Type)
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+			}))
+			defer server.Close()
+			withControllerContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+			body := &unreadableRequestBody{}
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = httptest.NewRequest(http.MethodPost, test.path, body)
+			info := &relaycommon.RelayInfo{
+				UserId: 1, OriginModelName: "gpt-test", RequestId: "typed-" + test.name,
+				Request: decodeControllerContentModerationRequest(t, test.protocol, test.body),
+			}
+			decision := checkRelayContentModeration(context, test.format, info)
+
+			require.NotNil(t, decision)
+			require.True(t, decision.Checked)
+			require.Equal(t, 1, calls)
+			require.Zero(t, body.reads)
+		})
+	}
 }
 
 func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T) {
@@ -248,6 +288,25 @@ func TestUnbanContentModerationUserIsIdempotent(t *testing.T) {
 
 type unreadableRequestBody struct {
 	reads int
+}
+
+func decodeControllerContentModerationRequest(t *testing.T, protocol string, body string) dto.Request {
+	t.Helper()
+	var request dto.Request
+	switch protocol {
+	case service.ContentModerationProtocolOpenAIChat:
+		request = &dto.GeneralOpenAIRequest{}
+	case service.ContentModerationProtocolOpenAIResponses:
+		request = &dto.OpenAIResponsesRequest{}
+	case service.ContentModerationProtocolAnthropic:
+		request = &dto.ClaudeRequest{}
+	case service.ContentModerationProtocolGemini:
+		request = &dto.GeminiChatRequest{}
+	default:
+		t.Fatalf("unsupported protocol %q", protocol)
+	}
+	require.NoError(t, common.Unmarshal([]byte(body), request))
+	return request
 }
 
 func (body *unreadableRequestBody) Read([]byte) (int, error) {

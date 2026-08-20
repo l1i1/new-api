@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,13 +28,13 @@ import (
 func TestExtractContentModerationInputUsesLatestUserTurn(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"old"},{"role":"assistant","content":"answer"},{"role":"user","content":[{"type":"text","text":"latest"},{"type":"text","text":"part"}]}]}`)
 	got := ExtractContentModerationInput(nil, body, ContentModerationProtocolOpenAIChat)
-	require.Equal(t, "latest part", got)
+	require.Equal(t, "latest part", got.Text)
 
 	gemini := []byte(`{"contents":[{"role":"model","parts":[{"text":"answer"}]},{"parts":[{"text":"latest gemini"}]}]}`)
-	require.Equal(t, "latest gemini", ExtractContentModerationInput(nil, gemini, ContentModerationProtocolGemini))
+	require.Equal(t, "latest gemini", ExtractContentModerationInput(nil, gemini, ContentModerationProtocolGemini).Text)
 
 	anthropic := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>internal</system-reminder>"},{"type":"text","text":"visible"}]}]}`)
-	require.Equal(t, "visible", ExtractContentModerationInput(nil, anthropic, ContentModerationProtocolAnthropic))
+	require.Equal(t, "visible", ExtractContentModerationInput(nil, anthropic, ContentModerationProtocolAnthropic).Text)
 }
 
 func TestExtractContentModerationTextUsesTypedRequests(t *testing.T) {
@@ -53,14 +54,199 @@ func TestExtractContentModerationTextUsesTypedRequests(t *testing.T) {
 	require.Equal(t, "latest responses", ExtractContentModerationText(responses, ContentModerationProtocolOpenAIResponses))
 }
 
+func TestExtractContentModerationInputSupportsConversationImages(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		body     string
+		text     string
+		images   []string
+	}{
+		{
+			name:     "openai chat url",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"https://img.test/chat.png"}}]}]}`,
+			text:     "look",
+			images:   []string{"https://img.test/chat.png"},
+		},
+		{
+			name:     "openai chat data url",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":"data:image/png;base64,Y2hhdA=="}]}]}`,
+			images:   []string{"data:image/png;base64,Y2hhdA=="},
+		},
+		{
+			name:     "responses url and data url",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"inspect"},{"type":"input_image","image_url":"https://img.test/responses.png"},{"type":"input_image","image_url":{"url":"data:image/png;base64,cmVzcG9uc2Vz"}}]}]}`,
+			text:     "inspect",
+			images:   []string{"https://img.test/responses.png", "data:image/png;base64,cmVzcG9uc2Vz"},
+		},
+		{
+			name:     "anthropic base64 and url",
+			protocol: ContentModerationProtocolAnthropic,
+			body:     `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YW50aHJvcGlj"}},{"type":"image","source":{"type":"url","url":"https://img.test/anthropic.png"}}]}]}`,
+			images:   []string{"data:image/png;base64,YW50aHJvcGlj", "https://img.test/anthropic.png"},
+		},
+		{
+			name:     "gemini camel case",
+			protocol: ContentModerationProtocolGemini,
+			body:     `{"contents":[{"role":"user","parts":[{"text":"gemini"},{"inlineData":{"mimeType":"image/png","data":"Z2VtaW5p"}},{"fileData":{"mimeType":"image/jpeg","fileUri":"https://img.test/gemini.jpg"}}]}]}`,
+			text:     "gemini",
+			images:   []string{"data:image/png;base64,Z2VtaW5p", "https://img.test/gemini.jpg"},
+		},
+		{
+			name:     "gemini snake case",
+			protocol: ContentModerationProtocolGemini,
+			body:     `{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"image/png","data":"c25ha2U="}},{"file_data":{"mime_type":"image/png","file_uri":"https://img.test/snake.png"}}]}]}`,
+			images:   []string{"data:image/png;base64,c25ha2U=", "https://img.test/snake.png"},
+		},
+		{
+			name:     "gemini non image file",
+			protocol: ContentModerationProtocolGemini,
+			body:     `{"contents":[{"role":"user","parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://img.test/video.mp4"}}]}]}`,
+		},
+		{
+			name:     "unsupported image source",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"file:///private/image.png"}},{"type":"image_url","image_url":{"url":"data:text/plain;base64,dGV4dA=="}}]}]}`,
+		},
+		{
+			name:     "duplicate image",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://img.test/duplicate.png"}},{"type":"image_url","image_url":{"url":"https://img.test/duplicate.png"}}]}]}`,
+			images:   []string{"https://img.test/duplicate.png"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ExtractContentModerationInput(nil, []byte(test.body), test.protocol)
+			require.Equal(t, test.text, got.Text)
+			if test.images == nil {
+				require.Empty(t, got.Images)
+			} else {
+				require.Equal(t, test.images, got.Images)
+			}
+		})
+	}
+}
+
+func TestExtractContentModerationInputDoesNotReauditHistoricalOrToolTurns(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		body     string
+	}{
+		{
+			name:     "assistant is latest chat turn",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":"historical danger"},{"role":"assistant","content":"answer"}]}`,
+		},
+		{
+			name:     "anthropic tool result",
+			protocol: ContentModerationProtocolAnthropic,
+			body:     `{"messages":[{"role":"user","content":"historical danger"},{"role":"assistant","content":[{"type":"tool_use","name":"lookup"}]},{"role":"user","content":[{"type":"tool_result","content":"untrusted tool output"}]}]}`,
+		},
+		{
+			name:     "responses function output",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"historical danger"}]},{"type":"function_call_output","output":"untrusted tool output"}]}`,
+		},
+		{
+			name:     "gemini function response",
+			protocol: ContentModerationProtocolGemini,
+			body:     `{"contents":[{"role":"user","parts":[{"text":"historical danger"}]},{"role":"model","parts":[{"functionCall":{"name":"lookup"}}]},{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"value":"untrusted tool output"}}}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ExtractContentModerationInput(nil, []byte(test.body), test.protocol)
+			require.True(t, got.isEmpty(), "%+v", got)
+		})
+	}
+}
+
+func TestExtractContentModerationContentSupportsTypedConversationImages(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		body     string
+		text     string
+		images   []string
+	}{
+		{
+			name:     "openai chat",
+			protocol: ContentModerationProtocolOpenAIChat,
+			body:     `{"messages":[{"role":"user","content":[{"type":"text","text":"chat"},{"type":"image_url","image_url":{"url":"https://img.test/chat.png"}}]}]}`,
+			text:     "chat",
+			images:   []string{"https://img.test/chat.png"},
+		},
+		{
+			name:     "responses",
+			protocol: ContentModerationProtocolOpenAIResponses,
+			body:     `{"input":[{"role":"user","content":[{"type":"input_text","text":"responses"},{"type":"input_image","image_url":{"url":"https://img.test/responses.png"}}]}]}`,
+			text:     "responses",
+			images:   []string{"https://img.test/responses.png"},
+		},
+		{
+			name:     "anthropic",
+			protocol: ContentModerationProtocolAnthropic,
+			body:     `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YW50aHJvcGlj"}}]}]}`,
+			images:   []string{"data:image/png;base64,YW50aHJvcGlj"},
+		},
+		{
+			name:     "gemini snake file",
+			protocol: ContentModerationProtocolGemini,
+			body:     `{"contents":[{"role":"user","parts":[{"file_data":{"mime_type":"image/png","file_uri":"https://img.test/gemini.png"}}]}]}`,
+			images:   []string{"https://img.test/gemini.png"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := decodeContentModerationTypedRequest(t, test.protocol, test.body)
+			got := ExtractContentModerationContent(request, test.protocol)
+			require.Equal(t, test.text, got.Text)
+			require.Equal(t, test.images, got.Images)
+		})
+	}
+}
+
 func TestContentModerationAffinitySamplingIsStable(t *testing.T) {
 	config := defaultContentModerationConfig()
 	config.Enabled = true
 	config.SampleRate = 0.5
 	input := ContentModerationRequest{Group: "default", Model: "gpt-test", AffinityCacheIdentity: "stable-conversation"}
-	first := shouldModerateContent(config, input, "first body")
+	first := shouldModerateContent(config, input, ContentModerationInput{Text: "first body"})
 	input.RequestID = "different-request"
-	require.Equal(t, first, shouldModerateContent(config, input, "different body"))
+	require.Equal(t, first, shouldModerateContent(config, input, ContentModerationInput{Text: "different body"}))
+}
+
+func decodeContentModerationTypedRequest(t *testing.T, protocol string, body string) dto.Request {
+	t.Helper()
+	var request dto.Request
+	switch protocol {
+	case ContentModerationProtocolOpenAIChat:
+		request = &dto.GeneralOpenAIRequest{}
+	case ContentModerationProtocolOpenAIResponses:
+		request = &dto.OpenAIResponsesRequest{}
+	case ContentModerationProtocolAnthropic:
+		request = &dto.ClaudeRequest{}
+	case ContentModerationProtocolGemini:
+		request = &dto.GeminiChatRequest{}
+	default:
+		t.Fatalf("unsupported protocol %q", protocol)
+	}
+	require.NoError(t, common.Unmarshal([]byte(body), request))
+	return request
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
 }
 
 func TestContentModerationPolicyFingerprintInvalidatesAffinityKey(t *testing.T) {
@@ -246,6 +432,197 @@ func TestCheckContentModerationPreBlockUsesOpenAICompatibleContract(t *testing.T
 	require.True(t, strings.Contains(gotBody, `"input":"danger"`))
 }
 
+func TestCheckContentModerationUsesMultimodalContract(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	selectedImages := map[string]bool{
+		"https://img.test/first.png":     true,
+		"data:image/png;base64,c2Vjb25k": true,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string          `json:"model"`
+			Input json.RawMessage `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(r.Body, &payload))
+		require.Equal(t, "omni-moderation-latest", payload.Model)
+
+		var parts []moderationAPIInputPart
+		require.NoError(t, common.Unmarshal(payload.Input, &parts))
+		require.Len(t, parts, 3)
+		require.Equal(t, "text", parts[0].Type)
+		require.Equal(t, contentModerationMaxInputRunes, len([]rune(parts[0].Text)))
+		require.Equal(t, "text", parts[1].Type)
+		require.Equal(t, "tail", strings.TrimSpace(parts[1].Text))
+		require.Equal(t, "image_url", parts[2].Type)
+		require.NotNil(t, parts[2].ImageURL)
+		require.True(t, selectedImages[parts[2].ImageURL.URL])
+		_, _ = w.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"violence":0.99}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","model":"omni-moderation-latest","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		UserID: 1, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		Text: strings.Repeat("a", contentModerationMaxInputRunes) + " tail",
+		Images: []string{
+			"https://img.test/first.png",
+			"data:image/png;base64,c2Vjb25k",
+			"https://img.test/first.png",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Blocked)
+	require.Equal(t, "violence", decision.Category)
+}
+
+func TestCheckContentModerationSupportsImageOnlyInput(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	image := "data:image/png;base64,aW1hZ2Utb25seQ=="
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Input []moderationAPIInputPart `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(r.Body, &payload))
+		require.Len(t, payload.Input, 1)
+		require.Equal(t, "image_url", payload.Input[0].Type)
+		require.Equal(t, image, payload.Input[0].ImageURL.URL)
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat, Images: []string{image},
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Checked)
+	require.False(t, decision.Flagged)
+}
+
+func TestCheckContentModerationDoesNotCacheInvalidMultimodalResultCount(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}},{"flagged":false,"category_scores":{"sexual":0.02}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	config := GetContentModerationConfig()
+	input := ContentModerationRequest{
+		UserID: 1, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		Images: []string{"https://img.test/cardinality.png"}, AffinityRuleName: "rule", AffinityCacheIdentity: "multimodal-cardinality",
+		AffinityTTLSeconds: 300, AffinityChannelID: 1,
+	}
+	key := contentModerationAffinityCacheKey(input, config)
+	t.Cleanup(func() { _, _ = getContentModerationAffinityCache().DeleteMany([]string{key}) })
+
+	for range 2 {
+		decision, err := CheckContentModeration(context.Background(), input)
+		require.NoError(t, err)
+		require.Contains(t, decision.Error, "does not match input count")
+		require.False(t, decision.Cached)
+		require.False(t, decision.Blocked)
+	}
+	require.Equal(t, 2, requestCount)
+}
+
+func TestCheckContentModerationImageFailureDoesNotExposeImageReference(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	image := "https://private.example.test/sensitive.png"
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat, Images: []string{image},
+	})
+	require.NoError(t, err)
+	require.Contains(t, decision.Error, "status 400")
+	require.NotContains(t, decision.Error, image)
+	require.False(t, decision.Blocked)
+}
+
+func TestCheckContentModerationImageTimeoutIsRetryable(t *testing.T) {
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	requestCount := 0
+	contentModerationHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"https://moderation.example.test","timeout_ms":1,"retry_count":0,"sample_rate":1,"all_groups":true,"all_models":true}`)
+
+	config := GetContentModerationConfig()
+	input := ContentModerationRequest{
+		UserID: 1, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		Images: []string{"https://img.test/timeout.png"}, AffinityRuleName: "rule", AffinityCacheIdentity: "image-timeout",
+		AffinityTTLSeconds: 300, AffinityChannelID: 1,
+	}
+	key := contentModerationAffinityCacheKey(input, config)
+	t.Cleanup(func() { _, _ = getContentModerationAffinityCache().DeleteMany([]string{key}) })
+
+	for range 2 {
+		decision, err := CheckContentModeration(context.Background(), input)
+		require.NoError(t, err)
+		require.Contains(t, decision.Error, "moderation request failed")
+		require.False(t, decision.Cached)
+		require.False(t, decision.Blocked)
+	}
+	require.Equal(t, 2, requestCount)
+}
+
+func TestCheckContentModerationDoesNotPersistImageReference(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true,"record_non_hits":true}`)
+
+	requestID := "image-reference-redaction"
+	image := "https://private.example.test/sensitive-image.png"
+	t.Cleanup(func() {
+		_ = model.DB.Where("request_id = ?", requestID).Delete(&model.ContentModerationLog{}).Error
+	})
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		UserID: 987662, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		RequestID: requestID, Images: []string{image},
+	})
+	require.NoError(t, err)
+	require.NotZero(t, decision.LogID)
+
+	entry, err := model.GetContentModerationLog(decision.LogID)
+	require.NoError(t, err)
+	require.Empty(t, entry.Excerpt)
+	require.Len(t, entry.ExcerptHash, sha256.Size*2)
+	serialized, err := common.Marshal(entry)
+	require.NoError(t, err)
+	require.NotContains(t, string(serialized), image)
+}
+
 func TestCheckContentModerationRotatesKeysAfterTransientFailure(t *testing.T) {
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
@@ -407,7 +784,7 @@ func TestCheckContentModerationUsesChannelAffinityCachePerConversationAndChannel
 		AffinityKeyFingerprint: "conversation-fingerprint",
 		AffinityTTLSeconds:     300,
 		AffinityChannelID:      101,
-		Body:                   []byte(`{"messages":[{"role":"user","content":"first"}]}`),
+		Body:                   []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"image_url","image_url":{"url":"https://img.test/first.png"}}]}]}`),
 	}
 	config := GetContentModerationConfig()
 	cacheKeys := []string{contentModerationAffinityCacheKey(base, config)}
@@ -423,7 +800,7 @@ func TestCheckContentModerationUsesChannelAffinityCachePerConversationAndChannel
 
 	secondInput := base
 	secondInput.RequestID = "affinity-second"
-	secondInput.Body = []byte(`{"messages":[{"role":"user","content":"second"}]}`)
+	secondInput.Body = []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"second"},{"type":"image_url","image_url":{"url":"https://img.test/second.png"}}]}]}`)
 	second, err := CheckContentModeration(context.Background(), secondInput)
 	require.NoError(t, err)
 	require.True(t, second.Cached)
