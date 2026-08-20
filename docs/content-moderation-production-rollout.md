@@ -1,6 +1,6 @@
 # Content Moderation Production Rollout Runbook
 
-Status: release planning, 2026-08-20
+Status: code deployed with moderation disabled, 2026-08-20
 
 This runbook covers the production release and staged enablement of the
 affinity-aware multimodal content moderation gate. It does not authorize a
@@ -13,12 +13,29 @@ The implementation is safe to release with the gate disabled, then enable in
 progressive stages. Do not start with broad `pre_block`, email notification, or
 automatic account disablement.
 
-The moderation implementation candidate ends at commit
-`1d4b751eaa77ec2f46a20f6b1f7847c1b0ef0451` on
-`codex/sync-upstream-rc25`. The publish workflow checks out `tokeness/main`, so
-the implementation and its release-preparation changes must first pass review
-and be merged into that branch. The candidate has not been published or
-deployed.
+The reviewed moderation implementation and release preparation were merged to
+`tokeness/main` at commit `23a2fec86facd375d6cc0fa2480a26dbbe5c9e20` and
+deployed with the feature disabled. Provider configuration and staged feature
+enablement remain subject to the gates in this runbook.
+
+Production deployment record:
+
+- source commit: `23a2fec86facd375d6cc0fa2480a26dbbe5c9e20`;
+- version: `v1.0.0-rc.25-tokeness-moderation.1`;
+- immutable digest: `sha256:5c18d5e6d5e36f84bde90e43644b24bc1afded838df3cf4f9e25e2ced342a88d`;
+- baseline verify workflow: `32379322141`;
+- publish workflow: `32379661916`;
+- post-publish verify workflow: `32380481122`;
+- staged deployment workflow: `32380644587`;
+- post-deployment verify workflow: `32381279396`;
+- rollback digest: `sha256:5a32198cb10a2a1fddbc09357eda617b3555dc530f6760e270749117dcaf31c5`.
+
+The deployment completed in the documented `JP-N2`, `EV-JP`, `JP-M`,
+`EV-JP2` order. All nodes selected and ran the new digest; dashboard probes
+returned 200 and both CDN `/v1/models` probes returned the expected 401 with
+the new version header. No provider key or moderation policy was configured,
+so the feature remains disabled pending the provider, privacy, database,
+Redis, SMTP, and observe-canary gates below.
 
 The required production behavior is:
 
