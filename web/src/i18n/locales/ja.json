@@ -5557,6 +5557,7 @@
     "GeoIP SHA-256 checksum": "GeoIP SHA-256 checksum",
     "Use environment or default path": "Use environment or default path",
     "Use the default GeoLite2 source": "Use the default GeoLite2 source",
+    "Default source:": "デフォルトの取得元：",
     "Optional 64-character hexadecimal digest": "Optional 64-character hexadecimal digest",
     "Path for the MaxMind country database. Leave empty to use COMPLIANCE_GEOIP_DB or the default path.": "Path for the MaxMind country database. Leave empty to use COMPLIANCE_GEOIP_DB or the default path.",
     "Used only when the database is missing. The URL must use HTTPS.": "Used only when the database is missing. The URL must use HTTPS.",

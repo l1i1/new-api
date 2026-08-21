@@ -5557,6 +5557,7 @@
     "GeoIP SHA-256 checksum": "GeoIP SHA-256 校驗值",
     "Use environment or default path": "使用環境變數或預設路徑",
     "Use the default GeoLite2 source": "使用預設 GeoLite2 來源",
+    "Default source:": "預設來源：",
     "Optional 64-character hexadecimal digest": "可選的 64 位十六進位摘要",
     "Path for the MaxMind country database. Leave empty to use COMPLIANCE_GEOIP_DB or the default path.": "MaxMind 國家資料庫路徑。留空則使用 COMPLIANCE_GEOIP_DB 或預設路徑。",
     "Used only when the database is missing. The URL must use HTTPS.": "僅在資料庫缺失時使用。網址必須使用 HTTPS。",

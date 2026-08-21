@@ -47,6 +47,9 @@ import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 
+const DEFAULT_GEOIP_DOWNLOAD_URL =
+  'https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb'
+
 const splitList = (value: string) =>
   value
     .split(/[,，;\n\r]+/)
@@ -316,13 +319,22 @@ export function ComplianceGeoIPSection({ defaultValues }: Props) {
                   <Input
                     {...field}
                     type='url'
-                    placeholder={t('Use the default GeoLite2 source')}
+                    placeholder={DEFAULT_GEOIP_DOWNLOAD_URL}
                   />
                 </FormControl>
                 <FormDescription>
                   {t(
                     'Used only when the database is missing. The URL must use HTTPS.'
-                  )}
+                  )}{' '}
+                  {t('Default source:')}{' '}
+                  <a
+                    href={DEFAULT_GEOIP_DOWNLOAD_URL}
+                    target='_blank'
+                    rel='noreferrer'
+                    className='underline hover:no-underline break-all'
+                  >
+                    {DEFAULT_GEOIP_DOWNLOAD_URL}
+                  </a>
                 </FormDescription>
                 <FormMessage />
               </FormItem>
