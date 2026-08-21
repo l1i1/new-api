@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const ContentModerationOptionKey = "content_moderation.config"
@@ -54,6 +57,15 @@ type ContentModerationLogFilter struct {
 	Limit     int
 }
 
+type ContentModerationUserState struct {
+	UserID                int   `json:"user_id" gorm:"primaryKey"`
+	ViolationResetAfterID int64 `json:"violation_reset_after_id" gorm:"index"`
+}
+
+func (ContentModerationUserState) TableName() string {
+	return "content_moderation_user_states"
+}
+
 func CreateContentModerationLog(entry *ContentModerationLog) error {
 	if entry == nil {
 		return errors.New("content moderation log is nil")
@@ -79,11 +91,49 @@ func CountFlaggedContentModerationByUserSince(userID int, since time.Time) (int6
 	if DB == nil {
 		return 0, errors.New("database is not initialized")
 	}
+	resetAfterID, err := getContentModerationViolationResetAfterID(userID)
+	if err != nil {
+		return 0, err
+	}
 	var count int64
-	err := DB.Model(&ContentModerationLog{}).
-		Where("user_id = ? AND flagged = ? AND created_at >= ?", userID, true, since.Unix()).
+	err = DB.Model(&ContentModerationLog{}).
+		Where("user_id = ? AND flagged = ? AND id > ? AND created_at >= ?", userID, true, resetAfterID, since.Unix()).
 		Count(&count).Error
 	return count, err
+}
+
+func getContentModerationViolationResetAfterID(userID int) (int64, error) {
+	if DB == nil {
+		return 0, errors.New("database is not initialized")
+	}
+	var state ContentModerationUserState
+	err := DB.Where("user_id = ?", userID).First(&state).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	return state.ViolationResetAfterID, err
+}
+
+func ResetContentModerationUserViolations(userID int) error {
+	if DB == nil {
+		return errors.New("database is not initialized")
+	}
+	if userID <= 0 {
+		return errors.New("invalid user id")
+	}
+	var resetAfterID int64
+	if err := DB.Model(&ContentModerationLog{}).Where("user_id = ?", userID).
+		Select("COALESCE(MAX(id), 0)").Scan(&resetAfterID).Error; err != nil {
+		return err
+	}
+	state := ContentModerationUserState{
+		UserID:                userID,
+		ViolationResetAfterID: resetAfterID,
+	}
+	return DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"violation_reset_after_id"}),
+	}).Create(&state).Error
 }
 
 // ClaimContentModerationEmail atomically reserves one notification attempt.

@@ -14,7 +14,7 @@ Defaults: disabled, `observe`, `https://api.openai.com`, `omni-moderation-latest
 
 ## Data model
 
-`ContentModerationLog` is a main-database GORM model. It stores user/group/model/protocol/request metadata, action, flagged state, highest category/score, category scores JSON, excerpt/hash, latency, timestamps, and the notification delivery state. It does not store the raw body or API keys. Email delivery uses an atomic claim token on the log row so only one node can send that notification.
+`ContentModerationLog` is a main-database GORM model. It stores user/group/model/protocol/request metadata, including the relay request ID, action, flagged state, highest category/score, category scores JSON, excerpt/hash, latency, timestamps, and the notification delivery state. It does not store the raw body or API keys. Email delivery uses an atomic claim token on the log row so only one node can send that notification. `ContentModerationUserState` stores a per-user violation-reset log-ID boundary; counting ignores flagged logs at or before that boundary without deleting audit history.
 
 ## Service
 
@@ -44,8 +44,9 @@ Auto-ban remains synchronous because it changes authorization state before the r
 - `PUT /api/content-moderation/config`
 - `GET /api/content-moderation/logs`
 - `POST /api/content-moderation/users/:id/unban`
+- `POST /api/content-moderation/users/:id/reset-violations`
 
-All endpoints use `RootAuth`. The log endpoint is paginated and filters by user, group, model, protocol, flagged state, request ID, and time range. Config responses expose API key count and suffixes but never the keys themselves. Capacity fields are `max_in_flight_per_key` (1-64), `queue_wait_ms` (1-10000), `overload_status` (429 or 503), and `key_cooldown_ms` (100-300000).
+All endpoints use `RootAuth`. The log endpoint supports `offset`/`limit` pagination, returns `total`, and filters by user, group, model, protocol, flagged state, request ID, and time range. The admin UI uses the log request ID column and offers 10/20/50/100 page sizes. Config responses expose API key count and suffixes but never the keys themselves. Capacity fields are `max_in_flight_per_key` (1-64), `queue_wait_ms` (1-10000), `overload_status` (429 or 503), and `key_cooldown_ms` (100-300000). Resetting violations records a per-user log-ID boundary and never deletes moderation logs.
 
 ## Verification
 

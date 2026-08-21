@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "Chưa có nhật ký kiểm duyệt.",
     "allow": "Cho phép",
     "block": "Chặn",
-    "observe": "Ghi nhận"
+    "observe": "Ghi nhận",
+    "Reset count": "Đặt lại số lần",
+    "Reset violation count": "Đặt lại số lần vi phạm",
+    "Violation count reset successfully": "Đã đặt lại số lần vi phạm",
+    "Failed to reset violation count": "Không thể đặt lại số lần vi phạm",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Đặt lại số lần vi phạm tích lũy của người dùng {{userID}}? Nhật ký kiểm duyệt vẫn được giữ lại."
   }
 }

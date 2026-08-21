@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "Журналов модерации пока нет.",
     "allow": "Разрешить",
     "block": "Заблокировать",
-    "observe": "Наблюдение"
+    "observe": "Наблюдение",
+    "Reset count": "Сбросить счётчик",
+    "Reset violation count": "Сбросить счётчик нарушений",
+    "Violation count reset successfully": "Счётчик нарушений сброшен",
+    "Failed to reset violation count": "Не удалось сбросить счётчик нарушений",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Сбросить накопленный счётчик нарушений пользователя {{userID}}? Журналы модерации сохраняются."
   }
 }

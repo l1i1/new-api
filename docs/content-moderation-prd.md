@@ -11,7 +11,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 - OpenAI-compatible multimodal moderation input using `omni-moderation-latest`; HTTP(S) image URLs and Base64 image data URLs are supported, and at most one image is sampled per audited request.
 - Global enable switch, `observe` and `pre_block` modes, group and model filters, sample rate, timeout, retry count, API key rotation, and per-category thresholds.
 - Audit records for flagged requests, optional non-hit records, highest category/score, request metadata, and a short redacted excerpt.
-- Admin endpoints for configuration and paginated logs, protected by root authentication.
+- Admin endpoints for configuration and paginated logs, protected by root authentication. Logs expose the relay request ID, support selectable page sizes, and retain audit history when a user's cumulative violation count is reset.
 - Optional user notification through the existing notification service and optional automatic user disable after a configurable rolling count.
 - Channel-affinity conversation de-duplication: when the distributor resolves a channel-affinity key, the same affinity conversation is moderated once per selected channel for the affinity TTL; later requests reuse the decision without a second API call or duplicate side effects.
 - Repeated short-text allow de-duplication: the first in-scope request is still moderated, but a successful allow decision for the same normalized pure text may be reused briefly for the same user/group/protocol across target models. Flagged decisions, provider failures, image inputs, and long text are never eligible for this cache.
@@ -66,6 +66,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 38. When the queue wait budget expires in `observe`, the relay remains fail-open but always persists an audit row with action `skipped_capacity`. It is never represented as a successful allow or cached decision.
 39. When the queue wait budget expires in `pre_block`, the relay does not contact the model provider and returns the configured 429 or 503 with error code `content_moderation_overloaded`, distinct from a content-policy violation.
 40. Affinity-cache and repeated-allow-cache hits do not acquire provider capacity because they do not call the moderation provider.
+41. Resetting a user's cumulative violation count records a reset boundary without deleting moderation logs; subsequent auto-ban and email counts ignore flagged entries at or before that boundary.
 
 ## Risks and controls
 

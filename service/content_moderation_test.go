@@ -703,7 +703,7 @@ func TestCheckContentModerationImageTimeoutIsRetryable(t *testing.T) {
 
 func TestCheckContentModerationDoesNotPersistImageReference(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
 
@@ -949,7 +949,7 @@ func TestCheckContentModerationUsesAvailableCapacityAcrossKeys(t *testing.T) {
 
 func TestCheckContentModerationObservePersistsCapacitySkip(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
 
@@ -1007,7 +1007,7 @@ func TestCheckContentModerationObservePersistsCapacitySkip(t *testing.T) {
 
 func TestCheckContentModerationPreBlockUsesOverloadStatus(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
 
@@ -1219,7 +1219,7 @@ func TestCheckContentModerationShortAllowDedupKeepsUserGroupAndTextIsolation(t *
 
 func TestCheckContentModerationDoesNotDeduplicateFlaggedShortTextAcrossModels(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
 
@@ -1432,7 +1432,7 @@ func TestCheckContentModerationDoesNotCachePartialResultsForLongInput(t *testing
 
 func TestCheckContentModerationUsesChannelAffinityCachePerConversationAndChannel(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
 	defer func() { contentModerationHTTPClient = previousClient }()
 
@@ -1667,7 +1667,7 @@ func TestContentModerationDoesNotCacheWhenLogPersistenceFails(t *testing.T) {
 
 func TestContentModerationCacheHitRetriesIncompleteSideEffects(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}))
 	const userID = 987654
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
 	t.Cleanup(func() { _ = model.DB.Unscoped().Delete(&model.User{}, userID).Error })
@@ -1709,7 +1709,7 @@ func TestContentModerationCacheHitRetriesIncompleteSideEffects(t *testing.T) {
 func TestContentModerationEmailSideEffectIsAsyncAndClaimedOnce(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}))
 	const userID = 987655
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
 	t.Cleanup(func() {
@@ -1772,7 +1772,7 @@ func TestContentModerationEmailSideEffectIsAsyncAndClaimedOnce(t *testing.T) {
 func TestContentModerationEmailFailureReleasesClaimForRetry(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}))
 	const userID = 987656
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
 	t.Cleanup(func() {
@@ -1812,7 +1812,7 @@ func TestContentModerationEmailFailureReleasesClaimForRetry(t *testing.T) {
 func TestContentModerationEmailAmbiguousFailureKeepsClaim(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}))
 	const userID = 987658
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
 	t.Cleanup(func() {
@@ -1846,7 +1846,7 @@ func TestContentModerationEmailAmbiguousFailureKeepsClaim(t *testing.T) {
 
 func TestContentModerationAutoBanIsIdempotent(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}, &model.UserSession{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}, &model.UserSession{}))
 	const userID = 987657
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
 	t.Cleanup(func() {
@@ -1874,7 +1874,7 @@ func TestContentModerationAutoBanIsIdempotent(t *testing.T) {
 
 func TestContentModerationAutoBanPublishesDisabledAuthCache(t *testing.T) {
 	require.NotNil(t, model.DB)
-	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.User{}, &model.UserSession{}, &model.Token{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}, &model.UserSession{}, &model.Token{}))
 	withContentModerationRedis(t)
 	const userID = 987660
 	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error

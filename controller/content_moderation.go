@@ -67,6 +67,16 @@ func GetContentModerationLogs(c *gin.Context) {
 	if c.Query("limit") == "" {
 		limit = pageInfo.GetPageSize()
 	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	page := offset/limit + 1
 	filter := model.ContentModerationLogFilter{UserID: userID, GroupName: strings.TrimSpace(c.Query("group")), ModelName: strings.TrimSpace(c.Query("model")), Protocol: strings.TrimSpace(c.Query("protocol")), RequestID: strings.TrimSpace(c.Query("request_id")), Offset: offset, Limit: limit}
 	if raw := strings.TrimSpace(c.Query("flagged")); raw != "" {
 		value, err := strconv.ParseBool(raw)
@@ -97,7 +107,7 @@ func GetContentModerationLogs(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to query content moderation logs"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": logs, "total": total, "offset": offset, "limit": limit, "page": pageInfo.GetPage(), "page_size": pageInfo.GetPageSize()})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": logs, "total": total, "offset": offset, "limit": limit, "page": page, "page_size": limit})
 }
 
 func UnbanContentModerationUser(c *gin.Context) {
@@ -132,6 +142,32 @@ func UnbanContentModerationUser(c *gin.Context) {
 	}
 	_ = model.InvalidateUserTokensCache(userID)
 	_ = model.InvalidateUserCache(userID)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func ResetContentModerationUserViolations(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || userID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid user id"})
+		return
+	}
+	if model.DB == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "database is not initialized"})
+		return
+	}
+	var count int64
+	if err := model.DB.Model(&model.User{}).Where("id = ?", userID).Count(&count).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to reset violation count"})
+		return
+	}
+	if count == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "user not found"})
+		return
+	}
+	if err := model.ResetContentModerationUserViolations(userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to reset violation count"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

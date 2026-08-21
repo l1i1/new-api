@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "暂无审核日志。",
     "allow": "允许",
     "block": "拦截",
-    "observe": "观察"
+    "observe": "观察",
+    "Reset count": "重置次数",
+    "Reset violation count": "重置违规次数",
+    "Violation count reset successfully": "违规次数已重置",
+    "Failed to reset violation count": "重置违规次数失败",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置用户 {{userID}} 的累计违规次数？审核日志将保留。"
   }
 }

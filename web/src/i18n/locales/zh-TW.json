@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "尚無審核記錄。",
     "allow": "允許",
     "block": "攔截",
-    "observe": "觀察"
+    "observe": "觀察",
+    "Reset count": "重置次數",
+    "Reset violation count": "重置違規次數",
+    "Violation count reset successfully": "違規次數已重置",
+    "Failed to reset violation count": "重置違規次數失敗",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置使用者 {{userID}} 的累計違規次數？審核記錄將保留。"
   }
 }

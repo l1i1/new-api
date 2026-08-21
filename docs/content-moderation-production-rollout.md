@@ -119,7 +119,9 @@ Stop the rollout if any gate below is unresolved.
 
    After the first upgraded node starts, verify the table, indexes, and a
    representative insert/query on the actual production database engine
-   (MySQL or PostgreSQL). Do not rely only on the SQLite test suite.
+   (MySQL or PostgreSQL). The additive `content_moderation_user_states` table
+   stores per-user violation-reset log-ID boundaries and must also be present.
+   Do not rely only on the SQLite test suite.
 
 4. **Redis and affinity**
 
@@ -369,7 +371,8 @@ The root-only log endpoint is `/api/content-moderation/logs`. Monitor at least:
 - audit insert failures and table growth;
 - Redis lease/cache errors and affinity cache hit behavior;
 - `email_sent` and `email_sending` rows;
-- users disabled by auto-ban and subsequent unban actions;
+- users disabled by auto-ban, subsequent unban actions, and violation-count
+   reset actions;
 - upstream request count for blocked canary fixtures.
 
 There is no built-in automatic retention job for

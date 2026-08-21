@@ -82,6 +82,13 @@ export type LogsResponse = {
   total: number
   offset: number
   limit: number
+  page: number
+  page_size: number
+}
+
+export type ContentModerationLogsQuery = {
+  offset: number
+  limit: number
 }
 
 export type UpdateContentModerationConfig = {
@@ -130,9 +137,18 @@ export async function updateContentModerationConfig(
   return response.data
 }
 
-export async function getContentModerationLogs() {
+export async function getContentModerationLogs(
+  params: ContentModerationLogsQuery
+) {
   const response = await api.get<LogsResponse>('/api/content-moderation/logs', {
-    params: { offset: 0, limit: 50 },
+    params,
   })
+  return response.data
+}
+
+export async function resetContentModerationUserViolations(userID: number) {
+  const response = await api.post<{ success: boolean; message?: string }>(
+    `/api/content-moderation/users/${userID}/reset-violations`
+  )
   return response.data
 }

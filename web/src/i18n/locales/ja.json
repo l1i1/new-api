@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "モデレーションログはまだありません。",
     "allow": "許可",
     "block": "ブロック",
-    "observe": "記録"
+    "observe": "記録",
+    "Reset count": "カウントをリセット",
+    "Reset violation count": "違反カウントをリセット",
+    "Violation count reset successfully": "違反カウントをリセットしました",
+    "Failed to reset violation count": "違反カウントのリセットに失敗しました",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "ユーザー {{userID}} の累積違反カウントをリセットしますか？モデレーションログは保持されます。"
   }
 }

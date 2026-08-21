@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "No moderation logs yet.",
     "allow": "Allow",
     "block": "Block",
-    "observe": "Observe"
+    "observe": "Observe",
+    "Reset count": "Reset count",
+    "Reset violation count": "Reset violation count",
+    "Violation count reset successfully": "Violation count reset successfully",
+    "Failed to reset violation count": "Failed to reset violation count",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained."
   }
 }

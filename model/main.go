@@ -304,6 +304,7 @@ func migrateDB() error {
 		&PaymentGatewaySettlement{},
 		&PaymentGatewayProviderEvent{},
 		&ContentModerationLog{},
+		&ContentModerationUserState{},
 	)
 	if err != nil {
 		return err
@@ -382,6 +383,7 @@ func migrateDBFast() error {
 		{&InvoiceOrderClaim{}, "InvoiceOrderClaim"},
 		{&PaymentGatewaySettlement{}, "PaymentGatewaySettlement"},
 		{&ContentModerationLog{}, "ContentModerationLog"},
+		{&ContentModerationUserState{}, "ContentModerationUserState"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

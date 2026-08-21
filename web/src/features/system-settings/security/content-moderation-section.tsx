@@ -18,12 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw } from 'lucide-react'
-import { useEffect, useMemo } from 'react'
+import { ChevronLeft, ChevronRight, RefreshCw, RotateCcw } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -65,6 +66,7 @@ import { SettingsSection } from '../components/settings-section'
 import {
   getContentModerationConfig,
   getContentModerationLogs,
+  resetContentModerationUserViolations,
   updateContentModerationConfig,
 } from './content-moderation-api'
 import {
@@ -78,18 +80,43 @@ type ContentModerationSectionProps = {
   defaultValues: Record<string, never>
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
+
 export function ContentModerationSection(
   _props: ContentModerationSectionProps
 ) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [resetUserID, setResetUserID] = useState<number | null>(null)
   const configQuery = useQuery({
     queryKey: ['content-moderation-config'],
     queryFn: getContentModerationConfig,
   })
   const logsQuery = useQuery({
-    queryKey: ['content-moderation-logs'],
-    queryFn: getContentModerationLogs,
+    queryKey: ['content-moderation-logs', page, pageSize],
+    queryFn: () =>
+      getContentModerationLogs({
+        offset: (page - 1) * pageSize,
+        limit: pageSize,
+      }),
+    placeholderData: (previousData) => previousData,
+  })
+  const resetViolationsMutation = useMutation({
+    mutationFn: resetContentModerationUserViolations,
+    onSuccess: (response) => {
+      if (!response.success) {
+        toast.error(response.message || t('Failed to reset violation count'))
+        return
+      }
+      toast.success(t('Violation count reset successfully'))
+      setResetUserID(null)
+      queryClient.invalidateQueries({ queryKey: ['content-moderation-logs'] })
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || t('Failed to reset violation count'))
+    },
   })
   const updateMutation = useMutation({
     mutationFn: updateContentModerationConfig,
@@ -166,6 +193,21 @@ export function ContentModerationSection(
 
   const onSubmit = async (values: ContentModerationFormValues) => {
     await updateMutation.mutateAsync(toContentModerationRequest(values))
+  }
+
+  const total = logsQuery.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages))
+  }, [totalPages])
+
+  const handlePageSizeChange = (value: string | null) => {
+    if (value !== null) {
+      const nextPageSize = Number.parseInt(value)
+      setPageSize(nextPageSize)
+      setPage(1)
+    }
   }
 
   return (
@@ -760,11 +802,13 @@ export function ContentModerationSection(
             <TableRow>
               <TableHead>{t('Time')}</TableHead>
               <TableHead>{t('User')}</TableHead>
+              <TableHead>{t('Request ID')}</TableHead>
               <TableHead>{t('Model')}</TableHead>
               <TableHead>{t('Action')}</TableHead>
               <TableHead>{t('Category')}</TableHead>
               <TableHead>{t('Score')}</TableHead>
               <TableHead>{t('Latency')}</TableHead>
+              <TableHead>{t('Actions')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -774,6 +818,9 @@ export function ContentModerationSection(
                   {new Date(entry.created_at * 1000).toLocaleString()}
                 </TableCell>
                 <TableCell>{entry.user_id || '-'}</TableCell>
+                <TableCell className='max-w-40 truncate font-mono text-xs'>
+                  {entry.request_id || '-'}
+                </TableCell>
                 <TableCell className='max-w-48 truncate'>
                   {entry.model || '-'}
                 </TableCell>
@@ -789,6 +836,21 @@ export function ContentModerationSection(
                 <TableCell>
                   {entry.latency_ms ? `${entry.latency_ms} ms` : '-'}
                 </TableCell>
+                <TableCell>
+                  {entry.user_id > 0 ? (
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => setResetUserID(entry.user_id)}
+                    >
+                      <RotateCcw data-icon='inline-start' />
+                      {t('Reset count')}
+                    </Button>
+                  ) : (
+                    '-'
+                  )}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -798,6 +860,74 @@ export function ContentModerationSection(
             {t('No moderation logs yet.')}
           </p>
         ) : null}
+        {logsQuery.data?.data.length ? (
+          <div className='flex flex-col items-center gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between'>
+            <div className='text-muted-foreground text-xs sm:text-sm'>
+              {t('Showing')} {(page - 1) * pageSize + 1}-
+              {Math.min(page * pageSize, total)} {t('of')} {total}
+            </div>
+            <div className='flex items-center gap-2'>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setPage((current) => current - 1)}
+                disabled={page <= 1 || logsQuery.isFetching}
+                className='h-8 w-8 p-0'
+                aria-label={t('Previous page')}
+              >
+                <ChevronLeft className='h-4 w-4' />
+              </Button>
+              <div className='text-muted-foreground flex items-center gap-1 text-sm'>
+                <span className='font-medium'>{page}</span>
+                <span>/</span>
+                <span>{totalPages}</span>
+              </div>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setPage((current) => current + 1)}
+                disabled={page >= totalPages || logsQuery.isFetching}
+                className='h-8 w-8 p-0'
+                aria-label={t('Next page')}
+              >
+                <ChevronRight className='h-4 w-4' />
+              </Button>
+              <Select
+                value={pageSize.toString()}
+                onValueChange={handlePageSizeChange}
+              >
+                <SelectTrigger className='h-8 w-[92px] sm:w-32'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={size.toString()}>
+                      {t('{{size}} / page', { size })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        ) : null}
+        <ConfirmDialog
+          open={resetUserID !== null}
+          onOpenChange={(open) => {
+            if (!open) setResetUserID(null)
+          }}
+          title={t('Reset violation count')}
+          desc={t(
+            'Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.',
+            { userID: resetUserID ?? '' }
+          )}
+          confirmText={t('Reset count')}
+          handleConfirm={() => {
+            if (resetUserID !== null) {
+              resetViolationsMutation.mutate(resetUserID)
+            }
+          }}
+          isLoading={resetViolationsMutation.isPending}
+        />
       </SettingsSection>
     </div>
   )

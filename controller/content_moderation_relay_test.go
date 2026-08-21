@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -370,6 +371,99 @@ func TestUnbanContentModerationUserIsIdempotent(t *testing.T) {
 	require.NoError(t, db.First(&reloaded, user.Id).Error)
 	require.Equal(t, common.UserStatusEnabled, reloaded.Status)
 	require.EqualValues(t, 6, reloaded.AuthVersion)
+}
+
+func TestResetContentModerationUserViolationsRequiresExistingUser(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.ContentModerationLog{}, &model.ContentModerationUserState{}))
+
+	previousDB := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = previousDB })
+
+	const userID = 987661
+	require.NoError(t, db.Create(&model.User{
+		Id: userID, Username: "moderation-reset", Password: "unused-password",
+		Status: common.UserStatusEnabled, Role: common.RoleCommonUser,
+	}).Error)
+	require.NoError(t, db.Create(&model.ContentModerationLog{
+		UserID: userID, Flagged: true, CreatedAt: time.Now().Unix(),
+	}).Error)
+
+	callReset := func(id string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Params = gin.Params{{Key: "id", Value: id}}
+		ResetContentModerationUserViolations(context)
+		return recorder
+	}
+
+	require.Equal(t, http.StatusNotFound, callReset("404").Code)
+	require.Equal(t, http.StatusBadRequest, callReset("invalid").Code)
+	require.Equal(t, http.StatusOK, callReset(strconv.Itoa(userID)).Code)
+
+	var state model.ContentModerationUserState
+	require.NoError(t, db.First(&state, "user_id = ?", userID).Error)
+	require.NotZero(t, state.ViolationResetAfterID)
+
+	count, err := model.CountFlaggedContentModerationByUserSince(userID, time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	require.EqualValues(t, 0, count)
+}
+
+func TestGetContentModerationLogsReturnsExplicitPaginationMetadata(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.ContentModerationLog{}))
+
+	previousDB := model.DB
+	model.DB = db
+	t.Cleanup(func() { model.DB = previousDB })
+
+	require.NoError(t, db.Create(&model.ContentModerationLog{
+		UserID: 987662, RequestID: "first-request", CreatedAt: time.Now().Add(-time.Minute).Unix(),
+	}).Error)
+	require.NoError(t, db.Create(&model.ContentModerationLog{
+		UserID: 987662, RequestID: "second-request", CreatedAt: time.Now().Unix(),
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/content-moderation/logs?offset=1&limit=1", nil)
+
+	GetContentModerationLogs(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success  bool                         `json:"success"`
+		Data     []model.ContentModerationLog `json:"data"`
+		Total    int64                        `json:"total"`
+		Offset   int                          `json:"offset"`
+		Limit    int                          `json:"limit"`
+		Page     int                          `json:"page"`
+		PageSize int                          `json:"page_size"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	require.EqualValues(t, 2, response.Total)
+	require.Equal(t, 1, response.Offset)
+	require.Equal(t, 1, response.Limit)
+	require.Equal(t, 2, response.Page)
+	require.Equal(t, 1, response.PageSize)
+	require.Len(t, response.Data, 1)
+	require.Equal(t, "first-request", response.Data[0].RequestID)
+
+	recorder = httptest.NewRecorder()
+	context, _ = gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/content-moderation/logs?p=-1", nil)
+
+	GetContentModerationLogs(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Equal(t, 0, response.Offset)
+	require.Equal(t, 1, response.Page)
 }
 
 type unreadableRequestBody struct {

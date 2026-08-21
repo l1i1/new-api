@@ -244,6 +244,7 @@ func SetApiRouter(router *gin.Engine) {
 			contentModerationRoute.PUT("/config", controller.UpdateContentModerationConfig)
 			contentModerationRoute.GET("/logs", controller.GetContentModerationLogs)
 			contentModerationRoute.POST("/users/:id/unban", controller.UnbanContentModerationUser)
+			contentModerationRoute.POST("/users/:id/reset-violations", controller.ResetContentModerationUserViolations)
 		}
 
 		// Custom OAuth provider management (root only)

@@ -5790,6 +5790,11 @@
     "No moderation logs yet.": "Aucun journal de modération pour le moment.",
     "allow": "Autoriser",
     "block": "Bloquer",
-    "observe": "Observer"
+    "observe": "Observer",
+    "Reset count": "Réinitialiser le compteur",
+    "Reset violation count": "Réinitialiser le compteur de violations",
+    "Violation count reset successfully": "Compteur de violations réinitialisé",
+    "Failed to reset violation count": "Échec de la réinitialisation du compteur de violations",
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Réinitialiser le compteur de violations cumulées de l'utilisateur {{userID}} ? Les journaux de modération sont conservés."
   }
 }
