@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -456,6 +457,97 @@ func TestExtractSessionIdentifier_RejectsNullAndStructuredValues(t *testing.T) {
 	}))
 	assert.Empty(t, extractSessionIdentifier(&dto.GeneralOpenAIRequest{
 		Metadata: json.RawMessage(`{"user_id":{"id":"nested"}}`),
+	}))
+}
+
+func TestBuildPromptCacheKey_UsesSessionHeaderFallback(t *testing.T) {
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	info := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	info.RequestHeaders = map[string]string{"X-Session-Id": "header-session"}
+
+	assert.NotEmpty(t, buildPromptCacheKey(info))
+}
+
+func TestApplyOllamaPromptCacheEstimation_HeaderSessionHit(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+
+	first := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	first.RequestHeaders = map[string]string{"X-Session-Id": "header-session"}
+	applyOllamaPromptCacheEstimation(first, &dto.Usage{PromptTokens: 200})
+
+	second := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello", "assistant", "hi"),
+	})
+	second.RequestHeaders = map[string]string{"conversation-id": "header-session"}
+	usage := &dto.Usage{PromptTokens: 300}
+	applyOllamaPromptCacheEstimation(second, usage)
+
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+}
+
+func TestApplyOllamaPromptCacheEstimation_HeaderSessionIsolation(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+
+	first := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	first.RequestHeaders = map[string]string{"session_id": "session-a"}
+	applyOllamaPromptCacheEstimation(first, &dto.Usage{PromptTokens: 200})
+
+	second := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello", "assistant", "hi"),
+	})
+	second.RequestHeaders = map[string]string{"session_id": "session-b"}
+	usage := &dto.Usage{PromptTokens: 300}
+	applyOllamaPromptCacheEstimation(second, usage)
+
+	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+	assert.Nil(t, usage.BillingUsage)
+}
+
+func TestExtractHeaderSessionIdentifier_NormalizesNamesAndPrefersSession(t *testing.T) {
+	headers := map[string]string{
+		"X-Conversation-ID": "conversation-session",
+		"SESSION_ID":        "session-id",
+	}
+	assert.Equal(t, "session-id", extractHeaderSessionIdentifier(headers))
+	assert.Equal(t, "conversation-session", extractHeaderSessionIdentifier(map[string]string{
+		"conversation-id": "conversation-session",
+	}))
+	assert.Equal(t, "opencode-session", extractHeaderSessionIdentifier(map[string]string{
+		"x-opencode-session": "opencode-session",
+	}))
+	assert.Equal(t, "affinity-session", extractHeaderSessionIdentifier(map[string]string{
+		"x-session-affinity": "affinity-session",
+	}))
+}
+
+func TestBuildPromptCacheKey_BodyIdentifierPrecedesHeader(t *testing.T) {
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	body := &dto.GeneralOpenAIRequest{
+		Messages:       msgs("user", "hello"),
+		PromptCacheKey: "body-session",
+	}
+	info := infoWith(1, 10, "llama3", setting, body)
+	info.RequestHeaders = map[string]string{"session_id": "header-session"}
+
+	bodyOnly := infoWith(1, 10, "llama3", setting, body)
+	headerOnly := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{Messages: body.Messages})
+	headerOnly.RequestHeaders = info.RequestHeaders
+
+	assert.NotEqual(t, buildPromptCacheKey(bodyOnly), buildPromptCacheKey(headerOnly))
+}
+
+func TestExtractHeaderSessionIdentifierRejectsBlankAndOversizedValues(t *testing.T) {
+	assert.Empty(t, extractHeaderSessionIdentifier(map[string]string{"session_id": "  "}))
+	assert.Empty(t, extractHeaderSessionIdentifier(map[string]string{
+		"session_id": strings.Repeat("x", promptCacheMaxSessionIDRunes+1),
 	}))
 }
 

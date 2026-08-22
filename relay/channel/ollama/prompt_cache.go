@@ -158,7 +158,8 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 
 // buildPromptCacheKey constructs a per-channel-model-user-session cache key.
 // The session identifier is derived from prompt_cache_key, metadata.user_id,
-// or the request user field, in that priority order.
+// the request user field, or a stable session/conversation request header, in
+// that priority order.
 func buildPromptCacheKey(info *relaycommon.RelayInfo) string {
 	if info == nil || info.ChannelMeta == nil {
 		return ""
@@ -178,6 +179,9 @@ func buildPromptCacheKey(info *relaycommon.RelayInfo) string {
 	sessionId := ""
 	if req, ok := info.Request.(*dto.GeneralOpenAIRequest); ok {
 		sessionId = extractSessionIdentifier(req)
+	}
+	if sessionId == "" {
+		sessionId = extractHeaderSessionIdentifier(info.RequestHeaders)
 	}
 	if sessionId == "" {
 		return ""
@@ -241,6 +245,32 @@ func extractSessionIdentifier(req *dto.GeneralOpenAIRequest) string {
 		var scalar any
 		if err := common.Unmarshal(req.User, &scalar); err == nil {
 			return promptCacheScalarIdentifier(scalar)
+		}
+	}
+	return ""
+}
+
+// extractHeaderSessionIdentifier returns a stable conversation identifier from
+// the request headers. Header names are normalized so HTTP clients may use
+// underscores, hyphens, case variants, or one x- prefix. Body identifiers are
+// checked separately and always take precedence over these headers.
+func extractHeaderSessionIdentifier(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	for _, target := range []string{"session_id", "conversation_id"} {
+		for name, value := range headers {
+			normalizedName := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "-", "_"))
+			normalizedName = strings.TrimPrefix(normalizedName, "x_")
+			if normalizedName == "opencode_session" || normalizedName == "session_affinity" {
+				normalizedName = "session_id"
+			}
+			if normalizedName != target {
+				continue
+			}
+			if sessionID := normalizePromptCacheSessionIdentifier(value); sessionID != "" {
+				return sessionID
+			}
 		}
 	}
 	return ""
