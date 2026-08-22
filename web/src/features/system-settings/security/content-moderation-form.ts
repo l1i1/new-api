@@ -66,7 +66,7 @@ export const contentModerationSchema = z.object({
   }),
   max_in_flight_per_key: z.string().refine((value) => {
     const parsed = Number(value)
-    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 64
+    return Number.isInteger(parsed) && parsed >= 1
   }),
   queue_wait_ms: z.string().refine((value) => {
     const parsed = Number(value)

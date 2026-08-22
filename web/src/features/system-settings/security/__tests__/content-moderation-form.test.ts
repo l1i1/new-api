@@ -103,6 +103,16 @@ describe('content moderation form mapping', () => {
     ).toBe(false)
   })
 
+  test('accepts max in-flight values above the legacy limit', () => {
+    const values = {
+      ...toContentModerationFormValues(config),
+      max_in_flight_per_key: '128',
+    }
+
+    expect(contentModerationSchema.safeParse(values).success).toBe(true)
+    expect(toContentModerationRequest(values).max_in_flight_per_key).toBe(128)
+  })
+
   test('rejects unsupported overload statuses', () => {
     expect(
       contentModerationSchema.safeParse({

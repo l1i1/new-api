@@ -1158,9 +1158,6 @@ func NormalizeContentModerationConfig(input ContentModerationConfig) (ContentMod
 	if config.MaxInFlightPerKey <= 0 {
 		config.MaxInFlightPerKey = contentModerationDefaultMaxInFlight
 	}
-	if config.MaxInFlightPerKey > 64 {
-		return ContentModerationConfig{}, errors.New("max_in_flight_per_key must not exceed 64")
-	}
 	if config.QueueWaitMS <= 0 {
 		config.QueueWaitMS = contentModerationDefaultQueueWaitMS
 	}

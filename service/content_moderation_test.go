@@ -1122,6 +1122,12 @@ func TestNormalizeContentModerationConfigValidatesCapacitySettings(t *testing.T)
 	config.OverloadStatus = http.StatusForbidden
 	_, err := NormalizeContentModerationConfig(config)
 	require.EqualError(t, err, "overload_status must be 429 or 503")
+
+	config = defaultContentModerationConfig()
+	config.MaxInFlightPerKey = 128
+	normalized, err := NormalizeContentModerationConfig(config)
+	require.NoError(t, err)
+	require.Equal(t, 128, normalized.MaxInFlightPerKey)
 }
 
 func TestCheckContentModerationDeduplicatesConcurrentShortAllowAcrossModels(t *testing.T) {

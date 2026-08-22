@@ -375,7 +375,6 @@ export function ContentModerationSection(
                       <Input
                         type='number'
                         min={1}
-                        max={64}
                         step={1}
                         {...field}
                       />
