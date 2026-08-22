@@ -92,7 +92,7 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-const models: PricingModel[] = Array.from({ length: 21 }, (_, index) => ({
+const models: PricingModel[] = Array.from({ length: 31 }, (_, index) => ({
   id: index + 1,
   model_name: `model-${index + 1}`,
   quota_type: 1,
@@ -139,7 +139,7 @@ describe('model card grid pagination', () => {
       )
     })
 
-    assert.equal(countCards(container), 20)
+    assert.equal(countCards(container), 30)
     const pageSizeTrigger = container.querySelector<HTMLButtonElement>(
       'button[data-slot="select-trigger"]'
     )

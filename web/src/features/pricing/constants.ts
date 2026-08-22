@@ -143,8 +143,8 @@ export const VIEW_MODES = {
 
 export type ViewMode = (typeof VIEW_MODES)[keyof typeof VIEW_MODES]
 
-/** Default page size for pricing table */
-export const DEFAULT_PRICING_PAGE_SIZE = 20
+/** Default page size for pricing views; divisible by the card grid's 1/2/3 columns */
+export const DEFAULT_PRICING_PAGE_SIZE = 30
 
 /** Page size options shared by pricing views */
 export const PRICING_PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50, 100] as const
