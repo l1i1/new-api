@@ -46,6 +46,11 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	}
 
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, resp, responseBody)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return &usageResp.Usage, cyberErr
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
@@ -247,6 +252,11 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, resp, responseBody)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return &usageResp.Usage, cyberErr
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)
