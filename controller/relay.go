@@ -381,7 +381,7 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 		moderationRequest.AffinityTTLSeconds = int(affinity.TTLSeconds)
 		moderationRequest.AffinityChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	}
-	decision, _ := service.CheckContentModeration(c.Request.Context(), moderationRequest)
+		decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
 	if decision != nil && decision.Error != "" {
 		logLabel := "content moderation fail-open"
 		if decision.Overloaded {

@@ -1965,6 +1965,172 @@ func TestContentModerationAutoBanPublishesDisabledAuthCache(t *testing.T) {
 	require.EqualValues(t, 2, cachedAfter.AuthVersion)
 }
 
+func TestSubmitContentModerationObserveExecutesAsynchronouslyWithoutBlocking(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}))
+
+	moderationStarted := make(chan struct{})
+	moderationRelease := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		close(moderationStarted)
+		<-moderationRelease
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.99}}]}`))
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-moderationRelease:
+		default:
+			close(moderationRelease)
+		}
+	}()
+
+	configJSON, _ := common.Marshal(ContentModerationConfig{
+		Enabled:    true,
+		Mode:       "observe",
+		BaseURL:    server.URL,
+		APIKeys:    []string{"test-async-key"},
+		SampleRate: 1,
+		AllGroups:  true,
+		AllModels:  true,
+	})
+	withContentModerationOption(t, string(configJSON))
+
+	const userID = 987670
+	_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+	t.Cleanup(func() {
+		_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+	})
+
+	input := ContentModerationRequest{
+		UserID:    userID,
+		Group:     "default",
+		Model:     "gpt-4",
+		Protocol:  ContentModerationProtocolOpenAIChat,
+		Text:      "asynchronous content moderation check",
+		RequestID: "req-async-test",
+	}
+
+	start := time.Now()
+	decision, err := SubmitContentModeration(context.Background(), input)
+	elapsed := time.Since(start)
+
+	// In observe mode, SubmitContentModeration must return immediately without waiting for upstream moderation API.
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.False(t, decision.Blocked)
+	require.False(t, decision.Checked)
+	require.Less(t, elapsed, 100*time.Millisecond)
+
+	// Ensure background job actually reached the upstream server
+	select {
+	case <-moderationStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background moderation check did not start in time")
+	}
+
+	// Release upstream server and verify DB record created
+	close(moderationRelease)
+	require.Eventually(t, func() bool {
+		var log model.ContentModerationLog
+		err := model.DB.Where("request_id = ? AND user_id = ?", "req-async-test", userID).First(&log).Error
+		return err == nil && log.Flagged && log.Action == "observe"
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestSubmitContentModerationPreBlockExecutesSynchronously(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.99}}]}`))
+	}))
+	defer server.Close()
+
+	configJSON, _ := common.Marshal(ContentModerationConfig{
+		Enabled:     true,
+		Mode:        "pre_block",
+		BaseURL:     server.URL,
+		APIKeys:     []string{"test-preblock-key"},
+		SampleRate:  1,
+		AllGroups:   true,
+		AllModels:   true,
+		BlockStatus: 403,
+	})
+	withContentModerationOption(t, string(configJSON))
+
+	input := ContentModerationRequest{
+		UserID:    12345,
+		Group:     "default",
+		Model:     "gpt-4",
+		Protocol:  ContentModerationProtocolOpenAIChat,
+		Text:      "pre_block violation content",
+		RequestID: "req-preblock-test",
+	}
+
+	decision, err := SubmitContentModeration(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.True(t, decision.Blocked)
+	require.True(t, decision.Flagged)
+	require.Equal(t, 403, decision.StatusCode)
+}
+
+func TestSubmitContentModerationAsyncQueueFullDropsAndLogsSkippedCapacity(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}))
+
+	configJSON, _ := common.Marshal(ContentModerationConfig{
+		Enabled:    true,
+		Mode:       "observe",
+		BaseURL:    "http://127.0.0.1:9999",
+		APIKeys:    []string{"test-key"},
+		SampleRate: 1,
+		AllGroups:  true,
+		AllModels:  true,
+	})
+	withContentModerationOption(t, string(configJSON))
+
+	const userID = 987671
+	_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+	t.Cleanup(func() {
+		_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+	})
+
+	// Fill the semaphore channel completely
+	for range cap(contentModerationAsyncSemaphore) {
+		contentModerationAsyncSemaphore <- struct{}{}
+	}
+	defer func() {
+		for len(contentModerationAsyncSemaphore) > 0 {
+			<-contentModerationAsyncSemaphore
+		}
+	}()
+
+	input := ContentModerationRequest{
+		UserID:    userID,
+		Group:     "default",
+		Model:     "gpt-4",
+		Protocol:  ContentModerationProtocolOpenAIChat,
+		Text:      "dropped when queue is full",
+		RequestID: "req-overflow-test",
+	}
+
+	start := time.Now()
+	decision, err := SubmitContentModeration(context.Background(), input)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.False(t, decision.Blocked)
+	require.Less(t, elapsed, 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		var log model.ContentModerationLog
+		err := model.DB.Where("request_id = ? AND user_id = ?", "req-overflow-test", userID).First(&log).Error
+		return err == nil && log.Action == "skipped_capacity"
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
 func withContentModerationRedis(t *testing.T) *miniredis.Miniredis {
 	t.Helper()
 	resetContentModerationCapacityState()

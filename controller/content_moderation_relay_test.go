@@ -78,7 +78,9 @@ func TestCheckRelayContentModerationSkipsModerationRelayEndpoint(t *testing.T) {
 }
 
 func TestCheckRelayContentModerationObserveDoesNotBlock(t *testing.T) {
+	moderationCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		moderationCalls++
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.9}}]}`))
 	}))
@@ -92,8 +94,11 @@ func TestCheckRelayContentModerationObserveDoesNotBlock(t *testing.T) {
 	common.CleanupBodyStorage(context)
 
 	require.NotNil(t, decision)
-	require.True(t, decision.Flagged)
 	require.False(t, decision.Blocked)
+
+	require.Eventually(t, func() bool {
+		return moderationCalls == 1
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing.T) {
@@ -143,7 +148,7 @@ func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing
 				_, _ = writer.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
 			}))
 			defer server.Close()
-			withControllerContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
+			withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","sample_rate":1,"all_groups":true,"all_models":true}`)
 
 			body := &unreadableRequestBody{}
 			context, _ := gin.CreateTestContext(httptest.NewRecorder())

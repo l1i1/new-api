@@ -28,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/go-redis/redis/v8"
 	"github.com/samber/hot"
 	"github.com/tidwall/gjson"
@@ -1445,6 +1446,75 @@ func contentModerationInScope(config ContentModerationConfig, input ContentModer
 		}
 	}
 	return true
+}
+
+const contentModerationAsyncQueueCapacity = 512
+
+var (
+	contentModerationAsyncSemaphore = make(chan struct{}, contentModerationAsyncQueueCapacity)
+)
+
+func recordContentModerationSkippedCapacityLog(input ContentModerationRequest, config ContentModerationConfig) {
+	gopool.Go(func() {
+		content := ContentModerationInput{
+			Text:            input.Text,
+			Images:          input.Images,
+			ValidationError: input.ContentValidationError,
+			validated:       input.ContentValidated,
+		}
+		content.normalize()
+		entry := &model.ContentModerationLog{
+			UserID:      input.UserID,
+			GroupName:   strings.TrimSpace(input.Group),
+			ModelName:   strings.TrimSpace(input.Model),
+			Protocol:    strings.TrimSpace(input.Protocol),
+			RequestPath: strings.TrimSpace(input.RequestPath),
+			RequestID:   strings.TrimSpace(input.RequestID),
+			Mode:        config.Mode,
+			Action:      "skipped_capacity",
+			Flagged:     false,
+			Blocked:     false,
+			Excerpt:     redactedModerationExcerpt(content.Text),
+			ExcerptHash: content.hash(),
+		}
+		_ = model.CreateContentModerationLog(entry)
+	})
+}
+
+// SubmitContentModeration executes content moderation for a relay request.
+// In "observe" mode, the check is dispatched to a bounded background worker pool
+// so that client requests are never blocked by upstream moderation latency or slot acquisition queues.
+// In "pre_block" mode, the check executes synchronously so violating requests can be blocked immediately.
+func SubmitContentModeration(ctx context.Context, input ContentModerationRequest) (*ContentModerationDecision, error) {
+	config, configErr := readContentModerationConfig()
+	if configErr != nil {
+		return &ContentModerationDecision{Error: configErr.Error()}, nil
+	}
+	if !config.Enabled {
+		return &ContentModerationDecision{}, nil
+	}
+	if config.Mode == "pre_block" {
+		return CheckContentModeration(ctx, input)
+	}
+
+	// Mode is "observe" (or any non-blocking mode): dispatch asynchronously.
+	select {
+	case contentModerationAsyncSemaphore <- struct{}{}:
+		gopool.Go(func() {
+			defer func() { <-contentModerationAsyncSemaphore }()
+			ttl := time.Duration(config.TimeoutMS+config.QueueWaitMS)*time.Millisecond + 10*time.Second
+			asyncCtx, cancel := context.WithTimeout(context.Background(), ttl)
+			defer cancel()
+			_, _ = CheckContentModeration(asyncCtx, input)
+		})
+	default:
+		common.SysLog("content moderation async queue full, dropping background check")
+		recordContentModerationSkippedCapacityLog(input, config)
+	}
+
+	return &ContentModerationDecision{
+		Checked: false,
+	}, nil
 }
 
 func CheckContentModeration(ctx context.Context, input ContentModerationRequest) (*ContentModerationDecision, error) {
