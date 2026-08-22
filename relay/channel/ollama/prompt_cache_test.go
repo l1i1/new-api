@@ -62,7 +62,7 @@ func TestApplyOllamaPromptCacheEstimation_SwitchOff(t *testing.T) {
 	assert.Nil(t, usage.BillingUsage)
 }
 
-func TestApplyOllamaPromptCacheEstimation_RequiresSessionIdentifier(t *testing.T) {
+func TestApplyOllamaPromptCacheEstimation_UsesUserFallbackWithoutSessionIdentifier(t *testing.T) {
 	resetPromptCache()
 	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
 
@@ -77,9 +77,10 @@ func TestApplyOllamaPromptCacheEstimation_RequiresSessionIdentifier(t *testing.T
 	usage2 := &dto.Usage{PromptTokens: 300}
 	applyOllamaPromptCacheEstimation(info2, usage2)
 
-	assert.Zero(t, usage2.PromptTokensDetails.CachedTokens)
-	assert.Nil(t, usage2.BillingUsage)
-	assert.Empty(t, buildPromptCacheKey(info1))
+	assert.Equal(t, 100, usage2.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage2.BillingUsage)
+	assert.True(t, usage2.BillingUsage.Estimated)
+	assert.NotEmpty(t, buildPromptCacheKey(info1))
 }
 
 // Test strict prefix hit.
@@ -466,6 +467,68 @@ func TestBuildPromptCacheKey_UsesSessionHeaderFallback(t *testing.T) {
 		Messages: msgs("user", "hello"),
 	})
 	info.RequestHeaders = map[string]string{"X-Session-Id": "header-session"}
+
+	assert.NotEmpty(t, buildPromptCacheKey(info))
+}
+
+func TestBuildPromptCacheKey_UsesTokenFallback(t *testing.T) {
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	info := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	info.TokenId = 42
+
+	assert.NotEmpty(t, buildPromptCacheKey(info))
+}
+
+func TestApplyOllamaPromptCacheEstimation_TokenFallbackHit(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+
+	first := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	first.TokenId = 42
+	applyOllamaPromptCacheEstimation(first, &dto.Usage{PromptTokens: 200})
+
+	second := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello", "assistant", "hi"),
+	})
+	second.TokenId = 42
+	usage := &dto.Usage{PromptTokens: 300}
+	applyOllamaPromptCacheEstimation(second, usage)
+
+	require.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage.BillingUsage)
+	assert.True(t, usage.BillingUsage.Estimated)
+}
+
+func TestApplyOllamaPromptCacheEstimation_TokenFallbackIsolatesTokens(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+
+	first := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	first.TokenId = 42
+	applyOllamaPromptCacheEstimation(first, &dto.Usage{PromptTokens: 200})
+
+	second := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello", "assistant", "hi"),
+	})
+	second.TokenId = 43
+	usage := &dto.Usage{PromptTokens: 300}
+	applyOllamaPromptCacheEstimation(second, usage)
+
+	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+	assert.Nil(t, usage.BillingUsage)
+}
+
+func TestBuildPromptCacheKey_UsesUserFallbackWithoutToken(t *testing.T) {
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	info := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
 
 	assert.NotEmpty(t, buildPromptCacheKey(info))
 }

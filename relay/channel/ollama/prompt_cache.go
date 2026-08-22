@@ -157,9 +157,8 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 }
 
 // buildPromptCacheKey constructs a per-channel-model-user-session cache key.
-// The session identifier is derived from prompt_cache_key, metadata.user_id,
-// the request user field, or a stable session/conversation request header, in
-// that priority order.
+// The session partition is derived from explicit body/header identifiers first,
+// then falls back to the same token/user partition used by channel affinity.
 func buildPromptCacheKey(info *relaycommon.RelayInfo) string {
 	if info == nil || info.ChannelMeta == nil {
 		return ""
@@ -184,7 +183,15 @@ func buildPromptCacheKey(info *relaycommon.RelayInfo) string {
 		sessionId = extractHeaderSessionIdentifier(info.RequestHeaders)
 	}
 	if sessionId == "" {
-		return ""
+		// Match channel affinity's established fallback for clients such as
+		// OpenCode that do not send a conversation identifier. The token is
+		// the narrowest stable partition; playground requests have no token
+		// id, so fall back to the authenticated user.
+		if info.TokenId > 0 {
+			sessionId = "token:" + strconv.Itoa(info.TokenId)
+		} else {
+			sessionId = "user:" + strconv.Itoa(userId)
+		}
 	}
 
 	h := sha256.New()
