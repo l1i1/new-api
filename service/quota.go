@@ -475,19 +475,30 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 
 func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int) {
 	gopool.Go(func() {
+		if relayInfo == nil {
+			return
+		}
 		userSetting := relayInfo.UserSetting
 		threshold := common.QuotaRemindThreshold
 		if userSetting.QuotaWarningThreshold != 0 {
 			threshold = int(userSetting.QuotaWarningThreshold)
 		}
 
-		//noMoreQuota := userCache.Quota-(quota+preConsumedQuota) <= 0
-		quotaTooLow := false
-		consumeQuota := quota + preConsumedQuota
-		if relayInfo.UserQuota-consumeQuota < threshold {
-			quotaTooLow = true
+		consumeQuota := int64(quota) + int64(preConsumedQuota)
+		balanceAfter := int64(relayInfo.UserQuota) - consumeQuota
+		shouldSend, err := model.ClaimQuotaWarning(
+			relayInfo.UserId,
+			false,
+			0,
+			int64(threshold),
+			int64(relayInfo.UserQuota),
+			balanceAfter,
+		)
+		if err != nil {
+			common.SysError(fmt.Sprintf("failed to claim quota notify for user %d: %s", relayInfo.UserId, err.Error()))
+			return
 		}
-		if quotaTooLow {
+		if shouldSend {
 			lang := i18n.ResolveUserLang(relayInfo.UserId)
 			prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaExceedSubject)
 			topUpLink := PaymentReturnURL("/wallet")
@@ -538,8 +549,21 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 		}
 
 		usedAfter := relayInfo.SubscriptionAmountUsedAfterPreConsume + relayInfo.SubscriptionPostDelta
+		remainingBefore := relayInfo.SubscriptionAmountTotal - relayInfo.SubscriptionAmountUsedAfterPreConsume
 		remaining := relayInfo.SubscriptionAmountTotal - usedAfter
-		if remaining >= int64(threshold) {
+		shouldSend, err := model.ClaimQuotaWarning(
+			relayInfo.UserId,
+			true,
+			relayInfo.SubscriptionId,
+			int64(threshold),
+			remainingBefore,
+			remaining,
+		)
+		if err != nil {
+			common.SysError(fmt.Sprintf("failed to claim subscription quota notify for user %d: %s", relayInfo.UserId, err.Error()))
+			return
+		}
+		if !shouldSend {
 			return
 		}
 
