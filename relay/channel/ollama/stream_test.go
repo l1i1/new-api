@@ -97,3 +97,100 @@ func TestOllamaChatHandlerNonStreamToolCalls(t *testing.T) {
 		})
 	}
 }
+
+func TestOllamaChatHandlerNonStreamEstimationIsClientSafe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	raw := `{"model":"llama3","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"prompt_eval_count":200,"eval_count":1}`
+
+	first := openAIRequest(msgs("user", "hello"), "session-1")
+	firstWriter := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstWriter)
+	usage, apiErr := ollamaChatHandler(firstContext, infoWith(1, 10, "llama3", setting, first), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(raw)),
+	})
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+
+	second := openAIRequest(msgs("user", "hello", "assistant", "ok"), "session-1")
+	secondWriter := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondWriter)
+	usage, apiErr = ollamaChatHandler(secondContext, infoWith(1, 10, "llama3", setting, second), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(raw)),
+	})
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":100`)
+	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
+}
+
+func TestOllamaChatHandlerRealZeroCachedTokensSuppressesEstimation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	withoutCache := `{"model":"llama3","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"prompt_eval_count":200,"eval_count":1}`
+	withRealZero := `{"model":"llama3","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"prompt_eval_count":300,"eval_count":1,"prompt_tokens_details":{"cached_tokens":0}}`
+
+	firstWriter := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstWriter)
+	_, apiErr := ollamaChatHandler(firstContext, infoWith(2, 10, "llama3", setting, openAIRequest(msgs("user", "hello"), "session-2")), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(withoutCache)),
+	})
+	require.Nil(t, apiErr)
+
+	secondWriter := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondWriter)
+	usage, apiErr := ollamaChatHandler(secondContext, infoWith(2, 10, "llama3", setting, openAIRequest(msgs("user", "hello", "assistant", "ok"), "session-2")), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(withRealZero)),
+	})
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
+}
+
+func TestOllamaStreamHandlerEstimationIsClientSafe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	raw := "{" + `"model":"llama3","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"ok"}}` + "\n" +
+		"{" + `"model":"llama3","created_at":"2026-05-27T12:00:00Z","done":true,"prompt_eval_count":200,"eval_count":1}` + "\n"
+
+	firstWriter := httptest.NewRecorder()
+	firstContext, _ := gin.CreateTestContext(firstWriter)
+	_, apiErr := ollamaStreamHandler(firstContext, infoWith(3, 10, "llama3", setting, openAIRequest(msgs("user", "hello"), "session-3")), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(raw)),
+	})
+	require.Nil(t, apiErr)
+
+	secondWriter := httptest.NewRecorder()
+	secondContext, _ := gin.CreateTestContext(secondWriter)
+	usage, apiErr := ollamaStreamHandler(secondContext, infoWith(3, 10, "llama3", setting, openAIRequest(msgs("user", "hello", "assistant", "ok"), "session-3")), &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(raw)),
+	})
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":100`)
+	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
+}
+
+func TestOllamaUsageNormalizesUpstreamCounts(t *testing.T) {
+	assert.Equal(t, 0, normalizeOllamaTokenCount(-1))
+	assert.Equal(t, 100, normalizeOllamaCachedTokens(200, 100))
+	assert.Equal(t, 0, normalizeOllamaCachedTokens(-1, 100))
+}

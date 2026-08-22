@@ -21,6 +21,7 @@ import { describe, test } from 'node:test'
 
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
+  buildSettingJSON,
   transformFormDataToCreatePayload,
   transformFormDataToUpdatePayload,
 } from '../channel-form'
@@ -136,5 +137,17 @@ describe('channel form multi-key credential payloads', () => {
       { secret: 'key-one', proxy_url: 'http://proxy.example:8080' },
       { secret: 'key-two' },
     ])
+  })
+
+  test('persists Ollama cache estimation in channel settings', () => {
+    const setting = JSON.parse(
+      buildSettingJSON({
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        type: 4,
+        ollama_cache_estimation_enabled: true,
+      })
+    )
+
+    assert.equal(setting.ollama_cache_estimation_enabled, true)
   })
 })

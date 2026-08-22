@@ -23,6 +23,11 @@ type ChannelSettings struct {
 	// HTTP2ConnectionShards spreads HTTP/2 traffic across N independent transports
 	// (1-8). Zero/unset means 1. Ignored when HTTPProtocol is "http1".
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
+	// OllamaCacheEstimationEnabled enables approximate prompt-cache estimation
+	// for Ollama channels that do not return cached_tokens from upstream.
+	// When enabled and upstream omits cached_tokens, the gateway estimates
+	// cache hits from message-prefix matching and applies cache-ratio billing.
+	OllamaCacheEstimationEnabled bool `json:"ollama_cache_estimation_enabled,omitempty"`
 }
 
 const (

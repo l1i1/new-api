@@ -3168,6 +3168,8 @@
     "Old format: Direct override. New format: Supports conditional judgment and custom JSON operations.": "旧格式：直接覆盖。新格式：支持条件判断和自定义 JSON 操作。",
     "Ollama": "Ollama",
     "Ollama Models": "Ollama 模型",
+    "Ollama Prompt Cache Estimation": "Ollama 近似缓存计费",
+    "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "当上游未返回 cached_tokens 时，通过消息前缀匹配估算缓存 token 数",
     "One API": "One API",
     "One domain per line": "每行一个域名",
     "One domain per line (only used when domain restriction is enabled)": "每行一个域名 (仅在启用域名限制时使用)",

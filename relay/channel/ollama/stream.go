@@ -31,15 +31,53 @@ type ollamaChatStreamChunk struct {
 		ToolCalls []OllamaToolCall `json:"tool_calls"`
 	} `json:"message"`
 	// generate
-	Response           string `json:"response"`
-	Done               bool   `json:"done"`
-	DoneReason         string `json:"done_reason"`
-	TotalDuration      int64  `json:"total_duration"`
-	LoadDuration       int64  `json:"load_duration"`
-	PromptEvalCount    int    `json:"prompt_eval_count"`
-	EvalCount          int    `json:"eval_count"`
-	PromptEvalDuration int64  `json:"prompt_eval_duration"`
-	EvalDuration       int64  `json:"eval_duration"`
+	Response            string `json:"response"`
+	Done                bool   `json:"done"`
+	DoneReason          string `json:"done_reason"`
+	TotalDuration       int64  `json:"total_duration"`
+	LoadDuration        int64  `json:"load_duration"`
+	PromptEvalCount     int    `json:"prompt_eval_count"`
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CachedTokens       *int  `json:"cached_tokens"`
+	EvalCount          int   `json:"eval_count"`
+	PromptEvalDuration int64 `json:"prompt_eval_duration"`
+	EvalDuration       int64 `json:"eval_duration"`
+}
+
+func ollamaCachedTokens(chunk ollamaChatStreamChunk) (int, bool) {
+	if chunk.PromptTokensDetails != nil && chunk.PromptTokensDetails.CachedTokens != nil {
+		value := *chunk.PromptTokensDetails.CachedTokens
+		if value < 0 {
+			value = 0
+		}
+		return value, true
+	}
+	if chunk.CachedTokens != nil {
+		value := *chunk.CachedTokens
+		if value < 0 {
+			value = 0
+		}
+		return value, true
+	}
+	return 0, false
+}
+
+func normalizeOllamaTokenCount(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func normalizeOllamaCachedTokens(value, promptTokens int) int {
+	value = normalizeOllamaTokenCount(value)
+	promptTokens = normalizeOllamaTokenCount(promptTokens)
+	if value > promptTokens {
+		return promptTokens
+	}
+	return value
 }
 
 func ollamaToolCallsToOpenAI(toolCalls []OllamaToolCall, startIndex int, includeIndex bool) ([]dto.ToolCallResponse, int) {
@@ -174,9 +212,14 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// done frame
 		// finalize once and break loop
-		usage.PromptTokens = chunk.PromptEvalCount
-		usage.CompletionTokens = chunk.EvalCount
+		usage.PromptTokens = normalizeOllamaTokenCount(chunk.PromptEvalCount)
+		usage.CompletionTokens = normalizeOllamaTokenCount(chunk.EvalCount)
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		cachedTokens, cachedTokensPresent := ollamaCachedTokens(chunk)
+		if cachedTokensPresent {
+			usage.PromptTokensDetails.CachedTokens = normalizeOllamaCachedTokens(cachedTokens, usage.PromptTokens)
+		}
+		applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent)
 		finishReason := chunk.DoneReason
 		if finishReason == "" {
 			finishReason = "stop"
@@ -192,7 +235,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// emit usage frame
 		if final := helper.GenerateFinalUsageResponse(responseId, created, model, *usage); final != nil {
-			if data, err := common.Marshal(final); err == nil {
+			if data, err := common.Marshal(helper.ChatCompletionsStreamResponseForClient(final)); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
 		}
@@ -302,7 +345,14 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		model = info.UpstreamModelName
 	}
 	created := toUnix(lastChunk.CreatedAt)
-	usage := &dto.Usage{PromptTokens: lastChunk.PromptEvalCount, CompletionTokens: lastChunk.EvalCount, TotalTokens: lastChunk.PromptEvalCount + lastChunk.EvalCount}
+	promptTokens := normalizeOllamaTokenCount(lastChunk.PromptEvalCount)
+	completionTokens := normalizeOllamaTokenCount(lastChunk.EvalCount)
+	usage := &dto.Usage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens}
+	cachedTokens, cachedTokensPresent := ollamaCachedTokens(lastChunk)
+	if cachedTokensPresent {
+		usage.PromptTokensDetails.CachedTokens = normalizeOllamaCachedTokens(cachedTokens, usage.PromptTokens)
+	}
+	applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent)
 	content := aggContent.String()
 	finishReason := lastChunk.DoneReason
 	if finishReason == "" {
@@ -333,7 +383,7 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		}},
 		Usage: *usage,
 	}
-	out, _ := common.Marshal(full)
+	out, _ := common.Marshal(helper.OpenAITextResponseForClient(&full))
 	service.IOCopyBytesGracefully(c, resp, out)
 	return usage, nil
 }

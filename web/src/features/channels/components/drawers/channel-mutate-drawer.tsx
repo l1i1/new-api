@@ -292,6 +292,7 @@ const SENSITIVE_FORM_FIELDS = [
   'http_protocol',
   'http2_connection_shards',
   'pass_through_body_enabled',
+  'ollama_cache_estimation_enabled',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -345,6 +346,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.force_format ||
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
+    values.ollama_cache_estimation_enabled ||
     values.system_prompt_override ||
     (values.http_protocol && values.http_protocol !== 'auto') ||
     (values.http2_connection_shards != null &&
@@ -751,6 +753,9 @@ export function ChannelMutateDrawer({
   const currentForceFormat = form.watch('force_format')
   const currentThinkingToContent = form.watch('thinking_to_content')
   const currentPassThroughBodyEnabled = form.watch('pass_through_body_enabled')
+  const currentOllamaCacheEstimationEnabled = form.watch(
+    'ollama_cache_estimation_enabled'
+  )
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
@@ -1025,6 +1030,7 @@ export function ChannelMutateDrawer({
     currentForceFormat ||
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
+    currentOllamaCacheEstimationEnabled ||
     currentDisableTaskPollingSleep ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
@@ -4178,6 +4184,33 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+
+                              {currentType === 4 && (
+                                <FormField
+                                  control={form.control}
+                                  name='ollama_cache_estimation_enabled'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('Ollama Prompt Cache Estimation')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
 
                               <FormField
                                 control={form.control}
