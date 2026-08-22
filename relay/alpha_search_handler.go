@@ -87,7 +87,7 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+		newAPIError = service.RelayErrorHandler(c, httpResp, false)
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}

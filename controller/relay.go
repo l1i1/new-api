@@ -93,6 +93,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			if service.OpsCyberPolicyForwarded(c) {
+				return
+			}
+			if mark := service.GetOpsCyberPolicy(c); mark != nil && mark.Body != "" {
+				statusCode := mark.UpstreamStatus
+				if statusCode < 400 || statusCode > 599 {
+					statusCode = http.StatusBadRequest
+				}
+				c.Data(statusCode, "application/json; charset=utf-8", []byte(mark.Body))
+				return
+			}
 			filteredMessage := operation_setting.FilterErrorMessage(newAPIError.Error())
 			newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
 			switch relayFormat {
@@ -205,10 +216,36 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Only return quota if downstream failed and quota was actually pre-consumed
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			if mark := service.GetOpsCyberPolicy(c); mark != nil {
+				if mark.UpstreamInTok > 0 || mark.UpstreamOutTok > 0 {
+					usage := &dto.Usage{
+						PromptTokens:     mark.UpstreamInTok,
+						CompletionTokens: mark.UpstreamOutTok,
+						TotalTokens:      mark.UpstreamInTok + mark.UpstreamOutTok,
+						InputTokens:      mark.UpstreamInTok,
+						OutputTokens:     mark.UpstreamOutTok,
+						UsageSource:      "upstream",
+						UsageSemantic:    "openai",
+					}
+					service.PostTextConsumeQuota(c, relayInfo, usage, []string{"cyber_policy interception"})
+				}
+				markCopy := *mark
+				eventInput := service.CyberPolicyEventInput{
+					UserID: relayInfo.UserId, Group: relayInfo.UsingGroup, Model: relayInfo.OriginModelName,
+					Protocol: ContentModerationProtocolForRelayFormat(relayFormat), RequestPath: relayInfo.RequestURLPath, RequestID: relayInfo.RequestId,
+				}
+				gopool.Go(func() {
+					if err := service.RecordCyberPolicyEvent(eventInput, &markCopy); err != nil {
+						common.SysLog("failed to record cyber policy event: " + err.Error())
+					}
+				})
+			}
 			if relayInfo.Billing != nil {
 				relayInfo.Billing.Refund(c)
 			}
-			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			if service.GetOpsCyberPolicy(c) == nil {
+				service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			}
 		}
 	}()
 
@@ -536,6 +573,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
+	if mark := service.GetOpsCyberPolicy(c); mark != nil {
+		recordCyberPolicyErrorLog(c, channelError, mark)
+		return
+	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {
@@ -579,6 +620,32 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
+}
+
+func recordCyberPolicyErrorLog(c *gin.Context, channelError types.ChannelError, mark *service.CyberPolicyMark) {
+	if !constant.ErrorLogEnabled || mark == nil {
+		return
+	}
+	other := map[string]interface{}{
+		"request_path":         c.Request.URL.Path,
+		"error_type":           "cyber_policy",
+		"error_code":           "cyber_policy",
+		"status_code":          mark.UpstreamStatus,
+		"upstream_status_code": mark.UpstreamStatus,
+		"error_source":         "upstream_http",
+		"priority":             "P3",
+		"is_business_limited":  true,
+		"request_type":         "cyber",
+		"channel_id":           channelError.ChannelId,
+		"channel_name":         channelError.ChannelName,
+		"channel_type":         channelError.ChannelType,
+	}
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	model.RecordErrorLog(c, c.GetInt("id"), channelError.ChannelId, c.GetString("original_model"), c.GetString("token_name"),
+		mark.Message, c.GetInt("token_id"), int(time.Since(startTime).Seconds()), common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
 }
 
 func RelayMidjourney(c *gin.Context) {

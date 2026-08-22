@@ -9,7 +9,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const ContentModerationOptionKey = "content_moderation.config"
+const (
+	ContentModerationOptionKey         = "content_moderation.config"
+	ContentModerationActionCyberPolicy = "cyber_policy"
+)
 
 // ContentModerationLog stores an audit decision without retaining the request
 // body. Excerpt is intentionally redacted by the service; ExcerptHash is the
@@ -98,6 +101,7 @@ func CountFlaggedContentModerationByUserSince(userID int, since time.Time) (int6
 	var count int64
 	err = DB.Model(&ContentModerationLog{}).
 		Where("user_id = ? AND flagged = ? AND id > ? AND created_at >= ?", userID, true, resetAfterID, since.Unix()).
+		Where("(action <> ? OR action IS NULL)", ContentModerationActionCyberPolicy).
 		Count(&count).Error
 	return count, err
 }

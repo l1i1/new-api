@@ -90,6 +90,17 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		common.SysLog("error unmarshalling stream response: " + err.Error())
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
+	if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), http.StatusOK, true, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+		switch info.RelayFormat {
+		case types.RelayFormatClaude:
+			_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: types.ClaudeError{Type: "cyber_policy", Message: cyberErr.Error()}})
+		default:
+			_ = helper.ObjectData(c, gin.H{"error": cyberErr.ToOpenAIError()})
+			helper.Done(c)
+		}
+		service.MarkOpsCyberPolicyForwarded(c)
+		return cyberErr
+	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
@@ -221,6 +232,11 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
+		if cyberErr := service.NewOpenAICyberPolicyError(c, data, httpResp.StatusCode, false, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, httpResp, data)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return cyberErr
+		}
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
 	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
@@ -263,6 +279,22 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 
 	service.IOCopyBytesGracefully(c, httpResp, responseData)
 	return nil
+}
+
+func usageFromClaudeResponse(response *dto.ClaudeResponse) *dto.Usage {
+	usage := &dto.Usage{UsageSemantic: "anthropic", UsageSource: "anthropic"}
+	if response == nil || response.Usage == nil {
+		return usage
+	}
+	usage.PromptTokens = response.Usage.InputTokens
+	usage.InputTokens = response.Usage.InputTokens
+	usage.CompletionTokens = response.Usage.OutputTokens
+	usage.OutputTokens = response.Usage.OutputTokens
+	usage.TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
+	usage.PromptTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
+	usage.PromptTokensDetails.CachedCreationTokens = response.Usage.CacheCreationInputTokens
+	usage.BillingUsage = dto.NewClaudeMessagesBillingUsage(response.Usage)
+	return usage
 }
 
 func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {

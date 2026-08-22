@@ -520,6 +520,13 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if tieredBillingApplied {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
+	if mark := GetOpsCyberPolicy(ctx); mark != nil {
+		other["cyber_policy"] = true
+		other["request_type"] = "cyber"
+		other["upstream_error_code"] = mark.Code
+		other["input_tokens"] = mark.UpstreamInTok
+		other["output_tokens"] = mark.UpstreamOutTok
+	}
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 

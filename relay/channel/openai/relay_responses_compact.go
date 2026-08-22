@@ -25,6 +25,19 @@ func OaiResponsesCompactionHandler(c *gin.Context, resp *http.Response) (*dto.Us
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if oaiError := compactResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		usage := &dto.Usage{}
+		if compactResp.Usage != nil {
+			usage.PromptTokens = compactResp.Usage.InputTokens
+			usage.InputTokens = compactResp.Usage.InputTokens
+			usage.CompletionTokens = compactResp.Usage.OutputTokens
+			usage.OutputTokens = compactResp.Usage.OutputTokens
+			usage.TotalTokens = compactResp.Usage.TotalTokens
+		}
+		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, usage); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, resp, responseBody)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return usage, cyberErr
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 

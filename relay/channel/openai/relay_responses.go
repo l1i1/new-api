@@ -31,6 +31,12 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && (oaiError.Type != "" || oaiError.Message != "" || oaiError.Code != nil) {
+		usage := usageFromResponsesResponse(&responsesResponse)
+		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, usage); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, resp, responseBody)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return usage, cyberErr
+		}
 		service.NormalizeServerOverloadError(oaiError)
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -39,16 +45,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	// compute usage
-	usage := dto.Usage{}
-	if responsesResponse.Usage != nil {
-		usage.PromptTokens = responsesResponse.Usage.InputTokens
-		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
-		usage.TotalTokens = responsesResponse.Usage.TotalTokens
-		if responsesResponse.Usage.InputTokensDetails != nil {
-			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
-			usage.PromptTokensDetails.CacheWriteTokens = responsesResponse.Usage.InputTokensDetails.CacheWriteTokens
-		}
-	}
+	usage := *usageFromResponsesResponse(&responsesResponse)
 	// Count actual tool invocations from Output (not tool declarations).
 	for _, output := range responsesResponse.Output {
 		switch output.Type {
@@ -93,6 +90,23 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Stop(streamErr)
 			return
 		}
+		// 检查当前数据是否包含 completed 状态和 usage 信息
+		var streamResponse dto.ResponsesStreamResponse
+		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
+			sr.Error(err)
+			return
+		}
+		if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
+			usage = usageFromResponsesResponse(streamResponse.Response)
+		}
+		if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+			streamErr = cyberErr
+			sendResponsesStreamData(c, streamResponse, data)
+			service.MarkOpsCyberPolicyForwarded(c)
+			sr.Stop(streamErr)
+			return
+		}
 		rewrittenData, rewritten, err := rewriteResponsesServerOverload(data)
 		if err != nil {
 			logger.LogError(c, "failed to rewrite Responses overload event: "+err.Error())
@@ -102,14 +116,11 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		if rewritten {
 			logger.LogWarn(c, "rewrote Responses overload event code to server_error for client retry")
 			data = rewrittenData
-		}
-
-		// 检查当前数据是否包含 completed 状态和 usage 信息
-		var streamResponse dto.ResponsesStreamResponse
-		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
-			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
-			sr.Error(err)
-			return
+			if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+				logger.LogError(c, "failed to unmarshal rewritten stream response: "+err.Error())
+				sr.Error(err)
+				return
+			}
 		}
 		if streamResponse.Type == "response.failed" || streamResponse.Type == "response.error" {
 			var oaiError *types.OpenAIError
@@ -200,6 +211,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 	})
 	if streamErr != nil {
+		if service.GetOpsCyberPolicy(c) != nil {
+			return usage, streamErr
+		}
 		return nil, streamErr
 	}
 
@@ -220,4 +234,21 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return usage, nil
+}
+
+func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usage {
+	usage := &dto.Usage{}
+	if response == nil || response.Usage == nil {
+		return usage
+	}
+	usage.PromptTokens = response.Usage.InputTokens
+	usage.InputTokens = response.Usage.InputTokens
+	usage.CompletionTokens = response.Usage.OutputTokens
+	usage.OutputTokens = response.Usage.OutputTokens
+	usage.TotalTokens = response.Usage.TotalTokens
+	if response.Usage.InputTokensDetails != nil {
+		usage.PromptTokensDetails.CachedTokens = response.Usage.InputTokensDetails.CachedTokens
+		usage.PromptTokensDetails.CacheWriteTokens = response.Usage.InputTokensDetails.CacheWriteTokens
+	}
+	return usage
 }

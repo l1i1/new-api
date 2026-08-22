@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 )
 
 func MidjourneyErrorWrapper(code int, desc string) *taskdto.MidjourneyResponse {
@@ -100,6 +101,19 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 			return fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, responseBodyText)
 		}
 		return fmt.Errorf("bad response status code %d, message: %s, body: %s", resp.StatusCode, message, responseBodyText)
+	}
+	if ginCtx, ok := ctx.(*gin.Context); ok {
+		if cyberErr := NewOpenAICyberPolicyError(ginCtx, responseBody, resp.StatusCode, false, nil); cyberErr != nil {
+			IOCopyBytesGracefully(ginCtx, resp, responseBody)
+			MarkOpsCyberPolicyForwarded(ginCtx)
+			return cyberErr
+		}
+	} else if hit, _, message := detectOpenAICyberPolicy(responseBody); hit {
+		if message == "" {
+			message = "upstream cyber policy interception"
+		}
+		return types.NewOpenAIError(errors.New(message), types.ErrorCode("cyber_policy"), resp.StatusCode,
+			types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 	}
 
 	err = common.Unmarshal(responseBody, &errResponse)

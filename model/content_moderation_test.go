@@ -21,7 +21,10 @@ func TestResetContentModerationUserViolationsKeepsAuditLogs(t *testing.T) {
 	const userID = 987660
 	now := time.Now()
 	require.NoError(t, db.Create(&ContentModerationLog{
-		UserID: userID, Flagged: true, CreatedAt: now.Add(-time.Minute).Unix(),
+		UserID: userID, Flagged: true, Action: "observe", CreatedAt: now.Add(-time.Minute).Unix(),
+	}).Error)
+	require.NoError(t, db.Create(&ContentModerationLog{
+		UserID: userID, Flagged: true, Action: ContentModerationActionCyberPolicy, CreatedAt: now.Add(-time.Minute).Unix(),
 	}).Error)
 
 	count, err := CountFlaggedContentModerationByUserSince(userID, now.Add(-time.Hour))
@@ -35,10 +38,13 @@ func TestResetContentModerationUserViolationsKeepsAuditLogs(t *testing.T) {
 
 	var logs int64
 	require.NoError(t, db.Model(&ContentModerationLog{}).Where("user_id = ?", userID).Count(&logs).Error)
-	require.EqualValues(t, 1, logs)
+	require.EqualValues(t, 2, logs)
 
 	require.NoError(t, db.Create(&ContentModerationLog{
-		UserID: userID, Flagged: true, CreatedAt: now.Unix(),
+		UserID: userID, Flagged: true, Action: "observe", CreatedAt: now.Unix(),
+	}).Error)
+	require.NoError(t, db.Create(&ContentModerationLog{
+		UserID: userID, Flagged: true, Action: ContentModerationActionCyberPolicy, CreatedAt: now.Unix(),
 	}).Error)
 	count, err = CountFlaggedContentModerationByUserSince(userID, now.Add(-time.Hour))
 	require.NoError(t, err)

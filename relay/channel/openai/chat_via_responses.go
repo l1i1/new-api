@@ -38,6 +38,12 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	if oaiError := responsesResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		usage := usageFromResponsesResponse(&responsesResp)
+		if cyberErr := service.NewOpenAICyberPolicyError(c, body, resp.StatusCode, false, usage); cyberErr != nil {
+			service.IOCopyBytesGracefully(c, resp, body)
+			service.MarkOpsCyberPolicyForwarded(c)
+			return usage, cyberErr
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
@@ -122,6 +128,14 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 				}
 			}
 		case "response.failed", "response.error":
+			usage := usageFromResponsesResponse(streamResp.Response)
+			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+				cyberErr.StatusCode = http.StatusBadRequest
+				c.JSON(http.StatusBadRequest, gin.H{"error": cyberErr.ToOpenAIError()})
+				service.MarkOpsCyberPolicyForwarded(c)
+				streamErr = cyberErr
+				break
+			}
 			if streamResp.Response != nil {
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
 					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
@@ -281,6 +295,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
+			usage := usageFromResponsesResponse(streamResp.Response)
+			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+				streamErr = cyberErr
+				_ = helper.ObjectData(c, gin.H{"error": cyberErr.ToOpenAIError()})
+				helper.Done(c)
+				service.MarkOpsCyberPolicyForwarded(c)
+				sr.Stop(streamErr)
+				return
+			}
 			if streamResp.Response != nil {
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
 					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
