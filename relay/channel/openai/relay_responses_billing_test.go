@@ -180,6 +180,7 @@ func TestOaiResponsesStreamHandlerExtractsCyberPolicyUsageBeforeMark(t *testing.
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "response.failed")
 	require.Contains(t, w.Body.String(), "cyber_policy")
+	require.Contains(t, w.Body.String(), "data: [DONE]")
 }
 
 func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {

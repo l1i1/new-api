@@ -107,6 +107,10 @@ func NewOpenAICyberPolicyError(c *gin.Context, payload []byte, status int, strea
 	if message == "" {
 		message = "upstream cyber policy interception"
 	}
+	payloadUsage := extractCyberPolicyUsage(payload)
+	if payloadUsage != nil {
+		usage = dto.MergeUsage(payloadUsage, usage)
+	}
 	inTokens, outTokens := 0, 0
 	if usage != nil {
 		inTokens = normalizeCyberPolicyTokens(usage.InputTokens, usage.PromptTokens)
@@ -126,6 +130,27 @@ func NewOpenAICyberPolicyError(c *gin.Context, payload []byte, status int, strea
 	}
 	return types.NewOpenAIError(errors.New(mark.Message), types.ErrorCode("cyber_policy"), status,
 		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+}
+
+func extractCyberPolicyUsage(payload []byte) *dto.Usage {
+	usage := &dto.Usage{}
+	found := false
+	for _, path := range []string{"usage", "response.usage"} {
+		result := gjson.GetBytes(payload, path)
+		if !result.Exists() || result.Raw == "" {
+			continue
+		}
+		var candidate dto.Usage
+		if err := common.Unmarshal([]byte(result.Raw), &candidate); err != nil {
+			continue
+		}
+		usage = dto.MergeUsage(usage, &candidate)
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return usage
 }
 
 func normalizeCyberPolicyTokens(values ...int) int {
@@ -155,11 +180,7 @@ func RecordCyberPolicyEvent(input CyberPolicyEventInput, mark *CyberPolicyMark) 
 	if mark == nil {
 		return errors.New("cyber policy mark is nil")
 	}
-	message := common.MaskSensitiveInfo(strings.TrimSpace(mark.Message))
-	if message == "" {
-		message = "upstream cyber policy interception"
-	}
-	message = boundedCyberPolicyMessage(message)
+	message := CyberPolicyMessageForLog(mark.Message)
 	digest := sha256.Sum256([]byte("cyber_policy\x00" + message))
 	return model.CreateContentModerationLog(&model.ContentModerationLog{
 		UserID:      input.UserID,
@@ -178,6 +199,17 @@ func RecordCyberPolicyEvent(input CyberPolicyEventInput, mark *CyberPolicyMark) 
 		ExcerptHash: hex.EncodeToString(digest[:]),
 		Error:       message,
 	})
+}
+
+// CyberPolicyMessageForLog masks and bounds an upstream message before it is
+// written to gateway or operations logs. Client forwarding keeps the original
+// upstream body separately in CyberPolicyMark.Body.
+func CyberPolicyMessageForLog(message string) string {
+	message = common.MaskSensitiveInfo(strings.TrimSpace(message))
+	if message == "" {
+		message = "upstream cyber policy interception"
+	}
+	return boundedCyberPolicyMessage(message)
 }
 
 func boundedCyberPolicyMessage(message string) string {

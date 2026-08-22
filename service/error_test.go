@@ -142,6 +142,21 @@ func TestRelayErrorHandlerForwardsCyberPolicyBodyOnce(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestRelayErrorHandlerRetainsCyberPolicyUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"cyber_policy"},"usage":{"input_tokens":7,"output_tokens":5}}`)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	apiErr := RelayErrorHandler(c, resp, false)
+	require.NotNil(t, apiErr)
+	require.Equal(t, 7, GetOpsCyberPolicy(c).UpstreamInTok)
+	require.Equal(t, 5, GetOpsCyberPolicy(c).UpstreamOutTok)
+}
+
 func TestNormalizeServerOverloadError(t *testing.T) {
 	t.Parallel()
 

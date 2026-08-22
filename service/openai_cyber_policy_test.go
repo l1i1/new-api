@@ -48,6 +48,23 @@ func TestNewOpenAICyberPolicyErrorMarksUsageAndSkipsRetry(t *testing.T) {
 	require.LessOrEqual(t, len(mark.Body), 4096)
 }
 
+func TestNewOpenAICyberPolicyErrorExtractsNestedUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	err := NewOpenAICyberPolicyError(context, []byte(`{"response":{"error":{"code":"cyber_policy"},"usage":{"input_tokens":8,"output_tokens":4}}}`), http.StatusBadRequest, false, nil)
+	require.NotNil(t, err)
+	require.Equal(t, 8, GetOpsCyberPolicy(context).UpstreamInTok)
+	require.Equal(t, 4, GetOpsCyberPolicy(context).UpstreamOutTok)
+}
+
+func TestCyberPolicyMessageForLogRedactsAndBounds(t *testing.T) {
+	secret := "sk-live-cyber-policy-secret"
+	message := "API key provided: " + secret + " " + strings.Repeat("x", 1200)
+	redacted := CyberPolicyMessageForLog(message)
+	require.NotContains(t, redacted, secret)
+	require.LessOrEqual(t, len(redacted), 1024)
+}
+
 func TestNewOpenAICyberPolicyErrorBoundsBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())

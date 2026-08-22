@@ -92,6 +92,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	accumulator := relayconvert.NewResponsesBufferedAccumulator()
 	var finalResponse *dto.OpenAIResponsesResponse
 	var streamErr *types.NewAPIError
+	var cyberUsage *dto.Usage
 
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
@@ -130,6 +131,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		case "response.failed", "response.error":
 			usage := usageFromResponsesResponse(streamResp.Response)
 			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+				cyberUsage = usage
 				cyberErr.StatusCode = http.StatusBadRequest
 				c.JSON(http.StatusBadRequest, gin.H{"error": cyberErr.ToOpenAIError()})
 				service.MarkOpsCyberPolicyForwarded(c)
@@ -149,6 +151,9 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 	}
 	if streamErr != nil {
+		if cyberUsage != nil {
+			return cyberUsage, streamErr
+		}
 		return nil, streamErr
 	}
 	if err := scanner.Err(); err != nil {
@@ -217,6 +222,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
+	var cyberUsage *dto.Usage
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo == nil {
 		info.ClaudeConvertInfo = &relaycommon.ClaudeConvertInfo{LastMessagesType: relaycommon.LastMessageTypeNone}
@@ -297,6 +303,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
 			usage := usageFromResponsesResponse(streamResp.Response)
 			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+				cyberUsage = dto.MergeUsage(state.Usage(), usage)
 				streamErr = cyberErr
 				_ = helper.ObjectData(c, gin.H{"error": cyberErr.ToOpenAIError()})
 				helper.Done(c)
@@ -331,6 +338,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	})
 
 	if streamErr != nil {
+		if cyberUsage != nil {
+			return cyberUsage, streamErr
+		}
 		return nil, streamErr
 	}
 

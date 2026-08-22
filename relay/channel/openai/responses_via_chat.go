@@ -82,6 +82,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 	streamErr := (*types.NewAPIError)(nil)
+	var cyberUsage *dto.Usage
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(helper.ResponsesStreamResponseForClient(&event.Payload))
@@ -102,10 +103,12 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		var errorResp dto.OpenAITextResponse
 		if err := common.UnmarshalJsonStr(data, &errorResp); err == nil {
 			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, &errorResp.Usage); cyberErr != nil {
+				cyberUsage = dto.MergeUsage(state.Usage(), &errorResp.Usage)
 				streamErr = cyberErr
 				failed := dto.ResponsesStreamResponse{Type: "response.failed", Error: cyberErr.ToOpenAIError()}
 				raw, _ := common.Marshal(failed)
 				_ = helper.ResponseChunkData(c, failed, string(raw))
+				helper.Done(c)
 				service.MarkOpsCyberPolicyForwarded(c)
 				sr.Stop(streamErr)
 				return
@@ -145,6 +148,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	})
 
 	if streamErr != nil {
+		if cyberUsage != nil {
+			return cyberUsage, streamErr
+		}
 		return nil, streamErr
 	}
 

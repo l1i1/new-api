@@ -97,11 +97,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			return
 		}
 		if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
-			usage = usageFromResponsesResponse(streamResponse.Response)
+			usage = dto.MergeUsage(usage, usageFromResponsesResponse(streamResponse.Response))
 		}
 		if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
 			streamErr = cyberErr
 			sendResponsesStreamData(c, streamResponse, data)
+			helper.Done(c)
 			service.MarkOpsCyberPolicyForwarded(c)
 			sr.Stop(streamErr)
 			return

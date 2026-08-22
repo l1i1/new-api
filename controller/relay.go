@@ -92,7 +92,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
-			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			errorMessage := newAPIError.Error()
+			if service.GetOpsCyberPolicy(c) != nil {
+				errorMessage = service.CyberPolicyMessageForLog(errorMessage)
+			}
+			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(errorMessage)))
 			if service.OpsCyberPolicyForwarded(c) {
 				return
 			}
@@ -572,7 +576,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
-	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
+	errorMessage := err.Error()
+	if service.GetOpsCyberPolicy(c) != nil {
+		errorMessage = service.CyberPolicyMessageForLog(errorMessage)
+	}
+	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(errorMessage)))
 	if mark := service.GetOpsCyberPolicy(c); mark != nil {
 		recordCyberPolicyErrorLog(c, channelError, mark)
 		return
@@ -645,7 +653,7 @@ func recordCyberPolicyErrorLog(c *gin.Context, channelError types.ChannelError, 
 		startTime = time.Now()
 	}
 	model.RecordErrorLog(c, c.GetInt("id"), channelError.ChannelId, c.GetString("original_model"), c.GetString("token_name"),
-		mark.Message, c.GetInt("token_id"), int(time.Since(startTime).Seconds()), common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+		service.CyberPolicyMessageForLog(mark.Message), c.GetInt("token_id"), int(time.Since(startTime).Seconds()), common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
 }
 
 func RelayMidjourney(c *gin.Context) {

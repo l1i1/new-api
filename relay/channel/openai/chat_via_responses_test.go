@@ -174,6 +174,43 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.NotContains(t, got, `billing_usage`)
 }
 
+func TestOaiResponsesToChatBufferedStreamHandlerRetainsCyberPolicyUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"cyber_policy\"},\"usage\":{\"input_tokens\":6,\"output_tokens\":2}}}\n\ndata: [DONE]\n\n"
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+
+	usage, err := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCode("cyber_policy"), err.GetErrorCode())
+	require.NotNil(t, usage)
+	require.Equal(t, 6, usage.PromptTokens)
+	require.Equal(t, 2, usage.CompletionTokens)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"cyber_policy"`)
+}
+
+func TestOaiResponsesToChatStreamHandlerTerminatesCyberPolicyStream(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"cyber_policy\"},\"usage\":{\"input_tokens\":6,\"output_tokens\":2}}}\n\ndata: [DONE]\n\n"
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+
+	usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCode("cyber_policy"), err.GetErrorCode())
+	require.NotNil(t, usage)
+	require.Equal(t, 6, usage.PromptTokens)
+	require.Equal(t, 2, usage.CompletionTokens)
+	require.Contains(t, recorder.Body.String(), `"code":"cyber_policy"`)
+	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
+}
+
 func TestOaiResponsesToChatHandlerStripsBillingUsage(t *testing.T) {
 	body := `{"id":"resp_1","object":"response","created_at":1710000000,"status":"completed","model":"gpt-test","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[]}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`
 	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
@@ -238,6 +275,30 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 		`event: response.function_call_arguments.done`,
 		`event: response.completed`,
 	)
+}
+
+func TestOaiChatToResponsesStreamHandlerTerminatesCyberPolicyStream(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, `data: {"error":{"code":"cyber_policy","message":"blocked"}}
+
+data: [DONE]
+
+`, true)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	usage, err := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCode("cyber_policy"), err.GetErrorCode())
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), `event: response.failed`)
+	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
 func TestOaiChatToResponsesHandlerStripsBillingUsage(t *testing.T) {

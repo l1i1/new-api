@@ -90,7 +90,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		common.SysLog("error unmarshalling stream response: " + err.Error())
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), http.StatusOK, true, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+	cyberUsage := usageFromClaudeResponse(&claudeResponse)
+	if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), http.StatusOK, true, cyberUsage); cyberErr != nil {
+		claudeInfo.Usage = dto.MergeUsage(claudeInfo.Usage, cyberUsage)
 		switch info.RelayFormat {
 		case types.RelayFormatClaude:
 			_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: types.ClaudeError{Type: "cyber_policy", Message: cyberErr.Error()}})
@@ -218,6 +220,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 	})
 	if err != nil {
+		if service.GetOpsCyberPolicy(c) != nil {
+			return claudeInfo.Usage, err
+		}
 		return nil, err
 	}
 
@@ -235,7 +240,9 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if httpResp != nil {
 		statusCode = httpResp.StatusCode
 	}
-	if cyberErr := service.NewOpenAICyberPolicyError(c, data, statusCode, false, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+	cyberUsage := usageFromClaudeResponse(&claudeResponse)
+	if cyberErr := service.NewOpenAICyberPolicyError(c, data, statusCode, false, cyberUsage); cyberErr != nil {
+		claudeInfo.Usage = dto.MergeUsage(claudeInfo.Usage, cyberUsage)
 		if httpResp != nil {
 			service.IOCopyBytesGracefully(c, httpResp, data)
 		}
@@ -317,9 +324,12 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	logger.LogDebug(c, "responseBody: %s", responseBody)
+	logger.LogDebug(c, "responseBody: %s", common.LocalLogPreview(common.MaskSensitiveInfo(string(responseBody))))
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
+		if service.GetOpsCyberPolicy(c) != nil {
+			return claudeInfo.Usage, handleErr
+		}
 		return nil, handleErr
 	}
 	return claudeInfo.Usage, nil
