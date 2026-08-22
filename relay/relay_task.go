@@ -90,11 +90,14 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	info.LockedChannel = ch
 
 	if originTask.ChannelId != info.ChannelId {
-		key, _, newAPIError := ch.GetNextEnabledKey(info.TokenId)
-		if newAPIError != nil {
-			return service.TaskErrorWrapper(newAPIError, "channel_no_available_key", newAPIError.StatusCode)
+		if !ch.ChannelInfo.IsMultiKey {
+			key, _, newAPIError := ch.GetNextEnabledKey(info.TokenId)
+			if newAPIError != nil {
+				return service.TaskErrorWrapper(newAPIError, "channel_no_available_key", newAPIError.StatusCode)
+			}
+			common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+			info.ApiKey = key
 		}
-		common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 		common.SetContextKey(c, constant.ContextKeyChannelType, ch.Type)
 		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, ch.GetBaseURL())
 		common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
@@ -102,7 +105,6 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		info.ChannelBaseUrl = ch.GetBaseURL()
 		info.ChannelId = originTask.ChannelId
 		info.ChannelType = ch.Type
-		info.ApiKey = key
 	}
 
 	// 提取 remix 参数（时长、分辨率 → OtherRatios）

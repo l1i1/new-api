@@ -49,6 +49,9 @@ const (
 	ContextKeyForceMultiKeyCredentialID ContextKey = "force_multi_key_credential_id"
 	ContextKeyIncludeDisabledKey        ContextKey = "include_disabled_key"
 
+	ContextKeyChannelMultiKeyTried           ContextKey = "channel_multi_key_tried"
+	ContextKeyChannelMultiKeySuccessRecorded ContextKey = "channel_multi_key_success_recorded"
+
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"

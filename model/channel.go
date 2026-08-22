@@ -73,6 +73,17 @@ type ChannelInfo struct {
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
 }
 
+// MultiKeySelectionOptions controls per-request multi-key selection without
+// changing the channel's persistent rotation state.
+type MultiKeySelectionOptions struct {
+	ExcludedPositions map[int]struct{}
+	PreferredPosition *int
+}
+
+// ErrNoUntriedMultiKey indicates that every enabled credential was attempted
+// in the current request.
+var ErrNoUntriedMultiKey = errors.New("no untried enabled multi-key credentials")
+
 type ChannelSortOptions struct {
 	SortBy    string
 	SortOrder string
@@ -201,6 +212,10 @@ func (channel *Channel) GetKeys() []string {
 }
 
 func (channel *Channel) GetNextEnabledKey(affinityValues ...int) (string, int, *types.NewAPIError) {
+	return channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{}, affinityValues...)
+}
+
+func (channel *Channel) GetNextEnabledKeyWithOptions(options MultiKeySelectionOptions, affinityValues ...int) (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
@@ -256,12 +271,28 @@ func (channel *Channel) GetNextEnabledKey(affinityValues ...int) (string, int, *
 	if len(enabledIdx) == 0 {
 		return "", 0, types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
 	}
+	selectedIdx := make([]int, 0, len(enabledIdx))
+	for _, index := range enabledIdx {
+		if _, excluded := options.ExcludedPositions[index]; !excluded {
+			selectedIdx = append(selectedIdx, index)
+		}
+	}
+	if len(selectedIdx) == 0 {
+		if len(options.ExcludedPositions) > 0 {
+			return "", 0, types.NewError(ErrNoUntriedMultiKey, types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+		}
+		selectedIdx = enabledIdx
+	}
+	selectedSet := make(map[int]struct{}, len(selectedIdx))
+	for _, index := range selectedIdx {
+		selectedSet[index] = struct{}{}
+	}
 
 	switch channel.ChannelInfo.MultiKeyMode {
 	case constant.MultiKeyModeRandom:
 		// Randomly pick one enabled key
-		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
-		return keys[selectedIdx], selectedIdx, nil
+		index := selectedIdx[rand.Intn(len(selectedIdx))]
+		return keys[index], index, nil
 	case constant.MultiKeyModePolling:
 		// Use channel-specific lock to ensure thread-safe polling
 
@@ -287,22 +318,32 @@ func (channel *Channel) GetNextEnabledKey(affinityValues ...int) (string, int, *
 		for i := 0; i < len(keys); i++ {
 			idx := (start + i) % len(keys)
 			if getStatus(idx) == common.ChannelStatusEnabled {
+				if _, selected := selectedSet[idx]; !selected {
+					continue
+				}
 				// update polling index for next call (point to the next position)
 				channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
 				return keys[idx], idx, nil
 			}
 		}
 		// Fallback – should not happen, but return first enabled key
-		return keys[enabledIdx[0]], enabledIdx[0], nil
+		return keys[selectedIdx[0]], selectedIdx[0], nil
 	case constant.MultiKeyModeAffinity:
-		if len(affinityValues) == 0 || affinityValues[0] <= 0 {
-			return keys[enabledIdx[0]], enabledIdx[0], nil
+		if options.PreferredPosition != nil {
+			for _, index := range selectedIdx {
+				if index == *options.PreferredPosition {
+					return keys[index], index, nil
+				}
+			}
 		}
-		selectedIdx := selectAffinityKeyIndex(keys, enabledIdx, affinityValues[0])
-		return keys[selectedIdx], selectedIdx, nil
+		if len(affinityValues) == 0 || affinityValues[0] <= 0 {
+			return keys[selectedIdx[0]], selectedIdx[0], nil
+		}
+		index := selectAffinityKeyIndex(keys, selectedIdx, affinityValues[0])
+		return keys[index], index, nil
 	default:
 		// Unknown mode, default to first enabled key (or original key string)
-		return keys[enabledIdx[0]], enabledIdx[0], nil
+		return keys[selectedIdx[0]], selectedIdx[0], nil
 	}
 }
 

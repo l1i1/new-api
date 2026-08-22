@@ -59,6 +59,78 @@ func TestChannelGetNextEnabledKeyAffinity(t *testing.T) {
 	}
 }
 
+func TestChannelGetNextEnabledKeyWithOptionsSkipsExcludedPositions(t *testing.T) {
+	channel := &Channel{
+		Key: "key-0\nkey-1\nkey-2",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeyMode: constant.MultiKeyModeRandom,
+		},
+	}
+
+	key, index, err := channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		ExcludedPositions: map[int]struct{}{0: {}, 1: {}},
+	})
+	require.Nil(t, err)
+	require.Equal(t, 2, index)
+	require.Equal(t, "key-2", key)
+
+	_, _, err = channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		ExcludedPositions: map[int]struct{}{0: {}, 1: {}, 2: {}},
+	})
+	require.ErrorIs(t, err, ErrNoUntriedMultiKey)
+}
+
+func TestChannelGetNextEnabledKeyWithOptionsUsesAffinitySuccessPosition(t *testing.T) {
+	preferred := 2
+	channel := &Channel{
+		Key: "key-0\nkey-1\nkey-2",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeyMode: constant.MultiKeyModeAffinity,
+		},
+	}
+
+	key, index, err := channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		PreferredPosition: &preferred,
+	}, 4)
+	require.Nil(t, err)
+	require.Equal(t, 2, index)
+	require.Equal(t, "key-2", key)
+
+	key, index, err = channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		ExcludedPositions: map[int]struct{}{2: {}},
+		PreferredPosition: &preferred,
+	}, 4)
+	require.Nil(t, err)
+	require.NotEqual(t, 2, index)
+	require.NotEqual(t, "key-2", key)
+}
+
+func TestChannelGetNextEnabledKeyWithOptionsSkipsExcludedPollingPositions(t *testing.T) {
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCacheEnabled })
+
+	channel := &Channel{
+		Id:  9504,
+		Key: "key-0\nkey-1\nkey-2",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:           true,
+			MultiKeyMode:         constant.MultiKeyModePolling,
+			MultiKeyPollingIndex: 0,
+		},
+	}
+	CacheUpdateChannel(channel)
+
+	key, index, err := channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		ExcludedPositions: map[int]struct{}{0: {}, 1: {}},
+	})
+	require.Nil(t, err)
+	require.Equal(t, 2, index)
+	require.Equal(t, "key-2", key)
+}
+
 func TestHandlerMultiKeyUpdateSynchronizesCredentialCacheStatus(t *testing.T) {
 	channel := &Channel{
 		Id:  1,

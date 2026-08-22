@@ -540,11 +540,42 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 
 	forcedCredentialID := common.GetContextKeyInt(c, constant.ContextKeyForceMultiKeyCredentialID)
 	forceMultiKeyIndex := common.GetContextKeyBool(c, constant.ContextKeyForceMultiKeyIndex)
+	rotateMultiKey := common.RetryTimes > 0 && channel.ChannelInfo.IsMultiKey && forcedCredentialID <= 0 && !forceMultiKeyIndex
+	useMultiKeyOptions := channel.ChannelInfo.IsMultiKey && forcedCredentialID <= 0 && !forceMultiKeyIndex
+	selectionOptions := model.MultiKeySelectionOptions{}
+	var triedPositions map[int]struct{}
+	if rotateMultiKey {
+		state, _ := common.GetContextKeyType[map[int]map[int]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
+		if state == nil {
+			state = make(map[int]map[int]struct{})
+			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyTried, state)
+		}
+		triedPositions = state[channel.Id]
+		if triedPositions == nil {
+			triedPositions = make(map[int]struct{})
+			state[channel.Id] = triedPositions
+		}
+		selectionOptions.ExcludedPositions = triedPositions
+	}
+	if useMultiKeyOptions && channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModeAffinity {
+		if preferredFingerprint, found := service.GetLastSuccessfulMultiKeyFingerprint(channel.Id, c.GetInt(string(constant.ContextKeyTokenId))); found {
+			for position, key := range channel.GetKeys() {
+				if model.ChannelCredentialFingerprint(key) == preferredFingerprint {
+					selectionOptions.PreferredPosition = &position
+					break
+				}
+			}
+		}
+	}
 	var key string
 	var index int
 	var newAPIError *types.NewAPIError
 	if !channel.ChannelInfo.IsMultiKey || (forcedCredentialID <= 0 && !forceMultiKeyIndex) {
-		key, index, newAPIError = channel.GetNextEnabledKey(c.GetInt(string(constant.ContextKeyTokenId)))
+		if useMultiKeyOptions {
+			key, index, newAPIError = channel.GetNextEnabledKeyWithOptions(selectionOptions, c.GetInt(string(constant.ContextKeyTokenId)))
+		} else {
+			key, index, newAPIError = channel.GetNextEnabledKey(c.GetInt(string(constant.ContextKeyTokenId)))
+		}
 		if newAPIError != nil {
 			return newAPIError
 		}

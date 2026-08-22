@@ -263,6 +263,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
+			if service.IsMultiKeyRetryExhausted(channelErr) && relayInfo.LastError != nil {
+				newAPIError = relayInfo.LastError
+				continue
+			}
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
 			break
@@ -285,6 +289,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 		relayInfo.BeginAttempt(time.Now())
+		service.MarkCurrentMultiKeyTried(c)
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -305,6 +310,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			service.RecordMultiKeySuccess(c)
 			return
 		}
 
@@ -677,6 +683,9 @@ func RelayMidjourney(c *gin.Context) {
 	default:
 		mjErr = relay.RelayMidjourneySubmit(c, relayInfo)
 	}
+	if mjErr == nil {
+		service.RecordMultiKeySuccess(c)
+	}
 	//err = relayMidjourneySubmit(c, relayMode)
 	log.Println(mjErr)
 	if mjErr != nil {
@@ -771,8 +780,11 @@ func RelayTask(c *gin.Context) {
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
-			if retryParam.GetRetry() > 0 {
+			if retryParam.GetRetry() > 0 || channel.ChannelInfo.IsMultiKey {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+					if service.IsMultiKeyRetryExhausted(setupErr) && taskErr != nil {
+						continue
+					}
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
 					break
 				}
@@ -781,6 +793,9 @@ func RelayTask(c *gin.Context) {
 			var channelErr *types.NewAPIError
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
+				if service.IsMultiKeyRetryExhausted(channelErr) && taskErr != nil {
+					continue
+				}
 				logger.LogError(c, channelErr.Error())
 				taskErr = service.TaskErrorFromAPIError(channelErr)
 				taskErr.LocalError = true
@@ -799,9 +814,11 @@ func RelayTask(c *gin.Context) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		service.MarkCurrentMultiKeyTried(c)
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
+			service.RecordMultiKeySuccess(c)
 			break
 		}
 
