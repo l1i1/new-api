@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import {
@@ -52,36 +53,21 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
   const description = resolveTntContent(item.description, contentLanguage)
 
   if (props.compact) {
-    return (
-      <div className='group border-border/60 inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1'>
+    const compactRow = (
+      <div
+        className='group border-border/60 inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1'
+        tabIndex={description ? 0 : undefined}
+        aria-label={description ? `${route}: ${description}` : undefined}
+      >
         <span
           className={cn(
             'inline-block size-1.5 shrink-0 rounded-full',
             getBgColorClass(item.color)
           )}
         />
-        {description ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type='button'
-                  className='max-w-32 shrink-0 truncate font-mono text-xs font-medium outline-none focus-visible:underline sm:max-w-44'
-                  aria-label={`${route}: ${description}`}
-                />
-              }
-            >
-              {route}
-            </TooltipTrigger>
-            <TooltipContent>
-              <p className='max-w-xs break-words'>{description}</p>
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          <span className='max-w-32 shrink-0 truncate font-mono text-xs font-medium sm:max-w-44'>
-            {route}
-          </span>
-        )}
+        <span className='max-w-32 shrink-0 truncate font-mono text-xs font-medium sm:max-w-44'>
+          {route}
+        </span>
         <span className='text-muted-foreground/50 shrink-0' aria-hidden='true'>
           |
         </span>
@@ -119,7 +105,7 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
           size='sm'
           className='size-6 p-0 opacity-70 hover:opacity-100'
           iconClassName='size-3'
-          tooltip={t('Copy URL')}
+          tooltip={description ? undefined : t('Copy URL')}
           aria-label={`${t('Copy URL')}: ${route}`}
         />
         <Button
@@ -134,6 +120,19 @@ export function ApiInfoItemComponent(props: ApiInfoItemProps) {
           <Zap className={cn('size-3', status.testing && 'animate-pulse')} />
         </Button>
       </div>
+    )
+
+    if (!description) return compactRow
+
+    return (
+      <TooltipProvider delay={0}>
+        <Tooltip>
+          <TooltipTrigger render={compactRow} />
+          <TooltipContent>
+            <p className='max-w-xs break-words'>{description}</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     )
   }
 

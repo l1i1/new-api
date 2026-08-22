@@ -131,7 +131,7 @@ describe('API info item localization', () => {
     container.remove()
   })
 
-  test('compact items expose the URL and a description tooltip', async () => {
+  test('compact items use the full row as an immediate description tooltip trigger', async () => {
     const item: ApiInfoItem = {
       route: 'Primary',
       description: 'Global acceleration',
@@ -167,14 +167,25 @@ describe('API info item localization', () => {
 
     assert.equal(container.textContent?.includes(item.url), true)
     assert.equal(container.textContent?.includes('Global acceleration'), false)
-    assert.equal(
-      container.querySelector('[data-slot="tooltip-trigger"]')?.textContent,
-      item.route
-    )
-    const descriptionTrigger = container.querySelector<HTMLButtonElement>(
-      'button[data-slot="tooltip-trigger"]'
+    const descriptionTrigger = container.querySelector<HTMLDivElement>(
+      'div[data-slot="tooltip-trigger"]'
     )
     assert.ok(descriptionTrigger)
+    assert.equal(descriptionTrigger.textContent?.includes(item.route), true)
+    assert.equal(descriptionTrigger.textContent?.includes(item.url), true)
+    assert.equal(
+      container.querySelectorAll('[data-slot="tooltip-trigger"]').length,
+      1
+    )
+    await act(async () => {
+      descriptionTrigger.dispatchEvent(new Event('mouseenter'))
+    })
+    assert.equal(
+      document
+        .querySelector('[data-slot="tooltip-content"]')
+        ?.textContent?.includes(item.description),
+      true
+    )
     await act(async () => descriptionTrigger.focus())
     assert.equal(document.activeElement, descriptionTrigger)
     assert.equal(
