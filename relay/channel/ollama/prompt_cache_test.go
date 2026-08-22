@@ -83,8 +83,8 @@ func TestApplyOllamaPromptCacheEstimation_UsesUserFallbackWithoutSessionIdentifi
 	assert.NotEmpty(t, buildPromptCacheKey(info1))
 }
 
-// Test strict prefix hit.
-func TestApplyOllamaPromptCacheEstimation_StrictPrefixHit(t *testing.T) {
+// Test prefix hit when the current request appends messages.
+func TestApplyOllamaPromptCacheEstimation_PrefixHit(t *testing.T) {
 	resetPromptCache()
 	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
 	req1 := openAIRequest(msgs("user", "hello"), "u1")
@@ -106,6 +106,23 @@ func TestApplyOllamaPromptCacheEstimation_StrictPrefixHit(t *testing.T) {
 	require.NotNil(t, usage2.BillingUsage)
 	assert.True(t, usage2.BillingUsage.Estimated)
 	assert.Equal(t, 100, usage2.BillingUsage.OpenAIUsage.PromptTokensDetails.CachedTokens)
+}
+
+func TestApplyOllamaPromptCacheEstimation_ExactReplayHit(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	request := openAIRequest(msgs("user", "hello", "assistant", "hi"), "u1")
+
+	first := infoWith(1, 10, "llama3", setting, request)
+	applyOllamaPromptCacheEstimation(first, &dto.Usage{PromptTokens: 200})
+
+	second := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "hello", "assistant", "hi"), "u1"))
+	usage := &dto.Usage{PromptTokens: 200}
+	applyOllamaPromptCacheEstimation(second, usage)
+
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage.BillingUsage)
+	assert.True(t, usage.BillingUsage.Estimated)
 }
 
 // Test non-prefix doesn't hit.

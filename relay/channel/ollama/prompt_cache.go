@@ -114,8 +114,10 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 	prev, found, _ := cache.Get(cacheKey)
 	estimated := 0
 	if allowEstimation && found && prev.PreviousPromptTokens > 0 && len(prev.MessageHashes) > 0 {
-		// Validate prefix: previous hashes must be a strict prefix of current.
-		if len(prev.MessageHashes) < len(messageHashes) {
+		// Validate prefix: an exact replay is also a cache hit. Retries and
+		// clients that resend the current turn do not append a new message, but
+		// Ollama can still reuse the complete prompt prefix.
+		if len(prev.MessageHashes) <= len(messageHashes) {
 			prefixMatch := true
 			for i, h := range prev.MessageHashes {
 				if messageHashes[i] != h {
