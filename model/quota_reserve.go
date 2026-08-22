@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
 
@@ -92,7 +93,14 @@ func cacheApplyUserQuotaDelta(userID int, delta int64) (cacheQuotaResult, error)
 	if !common.RedisEnabled || common.RDB == nil {
 		return cacheQuotaMiss, errors.New("redis is unavailable")
 	}
-	result, err := common.RDB.Eval(context.Background(), userQuotaDeltaScript,
+	return cacheApplyUserQuotaDeltaWithClient(common.RDB, userID, delta)
+}
+
+func cacheApplyUserQuotaDeltaWithClient(rdb *redis.Client, userID int, delta int64) (cacheQuotaResult, error) {
+	if rdb == nil {
+		return cacheQuotaMiss, errors.New("redis client is unavailable")
+	}
+	result, err := rdb.Eval(context.Background(), userQuotaDeltaScript,
 		[]string{getUserCacheKey(userID)}, delta, userID, userCacheSchemaVersion).Int()
 	return quotaResultFromLua(result, err)
 }
@@ -110,7 +118,14 @@ func cacheApplyTokenQuotaDelta(id int, key string, delta int64) (cacheQuotaResul
 	if !common.RedisEnabled || common.RDB == nil {
 		return cacheQuotaMiss, errors.New("redis is unavailable")
 	}
-	result, err := common.RDB.Eval(context.Background(), tokenQuotaDeltaScript,
+	return cacheApplyTokenQuotaDeltaWithClient(common.RDB, id, key, delta)
+}
+
+func cacheApplyTokenQuotaDeltaWithClient(rdb *redis.Client, id int, key string, delta int64) (cacheQuotaResult, error) {
+	if rdb == nil {
+		return cacheQuotaMiss, errors.New("redis client is unavailable")
+	}
+	result, err := rdb.Eval(context.Background(), tokenQuotaDeltaScript,
 		[]string{getTokenCacheKey(key)}, delta, id, common.GetTimestamp()).Int()
 	return quotaResultFromLua(result, err)
 }
@@ -192,31 +207,33 @@ func reserveTokenQuotaDB(id int, quota int) (bool, error) {
 }
 
 func syncReservedUserQuotaCache(id int, quota int) {
-	if !common.RedisEnabled || common.RDB == nil {
+	rdb := common.RDB
+	if !common.RedisEnabled || rdb == nil {
 		return
 	}
-	go func() {
-		result, err := cacheApplyUserQuotaDelta(id, int64(-quota))
+	go func(rdb *redis.Client) {
+		result, err := cacheApplyUserQuotaDeltaWithClient(rdb, id, int64(-quota))
 		if err != nil || result != cacheQuotaOK {
-			if invalidateErr := invalidateUserCache(id); invalidateErr != nil {
+			if invalidateErr := rdb.Del(context.Background(), getUserCacheKey(id)).Err(); invalidateErr != nil {
 				common.SysLog(fmt.Sprintf("failed to invalidate user quota cache after DB reservation: %v", invalidateErr))
 			}
 		}
-	}()
+	}(rdb)
 }
 
 func syncReservedTokenQuotaCache(id int, key string, quota int) {
-	if !common.RedisEnabled || common.RDB == nil {
+	rdb := common.RDB
+	if !common.RedisEnabled || rdb == nil {
 		return
 	}
-	go func() {
-		result, err := cacheApplyTokenQuotaDelta(id, key, int64(-quota))
+	go func(rdb *redis.Client) {
+		result, err := cacheApplyTokenQuotaDeltaWithClient(rdb, id, key, int64(-quota))
 		if err != nil || result != cacheQuotaOK {
-			if invalidateErr := invalidateTokenCacheForMutation(key); invalidateErr != nil {
+			if invalidateErr := invalidateTokenCacheForMutationWithClient(rdb, key); invalidateErr != nil {
 				common.SysLog(fmt.Sprintf("failed to invalidate token quota cache after DB reservation: %v", invalidateErr))
 			}
 		}
-	}()
+	}(rdb)
 }
 
 // TryReserveUserQuota atomically checks and deducts a user's wallet quota.

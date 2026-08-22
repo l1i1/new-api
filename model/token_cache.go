@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/go-redis/redis/v8"
 )
 
 func getTokenCacheKey(key string) string {
@@ -39,12 +40,19 @@ func invalidateTokenCacheForMutation(key string) error {
 	if !common.RedisAvailable() || key == "" {
 		return nil
 	}
+	return invalidateTokenCacheForMutationWithClient(common.RDB, key)
+}
+
+func invalidateTokenCacheForMutationWithClient(rdb *redis.Client, key string) error {
+	if rdb == nil || key == "" {
+		return nil
+	}
 	ctx := context.Background()
-	err := common.RDB.Set(ctx, getTokenCacheFenceKey(key), 1, time.Duration(tokenCacheFenceSeconds)*time.Second).Err()
+	err := rdb.Set(ctx, getTokenCacheFenceKey(key), 1, time.Duration(tokenCacheFenceSeconds)*time.Second).Err()
 	if err != nil {
 		return err
 	}
-	return common.RDB.Del(ctx, getTokenCacheKey(key)).Err()
+	return rdb.Del(ctx, getTokenCacheKey(key)).Err()
 }
 
 // cacheInitToken publishes a database snapshot only when no mutation fence is
