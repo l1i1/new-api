@@ -166,9 +166,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
 				streamErr = cyberErr
-				_ = helper.ObjectData(c, gin.H{"error": cyberErr.ToOpenAIError()})
-				helper.Done(c)
-				service.MarkOpsCyberPolicyForwarded(c)
+				writeCyberPolicyStreamError(c, info, cyberErr)
 				sr.Stop(streamErr)
 				return
 			}
@@ -365,8 +363,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &simpleResponse.Usage); cyberErr != nil {
-		service.IOCopyBytesGracefully(c, resp, responseBody)
-		service.MarkOpsCyberPolicyForwarded(c)
+		writeCyberPolicyResponseError(c, info, resp, responseBody, cyberErr)
 		return &simpleResponse.Usage, cyberErr
 	}
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {

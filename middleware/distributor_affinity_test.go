@@ -82,6 +82,28 @@ func TestSetupContextForSelectedChannelSkipsTriedMultiKeysWhenRetriesEnabled(t *
 	require.True(t, service.IsMultiKeyRetryExhausted(err))
 }
 
+func TestSetupContextForSelectedChannelTracksTriedCredentialAcrossReordering(t *testing.T) {
+	originalRetryTimes := common.RetryTimes
+	common.RetryTimes = 1
+	t.Cleanup(func() { common.RetryTimes = originalRetryTimes })
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenId, 9506)
+	channel := &model.Channel{
+		Id: 9506, Type: constant.ChannelTypeOpenAI, Key: "key-a\nkey-b", Status: common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeyMode: constant.MultiKeyModeRandom},
+	}
+
+	require.Nil(t, SetupContextForSelectedChannel(ctx, channel, "model"))
+	firstKey := common.GetContextKeyString(ctx, constant.ContextKeyChannelKey)
+	service.MarkCurrentMultiKeyTried(ctx)
+
+	channel.Key = "key-b\nkey-a"
+	require.Nil(t, SetupContextForSelectedChannel(ctx, channel, "model"))
+	require.NotEqual(t, firstKey, common.GetContextKeyString(ctx, constant.ContextKeyChannelKey))
+}
+
 func TestSetupContextForSelectedChannelKeepsAffinityWhenRetriesDisabled(t *testing.T) {
 	originalRetryTimes := common.RetryTimes
 	common.RetryTimes = 0

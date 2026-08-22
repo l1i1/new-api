@@ -21,8 +21,10 @@ const (
 )
 
 var (
-	multiKeySuccessCacheOnce sync.Once
-	multiKeySuccessCache     *cachex.HybridCache[string]
+	multiKeySuccessCacheOnce    sync.Once
+	multiKeySuccessCache        *cachex.HybridCache[string]
+	multiKeySuccessFallbackOnce sync.Once
+	multiKeySuccessFallback     *hot.HotCache[string, string]
 )
 
 func getMultiKeySuccessCache() *cachex.HybridCache[string] {
@@ -45,6 +47,16 @@ func getMultiKeySuccessCache() *cachex.HybridCache[string] {
 	return multiKeySuccessCache
 }
 
+func getMultiKeySuccessFallback() *hot.HotCache[string, string] {
+	multiKeySuccessFallbackOnce.Do(func() {
+		multiKeySuccessFallback = hot.NewHotCache[string, string](hot.LRU, multiKeySuccessCacheCapacity).
+			WithTTL(multiKeySuccessCacheTTL).
+			WithJanitor().
+			Build()
+	})
+	return multiKeySuccessFallback
+}
+
 func multiKeySuccessCacheKey(channelID, tokenID int) string {
 	if channelID <= 0 || tokenID <= 0 {
 		return ""
@@ -60,7 +72,8 @@ func GetLastSuccessfulMultiKeyFingerprint(channelID, tokenID int) (string, bool)
 	fingerprint, found, err := getMultiKeySuccessCache().Get(key)
 	if err != nil {
 		common.SysError(fmt.Sprintf("multi-key success cache get failed: channel_id=%d token_id=%d err=%v", channelID, tokenID, err))
-		return "", false
+		fallbackFingerprint, fallbackFound, _ := getMultiKeySuccessFallback().Get(getMultiKeySuccessCache().FullKey(key))
+		return fallbackFingerprint, fallbackFound
 	}
 	return fingerprint, found
 }
@@ -87,6 +100,7 @@ func RecordMultiKeySuccess(c *gin.Context) {
 	}
 	if err := getMultiKeySuccessCache().SetWithTTL(key, keyFingerprint, multiKeySuccessCacheTTL); err != nil {
 		common.SysError(fmt.Sprintf("multi-key success cache set failed: channel_id=%d token_id=%d err=%v", channelID, tokenID, err))
+		getMultiKeySuccessFallback().SetWithTTL(getMultiKeySuccessCache().FullKey(key), keyFingerprint, multiKeySuccessCacheTTL)
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelMultiKeySuccessRecorded, true)
 }
@@ -105,22 +119,22 @@ func MarkCurrentMultiKeyTried(c *gin.Context) {
 	}
 
 	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
-	index := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-	if channelID <= 0 || index < 0 {
+	selectedKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+	if channelID <= 0 || selectedKey == "" {
 		return
 	}
 
-	state, _ := common.GetContextKeyType[map[int]map[int]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
+	state, _ := common.GetContextKeyType[map[int]map[string]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
 	if state == nil {
-		state = make(map[int]map[int]struct{})
+		state = make(map[int]map[string]struct{})
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyTried, state)
 	}
 	tried := state[channelID]
 	if tried == nil {
-		tried = make(map[int]struct{})
+		tried = make(map[string]struct{})
 		state[channelID] = tried
 	}
-	tried[index] = struct{}{}
+	tried[model.ChannelCredentialFingerprint(selectedKey)] = struct{}{}
 }
 
 func IsMultiKeyRetryExhausted(err error) bool {

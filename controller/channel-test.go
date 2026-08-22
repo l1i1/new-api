@@ -468,7 +468,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 	if resp != nil {
 		httpResp = resp.(*http.Response)
 		if httpResp.StatusCode != http.StatusOK {
-			err := service.RelayErrorHandler(c, httpResp, true)
+			err := service.RelayErrorHandlerWithFormat(c, httpResp, true, info.RelayFormat)
 			common.SysError(fmt.Sprintf(
 				"channel test bad response: channel_id=%d name=%s type=%d model=%s endpoint_type=%s status=%d err=%v",
 				channel.Id,

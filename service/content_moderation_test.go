@@ -1052,6 +1052,36 @@ func TestCheckContentModerationPreBlockFailsOpenWhenCapacityIsExhausted(t *testi
 
 }
 
+func TestCheckContentModerationPreBlockFailsOpenWhenProviderIsUnavailable(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"first-key\nsecond-key","sample_rate":1,"all_groups":true,"all_models":true,"retry_count":1,"queue_wait_ms":20}`)
+
+	requestID := "provider-unavailable-pre-block"
+	t.Cleanup(func() {
+		_ = model.DB.Where("request_id = ?", requestID).Delete(&model.ContentModerationLog{}).Error
+	})
+
+	decision, err := CheckContentModeration(context.Background(), ContentModerationRequest{
+		UserID: 752003, Group: "default", Model: "model-a", RequestID: requestID,
+		Protocol: ContentModerationProtocolOpenAIChat, Text: "provider outage",
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Checked)
+	require.False(t, decision.Flagged)
+	require.False(t, decision.Blocked)
+	require.False(t, decision.Overloaded)
+	require.Contains(t, decision.Error, "moderation API returned status 503")
+}
+
 func TestContentModerationProviderSlotUsesRedisFingerprintLease(t *testing.T) {
 	server := withContentModerationRedis(t)
 	config := defaultContentModerationConfig()
@@ -1091,6 +1121,29 @@ func TestContentModerationProviderSlotUsesRedisFingerprintLease(t *testing.T) {
 	coolingDown, degraded := contentModerationProviderKeyCoolingDown(context.Background(), credential.Fingerprint)
 	require.True(t, coolingDown)
 	require.False(t, degraded)
+}
+
+func TestContentModerationProviderSlotLargeLimitKeepsRedisWorkBounded(t *testing.T) {
+	server := withContentModerationRedis(t)
+	config := defaultContentModerationConfig()
+	config.MaxInFlightPerKey = 1_000_000_000
+	credential := contentModerationProviderCredential{
+		Fingerprint: contentModerationProviderKeyFingerprint(config, "large-limit-key"),
+	}
+
+	first, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	require.True(t, acquired)
+	require.False(t, degraded)
+	resetContentModerationCapacityState()
+
+	commandsBefore := server.Server().TotalCommands()
+	second, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+	commandsAfter := server.Server().TotalCommands()
+	require.True(t, acquired)
+	require.False(t, degraded)
+	require.LessOrEqual(t, commandsAfter-commandsBefore, 10)
+	second.release()
+	first.release()
 }
 
 func TestContentModerationProviderSlotFallsBackToLocalWhenRedisFails(t *testing.T) {

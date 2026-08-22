@@ -67,6 +67,69 @@ func TestOaiStreamHandlerKeepsUsageBeforeFinalEvent(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
+func TestOaiStreamHandlerFormatsCyberPolicyForClaudeClients(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: {\"error\":{\"code\":\"cyber_policy\",\"message\":\"blocked\"},\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatClaude,
+		DisablePing: true,
+	}
+
+	usage, err := OaiStreamHandler(c, info, resp)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCode("cyber_policy"), err.GetErrorCode())
+	require.Equal(t, 2, usage.PromptTokens)
+	require.Contains(t, recorder.Body.String(), "event: error")
+	require.Contains(t, recorder.Body.String(), `"type":"cyber_policy"`)
+	require.NotContains(t, recorder.Body.String(), `"code":"cyber_policy"`)
+}
+
+func TestOaiStreamHandlerFormatsCyberPolicyForGeminiClients(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/generateContent", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: {\"error\":{\"code\":\"cyber_policy\",\"message\":\"blocked\"}}\n\ndata: [DONE]\n\n")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatGemini,
+		DisablePing: true,
+	}
+
+	_, err := OaiStreamHandler(c, info, resp)
+	require.NotNil(t, err)
+	require.Contains(t, recorder.Body.String(), `"status":"CYBER_POLICY"`)
+	require.Contains(t, recorder.Body.String(), `"code":200`)
+}
+
 func TestOaiStreamHandlerRetainsCacheAcrossUsageEvents(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)

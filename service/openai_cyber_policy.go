@@ -17,10 +17,6 @@ import (
 const opsCyberPolicyKey = "ops_cyber_policy"
 const opsCyberPolicyForwardedKey = "ops_cyber_policy_forwarded"
 
-// errOpenAICyberPolicyForwarded indicates that a cyber policy error was already
-// written in the endpoint's native response format and must not be written again.
-var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to client")
-
 // CyberPolicyMark carries the upstream evidence for one cyber policy block.
 type CyberPolicyMark struct {
 	Code           string

@@ -142,6 +142,25 @@ func TestRelayErrorHandlerForwardsCyberPolicyBodyOnce(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestRelayErrorHandlerWithFormatUsesClaudeCyberEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"cyber_policy","message":"blocked"}}`)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	apiErr := RelayErrorHandlerWithFormat(c, resp, false, types.RelayFormatClaude)
+	require.NotNil(t, apiErr)
+	require.True(t, OpsCyberPolicyForwarded(c))
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), `"type":"error"`)
+	require.Contains(t, w.Body.String(), `"type":"cyber_policy"`)
+	require.NotContains(t, w.Body.String(), `"code":"cyber_policy"`)
+}
+
 func TestRelayErrorHandlerRetainsCyberPolicyUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

@@ -126,36 +126,36 @@ var defaultContentModerationThresholds = map[string]float64{
 // admin UI; APIKeys is an input convenience and is normalized away before
 // persistence.
 type ContentModerationConfig struct {
-	Enabled              bool               `json:"enabled"`
-	Mode                 string             `json:"mode"`
-	BaseURL              string             `json:"base_url"`
-	Model                string             `json:"model"`
-	APIKey               string             `json:"api_key,omitempty"`
-	APIKeys              []string           `json:"api_keys,omitempty"`
-	ClearAPIKeys         bool               `json:"clear_api_keys,omitempty"`
-	Thresholds           map[string]float64 `json:"thresholds"`
-	AllGroups            bool               `json:"all_groups"`
-	GroupIDs             []string           `json:"group_ids,omitempty"`
-	AllModels            bool               `json:"all_models"`
-	Models               []string           `json:"models,omitempty"`
-	ModelFilters         []string           `json:"model_filters,omitempty"`
-	SampleRate           float64            `json:"sample_rate"`
-	TimeoutMS            int                `json:"timeout_ms"`
-	RetryCount           int                `json:"retry_count"`
-	MaxInFlightPerKey    int                `json:"max_in_flight_per_key"`
-	QueueWaitMS          int                `json:"queue_wait_ms"`
+	Enabled           bool               `json:"enabled"`
+	Mode              string             `json:"mode"`
+	BaseURL           string             `json:"base_url"`
+	Model             string             `json:"model"`
+	APIKey            string             `json:"api_key,omitempty"`
+	APIKeys           []string           `json:"api_keys,omitempty"`
+	ClearAPIKeys      bool               `json:"clear_api_keys,omitempty"`
+	Thresholds        map[string]float64 `json:"thresholds"`
+	AllGroups         bool               `json:"all_groups"`
+	GroupIDs          []string           `json:"group_ids,omitempty"`
+	AllModels         bool               `json:"all_models"`
+	Models            []string           `json:"models,omitempty"`
+	ModelFilters      []string           `json:"model_filters,omitempty"`
+	SampleRate        float64            `json:"sample_rate"`
+	TimeoutMS         int                `json:"timeout_ms"`
+	RetryCount        int                `json:"retry_count"`
+	MaxInFlightPerKey int                `json:"max_in_flight_per_key"`
+	QueueWaitMS       int                `json:"queue_wait_ms"`
 	// OverloadStatus is retained for configuration compatibility. Capacity
 	// exhaustion is fail-open and never becomes a client-facing status.
-	OverloadStatus       int                `json:"overload_status"`
-	KeyCooldownMS        int                `json:"key_cooldown_ms"`
-	RecordNonHits        bool               `json:"record_non_hits"`
-	RecordLogs           bool               `json:"record_logs"`
-	BlockStatus          int                `json:"block_status"`
-	BlockMessage         string             `json:"block_message,omitempty"`
-	EmailOnHit           bool               `json:"email_on_hit"`
-	AutoBanEnabled       bool               `json:"auto_ban_enabled"`
-	BanThreshold         int                `json:"ban_threshold"`
-	ViolationWindowHours int                `json:"violation_window_hours"`
+	OverloadStatus       int    `json:"overload_status"`
+	KeyCooldownMS        int    `json:"key_cooldown_ms"`
+	RecordNonHits        bool   `json:"record_non_hits"`
+	RecordLogs           bool   `json:"record_logs"`
+	BlockStatus          int    `json:"block_status"`
+	BlockMessage         string `json:"block_message,omitempty"`
+	EmailOnHit           bool   `json:"email_on_hit"`
+	AutoBanEnabled       bool   `json:"auto_ban_enabled"`
+	BanThreshold         int    `json:"ban_threshold"`
+	ViolationWindowHours int    `json:"violation_window_hours"`
 }
 
 type ContentModerationConfigView struct {
@@ -313,6 +313,28 @@ return 0`
 const contentModerationRenewLeaseScript = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0`
+
+const contentModerationProviderAcquireLeaseScript = `
+local nowParts = redis.call("TIME")
+local now = (tonumber(nowParts[1]) * 1000) + math.floor(tonumber(nowParts[2]) / 1000)
+redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now)
+if redis.call("ZCARD", KEYS[1]) >= tonumber(ARGV[1]) then
+  return 0
+end
+local expiresAt = now + tonumber(ARGV[2])
+redis.call("ZADD", KEYS[1], expiresAt, ARGV[3])
+redis.call("PEXPIRE", KEYS[1], tonumber(ARGV[2]))
+return 1`
+
+const contentModerationProviderReleaseLeaseScript = `
+if redis.call("ZSCORE", KEYS[1], ARGV[1]) then
+  redis.call("ZREM", KEYS[1], ARGV[1])
+  if redis.call("ZCARD", KEYS[1]) == 0 then
+    redis.call("DEL", KEYS[1])
+  end
+  return 1
 end
 return 0`
 
@@ -881,8 +903,8 @@ func contentModerationProviderLeaseTTL(config ContentModerationConfig) time.Dura
 	return ttl
 }
 
-func contentModerationProviderSlotKey(fingerprint string, slot int) string {
-	return cachex.Namespace(contentModerationProviderSlotNamespace).FullKey(fmt.Sprintf("%s:%d", fingerprint, slot))
+func contentModerationProviderSlotKey(fingerprint string) string {
+	return cachex.Namespace(contentModerationProviderSlotNamespace).FullKey(fingerprint)
 }
 
 func contentModerationProviderCooldownKey(fingerprint string) string {
@@ -976,19 +998,17 @@ func tryAcquireContentModerationProviderSlot(ctx context.Context, config Content
 	}
 	token := common.NewRequestId()
 	ttl := contentModerationProviderLeaseTTL(config)
-	for slotIndex := 0; slotIndex < config.MaxInFlightPerKey; slotIndex++ {
-		leaseKey := contentModerationProviderSlotKey(credential.Fingerprint, slotIndex)
-		acquired, err := common.RDB.SetNX(ctx, leaseKey, token, ttl).Result()
-		if err != nil {
-			markContentModerationProviderCapacityDegraded()
-			return slot, true, true
-		}
-		if acquired {
-			slot.Redis = common.RDB
-			slot.RedisKey = leaseKey
-			slot.Token = token
-			return slot, true, false
-		}
+	leaseKey := contentModerationProviderSlotKey(credential.Fingerprint)
+	acquired, err := common.RDB.Eval(ctx, contentModerationProviderAcquireLeaseScript, []string{leaseKey}, config.MaxInFlightPerKey, ttl.Milliseconds(), token).Int()
+	if err != nil {
+		markContentModerationProviderCapacityDegraded()
+		return slot, true, true
+	}
+	if acquired == 1 {
+		slot.Redis = common.RDB
+		slot.RedisKey = leaseKey
+		slot.Token = token
+		return slot, true, false
 	}
 	releaseLocalContentModerationProviderSlot(credential.Fingerprint)
 	return contentModerationProviderSlot{}, false, false
@@ -997,7 +1017,7 @@ func tryAcquireContentModerationProviderSlot(ctx context.Context, config Content
 func (slot contentModerationProviderSlot) release() {
 	if slot.Redis != nil && slot.RedisKey != "" && slot.Token != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), contentModerationRedisOperationTimeout)
-		if err := slot.Redis.Eval(ctx, contentModerationReleaseLeaseScript, []string{slot.RedisKey}, slot.Token).Err(); err != nil {
+		if err := slot.Redis.Eval(ctx, contentModerationProviderReleaseLeaseScript, []string{slot.RedisKey}, slot.Token).Err(); err != nil {
 			common.SysLog("failed to release content moderation provider capacity lease")
 		}
 		cancel()

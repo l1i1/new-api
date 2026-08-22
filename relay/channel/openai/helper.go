@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -19,6 +20,65 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func cyberPolicyGeminiError(err *types.NewAPIError) gin.H {
+	statusCode := http.StatusBadRequest
+	if err != nil && err.StatusCode > 0 {
+		statusCode = err.StatusCode
+	}
+	message := "upstream cyber policy interception"
+	if err != nil && err.Error() != "" {
+		message = err.Error()
+	}
+	return gin.H{"error": gin.H{
+		"code":    statusCode,
+		"message": message,
+		"status":  "CYBER_POLICY",
+	}}
+}
+
+func writeCyberPolicyStreamError(c *gin.Context, info *relaycommon.RelayInfo, err *types.NewAPIError) {
+	if info == nil {
+		_ = helper.ObjectData(c, gin.H{"error": err.ToOpenAIError()})
+		helper.Done(c)
+		service.MarkOpsCyberPolicyForwarded(c)
+		return
+	}
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: err.ToClaudeError()})
+	case types.RelayFormatGemini:
+		payload, marshalErr := common.Marshal(cyberPolicyGeminiError(err))
+		if marshalErr == nil {
+			c.Render(-1, common.CustomEvent{Data: "data: " + string(payload) + "\n\n"})
+			_ = helper.FlushWriter(c)
+		}
+	default:
+		_ = helper.ObjectData(c, gin.H{"error": err.ToOpenAIError()})
+		helper.Done(c)
+	}
+	service.MarkOpsCyberPolicyForwarded(c)
+}
+
+func writeCyberPolicyResponseError(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, body []byte, err *types.NewAPIError) {
+	statusCode := http.StatusBadRequest
+	if resp != nil && resp.StatusCode > 0 {
+		statusCode = resp.StatusCode
+	}
+	switch {
+	case info != nil && info.RelayFormat == types.RelayFormatClaude:
+		c.JSON(statusCode, gin.H{"type": "error", "error": err.ToClaudeError()})
+	case info != nil && info.RelayFormat == types.RelayFormatGemini:
+		c.JSON(statusCode, cyberPolicyGeminiError(err))
+	default:
+		if resp != nil {
+			service.IOCopyBytesGracefully(c, resp, body)
+		} else {
+			c.Data(statusCode, "application/json; charset=utf-8", body)
+		}
+	}
+	service.MarkOpsCyberPolicyForwarded(c)
+}
 
 // patchStreamUsageData replaces only an SSE event's usage object with the
 // merged usage observed so far. Upstreams may split cache/details across

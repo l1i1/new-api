@@ -81,6 +81,23 @@ func TestChannelGetNextEnabledKeyWithOptionsSkipsExcludedPositions(t *testing.T)
 	require.ErrorIs(t, err, ErrNoUntriedMultiKey)
 }
 
+func TestChannelGetNextEnabledKeyWithOptionsSkipsExcludedCredentialFingerprints(t *testing.T) {
+	channel := &Channel{
+		Key: "key-a\nkey-b\nkey-c",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeyMode: constant.MultiKeyModeRandom,
+		},
+	}
+
+	key, index, err := channel.GetNextEnabledKeyWithOptions(MultiKeySelectionOptions{
+		ExcludedFingerprints: map[string]struct{}{ChannelCredentialFingerprint("key-b"): {}},
+	})
+	require.Nil(t, err)
+	require.NotEqual(t, 1, index)
+	require.NotEqual(t, "key-b", key)
+}
+
 func TestChannelGetNextEnabledKeyWithOptionsUsesAffinitySuccessPosition(t *testing.T) {
 	preferred := 2
 	channel := &Channel{

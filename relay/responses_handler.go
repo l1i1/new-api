@@ -128,7 +128,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		httpResp = resp.(*http.Response)
 
 		if httpResp.StatusCode != http.StatusOK {
-			newAPIError = service.RelayErrorHandler(c, httpResp, false)
+			newAPIError = service.RelayErrorHandlerWithFormat(c, httpResp, false, info.RelayFormat)
 			if newAPIError != nil {
 				openAIError := newAPIError.ToOpenAIError()
 				if service.NormalizeServerOverloadError(&openAIError) {

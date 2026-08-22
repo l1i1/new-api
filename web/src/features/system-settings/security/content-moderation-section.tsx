@@ -372,12 +372,7 @@ export function ContentModerationSection(
                   <FormItem>
                     <FormLabel>{t('Max in-flight per key')}</FormLabel>
                     <FormControl>
-                      <Input
-                        type='number'
-                        min={1}
-                        step={1}
-                        {...field}
-                      />
+                      <Input type='number' min={1} step={1} {...field} />
                     </FormControl>
                     <FormDescription>
                       {t(

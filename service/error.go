@@ -86,6 +86,17 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 }
 
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
+	return relayErrorHandler(ctx, resp, showBodyWhenFail, types.RelayFormatOpenAI)
+}
+
+// RelayErrorHandlerWithFormat preserves the selected compatibility protocol
+// when a cyber-policy response is detected before the channel adaptor runs.
+// Other upstream errors intentionally retain RelayErrorHandler's behavior.
+func RelayErrorHandlerWithFormat(ctx context.Context, resp *http.Response, showBodyWhenFail bool, relayFormat types.RelayFormat) *types.NewAPIError {
+	return relayErrorHandler(ctx, resp, showBodyWhenFail, relayFormat)
+}
+
+func relayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool, relayFormat types.RelayFormat) (newApiErr *types.NewAPIError) {
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
 	responseBody, err := io.ReadAll(resp.Body)
@@ -104,7 +115,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	}
 	if ginCtx, ok := ctx.(*gin.Context); ok {
 		if cyberErr := NewOpenAICyberPolicyError(ginCtx, responseBody, resp.StatusCode, false, nil); cyberErr != nil {
-			IOCopyBytesGracefully(ginCtx, resp, responseBody)
+			writeCyberPolicyErrorForRelayFormat(ginCtx, resp, responseBody, cyberErr, relayFormat)
 			MarkOpsCyberPolicyForwarded(ginCtx)
 			return cyberErr
 		}
@@ -149,6 +160,43 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+func writeCyberPolicyErrorForRelayFormat(c *gin.Context, resp *http.Response, body []byte, err *types.NewAPIError, relayFormat types.RelayFormat) {
+	stream := resp != nil && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	statusCode := http.StatusBadRequest
+	if resp != nil && resp.StatusCode > 0 {
+		statusCode = resp.StatusCode
+	}
+	switch relayFormat {
+	case types.RelayFormatClaude:
+		payload := gin.H{"type": "error", "error": err.ToClaudeError()}
+		if stream {
+			if data, marshalErr := common.Marshal(payload); marshalErr == nil {
+				c.Render(-1, common.CustomEvent{Data: "event: error\n"})
+				c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
+				c.Writer.Flush()
+			}
+		} else {
+			c.JSON(statusCode, payload)
+		}
+	case types.RelayFormatGemini:
+		payload := gin.H{"error": gin.H{
+			"code":    statusCode,
+			"message": err.Error(),
+			"status":  "CYBER_POLICY",
+		}}
+		if stream {
+			if data, marshalErr := common.Marshal(payload); marshalErr == nil {
+				c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
+				c.Writer.Flush()
+			}
+		} else {
+			c.JSON(statusCode, payload)
+		}
+	default:
+		IOCopyBytesGracefully(c, resp, body)
+	}
 }
 
 // NormalizeServerOverloadError maps Codex's non-retryable capacity marker to

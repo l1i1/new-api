@@ -76,8 +76,10 @@ type ChannelInfo struct {
 // MultiKeySelectionOptions controls per-request multi-key selection without
 // changing the channel's persistent rotation state.
 type MultiKeySelectionOptions struct {
-	ExcludedPositions map[int]struct{}
-	PreferredPosition *int
+	// ExcludedPositions is kept for callers that already have stable positions.
+	ExcludedPositions    map[int]struct{}
+	ExcludedFingerprints map[string]struct{}
+	PreferredPosition    *int
 }
 
 // ErrNoUntriedMultiKey indicates that every enabled credential was attempted
@@ -274,11 +276,14 @@ func (channel *Channel) GetNextEnabledKeyWithOptions(options MultiKeySelectionOp
 	selectedIdx := make([]int, 0, len(enabledIdx))
 	for _, index := range enabledIdx {
 		if _, excluded := options.ExcludedPositions[index]; !excluded {
-			selectedIdx = append(selectedIdx, index)
+			fingerprint := ChannelCredentialFingerprint(keys[index])
+			if _, excluded := options.ExcludedFingerprints[fingerprint]; !excluded {
+				selectedIdx = append(selectedIdx, index)
+			}
 		}
 	}
 	if len(selectedIdx) == 0 {
-		if len(options.ExcludedPositions) > 0 {
+		if len(options.ExcludedPositions) > 0 || len(options.ExcludedFingerprints) > 0 {
 			return "", 0, types.NewError(ErrNoUntriedMultiKey, types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
 		}
 		selectedIdx = enabledIdx

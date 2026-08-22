@@ -543,19 +543,19 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	rotateMultiKey := common.RetryTimes > 0 && channel.ChannelInfo.IsMultiKey && forcedCredentialID <= 0 && !forceMultiKeyIndex
 	useMultiKeyOptions := channel.ChannelInfo.IsMultiKey && forcedCredentialID <= 0 && !forceMultiKeyIndex
 	selectionOptions := model.MultiKeySelectionOptions{}
-	var triedPositions map[int]struct{}
+	var triedFingerprints map[string]struct{}
 	if rotateMultiKey {
-		state, _ := common.GetContextKeyType[map[int]map[int]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
+		state, _ := common.GetContextKeyType[map[int]map[string]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
 		if state == nil {
-			state = make(map[int]map[int]struct{})
+			state = make(map[int]map[string]struct{})
 			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyTried, state)
 		}
-		triedPositions = state[channel.Id]
-		if triedPositions == nil {
-			triedPositions = make(map[int]struct{})
-			state[channel.Id] = triedPositions
+		triedFingerprints = state[channel.Id]
+		if triedFingerprints == nil {
+			triedFingerprints = make(map[string]struct{})
+			state[channel.Id] = triedFingerprints
 		}
-		selectionOptions.ExcludedPositions = triedPositions
+		selectionOptions.ExcludedFingerprints = triedFingerprints
 	}
 	if useMultiKeyOptions && channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModeAffinity {
 		if preferredFingerprint, found := service.GetLastSuccessfulMultiKeyFingerprint(channel.Id, c.GetInt(string(constant.ContextKeyTokenId))); found {
