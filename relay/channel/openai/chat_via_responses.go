@@ -37,13 +37,13 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	usage := usageFromResponsesResponse(&responsesResp)
+	if cyberErr := service.NewOpenAICyberPolicyError(c, body, resp.StatusCode, false, usage); cyberErr != nil {
+		service.IOCopyBytesGracefully(c, resp, body)
+		service.MarkOpsCyberPolicyForwarded(c)
+		return usage, cyberErr
+	}
 	if oaiError := responsesResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		usage := usageFromResponsesResponse(&responsesResp)
-		if cyberErr := service.NewOpenAICyberPolicyError(c, body, resp.StatusCode, false, usage); cyberErr != nil {
-			service.IOCopyBytesGracefully(c, resp, body)
-			service.MarkOpsCyberPolicyForwarded(c)
-			return usage, cyberErr
-		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
@@ -58,7 +58,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if chatID := helper.GetResponseID(c); chatID != "" {
 		chatResp.Id = chatID
 	}
-	usage := chatResult.Usage
+	usage = chatResult.Usage
 
 	if usage == nil || usage.TotalTokens == 0 {
 		text := service.ExtractOutputTextFromResponses(&responsesResp)

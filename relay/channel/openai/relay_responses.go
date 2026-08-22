@@ -30,13 +30,13 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	usage := usageFromResponsesResponse(&responsesResponse)
+	if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, usage); cyberErr != nil {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+		service.MarkOpsCyberPolicyForwarded(c)
+		return usage, cyberErr
+	}
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && (oaiError.Type != "" || oaiError.Message != "" || oaiError.Code != nil) {
-		usage := usageFromResponsesResponse(&responsesResponse)
-		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, usage); cyberErr != nil {
-			service.IOCopyBytesGracefully(c, resp, responseBody)
-			service.MarkOpsCyberPolicyForwarded(c)
-			return usage, cyberErr
-		}
 		service.NormalizeServerOverloadError(oaiError)
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -45,7 +45,6 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	// compute usage
-	usage := *usageFromResponsesResponse(&responsesResponse)
 	// Count actual tool invocations from Output (not tool declarations).
 	for _, output := range responsesResponse.Output {
 		switch output.Type {
@@ -67,7 +66,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	imageCounter.Commit(info)
 
-	return &usage, nil
+	return usage, nil
 }
 
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

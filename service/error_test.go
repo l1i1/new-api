@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -120,6 +121,25 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 
 	require.NotNil(t, newAPIError)
 	require.Equal(t, message, newAPIError.Error())
+}
+
+func TestRelayErrorHandlerForwardsCyberPolicyBodyOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := `{"error":{"code":"CYBER_POLICY","message":"blocked"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	apiErr := RelayErrorHandler(c, resp, false)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("cyber_policy"), apiErr.GetErrorCode())
+	require.True(t, OpsCyberPolicyForwarded(c))
+	require.Equal(t, body, w.Body.String())
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestNormalizeServerOverloadError(t *testing.T) {

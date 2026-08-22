@@ -45,12 +45,12 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+		service.MarkOpsCyberPolicyForwarded(c)
+		return &usageResp.Usage, cyberErr
+	}
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
-			service.IOCopyBytesGracefully(c, resp, responseBody)
-			service.MarkOpsCyberPolicyForwarded(c)
-			return &usageResp.Usage, cyberErr
-		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
@@ -117,15 +117,15 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	usage := &dto.Usage{}
 	var lastStreamData []byte
 	var completedImages int64
+	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if streamErr != nil {
+			sr.Stop(streamErr)
+			return
+		}
 		raw := common.StringToByteSlice(data)
 		lastStreamData = raw
-		if isOpenAIImageStreamErrorEvent(raw) {
-			// Record the error as a soft error; the scanner drives the final
-			// EndReason. HasErrors() flags the failure for logging/handling.
-			sr.Error(fmt.Errorf("%s", extractOpenAIImageStreamErrorMessage(raw)))
-		}
 		var chunk struct {
 			Type  string    `json:"type"`
 			Usage dto.Usage `json:"usage"`
@@ -135,6 +135,21 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			if service.ValidUsage(&chunk.Usage) {
 				usage = &chunk.Usage
 			}
+		}
+		if cyberErr := service.NewOpenAICyberPolicyError(c, raw, resp.StatusCode, true, usage); cyberErr != nil {
+			streamErr = cyberErr
+			_ = helper.ObjectData(c, gin.H{"error": cyberErr.ToOpenAIError()})
+			helper.Done(c)
+			service.MarkOpsCyberPolicyForwarded(c)
+			sr.Stop(streamErr)
+			return
+		}
+		if isOpenAIImageStreamErrorEvent(raw) {
+			// Record the error as a soft error; the scanner drives the final
+			// EndReason. HasErrors() flags the failure for logging/handling.
+			sr.Error(fmt.Errorf("%s", extractOpenAIImageStreamErrorMessage(raw)))
+		}
+		if err := common.Unmarshal(raw, &chunk); err == nil {
 			if chunk.Type == "image_generation.completed" || chunk.Type == "image_edit.completed" {
 				completedImages++
 			}
@@ -143,6 +158,9 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			sr.Stop(err)
 		}
 	})
+	if streamErr != nil {
+		return usage, streamErr
+	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
@@ -251,12 +269,12 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	if err := common.Unmarshal(responseBody, &usageResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+		service.MarkOpsCyberPolicyForwarded(c)
+		return &usageResp.Usage, cyberErr
+	}
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		if cyberErr := service.NewOpenAICyberPolicyError(c, responseBody, resp.StatusCode, false, &usageResp.Usage); cyberErr != nil {
-			service.IOCopyBytesGracefully(c, resp, responseBody)
-			service.MarkOpsCyberPolicyForwarded(c)
-			return &usageResp.Usage, cyberErr
-		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)

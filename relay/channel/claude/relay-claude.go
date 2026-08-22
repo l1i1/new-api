@@ -231,12 +231,18 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
-		if cyberErr := service.NewOpenAICyberPolicyError(c, data, httpResp.StatusCode, false, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+	statusCode := http.StatusInternalServerError
+	if httpResp != nil {
+		statusCode = httpResp.StatusCode
+	}
+	if cyberErr := service.NewOpenAICyberPolicyError(c, data, statusCode, false, usageFromClaudeResponse(&claudeResponse)); cyberErr != nil {
+		if httpResp != nil {
 			service.IOCopyBytesGracefully(c, httpResp, data)
-			service.MarkOpsCyberPolicyForwarded(c)
-			return cyberErr
 		}
+		service.MarkOpsCyberPolicyForwarded(c)
+		return cyberErr
+	}
+	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
 	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)

@@ -4,9 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -109,8 +109,8 @@ func NewOpenAICyberPolicyError(c *gin.Context, payload []byte, status int, strea
 	}
 	inTokens, outTokens := 0, 0
 	if usage != nil {
-		inTokens = maxNonNegative(usage.InputTokens, usage.PromptTokens)
-		outTokens = maxNonNegative(usage.OutputTokens, usage.CompletionTokens)
+		inTokens = normalizeCyberPolicyTokens(usage.InputTokens, usage.PromptTokens)
+		outTokens = normalizeCyberPolicyTokens(usage.OutputTokens, usage.CompletionTokens)
 	}
 	MarkOpsCyberPolicy(c, CyberPolicyMark{
 		Message:        message,
@@ -121,15 +121,20 @@ func NewOpenAICyberPolicyError(c *gin.Context, payload []byte, status int, strea
 	})
 	mark := GetOpsCyberPolicy(c)
 	if mark == nil {
-		return nil
+		return types.NewOpenAIError(errors.New(message), types.ErrorCode("cyber_policy"), status,
+			types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 	}
 	return types.NewOpenAIError(errors.New(mark.Message), types.ErrorCode("cyber_policy"), status,
 		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 }
 
-func maxNonNegative(values ...int) int {
+func normalizeCyberPolicyTokens(values ...int) int {
+	const maxTokens = common.MaxQuota / 2
 	for _, value := range values {
 		if value > 0 {
+			if value > maxTokens {
+				return maxTokens
+			}
 			return value
 		}
 	}
@@ -150,10 +155,11 @@ func RecordCyberPolicyEvent(input CyberPolicyEventInput, mark *CyberPolicyMark) 
 	if mark == nil {
 		return errors.New("cyber policy mark is nil")
 	}
-	message := strings.TrimSpace(mark.Message)
+	message := common.MaskSensitiveInfo(strings.TrimSpace(mark.Message))
 	if message == "" {
 		message = "upstream cyber policy interception"
 	}
+	message = boundedCyberPolicyMessage(message)
 	digest := sha256.Sum256([]byte("cyber_policy\x00" + message))
 	return model.CreateContentModerationLog(&model.ContentModerationLog{
 		UserID:      input.UserID,
@@ -170,24 +176,28 @@ func RecordCyberPolicyEvent(input CyberPolicyEventInput, mark *CyberPolicyMark) 
 		Score:       1,
 		Excerpt:     "[redacted]",
 		ExcerptHash: hex.EncodeToString(digest[:]),
-		Error:       fmt.Sprintf("%.*s", 1024, message),
+		Error:       message,
 	})
+}
+
+func boundedCyberPolicyMessage(message string) string {
+	const maxMessage = 1024
+	if len(message) > maxMessage {
+		return message[:maxMessage]
+	}
+	return message
 }
 
 // detectOpenAICyberPolicy recognizes OpenAI-compatible cyber_policy errors in
 // either the top-level error object or a Responses event's nested response.
 func detectOpenAICyberPolicy(payload []byte) (bool, string, string) {
-	code := gjson.GetBytes(payload, "error.code").String()
-	if code == "" {
-		code = gjson.GetBytes(payload, "response.error.code").String()
+	topCode := strings.TrimSpace(gjson.GetBytes(payload, "error.code").String())
+	if strings.EqualFold(topCode, "cyber_policy") {
+		return true, "cyber_policy", strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
 	}
-	if !strings.EqualFold(strings.TrimSpace(code), "cyber_policy") {
+	nestedCode := strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String())
+	if !strings.EqualFold(nestedCode, "cyber_policy") {
 		return false, "", ""
 	}
-
-	message := gjson.GetBytes(payload, "error.message").String()
-	if message == "" {
-		message = gjson.GetBytes(payload, "response.error.message").String()
-	}
-	return true, "cyber_policy", strings.TrimSpace(message)
+	return true, "cyber_policy", strings.TrimSpace(gjson.GetBytes(payload, "response.error.message").String())
 }

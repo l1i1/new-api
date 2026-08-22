@@ -130,6 +130,58 @@ func TestOaiResponsesHandlerTreatsFailedResponseAsError(t *testing.T) {
 	require.Empty(t, w.Body.String())
 }
 
+func TestOaiResponsesHandlerDetectsCyberPolicyByCodeOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-test"}
+	body := `{"error":{"code":"CYBER_POLICY","message":"blocked"},"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+
+	usage, apiErr := OaiResponsesHandler(c, info, resp)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("cyber_policy"), apiErr.GetErrorCode())
+	require.Equal(t, 4, usage.PromptTokens)
+	require.Equal(t, 2, usage.CompletionTokens)
+	require.Equal(t, body, w.Body.String())
+}
+
+func TestOaiResponsesStreamHandlerExtractsCyberPolicyUsageBeforeMark(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	stream := "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"cyber_policy\",\"message\":\"blocked\"},\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"total_tokens\":12}}}\n\ndata: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("cyber_policy"), apiErr.GetErrorCode())
+	require.Equal(t, 9, usage.PromptTokens)
+	require.Equal(t, 3, usage.CompletionTokens)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "response.failed")
+	require.Contains(t, w.Body.String(), "cyber_policy")
+}
+
 func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldTimeout := constant.StreamingTimeout
