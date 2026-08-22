@@ -413,30 +413,6 @@ export function ContentModerationSection(
               />
               <FormField
                 control={form.control}
-                name='overload_status'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Overload status')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value='503'>503</SelectItem>
-                        <SelectItem value='429'>429</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormDescription>
-                      {t('Returned only when pre-block capacity is exhausted.')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
                 name='key_cooldown_ms'
                 render={({ field }) => (
                   <FormItem>

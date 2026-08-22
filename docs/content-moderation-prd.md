@@ -64,7 +64,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 36. Redis failure falls back to the same per-key process-local limit and emits a safe degradation log without an API key, prompt, image reference, or credential-bearing URL.
 37. Capacity acquisition considers every non-cooled-down key before waiting. A 429, timeout, transport failure, response-read failure, or 5xx response places only the affected key into a bounded cooldown, and a retry may use another healthy key without exceeding the existing retry budget.
 38. When the queue wait budget expires in `observe`, the relay remains fail-open but always persists an audit row with action `skipped_capacity`. It is never represented as a successful allow or cached decision.
-39. When the queue wait budget expires in `pre_block`, the relay does not contact the model provider and returns the configured 429 or 503 with error code `content_moderation_overloaded`, distinct from a content-policy violation.
+39. When the queue wait budget expires in any mode, moderation records `skipped_capacity` and the relay continues to the model provider. Capacity exhaustion never blocks normal model traffic; it is surfaced through safe request-scoped logs and operator metrics.
 40. Affinity-cache and repeated-allow-cache hits do not acquire provider capacity because they do not call the moderation provider.
 41. Resetting a user's cumulative violation count records a reset boundary without deleting moderation logs; subsequent auto-ban and email counts ignore flagged entries at or before that boundary.
 

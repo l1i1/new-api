@@ -192,7 +192,7 @@ func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T)
 	require.Contains(t, recorder.Body.String(), "content_policy_violation")
 }
 
-func TestRelayContentModerationPreBlockReturnsOverloadStatusWhenCapacityIsExhausted(t *testing.T) {
+func TestRelayContentModerationPreBlockFailsOpenWhenCapacityIsExhausted(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -217,19 +217,17 @@ func TestRelayContentModerationPreBlockReturnsOverloadStatusWhenCapacityIsExhaus
 		t.Fatal("first moderation request did not start")
 	}
 
-	recorder := httptest.NewRecorder()
-	context, _ := gin.CreateTestContext(recorder)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"overflow"}]}`))
 	context.Request.Header.Set("Content-Type", "application/json")
-	common.SetContextKey(context, constant.ContextKeyOriginalModel, "gpt-test")
-	context.Set(common.RequestIdKey, "relay-capacity-overload")
-
-	Relay(context, types.RelayFormatOpenAI)
+	decision := checkRelayContentModeration(context, types.RelayFormatOpenAI, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "gpt-test", RequestId: "relay-capacity-overload",
+	})
 	common.CleanupBodyStorage(context)
 
-	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "content_moderation_overloaded")
-	require.NotContains(t, recorder.Body.String(), "content_policy_violation")
+	require.NotNil(t, decision)
+	require.True(t, decision.Overloaded)
+	require.False(t, decision.Blocked)
 
 	close(release)
 	require.NotNil(t, <-firstDone)

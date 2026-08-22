@@ -1005,7 +1005,7 @@ func TestCheckContentModerationObservePersistsCapacitySkip(t *testing.T) {
 
 }
 
-func TestCheckContentModerationPreBlockUsesOverloadStatus(t *testing.T) {
+func TestCheckContentModerationPreBlockFailsOpenWhenCapacityIsExhausted(t *testing.T) {
 	require.NotNil(t, model.DB)
 	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}))
 	previousClient := contentModerationHTTPClient
@@ -1046,9 +1046,9 @@ func TestCheckContentModerationPreBlockUsesOverloadStatus(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, decision.Overloaded)
-	require.True(t, decision.Blocked)
-	require.Equal(t, http.StatusTooManyRequests, decision.StatusCode)
-	require.Equal(t, "Content moderation capacity is temporarily unavailable", decision.Message)
+	require.False(t, decision.Blocked)
+	require.Zero(t, decision.StatusCode)
+	require.Empty(t, decision.Message)
 
 }
 

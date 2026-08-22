@@ -142,7 +142,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
-	if decision := checkRelayContentModeration(c, relayFormat, relayInfo); decision != nil && decision.Blocked {
+	if decision := checkRelayContentModeration(c, relayFormat, relayInfo); decision != nil && decision.Blocked && !decision.Overloaded {
 		message := decision.Message
 		if message == "" {
 			message = "Request blocked by content policy"
@@ -151,11 +151,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if statusCode < 400 || statusCode > 599 {
 			statusCode = http.StatusForbidden
 		}
-		errorCode := types.ErrorCode("content_policy_violation")
-		if decision.Overloaded {
-			errorCode = types.ErrorCode("content_moderation_overloaded")
-		}
-		newAPIError = types.NewErrorWithStatusCode(errors.New(message), errorCode, statusCode, types.ErrOptionWithSkipRetry())
+		newAPIError = types.NewErrorWithStatusCode(errors.New(message), types.ErrorCode("content_policy_violation"), statusCode, types.ErrOptionWithSkipRetry())
 		return
 	}
 	if relayFormat != types.RelayFormatOpenAIRealtime {

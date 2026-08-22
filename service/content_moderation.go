@@ -144,6 +144,8 @@ type ContentModerationConfig struct {
 	RetryCount           int                `json:"retry_count"`
 	MaxInFlightPerKey    int                `json:"max_in_flight_per_key"`
 	QueueWaitMS          int                `json:"queue_wait_ms"`
+	// OverloadStatus is retained for configuration compatibility. Capacity
+	// exhaustion is fail-open and never becomes a client-facing status.
 	OverloadStatus       int                `json:"overload_status"`
 	KeyCooldownMS        int                `json:"key_cooldown_ms"`
 	RecordNonHits        bool               `json:"record_non_hits"`
@@ -1510,11 +1512,13 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		}
 		if capacitySkipped {
 			decision.Overloaded = true
-			decision.Blocked = config.Mode == "pre_block"
-			if decision.Blocked {
-				decision.StatusCode = config.OverloadStatus
-				decision.Message = "Content moderation capacity is temporarily unavailable"
-			}
+			// Moderation is an observability and policy aid, not a dependency of
+			// the model relay. Capacity exhaustion must therefore fail open in
+			// every mode; the skipped_capacity audit row remains the operator
+			// signal that this request was not reviewed.
+			decision.Blocked = false
+			decision.StatusCode = 0
+			decision.Message = ""
 		}
 
 		logComplete := true

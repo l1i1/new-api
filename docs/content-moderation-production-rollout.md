@@ -55,9 +55,9 @@ The required production behavior is:
 - provider concurrency is limited per moderation API key across gateway nodes
   through Redis slot leases, with a process-local limit retained during Redis
   degradation;
-- capacity exhaustion is always recorded as `skipped_capacity`; `observe`
-  remains fail-open, while `pre_block` returns only the configured 429 or 503
-  overload response and never a content-violation 403;
+- capacity exhaustion is always recorded as `skipped_capacity` and remains
+  fail-open in both `observe` and `pre_block`; the model request continues, and
+  the event is surfaced through safe logs/metrics rather than a client error;
 - no raw prompt or API key is written to the audit log, admin API, workflow
   output, or deployment log.
 
