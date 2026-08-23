@@ -20,54 +20,55 @@ func ClaimQuotaWarning(userID int, subscription bool, subscriptionID int, thresh
 		return false, errors.New("invalid subscription id")
 	}
 
-	column := "quota_warning_sent"
-	if subscription {
-		column = "subscription_quota_warning_sent"
-	}
-
 	shouldSend := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		var user User
-		selectColumns := "COALESCE(" + column + ", FALSE) AS " + column
-		if !subscription {
-			selectColumns += ", quota"
+		if subscription {
+			var sub UserSubscription
+			if err := lockForUpdate(tx).
+				Select("id", "amount_total", "amount_used", "COALESCE(quota_warning_sent, FALSE) AS quota_warning_sent").
+				Where("id = ? AND user_id = ?", subscriptionID, userID).
+				First(&sub).Error; err != nil {
+				return err
+			}
+			currentBalance := sub.AmountTotal - sub.AmountUsed
+			if currentBalance >= threshold {
+				return tx.Model(&UserSubscription{}).Where("id = ?", subscriptionID).Update("quota_warning_sent", false).Error
+			}
+			if balanceAfter >= threshold && !sub.QuotaWarningSent {
+				return nil
+			}
+			if sub.QuotaWarningSent {
+				requestDelta := balanceBefore - balanceAfter
+				if currentBalance+requestDelta < threshold {
+					return nil
+				}
+			}
+			if err := tx.Model(&UserSubscription{}).Where("id = ?", subscriptionID).Update("quota_warning_sent", true).Error; err != nil {
+				return err
+			}
+			shouldSend = true
+			return nil
 		}
+
+		var user User
 		if err := lockForUpdate(tx).
-			Select(selectColumns).
+			Select("id", "quota", "COALESCE(quota_warning_sent, FALSE) AS quota_warning_sent").
 			Where("id = ?", userID).
 			First(&user).Error; err != nil {
 			return err
 		}
 
 		currentBalance := int64(user.Quota)
-		if subscription {
-			var sub UserSubscription
-			if err := lockForUpdate(tx).
-				Select("amount_total", "amount_used").
-				Where("id = ? AND user_id = ?", subscriptionID, userID).
-				First(&sub).Error; err != nil {
-				return err
-			}
-			currentBalance = sub.AmountTotal - sub.AmountUsed
-		}
-
-		sent := user.QuotaWarningSent
-		if subscription {
-			sent = user.SubQuotaWarnSent
-		}
 		if currentBalance >= threshold {
-			if err := tx.Model(&User{}).Where("id = ?", userID).Update(column, false).Error; err != nil {
-				return err
-			}
-			return nil
+			return tx.Model(&User{}).Where("id = ?", userID).Update("quota_warning_sent", false).Error
 		}
-		if balanceAfter >= threshold && !sent {
+		if balanceAfter >= threshold && !user.QuotaWarningSent {
 			return nil
 		}
 
 		// A request that started above the threshold marks a new episode even
 		// if the previous episode was never observed at a recovered balance.
-		if sent {
+		if user.QuotaWarningSent {
 			// A stale high snapshot from a concurrent request must not rearm the
 			// same low-balance episode. Re-arm only when this request's inferred
 			// starting balance was actually high in the locked database state.
@@ -77,7 +78,7 @@ func ClaimQuotaWarning(userID int, subscription bool, subscriptionID int, thresh
 			}
 		}
 
-		if err := tx.Model(&User{}).Where("id = ?", userID).Update(column, true).Error; err != nil {
+		if err := tx.Model(&User{}).Where("id = ?", userID).Update("quota_warning_sent", true).Error; err != nil {
 			return err
 		}
 		shouldSend = true

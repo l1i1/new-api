@@ -261,8 +261,9 @@ type UserSubscription struct {
 	UserId int `json:"user_id" gorm:"index;index:idx_user_sub_active,priority:1"`
 	PlanId int `json:"plan_id" gorm:"index"`
 
-	AmountTotal int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
-	AmountUsed  int64 `json:"amount_used" gorm:"type:bigint;not null;default:0"`
+	AmountTotal      int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
+	AmountUsed       int64 `json:"amount_used" gorm:"type:bigint;not null;default:0"`
+	QuotaWarningSent bool  `json:"-" gorm:"column:quota_warning_sent"`
 
 	StartTime int64  `json:"start_time" gorm:"bigint"`
 	EndTime   int64  `json:"end_time" gorm:"bigint;index;index:idx_user_sub_active,priority:3"`

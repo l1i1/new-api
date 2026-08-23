@@ -37,7 +37,6 @@ func TestClaimQuotaWarningOnlyOnceUntilBalanceRecovers(t *testing.T) {
 	user := &User{Username: "quota-notification-user", AffCode: "quota-notification-user", Password: "unused", Status: common.UserStatusEnabled, Quota: 150}
 	require.NoError(t, DB.Create(user).Error)
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("quota_warning_sent", nil).Error)
-
 	setQuotaNotificationUserQuota(t, user.Id, 90)
 	claimed, err := ClaimQuotaWarning(user.Id, false, 0, 100, 150, 90)
 	require.NoError(t, err)
@@ -113,4 +112,22 @@ func TestClaimQuotaWarningSeparatesSubscriptionState(t *testing.T) {
 	claimed, err = ClaimQuotaWarning(user.Id, true, subscription.Id, 100, 90, 80)
 	require.NoError(t, err)
 	require.False(t, claimed)
+}
+
+func TestClaimQuotaWarningSeparatesSubscriptions(t *testing.T) {
+	setupQuotaNotificationTest(t)
+	user := &User{Username: "subscription-quota-notification-isolation", AffCode: "subscription-quota-notification-isolation", Password: "unused", Status: common.UserStatusEnabled, Quota: 1000}
+	require.NoError(t, DB.Create(user).Error)
+	subscription1 := &UserSubscription{UserId: user.Id, AmountTotal: 150, AmountUsed: 60, Status: "active"}
+	subscription2 := &UserSubscription{UserId: user.Id, AmountTotal: 150, AmountUsed: 60, Status: "active"}
+	require.NoError(t, DB.Create(subscription1).Error)
+	require.NoError(t, DB.Create(subscription2).Error)
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id IN ?", []int{subscription1.Id, subscription2.Id}).Update("quota_warning_sent", nil).Error)
+
+	claimed, err := ClaimQuotaWarning(user.Id, true, subscription1.Id, 100, 150, 90)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	claimed, err = ClaimQuotaWarning(user.Id, true, subscription2.Id, 100, 150, 90)
+	require.NoError(t, err)
+	require.True(t, claimed)
 }
