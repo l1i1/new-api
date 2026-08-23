@@ -80,6 +80,31 @@ func normalizeOllamaCachedTokens(value, promptTokens int) int {
 	return value
 }
 
+func ollamaThinkingText(raw json.RawMessage) string {
+	rawText := strings.TrimSpace(string(raw))
+	if rawText == "" || rawText == "null" {
+		return ""
+	}
+	var text string
+	if err := common.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return rawText
+}
+
+func ollamaResponseCacheMessage(content, thinking string, toolCalls []OllamaToolCall) *OllamaChatMessage {
+	if content == "" && thinking == "" && len(toolCalls) == 0 {
+		return nil
+	}
+	message := &OllamaChatMessage{Role: "assistant", Content: content, ToolCalls: toolCalls}
+	if thinking != "" {
+		if raw, err := common.Marshal(thinking); err == nil {
+			message.Thinking = raw
+		}
+	}
+	return message
+}
+
 func ollamaToolCallsToOpenAI(toolCalls []OllamaToolCall, startIndex int, includeIndex bool) ([]dto.ToolCallResponse, int) {
 	if len(toolCalls) == 0 {
 		return nil, startIndex
@@ -146,6 +171,9 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
 	var toolCallIndex int
+	var responseBuilder strings.Builder
+	var thinkingBuilder strings.Builder
+	var responseToolCalls []OllamaToolCall
 	start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
 	if data, err := common.Marshal(start); err == nil {
 		_ = helper.StringData(c, string(data))
@@ -186,23 +214,19 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				}},
 			}
 			if content != "" {
+				responseBuilder.WriteString(content)
 				delta.Choices[0].Delta.SetContentString(content)
 			}
 			if chunk.Message != nil && len(chunk.Message.Thinking) > 0 {
-				raw := strings.TrimSpace(string(chunk.Message.Thinking))
-				if raw != "" && raw != "null" {
+				if thinkingContent := ollamaThinkingText(chunk.Message.Thinking); thinkingContent != "" {
+					thinkingBuilder.WriteString(thinkingContent)
 					// Unmarshal the JSON string to get the actual content without quotes
-					var thinkingContent string
-					if err := common.Unmarshal(chunk.Message.Thinking, &thinkingContent); err == nil {
-						delta.Choices[0].Delta.SetReasoningContent(thinkingContent)
-					} else {
-						// Fallback to raw string if it's not a JSON string
-						delta.Choices[0].Delta.SetReasoningContent(raw)
-					}
+					delta.Choices[0].Delta.SetReasoningContent(thinkingContent)
 				}
 			}
 			// tool calls
 			if chunk.Message != nil && len(chunk.Message.ToolCalls) > 0 {
+				responseToolCalls = append(responseToolCalls, chunk.Message.ToolCalls...)
 				delta.Choices[0].Delta.ToolCalls, toolCallIndex = ollamaToolCallsToOpenAI(chunk.Message.ToolCalls, toolCallIndex, true)
 			}
 			if data, err := common.Marshal(delta); err == nil {
@@ -212,6 +236,13 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// done frame
 		// finalize once and break loop
+		if chunk.Message != nil {
+			responseBuilder.WriteString(chunk.Message.Content)
+			if thinkingContent := ollamaThinkingText(chunk.Message.Thinking); thinkingContent != "" {
+				thinkingBuilder.WriteString(thinkingContent)
+			}
+			responseToolCalls = append(responseToolCalls, chunk.Message.ToolCalls...)
+		}
 		usage.PromptTokens = normalizeOllamaTokenCount(chunk.PromptEvalCount)
 		usage.CompletionTokens = normalizeOllamaTokenCount(chunk.EvalCount)
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -219,7 +250,8 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		if cachedTokensPresent {
 			usage.PromptTokensDetails.CachedTokens = normalizeOllamaCachedTokens(cachedTokens, usage.PromptTokens)
 		}
-		applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent)
+		applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent, c)
+		recordOllamaPromptCacheResponse(info, usage, ollamaResponseCacheMessage(responseBuilder.String(), thinkingBuilder.String(), responseToolCalls), c)
 		finishReason := chunk.DoneReason
 		if finishReason == "" {
 			finishReason = "stop"
@@ -263,12 +295,13 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 
 	lines := strings.Split(raw, "\n")
 	var (
-		aggContent       strings.Builder
-		reasoningBuilder strings.Builder
-		lastChunk        ollamaChatStreamChunk
-		parsedAny        bool
-		toolCallIndex    int
-		toolCalls        []dto.ToolCallResponse
+		aggContent        strings.Builder
+		reasoningBuilder  strings.Builder
+		lastChunk         ollamaChatStreamChunk
+		parsedAny         bool
+		toolCallIndex     int
+		toolCalls         []dto.ToolCallResponse
+		responseToolCalls []OllamaToolCall
 	)
 	for _, ln := range lines {
 		ln = strings.TrimSpace(ln)
@@ -285,16 +318,8 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		parsedAny = true
 		lastChunk = ck
 		if ck.Message != nil && len(ck.Message.Thinking) > 0 {
-			raw := strings.TrimSpace(string(ck.Message.Thinking))
-			if raw != "" && raw != "null" {
-				// Unmarshal the JSON string to get the actual content without quotes
-				var thinkingContent string
-				if err := common.Unmarshal(ck.Message.Thinking, &thinkingContent); err == nil {
-					reasoningBuilder.WriteString(thinkingContent)
-				} else {
-					// Fallback to raw string if it's not a JSON string
-					reasoningBuilder.WriteString(raw)
-				}
+			if thinkingContent := ollamaThinkingText(ck.Message.Thinking); thinkingContent != "" {
+				reasoningBuilder.WriteString(thinkingContent)
 			}
 		}
 		if ck.Message != nil && ck.Message.Content != "" {
@@ -303,6 +328,7 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			aggContent.WriteString(ck.Response)
 		}
 		if ck.Message != nil && len(ck.Message.ToolCalls) > 0 {
+			responseToolCalls = append(responseToolCalls, ck.Message.ToolCalls...)
 			var converted []dto.ToolCallResponse
 			converted, toolCallIndex = ollamaToolCallsToOpenAI(ck.Message.ToolCalls, toolCallIndex, false)
 			toolCalls = append(toolCalls, converted...)
@@ -317,20 +343,13 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		lastChunk = single
 		if single.Message != nil {
 			if len(single.Message.Thinking) > 0 {
-				raw := strings.TrimSpace(string(single.Message.Thinking))
-				if raw != "" && raw != "null" {
-					// Unmarshal the JSON string to get the actual content without quotes
-					var thinkingContent string
-					if err := common.Unmarshal(single.Message.Thinking, &thinkingContent); err == nil {
-						reasoningBuilder.WriteString(thinkingContent)
-					} else {
-						// Fallback to raw string if it's not a JSON string
-						reasoningBuilder.WriteString(raw)
-					}
+				if thinkingContent := ollamaThinkingText(single.Message.Thinking); thinkingContent != "" {
+					reasoningBuilder.WriteString(thinkingContent)
 				}
 			}
 			aggContent.WriteString(single.Message.Content)
 			if len(single.Message.ToolCalls) > 0 {
+				responseToolCalls = append(responseToolCalls, single.Message.ToolCalls...)
 				var converted []dto.ToolCallResponse
 				converted, toolCallIndex = ollamaToolCallsToOpenAI(single.Message.ToolCalls, toolCallIndex, false)
 				toolCalls = append(toolCalls, converted...)
@@ -352,8 +371,9 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if cachedTokensPresent {
 		usage.PromptTokensDetails.CachedTokens = normalizeOllamaCachedTokens(cachedTokens, usage.PromptTokens)
 	}
-	applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent)
+	applyOllamaPromptCacheEstimationWithUpstreamUsage(info, usage, cachedTokensPresent, c)
 	content := aggContent.String()
+	recordOllamaPromptCacheResponse(info, usage, ollamaResponseCacheMessage(content, reasoningBuilder.String(), responseToolCalls), c)
 	finishReason := lastChunk.DoneReason
 	if finishReason == "" {
 		finishReason = "stop"

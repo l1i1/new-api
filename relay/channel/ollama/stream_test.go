@@ -125,8 +125,8 @@ func TestOllamaChatHandlerNonStreamEstimationIsClientSafe(t *testing.T) {
 	})
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
-	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":100`)
+	assert.Equal(t, 200, usage.PromptTokensDetails.CachedTokens)
+	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":200`)
 	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
 }
 
@@ -155,7 +155,7 @@ func TestOllamaChatHandlerRealZeroAllowsEstimation(t *testing.T) {
 	})
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 201, usage.PromptTokensDetails.CachedTokens)
 	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
 }
 
@@ -184,8 +184,8 @@ func TestOllamaStreamHandlerEstimationIsClientSafe(t *testing.T) {
 	})
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
-	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":100`)
+	assert.Equal(t, 200, usage.PromptTokensDetails.CachedTokens)
+	assert.Contains(t, secondWriter.Body.String(), `"cached_tokens":200`)
 	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
 }
 

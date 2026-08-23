@@ -107,6 +107,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, adminInfo)
+	if observation, ok := ctx.Get(string(constant.ContextKeyOllamaPromptCache)); ok {
+		adminInfo["ollama_prompt_cache"] = observation
+	}
 
 	other["admin_info"] = adminInfo
 	appendRequestPath(ctx, relayInfo, other)

@@ -83,6 +83,16 @@ func TestRelayInfoMetaTypedNilReceiver(t *testing.T) {
 	assert.NotNil(t, firstOptions.PreserveThinkingSuffix)
 }
 
+func TestCloneRequestHeadersSkipsBlankFirstValue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	c.Request.Header["X-Session-Id"] = []string{"", "session-2"}
+
+	headers := cloneRequestHeaders(c)
+	require.Equal(t, "session-2", headers["X-Session-Id"])
+}
+
 func TestGenRelayInfoCapturesRequestReasoningEffort(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {

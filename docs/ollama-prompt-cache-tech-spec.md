@@ -1,5 +1,7 @@
 # Ollama Prompt Cache Estimation
 
+Product requirements: `docs/ollama-prompt-cache-prd.md`.
+
 ## Problem
 
 OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.user_id`, `user`, and session headers. Channel affinity still works for these requests because its established fallback is `token_id`, then user ID. Ollama prompt-cache estimation must use the same request partition when an explicit conversation identifier is absent, otherwise it exits before storing the first prompt.
@@ -20,9 +22,53 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
   mutable chain. Select the longest matching prefix, deduplicate exact chains,
   and update the set atomically when Redis is enabled so interleaved requests do
   not overwrite one another.
+- Persist each new chain as a message count plus one cumulative SHA-256 prefix
+  identity. Legacy per-message hash arrays remain readable during rollout, but
+  new writes stay bounded even for long conversations.
 - Cache read/write failures are fail-open for the request but must be returned by
   the cache helper and logged with channel/model metadata; prompt content and
   credentials must never be logged.
+- Normalize Claude `/v1/messages` through the existing Claude-to-OpenAI
+  converter before matching. OpenAI chat and Claude Messages belong to the
+  Ollama chat prompt family; `/v1/completions` uses a separate generate family.
+- Resolve session header aliases in a fixed order. Go map iteration order must
+  never choose the cache partition.
+- When token/user fallback is required, include the first user-message hash in
+  the partition so unrelated conversations using one API token do not evict or
+  overwrite each other.
+- Completion prompt normalization must match `openAIToGenerate` and include the
+  suffix. Semantically different generate requests must not share cache state.
+- Final Ollama bodies containing images, an explicit `keep_alive: 0`, or an
+  unreadable shape are uncacheable. Explicit shorter keep-alive values cap the
+  Redis TTL; negative keep-alive values retain the normal five-minute bound.
+- The partition includes the normalized channel base URL and final Ollama model
+  so a channel endpoint or model override cannot reuse stale simulated state.
+- A completed chat response may add a separate assistant-prefix candidate using
+  the normalized final Ollama message. Its token count is prompt plus output
+  tokens, but it is only reusable when the assistant content, tool calls, and
+  thinking fields match exactly; generation responses never add this candidate.
+- Candidate reads are snapshotted before the upstream request. The response
+  path may commit new candidates, but cannot make a candidate created during
+  the request count as a hit for that same request.
+- Legacy Redis payloads remain decodable, but the expanded partition key starts
+  a bounded cold-cache window after rollout; no cross-partition migration is
+  attempted.
+
+## Metrics
+
+- `gross_request_hit_rate = hit_rows / all_usage_rows` includes cold starts.
+- `gross_cached_token_rate = sum(cache_tokens) / sum(prompt_tokens)` is the
+  production release metric. It must reach 90% as the baseline and stabilize
+  above 95% as the final target.
+- `reusable_session_hit_rate` measures follow-up requests with a stable cache
+  partition and reusable prefix.
+- Gross request hit rate and reusable-session hit rate remain separate
+  diagnostic metrics. They must not replace or inflate the weighted token
+  coverage target.
+- A validated prefix contributes its full previous prompt-token count, capped
+  at the current prompt-token count. The resulting token rate is therefore
+  determined by actual prefix growth rather than a fixed percentage chosen to
+  make a chart reach a target.
 
 ## Acceptance
 
@@ -37,4 +83,9 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
   billing on a matching follow-up; a positive upstream value remains unchanged.
 - Redis update conflicts retry atomically, and Redis read/write failures do not
   panic, block the request, or silently disappear from operational logs.
+- Claude Messages exact replay and prefix extension receive the same estimator
+  behavior as OpenAI chat.
+- Conflicting header aliases resolve deterministically.
+- Generate requests with equal normalized prompts and suffixes can match;
+  different suffixes remain isolated.
 - Focused Ollama tests, race tests, `go vet`, RelayKit build, and `git diff --check` pass.

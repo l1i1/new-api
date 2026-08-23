@@ -573,12 +573,13 @@ func cloneRequestHeaders(c *gin.Context) map[string]string {
 		return nil
 	}
 	headers := make(map[string]string, len(c.Request.Header))
-	for key := range c.Request.Header {
-		value := strings.TrimSpace(c.Request.Header.Get(key))
-		if value == "" {
-			continue
+	for key, values := range c.Request.Header {
+		for _, rawValue := range values {
+			if value := strings.TrimSpace(rawValue); value != "" {
+				headers[key] = value
+				break
+			}
 		}
-		headers[key] = value
 	}
 	if len(headers) == 0 {
 		return nil
