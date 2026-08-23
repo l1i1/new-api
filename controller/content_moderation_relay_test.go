@@ -425,7 +425,7 @@ func TestGetContentModerationLogsReturnsExplicitPaginationMetadata(t *testing.T)
 	t.Cleanup(func() { model.DB = previousDB })
 
 	require.NoError(t, db.Create(&model.ContentModerationLog{
-		UserID: 987662, RequestID: "first-request", CreatedAt: time.Now().Add(-time.Minute).Unix(),
+		UserID: 987662, RequestID: "first-request", CapacityReason: "local_slots_full", CreatedAt: time.Now().Add(-time.Minute).Unix(),
 	}).Error)
 	require.NoError(t, db.Create(&model.ContentModerationLog{
 		UserID: 987662, RequestID: "second-request", CreatedAt: time.Now().Unix(),
@@ -456,6 +456,7 @@ func TestGetContentModerationLogsReturnsExplicitPaginationMetadata(t *testing.T)
 	require.Equal(t, 1, response.PageSize)
 	require.Len(t, response.Data, 1)
 	require.Equal(t, "first-request", response.Data[0].RequestID)
+	require.Equal(t, "local_slots_full", response.Data[0].CapacityReason)
 
 	recorder = httptest.NewRecorder()
 	context, _ = gin.CreateTestContext(recorder)

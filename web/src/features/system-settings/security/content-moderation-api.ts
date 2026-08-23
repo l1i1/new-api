@@ -57,6 +57,7 @@ export type ContentModerationLog = {
   request_id: string
   mode: string
   action: string
+  capacity_reason?: string
   flagged: boolean
   blocked: boolean
   category: string
