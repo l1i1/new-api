@@ -253,7 +253,7 @@ export function DynamicPricingBreakdown({
             </div>
           </div>
         )}
-        <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider '>
+        <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
           {t('Raw expression')}
         </div>
         <code className='text-muted-foreground block text-xs break-all'>
@@ -276,19 +276,29 @@ export function DynamicPricingBreakdown({
   return (
     <section className={cn('min-w-0', !compact && 'py-3 sm:py-4')}>
       {!compact && (
-        <div className='mb-3 flex items-start gap-2 sm:mb-4'>
-          <span className='bg-primary/10 text-primary mt-0.5 inline-flex size-6 items-center justify-center border'>
-            <TagIcon className='size-3.5' />
-          </span>
-          <div>
-            <div className='text-foreground text-base font-medium'>
-              {t('Dynamic Pricing')}
-            </div>
-            <div className='text-muted-foreground text-xs'>
-              {t('Prices vary by usage tier and request conditions')}
+        <>
+          <div className='mb-3 flex items-start gap-2 sm:mb-4'>
+            <span className='bg-primary/10 text-primary mt-0.5 inline-flex size-6 items-center justify-center border'>
+              <TagIcon className='size-3.5' />
+            </span>
+            <div>
+              <div className='text-foreground text-base font-medium'>
+                {t('Dynamic Pricing')}
+              </div>
+              <div className='text-muted-foreground text-xs'>
+                {t('Prices vary by usage tier and request conditions')}
+              </div>
             </div>
           </div>
-        </div>
+          <div className='bg-muted/20 mb-3 min-w-0 border p-3 sm:mb-4'>
+            <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
+              {t('Expression')}
+            </div>
+            <code className='text-foreground block max-h-40 overflow-auto font-mono text-xs leading-relaxed break-all whitespace-pre-wrap'>
+              {expr}
+            </code>
+          </div>
+        </>
       )}
 
       {hasTiers && (
@@ -349,7 +359,7 @@ export function DynamicPricingBreakdown({
                       )
                       return (
                         <div key={v.field} className='min-w-0'>
-                          <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider '>
+                          <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider'>
                             {t(v.shortLabel)}
                           </div>
                           <div

@@ -35,6 +35,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
@@ -70,13 +71,6 @@ interface DetailSegment {
   danger?: boolean
 }
 
-function formatRatioCompact(ratio: number | undefined): string {
-  if (ratio == null || !Number.isFinite(ratio)) return '-'
-  return ratio % 1 === 0
-    ? String(ratio)
-    : ratio.toFixed(4).replace(/\.?0+$/, '')
-}
-
 function getGroupRatio(other: LogOtherData | null): number | null {
   const userGroupRatio = other?.user_group_ratio
   if (
@@ -99,9 +93,10 @@ function buildDetailSegments(
   log: UsageLog,
   other: LogOtherData | null,
   t: (key: string, opts?: Record<string, unknown>) => string,
+  language: string,
   isAdmin: boolean
 ): DetailSegment[] {
-  const segments = buildTypeDetailSegments(log, other, t)
+  const segments = buildTypeDetailSegments(log, other, t, language)
   // Quota saturation is a rare, admin-only anomaly marker; surface it first
   // and in danger styling so it stands out on the related billing log. The
   // backend already strips admin_info for non-admins; gate on isAdmin too as
@@ -115,7 +110,8 @@ function buildDetailSegments(
 function buildTypeDetailSegments(
   log: UsageLog,
   other: LogOtherData | null,
-  t: (key: string, opts?: Record<string, unknown>) => string
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  language: string
 ): DetailSegment[] {
   // Audit (type=3) and login (type=7) logs: render localized content from the
   // structured op descriptor instead of the raw (English-fallback) content.
@@ -264,10 +260,13 @@ function buildTypeDetailSegments(
       userGroupRatio !== -1
     const groupRatio = other.group_ratio
     if (isUserGroup || (groupRatio != null && Number.isFinite(groupRatio))) {
-      segments.push({
-        text: `${isUserGroup ? t('User Exclusive Ratio') : t('Group Ratio')} ${formatRatioCompact(billingRatio)}x`,
-        muted: true,
-      })
+      const ratioLabel = formatGroupDiscount(billingRatio, language)
+      if (ratioLabel) {
+        segments.push({
+          text: `${isUserGroup ? t('User Exclusive Ratio') : t('Group Ratio')} ${ratioLabel}`,
+          muted: true,
+        })
+      }
     }
   }
 
@@ -282,7 +281,8 @@ function buildTypeDetailSegments(
 }
 
 export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
+  const language = i18n.resolvedLanguage || i18n.language
   const columns: ColumnDef<UsageLog>[] = [
     {
       accessorKey: 'created_at',
@@ -549,6 +549,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       let group = log.group
       if (!group) group = other?.group || ''
       const groupRatio = getGroupRatio(other)
+      const groupRatioLabel = formatGroupDiscount(
+        groupRatio ?? undefined,
+        language
+      )
 
       return (
         <div className='flex max-w-[200px] flex-col gap-0.5'>
@@ -571,7 +575,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
               )}
             </Tooltip>
           </TooltipProvider>
-          {(group || groupRatio != null) && (
+          {(group || groupRatioLabel) && (
             <span className='block max-w-full truncate text-xs leading-none'>
               {group ? (
                 <GroupBadge
@@ -582,10 +586,10 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                   className='inline align-baseline text-xs leading-none [&>span]:leading-none'
                 />
               ) : null}
-              {group && groupRatio != null ? ' ' : null}
-              {groupRatio != null ? (
+              {group && groupRatioLabel ? ' ' : null}
+              {groupRatioLabel ? (
                 <span className='text-muted-foreground/60 relative top-px align-baseline tabular-nums'>
-                  {formatRatioCompact(groupRatio)}x
+                  {groupRatioLabel}
                 </span>
               ) : null}
             </span>
@@ -729,7 +733,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const log = row.original
         const other = parseLogOther(log.other)
 
-        const segments = buildDetailSegments(log, other, t, isAdmin)
+        const segments = buildDetailSegments(log, other, t, language, isAdmin)
         const primary = segments[0]
         const hasMore = segments.length > 1
         let primaryTextClass = 'text-foreground'

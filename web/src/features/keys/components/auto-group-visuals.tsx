@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { GroupBadge } from '@/components/group-badge'
 import { Badge } from '@/components/ui/badge'
+import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { cn } from '@/lib/utils'
 
 export type GroupRatio = number | string | null | undefined
@@ -91,7 +92,7 @@ type GroupRatioBadgeProps = {
 }
 
 export function GroupRatioBadge(props: GroupRatioBadgeProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
 
   if (props.ratio === undefined || props.ratio === null || props.ratio === '') {
     return null
@@ -99,8 +100,9 @@ export function GroupRatioBadge(props: GroupRatioBadgeProps) {
 
   const label =
     typeof props.ratio === 'number'
-      ? `${props.ratio}x ${t('Ratio')}`
+      ? formatGroupDiscount(props.ratio, i18n.resolvedLanguage || i18n.language)
       : `${t('Auto')} ${t('Ratio')}`
+  if (!label) return null
   const badge = (
     <Badge
       variant='outline'

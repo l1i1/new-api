@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+
 import { fireEvent, render, within } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
 
@@ -259,21 +260,21 @@ describe('Auto group order editor', () => {
         name: 'VIP',
         title: 'Priority access',
         description: 'Priority access',
-        ratio: '3x Ratio',
+        ratio: 'x3',
       },
       {
         index: '2',
         name: 'Default',
         title: 'Standard access',
         description: 'Standard access',
-        ratio: '1x Ratio',
+        ratio: undefined,
       },
       {
         index: '3',
         name: 'Team',
         title: 'Shared access',
         description: 'Shared access',
-        ratio: '2x Ratio',
+        ratio: 'x2',
       },
     ])
 

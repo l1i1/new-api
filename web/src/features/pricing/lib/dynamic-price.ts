@@ -28,6 +28,7 @@ import {
 } from './billing-expr'
 import { getDisplayGroupRatio } from './model-helpers'
 import { formatPricingCurrencyFromUSD } from './price'
+import { evalExprLocally } from './tier-expr'
 
 type DynamicPriceOptions = {
   tokenUnit: TokenUnit
@@ -36,6 +37,7 @@ type DynamicPriceOptions = {
   usdExchangeRate?: number
   displayCurrency?: PricingCurrency
   groupRatioMultiplier?: number
+  now?: Date
 }
 
 export type DynamicPriceEntry = {
@@ -63,6 +65,16 @@ export type DynamicPricingSummary = {
 }
 
 const PRIMARY_DYNAMIC_FIELDS = new Set(['inputPrice', 'outputPrice'])
+const TIME_FUNCTION_PATTERN = /\b(?:hour|minute|weekday|month|day)\s*\(/u
+const EMPTY_EXTRA_TOKEN_VALUES = {
+  cacheReadTokens: 0,
+  cacheCreateTokens: 0,
+  cacheCreate1hTokens: 0,
+  imageTokens: 0,
+  imageOutputTokens: 0,
+  audioInputTokens: 0,
+  audioOutputTokens: 0,
+}
 
 export function isDynamicPricingModel(model: PricingModel): boolean {
   return model.billing_mode === 'tiered_expr' && Boolean(model.billing_expr)
@@ -118,6 +130,28 @@ export function getDynamicPricingTiers(model: PricingModel): ParsedTier[] {
   return parseTiersFromExpr(billingExpr)
 }
 
+function getDisplayedTier(
+  tiers: ParsedTier[],
+  billingExpr: string,
+  now: Date | undefined
+): ParsedTier | null {
+  const firstTier = tiers[0] || null
+  if (!firstTier || !TIME_FUNCTION_PATTERN.test(billingExpr)) {
+    return firstTier
+  }
+
+  const expression = billingExpr.replace(/^v\d+:/u, '')
+  const result = evalExprLocally(
+    expression,
+    0,
+    0,
+    EMPTY_EXTRA_TOKEN_VALUES,
+    now
+  )
+  if (result.error || !result.matchedTier) return firstTier
+  return tiers.find((tier) => tier.label === result.matchedTier) || firstTier
+}
+
 export function hasDynamicRequestRules(model: PricingModel): boolean {
   if (!isDynamicPricingModel(model)) return false
   const { requestRuleExpr } = splitBillingExprAndRequestRules(
@@ -171,8 +205,11 @@ export function getDynamicPricingSummary(
 ): DynamicPricingSummary | null {
   if (!isDynamicPricingModel(model)) return null
 
-  const tiers = getDynamicPricingTiers(model)
-  const tier = tiers[0] || null
+  const { billingExpr } = splitBillingExprAndRequestRules(
+    model.billing_expr || ''
+  )
+  const tiers = parseTiersFromExpr(billingExpr)
+  const tier = getDisplayedTier(tiers, billingExpr, options.now)
   const entries = getDynamicPriceEntries(tier, options)
   const rawExpression = model.billing_expr || ''
 

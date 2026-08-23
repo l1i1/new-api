@@ -147,7 +147,21 @@ describe('API key group table cell', () => {
 
     rerender(<CellHarness group='vip' ratio={3} shouldReduceMotion={false} />)
 
-    expect(container).toHaveTextContent('3x')
+    expect(container).toHaveTextContent('x3')
     expect(container.querySelector('[data-auto-group-frame]')).toBe(null)
+  })
+
+  test('uses model-square discount notation and hides a neutral ratio', async () => {
+    await i18n.changeLanguage('zh')
+    const { container, rerender } = render(
+      <CellHarness group='vip' ratio={0.03} shouldReduceMotion={false} />
+    )
+
+    expect(container).toHaveTextContent('0.3折')
+
+    rerender(<CellHarness group='vip' ratio={1} shouldReduceMotion={false} />)
+
+    expect(container).not.toHaveTextContent('1x')
+    await i18n.changeLanguage('en')
   })
 })

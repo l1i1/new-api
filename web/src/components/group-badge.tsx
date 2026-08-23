@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { cn } from '@/lib/utils'
 
 import { StatusBadge, type StatusBadgeProps } from './status-badge'
@@ -55,7 +56,7 @@ function getGroupLabel(params: {
 }
 
 export function GroupBadge(props: GroupBadgeProps) {
-  const { t } = useTranslation()
+  const { i18n, t } = useTranslation()
   const {
     group,
     label: labelOverride,
@@ -88,7 +89,12 @@ export function GroupBadge(props: GroupBadgeProps) {
     />
   )
 
-  if (ratio == null) {
+  const ratioLabel = formatGroupDiscount(
+    ratio ?? undefined,
+    i18n.resolvedLanguage || i18n.language
+  )
+
+  if (ratioLabel == null) {
     return badge
   }
 
@@ -98,10 +104,10 @@ export function GroupBadge(props: GroupBadgeProps) {
       <span
         className={cn(
           'inline-flex h-5 shrink-0 items-center rounded-full px-1.5 font-mono text-xs leading-none font-medium tabular-nums',
-          getGroupRatioClassName(ratio)
+          getGroupRatioClassName(ratio ?? 1)
         )}
       >
-        <span>{ratio}x</span>
+        <span>{ratioLabel}</span>
       </span>
     </span>
   )
