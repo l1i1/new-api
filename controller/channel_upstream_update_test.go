@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -98,7 +99,7 @@ func TestFetchAdvancedCustomModelsAppliesHeaderOverrideAfterRouteAuth(t *testing
 	}`
 	channel.HeaderOverride = &headerOverride
 
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-4.1"}, models)
 
@@ -126,7 +127,7 @@ func TestFetchAdvancedCustomModelsUsesEnabledSavedMultiKey(t *testing.T) {
 		},
 	}
 
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-4.1-mini"}, models)
 	require.Equal(t, "Bearer enabled-key", <-authorization)
@@ -140,7 +141,7 @@ func TestFetchAdvancedCustomModelsRejectsNonOKResponse(t *testing.T) {
 	defer server.Close()
 
 	channel := newAdvancedCustomModelListChannel(server.URL, "secret-key", "/v1/models", nil)
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 	require.ErrorContains(t, err, "status code: 502")
 	require.Nil(t, models)
 }
@@ -157,7 +158,7 @@ func TestFetchAdvancedCustomModelsRedactsQueryKeyFromTransportErrors(t *testing.
 		Value: "prefix-{api_key}",
 	})
 
-	_, err := fetchChannelUpstreamModelIDs(channel)
+	_, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), secret)
 	require.NotContains(t, err.Error(), "custom-token")
@@ -192,7 +193,7 @@ func TestFetchOrdinaryOpenAIModelsKeepsExistingEmptyDataBehavior(t *testing.T) {
 		Key:     "ordinary-key",
 		BaseURL: &baseURL,
 	}
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 	require.NoError(t, err)
 	require.Empty(t, models)
 }
@@ -346,7 +347,7 @@ func TestFailedAdvancedCustomDetectionDoesNotStageFullRemoval(t *testing.T) {
 	channel.SetOtherSettings(settings)
 	require.NoError(t, db.Create(channel).Error)
 
-	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, true, true)
+	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(context.Background(), channel, &settings, true, true)
 	require.ErrorContains(t, err, "no valid model IDs")
 	require.False(t, modelsChanged)
 	require.Zero(t, autoAdded)
@@ -412,7 +413,7 @@ func TestFetchNewAPIModelsUsesOpenAIContract(t *testing.T) {
 		BaseURL: &baseURL,
 	}
 
-	models, err := fetchChannelUpstreamModelIDs(channel)
+	models, err := fetchChannelUpstreamModelIDs(context.Background(), channel)
 
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-5", "gpt-5-mini"}, models)
