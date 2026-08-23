@@ -121,7 +121,7 @@ func applyOllamaPromptCacheEstimation(info *relaycommon.RelayInfo, usage *dto.Us
 }
 
 func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayInfo, usage *dto.Usage, upstreamCachedTokensPresent bool, contexts ...*gin.Context) {
-	if info == nil || usage == nil {
+	if info == nil {
 		return
 	}
 	if info.ChannelMeta == nil {
@@ -130,33 +130,18 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 	if !info.ChannelSetting.OllamaCacheEstimationEnabled {
 		return
 	}
-	if usage.PromptTokens <= 0 {
-		return
-	}
-	// A positive upstream value is authoritative. An explicit zero is an
-	// upstream miss, so it must still allow the channel estimator to run.
-	allowEstimation := usage.PromptTokensDetails.CachedTokens <= 0
-	if upstreamCachedTokensPresent {
-		// The stream/non-stream parser has already normalized an upstream
-		// positive value above zero. Only an explicit upstream zero is a miss.
-		allowEstimation = usage.PromptTokensDetails.CachedTokens == 0
-	}
 	// Do not apply to embeddings.
 	if info.RelayMode == relayconstant.RelayModeEmbeddings {
 		return
 	}
-
 	identity := resolvePromptCacheIdentity(info, contexts...)
-	if len(identity.MessageHashes) == 0 {
-		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable"})
-		return
-	}
-
 	cacheKey := buildPromptCacheKeyWithIdentity(info, identity)
 	if cacheKey == "" {
 		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family})
 		return
 	}
+	// keep_alive=0 means the upstream model is being unloaded. Remove the
+	// whole simulated partition even when the response has no usage fields.
 	if identity.Clear {
 		if _, err := cacheDeletePromptCache(cacheKey); err != nil {
 			logger.LogWarn(nil, fmt.Sprintf("ollama prompt cache clear failed channel=%d model=%q: %v", info.ChannelId, info.UpstreamModelName, err))
@@ -167,6 +152,22 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 	if identity.Uncacheable {
 		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family, PartitionHash: cacheKey})
 		return
+	}
+	if len(identity.MessageHashes) == 0 {
+		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family, PartitionHash: cacheKey})
+		return
+	}
+	if usage == nil || usage.PromptTokens <= 0 {
+		return
+	}
+
+	// A positive upstream value is authoritative. An explicit zero is an
+	// upstream miss, so it must still allow the channel estimator to run.
+	allowEstimation := usage.PromptTokensDetails.CachedTokens <= 0
+	if upstreamCachedTokensPresent {
+		// The stream/non-stream parser has already normalized an upstream
+		// positive value above zero. Only an explicit upstream zero is a miss.
+		allowEstimation = usage.PromptTokensDetails.CachedTokens == 0
 	}
 	messageHashes := identity.MessageHashes
 
@@ -313,19 +314,10 @@ func hashPromptCacheResponse(response *OllamaChatMessage) string {
 	if response == nil {
 		return ""
 	}
-	message := dto.Message{Role: response.Role, Content: response.Content}
-	if len(response.Thinking) > 0 {
-		var thinking string
-		if common.Unmarshal(response.Thinking, &thinking) == nil && thinking != "" {
-			message.ReasoningContent = &thinking
-		}
-	}
-	if len(response.ToolCalls) > 0 {
-		if raw, err := common.Marshal(response.ToolCalls); err == nil {
-			message.ToolCalls = raw
-		}
-	}
-	return hashMessage(message)
+	// Hash the final Ollama message shape. Converting through dto.Message loses
+	// thinking and changes tool-call JSON, so the next request would miss even
+	// when it contains the exact response that Ollama cached.
+	return hashPromptCacheValue(*response)
 }
 
 func promptCacheTokenSum(promptTokens, completionTokens int) int {
@@ -398,6 +390,11 @@ func promptCacheCandidates(entry promptCacheEntry) []promptCacheCandidate {
 		if len(result) >= promptCacheMaxCandidates || candidate.PreviousPromptTokens <= 0 {
 			continue
 		}
+		if candidate.ExpiresAt == 0 {
+			// Legacy entries had no per-candidate expiry. Bound them during
+			// migration instead of extending stale state indefinitely on writes.
+			candidate.ExpiresAt = time.Now().Add(promptCacheTTL).UnixNano()
+		}
 		if candidate.PrefixHash != "" && candidate.MessageCount > 0 {
 			result = append(result, candidate)
 			continue
@@ -408,6 +405,7 @@ func promptCacheCandidates(entry promptCacheEntry) []promptCacheCandidate {
 		result = append(result, promptCacheCandidate{
 			MessageHashes:        append([]string(nil), candidate.MessageHashes...),
 			PreviousPromptTokens: candidate.PreviousPromptTokens,
+			ExpiresAt:            candidate.ExpiresAt,
 		})
 		totalHashes += len(candidate.MessageHashes)
 	}
@@ -556,9 +554,6 @@ func captureOllamaPromptCacheIdentity(c *gin.Context, info *relaycommon.RelayInf
 	// A successfully decoded final Ollama body is authoritative. Store even an
 	// empty identity so an uncacheable body cannot fall back to the client DTO.
 	c.Set(promptCacheIdentityContextKey, identity)
-	if len(identity.MessageHashes) == 0 {
-		return
-	}
 	cacheKey := buildPromptCacheKeyWithIdentity(info, identity)
 	if cacheKey == "" {
 		return
@@ -567,6 +562,9 @@ func captureOllamaPromptCacheIdentity(c *gin.Context, info *relaycommon.RelayInf
 		if _, err := cacheDeletePromptCache(cacheKey); err != nil {
 			logger.LogWarn(nil, fmt.Sprintf("ollama prompt cache clear failed channel=%d model=%q: %v", info.ChannelId, info.UpstreamModelName, err))
 		}
+		return
+	}
+	if len(identity.MessageHashes) == 0 || identity.Uncacheable {
 		return
 	}
 	cache := getPromptCache()
@@ -597,16 +595,35 @@ func resolvePromptCacheIdentity(info *relaycommon.RelayInfo, contexts ...*gin.Co
 }
 
 func buildOllamaChatPromptCacheIdentity(request *OllamaChatRequest) promptCacheIdentity {
-	if request == nil || len(request.Messages) == 0 {
+	if request == nil {
 		return promptCacheIdentity{}
 	}
 	ttl, cacheable := promptCacheTTLForKeepAlive(request.KeepAlive)
+	keyMaterial, _ := common.Marshal(struct {
+		Model   string          `json:"model"`
+		Tools   any             `json:"tools,omitempty"`
+		Format  any             `json:"format,omitempty"`
+		Options map[string]any  `json:"options,omitempty"`
+		Think   json.RawMessage `json:"think,omitempty"`
+	}{Model: request.Model, Tools: request.Tools, Format: request.Format, Options: request.Options, Think: request.Think})
+	if len(request.Messages) == 0 {
+		return promptCacheIdentity{Family: "chat", KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
+	}
 	hashes := make([]string, 0, len(request.Messages))
 	rootHash := ""
-	uncacheable := false
 	for _, message := range request.Messages {
 		if len(message.Images) > 0 {
-			uncacheable = true
+			// Do not serialize/hash image base64 data. Keep a stable root based
+			// on the non-image fields only so keep_alive=0 can clear the same
+			// fallback partition without retaining multimodal content.
+			return promptCacheIdentity{
+				Family:      "chat",
+				RootHash:    promptCacheRootHashWithoutImages(request.Messages),
+				KeyMaterial: keyMaterial,
+				TTL:         ttl,
+				Clear:       !cacheable,
+				Uncacheable: true,
+			}
 		}
 		hash := hashPromptCacheValue(message)
 		hashes = append(hashes, hash)
@@ -617,19 +634,12 @@ func buildOllamaChatPromptCacheIdentity(request *OllamaChatRequest) promptCacheI
 	if rootHash == "" {
 		rootHash = hashes[0]
 	}
-	keyMaterial, _ := common.Marshal(struct {
-		Model string          `json:"model"`
-		Tools any             `json:"tools,omitempty"`
-		Think json.RawMessage `json:"think,omitempty"`
-	}{Model: request.Model, Tools: request.Tools, Think: request.Think})
-	return promptCacheIdentity{Family: "chat", MessageHashes: hashes, RootHash: rootHash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable, Uncacheable: uncacheable}
+	return promptCacheIdentity{Family: "chat", MessageHashes: hashes, RootHash: rootHash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
 }
 
 func buildOllamaGeneratePromptCacheIdentity(request *OllamaGenerateRequest) promptCacheIdentity {
-	if request == nil || request.Prompt == "" || len(request.Images) > 0 {
-		if request == nil || request.Prompt == "" {
-			return promptCacheIdentity{}
-		}
+	if request == nil {
+		return promptCacheIdentity{}
 	}
 	ttl, cacheable := promptCacheTTLForKeepAlive(request.KeepAlive)
 	hash := hashPromptCacheValue(struct {
@@ -637,10 +647,50 @@ func buildOllamaGeneratePromptCacheIdentity(request *OllamaGenerateRequest) prom
 		Suffix string `json:"suffix,omitempty"`
 	}{Prompt: request.Prompt, Suffix: request.Suffix})
 	keyMaterial, _ := common.Marshal(struct {
-		Model string          `json:"model"`
-		Think json.RawMessage `json:"think,omitempty"`
-	}{Model: request.Model, Think: request.Think})
+		Model   string          `json:"model"`
+		Format  any             `json:"format,omitempty"`
+		Options map[string]any  `json:"options,omitempty"`
+		Think   json.RawMessage `json:"think,omitempty"`
+	}{Model: request.Model, Format: request.Format, Options: request.Options, Think: request.Think})
+	if request.Prompt == "" {
+		return promptCacheIdentity{Family: "generate", KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
+	}
+	if len(request.Images) > 0 {
+		// The prompt/suffix hash is safe; never include image base64 in the
+		// identity and never store this request as cacheable.
+		return promptCacheIdentity{Family: "generate", RootHash: hash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable, Uncacheable: true}
+	}
 	return promptCacheIdentity{Family: "generate", MessageHashes: []string{hash}, RootHash: hash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable, Uncacheable: len(request.Images) > 0}
+}
+
+func promptCacheRootHashWithoutImages(messages []OllamaChatMessage) string {
+	for _, message := range messages {
+		if message.Role == "user" {
+			return hashPromptCacheMessageWithoutImages(message)
+		}
+	}
+	if len(messages) > 0 {
+		return hashPromptCacheMessageWithoutImages(messages[0])
+	}
+	return ""
+}
+
+func hashPromptCacheMessageWithoutImages(message OllamaChatMessage) string {
+	return hashPromptCacheValue(struct {
+		Role       string           `json:"role"`
+		Content    string           `json:"content,omitempty"`
+		ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
+		ToolName   string           `json:"tool_name,omitempty"`
+		ToolCallID string           `json:"tool_call_id,omitempty"`
+		Thinking   json.RawMessage  `json:"thinking,omitempty"`
+	}{
+		Role:       message.Role,
+		Content:    message.Content,
+		ToolCalls:  message.ToolCalls,
+		ToolName:   message.ToolName,
+		ToolCallID: message.ToolCallID,
+		Thinking:   message.Thinking,
+	})
 }
 
 func promptCacheTTLForKeepAlive(value any) (time.Duration, bool) {

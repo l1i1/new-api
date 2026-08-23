@@ -868,11 +868,16 @@ func (info *RelayInfo) SetDownstreamFirstWriteTime() {
 	if info == nil {
 		return
 	}
+	// A stream may write a synthetic header chunk before the upstream responds;
+	// it must not be reported as TTFT.
+	if info.IsStream && info.AttemptFirstResponseTime.IsZero() {
+		return
+	}
 	now := time.Now()
 	if info.AttemptFirstDownstreamWriteTime.IsZero() {
 		info.AttemptFirstDownstreamWriteTime = now
 	}
-	if info.isFirstResponse && info.FirstDownstreamWriteTime.IsZero() {
+	if info.FirstDownstreamWriteTime.IsZero() {
 		info.FirstDownstreamWriteTime = now
 	}
 }

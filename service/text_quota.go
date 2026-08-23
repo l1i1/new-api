@@ -76,6 +76,19 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 	return s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
 }
 
+func saturatingTokenTotal(promptTokens, completionTokens int) int {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if completionTokens < 0 {
+		completionTokens = 0
+	}
+	if promptTokens > math.MaxInt-completionTokens {
+		return math.MaxInt
+	}
+	return promptTokens + completionTokens
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -256,7 +269,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	summary.PromptTokens = usage.PromptTokens
 	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	summary.TotalTokens = saturatingTokenTotal(usage.PromptTokens, usage.CompletionTokens)
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
 	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens

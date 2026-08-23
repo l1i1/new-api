@@ -100,6 +100,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if service.OpsCyberPolicyForwarded(c) {
 				return
 			}
+			if c.Writer != nil && c.Writer.Written() {
+				return
+			}
 			if mark := service.GetOpsCyberPolicy(c); mark != nil && mark.Body != "" {
 				statusCode := mark.UpstreamStatus
 				if statusCode < 400 || statusCode > 599 {
@@ -381,7 +384,7 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 		moderationRequest.AffinityTTLSeconds = int(affinity.TTLSeconds)
 		moderationRequest.AffinityChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	}
-		decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
+	decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
 	if decision != nil && decision.Error != "" {
 		logLabel := "content moderation fail-open"
 		if decision.Overloaded {

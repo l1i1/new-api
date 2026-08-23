@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
@@ -81,6 +82,38 @@ func TestRelayInfoMetaTypedNilReceiver(t *testing.T) {
 	assert.NotNil(t, firstOptions.Gemini.SupportsImagine)
 	assert.NotNil(t, firstOptions.Gemini.SafetySetting)
 	assert.NotNil(t, firstOptions.PreserveThinkingSuffix)
+}
+
+func TestRelayInfoSetDownstreamFirstWriteTimeWaitsForStreamingResponse(t *testing.T) {
+	start := time.Now()
+	info := &RelayInfo{
+		StartTime:         start,
+		AttemptStartTime:  start,
+		FirstResponseTime: start.Add(-time.Second),
+		IsStream:          true,
+		isFirstResponse:   true,
+	}
+
+	info.SetDownstreamFirstWriteTime()
+	assert.True(t, info.AttemptFirstDownstreamWriteTime.IsZero())
+	assert.True(t, info.FirstDownstreamWriteTime.IsZero())
+
+	info.SetFirstResponseTime()
+	info.SetDownstreamFirstWriteTime()
+	require.False(t, info.AttemptFirstResponseTime.IsZero())
+	require.False(t, info.AttemptFirstDownstreamWriteTime.IsZero())
+	assert.False(t, info.AttemptFirstDownstreamWriteTime.Before(info.AttemptFirstResponseTime))
+	assert.False(t, info.FirstDownstreamWriteTime.IsZero())
+
+	info.BeginAttempt(time.Now())
+	info.SetDownstreamFirstWriteTime()
+	assert.True(t, info.AttemptFirstDownstreamWriteTime.IsZero())
+}
+
+func TestRelayInfoSetDownstreamFirstWriteTimeKeepsNonStreamBehavior(t *testing.T) {
+	info := &RelayInfo{}
+	info.SetDownstreamFirstWriteTime()
+	assert.False(t, info.AttemptFirstDownstreamWriteTime.IsZero())
 }
 
 func TestCloneRequestHeadersSkipsBlankFirstValue(t *testing.T) {

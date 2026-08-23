@@ -238,8 +238,8 @@ func collectPendingUpstreamModelChangesFromModels(
 	return normalizeModelNames(pendingAdd), normalizeModelNames(pendingRemove)
 }
 
-func collectPendingUpstreamModelChanges(channel *model.Channel, settings dto.ChannelOtherSettings) (pendingAddModels []string, pendingRemoveModels []string, err error) {
-	upstreamModels, err := fetchChannelUpstreamModelIDs(channel)
+func collectPendingUpstreamModelChanges(ctx context.Context, channel *model.Channel, settings dto.ChannelOtherSettings) (pendingAddModels []string, pendingRemoveModels []string, err error) {
+	upstreamModels, err := fetchChannelUpstreamModelIDs(ctx, channel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -361,7 +361,7 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	return io.ReadAll(response.Body)
 }
 
-func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
+func fetchChannelUpstreamModelIDs(ctx context.Context, channel *model.Channel) ([]string, error) {
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() != "" {
 		baseURL = channel.GetBaseURL()
@@ -373,7 +373,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 			return nil, accessErr
 		}
 		key = strings.TrimSpace(key)
-		models, err := ollama.FetchOllamaModels(baseURL, key, proxy)
+		models, err := ollama.FetchOllamaModels(ctx, baseURL, key, proxy)
 		if err != nil {
 			return nil, err
 		}
@@ -505,6 +505,7 @@ func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.Cha
 }
 
 func checkAndPersistChannelUpstreamModelUpdates(
+	ctx context.Context,
 	channel *model.Channel,
 	settings *dto.ChannelOtherSettings,
 	force bool,
@@ -519,7 +520,7 @@ func checkAndPersistChannelUpstreamModelUpdates(
 		}
 	}
 
-	pendingAddModels, pendingRemoveModels, fetchErr := collectPendingUpstreamModelChanges(channel, *settings)
+	pendingAddModels, pendingRemoveModels, fetchErr := collectPendingUpstreamModelChanges(ctx, channel, *settings)
 	settings.UpstreamModelUpdateLastCheckTime = now
 	if fetchErr != nil {
 		if err = updateChannelUpstreamModelSettings(channel, *settings, false); err != nil {
@@ -761,7 +762,7 @@ scanLoop:
 			}
 
 			checkedChannels++
-			modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, force, allowAutoApply)
+			modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(ctx, channel, &settings, force, allowAutoApply)
 			if err != nil {
 				failedChannels++
 				failedChannelIDs = append(failedChannelIDs, channel.Id)
@@ -941,7 +942,7 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 	}
 
 	settings := channel.GetOtherSettings()
-	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, true, false)
+	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(c.Request.Context(), channel, &settings, true, false)
 	if err != nil {
 		common.ApiError(c, err)
 		return

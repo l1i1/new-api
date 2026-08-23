@@ -202,7 +202,9 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	c.Render(-1, common.CustomEvent{Data: "data: " + str})
+	if err := (common.CustomEvent{Data: "data: " + str}).Render(c.Writer); err != nil {
+		return fmt.Errorf("write stream data failed: %w", err)
+	}
 	return FlushWriter(c)
 }
 

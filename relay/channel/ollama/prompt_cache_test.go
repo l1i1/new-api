@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -370,6 +371,17 @@ func TestPromptCacheCandidatesReadLegacyEntry(t *testing.T) {
 	require.Len(t, candidates, 1)
 	assert.Equal(t, entry.MessageHashes, candidates[0].MessageHashes)
 	assert.Equal(t, 80, candidates[0].PreviousPromptTokens)
+}
+
+func TestPromptCacheLegacyCandidateReceivesBoundedExpiry(t *testing.T) {
+	candidates := promptCacheCandidates(promptCacheEntry{
+		MessageHashes:        []string{"legacy"},
+		PreviousPromptTokens: 80,
+	})
+	require.Len(t, candidates, 1)
+	assert.NotZero(t, candidates[0].ExpiresAt)
+	assert.Greater(t, time.Unix(0, candidates[0].ExpiresAt), time.Now())
+	assert.LessOrEqual(t, time.Unix(0, candidates[0].ExpiresAt), time.Now().Add(promptCacheTTL))
 }
 
 func TestPromptCacheEntryLegacyJSONCompatibility(t *testing.T) {
@@ -940,6 +952,55 @@ func TestCaptureOllamaPromptCacheIdentityKeepsFinalImageRequestUncacheable(t *te
 	assert.Equal(t, "uncacheable", observation.Outcome)
 }
 
+func TestOllamaPromptCacheIdentityDoesNotHashImagePayload(t *testing.T) {
+	largeImage := strings.Repeat("a", 8*1024*1024)
+	identity := buildOllamaChatPromptCacheIdentity(&OllamaChatRequest{
+		Model: "llama3",
+		Messages: []OllamaChatMessage{{
+			Role: "user", Content: "describe this image", Images: []string{largeImage},
+		}},
+	})
+
+	assert.True(t, identity.Uncacheable)
+	assert.Empty(t, identity.MessageHashes)
+	assert.Len(t, identity.RootHash, sha256.Size*2)
+	assert.NotContains(t, string(identity.KeyMaterial), largeImage)
+}
+
+func TestOllamaPromptCacheIdentityIsolatesFormatAndOptions(t *testing.T) {
+	base := &OllamaChatRequest{
+		Model:    "llama3",
+		Messages: []OllamaChatMessage{{Role: "user", Content: "hello"}},
+	}
+	withFormat := *base
+	withFormat.Format = "json"
+	withOptions := *base
+	withOptions.Options = map[string]any{"num_ctx": 4096}
+
+	assert.NotEqual(t,
+		buildOllamaChatPromptCacheIdentity(base).KeyMaterial,
+		buildOllamaChatPromptCacheIdentity(&withFormat).KeyMaterial,
+	)
+	assert.NotEqual(t,
+		buildOllamaChatPromptCacheIdentity(base).KeyMaterial,
+		buildOllamaChatPromptCacheIdentity(&withOptions).KeyMaterial,
+	)
+
+	generate := &OllamaGenerateRequest{Model: "llama3", Prompt: "hello"}
+	generateFormat := *generate
+	generateFormat.Format = "json"
+	generateOptions := *generate
+	generateOptions.Options = map[string]any{"num_ctx": 4096}
+	assert.NotEqual(t,
+		buildOllamaGeneratePromptCacheIdentity(generate).KeyMaterial,
+		buildOllamaGeneratePromptCacheIdentity(&generateFormat).KeyMaterial,
+	)
+	assert.NotEqual(t,
+		buildOllamaGeneratePromptCacheIdentity(generate).KeyMaterial,
+		buildOllamaGeneratePromptCacheIdentity(&generateOptions).KeyMaterial,
+	)
+}
+
 func TestCaptureOllamaPromptCacheIdentityKeepAliveZeroIsUncacheable(t *testing.T) {
 	resetPromptCache()
 	gin.SetMode(gin.TestMode)
@@ -1035,6 +1096,45 @@ func TestPromptCacheUsesShortKeepAliveForRedisKeyTTL(t *testing.T) {
 	assert.LessOrEqual(t, ttl, 30*time.Second)
 }
 
+func TestPromptCacheShortKeepAliveReplacesExistingLongTTL(t *testing.T) {
+	oldRedisEnabled := common.RedisEnabled
+	oldRedis := common.RDB
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() {
+		common.RedisEnabled = oldRedisEnabled
+		common.RDB = oldRedis
+		_ = client.Close()
+		resetPromptCache()
+	})
+	common.RedisEnabled = true
+	common.RDB = client
+	resetPromptCache()
+
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	info := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "hello"), "ttl-replace"))
+	defaultBody, defaultCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"hello"}]}`))
+	require.NoError(t, err)
+	defaultContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(defaultContext, info, defaultBody)
+	applyOllamaPromptCacheEstimation(info, &dto.Usage{PromptTokens: 100}, defaultContext)
+	defaultCloser.Close()
+
+	key := buildPromptCacheKeyWithIdentity(info, resolvePromptCacheIdentity(info, defaultContext))
+	assert.Greater(t, server.TTL(getPromptCache().FullKey(key)), 4*time.Minute)
+
+	shortBody, shortCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"hello"}],"keep_alive":"30s"}`))
+	require.NoError(t, err)
+	shortContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(shortContext, info, shortBody)
+	applyOllamaPromptCacheEstimation(info, &dto.Usage{PromptTokens: 100}, shortContext)
+	shortCloser.Close()
+
+	ttl := server.TTL(getPromptCache().FullKey(key))
+	assert.Greater(t, ttl, 20*time.Second)
+	assert.LessOrEqual(t, ttl, 30*time.Second)
+}
+
 func TestPromptCacheKeepAliveZeroClearsExistingPartition(t *testing.T) {
 	oldRedisEnabled := common.RedisEnabled
 	oldRedis := common.RDB
@@ -1068,6 +1168,39 @@ func TestPromptCacheKeepAliveZeroClearsExistingPartition(t *testing.T) {
 	zeroContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	captureOllamaPromptCacheIdentity(zeroContext, info, zeroBody)
 	applyOllamaPromptCacheEstimation(info, &dto.Usage{PromptTokens: 100}, zeroContext)
+
+	assert.False(t, server.Exists(getPromptCache().FullKey(key)))
+}
+
+func TestPromptCacheKeepAliveZeroClearsWithoutUsage(t *testing.T) {
+	oldRedisEnabled := common.RedisEnabled
+	oldRedis := common.RDB
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() {
+		common.RedisEnabled = oldRedisEnabled
+		common.RDB = oldRedis
+		_ = client.Close()
+		resetPromptCache()
+	})
+	common.RedisEnabled = true
+	common.RDB = client
+	resetPromptCache()
+
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	info := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "hello"), "clear-no-usage"))
+	identity := buildOllamaChatPromptCacheIdentity(&OllamaChatRequest{
+		Model: "llama3", Messages: []OllamaChatMessage{{Role: "user", Content: "hello"}}, KeepAlive: "0",
+	})
+	key := buildPromptCacheKeyWithIdentity(info, identity)
+	require.NoError(t, getPromptCache().SetWithTTL(key, promptCacheEntry{
+		Candidates: []promptCacheCandidate{newPromptCacheCandidate([]string{"existing"}, 100, time.Now().Add(promptCacheTTL))},
+	}, promptCacheTTL))
+	require.True(t, server.Exists(getPromptCache().FullKey(key)))
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(promptCacheIdentityContextKey, identity)
+	applyOllamaPromptCacheEstimation(info, &dto.Usage{}, c)
 
 	assert.False(t, server.Exists(getPromptCache().FullKey(key)))
 }
@@ -1125,6 +1258,50 @@ func TestRecordOllamaPromptCacheResponseRequiresExactAssistantPrefix(t *testing.
 
 	different := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "a", "assistant", "different"), "response-session"))
 	differentBody, differentCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"a"},{"role":"assistant","content":"different"}]}`))
+	require.NoError(t, err)
+	defer differentCloser.Close()
+	differentContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(differentContext, different, differentBody)
+	differentUsage := &dto.Usage{PromptTokens: 150}
+	applyOllamaPromptCacheEstimation(different, differentUsage, differentContext)
+	assert.Equal(t, 100, differentUsage.PromptTokensDetails.CachedTokens)
+}
+
+func TestRecordOllamaPromptCacheResponseUsesFinalMessageShapeForThinkingAndTools(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	first := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "a"), "response-structure-session"))
+	firstBody, firstCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"a"}]}`))
+	require.NoError(t, err)
+	defer firstCloser.Close()
+	firstContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(firstContext, first, firstBody)
+	firstUsage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20}
+	applyOllamaPromptCacheEstimation(first, firstUsage, firstContext)
+	response := &OllamaChatMessage{
+		Role:     "assistant",
+		Content:  "answer",
+		Thinking: json.RawMessage(`"internal"`),
+		ToolCalls: []OllamaToolCall{{ID: "call_1", Function: struct {
+			Name      string      `json:"name"`
+			Arguments interface{} `json:"arguments"`
+		}{Name: "lookup", Arguments: map[string]any{"city": "Paris"}}}},
+	}
+	assert.Equal(t, hashPromptCacheValue(*response), hashPromptCacheResponse(response))
+	recordOllamaPromptCacheResponse(first, firstUsage, response, firstContext)
+
+	matching := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "a"), "response-structure-session"))
+	matchingBody, matchingCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"a"},{"role":"assistant","content":"answer","thinking":"internal","tool_calls":[{"id":"call_1","function":{"name":"lookup","arguments":{"city":"Paris"}}}]}]}`))
+	require.NoError(t, err)
+	defer matchingCloser.Close()
+	matchingContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(matchingContext, matching, matchingBody)
+	matchingUsage := &dto.Usage{PromptTokens: 150}
+	applyOllamaPromptCacheEstimation(matching, matchingUsage, matchingContext)
+	assert.Equal(t, 120, matchingUsage.PromptTokensDetails.CachedTokens)
+
+	different := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "a"), "response-structure-session"))
+	differentBody, differentCloser, err := relaycommon.NewOutboundJSONBody([]byte(`{"model":"llama3","messages":[{"role":"user","content":"a"},{"role":"assistant","content":"answer","thinking":"other","tool_calls":[{"id":"call_1","function":{"name":"lookup","arguments":{"city":"Paris"}}}]}]}`))
 	require.NoError(t, err)
 	defer differentCloser.Close()
 	differentContext, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -1207,6 +1384,21 @@ func TestExtractSessionIdentifierFallsBackAfterBlankMetadataUserID(t *testing.T)
 		User:     marshalRaw("request-user"),
 	}
 	assert.Equal(t, "request-user", extractSessionIdentifier(req))
+}
+
+func TestBuildPromptCacheKeyBlankMetadataUsesTokenFallback(t *testing.T) {
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	blankMetadata := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+		Metadata: []byte(`{"user_id":"  "}`),
+	})
+	blankMetadata.TokenId = 42
+	noMetadata := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{
+		Messages: msgs("user", "hello"),
+	})
+	noMetadata.TokenId = 42
+
+	assert.Equal(t, buildPromptCacheKey(blankMetadata), buildPromptCacheKey(noMetadata))
 }
 
 func TestBuildMessageHashesSupportsLongConversations(t *testing.T) {
