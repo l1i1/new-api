@@ -1554,6 +1554,85 @@ func TestCheckContentModerationUsesChannelAffinityCachePerConversationAndChannel
 	require.Equal(t, 2, requestCount)
 }
 
+func TestCheckContentModerationObserveRechecksFlaggedAffinityUntilAllow(t *testing.T) {
+	require.NotNil(t, model.DB)
+	require.NoError(t, model.DB.AutoMigrate(&model.ContentModerationLog{}, &model.ContentModerationUserState{}, &model.User{}, &model.UserSession{}))
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	const userID = 987671
+	const affinity = "observe-recheck-flagged"
+	_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
+	_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+	t.Cleanup(func() {
+		_ = model.DB.Where("user_id = ?", userID).Delete(&model.ContentModerationLog{}).Error
+		_ = model.DB.Unscoped().Delete(&model.User{}, userID).Error
+		if cache := contentModerationAffinityCache; cache != nil {
+			key := contentModerationAffinityCacheKey(ContentModerationRequest{
+				UserID: userID, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+				AffinityRuleName: "responses-trace", AffinityCacheIdentity: affinity, AffinityTTLSeconds: 300, AffinityChannelID: 303,
+			}, GetContentModerationConfig())
+			_, _ = cache.DeleteMany([]string{key})
+		}
+	})
+	require.NoError(t, model.DB.Create(&model.User{
+		Id: userID, Username: "moderation-observe-recheck", Password: "unused-password",
+		Status: common.UserStatusEnabled, Role: common.RoleCommonUser, AuthVersion: 1,
+	}).Error)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		if requestCount <= 2 {
+			_, _ = w.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.9}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	contentModerationHTTPClient = server.Client()
+	withContentModerationOption(t, `{"enabled":true,"mode":"observe","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"auto_ban_enabled":true,"ban_threshold":2}`)
+
+	input := ContentModerationRequest{
+		UserID: userID, Group: "default", Model: "gpt-test", Protocol: ContentModerationProtocolOpenAIChat,
+		RequestID: "observe-recheck-1", Text: "persistent violation",
+		AffinityRuleName: "responses-trace", AffinityCacheIdentity: affinity, AffinityTTLSeconds: 300, AffinityChannelID: 303,
+	}
+	first, err := CheckContentModeration(context.Background(), input)
+	require.NoError(t, err)
+	require.True(t, first.Flagged)
+	require.False(t, first.Cached)
+
+	input.RequestID = "observe-recheck-2"
+	second, err := CheckContentModeration(context.Background(), input)
+	require.NoError(t, err)
+	require.True(t, second.Flagged)
+	require.False(t, second.Cached)
+	require.Equal(t, 2, requestCount)
+	var user model.User
+	require.NoError(t, model.DB.First(&user, userID).Error)
+	require.Equal(t, common.UserStatusDisabled, user.Status)
+
+	var flaggedLogs int64
+	require.NoError(t, model.DB.Model(&model.ContentModerationLog{}).Where("user_id = ? AND flagged = ?", userID, true).Count(&flaggedLogs).Error)
+	require.EqualValues(t, 2, flaggedLogs)
+
+	input.RequestID = "observe-recheck-3"
+	third, err := CheckContentModeration(context.Background(), input)
+	require.NoError(t, err)
+	require.False(t, third.Flagged)
+	require.False(t, third.Cached)
+	require.Equal(t, 3, requestCount)
+
+	input.RequestID = "observe-recheck-4"
+	fourth, err := CheckContentModeration(context.Background(), input)
+	require.NoError(t, err)
+	require.False(t, fourth.Flagged)
+	require.True(t, fourth.Cached)
+	require.Equal(t, 3, requestCount)
+}
+
 func TestContentModerationAffinityLeaseAllowsOnlyOneOwner(t *testing.T) {
 	withContentModerationRedis(t)
 	config := defaultContentModerationConfig()
@@ -1577,7 +1656,7 @@ func TestContentModerationAffinityLeaseAllowsOnlyOneOwner(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check)
+			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check, false)
 		}()
 	}
 	waitGroup.Wait()
@@ -1643,7 +1722,7 @@ func TestContentModerationAffinityLeaseRenewsDuringSlowOwner(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check)
+			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check, false)
 		}()
 	}
 	waitGroup.Wait()
@@ -1680,7 +1759,7 @@ func TestContentModerationAffinityLeaseRetriesAfterOwnerFailure(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check)
+			results <- runContentModerationWithAffinityLease(context.Background(), input, config, key, check, false)
 		}()
 	}
 	waitGroup.Wait()

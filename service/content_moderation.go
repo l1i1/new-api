@@ -710,14 +710,18 @@ func runContentModerationWithLease(
 	}
 }
 
-func runContentModerationWithAffinityLease(ctx context.Context, input ContentModerationRequest, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision) *ContentModerationDecision {
+func runContentModerationWithAffinityLease(ctx context.Context, input ContentModerationRequest, config ContentModerationConfig, cacheKey string, check func() *ContentModerationDecision, recheckFlagged bool) *ContentModerationDecision {
 	return runContentModerationWithLease(
 		ctx,
 		config,
 		contentModerationAffinityLeaseKey(cacheKey),
 		"affinity",
 		func() (*ContentModerationDecision, bool) {
-			return getCachedContentModerationDecision(input, config)
+			cachedDecision, found := getCachedContentModerationDecision(input, config, !recheckFlagged)
+			if found && recheckFlagged && cachedDecision.Flagged {
+				return nil, false
+			}
+			return cachedDecision, found
 		},
 		check,
 	)
@@ -736,7 +740,7 @@ func runContentModerationWithAllowLease(ctx context.Context, config ContentModer
 	)
 }
 
-func getCachedContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig) (*ContentModerationDecision, bool) {
+func getCachedContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig, applySideEffects bool) (*ContentModerationDecision, bool) {
 	key := contentModerationAffinityCacheKey(input, config)
 	if key == "" {
 		return nil, false
@@ -756,7 +760,7 @@ func getCachedContentModerationDecision(input ContentModerationRequest, config C
 		Category: entry.Category,
 		Score:    entry.Score,
 	}
-	if entry.Flagged && !entry.SideEffects && entry.LogID > 0 {
+	if applySideEffects && entry.Flagged && !entry.SideEffects && entry.LogID > 0 {
 		entryLog, err := model.GetContentModerationLog(entry.LogID)
 		if err == nil {
 			if applyContentModerationSideEffects(input, config, entryLog) {
@@ -773,6 +777,10 @@ func getCachedContentModerationDecision(input ContentModerationRequest, config C
 		decision.Message = config.BlockMessage
 	}
 	return decision, true
+}
+
+func shouldRecheckFlaggedContentModeration(config ContentModerationConfig, decision *ContentModerationDecision) bool {
+	return config.Mode == "observe" && decision != nil && decision.Flagged
 }
 
 func cacheContentModerationDecision(input ContentModerationRequest, config ContentModerationConfig, decision ContentModerationDecision, sideEffects bool) {
@@ -1552,23 +1560,31 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 	}
 	content.Images = limitContentModerationImages(content.Images)
 	allowCacheKey := contentModerationAllowCacheKey(input, config, content)
-	if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
-		return cachedDecision, nil
+	cachedAffinityDecision, affinityCached := getCachedContentModerationDecision(input, config, true)
+	recheckFlagged := affinityCached && shouldRecheckFlaggedContentModeration(config, cachedAffinityDecision)
+	if affinityCached && !recheckFlagged {
+		return cachedAffinityDecision, nil
 	}
-	if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
-		cacheContentModerationDecision(input, config, *cachedDecision, true)
-		return cachedDecision, nil
+	if !recheckFlagged {
+		if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
+			cacheContentModerationDecision(input, config, *cachedDecision, true)
+			return cachedDecision, nil
+		}
 	}
-	if !shouldModerateContent(config, input, content) {
+	if !recheckFlagged && !shouldModerateContent(config, input, content) {
 		return decision, nil
 	}
 	check := func() *ContentModerationDecision {
-		if cachedDecision, found := getCachedContentModerationDecision(input, config); found {
-			return cachedDecision
+		if cachedDecision, found := getCachedContentModerationDecision(input, config, !recheckFlagged); found {
+			if !recheckFlagged || !cachedDecision.Flagged {
+				return cachedDecision
+			}
 		}
-		if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
-			cacheContentModerationDecision(input, config, *cachedDecision, true)
-			return cachedDecision
+		if !recheckFlagged {
+			if cachedDecision, found := getCachedContentModerationAllowDecision(allowCacheKey); found {
+				cacheContentModerationDecision(input, config, *cachedDecision, true)
+				return cachedDecision
+			}
 		}
 		decision := &ContentModerationDecision{Checked: true}
 		if ctx == nil {
@@ -1661,7 +1677,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 	}
 
 	runAllowDedup := func() *ContentModerationDecision {
-		if allowCacheKey == "" {
+		if allowCacheKey == "" || recheckFlagged {
 			return check()
 		}
 		result, _, _ := contentModerationAllowFlight.Do(allowCacheKey, func() (interface{}, error) {
@@ -1675,7 +1691,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		return runAllowDedup(), nil
 	}
 	result, _, _ := contentModerationAffinityFlight.Do(affinityCacheKey, func() (interface{}, error) {
-		decision := runContentModerationWithAffinityLease(ctx, input, config, affinityCacheKey, runAllowDedup)
+		decision := runContentModerationWithAffinityLease(ctx, input, config, affinityCacheKey, runAllowDedup, recheckFlagged)
 		if decision.Checked && decision.Error == "" && !decision.Flagged {
 			cacheContentModerationDecision(input, config, *decision, true)
 		}

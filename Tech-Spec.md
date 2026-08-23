@@ -208,3 +208,28 @@ Accept a requested model ending in `-openai-compact` when the exact model is not
 - Unit tests cover suffix parsing, exact precedence, memory-cache and database selection, token-model permission fallback, auto-group resolution, and upstream request rewriting.
 - Run focused `go test` for `setting/ratio_setting`, `model`, `service`, `middleware`, and `relay/helper`.
 - Run `go test ./...`, targeted `go vet`, `gofmt`, and `git diff --check`.
+
+## Observe Content Moderation Affinity Re-audit
+
+### Goal
+
+Increase the cost of sustained violations in one affinity conversation without changing synchronous `pre_block` behavior.
+
+### State Semantics
+
+- In `observe` mode, an affinity cache entry with `flagged=true` is stale for reuse: each subsequent request with the same affinity key performs a fresh moderation check.
+- A fresh flagged result writes a new moderation log and runs the existing violation count, auto-ban, and email side effects.
+- A fresh allow result replaces the affinity entry with `flagged=false`; later requests reuse that allow result until the normal affinity TTL expires.
+- A cached allow result remains a cache hit and does not call the moderation provider again.
+- `pre_block` continues to reuse a flagged affinity result and blocks before pricing, quota reservation, and upstream forwarding.
+- Provider failures and persistence failures remain fail-open and do not create a new violation count.
+
+### Acceptance Criteria
+
+- Two sequential `observe` checks whose affinity entry remains flagged produce two provider calls and two flagged audit rows.
+- A subsequent allow result changes the same affinity entry to allow, and the next request is a cache hit with no provider call.
+- A flagged `pre_block` affinity entry remains a blocking cache hit.
+
+### Verification
+
+- Run the focused content-moderation service tests, `gofmt`, `go vet`, and `git diff --check`.
