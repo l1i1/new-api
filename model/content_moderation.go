@@ -27,6 +27,7 @@ type ContentModerationLog struct {
 	RequestID         string  `json:"request_id,omitempty" gorm:"index"`
 	Mode              string  `json:"mode"`
 	Action            string  `json:"action"`
+	CapacityReason    string  `json:"capacity_reason,omitempty" gorm:"size:32"`
 	Flagged           bool    `json:"flagged" gorm:"index"`
 	Blocked           bool    `json:"blocked"`
 	Category          string  `json:"category,omitempty"`

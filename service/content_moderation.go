@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -80,6 +81,108 @@ var (
 	ErrContentModerationConfigPersistence = errors.New("content moderation configuration persistence failed")
 	ErrContentModerationCapacity          = errors.New("content moderation capacity exhausted")
 )
+
+const (
+	contentModerationCapacityReasonAllKeysCoolingDown = "all_keys_cooling_down"
+	contentModerationCapacityReasonLocalSlotsFull     = "local_slots_full"
+	contentModerationCapacityReasonRedisSlotsFull     = "redis_slots_full"
+	contentModerationCapacityReasonRedisError         = "redis_error"
+	contentModerationCapacityReasonAsyncQueueFull     = "async_queue_full"
+	contentModerationCapacityReasonUnavailable        = "capacity_unavailable"
+
+	contentModerationFailure429          = "status_429"
+	contentModerationFailureTimeout      = "timeout"
+	contentModerationFailureUpstream5xx  = "upstream_5xx"
+	contentModerationFailureTransport    = "transport"
+	contentModerationFailureResponseRead = "response_read"
+	contentModerationFailureRedis        = "redis_error"
+)
+
+type contentModerationCapacityError struct {
+	reason string
+	waitMS int
+}
+
+func (err *contentModerationCapacityError) Error() string {
+	return fmt.Sprintf("%s after %dms", ErrContentModerationCapacity, err.waitMS)
+}
+
+func (err *contentModerationCapacityError) Unwrap() error {
+	return ErrContentModerationCapacity
+}
+
+func contentModerationCapacityReason(err error) string {
+	var capacityErr *contentModerationCapacityError
+	if errors.As(err, &capacityErr) && capacityErr.reason != "" {
+		return capacityErr.reason
+	}
+	return ""
+}
+
+type contentModerationProviderFailureStats struct {
+	mu         sync.Mutex
+	counts     map[string]uint64
+	flushTimer *time.Timer
+}
+
+var contentModerationProviderFailures = contentModerationProviderFailureStats{
+	counts: make(map[string]uint64),
+}
+
+const contentModerationProviderFailureAggregationWindow = 10 * time.Second
+
+func recordContentModerationProviderFailure(kind string) {
+	if kind == "" {
+		return
+	}
+	contentModerationProviderFailures.mu.Lock()
+	contentModerationProviderFailures.counts[kind]++
+	if contentModerationProviderFailures.flushTimer == nil {
+		contentModerationProviderFailures.flushTimer = time.AfterFunc(contentModerationProviderFailureAggregationWindow, func() {
+			flushContentModerationProviderFailures()
+		})
+	}
+	contentModerationProviderFailures.mu.Unlock()
+}
+
+func flushContentModerationProviderFailures() map[string]uint64 {
+	contentModerationProviderFailures.mu.Lock()
+	counts := contentModerationProviderFailures.counts
+	contentModerationProviderFailures.counts = make(map[string]uint64)
+	if contentModerationProviderFailures.flushTimer != nil {
+		contentModerationProviderFailures.flushTimer.Stop()
+	}
+	contentModerationProviderFailures.flushTimer = nil
+	contentModerationProviderFailures.mu.Unlock()
+	if len(counts) == 0 {
+		return counts
+	}
+	keys := make([]string, 0, len(counts))
+	for kind := range counts {
+		keys = append(keys, kind)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, kind := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", kind, counts[kind]))
+	}
+	common.SysLog("content moderation provider failures aggregated: " + strings.Join(parts, " "))
+	return counts
+}
+
+func contentModerationProviderFailureKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return contentModerationFailureTimeout
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return contentModerationFailureTimeout
+	}
+	return contentModerationFailureTransport
+}
 
 type contentModerationEmailSendFunc func(context.Context, string, dto.Notify, int) error
 
@@ -973,6 +1076,7 @@ func contentModerationProviderKeyCoolingDown(ctx context.Context, fingerprint st
 	}
 	exists, err := common.RDB.Exists(ctx, contentModerationProviderCooldownKey(fingerprint)).Result()
 	if err != nil {
+		recordContentModerationProviderFailure(contentModerationFailureRedis)
 		markContentModerationProviderCapacityDegraded()
 		return false, true
 	}
@@ -990,43 +1094,60 @@ func markContentModerationProviderKeyCooldown(config ContentModerationConfig, fi
 	ctx, cancel := context.WithTimeout(context.Background(), contentModerationRedisOperationTimeout)
 	defer cancel()
 	if err := common.RDB.Set(ctx, contentModerationProviderCooldownKey(fingerprint), "1", cooldown).Err(); err != nil {
+		recordContentModerationProviderFailure(contentModerationFailureRedis)
 		common.SysLog("content moderation capacity control degraded to local key cooldown")
 	}
 }
 
-func tryAcquireContentModerationProviderSlot(ctx context.Context, config ContentModerationConfig, credential contentModerationProviderCredential) (contentModerationProviderSlot, bool, bool) {
+type contentModerationSlotAttemptReason string
+
+const (
+	contentModerationSlotAttemptNone       contentModerationSlotAttemptReason = ""
+	contentModerationSlotAttemptLocalFull  contentModerationSlotAttemptReason = contentModerationCapacityReasonLocalSlotsFull
+	contentModerationSlotAttemptRedisFull  contentModerationSlotAttemptReason = contentModerationCapacityReasonRedisSlotsFull
+	contentModerationSlotAttemptRedisError contentModerationSlotAttemptReason = contentModerationCapacityReasonRedisError
+)
+
+func tryAcquireContentModerationProviderSlotWithReason(ctx context.Context, config ContentModerationConfig, credential contentModerationProviderCredential) (contentModerationProviderSlot, bool, bool, contentModerationSlotAttemptReason) {
 	if !tryAcquireLocalContentModerationProviderSlot(credential.Fingerprint, config.MaxInFlightPerKey) {
-		return contentModerationProviderSlot{}, false, false
+		return contentModerationProviderSlot{}, false, false, contentModerationSlotAttemptLocalFull
 	}
 	slot := contentModerationProviderSlot{Fingerprint: credential.Fingerprint, Local: true}
 	if !common.RedisEnabled || common.RDB == nil {
-		return slot, true, false
+		return slot, true, false, contentModerationSlotAttemptNone
 	}
 	if contentModerationProviderCapacityDegraded() {
-		return slot, true, true
+		return slot, true, true, contentModerationSlotAttemptRedisError
 	}
 	token := common.NewRequestId()
 	ttl := contentModerationProviderLeaseTTL(config)
 	leaseKey := contentModerationProviderSlotKey(credential.Fingerprint)
 	acquired, err := common.RDB.Eval(ctx, contentModerationProviderAcquireLeaseScript, []string{leaseKey}, config.MaxInFlightPerKey, ttl.Milliseconds(), token).Int()
 	if err != nil {
+		recordContentModerationProviderFailure(contentModerationFailureRedis)
 		markContentModerationProviderCapacityDegraded()
-		return slot, true, true
+		return slot, true, true, contentModerationSlotAttemptRedisError
 	}
 	if acquired == 1 {
 		slot.Redis = common.RDB
 		slot.RedisKey = leaseKey
 		slot.Token = token
-		return slot, true, false
+		return slot, true, false, contentModerationSlotAttemptNone
 	}
 	releaseLocalContentModerationProviderSlot(credential.Fingerprint)
-	return contentModerationProviderSlot{}, false, false
+	return contentModerationProviderSlot{}, false, false, contentModerationSlotAttemptRedisFull
+}
+
+func tryAcquireContentModerationProviderSlot(ctx context.Context, config ContentModerationConfig, credential contentModerationProviderCredential) (contentModerationProviderSlot, bool, bool) {
+	slot, acquired, degraded, _ := tryAcquireContentModerationProviderSlotWithReason(ctx, config, credential)
+	return slot, acquired, degraded
 }
 
 func (slot contentModerationProviderSlot) release() {
 	if slot.Redis != nil && slot.RedisKey != "" && slot.Token != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), contentModerationRedisOperationTimeout)
 		if err := slot.Redis.Eval(ctx, contentModerationProviderReleaseLeaseScript, []string{slot.RedisKey}, slot.Token).Err(); err != nil {
+			recordContentModerationProviderFailure(contentModerationFailureRedis)
 			common.SysLog("failed to release content moderation provider capacity lease")
 		}
 		cancel()
@@ -1054,6 +1175,10 @@ func acquireContentModerationProviderSlot(ctx context.Context, config ContentMod
 	capacityContext, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	degradationLogged := false
+	sawCoolingDown := false
+	sawLocalSlotsFull := false
+	sawRedisSlotsFull := false
+	sawRedisError := false
 	for {
 		if ctx.Err() != nil {
 			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, ctx.Err()
@@ -1062,13 +1187,23 @@ func acquireContentModerationProviderSlot(ctx context.Context, config ContentMod
 			credential := credentials[(start+offset)%len(credentials)]
 			coolingDown, degraded := contentModerationProviderKeyCoolingDown(capacityContext, credential.Fingerprint)
 			if degraded && !degradationLogged {
+				sawRedisError = true
 				common.SysLog("content moderation capacity control degraded to local limiter")
 				degradationLogged = true
 			}
 			if coolingDown {
+				sawCoolingDown = true
 				continue
 			}
-			slot, acquired, degraded := tryAcquireContentModerationProviderSlot(capacityContext, config, credential)
+			slot, acquired, degraded, attemptReason := tryAcquireContentModerationProviderSlotWithReason(capacityContext, config, credential)
+			switch attemptReason {
+			case contentModerationSlotAttemptLocalFull:
+				sawLocalSlotsFull = true
+			case contentModerationSlotAttemptRedisFull:
+				sawRedisSlotsFull = true
+			case contentModerationSlotAttemptRedisError:
+				sawRedisError = true
+			}
 			if degraded && !degradationLogged {
 				common.SysLog("content moderation capacity control degraded to local limiter")
 				degradationLogged = true
@@ -1079,7 +1214,10 @@ func acquireContentModerationProviderSlot(ctx context.Context, config ContentMod
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, fmt.Errorf("%w after %dms", ErrContentModerationCapacity, config.QueueWaitMS)
+			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, &contentModerationCapacityError{
+				reason: contentModerationCapacityReasonForAttempt(sawCoolingDown, sawLocalSlotsFull, sawRedisSlotsFull, sawRedisError),
+				waitMS: config.QueueWaitMS,
+			}
 		}
 		wait := contentModerationAffinityPollInterval
 		if remaining < wait {
@@ -1092,9 +1230,27 @@ func acquireContentModerationProviderSlot(ctx context.Context, config ContentMod
 			if ctx.Err() != nil {
 				return contentModerationProviderCredential{}, contentModerationProviderSlot{}, ctx.Err()
 			}
-			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, fmt.Errorf("%w after %dms", ErrContentModerationCapacity, config.QueueWaitMS)
+			return contentModerationProviderCredential{}, contentModerationProviderSlot{}, &contentModerationCapacityError{
+				reason: contentModerationCapacityReasonForAttempt(sawCoolingDown, sawLocalSlotsFull, sawRedisSlotsFull, sawRedisError),
+				waitMS: config.QueueWaitMS,
+			}
 		case <-timer.C:
 		}
+	}
+}
+
+func contentModerationCapacityReasonForAttempt(sawCoolingDown, sawLocalSlotsFull, sawRedisSlotsFull, sawRedisError bool) string {
+	switch {
+	case sawCoolingDown && !sawLocalSlotsFull && !sawRedisSlotsFull && !sawRedisError:
+		return contentModerationCapacityReasonAllKeysCoolingDown
+	case sawRedisError && !sawCoolingDown && !sawRedisSlotsFull:
+		return contentModerationCapacityReasonRedisError
+	case sawLocalSlotsFull && !sawCoolingDown && !sawRedisSlotsFull:
+		return contentModerationCapacityReasonLocalSlotsFull
+	case sawRedisSlotsFull && !sawCoolingDown && !sawLocalSlotsFull:
+		return contentModerationCapacityReasonRedisSlotsFull
+	default:
+		return contentModerationCapacityReasonUnavailable
 	}
 }
 
@@ -1462,7 +1618,7 @@ var (
 	contentModerationAsyncSemaphore = make(chan struct{}, contentModerationAsyncQueueCapacity)
 )
 
-func recordContentModerationSkippedCapacityLog(input ContentModerationRequest, config ContentModerationConfig) {
+func recordContentModerationSkippedCapacityLog(input ContentModerationRequest, config ContentModerationConfig, reason string) {
 	gopool.Go(func() {
 		content := ContentModerationInput{
 			Text:            input.Text,
@@ -1472,18 +1628,19 @@ func recordContentModerationSkippedCapacityLog(input ContentModerationRequest, c
 		}
 		content.normalize()
 		entry := &model.ContentModerationLog{
-			UserID:      input.UserID,
-			GroupName:   strings.TrimSpace(input.Group),
-			ModelName:   strings.TrimSpace(input.Model),
-			Protocol:    strings.TrimSpace(input.Protocol),
-			RequestPath: strings.TrimSpace(input.RequestPath),
-			RequestID:   strings.TrimSpace(input.RequestID),
-			Mode:        config.Mode,
-			Action:      "skipped_capacity",
-			Flagged:     false,
-			Blocked:     false,
-			Excerpt:     redactedModerationExcerpt(content.Text),
-			ExcerptHash: content.hash(),
+			UserID:         input.UserID,
+			GroupName:      strings.TrimSpace(input.Group),
+			ModelName:      strings.TrimSpace(input.Model),
+			Protocol:       strings.TrimSpace(input.Protocol),
+			RequestPath:    strings.TrimSpace(input.RequestPath),
+			RequestID:      strings.TrimSpace(input.RequestID),
+			Mode:           config.Mode,
+			Action:         "skipped_capacity",
+			CapacityReason: reason,
+			Flagged:        false,
+			Blocked:        false,
+			Excerpt:        redactedModerationExcerpt(content.Text),
+			ExcerptHash:    content.hash(),
 		}
 		_ = model.CreateContentModerationLog(entry)
 	})
@@ -1517,7 +1674,7 @@ func SubmitContentModeration(ctx context.Context, input ContentModerationRequest
 		})
 	default:
 		common.SysLog("content moderation async queue full, dropping background check")
-		recordContentModerationSkippedCapacityLog(input, config)
+		recordContentModerationSkippedCapacityLog(input, config, contentModerationCapacityReasonAsyncQueueFull)
 	}
 
 	return &ContentModerationDecision{
@@ -1598,6 +1755,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 		latency := time.Since(started).Milliseconds()
 		decision.CategoryScores = scores
 		capacitySkipped := errors.Is(callErr, ErrContentModerationCapacity)
+		capacityReason := contentModerationCapacityReason(callErr)
 		if callErr != nil {
 			decision.Error = callErr.Error()
 		}
@@ -1641,6 +1799,7 @@ func CheckContentModeration(ctx context.Context, input ContentModerationRequest)
 				RequestID:      strings.TrimSpace(input.RequestID),
 				Mode:           config.Mode,
 				Action:         action,
+				CapacityReason: capacityReason,
 				Flagged:        flagged,
 				Blocked:        decision.Blocked,
 				Category:       category,
@@ -1901,6 +2060,7 @@ func callModeration(ctx context.Context, config ContentModerationConfig, content
 		if err != nil {
 			slot.release()
 			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
+			recordContentModerationProviderFailure(contentModerationProviderFailureKind(err))
 			var requestErr *url.Error
 			if errors.As(err, &requestErr) {
 				// url.Error includes the complete request URL. Only retain the
@@ -1920,11 +2080,18 @@ func callModeration(ctx context.Context, config ContentModerationConfig, content
 		slot.release()
 		if readErr != nil {
 			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
+			recordContentModerationProviderFailure(contentModerationFailureResponseRead)
 			lastErr = fmt.Errorf("read moderation response failed: %w", readErr)
 			continue
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			lastErr = fmt.Errorf("moderation API returned status %d", response.StatusCode)
+			switch {
+			case response.StatusCode == http.StatusTooManyRequests:
+				recordContentModerationProviderFailure(contentModerationFailure429)
+			case response.StatusCode >= 500:
+				recordContentModerationProviderFailure(contentModerationFailureUpstream5xx)
+			}
 			if response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
 				return nil, false, lastErr
 			}

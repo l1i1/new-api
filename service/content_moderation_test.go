@@ -1000,6 +1000,7 @@ func TestCheckContentModerationObservePersistsCapacitySkip(t *testing.T) {
 	entry, err := model.GetContentModerationLog(decision.LogID)
 	require.NoError(t, err)
 	require.Equal(t, "skipped_capacity", entry.Action)
+	require.Equal(t, contentModerationCapacityReasonLocalSlotsFull, entry.CapacityReason)
 	require.False(t, entry.Flagged)
 	require.False(t, entry.Blocked)
 
@@ -2206,7 +2207,7 @@ func TestSubmitContentModerationAsyncQueueFullDropsAndLogsSkippedCapacity(t *tes
 	require.Eventually(t, func() bool {
 		var log model.ContentModerationLog
 		err := model.DB.Where("request_id = ? AND user_id = ?", "req-overflow-test", userID).First(&log).Error
-		return err == nil && log.Action == "skipped_capacity"
+		return err == nil && log.Action == "skipped_capacity" && log.CapacityReason == contentModerationCapacityReasonAsyncQueueFull
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
@@ -2249,4 +2250,130 @@ func withContentModerationOption(t *testing.T, value string) {
 		common.OptionMap = previous
 		common.OptionMapRWMutex.Unlock()
 	})
+}
+
+func withContentModerationNoRedis(t *testing.T) {
+	t.Helper()
+	previousRedisEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	common.RedisEnabled = false
+	common.RDB = nil
+	resetContentModerationCapacityState()
+	t.Cleanup(func() {
+		resetContentModerationCapacityState()
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRDB
+	})
+}
+
+func TestAcquireContentModerationProviderSlotReportsCapacityReasons(t *testing.T) {
+	t.Run("all keys cooling down", func(t *testing.T) {
+		withContentModerationNoRedis(t)
+		config := defaultContentModerationConfig()
+		config.APIKeys = []string{"first", "second"}
+		config.QueueWaitMS = 30
+		for _, credential := range contentModerationProviderCredentials(config) {
+			markContentModerationProviderKeyCooldown(config, credential.Fingerprint)
+		}
+
+		_, _, err := acquireContentModerationProviderSlot(context.Background(), config, ContentModerationInput{Text: "cooldown"}, 0)
+		require.Error(t, err)
+		require.Equal(t, contentModerationCapacityReasonAllKeysCoolingDown, contentModerationCapacityReason(err))
+	})
+
+	t.Run("local slots full", func(t *testing.T) {
+		withContentModerationNoRedis(t)
+		config := defaultContentModerationConfig()
+		config.APIKeys = []string{"local"}
+		config.MaxInFlightPerKey = 1
+		config.QueueWaitMS = 30
+		credential := contentModerationProviderCredentials(config)[0]
+		first, acquired, _ := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+		require.True(t, acquired)
+		defer first.release()
+
+		_, _, err := acquireContentModerationProviderSlot(context.Background(), config, ContentModerationInput{Text: "local-full"}, 0)
+		require.Error(t, err)
+		require.Equal(t, contentModerationCapacityReasonLocalSlotsFull, contentModerationCapacityReason(err))
+	})
+
+	t.Run("redis slots full", func(t *testing.T) {
+		server := withContentModerationRedis(t)
+		config := defaultContentModerationConfig()
+		config.APIKeys = []string{"redis"}
+		config.MaxInFlightPerKey = 1
+		credential := contentModerationProviderCredentials(config)[0]
+		first, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+		require.True(t, acquired)
+		require.False(t, degraded)
+		defer first.release()
+		require.Len(t, server.Keys(), 1)
+		resetContentModerationCapacityState()
+
+		_, acquired, degraded, attemptReason := tryAcquireContentModerationProviderSlotWithReason(context.Background(), config, credential)
+		require.False(t, acquired)
+		require.False(t, degraded)
+		require.Equal(t, contentModerationSlotAttemptRedisFull, attemptReason)
+		require.Equal(t, contentModerationCapacityReasonRedisSlotsFull, contentModerationCapacityReasonForAttempt(false, false, true, false))
+	})
+
+	t.Run("redis error", func(t *testing.T) {
+		server := withContentModerationRedis(t)
+		server.SetError("redis unavailable")
+		config := defaultContentModerationConfig()
+		config.APIKeys = []string{"redis-error"}
+		config.MaxInFlightPerKey = 1
+		config.QueueWaitMS = 30
+		credential := contentModerationProviderCredentials(config)[0]
+		first, acquired, degraded := tryAcquireContentModerationProviderSlot(context.Background(), config, credential)
+		require.True(t, acquired)
+		require.True(t, degraded)
+		defer first.release()
+
+		_, _, err := acquireContentModerationProviderSlot(context.Background(), config, ContentModerationInput{Text: "redis-error"}, 0)
+		require.Error(t, err)
+		require.Equal(t, contentModerationCapacityReasonRedisError, contentModerationCapacityReason(err))
+	})
+}
+
+func TestContentModerationProviderFailureStatsAggregate(t *testing.T) {
+	flushContentModerationProviderFailures()
+	defer flushContentModerationProviderFailures()
+	recordContentModerationProviderFailure(contentModerationFailure429)
+	recordContentModerationProviderFailure(contentModerationFailure429)
+	recordContentModerationProviderFailure(contentModerationFailureTimeout)
+
+	counts := flushContentModerationProviderFailures()
+	require.Equal(t, uint64(2), counts[contentModerationFailure429])
+	require.Equal(t, uint64(1), counts[contentModerationFailureTimeout])
+}
+
+func TestCallModerationRecords429AndTimeoutFailureStats(t *testing.T) {
+	withContentModerationNoRedis(t)
+	flushContentModerationProviderFailures()
+	defer flushContentModerationProviderFailures()
+	previousClient := contentModerationHTTPClient
+	defer func() { contentModerationHTTPClient = previousClient }()
+
+	config := defaultContentModerationConfig()
+	config.APIKeys = []string{"failure-stats"}
+	config.RetryCount = 0
+	config.QueueWaitMS = 100
+
+	contentModerationHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	_, _, err := callModeration(context.Background(), config, ContentModerationInput{Text: "429"})
+	require.Error(t, err)
+
+	resetContentModerationCapacityState()
+	contentModerationHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})}
+	_, _, err = callModeration(context.Background(), config, ContentModerationInput{Text: "timeout"})
+	require.Error(t, err)
+
+	counts := flushContentModerationProviderFailures()
+	require.Equal(t, uint64(1), counts[contentModerationFailure429])
+	require.Equal(t, uint64(1), counts[contentModerationFailureTimeout])
 }
