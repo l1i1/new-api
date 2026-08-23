@@ -37,9 +37,73 @@ type HybridCache[V any] struct {
 	redisCodec   ValueCodec[V]
 	redisEnabled func() bool
 
-	memOnce sync.Once
-	memInit func() *hot.HotCache[string, V]
-	mem     *hot.HotCache[string, V]
+	memOnce  sync.Once
+	memInit  func() *hot.HotCache[string, V]
+	mem      *hot.HotCache[string, V]
+	updateMu sync.Mutex
+}
+
+// UpdateWithTTL applies update to the current value and stores the result.
+// Redis updates use WATCH so concurrent writers retry instead of silently
+// overwriting one another. The callback must be side-effect free because it
+// may run more than once after a transaction conflict.
+func (c *HybridCache[V]) UpdateWithTTL(key string, ttl time.Duration, update func(value V, found bool) (V, error)) error {
+	full := c.ns.FullKey(key)
+	if full == "" || update == nil {
+		return nil
+	}
+
+	if c.redisOn() {
+		const maxAttempts = 64
+		ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+		defer cancel()
+		var err error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			err = c.redis.Watch(ctx, func(tx *redis.Tx) error {
+				raw, getErr := tx.Get(ctx, full).Result()
+				found := getErr == nil
+				if getErr != nil && !errors.Is(getErr, redis.Nil) {
+					return getErr
+				}
+				var current V
+				if found {
+					current, getErr = c.redisCodec.Decode(raw)
+					if getErr != nil {
+						return getErr
+					}
+				}
+				next, updateErr := update(current, found)
+				if updateErr != nil {
+					return updateErr
+				}
+				encoded, encodeErr := c.redisCodec.Encode(next)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Set(ctx, full, encoded, ttl)
+					return nil
+				})
+				return err
+			}, full)
+			if !errors.Is(err, redis.TxFailedErr) {
+				return err
+			}
+		}
+		return err
+	}
+
+	// The in-memory fallback has no external transaction primitive, so keep
+	// the read-modify-write pair serialized per cache instance.
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
+	current, found, _ := c.memCache().Get(full)
+	next, err := update(current, found)
+	if err != nil {
+		return err
+	}
+	c.memCache().SetWithTTL(full, next, ttl)
+	return nil
 }
 
 func NewHybridCache[V any](cfg HybridCacheConfig[V]) *HybridCache[V] {

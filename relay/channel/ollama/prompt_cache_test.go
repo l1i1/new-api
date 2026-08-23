@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -254,7 +255,7 @@ func TestApplyOllamaPromptCacheEstimation_RealCachedTokensPriority(t *testing.T)
 	assert.Nil(t, usage2.BillingUsage)
 }
 
-func TestApplyOllamaPromptCacheEstimation_RealZeroCachedTokensPriority(t *testing.T) {
+func TestApplyOllamaPromptCacheEstimation_RealZeroAllowsEstimation(t *testing.T) {
 	resetPromptCache()
 	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
 
@@ -265,8 +266,9 @@ func TestApplyOllamaPromptCacheEstimation_RealZeroCachedTokensPriority(t *testin
 	usage := &dto.Usage{PromptTokens: 300}
 	applyOllamaPromptCacheEstimationWithUpstreamUsage(second, usage, true)
 
-	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
-	assert.Nil(t, usage.BillingUsage)
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, usage.BillingUsage)
+	assert.True(t, usage.BillingUsage.Estimated)
 }
 
 func TestApplyOllamaPromptCacheEstimation_RecordsRealUsageForLaterFallback(t *testing.T) {
@@ -279,12 +281,91 @@ func TestApplyOllamaPromptCacheEstimation_RecordsRealUsageForLaterFallback(t *te
 	real := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "hello", "assistant", "hi"), "u1"))
 	realUsage := &dto.Usage{PromptTokens: 300}
 	applyOllamaPromptCacheEstimationWithUpstreamUsage(real, realUsage, true)
-	assert.Zero(t, realUsage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 50, realUsage.PromptTokensDetails.CachedTokens)
+	require.NotNil(t, realUsage.BillingUsage)
+	assert.True(t, realUsage.BillingUsage.Estimated)
 
 	later := infoWith(1, 10, "llama3", setting, openAIRequest(msgs("user", "hello", "assistant", "hi", "user", "bye"), "u1"))
 	laterUsage := &dto.Usage{PromptTokens: 400}
 	applyOllamaPromptCacheEstimation(later, laterUsage)
 	assert.Equal(t, 150, laterUsage.PromptTokensDetails.CachedTokens)
+}
+
+func TestPromptCacheCandidatesRetainInterleavedChainsAndChooseLongestPrefix(t *testing.T) {
+	short := promptCacheCandidate{MessageHashes: []string{"a"}, PreviousPromptTokens: 100}
+	long := promptCacheCandidate{MessageHashes: []string{"a", "b"}, PreviousPromptTokens: 200}
+	entry := prependPromptCacheCandidate([]promptCacheCandidate{short}, long)
+	assert.Equal(t, 200, mustLongestPromptCachePrefix(t, entry.Candidates, []string{"a", "b", "c"}))
+
+	other := prependPromptCacheCandidate(entry.Candidates, promptCacheCandidate{
+		MessageHashes: []string{"x"}, PreviousPromptTokens: 50,
+	})
+	assert.Equal(t, 200, mustLongestPromptCachePrefix(t, other.Candidates, []string{"a", "b", "c"}))
+	assert.Equal(t, 50, mustLongestPromptCachePrefix(t, other.Candidates, []string{"x", "y"}))
+}
+
+func TestPromptCacheCandidatesReadLegacyEntry(t *testing.T) {
+	entry := promptCacheEntry{MessageHashes: []string{"legacy"}, PreviousPromptTokens: 80}
+	candidates := promptCacheCandidates(entry)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, entry.MessageHashes, candidates[0].MessageHashes)
+	assert.Equal(t, 80, candidates[0].PreviousPromptTokens)
+}
+
+func TestPromptCacheEntryLegacyJSONCompatibility(t *testing.T) {
+	raw, err := common.Marshal(promptCacheEntry{MessageHashes: []string{"legacy"}, PreviousPromptTokens: 80})
+	require.NoError(t, err)
+	var decoded promptCacheEntry
+	require.NoError(t, common.Unmarshal(raw, &decoded))
+	candidates := promptCacheCandidates(decoded)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, []string{"legacy"}, candidates[0].MessageHashes)
+	assert.Equal(t, 80, candidates[0].PreviousPromptTokens)
+}
+
+func TestApplyOllamaPromptCacheEstimation_InterleavedChains(t *testing.T) {
+	resetPromptCache()
+	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
+	firstA := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{Messages: msgs("user", "a")})
+	firstA.TokenId = 42
+	applyOllamaPromptCacheEstimation(firstA, &dto.Usage{PromptTokens: 200})
+
+	firstB := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{Messages: msgs("user", "b")})
+	firstB.TokenId = 42
+	applyOllamaPromptCacheEstimation(firstB, &dto.Usage{PromptTokens: 300})
+
+	followA := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{Messages: msgs("user", "a", "assistant", "ok")})
+	followA.TokenId = 42
+	usageA := &dto.Usage{PromptTokens: 400}
+	applyOllamaPromptCacheEstimation(followA, usageA)
+	assert.Equal(t, 100, usageA.PromptTokensDetails.CachedTokens)
+
+	followB := infoWith(1, 10, "llama3", setting, &dto.GeneralOpenAIRequest{Messages: msgs("user", "b", "assistant", "ok")})
+	followB.TokenId = 42
+	usageB := &dto.Usage{PromptTokens: 400}
+	applyOllamaPromptCacheEstimation(followB, usageB)
+	assert.Equal(t, 150, usageB.PromptTokensDetails.CachedTokens)
+}
+
+func TestPromptCacheCandidatesBoundedAndDeduplicated(t *testing.T) {
+	existing := make([]promptCacheCandidate, 0, promptCacheMaxCandidates+2)
+	for i := 0; i < promptCacheMaxCandidates+2; i++ {
+		existing = append(existing, promptCacheCandidate{
+			MessageHashes: []string{fmt.Sprintf("h-%d", i)}, PreviousPromptTokens: i + 1,
+		})
+	}
+	entry := prependPromptCacheCandidate(existing, existing[0])
+	assert.LessOrEqual(t, len(entry.Candidates), promptCacheMaxCandidates)
+	for i := 1; i < len(entry.Candidates); i++ {
+		assert.False(t, samePromptCacheCandidate(entry.Candidates[0], entry.Candidates[i]))
+	}
+}
+
+func mustLongestPromptCachePrefix(t *testing.T, candidates []promptCacheCandidate, current []string) int {
+	t.Helper()
+	tokens, found := longestPromptCachePrefix(candidates, current)
+	require.True(t, found)
+	return tokens
 }
 
 func TestOllamaCachedTokensPresence(t *testing.T) {

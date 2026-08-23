@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -23,17 +24,26 @@ const (
 	promptCacheEstimation = 0.5
 	// A local fallback entry can contain up to 256 hashes; keep its memory
 	// ceiling bounded even when Redis is disabled or unavailable at startup.
-	promptCacheCapacity          = 5_000
-	promptCacheMaxMessages       = 256
-	promptCacheMaxSessionIDRunes = 256
-	promptCacheNamespace         = "ollama_prompt_cache:v1"
+	promptCacheCapacity           = 5_000
+	promptCacheMaxMessages        = 256
+	promptCacheMaxCandidates      = 16
+	promptCacheMaxCandidateHashes = promptCacheMaxCandidates * promptCacheMaxMessages
+	promptCacheMaxSessionIDRunes  = 256
+	promptCacheNamespace          = "ollama_prompt_cache:v1"
 )
 
-// promptCacheEntry stores the previous request's conversation fingerprint
-// so a follow-up request with the same prefix can estimate cache hits.
-type promptCacheEntry struct {
+type promptCacheCandidate struct {
 	MessageHashes        []string `json:"h"`
 	PreviousPromptTokens int      `json:"p"`
+}
+
+// promptCacheEntry stores a bounded set of recent conversation fingerprints.
+// The legacy fields remain readable so existing Redis entries survive the
+// rollout without a cache flush.
+type promptCacheEntry struct {
+	Candidates           []promptCacheCandidate `json:"c,omitempty"`
+	MessageHashes        []string               `json:"h,omitempty"`
+	PreviousPromptTokens int                    `json:"p,omitempty"`
 }
 
 var (
@@ -86,9 +96,14 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 	if usage.PromptTokens <= 0 {
 		return
 	}
-	// Real cached_tokens from upstream take precedence. We still record the
-	// current prompt so a later response that omits the field has fresh state.
-	allowEstimation := !upstreamCachedTokensPresent && usage.PromptTokensDetails.CachedTokens <= 0
+	// A positive upstream value is authoritative. An explicit zero is an
+	// upstream miss, so it must still allow the channel estimator to run.
+	allowEstimation := usage.PromptTokensDetails.CachedTokens <= 0
+	if upstreamCachedTokensPresent {
+		// The stream/non-stream parser has already normalized an upstream
+		// positive value above zero. Only an explicit upstream zero is a miss.
+		allowEstimation = usage.PromptTokensDetails.CachedTokens == 0
+	}
 	// Do not apply to embeddings.
 	if info.RelayMode == relayconstant.RelayModeEmbeddings {
 		return
@@ -110,43 +125,33 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 
 	cache := getPromptCache()
 
-	// Look up previous entry before overwriting with current state.
-	prev, found, _ := cache.Get(cacheKey)
 	estimated := 0
-	if allowEstimation && found && prev.PreviousPromptTokens > 0 && len(prev.MessageHashes) > 0 {
-		// Validate prefix: an exact replay is also a cache hit. Retries and
-		// clients that resend the current turn do not append a new message, but
-		// Ollama can still reuse the complete prompt prefix.
-		if len(prev.MessageHashes) <= len(messageHashes) {
-			prefixMatch := true
-			for i, h := range prev.MessageHashes {
-				if messageHashes[i] != h {
-					prefixMatch = false
-					break
-				}
-			}
-			if prefixMatch {
-				estimated = int(math.Floor(float64(prev.PreviousPromptTokens) * promptCacheEstimation))
-				if estimated > usage.PromptTokens {
-					estimated = usage.PromptTokens
-				}
-				if estimated > 0 {
-					usage.PromptTokensDetails.CachedTokens = estimated
+	cacheErr := cache.UpdateWithTTL(cacheKey, promptCacheTTL, func(previous promptCacheEntry, _ bool) (promptCacheEntry, error) {
+		candidateEstimated := 0
+		candidates := promptCacheCandidates(previous)
+		if allowEstimation {
+			if previousTokens, ok := longestPromptCachePrefix(candidates, messageHashes); ok && previousTokens > 0 {
+				candidateEstimated = int(math.Floor(float64(previousTokens) * promptCacheEstimation))
+				if candidateEstimated > usage.PromptTokens {
+					candidateEstimated = usage.PromptTokens
 				}
 			}
 		}
+		estimated = candidateEstimated
+		return prependPromptCacheCandidate(candidates, promptCacheCandidate{
+			MessageHashes:        append([]string(nil), messageHashes...),
+			PreviousPromptTokens: usage.PromptTokens,
+		}), nil
+	})
+	if cacheErr != nil {
+		estimated = 0
+		logger.LogWarn(nil, fmt.Sprintf("ollama prompt cache update failed channel=%d model=%q: %v", info.ChannelId, info.UpstreamModelName, cacheErr))
 	}
-
-	// Store current state for next request.
-	entry := promptCacheEntry{
-		MessageHashes:        messageHashes,
-		PreviousPromptTokens: usage.PromptTokens,
-	}
-	_ = cache.SetWithTTL(cacheKey, entry, promptCacheTTL)
 
 	if estimated <= 0 {
 		return
 	}
+	usage.PromptTokensDetails.CachedTokens = estimated
 
 	// Attach BillingUsage so settlement uses cache ratio and log path
 	// reports billing-usage-openai-estimated.
@@ -156,6 +161,96 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 		billingUsage.OpenAIUsage.PromptTokensDetails.CachedTokens = estimated
 		usage.BillingUsage = billingUsage
 	}
+}
+
+func promptCacheCandidates(entry promptCacheEntry) []promptCacheCandidate {
+	available := entry.Candidates
+	if len(available) == 0 && len(entry.MessageHashes) > 0 && entry.PreviousPromptTokens > 0 {
+		available = []promptCacheCandidate{{
+			MessageHashes:        entry.MessageHashes,
+			PreviousPromptTokens: entry.PreviousPromptTokens,
+		}}
+	}
+	result := make([]promptCacheCandidate, 0, promptCacheMaxCandidates)
+	totalHashes := 0
+	for _, candidate := range available {
+		if len(result) >= promptCacheMaxCandidates || len(candidate.MessageHashes) == 0 || len(candidate.MessageHashes) > promptCacheMaxMessages || candidate.PreviousPromptTokens <= 0 {
+			continue
+		}
+		if totalHashes+len(candidate.MessageHashes) > promptCacheMaxCandidateHashes {
+			continue
+		}
+		result = append(result, promptCacheCandidate{
+			MessageHashes:        append([]string(nil), candidate.MessageHashes...),
+			PreviousPromptTokens: candidate.PreviousPromptTokens,
+		})
+		totalHashes += len(candidate.MessageHashes)
+	}
+	return result
+}
+
+func longestPromptCachePrefix(candidates []promptCacheCandidate, current []string) (int, bool) {
+	bestLength := 0
+	bestTokens := 0
+	for _, candidate := range candidates {
+		if candidate.PreviousPromptTokens <= 0 || len(candidate.MessageHashes) == 0 || len(candidate.MessageHashes) > len(current) {
+			continue
+		}
+		matched := true
+		for i, hash := range candidate.MessageHashes {
+			if current[i] != hash {
+				matched = false
+				break
+			}
+		}
+		if matched && len(candidate.MessageHashes) > bestLength {
+			bestLength = len(candidate.MessageHashes)
+			bestTokens = candidate.PreviousPromptTokens
+		}
+	}
+	return bestTokens, bestLength > 0
+}
+
+func prependPromptCacheCandidate(existing []promptCacheCandidate, current promptCacheCandidate) promptCacheEntry {
+	result := make([]promptCacheCandidate, 0, promptCacheMaxCandidates)
+	result = append(result, current)
+	totalHashes := len(current.MessageHashes)
+	for _, candidate := range existing {
+		if len(result) >= promptCacheMaxCandidates || totalHashes >= promptCacheMaxCandidateHashes {
+			break
+		}
+		duplicate := false
+		for _, retained := range result {
+			if samePromptCacheCandidate(candidate, retained) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if len(candidate.MessageHashes) == 0 || candidate.PreviousPromptTokens <= 0 {
+			continue
+		}
+		if totalHashes+len(candidate.MessageHashes) > promptCacheMaxCandidateHashes {
+			continue
+		}
+		result = append(result, candidate)
+		totalHashes += len(candidate.MessageHashes)
+	}
+	return promptCacheEntry{Candidates: result}
+}
+
+func samePromptCacheCandidate(a, b promptCacheCandidate) bool {
+	if len(a.MessageHashes) != len(b.MessageHashes) {
+		return false
+	}
+	for i := range a.MessageHashes {
+		if a.MessageHashes[i] != b.MessageHashes[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildPromptCacheKey constructs a per-channel-model-user-session cache key.

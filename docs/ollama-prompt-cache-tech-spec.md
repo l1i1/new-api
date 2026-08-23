@@ -13,7 +13,16 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
 - Keep existing isolation by channel, persisted credential, multi-key position, upstream model, relay mode, authenticated user, and system/tool settings.
 - Match a previous message prefix when the current request appends messages or
   replays the same prompt, with a five-minute TTL and upstream `cached_tokens`
-  precedence.
+  precedence. An upstream `cached_tokens` value greater than zero is authoritative;
+  an explicit zero is treated as an upstream miss so the channel-level estimator
+  can still provide a simulated cache value.
+- Keep a bounded set of recent prompt chains per cache partition instead of one
+  mutable chain. Select the longest matching prefix, deduplicate exact chains,
+  and update the set atomically when Redis is enabled so interleaved requests do
+  not overwrite one another.
+- Cache read/write failures are fail-open for the request but must be returned by
+  the cache helper and logged with channel/model metadata; prompt content and
+  credentials must never be logged.
 
 ## Acceptance
 
@@ -22,4 +31,10 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
   an exact replay) receives estimated `cached_tokens` and estimated billing usage.
 - Different token IDs and users do not share entries.
 - Explicit body/header identifiers still take precedence over fallback values.
+- Interleaved prompt chains in one token fallback partition retain independent
+  candidates and match the longest safe prefix without sharing across tokens.
+- A response with `cached_tokens: 0` stores state and can receive estimated
+  billing on a matching follow-up; a positive upstream value remains unchanged.
+- Redis update conflicts retry atomically, and Redis read/write failures do not
+  panic, block the request, or silently disappear from operational logs.
 - Focused Ollama tests, race tests, `go vet`, RelayKit build, and `git diff --check` pass.

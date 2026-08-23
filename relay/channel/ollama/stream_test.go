@@ -130,7 +130,7 @@ func TestOllamaChatHandlerNonStreamEstimationIsClientSafe(t *testing.T) {
 	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
 }
 
-func TestOllamaChatHandlerRealZeroCachedTokensSuppressesEstimation(t *testing.T) {
+func TestOllamaChatHandlerRealZeroAllowsEstimation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	resetPromptCache()
 	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
@@ -155,7 +155,7 @@ func TestOllamaChatHandlerRealZeroCachedTokensSuppressesEstimation(t *testing.T)
 	})
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedTokens)
 	assert.NotContains(t, secondWriter.Body.String(), `billing_usage`)
 }
 
