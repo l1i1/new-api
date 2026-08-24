@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -73,6 +74,25 @@ func TestOpenAIResponsesForClientStripBillingUsageWithoutMutatingInternalRespons
 	assert.NotNil(t, responsesResponse.Usage.BillingUsage)
 	assert.NotNil(t, chatChunk.Usage.BillingUsage)
 	assert.NotNil(t, responsesEvent.Response.Usage.BillingUsage)
+}
+
+func TestOpenAITextResponseForClientPreservesContentAndReasoningLogprobs(t *testing.T) {
+	logprobs := any(map[string]any{
+		"content":           []any{map[string]any{"token": "1"}},
+		"reasoning_content": []any{map[string]any{"token": "thinking"}},
+	})
+	response := &dto.OpenAITextResponse{
+		Choices: []dto.OpenAITextResponseChoice{{Logprobs: &logprobs}},
+	}
+
+	clientResponse := OpenAITextResponseForClient(response)
+	require.NotNil(t, clientResponse)
+	require.NotNil(t, clientResponse.Choices[0].Logprobs)
+
+	encoded, err := json.Marshal(clientResponse)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"content"`)
+	assert.Contains(t, string(encoded), `"reasoning_content"`)
 }
 
 func TestResponseForClientHandlesValueResponses(t *testing.T) {
