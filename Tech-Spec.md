@@ -317,3 +317,31 @@ The frontend should use the existing group selector and channel search/list API.
 
 - No per-user/token exceptions, wildcard model rules, temporary schedules, global channel status changes, provider safety bypass, moderation-log deletion, quota changes, or upstream-provider changes.
 - Do not store the supplied production/test API key in source, documentation, tests, logs, or `MEMORY.md`.
+
+## DeepSeek V4 Client Compatibility
+
+### Goal
+
+Keep the OpenAI-compatible `deepseek-v4-flash` route compatible with the customer's
+request matrix without fabricating token probabilities or changing billing semantics.
+
+### Request Semantics
+
+- `reasoning_effort=extreme` is accepted as a compatibility alias for `max` only on the DeepSeek V4 adaptor.
+- `top_p` is clamped to the upstream-supported interval `(0, 1]` when supplied; omitted values remain omitted.
+- `thinking.type=disabled` remains disabled and must not be replaced by an enabled reasoning request.
+- Tools, `tool_choice`, `stop`, streaming usage, and OpenAI `logprobs`/`top_logprobs` are forwarded without dropping response fields.
+- If the DFLASH upstream rejects logprob generation because speculative decoding is enabled, NewAPI must return the upstream capability error rather than inventing logprobs. The channel configuration must be adjusted separately to disable speculative decoding for logprob requests if the upstream exposes such a control.
+
+### Acceptance Criteria
+
+- The four customer request shapes (basic, streaming usage, tools with disabled thinking, and stop) convert without request-local 400 validation errors.
+- `reasoning_effort=extreme` reaches the upstream as `max`.
+- `top_p=1.5` reaches the upstream as `1`, while a valid `top_p` and an omitted `top_p` are preserved.
+- A request with `logprobs=true` and `top_logprobs=5` preserves both fields and returns the upstream `logprobs` object when the selected channel supports it.
+- Conversion tests cover the above cases and assert no API key or credential is present in fixtures.
+
+### Verification
+
+- Run focused DeepSeek adaptor tests and `go test ./relay/channel/deepseek ./relay/channel/openai`.
+- Run `gofmt` and `git diff --check` on changed files.

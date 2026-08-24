@@ -59,6 +59,8 @@ const (
 	ErrorCodeChannelAwsClientError        ErrorCode = "channel:aws_client_error"
 	ErrorCodeChannelInvalidKey            ErrorCode = "channel:invalid_key"
 	ErrorCodeChannelResponseTimeExceeded  ErrorCode = "channel:response_time_exceeded"
+	ErrorCodeChannelUnsupportedEndpoint   ErrorCode = "channel:unsupported_endpoint"
+	ErrorCodeChannelUnsupportedFeature    ErrorCode = "channel:unsupported_feature"
 
 	// client request error
 	ErrorCodeReadRequestBodyFailed ErrorCode = "read_request_body_failed"
@@ -392,6 +394,11 @@ func IsSkipRetryError(err *NewAPIError) bool {
 
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
+		// Channel capability failures are retryable at the channel-selection
+		// layer even when a helper wraps them as a conversion error.
+		if e.errorCode == ErrorCodeChannelUnsupportedEndpoint || e.errorCode == ErrorCodeChannelUnsupportedFeature {
+			return
+		}
 		e.skipRetry = true
 	}
 }

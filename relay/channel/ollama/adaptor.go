@@ -23,9 +23,8 @@ type Adaptor struct {
 func unsupportedOllamaEndpoint(name string) error {
 	return types.NewErrorWithStatusCode(
 		fmt.Errorf("ollama channel: %s endpoint not supported", name),
-		types.ErrorCodeInvalidRequest,
+		types.ErrorCodeChannelUnsupportedEndpoint,
 		http.StatusBadRequest,
-		types.ErrOptionWithSkipRetry(),
 	)
 }
 

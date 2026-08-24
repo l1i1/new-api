@@ -86,6 +86,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	normalizeDeepSeekV4OpenAIRequest(info, request)
 	if err := applyDeepSeekV4OpenAIThinkingSuffix(info, request); err != nil {
 		return nil, err
 	}
@@ -161,8 +162,57 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
+	normalizeDeepSeekV4ResponsesRequest(info, &request)
 	applyDeepSeekV4ResponsesThinkingSuffix(info, &request)
 	return request, nil
+}
+
+const deepSeekV4MinimumTopP = 0.000001
+
+func normalizeDeepSeekV4OpenAIRequest(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
+	if !isDeepSeekV4Model(info, request.Model) {
+		return
+	}
+	request.ReasoningEffort = normalizeDeepSeekV4ReasoningEffort(request.ReasoningEffort)
+	normalizeDeepSeekV4TopP(&request.TopP)
+}
+
+func normalizeDeepSeekV4ResponsesRequest(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
+	if !isDeepSeekV4Model(info, request.Model) {
+		return
+	}
+	if request.Reasoning != nil {
+		request.Reasoning.Effort = normalizeDeepSeekV4ReasoningEffort(request.Reasoning.Effort)
+	}
+	normalizeDeepSeekV4TopP(&request.TopP)
+}
+
+func isDeepSeekV4Model(info *relaycommon.RelayInfo, modelName string) bool {
+	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
+		modelName = info.UpstreamModelName
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-v4-")
+}
+
+func normalizeDeepSeekV4ReasoningEffort(effort string) string {
+	effort = strings.TrimSpace(effort)
+	if strings.EqualFold(effort, "extreme") {
+		return "max"
+	}
+	return effort
+}
+
+func normalizeDeepSeekV4TopP(topP **float64) {
+	if topP == nil || *topP == nil {
+		return
+	}
+	value := **topP
+	if value > 1 {
+		value = 1
+	} else if value <= 0 {
+		value = deepSeekV4MinimumTopP
+	}
+	*topP = &value
 }
 
 func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
@@ -194,14 +244,28 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	var result any
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		adaptor := claude.Adaptor{}
-		return adaptor.DoResponse(c, resp, info)
+		result, err = adaptor.DoResponse(c, resp, info)
 	default:
 		adaptor := openai.Adaptor{}
-		return adaptor.DoResponse(c, resp, info)
+		result, err = adaptor.DoResponse(c, resp, info)
 	}
+	return result, classifyDeepSeekV4CapabilityError(err)
+}
+
+func classifyDeepSeekV4CapabilityError(err *types.NewAPIError) *types.NewAPIError {
+	if err == nil || err.StatusCode != http.StatusBadRequest {
+		return err
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "dflash") ||
+		(!strings.Contains(message, "return_logprob") && !strings.Contains(message, "return_logprobs")) {
+		return err
+	}
+	return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelUnsupportedFeature, err.StatusCode)
 }
 
 func (a *Adaptor) GetModelList() []string {

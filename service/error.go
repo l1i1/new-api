@@ -97,6 +97,9 @@ func RelayErrorHandlerWithFormat(ctx context.Context, resp *http.Response, showB
 }
 
 func relayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool, relayFormat types.RelayFormat) (newApiErr *types.NewAPIError) {
+	defer func() {
+		newApiErr = NormalizeDFlashLogprobCapabilityError(newApiErr)
+	}()
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
 	responseBody, err := io.ReadAll(resp.Body)
@@ -160,6 +163,21 @@ func relayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+// NormalizeDFlashLogprobCapabilityError keeps DFLASH capability failures
+// retryable so channel selection can move to an upstream that returns real
+// logprobs instead of disabling the incompatible channel.
+func NormalizeDFlashLogprobCapabilityError(err *types.NewAPIError) *types.NewAPIError {
+	if err == nil || err.StatusCode != http.StatusBadRequest {
+		return err
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "dflash") ||
+		(!strings.Contains(message, "return_logprob") && !strings.Contains(message, "return_logprobs")) {
+		return err
+	}
+	return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelUnsupportedFeature, err.StatusCode)
 }
 
 func writeCyberPolicyErrorForRelayFormat(c *gin.Context, resp *http.Response, body []byte, err *types.NewAPIError, relayFormat types.RelayFormat) {

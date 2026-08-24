@@ -62,6 +62,10 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 		return false
 	}
 	if types.IsChannelError(err) {
+		if err.GetErrorCode() == types.ErrorCodeChannelUnsupportedEndpoint ||
+			err.GetErrorCode() == types.ErrorCodeChannelUnsupportedFeature {
+			return false
+		}
 		return true
 	}
 	if types.IsSkipRetryError(err) {

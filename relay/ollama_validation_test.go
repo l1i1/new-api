@@ -80,6 +80,7 @@ func TestOllamaRerankPassThroughStillReturnsClientError(t *testing.T) {
 
 	require.NotNil(t, apiErr)
 	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
-	assert.True(t, types.IsSkipRetryError(apiErr))
+	assert.Equal(t, types.ErrorCodeChannelUnsupportedEndpoint, apiErr.GetErrorCode())
+	assert.False(t, types.IsSkipRetryError(apiErr))
 	assert.False(t, upstreamCalled.Load())
 }

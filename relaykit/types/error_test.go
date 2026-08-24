@@ -16,3 +16,14 @@ func TestNewAPIErrorSetMessageUpdatesRelayErrorPayload(t *testing.T) {
 	claudeError.SetMessage("filtered (request id: local-1)")
 	require.Equal(t, "filtered (request id: local-1)", claudeError.ToClaudeError().Message)
 }
+
+func TestSkipRetryOptionPreservesUnsupportedEndpointRetryability(t *testing.T) {
+	for _, errorCode := range []ErrorCode{
+		ErrorCodeChannelUnsupportedEndpoint,
+		ErrorCodeChannelUnsupportedFeature,
+	} {
+		err := NewErrorWithStatusCode(errors.New("channel capability not supported"), errorCode, 400)
+		ErrOptionWithSkipRetry()(err)
+		require.False(t, IsSkipRetryError(err))
+	}
+}

@@ -31,7 +31,14 @@ func TestAdaptorRejectsUnsupportedEndpoints(t *testing.T) {
 	var apiErr *types.NewAPIError
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
-	assert.True(t, types.IsSkipRetryError(apiErr))
+	assert.Equal(t, types.ErrorCodeChannelUnsupportedEndpoint, apiErr.GetErrorCode())
+	assert.False(t, types.IsSkipRetryError(apiErr))
+
+	wrapped := types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+	var wrappedAPIError *types.NewAPIError
+	require.True(t, errors.As(wrapped, &wrappedAPIError))
+	assert.Equal(t, types.ErrorCodeChannelUnsupportedEndpoint, wrappedAPIError.GetErrorCode())
+	assert.False(t, types.IsSkipRetryError(wrappedAPIError))
 
 	_, err = adaptor.ConvertAudioRequest(nil, nil, dto.AudioRequest{})
 	require.Error(t, err)
