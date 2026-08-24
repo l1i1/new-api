@@ -41,3 +41,14 @@ func TestRespondTaskErrorRewritesUpstreamRateLimitMessage(t *testing.T) {
 
 	assert.Equal(t, "当前分组上游负载已饱和，请稍后再试", taskErr.Message)
 }
+
+func TestShouldRetryTaskRelayUpstreamBadRequest(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	taskErr := &taskdto.TaskError{
+		StatusCode: http.StatusBadRequest,
+		LocalError: false,
+		Error:      errors.New("upstream rejected this channel request"),
+	}
+
+	assert.True(t, shouldRetryTaskRelay(c, 1, taskErr, 1))
+}

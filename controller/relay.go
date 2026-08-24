@@ -267,6 +267,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			if service.IsMultiKeyRetryExhausted(channelErr) && relayInfo.LastError != nil {
+				retryParam.ClearPreferredChannel()
+				retryParam.ExcludeChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 				newAPIError = relayInfo.LastError
 				continue
 			}
@@ -325,6 +327,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		prepareChannelRetry(retryParam, channel, newAPIError.StatusCode, types.IsSkipRetryError(newAPIError))
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -506,7 +509,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		selectGroup string
 		err         error
 	)
-	if retryParam.GetRetry() == 0 {
+	if retryParam.GetRetry() == 0 && retryParam.PreferredChannelID() == 0 {
 		if _, affinityEnabled := service.GetChannelAffinityStatsContext(c); affinityEnabled {
 			selectedChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 			if selectedChannelID > 0 {
@@ -530,6 +533,31 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 						err = nil
 					}
 				}
+			}
+		}
+	}
+	if preferredChannelID := retryParam.PreferredChannelID(); preferredChannelID > 0 {
+		channel, err = model.CacheGetChannel(preferredChannelID)
+		if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled ||
+			service.GroupAccessPolicyBlocksChannel(c, preferredChannelID) ||
+			service.GroupAccessPolicyBlocksModel(c, info.OriginModelName) {
+			channel = nil
+			err = nil
+			retryParam.ClearPreferredChannel()
+		} else {
+			selectGroup = info.UsingGroup
+			if selectGroup == "" {
+				selectGroup = info.TokenGroup
+			}
+			if selectGroup == "auto" {
+				if autoGroup := common.GetContextKeyString(c, constant.ContextKeyAutoGroup); autoGroup != "" {
+					selectGroup = autoGroup
+				}
+			}
+			if selectGroup == "" || !service.GroupAccessPolicyAllowsGroup(c, selectGroup) {
+				channel = nil
+				err = nil
+				retryParam.ClearPreferredChannel()
 			}
 		}
 	}
@@ -590,7 +618,32 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
+	if code == http.StatusBadRequest && openaiErr.GetErrorType() != types.ErrorTypeNewAPIError {
+		return true
+	}
 	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
+func isMultiKeyCredentialRetryStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel, statusCode int, skipRetry bool) {
+	if retryParam == nil || channel == nil || skipRetry {
+		return
+	}
+	if channel.ChannelInfo.IsMultiKey && isMultiKeyCredentialRetryStatus(statusCode) {
+		retryParam.PreferChannel(channel.Id)
+		retryParam.ResetRetryNextTry()
+		return
+	}
+	retryParam.ClearPreferredChannel()
+	retryParam.ExcludeChannel(channel.Id)
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
@@ -799,6 +852,8 @@ func RelayTask(c *gin.Context) {
 			if retryParam.GetRetry() > 0 || channel.ChannelInfo.IsMultiKey {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					if service.IsMultiKeyRetryExhausted(setupErr) && taskErr != nil {
+						retryParam.ClearPreferredChannel()
+						retryParam.ExcludeChannel(channel.Id)
 						continue
 					}
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
@@ -810,6 +865,8 @@ func RelayTask(c *gin.Context) {
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
 				if service.IsMultiKeyRetryExhausted(channelErr) && taskErr != nil {
+					retryParam.ClearPreferredChannel()
+					retryParam.ExcludeChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 					continue
 				}
 				logger.LogError(c, channelErr.Error())
@@ -848,6 +905,7 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		prepareChannelRetry(retryParam, channel, taskErr.StatusCode, taskErr.LocalError)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -913,6 +971,9 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	}
 	if taskErr.LocalError {
 		return false
+	}
+	if taskErr.StatusCode == http.StatusBadRequest {
+		return true
 	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		return true

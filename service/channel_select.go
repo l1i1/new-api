@@ -11,12 +11,14 @@ import (
 )
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
-	resetNextTry bool
+	Ctx                *gin.Context
+	TokenGroup         string
+	ModelName          string
+	RequestPath        string
+	Retry              *int
+	resetNextTry       bool
+	preferredChannelID int
+	excludedChannelIDs map[int]struct{}
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -43,6 +45,33 @@ func (p *RetryParam) IncreaseRetry() {
 
 func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
+}
+
+// PreferChannel keeps a key-rotation retry on the channel that just failed.
+func (p *RetryParam) PreferChannel(channelID int) {
+	if channelID > 0 {
+		p.preferredChannelID = channelID
+	}
+}
+
+func (p *RetryParam) PreferredChannelID() int {
+	return p.preferredChannelID
+}
+
+func (p *RetryParam) ClearPreferredChannel() {
+	p.preferredChannelID = 0
+}
+
+// ExcludeChannel prevents a non-key failure from selecting the same channel
+// again during this request.
+func (p *RetryParam) ExcludeChannel(channelID int) {
+	if channelID <= 0 {
+		return
+	}
+	if p.excludedChannelIDs == nil {
+		p.excludedChannelIDs = make(map[int]struct{})
+	}
+	p.excludedChannelIDs[channelID] = struct{}{}
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
@@ -87,6 +116,16 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	policy, policyLoaded := GetGroupAccessPolicy(param.Ctx)
 	blockedChannels := GroupAccessPolicyBlockedChannels(param.Ctx)
+	if len(param.excludedChannelIDs) > 0 {
+		mergedBlockedChannels := make(map[int]struct{}, len(blockedChannels)+len(param.excludedChannelIDs))
+		for channelID := range blockedChannels {
+			mergedBlockedChannels[channelID] = struct{}{}
+		}
+		for channelID := range param.excludedChannelIDs {
+			mergedBlockedChannels[channelID] = struct{}{}
+		}
+		blockedChannels = mergedBlockedChannels
+	}
 	if policyLoaded && policy.BlocksModel(param.ModelName) {
 		return nil, selectGroup, errors.New("model is blocked by group access policy")
 	}

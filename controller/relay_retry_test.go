@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -38,4 +40,42 @@ func TestShouldRetryUnsupportedChannelFeature(t *testing.T) {
 	)
 
 	require.True(t, shouldRetry(c, err, 1))
+}
+
+func TestShouldRetryUpstreamBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream rejected this channel request"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	require.True(t, shouldRetry(c, upstreamErr, 1))
+
+	localErr := types.NewErrorWithStatusCode(
+		errors.New("malformed request"),
+		types.ErrorCodeInvalidRequest,
+		http.StatusBadRequest,
+	)
+	require.False(t, shouldRetry(c, localErr, 1))
+}
+
+func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
+	param := &service.RetryParam{Retry: new(int)}
+	multiKeyChannel := &model.Channel{Id: 41, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
+	singleKeyChannel := &model.Channel{Id: 42}
+
+	prepareChannelRetry(param, multiKeyChannel, http.StatusTooManyRequests, false)
+	require.Equal(t, 41, param.PreferredChannelID())
+	param.IncreaseRetry()
+	require.Zero(t, param.GetRetry())
+
+	prepareChannelRetry(param, multiKeyChannel, http.StatusInternalServerError, false)
+	require.Zero(t, param.PreferredChannelID())
+	param.IncreaseRetry()
+	require.Equal(t, 1, param.GetRetry())
+
+	prepareChannelRetry(param, singleKeyChannel, http.StatusUnauthorized, false)
+	require.Zero(t, param.PreferredChannelID())
 }
