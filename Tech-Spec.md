@@ -233,3 +233,87 @@ Increase the cost of sustained violations in one affinity conversation without c
 ### Verification
 
 - Run the focused content-moderation service tests, `gofmt`, `go vet`, and `git diff --check`.
+
+## Group-Based Access and Content Policy
+
+### Goal
+
+Give administrators one policy surface for the user's base group to deny concrete channels, models, and target groups, and to exempt that base group from platform content moderation. This is an overlay on existing channel status, model abilities, token limits, usable-group rules, and global moderation configuration; it must not mutate those sources of truth.
+
+### Policy Identity and Semantics
+
+- The subject is the authenticated user's stored base group (`user_group`), not the token's selected group. Every token owned by that user inherits the same policy and cannot escape it by selecting another group.
+- `auto` is filtered by the subject group's blocked target groups first; each remaining candidate group then applies the subject group's blocked model and channel sets.
+- A policy entry is deny-only. No per-user or per-token allow override, expiry, schedule, or exception is included in the first version.
+- Existing `GroupSpecialUsableGroup` remains the source of truth for the established user-group-to-target-group allow/deny mapping. New blocked target groups are an explicit deny overlay evaluated at runtime; they do not rewrite or compete with the existing `-:target_group` configuration.
+- “屏蔽内容审查” means an explicit group-level moderation exemption (`content_moderation_disabled`). It skips this platform's pre-block/observe moderation check for that subject group; it does not disable provider safety controls, alter upstream model behavior, or erase historical moderation logs.
+- Moderation is enabled by default. A missing, malformed, stale, or unavailable policy never grants the exemption; it falls back to normal moderation behavior. Routing restrictions fail closed when the policy cannot be loaded.
+- The policy applies when selecting a channel for a new relay or async task. Existing task polling/result retrieval continues with its stored channel and does not re-evaluate the current policy.
+
+### Data Model
+
+Add one main-database `GroupAccessPolicy` row per subject group:
+
+- `group_name` — trimmed non-empty string, unique/indexed.
+- `blocked_channel_ids` — JSON text array of positive channel IDs.
+- `blocked_models` — JSON text array of exact model names; no wildcard syntax in v1.
+- `blocked_groups` — JSON text array of target group names.
+- `content_moderation_disabled` — boolean, default false in application normalization rather than a dialect-sensitive DB default.
+- `created_at` and `updated_at` — standard timestamps.
+
+JSON arrays are normalized with the project's JSON wrapper, deduplicated, sorted, and bounded. Do not add policy fields to `User`, `Token`, `Channel`, or `Ability`, and do not create one row per user/token. Register the model in normal and fast migrations for SQLite, MySQL, and PostgreSQL.
+
+### API Contract
+
+Admin-only routes beside the existing group model-rate-limit administration:
+
+- `GET /api/group-access-policies/:group` returns the normalized policy for one subject group.
+- `PUT /api/group-access-policies/:group` accepts `{ blocked_channel_ids, blocked_models, blocked_groups, content_moderation_disabled }` and atomically replaces that group's complete policy.
+
+The group must exist in the configured group-ratio/user-usable-group universe. Reject duplicate or invalid IDs, empty/oversized model names, unknown target groups, and oversized arrays before changing the previous policy. Channel IDs are positive and may remain stale after a channel is deleted; routing ignores missing channels and the UI marks them for cleanup. Existing admin audit middleware records every write. The API never returns moderation provider credentials.
+
+The frontend should use the existing group selector and channel search/list API. One policy editor exposes four sections: blocked channels, blocked models, blocked target groups, and the moderation-exemption switch with an explicit warning. It must preserve unrelated `GroupSpecialUsableGroup` rules when editing target-group blocks, and show stale channel/model entries instead of silently dropping them.
+
+### Enforcement Boundaries
+
+1. Load and normalize the subject-group policy once per authenticated request, cache it in request context, and reuse the immutable snapshot for distribution, retries, model discovery, and content moderation.
+2. In `TokenAuth`/playground group validation and `service.GetRequestAutoGroups`, remove blocked target groups from explicit and auto group candidates. A forged token or playground request naming a blocked target group receives the existing group-access-denied response.
+3. In channel selection, filter blocked models before selecting and filter blocked channel IDs in both the memory-cache and database fallback paths before priority/weight selection. Apply the same predicate to affinity reuse, retries, WebSocket relay, playground, and new task submission.
+4. The administrator-only `specific_channel_id` selector cannot bypass the subject group's policy; reject it if its requested model, resolved target group, or channel is blocked.
+5. `/v1/models`, `/v1beta/models`, `/api/user/models`, and group discovery omit blocked models/groups. A model remains visible when at least one permitted target group and channel can serve it.
+6. In `checkRelayContentModeration`, evaluate the subject-group exemption before extracting content or submitting to the moderation provider. When exempt, do not create a moderation log or violation side effect. When not exempt, keep the existing global `all_groups`, `group_ids`, `all_models`, and model-filter behavior unchanged.
+7. A policy update that changes `content_moderation_disabled` changes the policy fingerprint used by content-moderation allow/affinity keys before success, so old allow results cannot be reused after moderation is re-enabled; no full cache purge is required.
+
+### Cache, Failure, and Consistency Rules
+
+- Use a shared Redis-first cache key such as `groupAccessPolicy:<group_name>` with a short local fallback TTL when Redis is disabled.
+- Cache misses read the database and repopulate the cache. A routing-policy cache/database failure rejects the request before upstream traffic; a moderation-exemption cache/database failure treats the exemption as false and continues normal moderation.
+- Successful replacement is transactional and synchronously refreshes/invalidate the shared policy cache. The subject-group policy is never queried once per candidate or retry.
+- Updating `GroupSpecialUsableGroup` and this policy must not silently overwrite each other. If the UI presents them together, use a read-modify-write transaction or explicit conflict validation.
+
+### Acceptance Criteria
+
+- An unconfigured subject group preserves all existing behavior.
+- A blocked target group cannot be selected through token creation/update, playground selection, explicit group requests, auto groups, or model discovery.
+- A blocked model cannot be routed or advertised through any permitted target group, while another unblocked model remains usable.
+- A blocked channel is never selected through normal routing, affinity, retries, WebSocket, or new task submission; the same channel may remain usable for another subject group.
+- A subject group with `content_moderation_disabled=true` does not call the moderation provider, write new moderation logs, or execute moderation side effects; other subject groups remain governed by the existing global scope and mode.
+- The exemption is never granted on policy/config/cache errors, and re-enabling it invalidates old moderation allow/affinity decisions.
+- If every remaining channel/model/group candidate is blocked, no upstream request or quota charge occurs.
+- Existing async tasks remain pollable after their stored channel or model becomes blocked.
+- Policy replacement is atomic and cross-node visible through the shared cache; failed validation leaves the prior policy unchanged.
+- Tests cover policy normalization, API authorization, group/model/channel filtering, auto-group and token validation, affinity/retry paths, model discovery, moderation exemption/default-deny/error fallback/cache invalidation, and existing-task polling.
+
+### Implementation Tasks
+
+1. Add `GroupAccessPolicy`, normalization, atomic replacement, migration registration, and cache helpers.
+2. Extend group/token/model discovery helpers to apply policy overlays while preserving `GroupSpecialUsableGroup` behavior.
+3. Thread the immutable policy snapshot through distributor, channel selection, affinity, retries, explicit-channel checks, and new task submission.
+4. Add the moderation exemption check and cache invalidation hook without changing the existing global moderation scope semantics.
+5. Add admin API/UI, conflict-safe target-group editing, i18n strings, and focused backend/frontend tests.
+6. Run focused/full Go tests, `go vet`, frontend tests, `bun run typecheck`, i18n sync, production frontend build, and `git diff --check`.
+
+### Non-Goals
+
+- No per-user/token exceptions, wildcard model rules, temporary schedules, global channel status changes, provider safety bypass, moderation-log deletion, quota changes, or upstream-provider changes.
+- Do not store the supplied production/test API key in source, documentation, tests, logs, or `MEMORY.md`.

@@ -64,6 +64,22 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		return service.TaskErrorWrapperLocal(errors.New("task_origin_not_exist"), "task_not_exist", http.StatusBadRequest)
 	}
 
+	// Remix is a new task submission even though distribution skipped channel
+	// selection while resolving the origin task. Enforce the subject group's
+	// immutable policy against every value inherited from that task before any
+	// upstream request or billing begins.
+	if err := service.EnsureGroupAccessPolicy(c); err != nil {
+		common.SysLog(fmt.Sprintf("ResolveOriginTask load group access policy failed for user %d: %v", info.UserId, err))
+		return service.TaskErrorWrapperLocal(errors.New("group access policy unavailable"), "group_access_policy_unavailable", http.StatusInternalServerError)
+	}
+	if policy, loaded := service.GetGroupAccessPolicy(c); loaded {
+		if policy.BlocksChannel(originTask.ChannelId) ||
+			policy.BlocksGroup(originTask.Group) ||
+			policy.BlocksGroup(info.UsingGroup) {
+			return service.TaskErrorWrapperLocal(errors.New("group access denied"), "group_access_denied", http.StatusForbidden)
+		}
+	}
+
 	// 从原始任务推导模型名称
 	if info.OriginModelName == "" {
 		if originTask.Properties.OriginModelName != "" {
@@ -78,6 +94,10 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 			}
 		}
 	}
+	if policy, loaded := service.GetGroupAccessPolicy(c); loaded &&
+		(policy.BlocksModel(info.OriginModelName) || policy.BlocksModel(originTask.Properties.UpstreamModelName)) {
+		return service.TaskErrorWrapperLocal(errors.New("group access denied"), "group_access_denied", http.StatusForbidden)
+	}
 
 	// 锁定到原始任务的渠道（重试时复用同一渠道，轮换 key）
 	ch, err := model.GetChannelById(originTask.ChannelId, true)
@@ -86,6 +106,9 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	}
 	if ch.Status != common.ChannelStatusEnabled {
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
+	}
+	if !service.GroupAccessPolicyAllowsTaskChannel(c, ch, originTask.Group, info.OriginModelName, path) {
+		return service.TaskErrorWrapperLocal(errors.New("group access denied"), "group_access_denied", http.StatusForbidden)
 	}
 	info.LockedChannel = ch
 

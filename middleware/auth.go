@@ -459,8 +459,16 @@ func TokenAuth() func(c *gin.Context) {
 		userGroup := userCache.Group
 		tokenGroup := token.Group
 		if tokenGroup != "" {
+			// Explicit token groups are checked during authentication as well as
+			// distribution, so non-relay endpoints cannot bypass the subject-group
+			// deny overlay.
+			if err := service.LoadGroupAccessPolicy(c, userGroup); err != nil {
+				common.SysLog(fmt.Sprintf("TokenAuth LoadGroupAccessPolicy error for group %q: %v", userGroup, err))
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, common.TranslateMessage(c, i18n.MsgDatabaseError))
+				return
+			}
 			// check common.UserUsableGroups[userGroup]
-			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+			if !service.GroupInUserUsableGroupsForContext(c, userGroup, tokenGroup) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
 				return
 			}

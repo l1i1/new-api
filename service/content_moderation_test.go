@@ -366,6 +366,23 @@ func TestContentModerationPolicyFingerprintInvalidatesAffinityKey(t *testing.T) 
 	require.NotEqual(t, contentModerationAffinityCacheKey(input, first), contentModerationAffinityCacheKey(input, second))
 }
 
+func TestGroupAccessPolicyFingerprintInvalidatesModerationKeys(t *testing.T) {
+	input := ContentModerationRequest{
+		UserID: 1, Group: "default", Model: "gpt-test",
+		Protocol:         ContentModerationProtocolOpenAIChat,
+		AffinityRuleName: "rule", AffinityCacheIdentity: "conversation",
+		AffinityTTLSeconds: 300, AffinityChannelID: 1,
+		Text: "same body",
+	}
+	config := defaultContentModerationConfig()
+	input.GroupPolicyFingerprint = "policy-v1"
+	affinityV1 := contentModerationAffinityCacheKey(input, config)
+	allowV1 := contentModerationAllowCacheKey(input, config, ContentModerationInput{Text: input.Text})
+	input.GroupPolicyFingerprint = "policy-v2"
+	require.NotEqual(t, affinityV1, contentModerationAffinityCacheKey(input, config))
+	require.NotEqual(t, allowV1, contentModerationAllowCacheKey(input, config, ContentModerationInput{Text: input.Text}))
+}
+
 func TestCachedFlaggedDecisionCannotBeBypassedBySampling(t *testing.T) {
 	withContentModerationOption(t, `{"enabled":true,"mode":"pre_block","sample_rate":0.000000001,"all_groups":true,"all_models":true}`)
 	config := GetContentModerationConfig()

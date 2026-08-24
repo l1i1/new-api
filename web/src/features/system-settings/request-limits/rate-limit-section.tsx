@@ -45,6 +45,7 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import { GroupAccessPoliciesSection } from './group-access-policies-section'
 import { GroupModelRateLimitsSection } from './group-model-rate-limits-section'
 import { RateLimitVisualEditor } from './rate-limit-visual-editor'
 import { UserModelRateLimitsAdminSection } from './user-model-rate-limits-admin-section'
@@ -323,6 +324,7 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
       </Form>
       <UserModelRateLimitsAdminSection />
       <GroupModelRateLimitsSection />
+      <GroupAccessPoliciesSection />
     </SettingsSection>
   )
 }

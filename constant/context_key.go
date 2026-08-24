@@ -65,6 +65,9 @@ const (
 	ContextKeyUserGroup   ContextKey = "user_group"
 	ContextKeyUsingGroup  ContextKey = "group"
 	ContextKeyUserName    ContextKey = "username"
+	// ContextKeyGroupAccessPolicy stores the immutable policy snapshot loaded
+	// for the authenticated user's base group.
+	ContextKeyGroupAccessPolicy ContextKey = "group_access_policy"
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 

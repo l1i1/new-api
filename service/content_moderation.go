@@ -310,6 +310,9 @@ type ContentModerationRequest struct {
 	AffinityCacheIdentity  string
 	AffinityTTLSeconds     int
 	AffinityChannelID      int
+	// GroupPolicyFingerprint binds queued and cached moderation decisions to
+	// the policy snapshot that was active when the request was submitted.
+	GroupPolicyFingerprint string
 }
 
 type ContentModerationInput struct {
@@ -559,7 +562,7 @@ func contentModerationAffinityCacheKey(input ContentModerationRequest, configs .
 	if len(configs) > 0 {
 		policyFingerprint = contentModerationPolicyFingerprint(configs[0])
 	}
-	seed := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%d\x00%s\x00%s", input.UserID, input.Group, input.Model, input.Protocol, input.AffinityRuleName, input.AffinityChannelID, affinityIdentity, policyFingerprint)
+	seed := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s", input.UserID, input.Group, input.Model, input.Protocol, input.AffinityRuleName, input.AffinityChannelID, affinityIdentity, policyFingerprint, input.GroupPolicyFingerprint)
 	digest := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(digest[:])
 }
@@ -573,12 +576,13 @@ func contentModerationAllowCacheKey(input ContentModerationRequest, config Conte
 		return ""
 	}
 	seed := fmt.Sprintf(
-		"%d\x00%s\x00%s\x00%s\x00%s",
+		"%d\x00%s\x00%s\x00%s\x00%s\x00%s",
 		input.UserID,
 		strings.TrimSpace(input.Group),
 		strings.TrimSpace(input.Protocol),
 		content.hash(),
 		contentModerationPolicyFingerprint(config),
+		input.GroupPolicyFingerprint,
 	)
 	digest := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(digest[:])

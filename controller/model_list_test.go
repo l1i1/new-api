@@ -49,7 +49,7 @@ func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB = db
 	model.LOG_DB = db
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.GroupAccessPolicy{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -502,6 +502,36 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	require.Empty(t, anthropicResponse.Data)
 	require.Empty(t, anthropicResponse.FirstID)
 	require.Empty(t, anthropicResponse.LastID)
+}
+
+func TestListModelsAppliesGroupAccessPolicyToModelsAndChannels(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "policy-visible-model", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "policy-blocked-model", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "channel-only-blocked-model", ChannelId: 2, Enabled: true},
+	}).Error)
+	_, err := model.ReplaceGroupAccessPolicy(model.GroupAccessPolicy{
+		GroupName:                 "default",
+		BlockedChannelIDs:         model.GroupAccessPolicyIntList{2},
+		BlockedModels:             model.GroupAccessPolicyStringList{"policy-blocked-model"},
+		ContentModerationDisabled: false,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = model.InvalidateGroupAccessPolicyCache("default") })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+	ids := decodeListModelsResponse(t, recorder)
+	require.Contains(t, ids, "policy-visible-model")
+	require.NotContains(t, ids, "policy-blocked-model")
+	require.NotContains(t, ids, "channel-only-blocked-model")
 }
 
 func TestCheckUpdatePasswordRequiresCurrentPassword(t *testing.T) {

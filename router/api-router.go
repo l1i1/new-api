@@ -361,6 +361,13 @@ func SetApiRouter(router *gin.Engine) {
 			groupModelRateLimitRoute.PUT("/", controller.ReplaceGroupModelRateLimits)
 		}
 
+		groupAccessPolicyRoute := apiRouter.Group("/group-access-policies")
+		groupAccessPolicyRoute.Use(middleware.AdminAuth())
+		{
+			groupAccessPolicyRoute.GET("/:group", controller.GetGroupAccessPolicy)
+			groupAccessPolicyRoute.PUT("/:group", controller.ReplaceGroupAccessPolicy)
+		}
+
 		prefillGroupRoute := apiRouter.Group("/prefill_group")
 		prefillGroupRoute.Use(middleware.AdminAuth())
 		{

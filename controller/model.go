@@ -207,6 +207,11 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 }
 
 func ListModels(c *gin.Context, modelType int) {
+	if err := service.EnsureGroupAccessPolicy(c); err != nil {
+		common.SysLog(fmt.Sprintf("ListModels GetCachedGroupAccessPolicy error: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "get group access policy failed"})
+		return
+	}
 	complianceCountry := complianceClientCountry(c)
 	setDiscoveryComplianceHeaders(c, complianceCountry)
 
@@ -245,7 +250,7 @@ func ListModels(c *gin.Context, modelType int) {
 			tokenModelLimit = map[string]bool{}
 		}
 	}
-	models := service.GetGroupsEnabledModels(ownerGroups)
+	models := service.GetGroupsEnabledModelsForContext(c, ownerGroups)
 	for _, modelName := range models {
 		if complianceCountry != "" && isComplianceRestrictedModel(modelName) {
 			continue
@@ -323,9 +328,29 @@ func ChannelListModels(c *gin.Context) {
 }
 
 func DashboardListModels(c *gin.Context) {
+	if err := service.EnsureGroupAccessPolicy(c); err != nil {
+		common.SysLog(fmt.Sprintf("DashboardListModels GetCachedGroupAccessPolicy error: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "get group access policy failed"})
+		return
+	}
+	policy, policyLoaded := service.GetGroupAccessPolicy(c)
+	models := make(map[int][]string, len(channelId2Models))
+	for channelType, modelNames := range channelId2Models {
+		if !policyLoaded {
+			models[channelType] = append([]string(nil), modelNames...)
+			continue
+		}
+		filtered := make([]string, 0, len(modelNames))
+		for _, modelName := range modelNames {
+			if !policy.BlocksModel(modelName) {
+				filtered = append(filtered, modelName)
+			}
+		}
+		models[channelType] = filtered
+	}
 	c.JSON(200, gin.H{
 		"success": true,
-		"data":    channelId2Models,
+		"data":    models,
 	})
 }
 
@@ -337,10 +362,21 @@ func EnabledListModels(c *gin.Context) {
 }
 
 func RetrieveModel(c *gin.Context, modelType int) {
+	if err := service.EnsureGroupAccessPolicy(c); err != nil {
+		common.SysLog(fmt.Sprintf("RetrieveModel GetCachedGroupAccessPolicy error: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "get group access policy failed"})
+		return
+	}
 	complianceCountry := complianceClientCountry(c)
 	setDiscoveryComplianceHeaders(c, complianceCountry)
 	modelId := c.Param("model")
 	aiModel, ok := openAIModelsMap[modelId]
+	if _, policyLoaded := service.GetGroupAccessPolicy(c); policyLoaded {
+		groups, groupsErr := getModelListGroups(c)
+		if groupsErr != nil || !service.GroupAccessPolicyAllowsModelForGroups(c, modelId, groups.ownerGroups) {
+			ok = false
+		}
+	}
 	if complianceCountry != "" && isComplianceRestrictedModel(modelId) {
 		ok = false
 	}

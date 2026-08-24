@@ -39,6 +39,21 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// Existing async task fetch/result routes intentionally skip channel
+		// selection and must remain pollable after a policy change. New relay
+		// submissions load the base-group snapshot and fail closed on errors.
+		if shouldSelectChannel {
+			userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+			if userGroup != "" {
+				if _, loaded := service.GetGroupAccessPolicy(c); !loaded {
+					if err := service.LoadGroupAccessPolicy(c, userGroup); err != nil {
+						common.SysLog(fmt.Sprintf("Distribute GetCachedGroupAccessPolicy error for group %q: %v", userGroup, err))
+						abortWithOpenAiMessage(c, http.StatusInternalServerError, common.TranslateMessage(c, i18n.MsgDatabaseError))
+						return
+					}
+				}
+			}
+		}
 		common.SetContextKey(c, constant.ContextKeyResolvedModel, "")
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
@@ -55,14 +70,31 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
+			if !service.GroupAccessPolicyAllowsSpecificChannel(c, channel, modelRequest.Model, c.Request.URL.Path) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+				return
+			}
 			resolvedModel, compactAlias := model.ResolveCompactModelAliasForChannel(channel, modelRequest.Model, c.Request.URL.Path)
+			if service.GroupAccessPolicyBlocksModel(c, resolvedModel) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+				return
+			}
+			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			if usingGroup != "auto" && !service.GroupAccessPolicyAllowsGroup(c, usingGroup) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+				return
+			}
+			if usingGroup == "auto" && len(service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))) == 0 {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+				return
+			}
 			setResolvedModelContext(c, resolvedModel, compactAlias)
 		} else {
 			// Select a channel for the user
 			// check token model mapping
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 			var tokenModelLimit map[string]bool
-			if modelLimitEnable {
+			if modelLimitEnable && modelRequest.Model != "" {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 				if !ok {
 					// token model limit is empty, all models are not allowed
@@ -86,6 +118,11 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+				baseUserGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+				if service.GroupAccessPolicyBlocksModel(c, modelRequest.Model) {
+					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+					return
+				}
 				// Playground routes embed the user-selected group in the
 				// request body (JSON) or form field (multipart). Chat sends
 				// JSON; image edits sends multipart.
@@ -97,7 +134,7 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if playgroundRequest.Group != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
+						if !service.GroupInUserUsableGroupsForContext(c, baseUserGroup, playgroundRequest.Group) && playgroundRequest.Group != baseUserGroup {
 							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 							return
 						}
@@ -119,7 +156,7 @@ func Distribute() func(c *gin.Context) {
 						}
 					}
 					if playgroundGroup != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundGroup) && playgroundGroup != usingGroup {
+						if !service.GroupInUserUsableGroupsForContext(c, baseUserGroup, playgroundGroup) && playgroundGroup != baseUserGroup {
 							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 							return
 						}
@@ -127,17 +164,22 @@ func Distribute() func(c *gin.Context) {
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
 				}
+				if !service.GroupAccessPolicyAllowsGroup(c, usingGroup) {
+					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+					return
+				}
 
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
+					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && !service.GroupAccessPolicyBlocksChannel(c, preferred.Id) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for _, g := range autoGroups {
 								routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(g, modelRequest.Model, c.Request.URL.Path)
 								if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
+									!service.GroupAccessPolicyBlocksModel(c, routingModel) &&
 									model.IsChannelEnabledForGroupModel(g, routingModel, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
@@ -151,6 +193,7 @@ func Distribute() func(c *gin.Context) {
 						} else {
 							routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(usingGroup, modelRequest.Model, c.Request.URL.Path)
 							if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
+								!service.GroupAccessPolicyBlocksModel(c, routingModel) &&
 								model.IsChannelEnabledForGroupModel(usingGroup, routingModel, preferred.Id) {
 								channel = preferred
 								selectGroup = usingGroup
@@ -193,7 +236,7 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 			}
-			if modelLimitEnable && !tokenModelLimitAllowsResolved(
+			if modelLimitEnable && modelRequest.Model != "" && !tokenModelLimitAllowsResolved(
 				tokenModelLimit,
 				modelRequest.Model,
 				common.GetContextKeyString(c, constant.ContextKeyResolvedModel),

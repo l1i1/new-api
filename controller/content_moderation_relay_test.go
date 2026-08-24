@@ -65,6 +65,23 @@ func TestCheckRelayContentModerationDoesNotReadDisabledBody(t *testing.T) {
 	require.Zero(t, body.reads)
 }
 
+func TestCheckRelayContentModerationSkipsForGroupPolicyExemption(t *testing.T) {
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block"}`)
+	body := &unreadableRequestBody{}
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body)
+	common.SetContextKey(context, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{
+		GroupName:                 "default",
+		ContentModerationDisabled: true,
+	})
+
+	decision := checkRelayContentModeration(context, types.RelayFormatOpenAI, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "gpt-test",
+	})
+	require.Nil(t, decision)
+	require.Zero(t, body.reads)
+}
+
 func TestCheckRelayContentModerationSkipsModerationRelayEndpoint(t *testing.T) {
 	withControllerContentModerationOption(t, `{"enabled":true}`)
 	body := &unreadableRequestBody{}

@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -27,8 +29,20 @@ func GetUserGroups(c *gin.Context) {
 	usableGroups := make(map[string]map[string]interface{})
 	userGroup := ""
 	userId := c.GetInt("id")
+	policyLoaded := false
 	userGroup, _ = model.GetUserGroup(userId, false)
+	if userId > 0 {
+		if err := service.LoadGroupAccessPolicy(c, userGroup); err != nil {
+			common.SysLog(fmt.Sprintf("GetUserGroups GetCachedGroupAccessPolicy error: %v", err))
+			common.ApiError(c, err)
+			return
+		}
+		policyLoaded = true
+	}
 	userUsableGroups := service.GetUserUsableGroups(userGroup)
+	if userId > 0 {
+		userUsableGroups = service.GetUserUsableGroupsForContext(c, userGroup)
+	}
 	complianceCountry := complianceClientCountry(c)
 	setDiscoveryComplianceHeaders(c, complianceCountry)
 	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
@@ -45,7 +59,10 @@ func GetUserGroups(c *gin.Context) {
 	}
 	if _, ok := userUsableGroups["auto"]; ok {
 		autoGroups := service.GetUserAutoGroup(userGroup)
-		if complianceCountry == "" || len(filterComplianceGroups(autoGroups)) > 0 {
+		if userId > 0 {
+			autoGroups = service.GetUserAutoGroupForContext(c, userGroup)
+		}
+		if shouldExposeAutoGroup(policyLoaded, autoGroups, complianceCountry) {
 			usableGroups["auto"] = map[string]interface{}{
 				"ratio": "自动",
 				"desc":  setting.GetUsableGroupDescription("auto"),
@@ -57,4 +74,11 @@ func GetUserGroups(c *gin.Context) {
 		"message": "",
 		"data":    usableGroups,
 	})
+}
+
+func shouldExposeAutoGroup(policyLoaded bool, autoGroups []string, complianceCountry string) bool {
+	if policyLoaded && len(autoGroups) == 0 {
+		return false
+	}
+	return complianceCountry == "" || len(filterComplianceGroups(autoGroups)) > 0
 }

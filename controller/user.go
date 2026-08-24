@@ -629,6 +629,11 @@ func generateDefaultSidebarConfig(userRole int) string {
 }
 
 func GetUserModels(c *gin.Context) {
+	if err := service.EnsureGroupAccessPolicy(c); err != nil {
+		common.SysLog(fmt.Sprintf("GetUserModels GetCachedGroupAccessPolicy error: %v", err))
+		common.ApiError(c, err)
+		return
+	}
 	complianceCountry := complianceClientCountry(c)
 	setDiscoveryComplianceHeaders(c, complianceCountry)
 
@@ -641,7 +646,7 @@ func GetUserModels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	groups := service.GetUserUsableGroups(user.Group)
+	groups := service.GetUserUsableGroupsForContext(c, user.Group)
 	group := c.Query("group")
 	var groupsToQuery []string
 	switch {
@@ -651,7 +656,7 @@ func GetUserModels(c *gin.Context) {
 		}
 	case group == "auto":
 		if _, ok := groups[group]; ok {
-			groupsToQuery = service.GetUserAutoGroup(user.Group)
+			groupsToQuery = service.GetUserAutoGroupForContext(c, user.Group)
 		}
 	default:
 		if _, ok := groups[group]; ok {
@@ -661,7 +666,7 @@ func GetUserModels(c *gin.Context) {
 	if complianceCountry != "" {
 		groupsToQuery = filterComplianceGroups(groupsToQuery)
 	}
-	models := service.GetGroupsEnabledModels(groupsToQuery)
+	models := service.GetGroupsEnabledModelsForContext(c, groupsToQuery)
 	if complianceCountry != "" {
 		models = filterComplianceModels(models)
 	}

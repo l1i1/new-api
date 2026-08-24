@@ -343,6 +343,11 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	if c == nil || c.Request == nil || info == nil || relayFormat == types.RelayFormatOpenAIRealtime {
 		return nil
 	}
+	// This is only the platform AI moderation layer. Local sensitive-word
+	// checks and provider-side safety policies remain enforced later/upstream.
+	if service.GroupAccessPolicyModerationDisabled(c) {
+		return nil
+	}
 	enabled, configErr := service.ContentModerationEnabled()
 	if configErr != nil {
 		logger.LogError(c, fmt.Sprintf("content moderation fail-open user_id=%d request_id=%q: %s", info.UserId, info.RequestId, common.LocalLogPreview(configErr.Error())))
@@ -367,6 +372,9 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
 		RequestPath: c.Request.URL.Path, RequestID: info.RequestId,
 		Text: content.Text, Images: content.Images, ContentValidationError: content.ValidationError, ContentValidated: content.IsValidated(),
+	}
+	if policy, loaded := service.GetGroupAccessPolicy(c); loaded {
+		moderationRequest.GroupPolicyFingerprint = policy.Fingerprint
 	}
 	// Direct unit-test callers and legacy handlers may not expose a typed
 	// request. The normal Relay path never takes this body fallback.
@@ -506,7 +514,8 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 				if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled {
 					channel = nil
 					err = nil
-				} else {
+				} else if !service.GroupAccessPolicyBlocksChannel(c, selectedChannelID) &&
+					!service.GroupAccessPolicyBlocksModel(c, info.OriginModelName) {
 					selectGroup = info.UsingGroup
 					if selectGroup == "" {
 						selectGroup = info.TokenGroup
@@ -515,6 +524,10 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 						if autoGroup := common.GetContextKeyString(c, constant.ContextKeyAutoGroup); autoGroup != "" {
 							selectGroup = autoGroup
 						}
+					}
+					if selectGroup == "" || !service.GroupAccessPolicyAllowsGroup(c, selectGroup) {
+						channel = nil
+						err = nil
 					}
 				}
 			}

@@ -41,9 +41,20 @@ func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 }
 
 func GetGroupEnabledModels(group string) []string {
+	return GetGroupEnabledModelsWithBlockedChannels(group, nil)
+}
+
+// GetGroupEnabledModelsWithBlockedChannels is the discovery counterpart of
+// policy-aware channel selection. It removes abilities on denied channels so a
+// model is advertised only when at least one permitted channel remains.
+func GetGroupEnabledModelsWithBlockedChannels(group string, blockedChannels map[int]struct{}) []string {
 	var models []string
 	// Find distinct models
-	DB.Table("abilities").Where(commonGroupCol+" = ? and enabled = ?", group, true).Distinct("model").Pluck("model", &models)
+	query := DB.Table("abilities").Where(commonGroupCol+" = ? and enabled = ?", group, true)
+	if len(blockedChannels) > 0 {
+		query = query.Where("channel_id NOT IN ?", blockedChannelIDs(blockedChannels))
+	}
+	query.Distinct("model").Pluck("model", &models)
 	return models
 }
 
@@ -61,13 +72,20 @@ func GetAllEnableAbilities() []Ability {
 }
 
 func getPriority(group string, model string, retry int) (int, error) {
+	return getPriorityWithBlockedChannels(group, model, retry, nil)
+}
+
+func getPriorityWithBlockedChannels(group string, model string, retry int, blockedChannels map[int]struct{}) (int, error) {
 
 	var priorities []int
-	err := DB.Model(&Ability{}).
+	query := DB.Model(&Ability{}).
 		Select("DISTINCT(priority)").
 		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
-		Order("priority DESC").              // 按优先级降序排序
-		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
+		Order("priority DESC")
+	if len(blockedChannels) > 0 {
+		query = query.Where("channel_id NOT IN ?", blockedChannelIDs(blockedChannels))
+	}
+	err := query.Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
 
 	if err != nil {
 		// 处理错误
@@ -91,14 +109,28 @@ func getPriority(group string, model string, retry int) (int, error) {
 }
 
 func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
+	return getChannelQueryWithBlockedChannels(group, model, retry, nil)
+}
+
+func getChannelQueryWithBlockedChannels(group string, model string, retry int, blockedChannels map[int]struct{}) (*gorm.DB, error) {
 	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if len(blockedChannels) > 0 {
+		blockedIDs := blockedChannelIDs(blockedChannels)
+		maxPrioritySubQuery = maxPrioritySubQuery.Where("channel_id NOT IN ?", blockedIDs)
+	}
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if len(blockedChannels) > 0 {
+		channelQuery = channelQuery.Where("channel_id NOT IN ?", blockedChannelIDs(blockedChannels))
+	}
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
+		priority, err := getPriorityWithBlockedChannels(group, model, retry, blockedChannels)
 		if err != nil {
 			return nil, err
 		} else {
 			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+			if len(blockedChannels) > 0 {
+				channelQuery = channelQuery.Where("channel_id NOT IN ?", blockedChannelIDs(blockedChannels))
+			}
 		}
 	}
 
@@ -106,10 +138,14 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetChannelWithBlockedChannels(group, model, retry, requestPath, nil)
+}
+
+func GetChannelWithBlockedChannels(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQueryWithBlockedChannels(group, model, retry, blockedChannels)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +158,9 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if len(blockedChannels) > 0 {
+		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -144,6 +183,28 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+func blockedChannelIDs(blockedChannels map[int]struct{}) []int {
+	if len(blockedChannels) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(blockedChannels))
+	for channelID := range blockedChannels {
+		ids = append(ids, channelID)
+	}
+	return ids
+}
+
+func filterAbilitiesByBlockedChannels(abilities []Ability, blockedChannels map[int]struct{}) []Ability {
+	filtered := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if _, blocked := blockedChannels[ability.ChannelId]; blocked {
+			continue
+		}
+		filtered = append(filtered, ability)
+	}
+	return filtered
 }
 
 // filterAbilitiesByRequestPathAndModel restricts candidates by request path and

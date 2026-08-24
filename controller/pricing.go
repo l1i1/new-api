@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -30,6 +32,23 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 				filtered = append(filtered, item)
 				break
 			}
+		}
+	}
+	return filtered
+}
+
+func filterPricingByGroupAccessPolicy(c *gin.Context, pricing []model.Pricing, usableGroups map[string]string) []model.Pricing {
+	if len(pricing) == 0 || len(usableGroups) == 0 {
+		return pricing
+	}
+	groups := make([]string, 0, len(usableGroups))
+	for group := range usableGroups {
+		groups = append(groups, group)
+	}
+	filtered := make([]model.Pricing, 0, len(pricing))
+	for _, item := range pricing {
+		if service.GroupAccessPolicyAllowsModelForGroups(c, item.ModelName, groups) {
+			filtered = append(filtered, item)
 		}
 	}
 	return filtered
@@ -143,6 +162,11 @@ func GetPricing(c *gin.Context) {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			if err := service.LoadGroupAccessPolicy(c, group); err != nil {
+				common.SysLog(fmt.Sprintf("GetPricing GetCachedGroupAccessPolicy error: %v", err))
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "get group access policy failed"})
+				return
+			}
 			for g := range groupRatio {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
@@ -152,7 +176,12 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
-	usableGroup = service.GetUserUsableGroups(group)
+	if group != "" {
+		usableGroup = service.GetUserUsableGroupsForContext(c, group)
+	} else {
+		usableGroup = service.GetUserUsableGroups(group)
+	}
+	pricing = filterPricingByGroupAccessPolicy(c, pricing, usableGroup)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
@@ -160,7 +189,12 @@ func GetPricing(c *gin.Context) {
 			delete(groupRatio, group)
 		}
 	}
-	autoGroups := service.GetUserAutoGroup(group)
+	var autoGroups []string
+	if group != "" {
+		autoGroups = service.GetUserAutoGroupForContext(c, group)
+	} else {
+		autoGroups = service.GetUserAutoGroup(group)
+	}
 	complianceCountry := complianceClientCountry(c)
 	setDiscoveryComplianceHeaders(c, complianceCountry)
 	if complianceCountry != "" {

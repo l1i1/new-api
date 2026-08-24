@@ -85,6 +85,11 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+	policy, policyLoaded := GetGroupAccessPolicy(param.Ctx)
+	blockedChannels := GroupAccessPolicyBlockedChannels(param.Ctx)
+	if policyLoaded && policy.BlocksModel(param.ModelName) {
+		return nil, selectGroup, errors.New("model is blocked by group access policy")
+	}
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -105,7 +110,13 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
+			if policyLoaded && policy.BlocksGroup(autoGroup) {
+				continue
+			}
 			routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(autoGroup, param.ModelName, param.RequestPath)
+			if policyLoaded && policy.BlocksModel(routingModel) {
+				continue
+			}
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
 			priorityRetry := param.GetRetry()
@@ -116,7 +127,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, routingModel, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannelWithBlockedChannels(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -155,8 +166,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
+		if policyLoaded && policy.BlocksGroup(param.TokenGroup) {
+			return nil, param.TokenGroup, errors.New("group is blocked by group access policy")
+		}
 		routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(param.TokenGroup, param.ModelName, param.RequestPath)
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, routingModel, param.GetRetry(), param.RequestPath)
+		if policyLoaded && policy.BlocksModel(routingModel) {
+			return nil, param.TokenGroup, errors.New("model is blocked by group access policy")
+		}
+		channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(param.TokenGroup, routingModel, param.GetRetry(), param.RequestPath, blockedChannels)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

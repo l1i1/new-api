@@ -99,7 +99,7 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	if err := db.AutoMigrate(&model.Token{}); err != nil {
+	if err := db.AutoMigrate(&model.Token{}, &model.GroupAccessPolicy{}); err != nil {
 		t.Fatalf("failed to migrate token table: %v", err)
 	}
 }
@@ -202,6 +202,7 @@ func newAuthenticatedContext(t *testing.T, method string, target string, body an
 		ctx.Request.Header.Set("Content-Type", "application/json")
 	}
 	ctx.Set("id", userID)
+	ctx.Set("user_group", "default")
 	return ctx, recorder
 }
 

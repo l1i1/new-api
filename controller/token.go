@@ -76,6 +76,37 @@ func getTokenRequestUserGroup(c *gin.Context) (string, error) {
 	return model.GetUserGroup(c.GetInt("id"), false)
 }
 
+func ensureTokenRequestPolicy(c *gin.Context, userGroup string) error {
+	if _, loaded := service.GetGroupAccessPolicy(c); loaded {
+		return nil
+	}
+	return service.LoadGroupAccessPolicy(c, userGroup)
+}
+
+func validateTokenTargetGroup(c *gin.Context, groupName string) bool {
+	groupName = strings.TrimSpace(groupName)
+	if groupName == "" {
+		return true
+	}
+	userGroup, err := getTokenRequestUserGroup(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	if err := ensureTokenRequestPolicy(c, userGroup); err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	if groupName == "auto" {
+		return true
+	}
+	if !service.IsUserSelectableGroupForContext(c, userGroup, groupName) {
+		common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": groupName})
+		return false
+	}
+	return true
+}
+
 func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) bool {
 	if len(groups) == 0 {
 		if err := token.SetAutoGroups(nil); err != nil {
@@ -96,6 +127,10 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		common.ApiError(c, err)
 		return false
 	}
+	if err := ensureTokenRequestPolicy(c, userGroup); err != nil {
+		common.ApiError(c, err)
+		return false
+	}
 	seen := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
 		if _, ok := seen[group]; ok {
@@ -103,7 +138,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 			return false
 		}
 		seen[group] = struct{}{}
-		if !setting.ContainsAutoGroup(group) || !service.IsUserSelectableGroup(userGroup, group) {
+		if !setting.ContainsAutoGroup(group) || !service.IsUserSelectableGroupForContext(c, userGroup, group) {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
 			return false
 		}
@@ -168,8 +203,12 @@ func GetTokenAutoGroups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := ensureTokenRequestPolicy(c, userGroup); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    service.GetUserAutoGroupForContext(c, userGroup),
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }
@@ -299,6 +338,9 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
+	if !validateTokenTargetGroup(c, token.Group) {
+		return
+	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
@@ -397,6 +439,9 @@ func UpdateToken(c *gin.Context) {
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
 	} else {
+		if !validateTokenTargetGroup(c, token.Group) {
+			return
+		}
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = token.Name
 		cleanToken.ExpiredTime = token.ExpiredTime
