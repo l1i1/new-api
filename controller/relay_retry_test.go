@@ -79,3 +79,15 @@ func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
 	prepareChannelRetry(param, singleKeyChannel, http.StatusUnauthorized, false)
 	require.Zero(t, param.PreferredChannelID())
 }
+
+func TestRetryParamCancelResetAfterMultiKeyExhaustion(t *testing.T) {
+	param := &service.RetryParam{Retry: new(int)}
+	param.ResetRetryNextTry()
+	param.CancelRetryReset()
+	param.IncreaseRetry()
+	require.Equal(t, 1, param.GetRetry())
+
+	param.ExcludeChannel(41)
+	require.True(t, param.IsChannelExcluded(41))
+	require.False(t, param.IsChannelExcluded(42))
+}

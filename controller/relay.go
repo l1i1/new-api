@@ -267,6 +267,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			if service.IsMultiKeyRetryExhausted(channelErr) && relayInfo.LastError != nil {
+				retryParam.CancelRetryReset()
 				retryParam.ClearPreferredChannel()
 				retryParam.ExcludeChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 				newAPIError = relayInfo.LastError
@@ -512,7 +513,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	if retryParam.GetRetry() == 0 && retryParam.PreferredChannelID() == 0 {
 		if _, affinityEnabled := service.GetChannelAffinityStatsContext(c); affinityEnabled {
 			selectedChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
-			if selectedChannelID > 0 {
+			if selectedChannelID > 0 && !retryParam.IsChannelExcluded(selectedChannelID) {
 				channel, err = model.CacheGetChannel(selectedChannelID)
 				if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled {
 					channel = nil
@@ -852,6 +853,7 @@ func RelayTask(c *gin.Context) {
 			if retryParam.GetRetry() > 0 || channel.ChannelInfo.IsMultiKey {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					if service.IsMultiKeyRetryExhausted(setupErr) && taskErr != nil {
+						retryParam.CancelRetryReset()
 						retryParam.ClearPreferredChannel()
 						retryParam.ExcludeChannel(channel.Id)
 						continue
@@ -865,6 +867,7 @@ func RelayTask(c *gin.Context) {
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
 				if service.IsMultiKeyRetryExhausted(channelErr) && taskErr != nil {
+					retryParam.CancelRetryReset()
 					retryParam.ClearPreferredChannel()
 					retryParam.ExcludeChannel(common.GetContextKeyInt(c, constant.ContextKeyChannelId))
 					continue

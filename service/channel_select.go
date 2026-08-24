@@ -47,6 +47,10 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
+func (p *RetryParam) CancelRetryReset() {
+	p.resetNextTry = false
+}
+
 // PreferChannel keeps a key-rotation retry on the channel that just failed.
 func (p *RetryParam) PreferChannel(channelID int) {
 	if channelID > 0 {
@@ -72,6 +76,11 @@ func (p *RetryParam) ExcludeChannel(channelID int) {
 		p.excludedChannelIDs = make(map[int]struct{})
 	}
 	p.excludedChannelIDs[channelID] = struct{}{}
+}
+
+func (p *RetryParam) IsChannelExcluded(channelID int) bool {
+	_, excluded := p.excludedChannelIDs[channelID]
+	return excluded
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
