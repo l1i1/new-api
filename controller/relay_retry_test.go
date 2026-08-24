@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -66,18 +68,30 @@ func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
 	multiKeyChannel := &model.Channel{Id: 41, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
 	singleKeyChannel := &model.Channel{Id: 42}
 
-	prepareChannelRetry(param, multiKeyChannel, http.StatusTooManyRequests, false)
+	require.True(t, prepareChannelRetry(param, multiKeyChannel, http.StatusTooManyRequests, false))
 	require.Equal(t, 41, param.PreferredChannelID())
 	param.IncreaseRetry()
 	require.Zero(t, param.GetRetry())
 
-	prepareChannelRetry(param, multiKeyChannel, http.StatusInternalServerError, false)
+	require.False(t, prepareChannelRetry(param, multiKeyChannel, http.StatusInternalServerError, false))
 	require.Zero(t, param.PreferredChannelID())
 	param.IncreaseRetry()
 	require.Equal(t, 1, param.GetRetry())
 
-	prepareChannelRetry(param, singleKeyChannel, http.StatusUnauthorized, false)
+	require.False(t, prepareChannelRetry(param, singleKeyChannel, http.StatusUnauthorized, false))
 	require.Zero(t, param.PreferredChannelID())
+}
+
+func TestAffinitySkipStillAllowsMultiKeyCredentialRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("channel_affinity_skip_retry_on_failure", true)
+	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+
+	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusUnauthorized))
+	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusForbidden))
+	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusTooManyRequests))
+	require.True(t, shouldSkipRetryAfterAffinity(c, http.StatusBadRequest))
 }
 
 func TestRetryParamCancelResetAfterMultiKeyExhaustion(t *testing.T) {

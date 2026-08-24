@@ -594,9 +594,6 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
-	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-		return false
-	}
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
@@ -604,6 +601,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if retryTimes <= 0 {
+		return false
+	}
+	if shouldSkipRetryAfterAffinity(c, openaiErr.StatusCode) {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
@@ -634,17 +634,26 @@ func isMultiKeyCredentialRetryStatus(statusCode int) bool {
 	}
 }
 
-func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel, statusCode int, skipRetry bool) {
+func shouldSkipRetryAfterAffinity(c *gin.Context, statusCode int) bool {
+	if !service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	return !(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
+		isMultiKeyCredentialRetryStatus(statusCode))
+}
+
+func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel, statusCode int, skipRetry bool) bool {
 	if retryParam == nil || channel == nil || skipRetry {
-		return
+		return false
 	}
 	if channel.ChannelInfo.IsMultiKey && isMultiKeyCredentialRetryStatus(statusCode) {
 		retryParam.PreferChannel(channel.Id)
 		retryParam.ResetRetryNextTry()
-		return
+		return true
 	}
 	retryParam.ClearPreferredChannel()
 	retryParam.ExcludeChannel(channel.Id)
+	return false
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
@@ -856,6 +865,7 @@ func RelayTask(c *gin.Context) {
 						retryParam.CancelRetryReset()
 						retryParam.ClearPreferredChannel()
 						retryParam.ExcludeChannel(channel.Id)
+						relayInfo.LockedChannel = nil
 						continue
 					}
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
@@ -908,7 +918,9 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
-		prepareChannelRetry(retryParam, channel, taskErr.StatusCode, taskErr.LocalError)
+		if !prepareChannelRetry(retryParam, channel, taskErr.StatusCode, taskErr.LocalError) {
+			relayInfo.LockedChannel = nil
+		}
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -963,10 +975,10 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if taskErr == nil {
 		return false
 	}
-	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+	if retryTimes <= 0 {
 		return false
 	}
-	if retryTimes <= 0 {
+	if shouldSkipRetryAfterAffinity(c, taskErr.StatusCode) {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
@@ -990,9 +1002,6 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 			return false
 		}
 		return true
-	}
-	if taskErr.StatusCode == http.StatusBadRequest {
-		return false
 	}
 	if taskErr.StatusCode == 408 {
 		// azure处理超时不重试
