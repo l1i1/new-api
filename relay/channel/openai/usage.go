@@ -5,7 +5,83 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-gonic/gin"
 )
+
+// patchZeroCompletionUsage fills a missing output count from content that was
+// actually received. Some OpenAI-compatible providers emit prompt-only usage
+// even though the response body contains assistant output.
+func patchZeroCompletionUsage(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage, responseText string, toolCount int) bool {
+	if info == nil || usage == nil || usage.CompletionTokens != 0 {
+		return false
+	}
+
+	// Prefer exact output counts that were present in an OpenAI billing
+	// extension or derivable from a consistent top-level total. Only estimate
+	// from text when the upstream response contains no exact output count.
+	exactCompletionTokens := 0
+	if usage.BillingUsage != nil && usage.BillingUsage.OpenAIUsage != nil {
+		exactCompletionTokens = usage.BillingUsage.OpenAIUsage.CompletionTokens
+		if exactCompletionTokens == 0 {
+			exactCompletionTokens = usage.BillingUsage.OpenAIUsage.OutputTokens
+		}
+	}
+	if exactCompletionTokens == 0 && usage.OutputTokens > 0 {
+		exactCompletionTokens = usage.OutputTokens
+	}
+	if exactCompletionTokens == 0 && usage.TotalTokens > usage.PromptTokens {
+		exactCompletionTokens = usage.TotalTokens - usage.PromptTokens
+	}
+	if exactCompletionTokens > 0 {
+		usage.CompletionTokens = exactCompletionTokens
+		if usage.TotalTokens < usage.PromptTokens+usage.CompletionTokens {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+		if usage.BillingUsage != nil && usage.BillingUsage.OpenAIUsage != nil {
+			billingUsage := usage.BillingUsage.OpenAIUsage
+			if billingUsage.PromptTokens == 0 {
+				billingUsage.PromptTokens = usage.PromptTokens
+			}
+			billingUsage.CompletionTokens = usage.CompletionTokens
+			billingUsage.TotalTokens = billingUsage.PromptTokens + billingUsage.CompletionTokens
+			if billingUsage.OutputTokens == 0 {
+				billingUsage.OutputTokens = usage.CompletionTokens
+			}
+		}
+		return true
+	}
+	if responseText == "" && toolCount == 0 {
+		return false
+	}
+
+	estimated := service.ResponseText2Usage(c, responseText, info.UpstreamModelName, usage.PromptTokens)
+	estimatedCompletionTokens := estimated.CompletionTokens + toolCount*7
+	if estimatedCompletionTokens <= 0 {
+		return false
+	}
+
+	usage.CompletionTokens = estimatedCompletionTokens
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if usage.BillingUsage == nil {
+		usage.BillingUsage = dto.NewOpenAIChatBillingUsage(usage)
+	}
+	if usage.BillingUsage != nil {
+		usage.BillingUsage.Estimated = true
+	}
+	if usage.BillingUsage != nil && usage.BillingUsage.OpenAIUsage != nil {
+		billingUsage := usage.BillingUsage.OpenAIUsage
+		if billingUsage.PromptTokens == 0 {
+			billingUsage.PromptTokens = usage.PromptTokens
+		}
+		billingUsage.CompletionTokens = usage.CompletionTokens
+		billingUsage.TotalTokens = billingUsage.PromptTokens + billingUsage.CompletionTokens
+		if billingUsage.OutputTokens == 0 {
+			billingUsage.OutputTokens = usage.CompletionTokens
+		}
+	}
+	return true
+}
 
 func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, responseBody []byte) {
 	if info == nil || usage == nil {

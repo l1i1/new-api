@@ -19,8 +19,9 @@ func TestAppendStreamStatusRedactsCyberPolicyErrors(t *testing.T) {
 	MarkOpsCyberPolicy(c, CyberPolicyMark{Message: "blocked"})
 
 	info := &relaycommon.RelayInfo{
-		IsStream:     true,
-		StreamStatus: relaycommon.NewStreamStatus(),
+		IsStream:           true,
+		StreamStatus:       relaycommon.NewStreamStatus(),
+		StreamFinishReason: "length",
 	}
 	secret := "API key provided: sk-live-stream-secret"
 	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, errors.New(secret))
@@ -31,6 +32,7 @@ func TestAppendStreamStatusRedactsCyberPolicyErrors(t *testing.T) {
 
 	streamStatus, ok := other["stream_status"].(map[string]interface{})
 	require.True(t, ok)
+	require.Equal(t, "length", streamStatus["finish_reason"])
 	require.NotContains(t, streamStatus["end_error"], "sk-live-stream-secret")
 	errors, ok := streamStatus["errors"].([]string)
 	require.True(t, ok)

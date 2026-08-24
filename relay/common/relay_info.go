@@ -181,6 +181,9 @@ type RelayInfo struct {
 	FinalRequestRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
+	// StreamFinishReason is the latest non-empty provider finish reason seen
+	// on an OpenAI-compatible stream, retained for consume-log diagnostics.
+	StreamFinishReason string
 
 	// convOptions caches the converter settings snapshot (see ConvOptions).
 	convOptions *convmeta.Options

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -181,6 +182,225 @@ func TestOaiStreamHandlerRetainsCacheAcrossUsageEvents(t *testing.T) {
 	require.NotEmpty(t, usageEvents)
 	require.Len(t, usageEvents, 1)
 	assert.Contains(t, usageEvents[len(usageEvents)-1], `"cached_tokens":80`)
+}
+
+func TestOaiStreamHandlerEstimatesCompletionForPromptOnlyUsage(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[{"index":0,"delta":{"content":"partial streamed answer before the final usage event"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151,"billing_usage":{"source":"oai_chat","semantic":"openai","openai_usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151}}}}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3.7-flash",
+		},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 151, usage.PromptTokens)
+	require.Greater(t, usage.CompletionTokens, 0)
+	require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	require.Equal(t, usage.CompletionTokens, usage.BillingUsage.OpenAIUsage.CompletionTokens)
+	require.Equal(t, usage.TotalTokens, usage.BillingUsage.OpenAIUsage.TotalTokens)
+	require.True(t, usage.BillingUsage.Estimated)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
+	require.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	require.Equal(t, "length", info.StreamFinishReason)
+	assert.Contains(t, recorder.Body.String(), `partial streamed answer before the final usage event`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
+	assert.Contains(t, recorder.Body.String(), `"completion_tokens":`+strconv.Itoa(usage.CompletionTokens))
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
+func TestOpenaiHandlerEstimatesCompletionForPromptOnlyUsage(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3.7-flash",
+		},
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	body := `{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"gemini-3.7-flash","choices":[{"index":0,"message":{"role":"assistant","content":"complete buffered answer"},"finish_reason":"length"}],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151}}`
+
+	usage, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Greater(t, usage.CompletionTokens, 0)
+	require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	require.NotNil(t, usage.BillingUsage)
+	require.NotNil(t, usage.BillingUsage.OpenAIUsage)
+	require.True(t, usage.BillingUsage.Estimated)
+	require.Equal(t, usage.CompletionTokens, usage.BillingUsage.OpenAIUsage.CompletionTokens)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
+	assert.Contains(t, recorder.Body.String(), `"completion_tokens":`+strconv.Itoa(usage.CompletionTokens))
+	assert.NotContains(t, recorder.Body.String(), `"billing_usage"`)
+}
+
+func TestOaiStreamHandlerPromotesExactCompletionFromUpstreamUsage(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151,"billing_usage":{"source":"oai_chat","semantic":"openai","openai_usage":{"prompt_tokens":151,"completion_tokens":0,"output_tokens":7,"total_tokens":158}}}}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.7-flash"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
+	require.Nil(t, err)
+	require.Equal(t, 7, usage.CompletionTokens)
+	require.Equal(t, 158, usage.TotalTokens)
+	require.False(t, usage.BillingUsage.Estimated)
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
+}
+
+func TestOaiStreamHandlerPromotesCompletionFromUpstreamTotal(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":158}}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.7-flash"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
+	require.Nil(t, err)
+	require.Equal(t, 7, usage.CompletionTokens)
+	require.Equal(t, 158, usage.TotalTokens)
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
+}
+
+func TestOaiStreamHandlerPromotesTopLevelOutputTokens(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}],"usage":{"prompt_tokens":151,"completion_tokens":0,"output_tokens":9,"total_tokens":160}}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.7-flash"},
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
+	require.Nil(t, err)
+	require.Equal(t, 9, usage.CompletionTokens)
+	require.Equal(t, 160, usage.TotalTokens)
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
+}
+
+func TestOaiStreamHandlerKeepsZeroCompletionWithoutOutput(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151}}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.7-flash"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
+	require.Nil(t, err)
+	require.Zero(t, usage.CompletionTokens)
+	require.Equal(t, 151, usage.TotalTokens)
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
 }
 
 func TestOaiStreamHandlerEmitsUsageOnlyWhenRequestedAndPreservesChoices(t *testing.T) {

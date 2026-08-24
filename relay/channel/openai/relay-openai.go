@@ -143,19 +143,26 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
 				Usage   *dto.Usage                                `json:"usage"`
 			}
-			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil && streamResp.Usage != nil {
-				currentHasUsage = true
-				currentHasChoices = len(streamResp.Choices) > 0
-				stripped, stripErr := stripStreamUsageData(data)
-				if stripErr != nil {
-					common.SysLog("error stripping stream usage; suppressing the client event: " + stripErr.Error())
-					currentWithoutUsage = ""
-				} else {
-					currentWithoutUsage = stripped
+			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil {
+				for _, choice := range streamResp.Choices {
+					if choice.FinishReason != nil && *choice.FinishReason != "" {
+						info.StreamFinishReason = *choice.FinishReason
+					}
 				}
-				if service.ValidUsage(streamResp.Usage) {
-					usage = dto.MergeUsage(usage, streamResp.Usage)
-					containStreamUsage = true
+				if streamResp.Usage != nil {
+					currentHasUsage = true
+					currentHasChoices = len(streamResp.Choices) > 0
+					stripped, stripErr := stripStreamUsageData(data)
+					if stripErr != nil {
+						common.SysLog("error stripping stream usage; suppressing the client event: " + stripErr.Error())
+						currentWithoutUsage = ""
+					} else {
+						currentWithoutUsage = stripped
+					}
+					if service.ValidUsage(streamResp.Usage) {
+						usage = dto.MergeUsage(usage, streamResp.Usage)
+						containStreamUsage = true
+					}
 				}
 			}
 			// Apply provider-specific cache extraction before the previous
@@ -254,9 +261,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
+	responseText := responseTextBuilder.String()
 	if !containStreamUsage {
-		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
+	} else {
+		patchZeroCompletionUsage(c, info, usage, responseText, toolCount)
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
@@ -377,8 +387,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 	}
 
+	var responseTextBuilder strings.Builder
+	toolCount := 0
 	for _, choice := range simpleResponse.Choices {
-		for _, tc := range choice.Message.ParseToolCalls() {
+		responseTextBuilder.WriteString(choice.Message.StringContent())
+		responseTextBuilder.WriteString(choice.Message.GetReasoningContent())
+		toolCalls := choice.Message.ParseToolCalls()
+		toolCount += len(toolCalls)
+		for _, tc := range toolCalls {
 			info.CountBillableToolCall(dto.BuildInCallFunctionCall, tc.Function.Name)
 		}
 	}
@@ -402,6 +418,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			CompletionTokens: completionTokens,
 			TotalTokens:      info.GetEstimatePromptTokens() + completionTokens,
 		}
+		usageModified = true
+	}
+	if patchZeroCompletionUsage(c, info, &simpleResponse.Usage, responseTextBuilder.String(), toolCount) {
 		usageModified = true
 	}
 

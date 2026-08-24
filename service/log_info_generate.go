@@ -141,6 +141,9 @@ func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, othe
 		"status":     status,
 		"end_reason": string(ss.EndReason),
 	}
+	if relayInfo.StreamFinishReason != "" {
+		streamInfo["finish_reason"] = relayInfo.StreamFinishReason
+	}
 	if ss.EndError != nil {
 		streamInfo["end_error"] = streamErrorMessage(ctx, ss.EndError.Error())
 	}
