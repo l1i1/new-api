@@ -449,7 +449,7 @@ func TestCompleteIssueInvoiceRejectsOversizedAdminNote(t *testing.T) {
 func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	require.NoError(t, i18n.Init())
 	oldServerAddress := system_setting.ServerAddress
-	system_setting.ServerAddress = "https://tokeness.io"
+	system_setting.ServerAddress = "https://tokeness.ai"
 	defer func() { system_setting.ServerAddress = oldServerAddress }()
 
 	subjectKey := i18n.MsgInvoiceEmailStatusSubject
@@ -484,6 +484,6 @@ func TestInvoiceEmailRendersInRecipientLanguage(t *testing.T) {
 	assert.Contains(t, zhSubject, "1", "subject must interpolate the invoice id")
 	assert.Contains(t, enSubject, "Tokeness", "subject must identify the sending site")
 	assert.Contains(t, zhSubject, "Tokeness", "subject must identify the sending site")
-	assert.Contains(t, enBody, "https://tokeness.io", "body must link back to the site")
-	assert.Contains(t, zhBody, "https://tokeness.io", "body must link back to the site")
+	assert.Contains(t, enBody, "https://tokeness.ai", "body must link back to the site")
+	assert.Contains(t, zhBody, "https://tokeness.ai", "body must link back to the site")
 }

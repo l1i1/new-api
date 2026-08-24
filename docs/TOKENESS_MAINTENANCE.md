@@ -80,7 +80,7 @@ first deployment, an operator must explicitly mark only the New API proxy
 snippet(s) under `/opt/1panel/www/sites/<site>/proxy/*.conf`:
 
 ```nginx
-# TOKENESS_BLUE_GREEN_MANAGED host=tokeness.io
+# TOKENESS_BLUE_GREEN_MANAGED host=tokeness.ai
 proxy_pass http://127.0.0.1:8201;
 ```
 

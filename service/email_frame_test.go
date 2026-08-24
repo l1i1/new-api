@@ -101,7 +101,7 @@ func TestRenderBrandedEmailPreview(t *testing.T) {
 	common.SystemName = "Tokeness"
 	defer func() { common.SystemName = oldName }()
 	oldServerAddress := system_setting.ServerAddress
-	system_setting.ServerAddress = "https://tokeness.io"
+	system_setting.ServerAddress = "https://tokeness.ai"
 	defer func() { system_setting.ServerAddress = oldServerAddress }()
 
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -116,7 +116,7 @@ func TestRenderBrandedEmailPreview(t *testing.T) {
 
 		resetBody := i18n.TranslateHTML(lang, i18n.MsgEmailPasswordResetBody, map[string]any{
 			"SystemName": common.SystemName,
-			"Link":       "https://tokeness.io/user/reset?email=demo%40tokeness.io&token=abc123def456",
+			"Link":       "https://tokeness.ai/user/reset?email=demo%40tokeness.ai&token=abc123def456",
 			"Minutes":    30,
 		})
 		writeEmailPreview(t, dir, "password-reset-"+lang+".html",
@@ -125,7 +125,7 @@ func TestRenderBrandedEmailPreview(t *testing.T) {
 		quotaBody := i18n.TranslateHTML(lang, i18n.MsgNotifyQuotaExceedBody, map[string]any{
 			"Prompt":    i18n.Translate(lang, i18n.MsgNotifyQuotaExceedSubject),
 			"Quota":     "$1.23",
-			"TopUpLink": "https://tokeness.io/console/topup",
+			"TopUpLink": "https://tokeness.ai/console/topup",
 		})
 		writeEmailPreview(t, dir, "quota-"+lang+".html",
 			RenderBrandedEmail(lang, i18n.Translate(lang, i18n.MsgNotifyQuotaExceedSubject), quotaBody))

@@ -316,7 +316,7 @@ export function TokenessHome() {
                 {t(HOME_KEYS.footerModels)}
               </Link>
               <a
-                href='mailto:contact@tokeness.io'
+                href='mailto:contact@tokeness.ai'
                 className='tokeness-home__footer-link'
               >
                 {t(HOME_KEYS.footerContact)}

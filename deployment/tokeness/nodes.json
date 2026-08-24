@@ -32,10 +32,10 @@
     }
   ],
   "public_endpoints": [
-    "https://n.tokeness.io",
-    "https://n.tokeness.cn"
+    "https://n.tokeness.dev",
+    "https://n-cf.tokeness.dev"
   ],
   "web_endpoints": [
-    "https://tokeness.io"
+    "https://tokeness.ai"
   ]
 }

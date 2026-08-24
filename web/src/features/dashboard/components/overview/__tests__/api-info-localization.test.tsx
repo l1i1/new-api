@@ -90,7 +90,7 @@ describe('API info item localization', () => {
     const item: ApiInfoItem = {
       route,
       description,
-      url: 'https://n.tokeness.io/<tnt l="en">raw</tnt>',
+      url: 'https://n.tokeness.dev/<tnt l="en">raw</tnt>',
       color: 'cyan',
     }
     const container = document.createElement('div')
@@ -120,7 +120,7 @@ describe('API info item localization', () => {
     assert.equal(container.textContent?.includes('主节点'), false)
     assert.equal(
       container.textContent?.includes(
-        'https://n.tokeness.io/<tnt l="en">raw</tnt>'
+        'https://n.tokeness.dev/<tnt l="en">raw</tnt>'
       ),
       true
     )
