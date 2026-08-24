@@ -33,13 +33,15 @@ func TestConvertOpenAIRequestNormalizesDeepSeekV4CompatibilityFields(t *testing.
 				ReasoningEffort: test.effort,
 				TopP:            test.topP,
 			}
-			converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, &relaycommon.RelayInfo{
+			info := &relaycommon.RelayInfo{
 				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
-			}, request)
+			}
+			converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, info, request)
 
 			require.NoError(t, err)
 			got := converted.(*dto.GeneralOpenAIRequest)
 			assert.Equal(t, test.wantEffort, got.ReasoningEffort)
+			assert.Equal(t, test.wantEffort, info.GetReasoningEffort())
 			if test.wantTopP == nil {
 				assert.Nil(t, got.TopP)
 				return

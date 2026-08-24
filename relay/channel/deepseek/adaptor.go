@@ -174,6 +174,9 @@ func normalizeDeepSeekV4OpenAIRequest(info *relaycommon.RelayInfo, request *dto.
 		return
 	}
 	request.ReasoningEffort = normalizeDeepSeekV4ReasoningEffort(request.ReasoningEffort)
+	if info != nil {
+		info.SetReasoningEffort(request.ReasoningEffort)
+	}
 	normalizeDeepSeekV4TopP(&request.TopP)
 }
 

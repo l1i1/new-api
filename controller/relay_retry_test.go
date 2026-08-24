@@ -27,3 +27,15 @@ func TestShouldRetryUnsupportedChannelEndpoint(t *testing.T) {
 		http.StatusBadRequest,
 	), 1))
 }
+
+func TestShouldRetryUnsupportedChannelFeature(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	err := types.NewErrorWithStatusCode(
+		errors.New("DFlash logprob capability not supported"),
+		types.ErrorCodeChannelUnsupportedFeature,
+		http.StatusBadRequest,
+	)
+
+	require.True(t, shouldRetry(c, err, 1))
+}
