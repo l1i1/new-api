@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,9 +96,9 @@ func TestCheckRelayContentModerationSkipsModerationRelayEndpoint(t *testing.T) {
 }
 
 func TestCheckRelayContentModerationObserveDoesNotBlock(t *testing.T) {
-	moderationCalls := 0
+	var moderationCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		moderationCalls++
+		moderationCalls.Add(1)
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.9}}]}`))
 	}))
@@ -114,7 +115,7 @@ func TestCheckRelayContentModerationObserveDoesNotBlock(t *testing.T) {
 	require.False(t, decision.Blocked)
 
 	require.Eventually(t, func() bool {
-		return moderationCalls == 1
+		return moderationCalls.Load() == 1
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
