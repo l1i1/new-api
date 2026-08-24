@@ -77,6 +77,13 @@ func TestGroupAccessPolicySpecificChannelRequiresAllowedTargetGroup(t *testing.T
 	common.SetContextKey(ctx, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{GroupName: "default"})
 	assert.True(t, GroupAccessPolicyAllowsSpecificChannel(ctx, channel, "gpt-5.5", "/v1/chat/completions"))
 	assert.True(t, GroupAccessPolicyAllowsTaskChannel(ctx, channel, "vip", "gpt-5.5", "/v1/chat/completions"))
+	assert.True(t, GroupAccessPolicyAllowsTaskChannel(ctx, channel, "", "gpt-5.5", "/v1/chat/completions"))
+
+	common.SetContextKey(ctx, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{
+		GroupName:         "default",
+		BlockedChannelIDs: model.GroupAccessPolicyIntList{channel.Id},
+	})
+	assert.False(t, GroupAccessPolicyAllowsTaskChannel(ctx, channel, "", "gpt-5.5", "/v1/chat/completions"))
 }
 
 func pointerInt64(value int64) *int64 {

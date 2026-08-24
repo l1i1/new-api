@@ -515,6 +515,19 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			if channel.Status != common.ChannelStatusEnabled {
 				return service.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
 			}
+			if err := service.EnsureGroupAccessPolicy(c); err != nil {
+				common.SysLog("load group access policy for Midjourney action failed: " + err.Error())
+				return service.MidjourneyErrorWrapper(constant.MjRequestError, "group_access_policy_unavailable")
+			}
+			if !service.GroupAccessPolicyAllowsTaskChannel(
+				c,
+				channel,
+				"",
+				service.CovertMjpActionToModelName(midjRequest.Action),
+				c.Request.URL.Path,
+			) {
+				return service.MidjourneyErrorWrapper(constant.MjRequestError, "group_access_denied")
+			}
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
 			key := bindMidjourneyTaskChannel(c, originTask, channel)
