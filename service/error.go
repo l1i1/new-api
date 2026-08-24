@@ -169,7 +169,7 @@ func relayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 // retryable so channel selection can move to an upstream that returns real
 // logprobs instead of disabling the incompatible channel.
 func NormalizeDFlashLogprobCapabilityError(err *types.NewAPIError) *types.NewAPIError {
-	if err == nil || err.StatusCode != http.StatusBadRequest {
+	if err == nil {
 		return err
 	}
 	message := strings.ToLower(err.Error())
@@ -178,6 +178,32 @@ func NormalizeDFlashLogprobCapabilityError(err *types.NewAPIError) *types.NewAPI
 		return err
 	}
 	return types.NewErrorWithStatusCode(err, types.ErrorCodeChannelUnsupportedFeature, err.StatusCode)
+}
+
+// NormalizeOpenAIStreamError converts a top-level OpenAI-compatible SSE error
+// event into the same error path used for a non-2xx upstream response. A few
+// providers send an error object with HTTP 200 before closing the stream; that
+// event must not be mistaken for an empty successful completion.
+func NormalizeOpenAIStreamError(data []byte, upstreamStatus int) *types.NewAPIError {
+	var errResponse dto.GeneralErrorResponse
+	if err := common.Unmarshal(data, &errResponse); err != nil || len(errResponse.Error) == 0 {
+		return nil
+	}
+	message := errResponse.ToMessage()
+	if message == "" {
+		return nil
+	}
+	openAIError := errResponse.TryToOpenAIError()
+	statusCode := upstreamStatus
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		statusCode = http.StatusBadGateway
+	}
+	if openAIError != nil {
+		return NormalizeDFlashLogprobCapabilityError(types.WithOpenAIError(*openAIError, statusCode))
+	}
+	return NormalizeDFlashLogprobCapabilityError(types.NewOpenAIError(
+		errors.New(message), types.ErrorCodeBadResponseStatusCode, statusCode,
+	))
 }
 
 func writeCyberPolicyErrorForRelayFormat(c *gin.Context, resp *http.Response, body []byte, err *types.NewAPIError, relayFormat types.RelayFormat) {

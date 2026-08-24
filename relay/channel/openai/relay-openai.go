@@ -177,6 +177,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				sr.Stop(streamErr)
 				return
 			}
+			if upstreamErr := service.NormalizeOpenAIStreamError(common.StringToByteSlice(data), resp.StatusCode); upstreamErr != nil {
+				streamErr = upstreamErr
+				if !c.Writer.Written() {
+					c.Status(streamErr.StatusCode)
+				}
+				sr.Stop(streamErr)
+				return
+			}
 		}
 
 		if lastStreamData != "" {

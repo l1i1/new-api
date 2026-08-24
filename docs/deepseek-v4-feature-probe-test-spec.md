@@ -1,8 +1,8 @@
 # DeepSeek V4 Feature Probe Test Specification
 
-Status: Draft
+Status: Implemented (live tiers require runtime credentials)
 Owner: Tokeness New API relay
-Last reviewed: 2026-08-24
+Last reviewed: 2026-08-25
 
 ## 1. Purpose
 
@@ -116,6 +116,11 @@ compatibility. T3/T4 are required before a production release claim.
 ## 6. Deterministic Fixtures
 
 The runner should reuse these fixtures rather than inventing prompts per case.
+
+The redacted runner is `scripts/feature-probe`. It always emits all 84 case
+IDs, performs only the live cases for which runtime environment variables are
+present, and marks missing live tiers `inconclusive` rather than fabricating a
+pass. It never writes request bodies, response bodies, or credentials.
 
 | Fixture | Purpose |
 | --- | --- |

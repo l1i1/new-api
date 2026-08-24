@@ -68,6 +68,60 @@ func TestOaiStreamHandlerKeepsUsageBeforeFinalEvent(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
+func TestOaiStreamHandlerRejectsTopLevelUpstreamErrorEvent(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	for _, test := range []struct {
+		name     string
+		payload  string
+		wantCode types.ErrorCode
+		wantBody string
+	}{
+		{
+			name:     "dflash capability",
+			payload:  `{"error":{"message":"DFLASH speculative decoding does not support return_logprob yet.","type":"invalid_request_error"}}`,
+			wantCode: types.ErrorCodeChannelUnsupportedFeature,
+			wantBody: "",
+		},
+		{
+			name:     "generic upstream error",
+			payload:  `{"error":{"message":"upstream stream failed","type":"server_error","code":"server_error"}}`,
+			wantCode: types.ErrorCode("server_error"),
+			wantBody: "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+				IsStream:    true,
+				RelayMode:   relayconstant.RelayModeChatCompletions,
+				RelayFormat: types.RelayFormatOpenAI,
+				DisablePing: true,
+			}
+			usage, err := OaiStreamHandler(c, info, &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("data: " + test.payload + "\n\ndata: [DONE]\n\n")),
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			})
+
+			require.NotNil(t, usage)
+			require.NotNil(t, err)
+			require.Equal(t, test.wantCode, err.GetErrorCode())
+			require.Empty(t, test.wantBody)
+			require.Equal(t, http.StatusBadGateway, c.Writer.Status())
+			require.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
 func TestOaiStreamHandlerFormatsCyberPolicyForClaudeClients(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
