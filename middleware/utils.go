@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -10,16 +11,27 @@ import (
 )
 
 func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code ...types.ErrorCode) {
-	codeStr := ""
-	if len(code) > 0 {
+	errorType := "invalid_request_error"
+	codeStr := "invalid_request_error"
+	switch {
+	case statusCode == http.StatusUnauthorized:
+		errorType = "authentication_error"
+	case statusCode == http.StatusTooManyRequests:
+		errorType = "rate_limit_error"
+		codeStr = "rate_limit_error"
+	case statusCode >= http.StatusInternalServerError:
+		errorType = "server_error"
+		codeStr = "server_error"
+	case len(code) > 0:
 		codeStr = string(code[0])
 	}
 	userId := c.GetInt("id")
 	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"message": common.MessageWithRequestId(message, c.GetString(common.RequestIdKey)),
-			"type":    "new_api_error",
-			"code":    codeStr,
+		"error": types.OpenAIError{
+			Message: common.MessageWithRequestId(message, c.GetString(common.RequestIdKey)),
+			Type:    errorType,
+			Param:   nil,
+			Code:    codeStr,
 		},
 	})
 	c.Abort()
