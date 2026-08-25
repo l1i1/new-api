@@ -150,6 +150,13 @@ func TestGenRelayInfoCapturesRequestReasoningEffort(t *testing.T) {
 			expected:    "xhigh",
 		},
 		{
+			name:        "disabled thinking suppresses reasoning output",
+			path:        "/v1/chat/completions",
+			relayFormat: types.RelayFormatOpenAI,
+			request:     &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "high", THINKING: json.RawMessage(`{"type":"disabled"}`)},
+			expected:    "none",
+		},
+		{
 			name:        "OpenAI Responses effort",
 			path:        "/v1/responses",
 			relayFormat: types.RelayFormatOpenAIResponses,

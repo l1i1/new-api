@@ -111,6 +111,9 @@ func applyDeepSeekV4OpenAIThinkingSuffix(info *relaycommon.RelayInfo, request *d
 	}
 	request.Model = baseModel
 	request.THINKING = thinking
+	if thinkingType == "disabled" {
+		effort = "none"
+	}
 	request.ReasoningEffort = effort
 	if info != nil {
 		if info.ChannelMeta != nil {
@@ -167,17 +170,30 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommo
 	return request, nil
 }
 
-const deepSeekV4MinimumTopP = 0.000001
-
 func normalizeDeepSeekV4OpenAIRequest(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
 	if !isDeepSeekV4Model(info, request.Model) {
 		return
 	}
 	request.ReasoningEffort = normalizeDeepSeekV4ReasoningEffort(request.ReasoningEffort)
+	if deepSeekV4ThinkingDisabled(request.THINKING) {
+		request.ReasoningEffort = "none"
+	}
 	if info != nil {
 		info.SetReasoningEffort(request.ReasoningEffort)
 	}
-	normalizeDeepSeekV4TopP(&request.TopP)
+}
+
+func deepSeekV4ThinkingDisabled(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(raw, &thinking); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
 }
 
 func normalizeDeepSeekV4ResponsesRequest(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
@@ -187,7 +203,6 @@ func normalizeDeepSeekV4ResponsesRequest(info *relaycommon.RelayInfo, request *d
 	if request.Reasoning != nil {
 		request.Reasoning.Effort = normalizeDeepSeekV4ReasoningEffort(request.Reasoning.Effort)
 	}
-	normalizeDeepSeekV4TopP(&request.TopP)
 }
 
 func isDeepSeekV4Model(info *relaycommon.RelayInfo, modelName string) bool {
@@ -198,24 +213,7 @@ func isDeepSeekV4Model(info *relaycommon.RelayInfo, modelName string) bool {
 }
 
 func normalizeDeepSeekV4ReasoningEffort(effort string) string {
-	effort = strings.TrimSpace(effort)
-	if strings.EqualFold(effort, "extreme") {
-		return "max"
-	}
-	return effort
-}
-
-func normalizeDeepSeekV4TopP(topP **float64) {
-	if topP == nil || *topP == nil {
-		return
-	}
-	value := **topP
-	if value > 1 {
-		value = 1
-	} else if value <= 0 {
-		value = deepSeekV4MinimumTopP
-	}
-	*topP = &value
+	return strings.TrimSpace(effort)
 }
 
 func applyDeepSeekV4ResponsesThinkingSuffix(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {

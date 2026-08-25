@@ -13,7 +13,7 @@ import (
 type OpenAIError struct {
 	Message  string          `json:"message"`
 	Type     string          `json:"type"`
-	Param    string          `json:"param"`
+	Param    any             `json:"param"`
 	Code     any             `json:"code"`
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }

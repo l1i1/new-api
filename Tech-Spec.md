@@ -327,19 +327,29 @@ request matrix without fabricating token probabilities or changing billing seman
 
 ### Request Semantics
 
-- `reasoning_effort=extreme` is accepted as a compatibility alias for `max` only on the DeepSeek V4 adaptor.
-- `top_p` is clamped to the upstream-supported interval `(0, 1]` when supplied; omitted values remain omitted.
+- `reasoning_effort=extreme` is rejected with the official-shaped V4 validation error; it is not silently renamed to `max`.
+- `top_p` outside the upstream-supported interval `(0, 1]` is rejected with the official-shaped V4 validation error; omitted values remain omitted.
 - `thinking.type=disabled` remains disabled and must not be replaced by an enabled reasoning request.
+- Advanced Custom selection and no-candidate diagnosis use the incoming request path; a model configured only for another path is not reported as temporary capacity loss.
 - Tools, `tool_choice`, `stop`, streaming usage, and OpenAI `logprobs`/`top_logprobs` are forwarded without dropping response fields.
 - If the DFLASH upstream rejects logprob generation because speculative decoding is enabled, NewAPI must return the upstream capability error rather than inventing logprobs. The channel configuration must be adjusted separately to disable speculative decoding for logprob requests if the upstream exposes such a control.
+
+### Public Error Contract
+
+- Middleware failures use an OpenAI-compatible `error` object and never expose `type=new_api_error`.
+- Authentication failures return `type=authentication_error`, `code=invalid_request_error`, and `param=null`.
+- Validation failures return `type=invalid_request_error` and `param=null`; typed internal selection errors keep their diagnostic code where applicable.
+- Server-side selection failures return `type=server_error`, `code=server_error`, and `param=null`; detailed selection kinds remain internal diagnostics.
+- The fit probe records protocol acceptance separately from effective success. HTTP 200 with neither final content nor a valid tool call remains an effective failure.
 
 ### Acceptance Criteria
 
 - The four customer request shapes (basic, streaming usage, tools with disabled thinking, and stop) convert without request-local 400 validation errors.
-- `reasoning_effort=extreme` reaches the upstream as `max`.
-- `top_p=1.5` reaches the upstream as `1`, while a valid `top_p` and an omitted `top_p` are preserved.
+- `reasoning_effort=extreme`, invalid `top_p`, and `tool_choice=required` return the official-shaped 400 validation envelope.
+- A valid `top_p` and an omitted `top_p` are preserved.
 - A request with `logprobs=true` and `top_logprobs=5` preserves both fields and returns the upstream `logprobs` object when the selected channel supports it.
 - Conversion tests cover the above cases and assert no API key or credential is present in fixtures.
+- The fit runner defaults to gateway-only execution. Official API calls require an explicit opt-in because they may consume balance.
 
 ### Verification
 

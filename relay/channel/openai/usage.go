@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -8,6 +10,94 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+// isValidFunctionToolCall keeps empty or non-function tool objects from being
+// treated as a successful assistant response. A function name is the stable
+// part of a completed OpenAI tool call; arguments may legitimately be empty
+// for providers that encode a no-argument call that way.
+func isValidFunctionToolCall(call dto.ToolCallRequest) bool {
+	if call.Type != "" && !strings.EqualFold(strings.TrimSpace(call.Type), "function") {
+		return false
+	}
+	return strings.TrimSpace(call.Function.Name) != ""
+}
+
+func isValidStreamFunctionToolCall(call dto.ToolCallResponse) bool {
+	switch typ := call.Type.(type) {
+	case nil:
+	case string:
+		if strings.TrimSpace(typ) != "" &&
+			!strings.EqualFold(strings.TrimSpace(typ), "function") {
+			return false
+		}
+	default:
+		return false
+	}
+	return strings.TrimSpace(call.Function.Name) != ""
+}
+
+func shouldSuppressReasoningContent(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
+		return true
+	}
+	request, ok := info.Request.(*dto.GeneralOpenAIRequest)
+	if !ok || len(request.THINKING) == 0 {
+		return false
+	}
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(request.THINKING, &thinking); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
+}
+
+func stripReasoningContentFromTextResponse(response *dto.OpenAITextResponse) {
+	if response == nil {
+		return
+	}
+	for i := range response.Choices {
+		response.Choices[i].Message.ReasoningContent = nil
+		response.Choices[i].Message.Reasoning = nil
+	}
+}
+
+func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
+	var payload map[string]interface{}
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return body, err
+	}
+	rawChoices, ok := payload["choices"]
+	if !ok {
+		return body, nil
+	}
+	encodedChoices, err := common.Marshal(rawChoices)
+	if err != nil {
+		return body, err
+	}
+	var choices []map[string]interface{}
+	if err := common.Unmarshal(encodedChoices, &choices); err != nil {
+		return body, err
+	}
+	for _, choice := range choices {
+		message, ok := choice["message"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		delete(message, "reasoning_content")
+		delete(message, "reasoning")
+	}
+	payload["choices"] = choices
+	stripped, err := common.Marshal(payload)
+	if err != nil {
+		return body, err
+	}
+	return stripped, nil
+}
 
 // patchZeroCompletionUsage fills a missing output count from content that was
 // actually received. Some OpenAI-compatible providers emit prompt-only usage

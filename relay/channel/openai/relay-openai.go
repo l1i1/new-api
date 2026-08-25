@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
@@ -25,13 +27,20 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
-	if !forceFormat && !thinkToContent {
+	suppressReasoningContent := shouldSuppressReasoningContent(info)
+	if !forceFormat && !thinkToContent && !suppressReasoningContent {
 		return helper.StringData(c, data)
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &lastStreamResponse); err != nil {
 		return err
+	}
+	if suppressReasoningContent {
+		for i := range lastStreamResponse.Choices {
+			lastStreamResponse.Choices[i].Delta.ReasoningContent = nil
+			lastStreamResponse.Choices[i].Delta.Reasoning = nil
+		}
 	}
 
 	if !thinkToContent {
@@ -116,6 +125,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var containStreamUsage bool
 	var responseTextBuilder strings.Builder
 	var toolCount int
+	var hasContentOutput bool
+	var hasToolOutput bool
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var pendingUsageData string
@@ -238,10 +249,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
 			}
+			var output dto.ChatCompletionsStreamResponse
+			if err := common.UnmarshalJsonStr(data, &output); err == nil {
+				for _, choice := range output.Choices {
+					if strings.TrimSpace(choice.Delta.GetContentString()) != "" {
+						hasContentOutput = true
+					}
+					for _, toolCall := range choice.Delta.ToolCalls {
+						if isValidStreamFunctionToolCall(toolCall) {
+							hasToolOutput = true
+							break
+						}
+					}
+				}
+			}
 		}
 	})
 	if streamErr != nil {
 		return usage, streamErr
+	}
+	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput {
+		return usage, emptyChatCompletionError(c.Writer.Written())
 	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
@@ -332,10 +360,10 @@ func collectStreamFunctionCallNames(data string, seen map[string]struct{}, names
 	}
 	for _, choice := range streamResponse.Choices {
 		for i, tc := range choice.Delta.ToolCalls {
-			name := tc.Function.Name
-			if name == "" {
+			if !isValidStreamFunctionToolCall(tc) {
 				continue
 			}
+			name := strings.TrimSpace(tc.Function.Name)
 			toolIdx := i
 			if tc.Index != nil {
 				toolIdx = *tc.Index
@@ -387,6 +415,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
+	if requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
+		return nil, missingReasoningLogprobsError()
+	}
+	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) {
+		return nil, emptyChatCompletionError()
+	}
 
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {
@@ -397,19 +431,31 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	var responseTextBuilder strings.Builder
 	toolCount := 0
+	validToolCallNames := make([]string, 0)
 	for _, choice := range simpleResponse.Choices {
-		responseTextBuilder.WriteString(choice.Message.StringContent())
+		content := choice.Message.StringContent()
+		responseTextBuilder.WriteString(content)
 		responseTextBuilder.WriteString(choice.Message.GetReasoningContent())
 		toolCalls := choice.Message.ParseToolCalls()
-		toolCount += len(toolCalls)
 		for _, tc := range toolCalls {
-			info.CountBillableToolCall(dto.BuildInCallFunctionCall, tc.Function.Name)
+			if !isValidFunctionToolCall(tc) {
+				continue
+			}
+			toolCount++
+			validToolCallNames = append(validToolCallNames, strings.TrimSpace(tc.Function.Name))
 		}
+	}
+	for _, name := range validToolCallNames {
+		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
 	forceFormat := false
 	if info.ChannelSetting.ForceFormat {
 		forceFormat = true
+	}
+	suppressReasoningContent := shouldSuppressReasoningContent(info)
+	if suppressReasoningContent {
+		stripReasoningContentFromTextResponse(&simpleResponse)
 	}
 
 	usageModified := false
@@ -436,6 +482,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
+		if suppressReasoningContent && !forceFormat {
+			responseBody, err = stripReasoningContentFromResponseBody(responseBody)
+			if err != nil {
+				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			}
+		}
 		if usageModified {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
@@ -504,4 +556,90 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil
+}
+
+func hasUsableChatCompletionOutput(choices []dto.OpenAITextResponseChoice) bool {
+	for _, choice := range choices {
+		if strings.TrimSpace(choice.Message.StringContent()) != "" {
+			return true
+		}
+		for _, call := range choice.Message.ParseToolCalls() {
+			if isValidFunctionToolCall(call) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func emptyChatCompletionError(committed ...bool) *types.NewAPIError {
+	options := make([]types.NewAPIErrorOptions, 0, 1)
+	if len(committed) > 0 && committed[0] {
+		options = append(options, types.ErrOptionWithSkipRetry())
+	}
+	return types.NewOpenAIError(
+		errors.New("upstream returned empty final content"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+		options...,
+	)
+}
+
+func requiresDeepSeekV4ReasoningLogprobs(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions {
+		return false
+	}
+	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
+	if !strings.HasPrefix(modelName, "deepseek-v4-") || strings.HasSuffix(modelName, "-none") {
+		return false
+	}
+	request, ok := info.Request.(*dto.GeneralOpenAIRequest)
+	if !ok || request.LogProbs == nil || !*request.LogProbs || len(request.Tools) > 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "none") || deepSeekThinkingDisabled(request.THINKING) {
+		return false
+	}
+	return true
+}
+
+func deepSeekThinkingDisabled(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(raw, &thinking); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
+}
+
+func hasBothChatLogprobs(choices []dto.OpenAITextResponseChoice) bool {
+	hasContent, hasReasoning := false, false
+	for _, choice := range choices {
+		if choice.Logprobs == nil {
+			continue
+		}
+		logprobs, ok := (*choice.Logprobs).(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, ok := logprobs["content"].([]any); ok && len(content) > 0 {
+			hasContent = true
+		}
+		if reasoning, ok := logprobs["reasoning_content"].([]any); ok && len(reasoning) > 0 {
+			hasReasoning = true
+		}
+	}
+	return hasContent && hasReasoning
+}
+
+func missingReasoningLogprobsError() *types.NewAPIError {
+	return types.NewOpenAIError(
+		errors.New("upstream did not return both content and reasoning_content logprobs"),
+		types.ErrorCodeChannelUnsupportedFeature,
+		http.StatusBadGateway,
+	)
 }

@@ -65,6 +65,22 @@ func TestShouldRetryUpstreamBadRequest(t *testing.T) {
 	require.False(t, shouldRetry(c, localErr, 1))
 }
 
+func TestShouldNotRetryAfterResponseWriterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	_, err := c.Writer.Write([]byte("partial stream"))
+	require.NoError(t, err)
+
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream returned empty final content"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+	)
+	require.True(t, c.Writer.Written())
+	require.False(t, shouldRetry(c, upstreamErr, 1))
+}
+
 func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
 	param := &service.RetryParam{Retry: new(int)}
 	multiKeyChannel := &model.Channel{Id: 41, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}

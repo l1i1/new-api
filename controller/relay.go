@@ -609,6 +609,12 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
+	// Once bytes have reached the client, another channel cannot safely reuse
+	// the same writer. Retrying would concatenate a second response onto a
+	// partially committed SSE stream.
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return false
+	}
 	if types.IsChannelError(openaiErr) {
 		return true
 	}

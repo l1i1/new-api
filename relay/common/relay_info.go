@@ -467,6 +467,15 @@ func reasoningEffortFromRequest(request dto.Request) string {
 				effort = value.String()
 			}
 		}
+		if len(req.THINKING) > 0 {
+			var thinking struct {
+				Type string `json:"type"`
+			}
+			if err := common.Unmarshal(req.THINKING, &thinking); err == nil &&
+				strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled") {
+				effort = "none"
+			}
+		}
 	case *dto.OpenAIResponsesRequest:
 		if req != nil && req.Reasoning != nil {
 			effort = req.Reasoning.Effort

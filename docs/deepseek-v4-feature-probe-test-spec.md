@@ -1,6 +1,6 @@
 # DeepSeek V4 Feature Probe Test Specification
 
-Status: Implemented (live tiers require runtime credentials)
+Status: Partially implemented (29/85 live fixture IDs; live tiers require runtime credentials)
 Owner: Tokeness New API relay
 Last reviewed: 2026-08-25
 
@@ -41,6 +41,93 @@ uses `thinking.type` or `reasoning_effort`, returns `reasoning_content` beside
 also returned an `extreme` validation error with a broader valid-level list;
 that difference is a compatibility regression case, not a new provider fact.
 
+## 2a. Observed Baseline (2026-08-25)
+
+The authorized small-sample probe compared `https://api.deepseek.com` with
+Tokeness primary (`n.tokeness.dev/v1`) and backup (`n-cf.tokeness.dev/v1`).
+Only status codes, error metadata, usage fields, finish reasons, and redacted
+shape flags were retained.
+
+- Authentication, model listing, basic non-streaming, streaming termination,
+  thinking enabled/disabled, `reasoning_effort=none`, JSON mode, stop, logprobs,
+  and `tool_choice=auto` were structurally compatible on all three routes.
+- `thinking.type=disabled` produced non-empty `content` and no non-empty
+  `reasoning_content` on all three routes. The local adapter therefore maps it
+  to upstream `reasoning_effort=none` for V4, while preserving the raw field.
+- The official endpoint rejected `reasoning_effort=extreme`, `top_p=1.5`, and
+  `top_p=0` with 400 `invalid_request_error`. The local candidate now rejects
+  the same V4 inputs at the request boundary instead of clamping or renaming
+  them, so the gateway does not claim an extension while measuring official
+  parity.
+- The official endpoint rejected `tool_choice=required` with a 400-style
+  `invalid_request_error`. The local candidate now returns the same validation
+  envelope for V4 instead of turning this provider-invalid request into a
+  successful tool call.
+- `stream=true` without `include_usage` returned a usage event on all three
+  routes. This is observable parity, not transparent passthrough parity:
+  Tokeness defaults `ShouldIncludeUsage=true` when `stream_options` is omitted
+  and may synthesize a final usage event if the upstream does not provide one.
+- Unknown model behavior differed: official returned 400, while both Tokeness
+  routes returned 503 `model_not_found`. A broad local `503 -> 400` change was
+  rejected and reverted because the same selection result also represents
+  disabled channels, temporary unavailability, and internal selection errors.
+  The local compatibility candidate now carries typed selection outcomes:
+  unknown model (`400 model_not_found`), temporary unavailability (`503`,
+  public `server_error` envelope), policy denial (`403 access_denied`), and
+  selection inconsistency (`500`, public `server_error` envelope). The
+  detailed `get_channel_failed` code remains an internal diagnostic for the
+  server-side cases. Advanced Custom path mismatches are diagnosed as no
+  configured model for the requested endpoint rather than temporary capacity
+  loss. This candidate is not deployed.
+- The official endpoint rejected `top_logprobs` without `logprobs=true` and
+  rejected `top_logprobs=21` with 400 `invalid_request_error`. The gateway now
+  applies the same V4 trust-boundary validation and emits the official-shaped
+  error envelope with `param: null`; valid `top_logprobs` values through 20 are
+  accepted. These checks are local and not deployed.
+- Non-stream forced response formatting preserves both
+  `choices[0].logprobs.content` and `reasoning_content` arrays as received. The
+  gateway never synthesizes reasoning logprobs; an upstream DFLASH capability
+  error remains a typed retryable unsupported-feature result.
+- The public middleware error boundary is locally normalized to the official
+  OpenAI-compatible shape: `param` is JSON null, authentication uses
+  `authentication_error` plus `invalid_request_error`, validation uses
+  `invalid_request_error`, and internal `new_api_error` is not exposed. This is
+  local and not deployed.
+- The supplied fit request with `messages[].name`, `reasoning_effort=low`, and
+  `max_tokens=256` was isolated from the name field: both named and unnamed
+  variants consumed all 256 completion tokens in reasoning and ended with
+  `finish_reason=length`; raising the limit to 1024 returned final content and
+  stopped after 401 completion tokens, while disabling thinking returned final
+  content in 13 completion tokens. The probe therefore records
+  `protocol_accepted=true` separately from `effective_success=false` when final
+  content is empty.
+- A focused main-route repeat found the complex SSE, disabled-thinking tools,
+  and repeated stop cases structurally valid. The tools assertion now accepts
+  a valid function call when text content is absent. The production route still
+  accepts the two invalid `top_logprobs` requests because the local validation
+  candidate has not been deployed.
+
+This baseline is a compatibility snapshot, not a production-release claim. The
+remaining 56 matrix cases are intentionally `inconclusive` until their live
+fixtures and mock-upstream tests are implemented.
+
+### 2b. Compliance Verdict
+
+| Area | Verdict | Evidence / remaining risk |
+| --- | --- | --- |
+| Basic non-stream response | Partially aligned | Probe requires non-empty `content`; the 256-token named-message fit case is protocol-accepted but frequently has no final content after reasoning exhausts the limit |
+| Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and a separate usage event when requested |
+| Thinking disabled | Compatible locally; not deployed | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
+| Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking and tool replay cases remain unimplemented |
+| Sampling validation | Aligned locally; not deployed | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the local candidate now returns the same validation class |
+| JSON, stop, logprobs | Aligned for observed valid and invalid cases | Probe validates JSON parsing, stop termination, usage arithmetic/cache bounds, both reasoning/content logprob arrays when supported, the `top_logprobs <= 20` bound, and official validation fingerprints |
+| Tools | Aligned locally; not deployed | Official rejects `tool_choice=required`; the local candidate returns the official-shaped validation envelope |
+| Stream usage when omitted | Observable parity with different semantics | Official emitted usage; Tokeness may preserve or synthesize it because omission defaults to include |
+| Unknown model | Production not aligned; local candidate ready | Official 400 versus current production 503; local typed classification maps only truly unconfigured models to `400 model_not_found` and keeps unavailable/inconsistent selection failures at 503/500 with the public server-error envelope |
+| Capability failover | Locally verified | DFLASH unsupported-logprob errors are retryable, queryable as `channel:unsupported_feature`, and do not auto-disable the channel |
+| Logging safety | Locally hardened | Debug and direct response-body diagnostics are credential-masked and bounded to 2 KiB; no live response bodies are persisted by the probe |
+| Full matrix / release gate | Not complete | 56 case IDs, including Responses, multi-round tools, live failover, and single-charge billing assertions, remain inconclusive; the official fit route is opt-in and remains blocked by insufficient balance |
+
 ## 3. Environment and Safety
 
 The runner uses environment variables only. No key, cookie, full request body,
@@ -78,12 +165,16 @@ Each case emits one record:
   "route": "official",
   "status": "pass",
   "http_status": 200,
-  "provider_error_code": null,
-  "gateway_error_code": null,
-  "finish_reason": "stop",
-  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-  "retry": {"attempts": 1, "channels": [], "keys": []},
-  "evidence": {"has_content": true, "has_reasoning_content": false}
+  "error_code": "",
+  "evidence": {
+    "finish_reason": "stop",
+    "usage": true,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "has_content": true,
+    "has_reasoning_content": false
+  }
 }
 ```
 
@@ -117,10 +208,11 @@ compatibility. T3/T4 are required before a production release claim.
 
 The runner should reuse these fixtures rather than inventing prompts per case.
 
-The redacted runner is `scripts/feature-probe`. It always emits all 84 case
-IDs, performs only the live cases for which runtime environment variables are
-present, and marks missing live tiers `inconclusive` rather than fabricating a
-pass. It never writes request bodies, response bodies, or credentials.
+The redacted runner is `scripts/feature-probe`. It always emits all 85 case
+IDs, currently implements 29 live fixture IDs, performs only the live cases for
+which runtime environment variables are present, and marks missing cases
+`inconclusive` rather than fabricating a pass. It never writes request bodies,
+response bodies, or credentials.
 
 | Fixture | Purpose |
 | --- | --- |
@@ -152,7 +244,7 @@ pass. It never writes request bodies, response bodies, or credentials.
 | --- | --- | --- | --- |
 | DS-B01 | Non-stream `basic_math` | 200; `object=chat.completion`; one choice; assistant `content` exists; `finish_reason` is present | P0 |
 | DS-B02 | `stream=true`, `stream_options.include_usage=true` | Valid SSE chunks; deltas preserve order; one final usage chunk with empty `choices`; terminator is `data: [DONE]` | P0 |
-| DS-B03 | `stream=true` without `include_usage` | Valid SSE and `[DONE]`; no fabricated usage event is emitted | P1 |
+| DS-B03 | `stream=true` without `include_usage` | Valid SSE and `[DONE]`; record whether the provider emits a usage event despite the option being omitted. The gateway must not fabricate or overwrite provider usage | P1 |
 | DS-B04 | Non-stream usage | `total_tokens = prompt_tokens + completion_tokens`; nested cache usage, when present, is non-negative and not greater than prompt tokens | P0 |
 | DS-B05 | `messages` with system, user, assistant, and tool roles where applicable | Roles and text survive round-trip; no role is silently dropped or reordered | P0 |
 | DS-B06 | Same request twice with the same `seed` when supported | Shape and finish reason remain valid; exact text equality is advisory only | P2 |
@@ -168,7 +260,7 @@ pass. It never writes request bodies, response bodies, or credentials.
 | DS-C03 | `thinking: {"type":"disabled"}` | 200; no non-empty reasoning channel is synthesized by the gateway | P0 |
 | DS-C04 | `reasoning_effort` values `low`, `medium`, `high`, `xhigh`, `max` | Record provider mapping; current docs require `medium/xhigh -> high`; no value is silently renamed in the official evidence | P0 |
 | DS-C05 | `reasoning_effort=none` and `auto` | Record whether the current endpoint accepts these observed compatibility values; classify undocumented acceptance as `doc_drift`, not as a crash | P1 |
-| DS-C06 | `reasoning_effort=extreme` | Direct provider result is recorded as rejection or acceptance; gateway compatibility expects V4-only normalization to `max` | P0 |
+| DS-C06 | `reasoning_effort=extreme` | Direct provider and gateway both return the official-shaped 400 validation envelope; no V4-only normalization is applied | P0 |
 | DS-C07 | Thinking plus `temperature`, `top_p`, `presence_penalty`, `frequency_penalty` | Request succeeds and output remains structurally valid; paired output comparison is non-blocking because model sampling is nondeterministic | P0 |
 | DS-C08 | Two-turn thinking conversation without `tools`, replaying `reasoning_content` | Provider accepts the request; prior reasoning may be ignored as documented; gateway keeps message shape valid | P0 |
 | DS-C09 | Two-turn thinking conversation without `tools`, omitting prior `reasoning_content` | Provider accepts the request; gateway must not require a field the provider says is optional | P0 |
@@ -183,8 +275,8 @@ pass. It never writes request bodies, response bodies, or credentials.
 | DS-D01 | `temperature` values 0, 1, and 2 | Boundary values follow the provider schema; no value is changed for non-thinking requests | P1 |
 | DS-D02 | `top_p` values 0.000001, 0.5, and 1 | Valid values are preserved | P0 |
 | DS-D03 | `top_p=1.5` against the official API | Record the provider 400/422 validation response; it is a provider-boundary case | P0 |
-| DS-D04 | `top_p=1.5` through gateway V4 | Gateway clamps to 1 before upstream dispatch; downstream success is accepted | P0 |
-| DS-D05 | `top_p=0` and a negative value through gateway V4 | Gateway clamps to a positive value; no invalid zero/negative value is dispatched | P1 |
+| DS-D04 | `top_p=1.5` through gateway V4 | Gateway returns the official-shaped 400 validation envelope; the invalid value is not dispatched | P0 |
+| DS-D05 | `top_p=0` and a negative value through gateway V4 | Gateway returns the official-shaped 400 validation envelope; invalid values are not dispatched | P1 |
 | DS-D06 | `max_tokens=1` with a longer answer | `finish_reason=length`; partial content is valid and usage remains arithmetic-consistent | P0 |
 | DS-D07 | `max_tokens` omitted, zero, negative, and an excessive value | Invalid values are rejected at the trust boundary; omitted value is not rewritten to an arbitrary limit | P0 |
 | DS-D08 | `stop` as a string | Output stops before the sequence; `finish_reason=stop` | P0 |
@@ -200,16 +292,17 @@ pass. It never writes request bodies, response bodies, or credentials.
 | DS-E01 | Non-thinking `logprobs=true`, `top_logprobs=5` | 200; `choices[0].logprobs.content` exists; each position has at most five top entries | P0 |
 | DS-E02 | Thinking with `logprobs=true`, `top_logprobs=5` | If supported, both `content` and `reasoning_content` logprob arrays are non-empty and bounded by five; otherwise classify the provider capability error | P0 |
 | DS-E03 | `top_logprobs` values 0, 1, 5, and 20 | Accepted values do not exceed the requested bound; response shape remains valid | P1 |
-| DS-E04 | `top_logprobs=21` or without `logprobs=true` | Provider rejects or documents the invalid combination; gateway does not fabricate logprobs | P1 |
+| DS-E04 | `top_logprobs=5` without `logprobs=true` | Provider and gateway return the official 400 validation envelope; gateway does not fabricate logprobs | P1 |
 | DS-E05 | Streaming logprobs | Logprob deltas are parseable and preserved; final usage does not overwrite real usage | P0 |
 | DS-E06 | DFLASH capability response: HTTP 400 with `return_logprob` message | Classified as `channel:unsupported_feature`; retryable across channels; channel is not auto-disabled; original message remains diagnosable | P0 |
+| DS-E07 | `logprobs=true`, `top_logprobs=21` | Provider and gateway return the official 400 validation envelope with the `[0, 20]` range fingerprint | P1 |
 
 ### 7.6 Tools and Multi-turn Tool Calls
 
 | ID | Request | Required assertion | Severity |
 | --- | --- | --- | --- |
 | DS-F01 | `tools` with `tool_choice=auto` | Model may return text or a function call; both are valid and structurally distinct | P0 |
-| DS-F02 | `tool_choice=required` | At least one valid function tool call is returned | P0 |
+| DS-F02 | `tool_choice=required` | Official provider and gateway both return the official-shaped 400 `invalid_request_error`; a successful tool call is not accepted as parity | P0 |
 | DS-F03 | Named function tool choice | Requested function name is selected | P1 |
 | DS-F04 | `tool_choice=none` | No tool call is returned | P1 |
 | DS-F05 | Malformed function schema | Clear client error; no partial billing or retry to a different channel | P1 |
@@ -241,8 +334,8 @@ release failure.
 
 | ID | Assertion | Severity |
 | --- | --- | --- |
-| DS-H01 | V4-only `extreme` normalizes to `max`; legacy DeepSeek models and unrelated vendors remain unchanged | P0 |
-| DS-H02 | V4 `top_p > 1` clamps to 1 and `top_p <= 0` clamps to a positive lower bound; omitted `top_p` stays omitted | P0 |
+| DS-H01 | V4-only `extreme` | V4 returns the official-shaped 400 validation envelope; legacy DeepSeek models and unrelated vendors remain unchanged | P0 |
+| DS-H02 | V4 invalid `top_p` | V4 returns the official-shaped 400 validation envelope for `top_p > 1` and `top_p <= 0`; omitted `top_p` stays omitted | P0 |
 | DS-H03 | `reasoning_content`, `content`, `tool_calls`, `stop`, `logprobs`, and `usage` are preserved by forced response formatting | P0 |
 | DS-H04 | Stream usage received before the final event is authoritative; no local estimate overwrites non-zero provider usage | P0 |
 | DS-H05 | Explicit zero/false request values are retained when the upstream DTO uses optional fields | P1 |

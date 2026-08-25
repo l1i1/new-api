@@ -419,7 +419,7 @@ func GetOpenAIError(errorField any) *types.OpenAIError {
 		if errMsg, ok := err["message"].(string); ok {
 			openaiErr.Message = errMsg
 		}
-		if errParam, ok := err["param"].(string); ok {
+		if errParam, ok := err["param"]; ok {
 			openaiErr.Param = errParam
 		}
 		if errCode, ok := err["code"]; ok {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -329,6 +330,12 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	if textRequest.Model == "" {
 		return nil, errors.New("model is required")
 	}
+	if err := validateDeepSeekV4OfficialFields(textRequest); err != nil {
+		return nil, err
+	}
+	if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
+		return nil, err
+	}
 	if textRequest.WebSearchOptions != nil {
 		if textRequest.WebSearchOptions.SearchContextSize != "" {
 			validSizes := map[string]bool{
@@ -365,6 +372,60 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		}
 	}
 	return textRequest, nil
+}
+
+func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "extreme") {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "Invalid reasoning_effort value, the valid values are [low, high, max].",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if request.TopP != nil && (*request.TopP <= 0 || *request.TopP > 1) {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "Invalid top_p value, the valid range of top_p is (0, 1].",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if choice, ok := request.ToolChoice.(string); ok && strings.EqualFold(strings.TrimSpace(choice), "required") {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "Invalid tool_choice value, tool_choice=required is not supported.",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	return nil
+}
+
+func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") || request.TopLogProbs == nil {
+		return nil
+	}
+	if request.LogProbs == nil || !*request.LogProbs {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used.",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if *request.TopLogProbs < 0 || *request.TopLogProbs > 20 {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20].",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	return nil
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {

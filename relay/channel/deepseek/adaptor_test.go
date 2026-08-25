@@ -19,9 +19,12 @@ func TestConvertOpenAIRequestNormalizesDeepSeekV4CompatibilityFields(t *testing.
 		wantEffort string
 		wantTopP   *float64
 	}{
-		{name: "extreme effort", effort: "extreme", wantEffort: "max"},
-		{name: "upper top p", topP: float64Pointer(1.5), wantTopP: float64Pointer(1)},
-		{name: "zero top p", topP: float64Pointer(0), wantTopP: float64Pointer(deepSeekV4MinimumTopP)},
+		{name: "extreme effort remains visible for official validation", effort: "extreme", wantEffort: "extreme"},
+		{name: "xhigh effort", effort: "xhigh", wantEffort: "xhigh"},
+		{name: "auto effort", effort: "auto", wantEffort: "auto"},
+		{name: "upper top p remains visible for official validation", topP: float64Pointer(1.5), wantTopP: float64Pointer(1.5)},
+		{name: "zero top p remains visible for official validation", topP: float64Pointer(0), wantTopP: float64Pointer(0)},
+		{name: "negative top p remains visible for official validation", topP: float64Pointer(-0.1), wantTopP: float64Pointer(-0.1)},
 		{name: "valid top p", topP: float64Pointer(0.7), wantTopP: float64Pointer(0.7)},
 		{name: "omitted top p", wantTopP: nil},
 	}
@@ -72,6 +75,56 @@ func TestConvertOpenAIRequestPreservesCustomerControls(t *testing.T) {
 	assert.Equal(t, 5, *got.TopLogProbs)
 }
 
+func TestConvertOpenAIRequestMapsDisabledThinkingToNone(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:           "deepseek-v4-flash",
+		THINKING:        []byte(`{"type":"disabled"}`),
+		ReasoningEffort: " high ",
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+	}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, info, request)
+
+	require.NoError(t, err)
+	got := converted.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "none", got.ReasoningEffort)
+	assert.Equal(t, "none", info.GetReasoningEffort())
+}
+
+func TestConvertOpenAIRequestMapsDeepSeekV4NoneSuffixToNoneEffort(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash-none"}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash-none"},
+	}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, info, request)
+
+	require.NoError(t, err)
+	got := converted.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "deepseek-v4-flash", got.Model)
+	assert.Equal(t, `{"type":"disabled"}`, string(got.THINKING))
+	assert.Equal(t, "none", got.ReasoningEffort)
+	assert.Equal(t, "none", info.GetReasoningEffort())
+}
+
+func TestConvertOpenAIRequestMapsDeepSeekV4MaxSuffix(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash-max"}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash-max"},
+	}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, info, request)
+
+	require.NoError(t, err)
+	got := converted.(*dto.GeneralOpenAIRequest)
+	assert.Equal(t, "deepseek-v4-flash", got.Model)
+	assert.Equal(t, `{"type":"enabled"}`, string(got.THINKING))
+	assert.Equal(t, "max", got.ReasoningEffort)
+	assert.Equal(t, "max", info.GetReasoningEffort())
+}
+
 func TestConvertOpenAIRequestLeavesLegacyDeepSeekControlsUnchanged(t *testing.T) {
 	topP := 1.5
 	request := &dto.GeneralOpenAIRequest{
@@ -105,9 +158,9 @@ func TestConvertOpenAIResponsesRequestNormalizesDeepSeekV4CompatibilityFields(t 
 	require.NoError(t, err)
 	got := converted.(dto.OpenAIResponsesRequest)
 	require.NotNil(t, got.TopP)
-	assert.Equal(t, float64(1), *got.TopP)
+	assert.Equal(t, float64(1.5), *got.TopP)
 	require.NotNil(t, got.Reasoning)
-	assert.Equal(t, "max", got.Reasoning.Effort)
+	assert.Equal(t, "extreme", got.Reasoning.Effort)
 }
 
 func TestClassifyDeepSeekV4DFlashLogprobErrorAsChannelCapability(t *testing.T) {

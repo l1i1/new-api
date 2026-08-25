@@ -230,12 +230,17 @@ func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, res
 		responseTextBuilder.WriteString(choice.Delta.GetContentString())
 		responseTextBuilder.WriteString(choice.Delta.GetReasoningContent())
 		if choice.Delta.ToolCalls != nil {
-			if len(choice.Delta.ToolCalls) > *toolCount {
-				*toolCount = len(choice.Delta.ToolCalls)
-			}
+			validToolCount := 0
 			for _, tool := range choice.Delta.ToolCalls {
+				if !isValidStreamFunctionToolCall(tool) {
+					continue
+				}
+				validToolCount++
 				responseTextBuilder.WriteString(tool.Function.Name)
 				responseTextBuilder.WriteString(tool.Function.Arguments)
+			}
+			if validToolCount > *toolCount {
+				*toolCount = validToolCount
 			}
 		}
 	}
