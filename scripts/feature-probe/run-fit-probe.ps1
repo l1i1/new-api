@@ -139,7 +139,11 @@ function Get-Result($Route, $Case) {
     }
 
     $status = [int]$response.StatusCode
-    $raw = [string]$response.Content
+    $raw = if ($response.Content -is [byte[]]) {
+        [Text.Encoding]::UTF8.GetString($response.Content)
+    } else {
+        [string]$response.Content
+    }
     $isSse = [string]$response.Headers["Content-Type"] -match "text/event-stream"
     $json = $null
     if (-not $isSse) {

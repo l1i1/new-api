@@ -1285,11 +1285,18 @@ func requestPayload(ctx context.Context, client *http.Client, base, key, method,
 		return 0, map[string]any{"transport_error": safeError(err)}, nil, err
 	}
 	defer resp.Body.Close()
+	stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if readErr != nil {
-		return resp.StatusCode, map[string]any{"read_error": safeError(readErr)}, nil, readErr
+		evidence := summarize(data, stream)
+		evidence["read_error"] = safeError(readErr)
+		evidence["initial_scheme"] = req.URL.Scheme
+		evidence["tls"] = resp.TLS != nil
+		if resp.Request != nil && resp.Request.URL != nil {
+			evidence["final_scheme"] = resp.Request.URL.Scheme
+		}
+		return resp.StatusCode, evidence, nil, readErr
 	}
-	stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	isResponses := strings.HasSuffix(strings.TrimRight(path, "/"), "/responses")
 	evidence := summarize(data, stream)
 	if isResponses {

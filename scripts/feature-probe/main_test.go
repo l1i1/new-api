@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +11,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type probeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f probeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type probeReadErrorBody struct {
+	payload []byte
+	read    bool
+}
+
+func (b *probeReadErrorBody) Read(p []byte) (int, error) {
+	if b.read {
+		return 0, errors.New("read failed")
+	}
+	b.read = true
+	return copy(p, b.payload), errors.New("read failed")
+}
+
+func (b *probeReadErrorBody) Close() error { return nil }
 
 func TestFeatureProbeMatrixIsCompleteAndUnique(t *testing.T) {
 	seen := make(map[string]struct{}, len(allCases))
@@ -115,6 +138,24 @@ func TestSummarizeStreamAcceptsDataFieldWithoutSpace(t *testing.T) {
 	assert.Equal(t, true, evidence["done"])
 	assert.Equal(t, true, evidence["has_content"])
 	assert.Equal(t, "stop", evidence["finish_reason"])
+}
+
+func TestRequestPayloadPreservesPartialStreamEvidenceOnReadError(t *testing.T) {
+	client := &http.Client{Transport: probeRoundTripper(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &probeReadErrorBody{payload: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")},
+			Request:    req,
+		}, nil
+	})}
+
+	status, evidence, _, err := requestPayload(context.Background(), client, "https://example.test/v1", "key", http.MethodPost, "/chat/completions", []byte(`{}`))
+
+	assert.Equal(t, http.StatusOK, status)
+	assert.Error(t, err)
+	assert.Equal(t, true, evidence["has_content"])
+	assert.NotEmpty(t, evidence["read_error"])
 }
 
 func TestSummarizeStreamReassemblesToolArgumentsAndLogprobs(t *testing.T) {
