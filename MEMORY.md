@@ -1,5 +1,27 @@
 # New API Fork Memory
 
+- On 2026-08-26, the reviewed performance, DeepSeek compatibility, stream
+  integrity, and wallet presentation consolidation was deployed from commit
+  `0c33d4a55f085954f5ac8f4ec57097f7cacd8693` as
+  `v1.0.0-rc.25-tokeness-performance.1`. Publish workflow `32888611516`
+  produced immutable GHCR digest
+  `sha256:e9336f033baef03c6909c814eddda199e2cf02734d01de8b8d060a671507a9d2`
+  and published the matching frontend distribution. Baseline verification
+  workflows `32887557811` and `32889326257`, staged production rollout
+  `32889492662`, and independent post-deploy verification `32890062137` all
+  passed. JP-N2, EV-JP, JP-M, and EV-JP2 selected and ran the new digest and
+  version; the replicas reported healthy, while JP-M passed its expected
+  application and OpenResty checks without a Docker healthcheck. Public
+  dashboard routes returned 200 and unauthenticated API CDN probes returned
+  the expected 401 with the new version header. The previous production
+  digest
+  `sha256:5984f6f6757dc4aa2aa1aeb95485ad41031aee34f073ce8666ecb58ce8f5a44c`
+  remains the rollback reference. The production workflow deploys immutable
+  images but does not manage or expose `LOG_BATCH_ENABLED` or `GOGC`; the code
+  is live, while activation of the exact WSL2 acceptance configuration
+  (`LOG_BATCH_ENABLED=true`, `GOGC=30`) remains an operator-controlled setting
+  and was not confirmed or changed during this deployment.
+
 - On 2026-08-26, wallet top-up presentation gained two optional settings:
   `payment_setting.topup_contact` exposes a Contact Us dialog with sanitized
   Markdown/HTML content, and `payment_setting.topup_subtitle` replaces the
