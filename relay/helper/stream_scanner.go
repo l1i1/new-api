@@ -281,12 +281,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		}
 
 		if err := scanner.Err(); err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, io.ErrUnexpectedEOF)
+			} else {
 				logger.LogError(c, "scanner error: "+err.Error())
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
+			return
 		}
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+		// A clean reader EOF is not a valid SSE completion. OpenAI-compatible
+		// streams must terminate with an explicit data: [DONE] event.
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, io.ErrUnexpectedEOF)
 	})
 
 	// 主循环等待完成或超时

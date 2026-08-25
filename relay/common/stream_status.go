@@ -89,9 +89,7 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	return s.EndReason == StreamEndReasonDone
 }
 
 func (s *StreamStatus) Summary() string {
