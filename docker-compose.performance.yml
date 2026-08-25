@@ -26,6 +26,7 @@ services:
       # lower memory ceiling (GOGC=30 measured 54.2 vs 80.6 MiB peak RSS).
       GOGC: "${PERF_GOGC:-30}"
       MEMORY_CACHE_ENABLED: "true"
+      COMPLIANCE_GEOIP_ENABLED: "false"
       DEBUG: "false"
       ENABLE_PPROF: "true"
       DISABLE_PPROF_CPU_MONITOR: "true"

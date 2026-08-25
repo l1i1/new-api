@@ -63,7 +63,8 @@ func main() {
 	}
 	client := &http.Client{Transport: transport}
 	client.Timeout = 30 * time.Second
-	deadline := time.Now().Add(*duration)
+	measurementStarted := time.Now()
+	deadline := measurementStarted.Add(*duration)
 	workers := make([]workerResult, *concurrency)
 	var totalRequests atomic.Int64
 	var waitGroup sync.WaitGroup
@@ -75,6 +76,7 @@ func main() {
 		}(worker)
 	}
 	waitGroup.Wait()
+	measurementElapsed := time.Since(measurementStarted)
 	transport.CloseIdleConnections()
 
 	latencies := make([]int64, 0, totalRequests.Load())
@@ -90,13 +92,13 @@ func main() {
 		}
 	}
 	requests := totalRequests.Load()
-	seconds := duration.Seconds()
+	seconds := measurementElapsed.Seconds()
 	output := result{
 		DurationSeconds: seconds,
 		Requests:        requests,
 		Successes:       successes,
 		Errors:          errorsCount,
-		RPS:             float64(successes) / seconds,
+		RPS:             successfulRPS(successes, measurementElapsed),
 		P50Milliseconds: percentileMilliseconds(latencies, 0.50),
 		P95Milliseconds: percentileMilliseconds(latencies, 0.95),
 		P99Milliseconds: percentileMilliseconds(latencies, 0.99),
@@ -107,6 +109,13 @@ func main() {
 		fatal(err.Error())
 	}
 	fmt.Println(string(encoded))
+}
+
+func successfulRPS(successes int64, elapsed time.Duration) float64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(successes) / elapsed.Seconds()
 }
 
 func runWorker(client *http.Client, method, url, token string, body []byte, stream, models bool, deadline time.Time, totalRequests *atomic.Int64) workerResult {

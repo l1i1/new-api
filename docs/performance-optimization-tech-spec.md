@@ -30,7 +30,9 @@ load generator -> new-api -> PostgreSQL
 The performance compose project uses its own project name and named volumes.
 It must not reuse the development or production compose project, database,
 Redis instance, or credentials. The mock upstream accepts only local test
-traffic and returns fixed non-stream and SSE responses.
+traffic and returns fixed non-stream and SSE responses. Compliance GeoIP lookup
+is disabled in this isolated stack so a fresh run neither downloads external
+data nor measures unrelated cold-start latency.
 
 ## Measurement protocol
 
@@ -39,20 +41,23 @@ traffic and returns fixed non-stream and SSE responses.
    project.
 3. Seed one enabled user, one relay token, the required abilities/channels, and
    deterministic options through the local setup path.
-4. Warm the process and caches for 15 seconds. Do not include warm-up in the
-   result.
-5. Run the scenario for the configured duration at a fixed concurrency. Record
-   client-side latency and errors, then collect server resource counters for the
-   same interval.
-6. Repeat each case three times after a fresh warm-up. Report the median run and
-   retain all raw result files.
+4. Warm the process and caches before every measured scenario. Do not include
+   warm-up in the result.
+5. Run the precompiled load generator for the configured duration at a fixed
+   concurrency. Start container resource sampling immediately before the client
+   process and stop it immediately after completion. Missing, malformed, or
+   interrupted resource samples invalidate the run.
+6. Repeat each case three times after a fresh warm-up. Select the complete
+   median-RPS run, retain every raw result, and retain the matching resource
+   samples for non-stream, stream, and large-body cases.
 7. Capture a CPU profile and heap profile for the steady-state `relay-nonstream`
    case. Profiles are local artifacts and must not contain request bodies,
    credentials, or production data.
 
 ## Metrics
 
-- Throughput: completed successful requests / measured seconds.
+- Throughput: completed successful requests / actual wall-clock measurement
+  seconds, including completion time for requests admitted before the deadline.
 - Latency: client-observed p50, p95, and p99.
 - CPU: container CPU time converted to core-seconds / successful request.
 - Memory: maximum container RSS and Go heap `inuse_space` during the measured
@@ -87,6 +92,16 @@ traffic and returns fixed non-stream and SSE responses.
   changing them.
 - Consider batching only independent reads. Do not batch or reorder quota
   writes when that can weaken atomic reservation or settlement.
+- The optional quota updater stores each user's quota, used-quota, and request
+  count deltas as one in-memory tuple. Snapshotting cannot split one settlement
+  across batches. Graceful shutdown stops new queue admission, drains and
+  retries pending tuples, and makes later callers use the synchronous SQL path.
+- The optional log batcher uses an explicit transaction on SQLite, MySQL, and
+  PostgreSQL. Begin or insert failures retain the accepted buffer for retry;
+  only a commit error has unknown outcome and is dropped without replay to
+  avoid duplicate audit rows. ClickHouse keeps synchronous log inserts because
+  it cannot provide the same transaction boundary. Shutdown passes its context
+  into database work and does not return before the worker exits.
 
 ### Batch 4: body and relay allocations
 
@@ -105,6 +120,10 @@ traffic and returns fixed non-stream and SSE responses.
   synchronous write so the opt-in path does not silently discard observations
   under backpressure. A failed batch is logged and dropped without replay
   once; residual Redis failures are logged and remain non-fatal to the request.
+- Active-dashboard reads enqueue a worker barrier before reading Redis. The
+  barrier flushes all observations accepted before the query, preventing the
+  current bucket from lagging without merging and double-counting `hotBuckets`.
+  If that flush fails, the query falls back to the synchronous local bucket.
 - Preserve all counter, histogram, error-class, usage, expiry, and index
   fields, then compare request errors and active-dashboard counts before
   retaining any measured performance gain.
@@ -120,10 +139,12 @@ traffic and returns fixed non-stream and SSE responses.
   synchronous write, and graceful shutdown drains accepted records. A failed
   batch is logged and dropped without replay; Redis failures remain
   non-fatal to the request.
-- The local WSL2 screening showed zero request errors and higher candidate RPS
-  in two 60-second order-reversed pairs, but control throughput varied
-  materially between pairs and peak memory did not improve. Keep this as an
-  opt-in candidate, not a new project-level acceptance result.
+- An initial 60-second screening suggested higher candidate RPS, but control
+  throughput varied materially. A later fair recheck used two order-reversed
+  120-second pairs with the same loadgen and measured combined deltas of -1.4%
+  non-stream, +0.5% stream, and +0.9% large-body; CPU per request was slightly
+  worse overall and peak memory was unchanged. Keep the default disabled and
+  do not count this as a retained performance improvement.
 
 ### Rejected Batch 6: wallet quota-warning read fusion
 
@@ -164,6 +185,19 @@ traffic and returns fixed non-stream and SSE responses.
   production code or another end-to-end A/B candidate.
 - No Batch 8 production code was written.
 
+### Batch 11: user auth-cache Redis pipeline (rejected)
+
+- The candidate pipelined the user-cache `HGETALL` and auth-fence/version
+  `MGET` while preserving schema checks, database fallback, and the monotonic
+  authorization floor.
+- A fair 120-second WSL2 candidate/control run used identical response-validating
+  loadgen code, concurrency 64, `GOGC=30`, and zero-error HTTP 200 responses.
+  Candidate RPS regressed auth-hot by 53.2%, non-stream by 14.7%, stream by
+  54.3%, and large-body by 34.7%; peak RSS was effectively unchanged.
+- The production pipeline code was reverted. The `/v1/models` auth-hot workload
+  remains in the local performance harness so future authentication changes can
+  be measured directly.
+
 ## Verification commands
 
 From the repository root:
@@ -182,5 +216,8 @@ GOWORK=off go test ./...
 GOWORK=off go build ./...
 ```
 
-The performance runner will provide the exact WSL and JP-N4-EV commands after
-the isolated compose stack is added.
+The WSL runner is `scripts/performance/run-wsl.sh run`. It enforces an odd
+`PERF_ROUNDS` value of at least three, rejects any warm-up or measured errors,
+captures validated resource samples for every relay scenario, and records
+commit plus server/loadgen binary hashes. `PERF_SKIP_BUILD=1` only reuses both
+binaries when they match provenance from the current clean commit.

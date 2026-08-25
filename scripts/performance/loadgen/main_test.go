@@ -1,6 +1,18 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestSuccessfulRPSUsesActualElapsedWindow(t *testing.T) {
+	if got := successfulRPS(100, 2*time.Second); got != 50 {
+		t.Fatalf("successfulRPS() = %v, want 50", got)
+	}
+	if got := successfulRPS(100, 0); got != 0 {
+		t.Fatalf("successfulRPS() with zero duration = %v, want 0", got)
+	}
+}
 
 func TestHasEffectiveOutputRejectsEmptyHTTP200Body(t *testing.T) {
 	body := []byte(`{"choices":[{"message":{"content":""},"finish_reason":"length"}]}`)

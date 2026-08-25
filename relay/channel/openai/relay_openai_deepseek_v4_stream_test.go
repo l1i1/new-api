@@ -168,6 +168,106 @@ func TestOaiStreamHandlerDeepSeekV4MergesUsageOnlyTailIntoFinishChunk(t *testing
 	assert.NotContains(t, final, `"choices":[]`)
 }
 
+func TestOaiStreamHandlerDeepSeekV4PreservesFinishAcrossConsecutiveUsageOnlyTail(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"A"}}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	_, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	events := dataEvents(recorder)
+	require.Len(t, events, 3, "expected content, preserved finish, and [DONE]")
+	assert.Contains(t, events[0], `"content":"A"`)
+	assert.Contains(t, events[1], `"finish_reason":"stop"`)
+	for _, event := range events {
+		assert.NotContains(t, event, `"choices":[]`, "consecutive usage-only events must stay internal")
+	}
+}
+
+func TestOaiStreamHandlerDeepSeekV4PreservesContentBeforeConsecutiveUsageOnlyEvents(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"A"}}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":null}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	_, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	events := dataEvents(recorder)
+	require.Len(t, events, 3, "expected preserved content, finish, and [DONE]")
+	assert.Contains(t, events[0], `"content":"A"`)
+	assert.Contains(t, events[1], `"finish_reason":"stop"`)
+	for _, event := range events {
+		assert.NotContains(t, event, `"choices":[]`, "usage-only events must not become V4 protocol events")
+	}
+}
+
+func TestOaiStreamHandlerDeepSeekV4KeepsFinishAcrossRepeatedUsageTail(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"ok"}}]}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":null}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	usage, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	require.Equal(t, 2, usage.CompletionTokens)
+	events := dataEvents(recorder)
+	require.Len(t, events, 3, "expected content, merged finish/usage, and [DONE]")
+	assert.Contains(t, events[0], `"content":"ok"`)
+	assert.Contains(t, events[1], `"finish_reason":"stop"`)
+	assert.Contains(t, events[1], `"completion_tokens":2`)
+	assert.NotContains(t, events[1], `"choices":[]`)
+}
+
+func TestOaiStreamHandlerDeepSeekV4KeepsContentBeforeRepeatedUsage(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"kept"}}]}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":null}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	_, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	events := dataEvents(recorder)
+	require.Len(t, events, 3, "expected content, merged finish/usage, and [DONE]")
+	assert.Contains(t, events[0], `"content":"kept"`)
+	assert.Contains(t, events[1], `"finish_reason":"stop"`)
+	assert.NotContains(t, events[1], `"choices":[]`)
+}
+
 func TestOaiStreamHandlerDeepSeekV4HonorsIncludeUsageFalse(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"ok"}}],"usage":null}`,

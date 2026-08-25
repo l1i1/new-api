@@ -8,6 +8,42 @@
   returned by `/api/user/topup/info`, and no database migration is required
   because they use the registered hierarchical payment configuration.
 
+- On 2026-08-26, the follow-up performance experiments found no additional
+  production hot-path gain beyond the accepted five-round result. The later
+  fair recheck of the opt-in `PERF_METRICS_ASYNC_REDIS=true` candidate used two
+  order-reversed 120-second pairs at concurrency 64 with the same loadgen and
+  `GOGC=30`; combined RPS deltas were -1.4% (nonstream), +0.5% (stream), and
+  +0.9% (body-large), so it is not a stable optimization and remains disabled
+  by default. A separate r11 user-cache Redis pipeline candidate combined the
+  user `HGETALL` and auth-fence `MGET`, but the fair 120-second candidate vs
+  frozen-control run returned zero errors while regressing auth-hot 1705.8 vs
+  3646.8 RPS (-53.2%), nonstream 121.1 vs 141.9 (-14.7%), stream 59.3 vs
+  129.7 (-54.3%), and body-large 55.9 vs 85.7 (-34.7%); peak RSS was effectively
+  unchanged. The candidate was removed from the production working tree. The
+  auth-cache workload and response-validating loadgen remain because they are
+  useful measurement infrastructure. No production system, credential,
+  deployment, publication, or additional commit was used for these tests.
+
+- On 2026-08-26, deep review closed the remaining correctness and benchmark
+  gaps before committing the performance work. User accounting batches now
+  keep quota and usage deltas as one tuple, fully requeue failed persistence,
+  drain on shutdown, and fall back synchronously after admission closes. Log
+  batches use explicit transactions on SQLite/MySQL/PostgreSQL, preserve only
+  known-not-committed work for retry, and wait for context-bound workers;
+  ClickHouse remains synchronous. Channel-observability Redis batches expose
+  accepted writes to active readers through flush barriers; both channel and
+  performance metric batches avoid replaying an unknown commit. DeepSeek V4
+  streaming preserves finish/content state across repeated usage-only tails.
+  The benchmark now prebuilds and hashes both Linux
+  binaries, validates every resource-sample row, propagates sampler failures,
+  records reproducibility metadata, disables external GeoIP lookup in the
+  isolated stack, and selects complete median-RPS rounds. A three-round local
+  smoke artifact is retained at
+  `C:\Users\vhbs\AppData\Local\Temp\new-api-runner-smoke\20260826-021715`;
+  full root tests/vet, standalone RelayKit test/build, and focused race tests
+  passed. No production system, credential, deployment, publication, or push
+  was used.
+
 - On 2026-08-25, final pre-commit review of the DeepSeek V4/performance
   consolidation removed correctness risks before local commit. DeepSeek V4
   streaming now merges aggregator usage-only tails into the final

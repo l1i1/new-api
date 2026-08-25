@@ -1310,8 +1310,7 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 			}
 		})
 	}
-	if !db && common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
+	if !db && common.BatchUpdateEnabled && addNewRecord(BatchUpdateTypeUserQuota, id, quota) {
 		return nil
 	}
 	return increaseUserQuota(id, quota)
@@ -1337,8 +1336,7 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 			}
 		})
 	}
-	if !db && common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
+	if !db && common.BatchUpdateEnabled && addNewRecord(BatchUpdateTypeUserQuota, id, -quota) {
 		return nil
 	}
 	return decreaseUserQuota(id, quota)
@@ -1369,10 +1367,7 @@ func DecreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCo
 			}
 		})
 	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
-		addNewRecord(BatchUpdateTypeUsedQuota, id, usedQuotaDelta)
-		addNewRecord(BatchUpdateTypeRequestCount, id, requestCount)
+	if common.BatchUpdateEnabled && addUserBatchUpdate(id, -quota, usedQuotaDelta, requestCount) {
 		return nil
 	}
 	result := DB.Exec("UPDATE users SET quota = quota - ?, used_quota = used_quota + ?, request_count = request_count + ? WHERE id = ? AND deleted_at IS NULL",
@@ -1399,10 +1394,7 @@ func IncreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCo
 			}
 		})
 	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
-		addNewRecord(BatchUpdateTypeUsedQuota, id, usedQuotaDelta)
-		addNewRecord(BatchUpdateTypeRequestCount, id, requestCount)
+	if common.BatchUpdateEnabled && addUserBatchUpdate(id, quota, usedQuotaDelta, requestCount) {
 		return nil
 	}
 	result := DB.Exec("UPDATE users SET quota = quota + ?, used_quota = used_quota + ?, request_count = request_count + ? WHERE id = ? AND deleted_at IS NULL",
@@ -1444,9 +1436,7 @@ func UpdateUserLastLoginAt(id int) {
 }
 
 func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
-		addNewRecord(BatchUpdateTypeRequestCount, id, 1)
+	if common.BatchUpdateEnabled && addUserBatchUpdate(id, 0, quota, 1) {
 		return
 	}
 	updateUserUsedQuotaAndRequestCount(id, quota, 1)
@@ -1454,8 +1444,7 @@ func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
 
 // UpdateUserUsedQuota adjusts accumulated usage without changing request count.
 func UpdateUserUsedQuota(id int, quota int) {
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
+	if common.BatchUpdateEnabled && addNewRecord(BatchUpdateTypeUsedQuota, id, quota) {
 		return
 	}
 	if err := DB.Model(&User{}).Where("id = ?", id).Update("used_quota", gorm.Expr("used_quota + ?", quota)).Error; err != nil {

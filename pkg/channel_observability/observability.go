@@ -89,6 +89,7 @@ type redisObservationRecord struct {
 	frtMs      int64
 	usage      Usage
 	errorClass string
+	barrier    chan bool
 }
 
 var (
@@ -833,10 +834,18 @@ func percentage(numerator, denominator int64) float64 {
 }
 
 func activeAggregates(query Query, startTs, endTs int64) []model.ChannelModelPerfAggregate {
-	currentBucket := bucketStart(time.Now().Unix())
 	if !common.RedisEnabled || common.RDB == nil {
 		return localActiveAggregates(query, startTs, endTs)
 	}
+	if redisObservationActive.Load() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		flushed := waitForRedisObservationFlush(ctx)
+		cancel()
+		if !flushed {
+			return localActiveAggregates(query, startTs, endTs)
+		}
+	}
+	currentBucket := bucketStart(time.Now().Unix())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	keys, err := common.RDB.SMembers(ctx, redisIndexKey()).Result()
@@ -973,9 +982,11 @@ func recordRedis(key bucketKey, sample Observation, request bool) {
 		redisObservationMu.RUnlock()
 		return
 	default:
-		redisObservationMu.RUnlock()
 	}
+	// Keep the read lock until the fallback commits so a dashboard barrier
+	// cannot pass an accepted record that is still being written.
 	recordRedisSync(key, sample, request)
+	redisObservationMu.RUnlock()
 }
 
 func recordRedisSync(key bucketKey, sample Observation, request bool) {
@@ -1056,16 +1067,24 @@ func redisObservationLoop() {
 	defer ticker.Stop()
 	defer close(redisObservationDone)
 	batch := make([]redisObservationRecord, 0, redisObservationBatchSize)
-	flush := func() {
+	flushHealthy := true
+	flush := func() bool {
 		if len(batch) == 0 {
-			return
+			return flushHealthy
 		}
-		flushRedisObservationBatch(batch)
+		if !flushRedisObservationBatch(batch) {
+			flushHealthy = false
+		}
 		batch = batch[:0]
+		return flushHealthy
 	}
 	for {
 		select {
 		case record := <-redisObservationQueue:
+			if record.barrier != nil {
+				record.barrier <- flush()
+				continue
+			}
 			batch = append(batch, record)
 			if len(batch) >= redisObservationBatchSize {
 				flush()
@@ -1076,6 +1095,10 @@ func redisObservationLoop() {
 			for {
 				select {
 				case record := <-redisObservationQueue:
+					if record.barrier != nil {
+						record.barrier <- flush()
+						continue
+					}
 					batch = append(batch, record)
 					if len(batch) >= redisObservationBatchSize {
 						flush()
@@ -1086,6 +1109,41 @@ func redisObservationLoop() {
 				}
 			}
 		}
+	}
+}
+
+func waitForRedisObservationFlush(ctx context.Context) bool {
+	redisObservationMu.Lock()
+	if redisObservationQueue == nil {
+		redisObservationMu.Unlock()
+		return true
+	}
+	if redisObservationEnded {
+		done := redisObservationDone
+		redisObservationMu.Unlock()
+		if done == nil {
+			return true
+		}
+		select {
+		case <-done:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	barrier := make(chan bool, 1)
+	select {
+	case redisObservationQueue <- redisObservationRecord{barrier: barrier}:
+		redisObservationMu.Unlock()
+	case <-ctx.Done():
+		redisObservationMu.Unlock()
+		return false
+	}
+	select {
+	case flushed := <-barrier:
+		return flushed
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -1148,13 +1206,15 @@ func flushRedisObservations(records []redisObservationRecord) error {
 	return err
 }
 
-func flushRedisObservationBatch(records []redisObservationRecord) {
+func flushRedisObservationBatch(records []redisObservationRecord) bool {
 	if err := flushRedisObservations(records); err != nil {
 		// A failed Exec can be an unknown commit: replaying HINCRBY operations
 		// would risk duplicate metrics. Observability is best-effort, so keep
 		// at-most-once semantics and report the dropped batch.
 		common.SysError(fmt.Sprintf("failed to flush channel observation Redis batch; dropped %d records: %v", len(records), err))
+		return false
 	}
+	return true
 }
 
 func addRedisObservation(fields map[string]int64, record redisObservationRecord) {

@@ -250,6 +250,7 @@ func main() {
 		}
 	}
 	drain("log batch", model.ShutdownLogBatcher)
+	drain("quota batch", model.ShutdownBatchUpdater)
 	drain("channel observability", channelobservability.Shutdown)
 	drain("perf metrics", perfmetrics.Shutdown)
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)

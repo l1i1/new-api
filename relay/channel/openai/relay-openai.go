@@ -132,6 +132,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var pendingUsageData string
 	var lastStreamHasUsage bool
 	var lastStreamHasChoices bool
+	var lastStreamHasFinish bool
 	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	var deepSeekV4PendingFinalData string
@@ -149,6 +150,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		currentHasUsage := false
 		currentHasChoices := false
+		currentHasFinish := false
 		currentWithoutUsage := ""
 		if len(data) > 0 {
 			var streamResp struct {
@@ -158,6 +160,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil {
 				for _, choice := range streamResp.Choices {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
+						currentHasFinish = true
 						info.StreamFinishReason = *choice.FinishReason
 					}
 				}
@@ -206,10 +209,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// system_fingerprint on every chunk. Forward official-shaped
 				// events verbatim; only patch chunks from aggregators that
 				// stripped the fingerprint.
-				if currentHasUsage && !currentHasChoices {
+				if currentHasUsage && !currentHasChoices && lastStreamHasFinish {
 					// Hold the finish chunk until the following usage-only event is
 					// parsed, then merge usage back into that official-shaped chunk.
 					deepSeekV4PendingFinalData = lastStreamData
+				} else if currentHasUsage && !currentHasChoices && lastStreamHasUsage && !lastStreamHasChoices {
+					// Consecutive usage-only events are cumulative metadata. Suppress
+					// the older event without replacing an already-held finish chunk.
 				} else {
 					streamData := lastStreamData
 					if lastStreamHasUsage && !lastStreamHasChoices {
@@ -273,6 +279,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			lastStreamData = data
 			lastStreamHasUsage = currentHasUsage
 			lastStreamHasChoices = currentHasChoices
+			lastStreamHasFinish = currentHasFinish
 			lastStreamWithoutUsage = currentWithoutUsage
 			collectStreamFunctionCallNames(data, seenStreamToolCalls, &streamFunctionCallNames)
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {

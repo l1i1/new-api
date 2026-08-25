@@ -1,9 +1,11 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -137,12 +139,99 @@ func TestUsageAccountingSupportsSignedDirectAndBatchDeltas(t *testing.T) {
 	require.NoError(t, DB.Select("used_quota").First(&gotChannel, channel.Id).Error)
 	assert.Equal(t, int64(1150), gotChannel.UsedQuota, "channel usage bypasses process batching")
 
-	batchUpdate()
+	batchUpdate(context.Background())
 	require.NoError(t, DB.Select("used_quota", "request_count").First(&got, user.Id).Error)
 	assert.Equal(t, 1150, got.UsedQuota)
 	assert.Equal(t, 3, got.RequestCount)
 	require.NoError(t, DB.Select("used_quota").First(&gotChannel, channel.Id).Error)
 	assert.Equal(t, int64(1150), gotChannel.UsedQuota)
+}
+
+func TestShutdownBatchUpdaterDrainsCombinedUserAccounting(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	user := User{Id: 11, Username: "batch-drain-user", Password: "password", Status: common.UserStatusEnabled, Quota: 1000}
+	require.NoError(t, DB.Create(&user).Error)
+
+	batchUpdaterMu.Lock()
+	batchUpdaterAccept = false
+	batchUpdaterMu.Unlock()
+	InitBatchUpdater()
+	require.NoError(t, DecreaseUserQuotaWithUsage(user.Id, 200, 200, 1))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, ShutdownBatchUpdater(ctx))
+
+	var got User
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	assert.Equal(t, 800, got.Quota)
+	assert.Equal(t, 200, got.UsedQuota)
+	assert.Equal(t, 1, got.RequestCount)
+
+	require.NoError(t, DecreaseUserQuotaWithUsage(user.Id, 100, 100, 1), "updates after shutdown must fall back to synchronous persistence")
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	assert.Equal(t, 700, got.Quota)
+	assert.Equal(t, 300, got.UsedQuota)
+	assert.Equal(t, 2, got.RequestCount)
+}
+
+func TestShutdownBatchUpdaterDrainsPendingWithoutWorker(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	user := User{Id: 13, Username: "batch-no-worker-user", Password: "password", Status: common.UserStatusEnabled, Quota: 1000}
+	require.NoError(t, DB.Create(&user).Error)
+	require.True(t, addUserBatchUpdate(user.Id, -200, 200, 1))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, ShutdownBatchUpdater(ctx))
+
+	var got User
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	assert.Equal(t, 800, got.Quota)
+	assert.Equal(t, 200, got.UsedQuota)
+	assert.Equal(t, 1, got.RequestCount)
+}
+
+func TestBatchUpdateRequeuesCombinedUserAccountingAfterPersistenceFailure(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	require.True(t, addUserBatchUpdate(12, -200, 200, 1))
+	require.True(t, batchUpdate(context.Background()))
+
+	user := User{Id: 12, Username: "batch-retry-user", Password: "password", Status: common.UserStatusEnabled, Quota: 1000}
+	require.NoError(t, DB.Create(&user).Error)
+	require.True(t, batchUpdate(context.Background()))
+
+	var got User
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	assert.Equal(t, 800, got.Quota)
+	assert.Equal(t, 200, got.UsedQuota)
+	assert.Equal(t, 1, got.RequestCount)
+}
+
+func TestBatchUpdateRequeuesTokenAccountingAfterPersistenceFailure(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	require.True(t, addNewRecord(BatchUpdateTypeTokenQuota, 14, -200))
+	require.True(t, batchUpdate(context.Background()))
+
+	token := Token{Id: 14, UserId: 1, Name: "batch-retry-token", Key: "batch-retry-key", Status: common.TokenStatusEnabled, RemainQuota: 1000}
+	require.NoError(t, DB.Create(&token).Error)
+	require.True(t, batchUpdate(context.Background()))
+
+	var got Token
+	require.NoError(t, DB.First(&got, token.Id).Error)
+	assert.Equal(t, 800, got.RemainQuota)
+	assert.Equal(t, 200, got.UsedQuota)
 }
 
 func TestUpdateUserAccessTokenOnlyUpdatesAccessToken(t *testing.T) {

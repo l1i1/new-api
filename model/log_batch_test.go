@@ -17,6 +17,7 @@ func setupLogBatchTest(t *testing.T) {
 	previousDB := DB
 	previousLogDB := LOG_DB
 	previousMainType := common.MainDatabaseType()
+	previousLogType := common.LogDatabaseType()
 	logBatchMu.Lock()
 	previousQueue := logBatchQueue
 	previousStop := logBatchStop
@@ -31,6 +32,7 @@ func setupLogBatchTest(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	common.SetLogDatabaseType(common.DatabaseTypeSQLite)
 	DB = db
 	LOG_DB = db
 	require.NoError(t, db.AutoMigrate(&Log{}))
@@ -38,6 +40,7 @@ func setupLogBatchTest(t *testing.T) {
 		DB = previousDB
 		LOG_DB = previousLogDB
 		common.SetMainDatabaseType(previousMainType)
+		common.SetLogDatabaseType(previousLogType)
 		logBatchMu.Lock()
 		logBatchQueue = previousQueue
 		logBatchStop = previousStop
@@ -79,14 +82,20 @@ func TestEnqueueLogFallsBackWhenQueueFull(t *testing.T) {
 	require.Equal(t, int64(1), count)
 }
 
-func TestFlushLogBatchDropsFailedBatchWithoutReplay(t *testing.T) {
+func TestFlushLogBatchRetainsPreCommitFailureForRetry(t *testing.T) {
 	setupLogBatchTest(t)
-	// A failed batch is not replayed because the commit state may be unknown.
 	require.NoError(t, LOG_DB.Migrator().DropTable(&Log{}))
 
 	buffer := []*Log{{UserId: 1, Type: LogTypeConsume}, {UserId: 2, Type: LogTypeConsume}}
-	buffer = flushLogBatch(buffer)
+	buffer = flushLogBatch(context.Background(), buffer)
+	require.Len(t, buffer, 2)
+
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	buffer = flushLogBatch(context.Background(), buffer)
 	require.Empty(t, buffer)
+	var count int64
+	require.NoError(t, LOG_DB.Model(&Log{}).Count(&count).Error)
+	require.Equal(t, int64(2), count)
 }
 
 func TestShutdownLogBatcherDrainsQueue(t *testing.T) {
@@ -104,4 +113,37 @@ func TestShutdownLogBatcherDrainsQueue(t *testing.T) {
 	var count int64
 	require.NoError(t, LOG_DB.Model(&Log{}).Count(&count).Error)
 	require.Equal(t, int64(5), count)
+}
+
+func TestShutdownLogBatcherWaitsForCanceledWorker(t *testing.T) {
+	setupLogBatchTest(t)
+	callbackStarted := make(chan struct{})
+	callbackDone := make(chan struct{})
+	require.NoError(t, LOG_DB.Callback().Create().Before("gorm:create").Register("test:block_log_batch", func(tx *gorm.DB) {
+		close(callbackStarted)
+		<-tx.Statement.Context.Done()
+		close(callbackDone)
+		tx.AddError(tx.Statement.Context.Err())
+	}))
+	t.Cleanup(func() {
+		LOG_DB.Callback().Create().Remove("test:block_log_batch")
+	})
+
+	InitLogBatcher()
+	require.NoError(t, createLog(&Log{UserId: 1, Type: LogTypeConsume, ModelName: "blocked"}))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := ShutdownLogBatcher(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	select {
+	case <-callbackStarted:
+	default:
+		t.Fatal("log worker did not start the draining insert")
+	}
+	select {
+	case <-callbackDone:
+	default:
+		t.Fatal("shutdown returned before the log worker stopped using the database")
+	}
 }

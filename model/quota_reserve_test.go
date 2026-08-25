@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -58,18 +59,29 @@ func resetBatchUpdateTestState(t *testing.T) {
 	t.Helper()
 	oldBatchEnabled := common.BatchUpdateEnabled
 	common.BatchUpdateEnabled = false
-	for i := 0; i < BatchUpdateTypeCount; i++ {
-		batchUpdateLocks[i].Lock()
-		batchUpdateStores[i] = make(map[int]int)
-		batchUpdateLocks[i].Unlock()
-	}
+	batchUpdateMu.Lock()
+	batchUserUpdates = make(map[int]userBatchUpdate)
+	batchTokenUpdates = make(map[int]int)
+	batchUpdateMu.Unlock()
+	batchUpdaterMu.Lock()
+	oldAccept := batchUpdaterAccept
+	oldStop := batchUpdaterStop
+	oldDone := batchUpdaterDone
+	batchUpdaterAccept = true
+	batchUpdaterStop = nil
+	batchUpdaterDone = nil
+	batchUpdaterMu.Unlock()
 	t.Cleanup(func() {
 		common.BatchUpdateEnabled = oldBatchEnabled
-		for i := 0; i < BatchUpdateTypeCount; i++ {
-			batchUpdateLocks[i].Lock()
-			batchUpdateStores[i] = make(map[int]int)
-			batchUpdateLocks[i].Unlock()
-		}
+		batchUpdateMu.Lock()
+		batchUserUpdates = make(map[int]userBatchUpdate)
+		batchTokenUpdates = make(map[int]int)
+		batchUpdateMu.Unlock()
+		batchUpdaterMu.Lock()
+		batchUpdaterAccept = oldAccept
+		batchUpdaterStop = oldStop
+		batchUpdaterDone = oldDone
+		batchUpdaterMu.Unlock()
 	})
 }
 
@@ -145,7 +157,7 @@ func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	assert.False(t, reserved)
 	assert.Equal(t, 2, getTokenFromDB(t, token.Id).RemainQuota)
 
-	batchUpdate()
+	batchUpdate(context.Background())
 	assert.Equal(t, 2, getUserQuotaFromDB(t, user.Id))
 	reloadedToken := getTokenFromDB(t, token.Id)
 	assert.Equal(t, 2, reloadedToken.RemainQuota)
