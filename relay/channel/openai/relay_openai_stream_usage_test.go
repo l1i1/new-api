@@ -453,7 +453,9 @@ func TestOaiStreamHandlerRejectsEmptyFinalOutput(t *testing.T) {
 		DisablePing:        true,
 	}
 	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
-	require.Nil(t, err)
+	require.NotNil(t, err)
+	require.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
 	require.Zero(t, usage.CompletionTokens)
 	require.Equal(t, 151, usage.TotalTokens)
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
