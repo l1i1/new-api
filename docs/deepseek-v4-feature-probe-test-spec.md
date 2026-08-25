@@ -1,6 +1,6 @@
 # DeepSeek V4 Feature Probe Test Specification
 
-Status: Partially implemented (29/85 live fixture IDs; live tiers require runtime credentials)
+Status: Partially implemented (45/85 live fixture IDs; live tiers require runtime credentials)
 Owner: Tokeness New API relay
 Last reviewed: 2026-08-25
 
@@ -83,7 +83,8 @@ shape flags were retained.
   rejected `top_logprobs=21` with 400 `invalid_request_error`. The gateway now
   applies the same V4 trust-boundary validation and emits the official-shaped
   error envelope with `param: null`; valid `top_logprobs` values through 20 are
-  accepted. These checks are local and not deployed.
+  accepted. These checks are present in the release candidate; production
+  revalidation is required after the next image rollout.
 - Non-stream forced response formatting preserves both
   `choices[0].logprobs.content` and `reasoning_content` arrays as received. The
   gateway never synthesizes reasoning logprobs; an upstream DFLASH capability
@@ -92,7 +93,7 @@ shape flags were retained.
   OpenAI-compatible shape: `param` is JSON null, authentication uses
   `authentication_error` plus `invalid_request_error`, validation uses
   `invalid_request_error`, and internal `new_api_error` is not exposed. This is
-  local and not deployed.
+  committed locally and awaits the next production image rollout.
 - The supplied fit request with `messages[].name`, `reasoning_effort=low`, and
   `max_tokens=256` was isolated from the name field: both named and unnamed
   variants consumed all 256 completion tokens in reasoning and ended with
@@ -104,11 +105,11 @@ shape flags were retained.
 - A focused main-route repeat found the complex SSE, disabled-thinking tools,
   and repeated stop cases structurally valid. The tools assertion now accepts
   a valid function call when text content is absent. The production route still
-  accepts the two invalid `top_logprobs` requests because the local validation
-  candidate has not been deployed.
+  accepts the two invalid `top_logprobs` requests in the pre-rollout sample;
+  this is the release-gate probe for the next image.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
-remaining 56 matrix cases are intentionally `inconclusive` until their live
+remaining 40 matrix cases are intentionally `inconclusive` until their live
 fixtures and mock-upstream tests are implemented.
 
 ### 2b. Compliance Verdict
@@ -117,16 +118,16 @@ fixtures and mock-upstream tests are implemented.
 | --- | --- | --- |
 | Basic non-stream response | Partially aligned | Probe requires non-empty `content`; the 256-token named-message fit case is protocol-accepted but frequently has no final content after reasoning exhausts the limit |
 | Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and a separate usage event when requested |
-| Thinking disabled | Compatible locally; not deployed | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
+| Thinking disabled | Compatible in candidate and observed production sample | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
 | Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking and tool replay cases remain unimplemented |
-| Sampling validation | Aligned locally; not deployed | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the local candidate now returns the same validation class |
+| Sampling validation | Aligned in candidate; rollout recheck pending | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the candidate returns the same validation class |
 | JSON, stop, logprobs | Aligned for observed valid and invalid cases | Probe validates JSON parsing, stop termination, usage arithmetic/cache bounds, both reasoning/content logprob arrays when supported, the `top_logprobs <= 20` bound, and official validation fingerprints |
-| Tools | Aligned locally; not deployed | Official rejects `tool_choice=required`; the local candidate returns the official-shaped validation envelope |
+| Tools | Aligned in candidate; rollout recheck pending | Official rejects `tool_choice=required`; the candidate returns the official-shaped validation envelope |
 | Stream usage when omitted | Observable parity with different semantics | Official emitted usage; Tokeness may preserve or synthesize it because omission defaults to include |
 | Unknown model | Production not aligned; local candidate ready | Official 400 versus current production 503; local typed classification maps only truly unconfigured models to `400 model_not_found` and keeps unavailable/inconsistent selection failures at 503/500 with the public server-error envelope |
 | Capability failover | Locally verified | DFLASH unsupported-logprob errors are retryable, queryable as `channel:unsupported_feature`, and do not auto-disable the channel |
 | Logging safety | Locally hardened | Debug and direct response-body diagnostics are credential-masked and bounded to 2 KiB; no live response bodies are persisted by the probe |
-| Full matrix / release gate | Not complete | 56 case IDs, including Responses, multi-round tools, live failover, and single-charge billing assertions, remain inconclusive; the official fit route is opt-in and remains blocked by insufficient balance |
+| Full matrix / release gate | Not complete | 40 case IDs, including Responses, live failover, and single-charge billing assertions, remain inconclusive; full official/gateway paired runs still require controlled runtime credentials |
 
 ## 3. Environment and Safety
 
@@ -209,7 +210,7 @@ compatibility. T3/T4 are required before a production release claim.
 The runner should reuse these fixtures rather than inventing prompts per case.
 
 The redacted runner is `scripts/feature-probe`. It always emits all 85 case
-IDs, currently implements 29 live fixture IDs, performs only the live cases for
+IDs, currently implements 45 live fixture IDs, performs only the live cases for
 which runtime environment variables are present, and marks missing cases
 `inconclusive` rather than fabricating a pass. It never writes request bodies,
 response bodies, or credentials.

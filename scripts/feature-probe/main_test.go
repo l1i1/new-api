@@ -19,11 +19,69 @@ func TestFeatureProbeMatrixIsCompleteAndUnique(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 	require.Len(t, seen, 85)
-	require.Len(t, implementedLiveCases, 29)
+	require.Len(t, implementedLiveCases, 45)
 	for id := range implementedLiveCases {
 		_, exists := seen[id]
 		require.Truef(t, exists, "implemented live case %s is missing from the matrix", id)
 	}
+}
+
+func TestBasicCaseSelectionKeepsOnlyNormalMatrixIDs(t *testing.T) {
+	t.Setenv("FEATURE_PROBE_CASES", "DS-A01, DS-F09, K03, unknown")
+	selected := basicCaseSelection()
+	assert.Contains(t, selected, "DS-A01")
+	assert.Contains(t, selected, "DS-F09")
+	assert.NotContains(t, selected, "K03")
+	assert.NotContains(t, selected, "UNKNOWN")
+}
+
+func TestRoleRoundTripFixtureContainsOrderedRolesWithoutResponseData(t *testing.T) {
+	request := roleRoundTripRequest("deepseek-v4-flash")
+	messages, ok := request["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 5)
+	roles := make([]string, 0, len(messages))
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		require.True(t, ok)
+		role, ok := message["role"].(string)
+		require.True(t, ok)
+		roles = append(roles, role)
+	}
+	assert.Equal(t, []string{"system", "user", "assistant", "tool", "user"}, roles)
+	assert.NotContains(t, request, "response")
+}
+
+func TestVariantRequestsCoverBoundedParameterEdges(t *testing.T) {
+	assert.Len(t, variantRequests("deepseek-v4-flash", "DS-D01"), 3)
+	assert.Len(t, variantRequests("deepseek-v4-flash", "DS-D02"), 3)
+	variants := variantRequests("deepseek-v4-flash", "DS-D07")
+	require.Len(t, variants, 4)
+	assert.NotContains(t, variants[0].body, "max_tokens")
+	assert.Equal(t, 0, variants[1].body["max_tokens"])
+	assert.Equal(t, -1, variants[2].body["max_tokens"])
+	assert.Equal(t, 393217, variants[3].body["max_tokens"])
+}
+
+func TestReplayAssistantMessageKeepsOnlyProtocolFields(t *testing.T) {
+	payload := map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"role":              "assistant",
+				"content":           "2",
+				"reasoning_content": "private reasoning",
+				"tool_calls": []any{map[string]any{
+					"id": "call_1",
+				}},
+			},
+		}},
+	}
+	message, ok := replayAssistantMessage(payload, true)
+	require.True(t, ok)
+	assert.Equal(t, "assistant", message["role"])
+	assert.Equal(t, "2", message["content"])
+	assert.Equal(t, "private reasoning", message["reasoning_content"])
+	assert.NotContains(t, message, "usage")
 }
 
 func TestSafeErrorDoesNotExposeMessage(t *testing.T) {
@@ -57,6 +115,24 @@ func TestSummarizeStreamAcceptsDataFieldWithoutSpace(t *testing.T) {
 	assert.Equal(t, true, evidence["done"])
 	assert.Equal(t, true, evidence["has_content"])
 	assert.Equal(t, "stop", evidence["finish_reason"])
+}
+
+func TestSummarizeStreamReassemblesToolArgumentsAndLogprobs(t *testing.T) {
+	payload := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"weather","arguments":"{\"city\":\"Bei"}}]},"logprobs":{"content":[{"token":"x","top_logprobs":[{},{}]}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"jing\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n"
+	evidence := summarize([]byte(payload), true)
+
+	assert.Equal(t, true, evidence["has_tool_calls"])
+	assert.Equal(t, true, evidence["tool_arguments_json"])
+	assert.Equal(t, 1, evidence["stream_tool_call_count"])
+	assert.Equal(t, 1, evidence["logprobs_content"])
+	assert.Equal(t, 2, evidence["max_top_logprobs"])
+	_, leaked := evidence["arguments"]
+	assert.False(t, leaked)
 }
 
 func TestExpectedPassRequiresNonEmptyContentForBasicCompletion(t *testing.T) {
@@ -102,6 +178,67 @@ func TestExpectedPassRejectsEmptyStreamContent(t *testing.T) {
 
 	assert.False(t, expectedPass("DS-B02", "official", 200, evidence))
 	assert.False(t, expectedPass("DS-B03", "official", 200, evidence))
+}
+
+func TestExpectedPassCoversNewConversationAndToolCases(t *testing.T) {
+	base := map[string]any{
+		"first_http_status":           http.StatusOK,
+		"first_has_content":           true,
+		"first_has_reasoning_content": true,
+		"first_has_tool_calls":        true,
+		"second_http_status":          http.StatusOK,
+		"json":                        true,
+		"has_error":                   false,
+		"has_content":                 true,
+		"finish_reason":               "stop",
+	}
+	assert.True(t, expectedPass("DS-C08", "official", http.StatusOK, base))
+	assert.True(t, expectedPass("DS-C09", "official", http.StatusOK, base))
+	assert.True(t, expectedPass("DS-C10", "official", http.StatusOK, base))
+	assert.True(t, expectedPass("DS-F06", "official", http.StatusOK, base))
+	assert.True(t, expectedPass("DS-F07", "official", http.StatusOK, base))
+
+	validation := map[string]any{
+		"first_http_status":    http.StatusOK,
+		"first_has_tool_calls": true,
+		"json":                 true,
+		"has_error":            true,
+		"error_type":           "invalid_request_error",
+		"error_code":           "invalid_request_error",
+		"error_param_null":     true,
+	}
+	assert.True(t, expectedPass("DS-C11", "official", http.StatusBadRequest, validation))
+	assert.True(t, expectedPass("DS-F08", "official", http.StatusBadRequest, validation))
+}
+
+func TestExpectedPassStreamingToolCallRequiresValidArguments(t *testing.T) {
+	evidence := map[string]any{
+		"stream":              true,
+		"done":                true,
+		"has_error":           false,
+		"has_tool_calls":      true,
+		"tool_arguments_json": true,
+		"finish_reason":       "tool_calls",
+	}
+	assert.True(t, expectedPass("DS-F09", "official", http.StatusOK, evidence))
+	evidence["tool_arguments_json"] = false
+	assert.False(t, expectedPass("DS-F09", "official", http.StatusOK, evidence))
+}
+
+func TestExpectedPassStreamingLogprobsRequiresUsageAndBound(t *testing.T) {
+	evidence := map[string]any{
+		"stream":           true,
+		"done":             true,
+		"has_error":        false,
+		"has_content":      true,
+		"has_logprobs":     true,
+		"logprobs_content": 1,
+		"max_top_logprobs": 5,
+		"usage_events":     1,
+	}
+	assert.True(t, expectedPass("DS-E05", "official", http.StatusOK, evidence))
+	delete(evidence, "usage_events")
+	assert.False(t, expectedPass("DS-E05", "official", http.StatusOK, evidence))
 }
 
 func TestSummarizeToolCallValidatesArgumentsWithoutCopyingThem(t *testing.T) {

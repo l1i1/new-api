@@ -47,10 +47,11 @@ var allCases = []string{
 
 var implementedLiveCases = map[string]struct{}{
 	"DS-A01": {}, "DS-A02": {}, "DS-A03": {}, "DS-A04": {}, "DS-A05": {},
-	"DS-B01": {}, "DS-B02": {}, "DS-B03": {}, "DS-B04": {},
-	"DS-C01": {}, "DS-C02": {}, "DS-C03": {}, "DS-C04": {}, "DS-C05": {}, "DS-C06": {}, "DS-C07": {}, "DS-C12": {},
-	"DS-D03": {}, "DS-D04": {}, "DS-D05": {}, "DS-D08": {}, "DS-D10": {},
-	"DS-E01": {}, "DS-E02": {}, "DS-E03": {}, "DS-E04": {}, "DS-E07": {}, "DS-F01": {}, "DS-F02": {},
+	"DS-B01": {}, "DS-B02": {}, "DS-B03": {}, "DS-B04": {}, "DS-B05": {},
+	"DS-C01": {}, "DS-C02": {}, "DS-C03": {}, "DS-C04": {}, "DS-C05": {}, "DS-C06": {}, "DS-C07": {}, "DS-C08": {}, "DS-C09": {}, "DS-C10": {}, "DS-C11": {}, "DS-C12": {},
+	"DS-D01": {}, "DS-D02": {}, "DS-D03": {}, "DS-D04": {}, "DS-D05": {}, "DS-D06": {}, "DS-D07": {}, "DS-D08": {}, "DS-D09": {}, "DS-D10": {},
+	"DS-E01": {}, "DS-E02": {}, "DS-E03": {}, "DS-E04": {}, "DS-E05": {}, "DS-E06": {}, "DS-E07": {},
+	"DS-F01": {}, "DS-F02": {}, "DS-F06": {}, "DS-F07": {}, "DS-F08": {}, "DS-F09": {},
 }
 
 var fingerprintSecretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_-]+|bearer\s+[a-z0-9._-]+)`)
@@ -86,10 +87,20 @@ func main() {
 			}
 		}
 	}
+	selected := basicCaseSelection()
 	for _, id := range allCases {
 		if !executed[id] {
 			reason := "runner_not_implemented"
-			if _, implemented := implementedLiveCases[id]; implemented {
+			if len(selected) > 0 {
+				if _, selectedCase := selected[id]; !selectedCase {
+					reason = "case_not_selected"
+				} else if _, implemented := implementedLiveCases[id]; implemented {
+					reason = "required_live_route_not_injected"
+					if !liveProbeConfigured() {
+						reason = "live_credentials_or_route_not_injected"
+					}
+				}
+			} else if _, implemented := implementedLiveCases[id]; implemented {
 				reason = "required_live_route_not_injected"
 				if !liveProbeConfigured() {
 					reason = "live_credentials_or_route_not_injected"
@@ -293,12 +304,14 @@ func annotateFitEvidence(status int, evidence map[string]any) {
 	}
 }
 
+type basicCheck struct {
+	id   string
+	body map[string]any
+}
+
 func runBasic(client *http.Client, route, base, key, tier string) []result {
 	p := &probe{client: client, model: "deepseek-v4-flash"}
-	checks := []struct {
-		id   string
-		body any
-	}{
+	checks := []basicCheck{
 		{"DS-A01", nil},
 		{"DS-A02", nil},
 		{"DS-A03", basicRequest(p.model)},
@@ -308,6 +321,7 @@ func runBasic(client *http.Client, route, base, key, tier string) []result {
 		{"DS-B02", streamRequest(p.model, true)},
 		{"DS-B03", streamRequest(p.model, false)},
 		{"DS-B04", basicRequest(p.model)},
+		{"DS-B05", roleRoundTripRequest(p.model)},
 		{"DS-C01", basicRequest(p.model)},
 		{"DS-C02", withFields(basicRequest(p.model), "thinking", map[string]string{"type": "enabled"})},
 		{"DS-C03", withFields(basicRequest(p.model), "thinking", map[string]string{"type": "disabled"})},
@@ -315,73 +329,488 @@ func runBasic(client *http.Client, route, base, key, tier string) []result {
 		{"DS-C05", withFields(basicRequest(p.model), "reasoning_effort", "none")},
 		{"DS-C06", withFields(basicRequest(p.model), "reasoning_effort", "extreme")},
 		{"DS-C07", withFields(withFields(withFields(withFields(withFields(basicRequest(p.model), "thinking", map[string]string{"type": "enabled"}), "temperature", 1.2), "top_p", 0.8), "presence_penalty", 0.2), "frequency_penalty", 0.2)},
+		{"DS-C12", withFields(basicRequest(p.model), "model", "deepseek-v4-flash-max")},
 		{"DS-D03", withFields(basicRequest(p.model), "top_p", 1.5)},
 		{"DS-D04", withFields(basicRequest(p.model), "top_p", 1.5)},
 		{"DS-D05", withFields(basicRequest(p.model), "top_p", -0.1)},
-		{"DS-C12", withFields(basicRequest(p.model), "model", "deepseek-v4-flash-max")},
-		{"DS-F01", toolRequest(p.model, "auto")},
-		{"DS-F02", toolRequest(p.model, "required")},
+		{"DS-D06", withFields(withFields(basicRequest(p.model), "max_tokens", 1), "thinking", map[string]string{"type": "disabled"})},
 		{"DS-D08", stopRequest(p.model)},
+		{"DS-D09", stopArrayRequest(p.model)},
 		{"DS-D10", jsonRequest(p.model)},
 		{"DS-E01", withFields(withFields(basicRequest(p.model), "logprobs", true), "top_logprobs", 5)},
 		{"DS-E02", withFields(withFields(withFields(basicRequest(p.model), "thinking", map[string]string{"type": "enabled"}), "logprobs", true), "top_logprobs", 5)},
 		{"DS-E03", withFields(withFields(basicRequest(p.model), "logprobs", true), "top_logprobs", 20)},
 		{"DS-E04", withFields(basicRequest(p.model), "top_logprobs", 5)},
+		{"DS-E05", withFields(withFields(withFields(streamRequest(p.model, true), "thinking", map[string]string{"type": "disabled"}), "logprobs", true), "top_logprobs", 5)},
+		{"DS-E06", withFields(withFields(withFields(basicRequest(p.model), "thinking", map[string]string{"type": "enabled"}), "logprobs", true), "top_logprobs", 5)},
 		{"DS-E07", withFields(withFields(basicRequest(p.model), "logprobs", true), "top_logprobs", 21)},
+		{"DS-F01", toolRequest(p.model, "auto")},
+		{"DS-F02", toolRequest(p.model, "required")},
 	}
+	selected := basicCaseSelection()
 	results := make([]result, 0, len(checks))
 	for _, check := range checks {
-		if check.id == "DS-C12" && route == "official" {
+		if !caseSelected(check.id, selected) || (check.id == "DS-C12" && route == "official") {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		surface := "chat-completions"
-		if check.id == "DS-A01" || check.id == "DS-A02" || check.id == "DS-A05" {
-			surface = "models"
+		results = append(results, runSingleBasicCase(client, route, base, key, tier, p.model, check))
+	}
+	// Variant and advanced checks are constructed at execution time so their
+	// second request can depend on the first response shape.
+	for _, id := range []string{"DS-D01", "DS-D02", "DS-D07", "DS-C08", "DS-C09", "DS-C10", "DS-C11", "DS-F06", "DS-F07", "DS-F08", "DS-F09"} {
+		if !caseSelected(id, selected) || containsResult(results, id) {
+			continue
 		}
-		result := result{CaseID: check.id, Tier: tier, Surface: surface, Route: route, Status: "fail"}
-		if check.body == nil {
-			requestKey := key
-			if check.id == "DS-A02" {
-				requestKey = ""
-			}
-			status, evidence, err := request(ctx, client, base, requestKey, http.MethodGet, "/models", nil)
-			result.HTTP, result.Evidence = status, evidence
-			if code, ok := evidence["error_code"].(string); ok {
-				result.ErrorCode = code
-			}
-			if err == nil && expectedPass(check.id, route, status, evidence) {
-				result.Status = "pass"
-			}
+		if id == "DS-D01" || id == "DS-D02" || id == "DS-D07" {
+			results = append(results, runVariantBasicCase(client, route, base, key, tier, p.model, id))
 		} else {
-			body, _ := json.Marshal(check.body)
-			requestKey := key
-			if check.id == "DS-A03" {
-				requestKey = "sk-invalid-feature-probe"
-			}
-			status, evidence, err := request(ctx, client, base, requestKey, http.MethodPost, "/chat/completions", body)
-			result.HTTP, result.Evidence = status, evidence
-			if code, ok := evidence["error_code"].(string); ok {
-				result.ErrorCode = code
-			}
-			if err == nil && expectedPass(check.id, route, status, evidence) {
-				result.Status = "pass"
-			}
-			if check.id == "DS-B03" && evidence["usage"] == true {
-				evidence["usage_without_include_usage"] = true
-			}
-			if err == nil && evidence["has_error"] == true && check.id == "DS-E02" && isValidationStatus(status) && strings.Contains(evidenceString(evidence, "error_message_fingerprint"), "return_logprob") {
-				result.Status = "expected_unsupported"
-			}
+			results = append(results, runAdvancedBasicCase(client, route, base, key, tier, p.model, id))
 		}
-		cancel()
-		results = append(results, result)
 	}
 	return results
 }
 
+func runSingleBasicCase(client *http.Client, route, base, key, tier, model string, check basicCheck) result {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	item := result{CaseID: check.id, Tier: tier, Surface: "chat-completions", Route: route, Status: "fail"}
+	if check.id == "DS-A01" || check.id == "DS-A02" || check.id == "DS-A05" {
+		item.Surface = "models"
+	}
+	requestKey := key
+	method, path := http.MethodPost, "/chat/completions"
+	var body []byte
+	if check.body == nil {
+		method, path = http.MethodGet, "/models"
+		if check.id == "DS-A02" {
+			requestKey = ""
+		}
+	} else {
+		body, _ = json.Marshal(check.body)
+		if check.id == "DS-A03" {
+			requestKey = "sk-invalid-feature-probe"
+		}
+	}
+	status, evidence, err := request(ctx, client, base, requestKey, method, path, body)
+	item.HTTP, item.Evidence = status, evidence
+	if code, ok := evidence["error_code"].(string); ok {
+		item.ErrorCode = code
+	}
+	if err != nil {
+		item.Status = "inconclusive"
+		return item
+	}
+	if check.id == "DS-B05" {
+		mergeRoleEvidence(evidence, check.body)
+	}
+	if check.id == "DS-B03" && evidence["usage"] == true {
+		evidence["usage_without_include_usage"] = true
+	}
+	if expectedPass(check.id, route, status, evidence) {
+		item.Status = "pass"
+	}
+	if check.id == "DS-E02" || check.id == "DS-E05" || check.id == "DS-E06" {
+		if evidence["has_error"] == true && isValidationStatus(status) && isDFLASHCapabilityError(evidence) {
+			item.Status = "expected_unsupported"
+		} else if check.id == "DS-E06" && status == http.StatusOK && evidence["has_error"] != true {
+			item.Status = "inconclusive"
+			evidence["reason"] = "capability_error_not_observed"
+		}
+	}
+	return item
+}
+
+func containsResult(results []result, id string) bool {
+	for _, item := range results {
+		if item.CaseID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func basicCaseSelection() map[string]struct{} {
+	raw := os.Getenv("FEATURE_PROBE_CASES")
+	if strings.TrimSpace(raw) == "" {
+		raw = os.Getenv("FEATURE_PROBE_CASE_ID")
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	selected := make(map[string]struct{})
+	for _, token := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	}) {
+		id := strings.ToUpper(strings.TrimSpace(token))
+		if !strings.HasPrefix(id, "DS-") {
+			continue
+		}
+		selected[id] = struct{}{}
+	}
+	return selected
+}
+
+func caseSelected(id string, selected map[string]struct{}) bool {
+	if len(selected) == 0 {
+		return true
+	}
+	_, ok := selected[id]
+	return ok
+}
+
+func runVariantBasicCase(client *http.Client, route, base, key, tier, model, caseID string) result {
+	variants := variantRequests(model, caseID)
+	evidence := map[string]any{"variant_count": len(variants)}
+	variantEvidence := make([]any, 0, len(variants))
+	allExpected := true
+	anyTransportError := false
+	lastStatus := 0
+	for _, variant := range variants {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		body, _ := json.Marshal(variant.body)
+		status, itemEvidence, err := request(ctx, client, base, key, http.MethodPost, "/chat/completions", body)
+		cancel()
+		lastStatus = status
+		entry := map[string]any{"label": variant.label, "http_status": status}
+		for _, field := range []string{
+			"json", "has_error", "has_content", "finish_reason", "error_type", "error_code", "error_param_null",
+			"error_message_fingerprint", "usage_consistent", "cached_tokens_valid", "content_json",
+		} {
+			if value, ok := itemEvidence[field]; ok {
+				entry[field] = value
+			}
+		}
+		variantEvidence = append(variantEvidence, entry)
+		if err != nil {
+			anyTransportError = true
+			allExpected = false
+			continue
+		}
+		if !variantExpected(caseID, status, itemEvidence, variant.label) {
+			allExpected = false
+		}
+	}
+	evidence["variants"] = variantEvidence
+	item := result{CaseID: caseID, Tier: tier, Surface: "chat-completions", Route: route, HTTP: lastStatus, Evidence: evidence, Status: "fail"}
+	if anyTransportError {
+		item.Status = "inconclusive"
+		item.Evidence["reason"] = "variant_transport_error"
+	} else if allExpected {
+		item.Status = "pass"
+	}
+	return item
+}
+
+type variantRequest struct {
+	label string
+	body  map[string]any
+}
+
+func variantRequests(model, caseID string) []variantRequest {
+	switch caseID {
+	case "DS-D01":
+		return []variantRequest{
+			{"temperature_0", withFields(withFields(basicRequest(model), "temperature", 0), "thinking", map[string]string{"type": "disabled"})},
+			{"temperature_1", withFields(withFields(basicRequest(model), "temperature", 1), "thinking", map[string]string{"type": "disabled"})},
+			{"temperature_2", withFields(withFields(basicRequest(model), "temperature", 2), "thinking", map[string]string{"type": "disabled"})},
+		}
+	case "DS-D02":
+		return []variantRequest{
+			{"top_p_min_positive", withFields(withFields(basicRequest(model), "top_p", 0.000001), "thinking", map[string]string{"type": "disabled"})},
+			{"top_p_half", withFields(withFields(basicRequest(model), "top_p", 0.5), "thinking", map[string]string{"type": "disabled"})},
+			{"top_p_one", withFields(withFields(basicRequest(model), "top_p", 1), "thinking", map[string]string{"type": "disabled"})},
+		}
+	case "DS-D07":
+		omitted := basicRequest(model)
+		delete(omitted, "max_tokens")
+		omitted["thinking"] = map[string]string{"type": "disabled"}
+		return []variantRequest{
+			{"omitted", omitted},
+			{"zero", withFields(withFields(basicRequest(model), "thinking", map[string]string{"type": "disabled"}), "max_tokens", 0)},
+			{"negative", withFields(withFields(basicRequest(model), "thinking", map[string]string{"type": "disabled"}), "max_tokens", -1)},
+			{"excessive", withFields(withFields(basicRequest(model), "thinking", map[string]string{"type": "disabled"}), "max_tokens", 393217)},
+		}
+	default:
+		return nil
+	}
+}
+
+func variantExpected(caseID string, status int, evidence map[string]any, label string) bool {
+	switch caseID {
+	case "DS-D01", "DS-D02":
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+	case "DS-D07":
+		if label == "omitted" {
+			return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+		}
+		return expectedOfficialValidation(status, evidence)
+	default:
+		return false
+	}
+}
+
+func runAdvancedBasicCase(client *http.Client, route, base, key, tier, model, caseID string) result {
+	switch caseID {
+	case "DS-C08", "DS-C09":
+		return runThinkingConversationCase(client, route, base, key, tier, model, caseID)
+	case "DS-C10", "DS-C11":
+		return runThinkingToolConversationCase(client, route, base, key, tier, model, caseID)
+	case "DS-F06":
+		return runToolConversationCase(client, route, base, key, tier, model, false)
+	case "DS-F07", "DS-F08":
+		return runToolConversationCase(client, route, base, key, tier, model, true, caseID == "DS-F08")
+	case "DS-F09":
+		return runSingleBasicCase(client, route, base, key, tier, model, basicCheck{caseID, streamingToolRequest(model)})
+	default:
+		return result{CaseID: caseID, Tier: tier, Surface: "chat-completions", Route: route, Status: "inconclusive", Evidence: map[string]any{"reason": "runner_not_implemented"}}
+	}
+}
+
+func runThinkingConversationCase(client *http.Client, route, base, key, tier, model, caseID string) result {
+	firstBody := withFields(basicRequest(model), "thinking", map[string]string{"type": "enabled"})
+	firstBody["reasoning_effort"] = "low"
+	firstBody["max_tokens"] = 128
+	secondBodyBase := map[string]any{
+		"model":            model,
+		"thinking":         map[string]string{"type": "enabled"},
+		"reasoning_effort": "low",
+		"max_tokens":       128,
+	}
+	return runTwoTurnCase(client, route, base, key, tier, caseID, firstBody, func(payload map[string]any) (map[string]any, bool) {
+		assistant, ok := replayAssistantMessage(payload, caseID == "DS-C08")
+		if !ok {
+			return nil, false
+		}
+		firstMessages, _ := firstBody["messages"].([]any)
+		messages := append([]any{}, firstMessages...)
+		messages = append(messages, assistant, map[string]any{"role": "user", "content": "第二个问题是 2+2 等于多少？请只给出答案。"})
+		return withMessages(secondBodyBase, messages), true
+	})
+}
+
+func runThinkingToolConversationCase(client *http.Client, route, base, key, tier, model, caseID string) result {
+	firstBody := namedToolRequest(model)
+	firstBody["thinking"] = map[string]string{"type": "enabled"}
+	firstBody["reasoning_effort"] = "low"
+	return runTwoTurnCase(client, route, base, key, tier, caseID, firstBody, func(payload map[string]any) (map[string]any, bool) {
+		assistant, ok := replayAssistantMessage(payload, caseID == "DS-C10")
+		if !ok || !hasToolCallsMessage(assistant) {
+			return nil, false
+		}
+		messages := []any{
+			map[string]any{"role": "user", "content": "请调用天气工具，然后给出最终答案。"},
+			assistant,
+			map[string]any{"role": "tool", "tool_call_id": firstToolCallID(assistant), "content": "北京：晴，25 摄氏度。"},
+		}
+		body := withMessages(map[string]any{
+			"model":            model,
+			"thinking":         map[string]string{"type": "enabled"},
+			"reasoning_effort": "low",
+			"max_tokens":       128,
+			"tools":            namedToolRequest(model)["tools"],
+		}, messages)
+		if caseID == "DS-C11" {
+			delete(body, "thinking")
+			body["thinking"] = map[string]string{"type": "enabled"}
+		}
+		return body, true
+	})
+}
+
+func runToolConversationCase(client *http.Client, route, base, key, tier, model string, thinking bool, expectValidation ...bool) result {
+	caseID := "DS-F06"
+	omitReasoning := false
+	if thinking {
+		caseID = "DS-F07"
+		if len(expectValidation) > 0 && expectValidation[0] {
+			caseID = "DS-F08"
+			omitReasoning = true
+		}
+	}
+	firstBody := namedToolRequest(model)
+	if thinking {
+		firstBody["thinking"] = map[string]string{"type": "enabled"}
+		firstBody["reasoning_effort"] = "low"
+	} else {
+		firstBody["thinking"] = map[string]string{"type": "disabled"}
+	}
+	return runTwoTurnCase(client, route, base, key, tier, caseID, firstBody, func(payload map[string]any) (map[string]any, bool) {
+		assistant, ok := replayAssistantMessage(payload, thinking && !omitReasoning)
+		if !ok || !hasToolCallsMessage(assistant) {
+			return nil, false
+		}
+		body := withMessages(map[string]any{
+			"model":      model,
+			"tools":      namedToolRequest(model)["tools"],
+			"max_tokens": 128,
+		}, []any{
+			map[string]any{"role": "user", "content": "请调用天气工具，然后给出最终答案。"},
+			assistant,
+			map[string]any{"role": "tool", "tool_call_id": firstToolCallID(assistant), "content": "北京：晴，25 摄氏度。"},
+		})
+		if thinking {
+			body["thinking"] = map[string]string{"type": "enabled"}
+			body["reasoning_effort"] = "low"
+		}
+		return body, true
+	})
+}
+
+func runTwoTurnCase(client *http.Client, route, base, key, tier, caseID string, firstBody map[string]any, buildSecond func(map[string]any) (map[string]any, bool)) result {
+	item := result{CaseID: caseID, Tier: tier, Surface: "chat-completions", Route: route, Status: "fail"}
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	firstBytes, _ := json.Marshal(firstBody)
+	firstStatus, firstEvidence, firstPayload, firstErr := requestPayload(firstCtx, client, base, key, http.MethodPost, "/chat/completions", firstBytes)
+	firstCancel()
+	evidence := map[string]any{
+		"turns":                       2,
+		"first_http_status":           firstStatus,
+		"first_has_content":           firstEvidence["has_content"] == true,
+		"first_has_reasoning_content": firstEvidence["has_reasoning_content"] == true,
+		"first_has_tool_calls":        firstEvidence["has_tool_calls"] == true,
+	}
+	if firstErr != nil {
+		item.Status = "inconclusive"
+		evidence["reason"] = "first_turn_transport_error"
+		item.HTTP, item.Evidence = firstStatus, evidence
+		return item
+	}
+	secondBody, ok := buildSecond(firstPayload)
+	if !ok {
+		item.Status = "inconclusive"
+		evidence["reason"] = "first_turn_missing_required_shape"
+		item.HTTP, item.Evidence = firstStatus, evidence
+		return item
+	}
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	secondBytes, _ := json.Marshal(secondBody)
+	secondStatus, secondEvidence, _, secondErr := requestPayload(secondCtx, client, base, key, http.MethodPost, "/chat/completions", secondBytes)
+	secondCancel()
+	for key, value := range secondEvidence {
+		evidence[key] = value
+	}
+	evidence["second_http_status"] = secondStatus
+	item.HTTP, item.Evidence = secondStatus, evidence
+	if code, ok := secondEvidence["error_code"].(string); ok {
+		item.ErrorCode = code
+	}
+	if secondErr != nil {
+		item.Status = "inconclusive"
+		return item
+	}
+	if expectedPass(caseID, route, secondStatus, evidence) {
+		item.Status = "pass"
+	}
+	return item
+}
+
+func withMessages(body map[string]any, messages []any) map[string]any {
+	return withFields(body, "messages", messages)
+}
+
+func replayAssistantMessage(payload map[string]any, includeReasoning bool) (map[string]any, bool) {
+	assistant := firstAssistantMessage(payload)
+	if assistant == nil {
+		return nil, false
+	}
+	message := map[string]any{"role": "assistant"}
+	if content, ok := assistant["content"].(string); ok {
+		message["content"] = content
+	} else {
+		message["content"] = nil
+	}
+	if includeReasoning {
+		reasoning, ok := assistant["reasoning_content"].(string)
+		if !ok || strings.TrimSpace(reasoning) == "" {
+			return nil, false
+		}
+		message["reasoning_content"] = reasoning
+	}
+	if calls, ok := assistant["tool_calls"].([]any); ok {
+		message["tool_calls"] = calls
+	}
+	return message, true
+}
+
+func firstAssistantMessage(payload map[string]any) map[string]any {
+	choices, ok := payload["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return nil
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	message, _ := choice["message"].(map[string]any)
+	return message
+}
+
+func hasToolCallsMessage(message map[string]any) bool {
+	calls, ok := message["tool_calls"].([]any)
+	return ok && len(calls) > 0
+}
+
+func firstToolCallID(message map[string]any) string {
+	calls, ok := message["tool_calls"].([]any)
+	if !ok || len(calls) == 0 {
+		return "call_feature_probe"
+	}
+	call, _ := calls[0].(map[string]any)
+	if id, ok := call["id"].(string); ok && id != "" {
+		return id
+	}
+	return "call_feature_probe"
+}
+
 func basicRequest(model string) map[string]any {
 	return map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 64}
+}
+
+func roleRoundTripRequest(model string) map[string]any {
+	request := map[string]any{
+		"model": model,
+		"messages": []any{
+			map[string]any{"role": "system", "content": "You are a concise weather assistant."},
+			map[string]any{"role": "user", "content": "What is the weather in Beijing?"},
+			map[string]any{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []any{map[string]any{
+					"id":   "call_role_fixture",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "get_weather",
+						"arguments": `{"city":"Beijing"}`,
+					},
+				}},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_role_fixture", "content": "Beijing: sunny, 25C."},
+			map[string]any{"role": "user", "content": "Answer using the tool result."},
+		},
+		"thinking":   map[string]string{"type": "disabled"},
+		"max_tokens": 128,
+	}
+	return request
+}
+
+func namedToolRequest(model string) map[string]any {
+	request := toolRequest(model, "auto")
+	request["tool_choice"] = map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name": "get_weather",
+		},
+	}
+	return request
+}
+
+func streamingToolRequest(model string) map[string]any {
+	request := namedToolRequest(model)
+	request["stream"] = true
+	request["stream_options"] = map[string]any{"include_usage": true}
+	request["thinking"] = map[string]string{"type": "disabled"}
+	request["max_tokens"] = 128
+	return request
 }
 
 func streamRequest(model string, includeUsage bool) map[string]any {
@@ -397,6 +826,13 @@ func stopRequest(model string) map[string]any {
 	request := basicRequest(model)
 	request["messages"] = []any{map[string]any{"role": "user", "content": "Say: apple, banana, orange, watermelon."}}
 	request["stop"] = "banana"
+	return request
+}
+
+func stopArrayRequest(model string) map[string]any {
+	request := stopRequest(model)
+	request["stop"] = []string{"banana", "orange"}
+	request["thinking"] = map[string]string{"type": "disabled"}
 	return request
 }
 
@@ -429,6 +865,32 @@ func withFields(request map[string]any, key string, value any) map[string]any {
 	return copy
 }
 
+func mergeRoleEvidence(evidence map[string]any, body map[string]any) {
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		return
+	}
+	roles := make([]string, 0, len(messages))
+	hasTool := false
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := message["role"].(string)
+		if role == "" {
+			continue
+		}
+		roles = append(roles, role)
+		if role == "tool" {
+			hasTool = true
+		}
+	}
+	evidence["request_role_count"] = len(roles)
+	evidence["request_roles"] = roles
+	evidence["request_has_tool_role"] = hasTool
+}
+
 func expectedPass(caseID, route string, status int, evidence map[string]any) bool {
 	switch caseID {
 	case "DS-A01":
@@ -447,6 +909,8 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 	case "DS-B01", "DS-B04":
 		valid := status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["choices"] == 1 && evidence["has_content"] == true && evidence["finish_reason"] != nil
 		return valid && (caseID != "DS-B04" || (evidence["usage_consistent"] == true && (evidence["cached_tokens"] == nil || evidence["cached_tokens_valid"] == true)))
+	case "DS-B05":
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] != nil && evidence["request_has_tool_role"] == true
 	case "DS-B02":
 		return status == http.StatusOK && evidence["stream"] == true && evidence["has_error"] != true && evidence["done"] == true && evidence["has_content"] == true && evidence["usage_events"] != nil && evidence["usage_event_empty_choices"] == true
 	case "DS-B03":
@@ -459,12 +923,22 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 		return status >= 200 && status < 300 && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["has_reasoning_content"] != true
 	case "DS-C05", "DS-C07":
 		return status >= 200 && status < 300 && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+	case "DS-C08", "DS-C09":
+		return status == http.StatusOK && evidence["first_http_status"] == http.StatusOK && evidence["first_has_content"] == true && evidence["second_http_status"] == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+	case "DS-C10":
+		return status == http.StatusOK && evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && evidence["first_has_reasoning_content"] == true && evidence["second_http_status"] == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+	case "DS-C11":
+		return evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && expectedOfficialValidation(status, evidence)
 	case "DS-C04":
 		return status >= 200 && status < 300 && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
 	case "DS-C12":
 		return route != "official" && status >= 200 && status < 300 && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
 	case "DS-D08":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] == "stop" && evidence["contains_stop_sequence"] != true
+	case "DS-D06":
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] == "length"
+	case "DS-D09":
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] == "stop"
 	case "DS-D10":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["content_json"] == true
 	case "DS-F02":
@@ -484,10 +958,25 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && maxOK && maxEntries <= 20
 	case "DS-E04":
 		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs and logprobs value")
+	case "DS-E05":
+		count, ok := evidence["logprobs_content"].(int)
+		maxEntries, maxOK := evidence["max_top_logprobs"].(int)
+		usageEvents, usageOK := evidence["usage_events"].(int)
+		return status == http.StatusOK && evidence["stream"] == true && evidence["done"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["has_logprobs"] == true && ok && count > 0 && maxOK && maxEntries <= 5 && usageOK && usageEvents > 0
+	case "DS-E06":
+		return false
 	case "DS-E07":
 		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs value")
 	case "DS-F01":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && (evidence["has_content"] == true || evidence["has_tool_calls"] == true)
+	case "DS-F06":
+		return status == http.StatusOK && evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && evidence["second_http_status"] == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] == "stop"
+	case "DS-F07":
+		return status == http.StatusOK && evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && evidence["first_has_reasoning_content"] == true && evidence["second_http_status"] == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
+	case "DS-F08":
+		return evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && expectedOfficialValidation(status, evidence)
+	case "DS-F09":
+		return status == http.StatusOK && evidence["stream"] == true && evidence["done"] == true && evidence["has_error"] != true && evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true && (evidence["finish_reason"] == "tool_calls" || evidence["finish_reason"] == "stop")
 	default:
 		return status >= 200 && status < 300 && evidence["has_error"] != true
 	}
@@ -505,19 +994,29 @@ func expectedOfficialValidation(status int, evidence map[string]any) bool {
 	return isValidationStatus(status) && evidence["json"] == true && evidence["has_error"] == true && evidence["error_param_null"] == true && evidenceString(evidence, "error_type") == "invalid_request_error" && evidenceString(evidence, "error_code") == "invalid_request_error"
 }
 
+func isDFLASHCapabilityError(evidence map[string]any) bool {
+	fingerprint := evidenceString(evidence, "error_message_fingerprint")
+	return strings.Contains(fingerprint, "return_logprob") || strings.Contains(fingerprint, "return logprob")
+}
+
 func evidenceString(evidence map[string]any, key string) string {
 	value, _ := evidence[key].(string)
 	return value
 }
 
 func request(ctx context.Context, client *http.Client, base, key, method, path string, body []byte) (int, map[string]any, error) {
+	status, evidence, _, err := requestPayload(ctx, client, base, key, method, path, body)
+	return status, evidence, err
+}
+
+func requestPayload(ctx context.Context, client *http.Client, base, key, method, path string, body []byte) (int, map[string]any, map[string]any, error) {
 	url := strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
-		return 0, map[string]any{"request_error": safeError(err)}, err
+		return 0, map[string]any{"request_error": safeError(err)}, nil, err
 	}
 	if !strings.EqualFold(req.URL.Scheme, "https") {
-		return 0, map[string]any{"initial_scheme": req.URL.Scheme}, fmt.Errorf("feature probe requires HTTPS")
+		return 0, map[string]any{"initial_scheme": req.URL.Scheme}, nil, fmt.Errorf("feature probe requires HTTPS")
 	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -528,20 +1027,30 @@ func request(ctx context.Context, client *http.Client, base, key, method, path s
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, map[string]any{"transport_error": safeError(err)}, err
+		return 0, map[string]any{"transport_error": safeError(err)}, nil, err
 	}
 	defer resp.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if readErr != nil {
-		return resp.StatusCode, map[string]any{"read_error": safeError(readErr)}, readErr
+		return resp.StatusCode, map[string]any{"read_error": safeError(readErr)}, nil, readErr
 	}
-	evidence := summarize(data, strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream"))
+	stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+	evidence := summarize(data, stream)
 	evidence["initial_scheme"] = req.URL.Scheme
 	evidence["tls"] = resp.TLS != nil
 	if resp.Request != nil && resp.Request.URL != nil {
 		evidence["final_scheme"] = resp.Request.URL.Scheme
 	}
-	return resp.StatusCode, evidence, nil
+	var payload map[string]any
+	if !stream {
+		_ = json.Unmarshal(data, &payload)
+	}
+	return resp.StatusCode, evidence, payload, nil
+}
+
+type streamedToolCall struct {
+	name      strings.Builder
+	arguments strings.Builder
 }
 
 func summarize(data []byte, stream bool) map[string]any {
@@ -552,6 +1061,7 @@ func summarize(data []byte, stream bool) map[string]any {
 		events, done, usageEvents := 0, false, 0
 		contentChunks, reasoningChunks := 0, 0
 		var finishReason string
+		toolCalls := make(map[int]*streamedToolCall)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.HasPrefix(line, "data:") {
@@ -584,6 +1094,9 @@ func summarize(data []byte, stream bool) map[string]any {
 						if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
 							finishReason = reason
 						}
+						if logprobs, ok := choice["logprobs"].(map[string]any); ok {
+							addLogprobsEvidence(evidence, logprobs)
+						}
 						for _, field := range []string{"delta", "message"} {
 							part, ok := choice[field].(map[string]any)
 							if !ok {
@@ -595,6 +1108,33 @@ func summarize(data []byte, stream bool) map[string]any {
 							if hasNonEmptyString(part["reasoning_content"]) {
 								reasoningChunks++
 							}
+							if logprobs, ok := part["logprobs"].(map[string]any); ok {
+								addLogprobsEvidence(evidence, logprobs)
+							}
+							if rawCalls, ok := part["tool_calls"].([]any); ok {
+								for callIndex, rawCall := range rawCalls {
+									call, ok := rawCall.(map[string]any)
+									if !ok {
+										continue
+									}
+									index := callIndex
+									if value, ok := call["index"].(float64); ok && value >= 0 {
+										index = int(value)
+									}
+									toolCall := toolCalls[index]
+									if toolCall == nil {
+										toolCall = &streamedToolCall{}
+										toolCalls[index] = toolCall
+									}
+									function, _ := call["function"].(map[string]any)
+									if name, ok := function["name"].(string); ok {
+										toolCall.name.WriteString(name)
+									}
+									if arguments, ok := function["arguments"].(string); ok {
+										toolCall.arguments.WriteString(arguments)
+									}
+								}
+							}
 						}
 					}
 				}
@@ -603,6 +1143,17 @@ func summarize(data []byte, stream bool) map[string]any {
 		evidence["sse_events"], evidence["done"] = events, done
 		evidence["content_chunks"], evidence["reasoning_chunks"] = contentChunks, reasoningChunks
 		evidence["has_content"], evidence["has_reasoning_content"] = contentChunks > 0, reasoningChunks > 0
+		if len(toolCalls) > 0 {
+			evidence["has_tool_calls"] = true
+			evidence["stream_tool_call_count"] = len(toolCalls)
+			validArguments := true
+			for _, toolCall := range toolCalls {
+				if strings.TrimSpace(toolCall.name.String()) == "" || !json.Valid([]byte(toolCall.arguments.String())) {
+					validArguments = false
+				}
+			}
+			evidence["tool_arguments_json"] = validArguments
+		}
 		if usageEvents > 0 {
 			evidence["usage_events"] = usageEvents
 		}
@@ -709,6 +1260,26 @@ func maxTopLogprobs(entries []any) int {
 		}
 	}
 	return maxEntries
+}
+
+func addLogprobsEvidence(evidence map[string]any, logprobs map[string]any) {
+	evidence["has_logprobs"] = true
+	if content, ok := logprobs["content"].([]any); ok {
+		count, _ := evidence["logprobs_content"].(int)
+		evidence["logprobs_content"] = count + len(content)
+		maxEntries := maxTopLogprobs(content)
+		if current, ok := evidence["max_top_logprobs"].(int); !ok || maxEntries > current {
+			evidence["max_top_logprobs"] = maxEntries
+		}
+	}
+	if reasoningContent, ok := logprobs["reasoning_content"].([]any); ok {
+		count, _ := evidence["logprobs_reasoning_content"].(int)
+		evidence["logprobs_reasoning_content"] = count + len(reasoningContent)
+		maxEntries := maxTopLogprobs(reasoningContent)
+		if current, ok := evidence["max_reasoning_top_logprobs"].(int); !ok || maxEntries > current {
+			evidence["max_reasoning_top_logprobs"] = maxEntries
+		}
+	}
 }
 
 func addUsageEvidence(evidence map[string]any, usage map[string]any) {
