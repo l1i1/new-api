@@ -124,6 +124,21 @@ func normalizeClickHouseDSN(dsn string) string {
 	return parsed.String()
 }
 
+func disablePostgresStatementCaches(dsn string) string {
+	if !strings.Contains(dsn, "://") {
+		return strings.TrimSpace(dsn) + " statement_cache_capacity=0 description_cache_capacity=0"
+	}
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	query := parsed.Query()
+	query.Set("statement_cache_capacity", "0")
+	query.Set("description_cache_capacity", "0")
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
 func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error) {
 	dsn := os.Getenv(envName)
 	if dsn != "" {
@@ -139,7 +154,7 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 			// Use PostgreSQL
 			common.SysLog("using PostgreSQL as database")
 			db, err := gorm.Open(postgres.New(postgres.Config{
-				DSN:                  dsn,
+				DSN:                  disablePostgresStatementCaches(dsn),
 				PreferSimpleProtocol: true, // disables implicit prepared statement usage
 			}), newGormConfig(true))
 			return db, common.DatabaseTypePostgreSQL, err

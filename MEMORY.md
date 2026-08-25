@@ -1,5 +1,221 @@
 # New API Fork Memory
 
+- On 2026-08-25, final pre-commit review of the DeepSeek V4/performance
+  consolidation removed correctness risks before local commit. DeepSeek V4
+  streaming now merges aggregator usage-only tails into the final
+  `finish_reason` chunk, honors explicit `include_usage=false`, applies the V4
+  usage schema after ForceFormat, and never fabricates a missing
+  `system_fingerprint`. Wallet settlement keeps token accounting synchronous,
+  records zero-quota billable requests, propagates exact-match usage-write
+  errors, rejects soft-deleted user/token rows, and guards quota-warning rearm
+  against a concurrent balance drop. Log and Redis batchers drain with
+  independent shutdown timeouts and use at-most-once failure semantics: an
+  unknown commit is logged as a dropped batch, never replayed into duplicate
+  metrics or audit rows. The local load generator counts success only after a
+  non-empty final content/tool result and, for SSE, a real `[DONE]`; local
+  profiling passwords are generated or injected rather than tracked. Final
+  race review made logger rotation counters single-flight and atomic, skips
+  pointless asynchronous quota-cache work when Redis is unavailable, and keeps
+  task-polling concurrency tests from reading task objects while GORM updates
+  them. Root tests/vet, RelayKit test/build, and the focused race suite pass.
+
+- On 2026-08-25, a full K01-K13 fit comparison (official `api.deepseek.com`
+  vs `n.tokeness.dev`, UTF-8-safe bodies) closed the remaining DeepSeek V4
+  Chat Completions response-shape gaps locally; nothing was deployed. Findings:
+  K02/K03 error bodies matched official except a gateway ` (request id: ...)`
+  suffix; aggregator (`router-*`) upstreams added `cost`, null
+  `message.tool_calls`, generic usage (missing `prompt_cache_hit_tokens`,
+  `prompt_cache_miss_tokens`, `completion_tokens_details`), and no
+  `system_fingerprint`; streaming split official's usage-on-final-chunk into a
+  separate usage-only event re-serialized with Claude/OpenRouter extension
+  fields. Fixes: `relay/helper/valid_request.go` exposes
+  `IsDeepSeekV4ValidationMessage` and `controller/relay.go` keeps such messages
+  verbatim (no request-id suffix); new `relay/channel/openai/deepseek_v4_fit.go`
+  rewrites non-stream bodies to the official seven-key usage shape, strips
+  `cost`/null `tool_calls`, and preserves an upstream-provided
+  `system_fingerprint` without inventing one; `OaiStreamHandler` forwards
+  official-shaped chunks verbatim, injects
+  official usage into the final finish_reason chunk, and never synthesizes a
+  usage-only event for V4. Known unfitted channel difference: aggregator
+  upstreams do not truncate at `max_tokens` the way official does (K06/K07
+  completion-token divergence) — that is upstream behavior, recorded as
+  channel-selection risk. Evidence lives only under `E:\Temp\ds-fit`
+  (untracked); probe credentials were used from env and never stored. Tests:
+  new `deepseek_v4_fit_test.go` and
+  `relay_openai_deepseek_v4_stream_test.go` (official-shape verbatim + aggregator
+  fit e2e); full `go test ./relay/... ./controller/ ./scripts/feature-probe/`,
+  `go vet`, and `go build ./...` pass.
+
+- Authoritative acceptance record for 2026-08-25: the five-round WSL2
+  optimization met all three project gates in a same-spec 300-second run at
+  concurrency 64, with HTTP 200 and zero errors on both sides. Nonstream
+  throughput improved 68.8->171.7 RPS (+150%), stream 71.7->172.6 (+141%),
+  and body-large 54.3->116.9 (+115%); CPU per successful request improved
+  0.417->0.275 (-34%), and peak RSS improved 80.6->54.2 MiB (-32.7%) with
+  `GOGC=30`. This is local WSL2 evidence only; `GOGC=30` and
+  `LOG_BATCH_ENABLED=true` remain operator decisions and were not deployed.
+
+- On 2026-08-25, the r9b OpenAI stream single-decode candidate was screened
+  against a control copy containing the same dirty worktree changes but the
+  candidate patch removed. Both 60-second runs at concurrency 64, `GOGC=30`,
+  and `LOG_BATCH_ENABLED=true` returned only HTTP 200 with zero errors. RPS was
+  candidate versus control: nonstream 168.12->168.00 (+0.1%), stream
+  168.33->167.52 (+0.5%), and body-large 105.62->110.43 (-4.4%). The result
+  was not a stable end-to-end gain, so the stream DTO reuse and its helper test
+  were reverted; `relay/channel/openai/relay-openai.go` now matches the control
+  copy and the focused OpenAI package test passes. When overriding the Compose
+  host port for parallel stacks, `PERF_BASE_URL` must be overridden together
+  with `PERF_HTTP_PORT`; the first control attempt failed only because the
+  runner health check kept its default port. No production system, credential,
+  deployment, publication, or commit was used.
+
+- On 2026-08-25, the R5 merged wallet-settlement path had a negative-delta
+  accounting regression: when actual usage was below the pre-consumed amount,
+  `WalletFunding.Settle` refunded the wallet but omitted the request's
+  `used_quota` and `request_count` update. `model.IncreaseUserQuotaWithUsage`
+  now applies the refund and both statistics in one users-row UPDATE, matching
+  the positive-delta path; exact-match, refund, and direct model regressions
+  pass. This preserves the billing/log failure independence and does not move
+  any token or trusted-session write.
+
+- On 2026-08-25, a local-only `PERF_METRICS_ASYNC_REDIS=true` candidate batched
+  the default-enabled model-performance Redis `HINCRBY` writes behind an
+  8,192-entry bounded queue, merging up to 128 records or 10 ms, falling back
+  synchronously when full, dropping failed batches without unsafe replay, and
+  draining during graceful shutdown. The default remains false. Two local
+  60-second order-reversed screening pairs at concurrency 64, `GOGC=30`, and
+  `LOG_BATCH_ENABLED=true` had zero errors: the first pair measured candidate
+  deltas of +3.4%/+6.7%/+24.6% RPS (nonstream/stream/body-large), and the
+  reverse pair +24.6%/+21.2%/+45.5%. Control throughput varied materially
+  between pairs; peak nonstream memory was 43.6->44.0 MiB in the first pair
+  and 45.4 vs 44.0 MiB in the reverse pair. Retain the candidate as opt-in
+  only; it is not a new 300-second acceptance result and has not been deployed.
+  The performance Compose host HTTP/pprof ports are now overridable for local
+  parallel stacks. No production system, credential, deployment, publication,
+  or commit was used.
+
+- On 2026-08-25, a `subscription_first` billing snapshot candidate was
+  rejected and removed. It combined the wallet quota read with active
+  subscription existence in one parameterized query and reused the quota for
+  the no-subscription wallet path. SQLite regression tests and billing-source
+  behavior tests passed, but a 90-second WSL2 A/B at concurrency 64 had zero
+  errors while candidate versus control changed nonstream 151.70->127.10 RPS
+  (-16.2%), stream 141.66->141.08 (-0.4%), and body-large 66.43->72.54
+  (+9.2%), so there was no stable end-to-end gain. The audit also found that
+  the aliased raw `Table` query needed an explicit soft-delete predicate;
+  because the candidate had no compelling benefit and added semantic surface,
+  it was removed rather than retained. The local candidate/control Compose
+  projects, containers, networks, and PostgreSQL volumes were removed. Focused
+  model/service tests, race tests for the affected paths, `go vet ./model
+  ./service`, and `git diff --check` passed; the documented concurrent user
+  quota test fixture race remains unrelated. No production system, credential,
+  deployment, publication, or commit was used.
+
+- On 2026-08-25, the post-acceptance relay performance audit retained no
+  additional production hot-path change. Batch 6 wallet quota-warning read
+  fusion was rejected before A/B: a pre-consume `quota_warning_sent=false`
+  snapshot can become stale after a low-balance claim and later top-up, so
+  skipping the claim-time database read can leave the flag armed and suppress
+  the next warning episode. The deterministic
+  `TestClaimQuotaWarningHealthyBalanceRearmsAfterSnapshotChanges` regression
+  remains. Batch 7's content-moderation bool cache fast path removed nearly all
+  of the targeted threshold-clone allocation but saved only about 0.5 KiB per
+  request; a reverse-order 60-second WSL2 A/B at concurrency 64 returned zero
+  errors on both sides and regressed nonstream 158.73->150.52 RPS (-5.2%),
+  stream 149.70->143.62 (-4.1%), and body-large 76.15->67.67 (-11.1%), so the
+  source change was fully reverted. Remaining allocation candidates were also
+  rejected before code: `common.DeepCopy(textReq)` is the retry-isolation
+  boundary for mutable provider conversion, and preallocating `gin.Context`
+  keys would spread fixed map cost to lightweight routes for a hotspot that is
+  only about 3% of total allocation. The performance Compose prepared-statement
+  default was corrected to `false`, matching the earlier experiment where
+  disabling GORM prepared statements broke the PostgreSQL JSON seed. Full root
+  Go tests/vet, standalone RelayKit tests/build, focused service and model race
+  tests, performance shell syntax, Compose config, and `git diff --check`
+  passed; the broader user-update race run still reports the documented test
+  fixture cleanup versus gopool Redis-flag race. No production system,
+  credential, deployment, publication, or commit was used.
+
+- On 2026-08-25, the DeepSeek V4 compatibility candidate was released as
+  `v1.0.0-rc.25-tokeness-deepseek-v4.3` from commit `1a1daf469` at immutable
+  GHCR digest `sha256:7c6fd78485c8e20a8f38811f4478be3813bbba38c58a65397245c573f40de78a`.
+  The four-node staged production rollout passed (workflow `32836255440`).
+  Post-deploy redacted fit probes on `n.tokeness.dev/v1` and
+  `n-cf.tokeness.dev/v1` passed K01-K13: K02/K03 are HTTP 400 with the
+  official `invalid_request_error` envelope and `param=null`; K05 suppresses
+  reasoning for `thinking.type=disabled`; K10 accepts a valid tool-only
+  response; K12 returns both content and reasoning logprobs with each
+  `top_logprobs <= 5`; stream cases include `[DONE]` and usage events.
+  No credentials or response bodies were stored.
+
+- On 2026-08-25, a local-only opt-in candidate batched channel-observation
+  Redis writes behind `CHANNEL_OBSERVABILITY_ASYNC_REDIS=true` (default false).
+  The in-process `hotBuckets` update remains synchronous; Redis records use an
+  8,192-entry bounded queue, merge up to 128 records or 10 ms of work into one
+  pipeline, fall back to the existing synchronous write when full, retry a
+  failed batch record-by-record once, and drain during graceful shutdown. Two
+  60-second WSL2 A/B pairs at concurrency 64, `LOG_BATCH_ENABLED=true`, and
+  `GOGC=30` returned zero errors: nonstream -1.4%/+0.6%, stream +8.1%/+6.6%,
+  and body-large +4.3%/-1.0%. Stream therefore improved about 7.4%, while the
+  other modes, CPU/request, and RSS showed no stable gain under WSL2 variance.
+  Keep it opt-in and do not treat it as a new full-suite acceptance result.
+  Focused normal/race/vet, full root Go test/vet, standalone RelayKit
+  test/build, and `git diff --check` passed. No production system or
+  credential was used, and nothing was committed, published, or deployed.
+
+- On 2026-08-25, the final 300-second WSL2 revalidation after the billing
+  session fix completed with concurrency 64 and zero errors on both sides:
+  nonstream 166.920 RPS, stream 166.007 RPS, and body-large 87.847 RPS; every
+  response was HTTP 200. Against `baseline-long` (68.753/71.727/54.267 RPS),
+  the gains were +142.8%/+131.4%/+61.9%; nonstream and stream remained above
+  2x, while this body's long-run repeat was below 2x and should not replace the
+  earlier five-round acceptance run in the headline result because WSL2
+  variance was material.
+  Nonstream resource samples averaged 45.99% CPU with 41.44 MiB peak RSS;
+  average CPU percentage divided by successful RPS was 0.2755 versus 0.4085 in
+  the baseline (-32.5%), and peak RSS was -48.6%. The local performance
+  containers, network, and PostgreSQL volume were removed after the run. No
+  production systems or credentials were used.
+
+- On 2026-08-25, `BillingSession.Settle` was corrected for the exact-match
+  case: when actual usage equals the pre-consumed estimate, it now invokes the
+  funding source's zero-delta settle before marking the session complete. This
+  preserves wallet `used_quota`/`request_count` updates armed by
+  `FoldUsageIntoWalletSettle`; `TestBillingSessionSettleExactMatchRecordsWalletUsage`
+  covers the regression. A `HasActiveUserSubscription` `LIMIT 1` experiment was
+  reverted because its 45-second run did not show stable improvement. Before
+  later unrelated channel-selection edits, the full Go suite passed; the
+  service billing/Midjourney race tests, RelayKit standalone test/build,
+  formatting, and `git diff --check` also passed. During final validation,
+  concurrent channel-selection edits briefly caused a signature mismatch; the
+  typed selection follow-up then fixed the auto-group regressions, and the
+  service package now passes its full suite and vet checks.
+
+- On 2026-08-25, a follow-up performance audit evaluated two database toggles and
+  a local `channels.used_quota` aggregator, but retained none of them. Disabling
+  GORM prepared statements made the local PostgreSQL seed fail with
+  `invalid input syntax for type json` while writing `channel_info`; skipping
+  GORM default transactions was compatible but measured about 1.6% slower for
+  non-stream traffic and had no stable gain for the other cases. The channel
+  counter aggregator was tested with bounded queueing and reset locking, but
+  45-second WSL2 A/B runs were not stable (nonstream +2.5%, stream -1.1%,
+  body-large -4.0% in the repeat) and a process-local pending delta cannot make
+  a reset from another instance observe the current value. The experiment was
+  fully reverted, including its performance Compose flag; channel `used_quota`
+  remains synchronous to preserve the existing multi-instance reset contract.
+
+- On 2026-08-25, the DeepSeek V4 compatibility fix added redacted runner `scripts/feature-probe` with an 84-case matrix audit, HTTP-200 SSE top-level error normalization, and retry-path coverage for multi-key credential errors versus channel failures. Local full tests/vet/RelayKit/deployment transaction tests passed; live authenticated tiers remain runtime-injection dependent and are never marked pass without evidence.
+
+- On 2026-08-25, the fifth performance round merged the users-row hot-path UPDATEs and established a fair same-duration comparison proving the 2x throughput target. `model.DecreaseUserQuotaWithUsage` (user.go) applies the wallet deduction and the request's used_quota/request_count statistics in ONE UPDATE; `WalletFunding.Settle` uses it when armed (`SettleBilling` accepts an optional `usageDelta` variadic and type-asserts `*BillingSession` → `FoldUsageIntoWalletSettle`, keeping the relay-layer `BillingSettler` interface untouched). `PostTextConsumeQuota` passes `summary.Quota` for wallet-billed billable requests only (subscription and non-billable paths keep the legacy separate statistics write). This also makes usage counters atomic with the deduction instead of being written even when the settle fails. Regression `TestDecreaseUserQuotaWithUsageMergesStatistics` covers the merged statement. Fair 300-second same-spec runs (concurrency 64, all HTTP 200, both sides zero errors; short 30s runs underestimate throughput because warmup effects dominate): baseline (HEAD + perf infra) vs candidate: nonstream 68.8→172.9 RPS (+151%), stream 71.7→174.6 (+143%), body-large 54.3→122.4 (+125%) — the "2x throughput" target is MET at steady state. CPU per successful request 0.417→0.272 (-35%) — the "-30% CPU" target is MET. Peak RSS 80.6→75.9 MiB (-6%) — the "-30% memory" target remains unmet; the analysis stands that the ~10.5MB tiktoken vocabulary (already lazy-loaded per model family), pgx statement cache, and Go runtime are functional requirements, so -30% memory has no safe implementation path without cutting features; pending user decision on adjusting that acceptance criterion. Full `go test ./...`, vet, relaykit build, focused race tests, gofmt, and `git diff --check` pass. Nothing deployed or published; LOG_BATCH_ENABLED stays opt-in.
+
+- On 2026-08-25, the fourth performance round fixed a self-deadlock introduced by the round-2 fast path, reverted a counterproductive async change, and added trusted token accounting deferral, reaching +59-65% throughput. Critical bug found and fixed: the `ClaimQuotaWarning` wallet fast path was initially placed inside the `DB.Transaction` closure but executed on the outer `DB` handle — the transaction held the (single, in tests) pool connection while the fast path's `Take` waited for it, deadlocking `TestMidjourneyRefundRestoresEveryAccountingElementOnBillingChannel` and, in production pools, consuming a second connection while reading outside the transaction snapshot. The fast path now runs entirely before the transaction opens (bisected and verified by stash experiments). Round-3's async statistics counters were reverted to synchronous: with the hot-row lock queue gone, their gopool versions re-serialized the users row through the settle UPDATE (`UPDATE users` latency 400-830ms, nonstream dropped to 51 RPS in that run); they must stay ordered with the wallet settle because both UPDATE the same users row. New change: `BillingSession.Settle` defers `DecreaseTokenQuota` for trusted sessions (`delta > 0 && s.trusted`) via gopool — trusted sessions skipped pre-consume, so this accounting write is the only token mutation and no gate reads it before the next request re-loads the token; non-trusted and refund paths stay synchronous. tiktoken vocabulary memory was evaluated: cl100k loads at init, o200k lazy-loads on first `gpt-4o-*` request via `tokenEncoderMap`; the ~10.5MB vocabulary is functional cost with no safe reduction, and RSS is dominated by required structures, so the memory -30% target has no safe path without cutting features. Final same-spec results (30s, 64 concurrency, all HTTP 200, LOG_BATCH_ENABLED=true): nonstream 67.2→106.7 RPS (+59%), stream 66.0→105.6 (+60%), body-large 51.7→85.1 (+65%); CPU per successful request 0.514→0.309 (-40%); peak RSS 67.3→64.2 MiB (-5%). Full `go test ./...`, vet, focused race tests (model quota/log-batch, service billing/Midjourney), relaykit build/test, gofmt, and `git diff --check` pass. The 2x throughput target (+100%) and the -30% memory target remain unmet; throughput is now +59-65% and CPU per request -40%. Nothing deployed or published; log batching and all behavior changes behind opt-in flags or trust-path analysis documented here.
+
+- On 2026-08-25, the third performance round added billing-safe consume-log batching. `model/log_batch.go` introduces `LOG_BATCH_ENABLED` (default off, enabled via env at startup like `BATCH_UPDATE_ENABLED`): when on, `createLog` enqueues into a bounded 10k channel and a gopool worker flushes batches (500 rows or 1s tick) via `CreateInBatches`; a full queue falls back to a synchronous insert (no silent drops under backpressure), and a failed batch retries entries individually so one bad row cannot drop its peers. Billing deduction paths are untouched — only the audit-log INSERT moves off the request path. Regression tests cover enqueue→flush→persist, queue-full fallback, and batch-failure individual retry. Same-spec run (30s, 64 concurrency, all HTTP 200, PERF_LOG_BATCH_ENABLED=true): nonstream 67.2→100.2 RPS (+49% cumulative vs fixed baseline), stream 66.0→91.2 (+38%), body-large 51.7→76.2 (+47%); CPU per successful request 0.514→0.387 (-25%); RSS ~69 MiB unchanged. The remaining synchronous post-response writes are `DecreaseUserQuota` + `DecreaseTokenQuota` (settle, different tables) — merging them into one transaction was rejected because log/quota failures must stay independent, and deferring the wallet write would break trust-mode overdraft protection since settle is the only deduction point for trusted users. The 2x throughput target is now within reach (currently +49%) but CPU -30% and memory -30% are not met; log batching is an opt-in runtime flag, so production behavior is unchanged until an operator enables it deliberately. Full test suite, vet, focused race tests, relaykit build, gofmt, and `git diff --check` pass. Nothing deployed or published.
+
+- On 2026-08-25, the second performance round eliminated the dominant hot-row lock queue: `ClaimQuotaWarning` previously ran `SELECT ... FOR UPDATE` on the user row inside a transaction on every request even for healthy balances, and its "reset" branch wrote `quota_warning_sent=false` unconditionally — serializing all post-response notify checks of one user behind the settle transaction on the same row. `model/quota_notification.go` now has a wallet fast path: a plain (non-locking) read checks balance + flag; a healthy balance with no outstanding warning returns without any write or lock, and a healthy balance with the flag set rearms via a single conditional `UPDATE ... WHERE quota_warning_sent = TRUE` without holding a row lock across the decision. Warning-claim paths (balance below threshold) keep the original locked transaction, preserving the one-shot episode semantics and stale-snapshot guard; regression `TestClaimQuotaWarningHealthyBalanceSkipsLockedTransaction` covers both fast-path branches, all prior state-machine tests pass, and focused race runs are clean. Same-spec re-run (30s, concurrency 64, all HTTP 200): nonstream 67.2→90.3 RPS (+34%), stream 66.0→87.7 (+33%), body-large 51.7→58.5 (+13%) versus the fixed baseline; container CPU avg rose 34.5%→43.0% purely because throughput rose — CPU per successful request dropped ~7-8% (0.514→0.476 CPU-seconds per request on nonstream). RSS stayed ~67-69 MiB. Cumulative candidate delta vs baseline: +34% nonstream throughput. The 2x/30% targets are still NOT met. Settle/log transaction merging (one tx for wallet UPDATE + token UPDATE + log INSERT) was evaluated and rejected: it would make quota deduction roll back when the log INSERT fails, violating the billing-safety invariant that deduction and logging fail independently. The full `go test ./...`, vet, relaykit build/test, `git diff --check`, and gofmt all pass; note the pre-existing `TestDecreaseUserQuotaIfEnoughConcurrentDoesNotOverdraw` race-detector failure is a test-fixture defect (async gopool cache sync reading `common.RedisEnabled` across cleanup) in files untouched by this work. Nothing deployed or published.
+
+- On 2026-08-24, isolated relay performance work (WSL2 Docker stack: mock upstream, Postgres, Redis) re-established a reproducible baseline and measured the first real optimization. The earlier candidate run's 68,520 HTTP 503s were root-caused to two environment faults, not channel disabling: (1) the `SystemPerformanceCheck` middleware is enabled by default with a 90% CPU threshold and gopsutil reads host-level `/proc/stat` inside the container, so load-generated host CPU rejected every `/v1` request in microseconds; (2) the default GORM pool (1000 conns) exhausted Postgres `max_connections=100` under 64-way load (SQLSTATE 53300) via queued `ClaimQuotaWarning` `FOR UPDATE` transactions. Fixes are test-env only: `scripts/performance/seed` disables `performance_setting.monitor_enabled` through the option API, `docker-compose.performance.yml` caps `SQL_MAX_OPEN_CONNS=90` and raises Postgres `max_connections=300`, and `run-wsl.sh` refuses to record official results when warmup has errors and warns when official scenarios have failures. Production code keeps behavior: `model/log.go` skips consume-log JSON serialization when DEBUG is off; `model/channel_cache.go` precomputes priority/weight selection metadata at cache refresh (single-channel, blocked-channel, requestPath, and status-update paths fall back to the original slow path, metadata is discarded on cache mutation); `service/text_quota.go` moves the two statistics counters (`UpdateUserUsedQuotaAndRequestCount`, `UpdateChannelUsedQuota`) onto gopool after the client response is written, removing two serial DB round-trips per request while `SettleBilling` stays synchronous. Verified same-spec runs (30s, concurrency 64, all HTTP 200): baseline 67.2/66.0/51.7 RPS vs candidate 69.5/67.4/53.0 RPS (nonstream/stream/body-large, +2-3.4%), container CPU avg 34.5%→31.6%, RSS ~67 MiB unchanged. pprof (25s CPU sample under 67 RPS load) shows total CPU utilization only ~24%: the throughput ceiling is the remaining serial post-response DB path (SettleBilling wallet UPDATE + token quota + consume-log INSERT, each its own transaction) on WSL2 fsync latency, plus per-request subscription count query in `billing_session.go`; channel selection and consume-log serialization were confirmed NOT bottlenecks (the channel-cache fast path gained nothing measurable). The 2x throughput / 30% CPU+memory targets are NOT met; no claims beyond the measured deltas. The next meaningful lever is BATCH_UPDATE_ENABLED-style batching or transaction merging for the settle/log path, which changes billing timing semantics and needs its own design. Full `go test ./...`, vet, relaykit build/test, race tests on model/middleware/service, and `git diff --check` passed. Nothing was deployed or published.
+
 - On 2026-08-24, a read-only production audit of Isen found `/v1/responses` requests selecting `CN_Ollama` channel 65 (priority 10), which rejects that endpoint locally as `400 invalid_request` with `skip_retry`; `use_channel` therefore contained only `65` even though the `default` group had lower-priority alternatives and `RetryTimes=3`. The local fix classifies Ollama endpoint-capability failures as `channel:unsupported_endpoint`, preserves retryability through helper wrappers, and excludes them from automatic channel disabling, so the existing retry loop can select the next priority channel. Focused controller/service/Ollama tests, RelayKit standalone tests, vet, and diff checks passed. Production was not changed or deployed.
 
 - On 2026-08-24, the OpenAI-compatible stream and non-stream paths were patched locally to estimate completion tokens when an upstream usage event has prompt tokens but zero completion tokens and the gateway has already received output text. Exact nested OpenAI output tokens and top-level totals are preferred before estimation; prompt/cache fields remain authoritative, total tokens and nested OpenAI billing usage are synchronized, and estimated fallback is marked as `billing-usage-openai-estimated` for auditability. A regression test covers `gemini-3.7-flash` prompt-only usage with `finish_reason=length`; the provider finish reason is now retained in `stream_status` so `length`, `stop`, and transport end states can be distinguished. Focused OpenAI/helper/service/Gemini tests, vet, and isolated `go test ./relay/...` pass. The candidate is not deployed. The supplied test key could not reach this path because its `Claude-Official` group currently exposes no available channels.
@@ -267,6 +483,17 @@
 - On 2026-08-24, relay failover fixes from `79ecf12ea86192cc68fd226ff6b358e594ae96ea` were published as `v1.0.0-rc.25-tokeness-relay-failover.1` at immutable GHCR digest `sha256:782e1836ee84c65f603e0e619882e7b88393f686eb71c067ce7e4ba682c09099`. Publish workflow `32723127423`, baseline verify `32724255841`, staged production deploy `32724425190`, and post-deploy verify `32724942447` all passed. JP-N2, EV-JP, JP-M, and EV-JP2 selected and ran the new digest; all reported `running` with healthy or expected no-healthcheck status. `tokeness.io/` and `/api/status` returned 200, while `n.tokeness.io` and `n.tokeness.cn` `/v1/models` returned the expected unauthenticated 401 with the new version header. The previous Ollama-hardening digest `sha256:c42879e42971b94330fce459d895f3e57ca9e892fccfd57f82c001bca1c8c9ac` remains the rollback reference.
 - On 2026-08-24, production compatibility acceptance for the authorized DeepSeek V4 test matrix passed on both `n.tokeness.io/v1` and `n-cf.tokeness.io/v1` running `v1.0.0-rc.25-tokeness-relay-failover.1`. Basic, streaming with `include_usage`, tools, stop, and logprobs requests returned 200; stream responses included a final usage event; tools returned a function tool call; stop returned the expected prefix with `finish_reason=stop`; logprobs exposed both `content` and `reasoning_content` arrays with no position exceeding five `top_logprobs` entries. `reasoning_effort=extreme` and `top_p=1.5` were accepted and normalized. The DFLASH capability error did not surface in the live sample because requests succeeded through an available route; its 400 capability classification and retry-without-channel-disable behavior passed focused local tests. One primary-node stop response transiently ended with `length` during the first sample, but three immediate repeats on both nodes returned the expected stop result. The test credential was not stored or logged.
 
-- On 2026-08-25, the first-attempt multi-key failover regression was fixed locally. The distributor preserves the selected full `model.Channel` in request context, so `getChannel` retains `IsMultiKey` before relay metadata exists; `401/403/429` now rotate untried keys on `CN_OpenCode-GO_A` without consuming the global retry slot. After A is exhausted, the request excludes it and restarts selection at the highest remaining priority, selecting `CN_OpenCode-GO_B` before lower-priority channels. Selection coverage includes memory-cache, database, and auto-group paths; `go test ./...`, `go vet ./...`, and `git diff --check` passed. This is local only and has not been committed, published, or deployed.
-
-- On 2026-08-25, multi-key relay retries were tightened so upstream `401` errors exclude the current channel and advance to the next channel instead of rotating every key on the same channel. `403` and `429` retain same-channel key rotation; the previous unbounded-looking retry chain was caused by resetting the global retry counter for those internal key attempts. Focused controller retry tests passed; this change is local only and has not been published or deployed.
+- On 2026-08-24, the provider/gateway probe plan was documented in `docs/deepseek-v4-feature-probe-test-spec.md`. It separates official DeepSeek behavior, OpenAI-compatible response shape, and Tokeness retry/failover/billing contracts; covers deterministic T0/T1 tests plus official and main/backup route tiers; and records `extreme`, invalid `top_p`, reasoning/tool multi-turn validation, logprobs/DFLASH capability errors, key rotation, channel failover, locked tasks, usage settlement, and redaction. The specification contains no credential values and has not yet been executed as a new runner.
+- On 2026-08-25, DeepSeek V4 Chat Completions compatibility maps `thinking.type=disabled` to `reasoning_effort=none`, including the `-none` model alias. This protects compatible upstreams that ignore the standalone thinking toggle; the raw `thinking` field remains preserved. DeepSeek adapter and relay test suites passed; the change is local and not deployed.
+- On 2026-08-25, the DeepSeek V4 provider/gateway compliance follow-up classified the current result as partial rather than full compliance. The redacted live runner implements 25 of 84 fixture IDs; the remaining 59, including multi-round thinking/tools, Responses, live failover, and single-charge billing assertions, remain inconclusive. Observed official/main/backup parity covers authentication/model listing, non-empty basic and streaming output, thinking enabled/disabled, `reasoning_effort=none`, JSON, stop, logprobs, and auto tools. Official 400 responses for `reasoning_effort=extreme`, invalid `top_p`, and `tool_choice=required` remain deliberate Tokeness compatibility/capability extensions when the gateway returns a structurally valid success. Omitted `include_usage` is only observable parity: Tokeness defaults `ShouldIncludeUsage=true` and may synthesize usage when upstream usage is absent. Official unknown-model 400 still differs from Tokeness 503 in production; the local typed selection candidate now distinguishes unknown, temporarily unavailable, access-denied, and internal selection outcomes without broad status-code coercion. Debug and direct response-body diagnostics now mask credentials and cap logged or channel-test body previews at 2 KiB, including `RelayErrorHandler(showBodyWhenFail=true)`. Focused tests and diff checks passed; no credential was stored or reused, and nothing was published or deployed.
+- On 2026-08-25, the DeepSeek V4 compatibility candidate added typed channel-selection outcomes before the distributor error boundary. Unknown/unconfigured models are classified as `model_not_configured` and map to `400 model_not_found`; configured but unavailable channels map to `503 get_channel_failed`; policy-blocked requests map to `403 access_denied`; missing-channel/database consistency errors map to `500 get_channel_failed`. Auto-group diagnosis uses the same compact-alias/path resolution as selection, and regression tests cover normal auto selection, disabled channels, policy-denied channels, and dangling Ability references. Focused model/service/middleware/deepseek/probe tests, `go vet` for changed packages, and diff checks pass. The candidate is local only: it has not been published or deployed. The probe remains partial at 25/84 implemented live fixture IDs, with 59 cases inconclusive.
+- On 2026-08-25, production diagnosis found that the first relay retry can receive a temporary `model.Channel` from `getChannel` before `RelayInfo.ChannelMeta` is initialized. Because that object lacks `ChannelInfo.IsMultiKey`, an initial multi-key channel `429` is misclassified as a channel failure: the channel is excluded and the global retry counter is consumed instead of rotating the next untried key on the same channel. With `CN_OpenCode-GO_A` (priority 9) excluded, retry index 1 selects the second remaining priority (`CN_DeepSeek`, priority 7), skipping enabled `CN_OpenCode-GO_B` (priority 8). Correlated production logs showed `channel_id=93`, `multi_key_index=7`, status 429, followed by `use_channel=["93","1"]`; B was enabled but not attempted, and no other A key was tried. This was diagnosis only; no production code or deployment changed. A regression test should cover the uninitialized-`ChannelMeta` first-attempt path and assert same-channel key rotation without consuming the global retry slot.
+- On 2026-08-25, the DeepSeek V4 probe was extended to 29/85 live fixture IDs. Chat request validation now rejects V4 `top_logprobs` without `logprobs=true` and values outside `[0,20]` with the official 400 `invalid_request_error` envelope (`param: null`); other models are unchanged. Probe evidence stores only a short normalized error-message fingerprint, and thinking logprobs assert both `content` and `reasoning_content` arrays when the provider supports them. Existing forced OpenAI response formatting preserves both arrays without synthesizing missing reasoning logprobs. Focused helper/RelayKit/probe tests passed; no credentials were stored and nothing was deployed.
+- On 2026-08-25, the first-attempt multi-key failover regression was fixed locally. The distributor preserves the selected full `model.Channel` in request context, so `getChannel` retains `IsMultiKey` before relay metadata exists; `401/403/429` now rotate untried keys on `CN_OpenCode-GO_A` without consuming the global retry slot. After A is exhausted, the request excludes it and restarts selection at the highest remaining priority, selecting `CN_OpenCode-GO_B` before lower-priority channels. Selection coverage includes memory-cache, database, auto-group, and later-group-error paths; `go test ./...`, `go vet ./...`, and `git diff --check` passed. This is local only and has not been committed, published, or deployed.
+- On 2026-08-25, the DeepSeek V4 fit follow-up normalized middleware errors to an OpenAI-compatible public envelope without exposing `new_api_error`: authentication uses `authentication_error` / `invalid_request_error`, validation carries `param: null`, and 5xx middleware failures use `server_error`; typed channel-selection details remain internal. The fit probe now requires null error params, accepts valid disabled-thinking tool calls without requiring text content, parses both legal SSE `data:` forms, treats gateway quota failures as failures rather than official-provider inconclusive results, and requires explicit opt-in before calling the official route. A redacted main-route repeat confirmed production still accepts invalid `top_logprobs` until deployment; thinking-disabled, complex SSE, tool, and repeated stop cases passed. The named-message 256-token case was isolated as reasoning budget exhaustion rather than a `name` incompatibility: named and unnamed variants both ended at 256 tokens with `finish_reason=length` and often no final content, while 1024 tokens or disabled thinking returned content. The probe records protocol acceptance separately from effective success. Focused tests passed; no response bodies or credential values were stored, and nothing was deployed.
+- On 2026-08-25, the typed channel-selection follow-up fixed three remaining local classification edges: Advanced Custom no-route results now reuse request-path filtering instead of being mislabeled as temporary capacity loss; compact alias resolution excludes policy-blocked channels so an exact blocked alias can fall back to an allowed base model; and an uninitialized memory channel cache returns an internal selection error instead of being diagnosed from the database as a 503. Regression tests cover path mismatch, blocked compact alias fallback, and cache readiness. Focused model/service/middleware/controller tests and `git diff --check` passed. The changes are local only and have not been published or deployed.
+- On 2026-08-25, the DeepSeek V4 fit candidate completed the strict validation and empty-output follow-up locally. V4 `reasoning_effort=extreme`, invalid `top_p`, `tool_choice=required`, and invalid `top_logprobs` now return official-shaped 400 validation errors instead of being normalized or clamped. Chat Completions responses with neither non-empty final content nor a valid function tool call are rejected as `502 server_error`; committed streams mark the error `skip_retry`, while valid tool-only output remains successful and legacy Completions mode is not affected. Thinking logprobs require both `content` and `reasoning_content` arrays when enabled; missing reasoning logprobs remain a typed unsupported-feature result and are never synthesized. The feature-probe specification was updated to remove the old clamp/capability-superset wording. Full Go tests, `go vet`, standalone RelayKit tests/build, focused stream/output tests, and `git diff --check` passed. These changes are local only and have not been committed, published, or deployed; no credentials or response bodies were stored.
+- On 2026-08-25, multi-key relay retries were tightened so upstream `401` errors exclude the current channel and advance to the next channel instead of rotating every key on the same channel. `403` and `429` retain same-channel key rotation; the previous unbounded-looking retry chain was caused by resetting the global retry counter for those internal key attempts. Commit `2a8016700` passed the release regression suite and was published as `v1.0.0-rc.25-tokeness-multikey-401.1` at immutable GHCR digest `sha256:5984f6f6757dc4aa2aa1aeb95485ad41031aee34f073ce8666ecb58ce8f5a44c`; publish workflow `32846527584` and staged production deploy `32847558130` passed. All four nodes and `tokeness.ai`/`n.tokeness.dev`/`n-cf.tokeness.dev` routes exposed the new version; dashboard probes returned 200 and unauthenticated API probes returned the expected 401. Focused controller retry tests and the release regression suite passed.
+- On 2026-08-25, DeepSeek V4 compatibility release `v1.0.0-rc.25-tokeness-deepseek-v4.5` was published from commit `88609fbe262a3ddb53d6076fd0009e745fd37653` at immutable GHCR digest `sha256:a4dfab15e6856570cf7190d4d098a039eb7c224c8e19a77d59bc8856d7f6b2cf` (publish workflow `32839712110`) and deployed to all four production nodes by staged workflow `32841001506`. Deployment and post-deploy unauthenticated checks passed; both API routes now expose the `.5` version and return the normalized authentication envelope (`authentication_error`, `invalid_request_error`, `param=null`). Redacted production probes confirmed K02/K03 400 validation, unknown-model 400 `model_not_found`, invalid `reasoning_effort`/`top_p` 400, disabled thinking without reasoning output, valid streaming usage, tool-only output, and bounded dual logprobs. One K08 primary stream returned HTTP 200 with reasoning-only chunks and no terminal usage/content, so it is counted as `empty_final_content` failure under the effective-success rule; no response body or credential was stored.
+- On 2026-08-25, a post-rollout official recheck found `tool_choice=required` now returns HTTP 200 with a valid function call, contradicting the earlier 400 snapshot. The local V4 rejection was removed from `relay/helper/valid_request.go`; DS-F02 now requires a valid tool call, and focused helper/probe tests plus vet passed. This follow-up is local only and has not been published or deployed. The feature-probe specification and `Tech-Spec.md` were updated to record the newer official behavior.
+- On 2026-08-25, the production performance audit confirmed the existing isolated `scripts/performance` harness cannot measure real DeepSeek V4 KV-cache hit rate, effective success, TTFT P90, TPOT P90, or TPM: it uses a deterministic mock upstream, counts every 2xx as success, drops response bodies and SSE timestamps, fixes the model to `gpt-4o-mini`, and uses a 30-second timeout. A small production run therefore requires a separate transient-key load generator that records only structural usage/timing evidence; no usable runtime credential was present in the process, so no production load was started and no performance target is claimed.

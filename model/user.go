@@ -1302,12 +1302,14 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	gopool.Go(func() {
-		err := cacheIncrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to increase user quota: " + err.Error())
-		}
-	})
+	if common.RedisAvailable() {
+		gopool.Go(func() {
+			err := cacheIncrUserQuota(id, int64(quota))
+			if err != nil {
+				common.SysLog("failed to increase user quota: " + err.Error())
+			}
+		})
+	}
 	if !db && common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
 		return nil
@@ -1327,12 +1329,14 @@ func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	gopool.Go(func() {
-		err := cacheDecrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to decrease user quota: " + err.Error())
-		}
-	})
+	if common.RedisAvailable() {
+		gopool.Go(func() {
+			err := cacheDecrUserQuota(id, int64(quota))
+			if err != nil {
+				common.SysLog("failed to decrease user quota: " + err.Error())
+			}
+		})
+	}
 	if !db && common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
 		return nil
@@ -1346,6 +1350,70 @@ func decreaseUserQuota(id int, quota int) (err error) {
 		return err
 	}
 	return err
+}
+
+// DecreaseUserQuotaWithUsage atomically applies the wallet deduction and the
+// usage statistics of one request in a single UPDATE on the users row. Both
+// statements hit the same row, so merging them halves the hot-row lock
+// round-trips under load. Settling with the statistics embedded also makes the
+// usage counters atomic with the deduction instead of being written even when
+// the settle UPDATE fails.
+func DecreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCount int) (err error) {
+	if quota < 0 {
+		return errors.New("quota 不能为负数！")
+	}
+	if quota > 0 && common.RedisAvailable() {
+		gopool.Go(func() {
+			if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
+				common.SysLog("failed to decrease user quota: " + err.Error())
+			}
+		})
+	}
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
+		addNewRecord(BatchUpdateTypeUsedQuota, id, usedQuotaDelta)
+		addNewRecord(BatchUpdateTypeRequestCount, id, requestCount)
+		return nil
+	}
+	result := DB.Exec("UPDATE users SET quota = quota - ?, used_quota = used_quota + ?, request_count = request_count + ? WHERE id = ? AND deleted_at IS NULL",
+		quota, usedQuotaDelta, requestCount, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// IncreaseUserQuotaWithUsage atomically applies a wallet refund and the usage
+// statistics of one request in a single UPDATE on the users row.
+func IncreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCount int) (err error) {
+	if quota < 0 {
+		return errors.New("quota 不能为负数！")
+	}
+	if quota > 0 && common.RedisAvailable() {
+		gopool.Go(func() {
+			if err := cacheIncrUserQuota(id, int64(quota)); err != nil {
+				common.SysLog("failed to increase user quota: " + err.Error())
+			}
+		})
+	}
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
+		addNewRecord(BatchUpdateTypeUsedQuota, id, usedQuotaDelta)
+		addNewRecord(BatchUpdateTypeRequestCount, id, requestCount)
+		return nil
+	}
+	result := DB.Exec("UPDATE users SET quota = quota + ?, used_quota = used_quota + ?, request_count = request_count + ? WHERE id = ? AND deleted_at IS NULL",
+		quota, usedQuotaDelta, requestCount, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func DeltaUpdateUserQuota(id int, delta int) (err error) {

@@ -109,12 +109,12 @@ func relayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	CloseResponseBodyGracefully(resp)
 	var errResponse dto.GeneralErrorResponse
 	responseBodyText := string(responseBody)
-	responseBodyPreview := common.LocalLogPreview(responseBodyText)
+	responseBodyPreview := common.DebugLogPreview(responseBodyText)
 	buildErrWithBody := func(message string) error {
 		if message == "" {
-			return fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, responseBodyText)
+			return fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview)
 		}
-		return fmt.Errorf("bad response status code %d, message: %s, body: %s", resp.StatusCode, message, responseBodyText)
+		return fmt.Errorf("bad response status code %d, message: %s, body: %s", resp.StatusCode, message, responseBodyPreview)
 	}
 	if ginCtx, ok := ctx.(*gin.Context); ok {
 		if cyberErr := NewOpenAICyberPolicyError(ginCtx, responseBody, resp.StatusCode, false, nil); cyberErr != nil {

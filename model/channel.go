@@ -180,13 +180,23 @@ func ApplyChannelGroupFilter(query *gorm.DB, group string) *gorm.DB {
 
 // Value implements driver.Valuer interface
 func (c ChannelInfo) Value() (driver.Value, error) {
-	return common.Marshal(&c)
+	data, err := common.Marshal(&c)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
 }
 
 // Scan implements sql.Scanner interface
 func (c *ChannelInfo) Scan(value interface{}) error {
-	bytesValue, _ := value.([]byte)
-	return common.Unmarshal(bytesValue, c)
+	switch typed := value.(type) {
+	case []byte:
+		return common.Unmarshal(typed, c)
+	case string:
+		return common.Unmarshal([]byte(typed), c)
+	default:
+		return fmt.Errorf("unsupported channel info value %T", value)
+	}
 }
 
 func (channel *Channel) GetKeys() []string {
@@ -1073,7 +1083,7 @@ func ResetChannelsUsedQuota(ids []int) ([]Channel, error) {
 }
 
 func updateChannelUsedQuota(id int, quota int) {
-	err := DB.Model(&Channel{}).Where("id = ?", id).Update("used_quota", gorm.Expr("used_quota + ?", quota)).Error
+	err := DB.Exec("UPDATE channels SET used_quota = used_quota + ? WHERE id = ?", quota, id).Error
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to update channel used quota: channel_id=%d, delta_quota=%d, error=%v", id, quota, err))
 	}

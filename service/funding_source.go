@@ -35,6 +35,17 @@ var ErrInsufficientWalletQuota = errors.New("wallet quota insufficient")
 type WalletFunding struct {
 	userId   int
 	consumed int // 实际预扣的用户额度
+	// An armed usage delta folds used_quota/request_count into settlement so
+	// quota and usage accounting share one hot-row round-trip. A zero delta
+	// still records the request count.
+	usageDelta  int
+	recordUsage bool
+}
+
+// SetUsageDelta arms the merged settle-side usage accounting.
+func (w *WalletFunding) SetUsageDelta(delta int) {
+	w.usageDelta = delta
+	w.recordUsage = true
 }
 
 func (w *WalletFunding) Source() string { return BillingSourceWallet }
@@ -56,10 +67,21 @@ func (w *WalletFunding) PreConsume(amount int) error {
 
 func (w *WalletFunding) Settle(delta int) error {
 	if delta == 0 {
+		if w.recordUsage {
+			// Even with no wallet adjustment the usage statistics still need
+			// their own write; keep the single-statement shape.
+			return model.DecreaseUserQuotaWithUsage(w.userId, 0, w.usageDelta, 1)
+		}
 		return nil
 	}
 	if delta > 0 {
+		if w.recordUsage {
+			return model.DecreaseUserQuotaWithUsage(w.userId, delta, w.usageDelta, 1)
+		}
 		return model.DecreaseUserQuota(w.userId, delta, false)
+	}
+	if w.recordUsage {
+		return model.IncreaseUserQuotaWithUsage(w.userId, -delta, w.usageDelta, 1)
 	}
 	return model.IncreaseUserQuota(w.userId, -delta, false)
 }

@@ -158,11 +158,18 @@ func main() {
 		model.InitBatchUpdater()
 	}
 
+	if os.Getenv("LOG_BATCH_ENABLED") == "true" {
+		model.InitLogBatcher()
+		common.SysLog("log batching enabled")
+	}
+
 	if os.Getenv("ENABLE_PPROF") == "true" {
 		gopool.Go(func() {
 			log.Println(http.ListenAndServe("0.0.0.0:8005", nil))
 		})
-		go common.Monitor()
+		if !common.GetEnvOrDefaultBool("DISABLE_PPROF_CPU_MONITOR", false) {
+			go common.Monitor()
+		}
 		common.SysLog("pprof enabled")
 	}
 
@@ -229,10 +236,22 @@ func main() {
 	// SSE streams may run for minutes; give them time to finish before forced exit
 	shutdownTimeout := time.Duration(common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	cancel()
+
+	backgroundDrainTimeout := time.Duration(common.GetEnvOrDefault("BACKGROUND_DRAIN_TIMEOUT_SECONDS", 30)) * time.Second
+	drain := func(name string, shutdown func(context.Context) error) {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), backgroundDrainTimeout)
+		defer drainCancel()
+		if err := shutdown(drainCtx); err != nil {
+			common.SysError(fmt.Sprintf("%s shutdown: %v", name, err))
+		}
+	}
+	drain("log batch", model.ShutdownLogBatcher)
+	drain("channel observability", channelobservability.Shutdown)
+	drain("perf metrics", perfmetrics.Shutdown)
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()

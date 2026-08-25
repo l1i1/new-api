@@ -176,6 +176,14 @@ func RedisHGetObj(key string, obj interface{}) error {
 	if len(result) == 0 {
 		return fmt.Errorf("key %s not found in Redis", key)
 	}
+	return RedisHGetObjFromMap(result, obj)
+}
+
+// RedisHGetObjFromMap decodes a Redis hash result into a struct.
+func RedisHGetObjFromMap(result map[string]string, obj interface{}) error {
+	if len(result) == 0 {
+		return fmt.Errorf("redis hash is empty")
+	}
 
 	// Handle both pointer and non-pointer values
 	val := reflect.ValueOf(obj)

@@ -107,6 +107,33 @@ shape flags were retained.
   stream with reasoning-only chunks and no terminal usage/content; the runner
   records this as `empty_final_content` rather than a successful 200. K02/K03
   and the normalized authentication envelope passed on both gateway routes.
+- On 2026-08-25 a full K01-K13 paired rerun (UTF-8-safe bodies) compared the
+  official endpoint with `n.tokeness.dev`. All 13 cases returned HTTP 200 on
+  both routes except the intended K02/K03 400 validations. Remaining
+  differences and their handling:
+  - K02/K03 error messages carried a gateway ` (request id: ...)` suffix the
+    official body never has. The relay error boundary now keeps official V4
+    validation messages verbatim (no request-id suffix).
+  - Non-stream responses routed through aggregator upstreams added
+    `cost`, null `message.tool_calls`, and a generic usage object
+    (`prompt_tokens_details` empty, no `prompt_cache_hit_tokens`/
+    `prompt_cache_miss_tokens`/`completion_tokens_details`). A V4 fit layer now
+    rewrites such bodies to the official seven-key usage shape, strips
+    aggregator extensions, and preserves only a real upstream-provided
+    `system_fingerprint`; missing fingerprints are not fabricated.
+  - Streaming: official attaches usage to the final chunk carrying
+    `finish_reason` (no usage-only event, `system_fingerprint` on every chunk).
+    The gateway previously split a separate usage-only event and re-serialized
+    usage with Claude/OpenRouter extension fields. V4 streams now forward
+    official-shaped chunks verbatim and merge aggregator usage-only events into
+    the delayed final `finish_reason` chunk instead of forwarding a separate
+    event. Unknown fingerprints remain absent.
+  - K06/K07 completion-token divergence (official truncates at `max_tokens`
+    after exhausting the budget on reasoning; the aggregator upstream returns
+    full answers) is upstream channel behavior, not a gateway contract issue;
+    it is recorded as a channel-selection risk, not fitted locally.
+  These fixes are local and verified by unit tests plus offline build; they are
+  not deployed to the public routes yet.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
 remaining 36 matrix cases are intentionally `inconclusive` until their live
@@ -117,7 +144,7 @@ fixtures and mock-upstream tests are implemented.
 | Area | Verdict | Evidence / remaining risk |
 | --- | --- | --- |
 | Basic non-stream response | Partially aligned | Probe requires non-empty `content`; the 256-token named-message fit case is protocol-accepted but frequently has no final content after reasoning exhausts the limit |
-| Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and a separate usage event when requested |
+| Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and usage on the final `finish_reason` chunk when requested |
 | Thinking disabled | Compatible in candidate and observed production sample | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
 | Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking/tool replay is now covered by live fixtures; broader provider variance remains |
 | Sampling validation | Aligned in candidate; rollout recheck pending | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the candidate returns the same validation class |
@@ -244,7 +271,7 @@ response bodies, or credentials.
 | ID | Request | Required assertion | Severity |
 | --- | --- | --- | --- |
 | DS-B01 | Non-stream `basic_math` | 200; `object=chat.completion`; one choice; assistant `content` exists; `finish_reason` is present | P0 |
-| DS-B02 | `stream=true`, `stream_options.include_usage=true` | Valid SSE chunks; deltas preserve order; one final usage chunk with empty `choices`; terminator is `data: [DONE]` | P0 |
+| DS-B02 | `stream=true`, `stream_options.include_usage=true` | Valid SSE chunks; deltas preserve order; usage is attached to the final `finish_reason` chunk; no usage-only `choices:[]` event; terminator is `data: [DONE]` | P0 |
 | DS-B03 | `stream=true` without `include_usage` | Valid SSE and `[DONE]`; record whether the provider emits a usage event despite the option being omitted. The gateway must not fabricate or overwrite provider usage | P1 |
 | DS-B04 | Non-stream usage | `total_tokens = prompt_tokens + completion_tokens`; nested cache usage, when present, is non-negative and not greater than prompt tokens | P0 |
 | DS-B05 | `messages` with system, user, assistant, and tool roles where applicable | Roles and text survive round-trip; no role is silently dropped or reordered | P0 |

@@ -1,12 +1,14 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -124,15 +126,24 @@ func cacheGetUserBase(userId int) (*UserBase, error) {
 		return nil, fmt.Errorf("redis is not enabled")
 	}
 	var userCache UserBase
-	// Try getting from Redis first
-	err := common.RedisHGetObj(getUserCacheKey(userId), &userCache)
+	ctx := context.Background()
+	var userHash *redis.StringStringMapCmd
+	var authVersions *redis.SliceCmd
+	_, err := common.RDB.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		userHash = pipe.HGetAll(ctx, getUserCacheKey(userId))
+		authVersions = pipe.MGet(ctx, getUserAuthFenceKey(userId), getUserAuthVersionKey(userId))
+		return nil
+	})
 	if err != nil {
+		return nil, err
+	}
+	if err := common.RedisHGetObjFromMap(userHash.Val(), &userCache); err != nil {
 		return nil, err
 	}
 	if userCache.Id != userId || userCache.CacheSchema != userCacheSchemaVersion || userCache.AuthVersion <= 0 {
 		return nil, fmt.Errorf("user cache schema is stale")
 	}
-	floor, err := getUserAuthVersionFloor(userId)
+	floor, err := parseUserAuthVersionFloor(authVersions.Val())
 	if err != nil {
 		return nil, err
 	}

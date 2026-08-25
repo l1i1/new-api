@@ -36,6 +36,15 @@ type BillingSession struct {
 	mu               sync.Mutex
 }
 
+// FoldUsageIntoWalletSettle arms the wallet funding to write the request's
+// used_quota/request_count statistics inside the same settle UPDATE on the
+// users row. Call before Settle; wallet funding only.
+func (s *BillingSession) FoldUsageIntoWalletSettle(usageDelta int) {
+	if wallet, ok := s.funding.(*WalletFunding); ok {
+		wallet.SetUsageDelta(usageDelta)
+	}
+}
+
 // Settle 根据实际消耗额度进行结算。
 // 资金来源和令牌额度分两步提交：若资金来源已提交但令牌调整失败，
 // 会标记 fundingSettled 防止 Refund 对已提交的资金来源执行退款。
@@ -47,6 +56,15 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	delta := actualQuota - s.preConsumedQuota
 	if delta == 0 {
+		// A wallet request can still carry usage statistics when the estimate
+		// exactly matches actual usage. Let the funding source persist them before
+		// marking the session settled.
+		if !s.fundingSettled {
+			if err := s.funding.Settle(0); err != nil {
+				return err
+			}
+			s.fundingSettled = true
+		}
 		s.settled = true
 		return nil
 	}
@@ -439,12 +457,12 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	case "wallet_only":
 		return tryWallet()
 	case "wallet_first":
-		session, err := tryWallet()
-		if err != nil {
-			if err.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
+		session, apiErr := tryWallet()
+		if apiErr != nil {
+			if apiErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
 				return trySubscription()
 			}
-			return nil, err
+			return nil, apiErr
 		}
 		return session, nil
 	case "subscription_first":

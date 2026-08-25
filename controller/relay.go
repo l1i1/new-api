@@ -112,7 +112,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			filteredMessage := operation_setting.FilterErrorMessage(newAPIError.Error())
-			newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
+			// Official DeepSeek V4 validation errors carry no gateway request
+			// ID suffix; keep such messages byte-identical to the provider.
+			originalModel := strings.ToLower(strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyOriginalModel)))
+			isDeepSeekV4Validation := relayFormat == types.RelayFormatOpenAI &&
+				strings.HasPrefix(originalModel, "deepseek-v4-") &&
+				helper.IsDeepSeekV4ValidationMessage(filteredMessage)
+			if !isDeepSeekV4Validation {
+				newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())

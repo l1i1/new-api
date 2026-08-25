@@ -203,10 +203,11 @@ func TestNormalizeServerOverloadError(t *testing.T) {
 	require.Equal(t, "invalid_request", unsupported.Code)
 }
 
-func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
+func TestRelayErrorHandlerBoundsAndMasksInvalidJSONBodyInDebugLog(t *testing.T) {
 	withDebugEnabled(t, true)
 
-	body := strings.Repeat("e", common.LocalLogContentLimit+256)
+	secret := "sk-upstream-error-secret-123456"
+	body := `{"token":"` + secret + `","data":"` + strings.Repeat("e", common.LocalLogContentLimit+256)
 	var logBuffer bytes.Buffer
 
 	common.LogWriterMu.Lock()
@@ -227,8 +228,27 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	newAPIError := RelayErrorHandler(context.Background(), resp, false)
 
 	require.NotNil(t, newAPIError)
-	require.NotContains(t, logBuffer.String(), "[truncated")
-	require.Contains(t, logBuffer.String(), body)
+	require.Contains(t, logBuffer.String(), "[truncated")
+	require.NotContains(t, logBuffer.String(), secret)
+	require.NotContains(t, logBuffer.String(), body)
+}
+
+func TestRelayErrorHandlerBoundsBodyIncludedForChannelTest(t *testing.T) {
+	withDebugEnabled(t, true)
+
+	secret := "sk-channel-test-secret-123456"
+	body := `{"token":"` + secret + `","data":"` + strings.Repeat("f", common.LocalLogContentLimit+256)
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, true)
+
+	require.NotNil(t, newAPIError)
+	require.Contains(t, newAPIError.Error(), "[truncated")
+	require.NotContains(t, newAPIError.Error(), secret)
+	require.NotContains(t, newAPIError.Error(), body)
 }
 
 func withDebugEnabled(t *testing.T, enabled bool) {

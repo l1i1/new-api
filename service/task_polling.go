@@ -285,11 +285,11 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		}
 		var responseItems taskdto.TaskResponse[[]taskdto.SunoDataResponse]
 		if unmarshalErr := common.Unmarshal(responseBody, &responseItems); unmarshalErr != nil {
-			logger.LogError(ctx, fmt.Sprintf("Get Suno Task parse body error2: %v, body: %s", unmarshalErr, string(responseBody)))
+			logger.LogError(ctx, fmt.Sprintf("Get Suno Task parse body error2: %v, body: %s", unmarshalErr, common.DebugLogPreview(string(responseBody))))
 			return unmarshalErr
 		}
 		if !responseItems.IsSuccess() {
-			common.SysLog(fmt.Sprintf("渠道 #%d 未完成的任务有: %d, 成功获取到任务数: %s", channelId, len(group.ids), string(responseBody)))
+			common.SysLog(fmt.Sprintf("渠道 #%d 未完成的任务有: %d, 成功获取到任务数: %s", channelId, len(group.ids), common.DebugLogPreview(string(responseBody))))
 			continue
 		}
 
@@ -492,7 +492,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		return fmt.Errorf("readAll failed for task %s: %w", taskId, err)
 	}
 
-	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
+	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", common.DebugLogPreview(string(responseBody)))
 
 	snap := task.Snapshot()
 
@@ -532,8 +532,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 				// 其他错误认为是任务失败，记录错误信息并更新任务状态
 				taskResult = relaycommon.FailTaskInfo("upstream returned error")
 			} else {
-				// unknown error format, log original response
-				logger.LogError(ctx, fmt.Sprintf("Task %s returned empty status with unrecognized error format, response: %s", taskId, string(responseBody)))
+				// Unknown error format: keep diagnostics bounded and redacted.
+				logger.LogError(ctx, fmt.Sprintf("Task %s returned empty status with unrecognized error format, response: %s", taskId, common.DebugLogPreview(string(responseBody))))
 				taskResult = relaycommon.FailTaskInfo("upstream returned unrecognized message")
 			}
 		}

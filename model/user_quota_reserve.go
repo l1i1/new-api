@@ -31,13 +31,15 @@ func DecreaseUserQuotaIfEnough(id int, quota int) error {
 		return ErrInsufficientUserQuota
 	}
 
-	gopool.Go(func() {
-		if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
-			common.SysLog("failed to decrease user quota cache: " + err.Error())
-			if invalidateErr := invalidateUserCache(id); invalidateErr != nil {
-				common.SysLog("failed to invalidate user quota cache: " + invalidateErr.Error())
+	if common.RedisAvailable() {
+		gopool.Go(func() {
+			if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
+				common.SysLog("failed to decrease user quota cache: " + err.Error())
+				if invalidateErr := invalidateUserCache(id); invalidateErr != nil {
+					common.SysLog("failed to invalidate user quota cache: " + invalidateErr.Error())
+				}
 			}
-		}
-	})
+		})
+	}
 	return nil
 }

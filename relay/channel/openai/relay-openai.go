@@ -134,6 +134,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamHasChoices bool
 	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
+	var deepSeekV4PendingFinalData string
 	var streamErr *types.NewAPIError
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
@@ -199,7 +200,36 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 
 		if lastStreamData != "" {
-			if info.RelayFormat == types.RelayFormatOpenAI && lastStreamHasUsage {
+			if info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info) {
+				// Official DeepSeek V4 attaches usage to the chunk that also
+				// carries choices/finish_reason and includes
+				// system_fingerprint on every chunk. Forward official-shaped
+				// events verbatim; only patch chunks from aggregators that
+				// stripped the fingerprint.
+				if currentHasUsage && !currentHasChoices {
+					// Hold the finish chunk until the following usage-only event is
+					// parsed, then merge usage back into that official-shaped chunk.
+					deepSeekV4PendingFinalData = lastStreamData
+				} else {
+					streamData := lastStreamData
+					if lastStreamHasUsage && !lastStreamHasChoices {
+						// Some aggregators emit usage before the finish chunk. Suppress
+						// that event and release the data chunk held before it; the final
+						// finish chunk receives the accumulated usage below.
+						streamData = deepSeekV4PendingFinalData
+						deepSeekV4PendingFinalData = ""
+					}
+					if streamData != "" {
+						if patched, fitErr := fitDeepSeekV4StreamEvent(streamData, nil, info.ShouldIncludeUsage); fitErr == nil {
+							streamData = patched
+						}
+						if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+							common.SysLog("error handling stream format: " + err.Error())
+							sr.Error(err)
+						}
+					}
+				}
+			} else if info.RelayFormat == types.RelayFormatOpenAI && lastStreamHasUsage {
 				// Preserve choices carried beside usage, but keep the usage itself
 				// pending so clients receive only one cumulative event.
 				pendingUsageData = lastStreamData
@@ -311,7 +341,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		if lastStreamHasUsage {
+		switch {
+		case isDeepSeekV4ChatModel(info):
+			// Official DeepSeek V4 emits usage inside the final chunk that
+			// carries finish_reason and never sends a usage-only event. When
+			// the upstream already matched that shape, the raw chunk is
+			// forwarded verbatim; otherwise the official usage shape is
+			// injected into the final chunk.
+			streamData := lastStreamData
+			if lastStreamHasUsage && !lastStreamHasChoices {
+				streamData = deepSeekV4PendingFinalData
+			}
+			if streamData != "" {
+				patched, fitErr := fitDeepSeekV4StreamEvent(streamData, usage, info.ShouldIncludeUsage)
+				if fitErr != nil {
+					logger.LogError(c, "error fitting final stream usage; forwarding original event: "+fitErr.Error())
+				} else {
+					streamData = patched
+				}
+				_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+		case lastStreamHasUsage:
 			pendingUsageData = lastStreamData
 			if lastStreamHasChoices {
 				if lastStreamWithoutUsage != "" {
@@ -325,17 +375,19 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					pendingUsageData = usageOnlyData
 				}
 			}
-		} else if shouldSendLastResp {
-			streamData := lastStreamData
-			patched, err := patchStreamUsageData(streamData, usage)
-			if err != nil {
-				logger.LogError(c, "error patching final stream usage: "+err.Error())
-			} else {
-				streamData = patched
+		default:
+			if shouldSendLastResp {
+				streamData := lastStreamData
+				patched, err := patchStreamUsageData(streamData, usage)
+				if err != nil {
+					logger.LogError(c, "error patching final stream usage: "+err.Error())
+				} else {
+					streamData = patched
+				}
+				_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 			}
-			_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
-		if info.ShouldIncludeUsage && pendingUsageData != "" {
+		if info.ShouldIncludeUsage && pendingUsageData != "" && !isDeepSeekV4ChatModel(info) {
 			streamData := pendingUsageData
 			patched, err := patchStreamUsageData(streamData, usage)
 			if err != nil {
@@ -554,6 +606,16 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 		responseBody = geminiRespStr
+	}
+
+	if info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info) {
+		// Apply the V4 client contract after both passthrough and ForceFormat
+		// paths so generic usage extensions cannot escape either route.
+		fitted, fitErr := fitDeepSeekV4TextResponseBody(responseBody, &simpleResponse.Usage)
+		if fitErr != nil {
+			return nil, types.NewOpenAIError(fitErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		responseBody = fitted
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

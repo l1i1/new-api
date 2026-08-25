@@ -3,11 +3,13 @@ package channelobservability
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -72,7 +74,48 @@ type atomicBucket struct {
 
 var hotBuckets sync.Map
 
+const (
+	redisObservationQueueSize     = 8192
+	redisObservationBatchSize     = 128
+	redisObservationBatchInterval = 10 * time.Millisecond
+)
+
+type redisObservationRecord struct {
+	redisKey   string
+	request    bool
+	success    bool
+	latencyMs  int64
+	ttftMs     int64
+	frtMs      int64
+	usage      Usage
+	errorClass string
+}
+
+var (
+	redisObservationQueue  chan redisObservationRecord
+	redisObservationOnce   sync.Once
+	redisObservationStop   chan struct{}
+	redisObservationDone   chan struct{}
+	redisObservationMu     sync.RWMutex
+	redisObservationEnded  bool
+	redisObservationActive atomic.Bool
+)
+
+var errRedisObservationUnavailable = errors.New("channel observation Redis is unavailable")
+
 func Init() {
+	redisObservationOnce.Do(func() {
+		if common.GetEnvOrDefaultBool("CHANNEL_OBSERVABILITY_ASYNC_REDIS", false) && common.RedisAvailable() {
+			redisObservationMu.Lock()
+			redisObservationQueue = make(chan redisObservationRecord, redisObservationQueueSize)
+			redisObservationStop = make(chan struct{})
+			redisObservationDone = make(chan struct{})
+			redisObservationEnded = false
+			redisObservationActive.Store(true)
+			redisObservationMu.Unlock()
+			go redisObservationLoop()
+		}
+	})
 	go flushLoop()
 }
 
@@ -171,11 +214,15 @@ func record(sample Observation, request bool) {
 	}
 	key := bucketKey{bucketTs: bucketStart(time.Now().Unix()), channelId: sample.ChannelId, credentialId: sample.CredentialId,
 		requestedModel: sample.RequestedModel, upstreamModel: sample.UpstreamModel, group: sample.Group, protocol: sample.Protocol}
-	actual, _ := hotBuckets.LoadOrStore(key, &atomicBucket{value: model.ChannelModelPerfAggregate{
-		ChannelId: key.channelId, CredentialId: key.credentialId, RequestedModel: key.requestedModel, UpstreamModel: key.upstreamModel,
-		Group: key.group, Protocol: key.protocol, LatencyHistogram: model.NewObservationHistogram(),
-		RequestLatencyHistogram: model.NewObservationHistogram(), TtftHistogram: model.NewObservationHistogram(), FRTHistogram: model.NewObservationHistogram(), ErrorCounts: map[string]int64{},
-	}})
+	actual, loaded := hotBuckets.Load(key)
+	if !loaded {
+		candidate := &atomicBucket{value: model.ChannelModelPerfAggregate{
+			ChannelId: key.channelId, CredentialId: key.credentialId, RequestedModel: key.requestedModel, UpstreamModel: key.upstreamModel,
+			Group: key.group, Protocol: key.protocol, LatencyHistogram: model.NewObservationHistogram(),
+			RequestLatencyHistogram: model.NewObservationHistogram(), TtftHistogram: model.NewObservationHistogram(), FRTHistogram: model.NewObservationHistogram(), ErrorCounts: map[string]int64{},
+		}}
+		actual, _ = hotBuckets.LoadOrStore(key, candidate)
+	}
 	bucket := actual.(*atomicBucket)
 	bucket.mu.Lock()
 	value := &bucket.value
@@ -898,9 +945,40 @@ func decodeRedisKey(redisKey string) (bucketKey, bool) {
 }
 
 func recordRedis(key bucketKey, sample Observation, request bool) {
-	if !common.RedisEnabled || common.RDB == nil {
+	if !common.RedisAvailable() {
 		return
 	}
+	if !redisObservationActive.Load() {
+		recordRedisSync(key, sample, request)
+		return
+	}
+	redisObservationMu.RLock()
+	if redisObservationQueue == nil || redisObservationEnded {
+		redisObservationMu.RUnlock()
+		recordRedisSync(key, sample, request)
+		return
+	}
+	record := redisObservationRecord{
+		redisKey:   encodeRedisKey(key),
+		request:    request,
+		success:    sample.Success,
+		latencyMs:  sample.LatencyMs,
+		ttftMs:     sample.TtftMs,
+		frtMs:      sample.FRTMs,
+		usage:      sample.Usage,
+		errorClass: sample.ErrorClass,
+	}
+	select {
+	case redisObservationQueue <- record:
+		redisObservationMu.RUnlock()
+		return
+	default:
+		redisObservationMu.RUnlock()
+	}
+	recordRedisSync(key, sample, request)
+}
+
+func recordRedisSync(key bucketKey, sample Observation, request bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	redisKey := encodeRedisKey(key)
@@ -971,6 +1049,180 @@ func incrementRedisHistogram(pipe redis.Pipeliner, ctx context.Context, key, pre
 	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_%d", prefix, index), 1)
 	quantizedValue := quantizeRedisSketchValue(valueMs)
 	pipe.HIncrBy(ctx, key, fmt.Sprintf("%s_sample_%d", prefix, quantizedValue), 1)
+}
+
+func redisObservationLoop() {
+	ticker := time.NewTicker(redisObservationBatchInterval)
+	defer ticker.Stop()
+	defer close(redisObservationDone)
+	batch := make([]redisObservationRecord, 0, redisObservationBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		flushRedisObservationBatch(batch)
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case record := <-redisObservationQueue:
+			batch = append(batch, record)
+			if len(batch) >= redisObservationBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-redisObservationStop:
+			for {
+				select {
+				case record := <-redisObservationQueue:
+					batch = append(batch, record)
+					if len(batch) >= redisObservationBatchSize {
+						flush()
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
+}
+
+// Shutdown drains queued Redis observations during graceful process exit.
+func Shutdown(ctx context.Context) error {
+	redisObservationMu.Lock()
+	if redisObservationQueue == nil || redisObservationEnded {
+		redisObservationMu.Unlock()
+		return nil
+	}
+	redisObservationEnded = true
+	redisObservationActive.Store(false)
+	close(redisObservationStop)
+	done := redisObservationDone
+	redisObservationMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func flushRedisObservations(records []redisObservationRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if !common.RedisAvailable() {
+		return errRedisObservationUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	fieldsByKey := make(map[string]map[string]int64)
+	for _, record := range records {
+		fields := fieldsByKey[record.redisKey]
+		if fields == nil {
+			fields = make(map[string]int64, 24)
+			fieldsByKey[record.redisKey] = fields
+		}
+		addRedisObservation(fields, record)
+	}
+
+	pipe := common.RDB.TxPipeline()
+	keys := make([]string, 0, len(fieldsByKey))
+	for redisKey, fields := range fieldsByKey {
+		keys = append(keys, redisKey)
+		for field, delta := range fields {
+			pipe.HIncrBy(ctx, redisKey, field, delta)
+		}
+		pipe.Expire(ctx, redisKey, 2*time.Hour)
+	}
+	members := make([]interface{}, len(keys))
+	for index, key := range keys {
+		members[index] = key
+	}
+	pipe.SAdd(ctx, redisIndexKey(), members...)
+	pipe.Expire(ctx, redisIndexKey(), 2*time.Hour)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func flushRedisObservationBatch(records []redisObservationRecord) {
+	if err := flushRedisObservations(records); err != nil {
+		// A failed Exec can be an unknown commit: replaying HINCRBY operations
+		// would risk duplicate metrics. Observability is best-effort, so keep
+		// at-most-once semantics and report the dropped batch.
+		common.SysError(fmt.Sprintf("failed to flush channel observation Redis batch; dropped %d records: %v", len(records), err))
+	}
+}
+
+func addRedisObservation(fields map[string]int64, record redisObservationRecord) {
+	add := func(field string, delta int64) {
+		fields[field] += delta
+	}
+	if record.request {
+		add("request", 1)
+		if record.success {
+			add("request_ok", 1)
+		}
+		add("request_latency", record.latencyMs)
+		add("request_latency_count", 1)
+		addRedisHistogram(fields, "request_hist", record.latencyMs)
+		if record.ttftMs > 0 {
+			add("ttft", record.ttftMs)
+			add("ttft_count", 1)
+			addRedisHistogram(fields, "ttft_hist", record.ttftMs)
+		}
+		add("sample", 1)
+	} else {
+		add("attempt", 1)
+		if record.success {
+			add("attempt_ok", 1)
+		}
+		add("latency", record.latencyMs)
+		add("latency_count", 1)
+		addRedisHistogram(fields, "lat_hist", record.latencyMs)
+		if record.ttftMs > 0 {
+			add("ttft", record.ttftMs)
+			add("ttft_count", 1)
+			addRedisHistogram(fields, "ttft_hist", record.ttftMs)
+		}
+		if record.frtMs > 0 {
+			add("frt", record.frtMs)
+			add("frt_count", 1)
+			addRedisHistogram(fields, "frt_hist", record.frtMs)
+		}
+		if !record.success && record.errorClass != "" {
+			add(encodeRedisErrorClass(record.errorClass), 1)
+		}
+	}
+	if record.usage.Observable {
+		add("usage", 1)
+		add("input", record.usage.InputTokens)
+		add("cache_read", record.usage.CacheReadTokens)
+		add("cache_write", record.usage.CacheWriteTokens)
+		add("cache_observable", 1)
+		if record.usage.CacheReadTokens > 0 {
+			add("cache_hit", 1)
+		}
+	}
+}
+
+func addRedisHistogram(fields map[string]int64, prefix string, valueMs int64) {
+	if valueMs < 0 {
+		return
+	}
+	index := len(model.ObservationHistogramBounds)
+	for i, bound := range model.ObservationHistogramBounds {
+		if valueMs <= bound {
+			index = i
+			break
+		}
+	}
+	fields[fmt.Sprintf("%s_%d", prefix, index)]++
+	quantizedValue := quantizeRedisSketchValue(valueMs)
+	fields[fmt.Sprintf("%s_sample_%d", prefix, quantizedValue)]++
 }
 
 // quantizeRedisSketchValue keeps active Redis histograms compact without

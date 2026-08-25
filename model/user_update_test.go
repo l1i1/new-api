@@ -443,3 +443,71 @@ func TestResetUserPasswordByEmailRequiresSingleActiveMatch(t *testing.T) {
 	err = ResetUserPasswordByEmail("missing@example.com", "NewPassword123")
 	require.True(t, errors.Is(err, ErrEmailNotFound))
 }
+
+func TestDecreaseUserQuotaWithUsageMergesStatistics(t *testing.T) {
+	setupUserUpdateTestState(t)
+	user := User{
+		Username:     "merged-usage-user",
+		Password:     "unused",
+		Role:         common.RoleCommonUser,
+		Status:       common.UserStatusEnabled,
+		Quota:        1000,
+		UsedQuota:    100,
+		RequestCount: 5,
+		AffCode:      "merged-usage-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	require.NoError(t, DecreaseUserQuotaWithUsage(user.Id, 300, 300, 1))
+
+	var updated User
+	require.NoError(t, DB.Where("id = ?", user.Id).First(&updated).Error)
+	assert.Equal(t, 700, updated.Quota)
+	assert.Equal(t, 400, updated.UsedQuota)
+	assert.Equal(t, 6, updated.RequestCount)
+}
+
+func TestIncreaseUserQuotaWithUsageMergesStatistics(t *testing.T) {
+	setupUserUpdateTestState(t)
+	user := User{
+		Username:     "merged-refund-user",
+		Password:     "unused",
+		Role:         common.RoleCommonUser,
+		Status:       common.UserStatusEnabled,
+		Quota:        1000,
+		UsedQuota:    100,
+		RequestCount: 5,
+		AffCode:      "merged-refund-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	require.NoError(t, IncreaseUserQuotaWithUsage(user.Id, 300, 80, 1))
+
+	var updated User
+	require.NoError(t, DB.Where("id = ?", user.Id).First(&updated).Error)
+	assert.Equal(t, 1300, updated.Quota)
+	assert.Equal(t, 180, updated.UsedQuota)
+	assert.Equal(t, 6, updated.RequestCount)
+}
+
+func TestMergedUsageUpdatesRejectSoftDeletedUser(t *testing.T) {
+	setupUserUpdateTestState(t)
+	user := User{
+		Username: "deleted-usage-user",
+		Password: "unused",
+		Status:   common.UserStatusEnabled,
+		Quota:    1000,
+		AffCode:  "deleted-usage-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, DB.Delete(&user).Error)
+
+	require.ErrorIs(t, DecreaseUserQuotaWithUsage(user.Id, 100, 100, 1), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, IncreaseUserQuotaWithUsage(user.Id, 100, 100, 1), gorm.ErrRecordNotFound)
+
+	var deleted User
+	require.NoError(t, DB.Unscoped().First(&deleted, user.Id).Error)
+	assert.Equal(t, 1000, deleted.Quota)
+	assert.Zero(t, deleted.UsedQuota)
+	assert.Zero(t, deleted.RequestCount)
+}

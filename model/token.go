@@ -424,14 +424,15 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 }
 
 func decreaseTokenQuota(id int, quota int) (err error) {
-	err = DB.Model(&Token{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
-			"remain_quota":  gorm.Expr("remain_quota - ?", quota),
-			"used_quota":    gorm.Expr("used_quota + ?", quota),
-			"accessed_time": common.GetTimestamp(),
-		},
-	).Error
-	return err
+	result := DB.Exec("UPDATE tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND deleted_at IS NULL",
+		quota, quota, common.GetTimestamp(), id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // CountUserTokens returns total number of tokens for the given user, used for pagination

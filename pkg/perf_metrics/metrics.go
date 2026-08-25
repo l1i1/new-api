@@ -21,6 +21,7 @@ var hotBuckets sync.Map
 const seriesSchema = "dbcd0a3c01b55203"
 
 func Init() {
+	initPerfMetricsRedisBatcher()
 	go flushLoop()
 }
 
@@ -386,6 +387,9 @@ func avgTps(value counters) float64 {
 
 func recordRedis(key bucketKey, sample Sample) {
 	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	if enqueuePerfMetricsRedis(redisBucketKey(key), sample) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

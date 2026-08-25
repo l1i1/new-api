@@ -15,6 +15,7 @@ one-api
 new-api
 /new-api-linux
 /__debug_bin*
+/scripts/performance/.new-api*-linux-amd64
 .DS_Store
 tiktoken_cache
 .eslintcache

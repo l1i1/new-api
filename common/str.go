@@ -19,6 +19,19 @@ func LocalLogPreview(content string) string {
 	if DebugEnabled || len(content) <= LocalLogContentLimit {
 		return content
 	}
+	return truncateLogContent(content)
+}
+
+// DebugLogPreview keeps debug diagnostics bounded and removes credentials even
+// when DEBUG=true. Request and response payloads must not be written in full.
+func DebugLogPreview(content string) string {
+	return truncateLogContent(MaskSensitiveInfo(content))
+}
+
+func truncateLogContent(content string) string {
+	if len(content) <= LocalLogContentLimit {
+		return content
+	}
 	return fmt.Sprintf("%s... [truncated, original_length=%d, limit=%d]", content[:LocalLogContentLimit], len(content), LocalLogContentLimit)
 }
 

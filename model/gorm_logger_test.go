@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
@@ -72,6 +73,32 @@ func TestSanitizeDBErrorSQLiteDriver(t *testing.T) {
 func TestSanitizeDBErrorKeepsNonDriverErrors(t *testing.T) {
 	err := fmt.Errorf("dial tcp 127.0.0.1:3306: connect: connection refused")
 	assert.Equal(t, err, sanitizeDBError(err))
+}
+
+func TestNewGormConfigPreparedStatementToggle(t *testing.T) {
+	t.Setenv("SQL_DISABLE_PREPARED_STATEMENTS", "false")
+	assert.True(t, newGormConfig(true).PrepareStmt)
+
+	t.Setenv("SQL_DISABLE_PREPARED_STATEMENTS", "true")
+	assert.False(t, newGormConfig(true).PrepareStmt)
+	assert.False(t, newGormConfig(false).PrepareStmt)
+}
+
+func TestDisablePostgresStatementCaches(t *testing.T) {
+	normalized := disablePostgresStatementCaches("postgresql://perf-user@localhost/new-api?sslmode=disable&application_name=perf")
+	parsed, err := url.Parse(normalized)
+	require.NoError(t, err)
+	query := parsed.Query()
+	assert.Equal(t, "0", query.Get("statement_cache_capacity"))
+	assert.Equal(t, "0", query.Get("description_cache_capacity"))
+	assert.Equal(t, "disable", query.Get("sslmode"))
+	assert.Equal(t, "perf", query.Get("application_name"))
+
+	keywordDSN := disablePostgresStatementCaches("host=localhost user=perf dbname=new-api sslmode=disable")
+	assert.Equal(t,
+		"host=localhost user=perf dbname=new-api sslmode=disable statement_cache_capacity=0 description_cache_capacity=0",
+		keywordDSN,
+	)
 }
 
 // 保护契约:经 gorm 真实链路,错误日志同时满足 SQL 参数化、驱动错误脱敏、

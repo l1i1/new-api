@@ -1,0 +1,79 @@
+services:
+  new-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.performance
+    image: tokeness-new-api-perf:local
+    ports:
+      - "${PERF_HTTP_PORT:-3001}:3000"
+      - "${PERF_PPROF_PORT:-8006}:8005"
+    environment:
+      SQL_DSN: postgresql://perf_user:${PERF_DB_PASSWORD:?PERF_DB_PASSWORD must be set by the performance runner}@postgres:5432/new-api
+      # Stay below Postgres max_connections; the default pool of 1000 exhausts
+      # the server's 100-connection budget under load (SQLSTATE 53300).
+      SQL_MAX_OPEN_CONNS: "90"
+      SQL_MAX_IDLE_CONNS: "90"
+      SQL_DISABLE_PREPARED_STATEMENTS: "${PERF_SQL_DISABLE_PREPARED_STATEMENTS:-false}"
+      REDIS_CONN_STRING: redis://redis:6379
+      TZ: Asia/Shanghai
+      SESSION_COOKIE_SECURE: "false"
+      BATCH_UPDATE_ENABLED: "false"
+      LOG_BATCH_ENABLED: "${PERF_LOG_BATCH_ENABLED:-true}"
+      CHANNEL_OBSERVABILITY_ASYNC_REDIS: "${PERF_CHANNEL_OBSERVABILITY_ASYNC_REDIS:-false}"
+      PERF_METRICS_ASYNC_REDIS: "${PERF_METRICS_ASYNC_REDIS:-false}"
+      # Peak-RSS control: collect garbage at a smaller heap growth factor
+      # instead of the default 100% doubling; costs ~1% throughput for a ~33%
+      # lower memory ceiling (GOGC=30 measured 54.2 vs 80.6 MiB peak RSS).
+      GOGC: "${PERF_GOGC:-30}"
+      MEMORY_CACHE_ENABLED: "true"
+      DEBUG: "false"
+      ENABLE_PPROF: "true"
+      DISABLE_PPROF_CPU_MONITOR: "true"
+      PYROSCOPE_SERVER_ADDRESS: ""
+      NODE_NAME: new-api-perf
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mock-upstream:
+        condition: service_started
+    networks:
+      - performance
+
+  postgres:
+    image: postgres:15-alpine
+    command: postgres -c max_connections=300
+    environment:
+      POSTGRES_USER: perf_user
+      POSTGRES_PASSWORD: ${PERF_DB_PASSWORD:?PERF_DB_PASSWORD must be set by the performance runner}
+      POSTGRES_DB: new-api
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perf_user -d new-api"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - performance_pg_data:/var/lib/postgresql/data
+    networks:
+      - performance
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - performance
+
+  mock-upstream:
+    build:
+      context: .
+      dockerfile: scripts/performance/mock-upstream/Dockerfile
+    image: tokeness-new-api-perf-upstream:local
+    networks:
+      - performance
+
+volumes:
+  performance_pg_data:
+
+networks:
+  performance:
+    driver: bridge

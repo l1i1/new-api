@@ -1,0 +1,9 @@
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY scripts/performance/.new-api-linux-amd64 /new-api
+COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
+EXPOSE 3000
+WORKDIR /data
+ENTRYPOINT ["/new-api"]

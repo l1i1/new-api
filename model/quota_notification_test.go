@@ -32,6 +32,44 @@ func setQuotaNotificationUserQuota(t *testing.T, userID int, quota int) {
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", userID).Update("quota", quota).Error)
 }
 
+func TestClaimQuotaWarningHealthyBalanceRearmsAfterSnapshotChanges(t *testing.T) {
+	setupQuotaNotificationTest(t)
+	user := &User{Username: "quota-notification-stale-snapshot", AffCode: "quota-notification-stale-snapshot", Password: "unused", Status: common.UserStatusEnabled, Quota: 5000}
+	require.NoError(t, DB.Create(user).Error)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("quota_warning_sent", true).Error)
+
+	claimed, err := ClaimQuotaWarning(user.Id, false, 0, 100, 5000, 4998)
+	require.NoError(t, err)
+	require.False(t, claimed)
+
+	var flag bool
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).
+		Select("COALESCE(quota_warning_sent, FALSE)").Take(&flag).Error)
+	require.False(t, flag)
+}
+
+func TestClaimQuotaWarningHealthyBalanceSkipsLockedTransaction(t *testing.T) {
+	setupQuotaNotificationTest(t)
+	user := &User{Username: "quota-notification-healthy-user", AffCode: "quota-notification-healthy-user", Password: "unused", Status: common.UserStatusEnabled, Quota: 5000}
+	require.NoError(t, DB.Create(user).Error)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("quota_warning_sent", false).Error)
+
+	claimed, err := ClaimQuotaWarning(user.Id, false, 0, 100, 5000, 4998)
+	require.NoError(t, err)
+	require.False(t, claimed)
+
+	// A healthy balance with an outstanding warning flag still rearms the
+	// one-shot episode state.
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("quota_warning_sent", true).Error)
+	claimed, err = ClaimQuotaWarning(user.Id, false, 0, 100, 5000, 4998)
+	require.NoError(t, err)
+	require.False(t, claimed)
+	var flag bool
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).
+		Select("COALESCE(quota_warning_sent, FALSE)").Take(&flag).Error)
+	require.False(t, flag)
+}
+
 func TestClaimQuotaWarningOnlyOnceUntilBalanceRecovers(t *testing.T) {
 	setupQuotaNotificationTest(t)
 	user := &User{Username: "quota-notification-user", AffCode: "quota-notification-user", Password: "unused", Status: common.UserStatusEnabled, Quota: 150}

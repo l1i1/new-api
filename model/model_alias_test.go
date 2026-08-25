@@ -146,6 +146,41 @@ func TestResolveCompactModelAliasForGroupPathUsesEligibleAdvancedCustomRoute(t *
 	assert.False(t, aliased)
 }
 
+func TestResolveCompactModelAliasForGroupPathSkipsBlockedExactAlias(t *testing.T) {
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	originalGroupModels := group2model2channels
+	originalChannels := channelsIDM
+	originalConfigs := channel2advancedCustomConfig
+	group2model2channels = map[string]map[string][]int{
+		"default": {
+			"gpt-5.5-openai-compact": {401},
+			"gpt-5.5":                {402},
+		},
+	}
+	channelsIDM = map[int]*Channel{
+		401: {Id: 401, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled},
+		402: {Id: 402, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled},
+	}
+	channel2advancedCustomConfig = nil
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = originalGroupModels
+		channelsIDM = originalChannels
+		channel2advancedCustomConfig = originalConfigs
+		channelSyncLock.Unlock()
+	})
+
+	resolved, aliased := ResolveCompactModelAliasForGroupPathWithBlockedChannels(
+		"default", "gpt-5.5-openai-compact", "/v1/chat/completions", map[int]struct{}{401: {}},
+	)
+	assert.Equal(t, "gpt-5.5", resolved)
+	assert.True(t, aliased)
+}
+
 func TestResolveCompactModelAliasForChannelUsesEligibleAdvancedCustomRoute(t *testing.T) {
 	channel := &Channel{
 		Type:   constant.ChannelTypeAdvancedCustom,

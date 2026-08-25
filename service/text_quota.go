@@ -453,16 +453,28 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, fmt.Sprintf("Audio Input 花费 %s", logger.LogQuota(common.QuotaFromDecimal(q))))
 	}
 
-	if !summary.hasBillableUsage() {
+	billable := summary.hasBillableUsage()
+	if !billable {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	} else if relayInfo.BillingSource != BillingSourceWallet {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+	}
+	if billable {
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
-	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
-		logger.LogError(ctx, "error settling billing: "+err.Error())
+	// Wallet billing folds used_quota/request_count into the settle UPDATE on
+	// the users row, replacing the separate statistics statement that serializes
+	// on the same hot row.
+	var settleErr error
+	if billable && relayInfo.BillingSource == BillingSourceWallet {
+		settleErr = SettleBilling(ctx, relayInfo, summary.Quota, summary.Quota)
+	} else {
+		settleErr = SettleBilling(ctx, relayInfo, summary.Quota)
+	}
+	if settleErr != nil {
+		logger.LogError(ctx, "error settling billing: "+settleErr.Error())
 	}
 
 	logModel := summary.ModelName

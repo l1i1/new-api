@@ -102,6 +102,21 @@ func TestTryReserveQuotaWithoutRedis(t *testing.T) {
 	assert.Equal(t, 55, getTokenFromDB(t, token.Id).RemainQuota)
 }
 
+func TestDecreaseTokenQuotaRejectsSoftDeletedToken(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+
+	token := createReserveTestToken(t, 100)
+	require.NoError(t, DB.Delete(&token).Error)
+
+	require.ErrorIs(t, DecreaseTokenQuota(token.Id, token.Key, 25), gorm.ErrRecordNotFound)
+
+	var deleted Token
+	require.NoError(t, DB.Unscoped().First(&deleted, token.Id).Error)
+	assert.Equal(t, 100, deleted.RemainQuota)
+	assert.Zero(t, deleted.UsedQuota)
+}
+
 func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	truncateTables(t)
 	resetBatchUpdateTestState(t)

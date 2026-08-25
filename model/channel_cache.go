@@ -21,6 +21,25 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // channel2advancedCustomConfig caches parsed Advanced Custom (type 58) configs so
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
+
+type channelSelectionCandidate struct {
+	channelID       int
+	effectiveWeight int
+}
+
+type channelSelectionPriority struct {
+	candidates  []channelSelectionCandidate
+	totalWeight int
+}
+
+type channelSelectionMetadata struct {
+	priorities []channelSelectionPriority
+}
+
+// group2model2channelSelection contains immutable priority and effective-weight
+// metadata for the common unfiltered selection path. It is rebuilt with the
+// channel cache and discarded when a channel cache update can invalidate it.
+var group2model2channelSelection map[string]map[string]*channelSelectionMetadata
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
@@ -76,6 +95,14 @@ func InitChannelCache() {
 			newGroup2model2channels[group][model] = channels
 		}
 	}
+	newGroup2model2channelSelection := make(map[string]map[string]*channelSelectionMetadata, len(newGroup2model2channels))
+	for group, model2channels := range newGroup2model2channels {
+		model2selection := make(map[string]*channelSelectionMetadata, len(model2channels))
+		for model, channels := range model2channels {
+			model2selection[model] = buildChannelSelectionMetadata(channels, newChannelId2channel)
+		}
+		newGroup2model2channelSelection[group] = model2selection
+	}
 
 	channelSyncLock.Lock()
 	group2model2channels = newGroup2model2channels
@@ -95,6 +122,7 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
+	group2model2channelSelection = newGroup2model2channelSelection
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
@@ -127,6 +155,9 @@ func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, re
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
+	if group2model2channels == nil || channelsIDM == nil {
+		return nil, errors.New("channel cache is not initialized")
+	}
 
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
@@ -148,6 +179,19 @@ func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, re
 			return channel, nil
 		}
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
+	}
+
+	if requestPath == "" && len(blockedChannels) == 0 {
+		if model2selection, ok := group2model2channelSelection[group]; ok {
+			if selection := model2selection[model]; selection != nil {
+				return selectChannelFromMetadata(group, model, retry, selection)
+			}
+			if normalizedModel := ratio_setting.FormatMatchingModelName(model); normalizedModel != model {
+				if selection := model2selection[normalizedModel]; selection != nil {
+					return selectChannelFromMetadata(group, model, retry, selection)
+				}
+			}
+		}
 	}
 
 	uniquePriorities := make(map[int]bool)
@@ -216,6 +260,69 @@ func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, re
 	}
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
+}
+
+func buildChannelSelectionMetadata(channelIDs []int, channelsByID map[int]*Channel) *channelSelectionMetadata {
+	metadata := &channelSelectionMetadata{}
+	var lastPriority int64
+	hasPriority := false
+	for _, channelID := range channelIDs {
+		channel, ok := channelsByID[channelID]
+		if !ok {
+			continue
+		}
+		priority := channel.GetPriority()
+		if !hasPriority || lastPriority != priority {
+			metadata.priorities = append(metadata.priorities, channelSelectionPriority{})
+			hasPriority = true
+			lastPriority = priority
+		}
+		selection := &metadata.priorities[len(metadata.priorities)-1]
+		selection.candidates = append(selection.candidates, channelSelectionCandidate{channelID: channelID})
+		selection.totalWeight += channel.GetWeight()
+	}
+
+	for index := range metadata.priorities {
+		selection := &metadata.priorities[index]
+		smoothingFactor := 1
+		smoothingAdjustment := 0
+		if selection.totalWeight == 0 {
+			smoothingAdjustment = 100
+		} else if selection.totalWeight/len(selection.candidates) < 10 {
+			smoothingFactor = 100
+		}
+
+		selection.totalWeight = 0
+		for candidateIndex := range selection.candidates {
+			channel := channelsByID[selection.candidates[candidateIndex].channelID]
+			effectiveWeight := channel.GetWeight()*smoothingFactor + smoothingAdjustment
+			selection.candidates[candidateIndex].effectiveWeight = effectiveWeight
+			selection.totalWeight += effectiveWeight
+		}
+	}
+	return metadata
+}
+
+func selectChannelFromMetadata(group string, model string, retry int, metadata *channelSelectionMetadata) (*Channel, error) {
+	if len(metadata.priorities) == 0 {
+		return nil, nil
+	}
+	if retry >= len(metadata.priorities) {
+		retry = len(metadata.priorities) - 1
+	}
+	selection := metadata.priorities[retry]
+	randomWeight := rand.Intn(selection.totalWeight)
+	for _, candidate := range selection.candidates {
+		channel, ok := channelsIDM[candidate.channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", candidate.channelID)
+		}
+		randomWeight -= candidate.effectiveWeight
+		if randomWeight < 0 {
+			return channel, nil
+		}
+	}
+	return nil, fmt.Errorf("no channel found, group: %s, model: %s, priority retry: %d", group, model, retry)
 }
 
 func filterChannelIDsByBlockedChannels(channels []int, blockedChannels map[int]struct{}) []int {
@@ -315,6 +422,7 @@ func CacheUpdateChannelStatus(id int, status int) {
 			}
 		}
 	}
+	group2model2channelSelection = nil
 }
 
 func CacheUpdateChannel(channel *Channel) {
@@ -343,6 +451,7 @@ func CacheUpdateChannel(channel *Channel) {
 			channel2advancedCustomConfig[channel.Id] = config
 		}
 	}
+	group2model2channelSelection = nil
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
 	// Lock ordering: do NOT hold channelSyncLock while calling
 	// InvalidatePricingCache. GetPricing acquires updatePricingLock first and then

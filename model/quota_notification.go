@@ -21,6 +21,34 @@ func ClaimQuotaWarning(userID int, subscription bool, subscriptionID int, thresh
 	}
 
 	shouldSend := false
+	// Fast path (wallet only): a locked read is only needed when the row may
+	// be written. When the balance is healthy and no warning is outstanding,
+	// this request performs no write and must not queue on the user row lock.
+	// This must run before the transaction opens — using the outer DB handle
+	// inside the transaction closure would wait on the pool connection that
+	// the transaction itself holds.
+	if !subscription {
+		var flag struct {
+			Quota            int  `gorm:"column:quota"`
+			QuotaWarningSent bool `gorm:"column:quota_warning_sent"`
+		}
+		if err := DB.Model(&User{}).
+			Select("quota", "COALESCE(quota_warning_sent, FALSE) AS quota_warning_sent").
+			Where("id = ?", userID).
+			Take(&flag).Error; err != nil {
+			return shouldSend, err
+		}
+		if int64(flag.Quota) >= threshold {
+			if !flag.QuotaWarningSent {
+				return shouldSend, nil
+			}
+			// Rearm one-shot state with a single conditional UPDATE; no row
+			// lock is held while deciding.
+			return shouldSend, DB.Model(&User{}).Where("id = ? AND quota_warning_sent = ? AND quota >= ?", userID, true, threshold).
+				Update("quota_warning_sent", false).Error
+		}
+	}
+
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if subscription {
 			var sub UserSubscription

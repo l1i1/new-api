@@ -1,13 +1,44 @@
 package channelobservability
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type failFirstPipelineHook struct {
+	failed bool
+}
+
+func (hook *failFirstPipelineHook) BeforeProcess(ctx context.Context, _ redis.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+
+func (hook *failFirstPipelineHook) AfterProcess(_ context.Context, _ redis.Cmder) error {
+	return nil
+}
+
+func (hook *failFirstPipelineHook) BeforeProcessPipeline(ctx context.Context, _ []redis.Cmder) (context.Context, error) {
+	if hook.failed {
+		return ctx, nil
+	}
+	hook.failed = true
+	return ctx, errors.New("pipeline unavailable")
+}
+
+func (hook *failFirstPipelineHook) AfterProcessPipeline(_ context.Context, _ []redis.Cmder) error {
+	return nil
+}
 
 func TestRecordRequestSkipsUninitializedChannelMeta(t *testing.T) {
 	info := &relaycommon.RelayInfo{OriginModelName: "opus5"}
@@ -245,4 +276,195 @@ func TestQuantizeRedisSketchValuePreservesLongLatency(t *testing.T) {
 			assert.Equal(t, test.want, quantizeRedisSketchValue(test.input))
 		})
 	}
+}
+
+func TestFlushRedisObservationsMergesCountersAndKeepsIndex(t *testing.T) {
+	server := miniredis.RunT(t)
+	previousEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() {
+		_ = common.RDB.Close()
+		common.RedisEnabled = previousEnabled
+		common.RDB = previousRDB
+	})
+
+	key := bucketKey{bucketTs: 100, channelId: 7, credentialId: 9, requestedModel: "model", upstreamModel: "upstream", group: "group", protocol: "openai"}
+	redisKey := encodeRedisKey(key)
+	samples := []struct {
+		sample  Observation
+		request bool
+	}{
+		{sample: Observation{Success: true, LatencyMs: 123, TtftMs: 25, Usage: Usage{Observable: true, InputTokens: 100, CacheReadTokens: 40}}, request: true},
+		{sample: Observation{LatencyMs: 127, Usage: Usage{Observable: true, InputTokens: 80, CacheWriteTokens: 5}}, request: true},
+		{sample: Observation{LatencyMs: 300, TtftMs: 40, FRTMs: 55, ErrorClass: "timeout"}},
+	}
+	records := make([]redisObservationRecord, 0, len(samples))
+	for _, entry := range samples {
+		records = append(records, redisObservationRecord{
+			redisKey: redisKey, request: entry.request, success: entry.sample.Success,
+			latencyMs: entry.sample.LatencyMs, ttftMs: entry.sample.TtftMs, frtMs: entry.sample.FRTMs,
+			usage: entry.sample.Usage, errorClass: entry.sample.ErrorClass,
+		})
+	}
+
+	require.NoError(t, flushRedisObservations(records))
+	values, err := common.RDB.HGetAll(context.Background(), redisKey).Result()
+	require.NoError(t, err)
+	syncKey := bucketKey{bucketTs: 101, channelId: 8, credentialId: 10, requestedModel: "sync-model"}
+	for _, entry := range samples {
+		recordRedisSync(syncKey, entry.sample, entry.request)
+	}
+	syncValues, err := common.RDB.HGetAll(context.Background(), encodeRedisKey(syncKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, syncValues, values)
+
+	aggregate := redisValueToAggregate(key, values)
+	assert.Equal(t, int64(2), aggregate.RequestCount)
+	assert.Equal(t, int64(1), aggregate.RequestSuccessCount)
+	assert.Equal(t, int64(1), aggregate.AttemptCount)
+	assert.Equal(t, int64(2), aggregate.UsageCount)
+	assert.Equal(t, int64(180), aggregate.InputTokens)
+	assert.Equal(t, int64(40), aggregate.CacheReadTokens)
+	assert.Equal(t, int64(5), aggregate.CacheWriteTokens)
+	assert.Equal(t, int64(2), aggregate.TtftCount)
+	assert.Equal(t, int64(1), aggregate.FRTCount)
+	assert.Equal(t, int64(1), aggregate.ErrorCounts["timeout"])
+
+	members, err := common.RDB.SMembers(context.Background(), redisIndexKey()).Result()
+	require.NoError(t, err)
+	assert.Contains(t, members, redisKey)
+	ttl, err := common.RDB.TTL(context.Background(), redisKey).Result()
+	require.NoError(t, err)
+	assert.Greater(t, ttl, time.Duration(0))
+}
+
+func TestShutdownDrainsQueuedRedisObservations(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	previousEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	common.RedisEnabled = true
+	common.RDB = client
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = previousEnabled
+		common.RDB = previousRDB
+	})
+
+	redisObservationMu.Lock()
+	previousQueue := redisObservationQueue
+	previousStop := redisObservationStop
+	previousDone := redisObservationDone
+	previousEnded := redisObservationEnded
+	previousActive := redisObservationActive.Load()
+	redisObservationQueue = make(chan redisObservationRecord, 1)
+	redisObservationStop = make(chan struct{})
+	redisObservationDone = make(chan struct{})
+	redisObservationEnded = false
+	redisObservationActive.Store(true)
+	redisObservationMu.Unlock()
+	t.Cleanup(func() {
+		redisObservationMu.Lock()
+		redisObservationQueue = previousQueue
+		redisObservationStop = previousStop
+		redisObservationDone = previousDone
+		redisObservationEnded = previousEnded
+		redisObservationActive.Store(previousActive)
+		redisObservationMu.Unlock()
+	})
+	go redisObservationLoop()
+
+	key := bucketKey{bucketTs: 100, channelId: 7, credentialId: 9, requestedModel: "model"}
+	recordRedis(key, Observation{Success: true, LatencyMs: 123}, true)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, Shutdown(ctx))
+
+	requestCount, err := client.HGet(ctx, encodeRedisKey(key), "request").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), requestCount)
+}
+
+func TestRecordRedisUsesSynchronousPathWhenAsyncInactive(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	previousEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	previousActive := redisObservationActive.Load()
+	common.RedisEnabled = true
+	common.RDB = client
+	redisObservationActive.Store(false)
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = previousEnabled
+		common.RDB = previousRDB
+		redisObservationActive.Store(previousActive)
+	})
+
+	key := bucketKey{bucketTs: 100, channelId: 7, credentialId: 9, requestedModel: "model"}
+	recordRedis(key, Observation{Success: true, LatencyMs: 123}, true)
+
+	requestCount, err := client.HGet(context.Background(), encodeRedisKey(key), "request").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), requestCount)
+}
+
+func TestFlushRedisObservationBatchDoesNotReplayUnknownCommit(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	hook := &failFirstPipelineHook{}
+	client.AddHook(hook)
+	previousEnabled := common.RedisEnabled
+	previousRDB := common.RDB
+	common.RedisEnabled = true
+	common.RDB = client
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = previousEnabled
+		common.RDB = previousRDB
+	})
+
+	key := bucketKey{bucketTs: 100, channelId: 7, credentialId: 9, requestedModel: "model"}
+	redisKey := encodeRedisKey(key)
+	flushRedisObservationBatch([]redisObservationRecord{
+		{redisKey: redisKey, request: true, success: true, latencyMs: 123},
+		{redisKey: redisKey, latencyMs: 456},
+	})
+
+	assert.True(t, hook.failed)
+	values, err := client.HGetAll(context.Background(), redisKey).Result()
+	require.NoError(t, err)
+	assert.Empty(t, values, "unknown commits must not be replayed and double-counted")
+}
+
+func TestRecordConcurrentSameKeyKeepsEverySample(t *testing.T) {
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+	})
+
+	hotBuckets = sync.Map{}
+	const workers = 64
+	sample := Observation{ChannelId: 1, RequestedModel: "model", Success: true, LatencyMs: 100}
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(workers)
+	for range workers {
+		go func() {
+			defer waitGroup.Done()
+			record(sample, true)
+		}()
+	}
+	waitGroup.Wait()
+
+	key := bucketKey{bucketTs: bucketStart(time.Now().Unix()), channelId: 1, requestedModel: "model"}
+	actual, ok := hotBuckets.Load(key)
+	require.True(t, ok)
+	bucket := actual.(*atomicBucket)
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	assert.Equal(t, int64(workers), bucket.value.RequestCount)
+	assert.Equal(t, int64(workers), bucket.value.RequestSuccessCount)
 }

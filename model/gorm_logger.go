@@ -24,7 +24,7 @@ const (
 
 func newGormConfig(prepareStmt bool) *gorm.Config {
 	return &gorm.Config{
-		PrepareStmt: prepareStmt,
+		PrepareStmt: prepareStmt && !common.GetEnvOrDefaultBool("SQL_DISABLE_PREPARED_STATEMENTS", false),
 		Logger:      newGormLogger(os.Stdout),
 	}
 }

@@ -34,7 +34,11 @@ func (values GroupAccessPolicyIntList) Value() (driver.Value, error) {
 	if values == nil {
 		values = GroupAccessPolicyIntList{}
 	}
-	return common.Marshal(values)
+	data, err := common.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
 }
 
 func (values *GroupAccessPolicyIntList) Scan(value interface{}) error {
@@ -69,7 +73,11 @@ func (values GroupAccessPolicyStringList) Value() (driver.Value, error) {
 	if values == nil {
 		values = GroupAccessPolicyStringList{}
 	}
-	return common.Marshal(values)
+	data, err := common.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
 }
 
 func (values *GroupAccessPolicyStringList) Scan(value interface{}) error {

@@ -48,8 +48,16 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 
 // SettleBilling 执行计费结算。如果 RelayInfo 上有 BillingSession 则通过 session 结算，
 // 否则回退到旧的 PostConsumeQuota 路径（兼容按次计费等场景）。
-func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuota int) error {
+// 可选的 usageDelta 将该请求的 used_quota 统计合并进 wallet 结算的
+// 同一条 users 行 UPDATE；调用方传入后不得再单独调用
+// UpdateUserUsedQuotaAndRequestCount，避免双写。
+func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuota int, usageDelta ...int) error {
 	if relayInfo.Billing != nil {
+		if len(usageDelta) > 0 && relayInfo.BillingSource == BillingSourceWallet {
+			if session, ok := relayInfo.Billing.(*BillingSession); ok {
+				session.FoldUsageIntoWalletSettle(usageDelta[0])
+			}
+		}
 		preConsumed := relayInfo.Billing.GetPreConsumedQuota()
 		delta := actualQuota - preConsumed
 

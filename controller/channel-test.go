@@ -477,7 +477,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 				testModel,
 				endpointType,
 				httpResp.StatusCode,
-				err,
+				common.DebugLogPreview(fmt.Sprintf("%v", err)),
 			))
 			return testResult{
 				context:     c,
@@ -540,7 +540,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 			Other:            other,
 		})
 	}
-	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
+	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, common.DebugLogPreview(string(respBody))))
 	return testResult{
 		context:     c,
 		localErr:    nil,
