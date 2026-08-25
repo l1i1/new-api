@@ -355,3 +355,41 @@ request matrix without fabricating token probabilities or changing billing seman
 
 - Run focused DeepSeek adaptor tests and `go test ./relay/channel/deepseek ./relay/channel/openai`.
 - Run `gofmt` and `git diff --check` on changed files.
+
+## Wallet Top-up Card Content
+
+### Goal
+
+Allow administrators to configure the wallet top-up card subtitle and an
+optional contact dialog without changing the payment flow.
+
+### Configuration And API Contract
+
+- `payment_setting.topup_subtitle`: optional HTML content. When empty, the
+  wallet keeps the localized `Choose an amount and payment method` default.
+- `payment_setting.topup_contact`: optional Markdown or HTML content. When
+  empty, the contact entry is hidden.
+- `GET /api/user/topup/info` exposes these values as `topup_subtitle` and
+  `topup_contact`.
+- Both fields are public presentation content and must never contain secrets.
+
+### Rendering And Safety
+
+- HTML is rendered through the existing sanitized `RichContent`/DOMPurify
+  path.
+- Contact content is detected as HTML or Markdown and rendered accordingly.
+- Localized `<tnt>` content remains supported through the existing content
+  resolver.
+- The contact dialog must be keyboard accessible and keep order history as a
+  separate action.
+
+### Acceptance Criteria
+
+- Administrators can edit and clear both fields in payment settings.
+- A non-empty contact value shows a `Contact Us` button and opens the rendered
+  content in a dialog; an empty value shows no entry.
+- A non-empty subtitle replaces the default and renders HTML safely; an empty
+  value preserves the localized default.
+- Existing installations retain their current wallet UI until configured.
+- Focused frontend tests, typecheck, lint, production build, Go tests, and
+  `git diff --check` pass.

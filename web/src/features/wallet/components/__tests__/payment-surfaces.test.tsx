@@ -78,6 +78,7 @@ await i18n.use(initReactI18next).init({
       translation: {
         Save: 'Save',
         'You save': 'You save',
+        'footer.columns.about.links.contact': 'Contact Us',
         'Credited Amount': 'Credited Amount',
         'Amount Due': 'Amount Due',
         'Recharge Amount (USD)': 'Recharge Amount (USD)',
@@ -201,6 +202,133 @@ describe('wallet payment surfaces', () => {
     assert.ok(paymentButton instanceof HTMLButtonElement)
     await act(async () => paymentButton.click())
     assert.deepEqual(selectedMethods, [epayMethod])
+
+    await unmountComponent(rendered)
+  })
+
+  test('hides contact action and keeps the default subtitle when configuration is empty', async () => {
+    const withoutContact = await renderComponent(
+      <RechargeFormCard
+        topupInfo={topupInfo}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={8}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+      />
+    )
+
+    assert.equal(
+      [...withoutContact.container.querySelectorAll('button')].some((button) =>
+        button.textContent?.includes('Contact Us')
+      ),
+      false
+    )
+    assert.equal(
+      withoutContact.container.textContent?.includes(
+        'Choose an amount and payment method'
+      ),
+      true
+    )
+    await unmountComponent(withoutContact)
+  })
+
+  test('opens configured Markdown contact content and renders the HTML subtitle', async () => {
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={{
+          ...topupInfo,
+          topup_contact: '**Support**: support@example.com',
+          topup_subtitle: '<strong>Pick a plan</strong>',
+        }}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={8}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+      />
+    )
+
+    const contactButton = [
+      ...rendered.container.querySelectorAll('button'),
+    ].find((button) => button.textContent?.includes('Contact Us'))
+    assert.ok(contactButton instanceof HTMLButtonElement)
+    const subtitle = rendered.container.querySelector(
+      '[data-slot="card-description"]'
+    )
+    assert.equal(subtitle?.textContent?.includes('Pick a plan'), true)
+
+    await act(async () => contactButton.click())
+
+    const contactContent = document.body.querySelector(
+      '[data-testid="wallet-contact-content"]'
+    )
+    assert.ok(contactContent)
+    assert.equal(contactContent.querySelector('strong')?.textContent, 'Support')
+    assert.equal(
+      contactContent.textContent?.includes('support@example.com'),
+      true
+    )
+
+    await unmountComponent(rendered)
+  })
+
+  test('opens HTML contact content', async () => {
+    const rendered = await renderComponent(
+      <RechargeFormCard
+        topupInfo={{
+          ...topupInfo,
+          topup_contact:
+            '<p><strong>Sales</strong></p><a href="mailto:sales@example.com">Email us</a>',
+        }}
+        presetAmounts={[]}
+        selectedPreset={null}
+        onSelectPreset={() => undefined}
+        topupAmount={10}
+        onTopupAmountChange={() => undefined}
+        paymentAmount={8}
+        calculating={false}
+        onPaymentMethodSelect={() => undefined}
+        paymentLoading={null}
+        redemptionCode=''
+        onRedemptionCodeChange={() => undefined}
+        onRedeem={() => undefined}
+        redeeming={false}
+      />
+    )
+
+    const contactButton = [
+      ...rendered.container.querySelectorAll('button'),
+    ].find((button) => button.textContent?.includes('Contact Us'))
+    assert.ok(contactButton instanceof HTMLButtonElement)
+
+    await act(async () => contactButton.click())
+
+    const contactContent = document.body.querySelector(
+      '[data-testid="wallet-contact-content"]'
+    )
+    assert.ok(contactContent)
+    assert.equal(contactContent.querySelector('strong')?.textContent, 'Sales')
+    assert.equal(
+      contactContent.querySelector('a')?.getAttribute('href'),
+      'mailto:sales@example.com'
+    )
 
     await unmountComponent(rendered)
   })

@@ -16,13 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
+import {
+  Gift,
+  ExternalLink,
+  Loader2,
+  MessageCircle,
+  Receipt,
+  WalletCards,
+} from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { RichContent } from '@/components/rich-content'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -34,6 +48,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { isLikelyHtml } from '@/lib/content-format'
 import {
   formatCnyAmount,
   formatCnyFromUSD,
@@ -119,6 +134,7 @@ export function RechargeFormCard({
   const { i18n, t } = useTranslation()
   const contentLanguage = i18n.resolvedLanguage || i18n.language
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
+  const [contactDialogOpen, setContactDialogOpen] = useState(false)
 
   useEffect(() => {
     // Empty string must survive, otherwise the field can never be cleared
@@ -147,6 +163,9 @@ export function RechargeFormCard({
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
   const redemptionEnabled = topupInfo?.enable_redemption !== false
+  const contactContent = topupInfo?.topup_contact?.trim() || ''
+  const subtitleContent = topupInfo?.topup_subtitle?.trim() || ''
+  const contactIsHtml = isLikelyHtml(contactContent)
 
   if (loading) {
     return (
@@ -202,21 +221,46 @@ export function RechargeFormCard({
   return (
     <TitledCard
       title={t('Add Funds')}
-      description={t('Choose an amount and payment method')}
+      description={
+        subtitleContent ? (
+          <RichContent
+            content={subtitleContent}
+            mode='html'
+            className='[&_p]:my-0'
+          />
+        ) : (
+          t('Choose an amount and payment method')
+        )
+      }
       icon={<WalletCards className='h-4 w-4' />}
       iconTone='success'
       disableHoverEffect
       action={
-        onOpenBilling ? (
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={onOpenBilling}
-            className='w-full gap-2 sm:w-auto'
-          >
-            <Receipt className='h-4 w-4' />
-            {t('Order History')}
-          </Button>
+        onOpenBilling || contactContent ? (
+          <div className='flex w-full flex-col gap-2 sm:w-auto sm:flex-row'>
+            {contactContent && (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setContactDialogOpen(true)}
+                className='w-full gap-2 sm:w-auto'
+              >
+                <MessageCircle className='h-4 w-4' />
+                {t('footer.columns.about.links.contact')}
+              </Button>
+            )}
+            {onOpenBilling && (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={onOpenBilling}
+                className='w-full gap-2 sm:w-auto'
+              >
+                <Receipt className='h-4 w-4' />
+                {t('Order History')}
+              </Button>
+            )}
+          </div>
         ) : null
       }
       contentClassName='space-y-4 sm:space-y-6'
@@ -605,6 +649,20 @@ export function RechargeFormCard({
           </AlertDescription>
         </Alert>
       )}
+
+      <Dialog open={contactDialogOpen} onOpenChange={setContactDialogOpen}>
+        <DialogContent className='sm:max-w-2xl'>
+          <DialogHeader>
+            <DialogTitle>{t('footer.columns.about.links.contact')}</DialogTitle>
+          </DialogHeader>
+          <div data-testid='wallet-contact-content' className='min-w-0'>
+            <RichContent
+              content={contactContent}
+              mode={contactIsHtml ? 'html' : 'markdown'}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </TitledCard>
   )
 }

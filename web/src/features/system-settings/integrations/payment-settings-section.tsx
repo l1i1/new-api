@@ -46,6 +46,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
 import { confirmPaymentCompliance } from '../api'
@@ -119,6 +120,8 @@ const paymentSchema = z.object({
       })
     }
   }),
+  TopupContact: z.string(),
+  TopupSubtitle: z.string(),
   AmountOptions: z.string().superRefine((value, ctx) => {
     const error = getJsonError(value, (parsed) => Array.isArray(parsed))
     if (error) {
@@ -425,6 +428,8 @@ export function PaymentSettingsSection({
       MinTopUp: values.MinTopUp,
       CustomCallbackAddress: removeTrailingSlash(values.CustomCallbackAddress),
       PayMethods: values.PayMethods.trim(),
+      TopupContact: values.TopupContact.trim(),
+      TopupSubtitle: values.TopupSubtitle.trim(),
       AmountOptions: values.AmountOptions.trim(),
       AmountDiscount: values.AmountDiscount.trim(),
       StripeApiSecret: values.StripeApiSecret.trim(),
@@ -469,6 +474,8 @@ export function PaymentSettingsSection({
         initialRef.current.CustomCallbackAddress
       ),
       PayMethods: initialRef.current.PayMethods.trim(),
+      TopupContact: initialRef.current.TopupContact.trim(),
+      TopupSubtitle: initialRef.current.TopupSubtitle.trim(),
       AmountOptions: initialRef.current.AmountOptions.trim(),
       AmountDiscount: initialRef.current.AmountDiscount.trim(),
       StripeApiSecret: initialRef.current.StripeApiSecret.trim(),
@@ -549,6 +556,20 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'payment_setting.amount_options',
         value: sanitized.AmountOptions,
+      })
+    }
+
+    if (sanitized.TopupContact !== initial.TopupContact) {
+      updates.push({
+        key: 'payment_setting.topup_contact',
+        value: sanitized.TopupContact,
+      })
+    }
+
+    if (sanitized.TopupSubtitle !== initial.TopupSubtitle) {
+      updates.push({
+        key: 'payment_setting.topup_subtitle',
+        value: sanitized.TopupSubtitle,
       })
     }
 
@@ -941,6 +962,58 @@ export function PaymentSettingsSection({
                         </FormControl>
                         <FormDescription>
                           {t('Smallest USD amount users can recharge (Epay)')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='TopupContact'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Top-up contact content')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            {...field}
+                            rows={5}
+                            placeholder={t(
+                              'Leave empty to hide the Contact Us button'
+                            )}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Displayed in the wallet contact dialog. Supports HTML and Markdown.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='TopupSubtitle'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Top-up subtitle')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            {...field}
+                            rows={5}
+                            placeholder={t(
+                              'Leave empty to use the default subtitle'
+                            )}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Displayed below Add Funds. Supports HTML; empty uses the default text.'
+                          )}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>

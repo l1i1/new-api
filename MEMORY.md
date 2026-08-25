@@ -1,5 +1,13 @@
 # New API Fork Memory
 
+- On 2026-08-26, wallet top-up presentation gained two optional settings:
+  `payment_setting.topup_contact` exposes a Contact Us dialog with sanitized
+  Markdown/HTML content, and `payment_setting.topup_subtitle` replaces the
+  Add Funds subtitle with sanitized HTML. Empty contact content hides the
+  action; an empty subtitle preserves the localized default. Both values are
+  returned by `/api/user/topup/info`, and no database migration is required
+  because they use the registered hierarchical payment configuration.
+
 - On 2026-08-25, final pre-commit review of the DeepSeek V4/performance
   consolidation removed correctness risks before local commit. DeepSeek V4
   streaming now merges aggregator usage-only tails into the final
