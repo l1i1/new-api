@@ -89,6 +89,24 @@ func createChannelSelectAutoGroupsChannel(t *testing.T, db *gorm.DB, id int, gro
 	}).Error)
 }
 
+func useChannelSelectAutoGroupsDatabasePath(t *testing.T) {
+	t.Helper()
+
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	originalLogDB := model.LOG_DB
+	originalMainDatabaseType := common.MainDatabaseType()
+	originalLogDatabaseType := common.LogDatabaseType()
+	common.MemoryCacheEnabled = false
+	t.Setenv("LOG_SQL_DSN", "")
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, model.InitLogDB())
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCacheEnabled
+		model.LOG_DB = originalLogDB
+		common.SetDatabaseTypes(originalMainDatabaseType, originalLogDatabaseType)
+	})
+}
+
 func TestCacheGetRandomSatisfiedChannelUsesTokenOrderWithinGlobalAllowlist(t *testing.T) {
 	db := setupChannelSelectAutoGroupsTest(t)
 	const modelName = "auto-groups-runtime-model"
@@ -190,4 +208,78 @@ func TestCacheGetRandomSatisfiedChannelPrefersExactCompactModel(t *testing.T) {
 	assert.Equal(t, 2302, channel.Id)
 	assert.Equal(t, "default", selectedGroup)
 	assert.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyResolvedModel))
+}
+
+func TestCacheGetRandomSatisfiedChannelRestartsAtHighestRemainingPriorityAfterExclusion(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	const modelName = "retry-exclusion-priority-model"
+	for _, channel := range []struct {
+		id       int
+		priority int64
+	}{
+		{id: 2351, priority: 9},
+		{id: 2352, priority: 8},
+		{id: 2353, priority: 7},
+	} {
+		weight := uint(100)
+		require.NoError(t, db.Create(&model.Channel{
+			Id: channel.id, Type: constant.ChannelTypeOpenAI, Key: fmt.Sprintf("key-%d", channel.id),
+			Status: common.ChannelStatusEnabled, Name: fmt.Sprintf("channel-%d", channel.id),
+			Weight: &weight, Models: modelName, Group: "default", Priority: &channel.priority,
+		}).Error)
+		require.NoError(t, db.Create(&model.Ability{
+			Group: "default", Model: modelName, ChannelId: channel.id, Enabled: true, Priority: &channel.priority, Weight: weight,
+		}).Error)
+	}
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	retry := 1
+	param := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: modelName, Retry: &retry}
+	param.ExcludeChannel(2351)
+
+	channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(param)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, "default", selectedGroup)
+	assert.Equal(t, 2352, channel.Id)
+
+	useChannelSelectAutoGroupsDatabasePath(t)
+	databaseRetry := 1
+	databaseParam := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: modelName, Retry: &databaseRetry}
+	databaseParam.ExcludeChannel(2351)
+	channel, selectedGroup, err = CacheGetRandomSatisfiedChannel(databaseParam)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, "default", selectedGroup)
+	assert.Equal(t, 2352, channel.Id)
+
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["default"]`))
+	autoCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(autoCtx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(autoCtx, constant.ContextKeyTokenAutoGroups, []string{"default"})
+	autoRetry := 1
+	autoParam := &RetryParam{Ctx: autoCtx, TokenGroup: "auto", ModelName: modelName, Retry: &autoRetry}
+	autoParam.ExcludeChannel(2351)
+
+	channel, selectedGroup, err = CacheGetRandomSatisfiedChannel(autoParam)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, "default", selectedGroup)
+	assert.Equal(t, 2352, channel.Id)
+
+	policyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(policyCtx, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{
+		GroupName:         "default",
+		BlockedChannelIDs: model.GroupAccessPolicyIntList{2351},
+	})
+	policyRetry := 1
+	channel, selectedGroup, err = CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: policyCtx, TokenGroup: "default", ModelName: modelName, Retry: &policyRetry,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, "default", selectedGroup)
+	assert.Equal(t, 2353, channel.Id)
 }

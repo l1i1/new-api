@@ -493,6 +493,18 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	if info.ChannelMeta == nil {
+		// The distributor has already selected and initialized the first channel
+		// in the request context, but the relay handler has not attached its
+		// RelayInfo metadata yet. Recover the complete channel so first-attempt
+		// failures still preserve multi-key retry semantics.
+		if channel, ok := common.GetContextKeyType[*model.Channel](c, constant.ContextKeySelectedChannel); ok && channel != nil {
+			return channel, nil
+		}
+		if channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId); channelID > 0 {
+			if channel, err := model.CacheGetChannel(channelID); err == nil && channel != nil {
+				return channel, nil
+			}
+		}
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
 		if !autoBan {
@@ -503,6 +515,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			Type:    c.GetInt("channel_type"),
 			Name:    c.GetString("channel_name"),
 			AutoBan: &autoBanInt,
+			ChannelInfo: model.ChannelInfo{
+				IsMultiKey: common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
+			},
 		}, nil
 	}
 	var (

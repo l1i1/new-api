@@ -168,6 +168,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
 			priorityRetry := param.GetRetry()
+			if len(param.excludedChannelIDs) > 0 {
+				priorityRetry = 0
+			}
 			// If moved to a new group, reset priorityRetry and update startRetryIndex
 			// 如果切换到新分组，重置 priorityRetry 并更新 startRetryIndex
 			if i > startGroupIndex {
@@ -221,7 +224,11 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if policyLoaded && policy.BlocksModel(routingModel) {
 			return nil, param.TokenGroup, errors.New("model is blocked by group access policy")
 		}
-		channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(param.TokenGroup, routingModel, param.GetRetry(), param.RequestPath, blockedChannels)
+		selectionRetry := param.GetRetry()
+		if len(param.excludedChannelIDs) > 0 {
+			selectionRetry = 0
+		}
+		channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

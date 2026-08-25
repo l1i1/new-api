@@ -41,6 +41,7 @@ const (
 	ContextKeyChannelCredentialId      ContextKey = "channel_credential_id"
 	ContextKeyChannelProxyMode         ContextKey = "channel_proxy_mode"
 	ContextKeyChannelEffectiveProxy    ContextKey = "channel_effective_proxy"
+	ContextKeySelectedChannel          ContextKey = "selected_channel"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 	ContextKeyForceMultiKeyIndex       ContextKey = "force_multi_key_index"
 	// ContextKeyForceMultiKeyCredentialID pins a probe or other administrative

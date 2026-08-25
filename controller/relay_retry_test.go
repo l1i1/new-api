@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -148,6 +149,45 @@ func TestCredentialErrorsRetryAnotherKeyOnSameChannel(t *testing.T) {
 			require.NotEqual(t, firstIndex, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
 		})
 	}
+}
+
+func TestFirstAttemptWithoutRelayChannelMetaKeepsMultiKeyRetry(t *testing.T) {
+	originalRetryTimes := common.RetryTimes
+	common.RetryTimes = 1
+	t.Cleanup(func() { common.RetryTimes = originalRetryTimes })
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	channel := &model.Channel{
+		Id:     94101,
+		Type:   constant.ChannelTypeOpenAI,
+		Status: common.ChannelStatusEnabled,
+		Name:   "first-attempt-multi-key",
+		Key:    "key-a\nkey-b",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeyMode: constant.MultiKeyModeRandom,
+		},
+	}
+	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, channel, "model"))
+
+	// The normal first relay attempt has no RelayInfo.ChannelMeta until the
+	// selected adaptor calls InitChannelMeta.
+	info := &relaycommon.RelayInfo{}
+	param := &service.RetryParam{Retry: new(int)}
+	selected, err := getChannel(ctx, info, param)
+	require.Nil(t, err)
+	require.NotNil(t, selected)
+	require.True(t, selected.ChannelInfo.IsMultiKey)
+
+	firstIndex := common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
+	service.MarkCurrentMultiKeyTried(ctx)
+	require.True(t, prepareChannelRetry(param, selected, http.StatusTooManyRequests, false))
+	param.IncreaseRetry()
+	require.Zero(t, param.GetRetry())
+
+	require.Nil(t, middleware.SetupContextForSelectedChannel(ctx, selected, "model"))
+	require.NotEqual(t, firstIndex, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
 }
 
 func TestGatewayAndUnsupportedFeatureErrorsMoveToAnotherChannel(t *testing.T) {
