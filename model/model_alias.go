@@ -36,6 +36,12 @@ func ResolveCompactModelAliasForGroup(group, modelName string) (string, bool) {
 }
 
 func ResolveCompactModelAliasForGroupPath(group, modelName, requestPath string) (string, bool) {
+	return ResolveCompactModelAliasForGroupPathWithBlockedChannels(group, modelName, requestPath, nil)
+}
+
+// ResolveCompactModelAliasForGroupPathWithBlockedChannels resolves compact
+// aliases against the same eligible channel set used by request routing.
+func ResolveCompactModelAliasForGroupPathWithBlockedChannels(group, modelName, requestPath string, blockedChannels map[int]struct{}) (string, bool) {
 	if group == "" || modelName == "" {
 		return modelName, false
 	}
@@ -44,9 +50,10 @@ func ResolveCompactModelAliasForGroupPath(group, modelName, requestPath string) 
 		channelSyncLock.RLock()
 		defer channelSyncLock.RUnlock()
 		return resolveCompactModelAlias(modelName, func(candidate, requestModel string) bool {
-			return len(filterChannelsByRequestPathAndModel(
+			channels := filterChannelsByRequestPathAndModel(
 				group2model2channels[group][candidate], requestPath, requestModel,
-			)) > 0
+			)
+			return len(filterChannelIDsByBlockedChannels(channels, blockedChannels)) > 0
 		})
 	}
 
@@ -57,7 +64,9 @@ func ResolveCompactModelAliasForGroupPath(group, modelName, requestPath string) 
 		if err != nil || len(abilities) == 0 {
 			return false
 		}
-		return len(filterAbilitiesByRequestPathAndModel(abilities, requestPath, requestModel)) > 0
+		abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, requestModel)
+		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
+		return len(abilities) > 0
 	})
 }
 

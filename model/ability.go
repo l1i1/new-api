@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -56,6 +57,93 @@ func GetGroupEnabledModelsWithBlockedChannels(group string, blockedChannels map[
 	}
 	query.Distinct("model").Pluck("model", &models)
 	return models
+}
+
+// GetGroupModelAvailability reports whether a requested model is configured in
+// a group at all and whether any matching ability is currently enabled. It is
+// intentionally used only after channel selection returns no candidate, where
+// distinguishing an unknown model from temporary channel unavailability is
+// more important than avoiding one diagnostic query.
+func GetGroupModelAvailability(group, requestedModel string, blockedChannels map[int]struct{}) (configured bool, enabled bool, permittedEnabled bool, err error) {
+	return GetGroupModelAvailabilityForPath(group, requestedModel, "", blockedChannels)
+}
+
+// GetGroupModelAvailabilityForPath applies the same Advanced Custom route
+// predicate as channel selection before classifying a no-candidate result.
+func GetGroupModelAvailabilityForPath(group, requestedModel, requestPath string, blockedChannels map[int]struct{}) (configured bool, enabled bool, permittedEnabled bool, err error) {
+	if strings.TrimSpace(group) == "" || strings.TrimSpace(requestedModel) == "" {
+		return false, false, false, nil
+	}
+
+	candidates := []string{requestedModel}
+	if normalized := ratio_setting.FormatMatchingModelName(requestedModel); normalized != requestedModel {
+		candidates = append(candidates, normalized)
+	}
+	if base, ok := ratio_setting.CompactBaseModelName(requestedModel); ok {
+		candidates = append(candidates, base)
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	uniqueCandidates := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		uniqueCandidates = append(uniqueCandidates, candidate)
+	}
+
+	var abilities []Ability
+	if err := DB.Where(&Ability{Group: group}).Where("model IN ?", uniqueCandidates).Find(&abilities).Error; err != nil {
+		return false, false, false, err
+	}
+	channelIDs := make([]int, 0, len(abilities))
+	seenChannelIDs := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, exists := seenChannelIDs[ability.ChannelId]; exists {
+			continue
+		}
+		seenChannelIDs[ability.ChannelId] = struct{}{}
+		channelIDs = append(channelIDs, ability.ChannelId)
+	}
+	var channels []Channel
+	if len(channelIDs) == 0 {
+		return false, false, false, nil
+	}
+	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		return false, false, false, err
+	}
+	if len(channels) != len(channelIDs) {
+		return false, false, false, fmt.Errorf("configured model references missing channel")
+	}
+	channelsByID := make(map[int]*Channel, len(channels))
+	for index := range channels {
+		channelsByID[channels[index].Id] = &channels[index]
+	}
+	for _, ability := range abilities {
+		channel, exists := channelsByID[ability.ChannelId]
+		if !exists {
+			return configured, false, false, fmt.Errorf("configured model references missing channel")
+		}
+		if requestPath != "" && channel.Type == constant.ChannelTypeAdvancedCustom {
+			config := channel.GetOtherSettings().AdvancedCustom
+			if config == nil || !config.SupportsPathForModel(requestPath, ability.Model) {
+				continue
+			}
+		}
+		configured = true
+		if !ability.Enabled || channel.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		enabled = true
+		if _, blocked := blockedChannels[channel.Id]; !blocked {
+			permittedEnabled = true
+		}
+	}
+	return configured, enabled, permittedEnabled, nil
 }
 
 func GetEnabledModels() []string {

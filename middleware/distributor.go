@@ -227,11 +227,12 @@ func Distribute() func(c *gin.Context) {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 						//	message = "数据库一致性已被破坏，请联系管理员"
 						//}
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+						statusCode, errorCode := channelSelectionFailureResponse(err)
+						abortWithOpenAiMessage(c, statusCode, message, errorCode)
 						return
 					}
 					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeGetChannelFailed)
 						return
 					}
 				}
@@ -251,6 +252,23 @@ func Distribute() func(c *gin.Context) {
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
+	}
+}
+
+func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
+	var selectionErr *service.ChannelSelectionError
+	if !errors.As(err, &selectionErr) {
+		return http.StatusInternalServerError, types.ErrorCodeGetChannelFailed
+	}
+	switch selectionErr.Kind {
+	case service.ChannelSelectionModelNotConfigured:
+		return http.StatusBadRequest, types.ErrorCodeModelNotFound
+	case service.ChannelSelectionTemporarilyUnavailable:
+		return http.StatusServiceUnavailable, types.ErrorCodeGetChannelFailed
+	case service.ChannelSelectionAccessDenied:
+		return http.StatusForbidden, types.ErrorCodeAccessDenied
+	default:
+		return http.StatusInternalServerError, types.ErrorCodeGetChannelFailed
 	}
 }
 

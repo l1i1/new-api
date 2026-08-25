@@ -21,6 +21,39 @@ type RetryParam struct {
 	excludedChannelIDs map[int]struct{}
 }
 
+type ChannelSelectionFailureKind string
+
+const (
+	ChannelSelectionModelNotConfigured     ChannelSelectionFailureKind = "model_not_configured"
+	ChannelSelectionTemporarilyUnavailable ChannelSelectionFailureKind = "temporarily_unavailable"
+	ChannelSelectionInternalError          ChannelSelectionFailureKind = "internal_selection_error"
+	ChannelSelectionAccessDenied           ChannelSelectionFailureKind = "access_denied"
+)
+
+type ChannelSelectionError struct {
+	Kind  ChannelSelectionFailureKind
+	Group string
+	Model string
+	Err   error
+}
+
+func (e *ChannelSelectionError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err == nil {
+		return string(e.Kind)
+	}
+	return e.Err.Error()
+}
+
+func (e *ChannelSelectionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 func (p *RetryParam) GetRetry() int {
 	if p.Retry == nil {
 		return 0
@@ -121,6 +154,8 @@ func (p *RetryParam) IsChannelExcluded(channelID int) bool {
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
+	var lastAutoGroupSelectionErr error
+	var lastAutoGroupSelectionErrGroup string
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	policy, policyLoaded := GetGroupAccessPolicy(param.Ctx)
@@ -136,13 +171,23 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		blockedChannels = mergedBlockedChannels
 	}
 	if policyLoaded && policy.BlocksModel(param.ModelName) {
-		return nil, selectGroup, errors.New("model is blocked by group access policy")
+		return nil, selectGroup, &ChannelSelectionError{
+			Kind:  ChannelSelectionAccessDenied,
+			Group: selectGroup,
+			Model: param.ModelName,
+			Err:   errors.New("model is blocked by group access policy"),
+		}
 	}
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
 		if len(autoGroups) == 0 {
-			return nil, selectGroup, errors.New("auto groups is not enabled")
+			return nil, selectGroup, &ChannelSelectionError{
+				Kind:  ChannelSelectionAccessDenied,
+				Group: selectGroup,
+				Model: param.ModelName,
+				Err:   errors.New("auto groups is not enabled"),
+			}
 		}
 
 		// startGroupIndex: the group index to start searching from
@@ -161,7 +206,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			if policyLoaded && policy.BlocksGroup(autoGroup) {
 				continue
 			}
-			routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(autoGroup, param.ModelName, param.RequestPath)
+			routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPathWithBlockedChannels(autoGroup, param.ModelName, param.RequestPath, blockedChannels)
 			if policyLoaded && policy.BlocksModel(routingModel) {
 				continue
 			}
@@ -178,7 +223,12 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelWithBlockedChannels(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels)
+			channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels)
+			if err != nil {
+				lastAutoGroupSelectionErr = err
+				lastAutoGroupSelectionErrGroup = autoGroup
+				channel = nil
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -218,11 +268,21 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	} else {
 		if policyLoaded && policy.BlocksGroup(param.TokenGroup) {
-			return nil, param.TokenGroup, errors.New("group is blocked by group access policy")
+			return nil, param.TokenGroup, &ChannelSelectionError{
+				Kind:  ChannelSelectionAccessDenied,
+				Group: param.TokenGroup,
+				Model: param.ModelName,
+				Err:   errors.New("group is blocked by group access policy"),
+			}
 		}
-		routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(param.TokenGroup, param.ModelName, param.RequestPath)
+		routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPathWithBlockedChannels(param.TokenGroup, param.ModelName, param.RequestPath, blockedChannels)
 		if policyLoaded && policy.BlocksModel(routingModel) {
-			return nil, param.TokenGroup, errors.New("model is blocked by group access policy")
+			return nil, param.TokenGroup, &ChannelSelectionError{
+				Kind:  ChannelSelectionAccessDenied,
+				Group: param.TokenGroup,
+				Model: param.ModelName,
+				Err:   errors.New("model is blocked by group access policy"),
+			}
 		}
 		selectionRetry := param.GetRetry()
 		if len(param.excludedChannelIDs) > 0 {
@@ -230,13 +290,67 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 		channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels)
 		if err != nil {
-			return nil, param.TokenGroup, err
+			return nil, param.TokenGroup, &ChannelSelectionError{
+				Kind:  ChannelSelectionInternalError,
+				Group: param.TokenGroup,
+				Model: param.ModelName,
+				Err:   err,
+			}
 		}
 		if channel != nil {
 			setResolvedModelContext(param.Ctx, routingModel, compactAlias)
 		}
 	}
+	if channel == nil {
+		if lastAutoGroupSelectionErr != nil {
+			return nil, lastAutoGroupSelectionErrGroup, &ChannelSelectionError{
+				Kind:  ChannelSelectionInternalError,
+				Group: lastAutoGroupSelectionErrGroup,
+				Model: param.ModelName,
+				Err:   lastAutoGroupSelectionErr,
+			}
+		}
+		return nil, selectGroup, classifyChannelSelectionFailure(param, selectGroup)
+	}
 	return channel, selectGroup, nil
+}
+
+func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *ChannelSelectionError {
+	groups := []string{selectedGroup}
+	if param.TokenGroup == "auto" {
+		groups = GetRequestAutoGroups(param.Ctx, common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup))
+	}
+	blockedChannels := GroupAccessPolicyBlockedChannels(param.Ctx)
+	policy, policyLoaded := GetGroupAccessPolicy(param.Ctx)
+	configured := false
+	enabled := false
+	accessDenied := false
+	for _, group := range groups {
+		routingModel, _ := model.ResolveCompactModelAliasForGroupPathWithBlockedChannels(group, param.ModelName, param.RequestPath, blockedChannels)
+		if policyLoaded && (policy.BlocksGroup(group) || policy.BlocksModel(routingModel)) {
+			accessDenied = true
+			continue
+		}
+		groupConfigured, groupEnabled, permittedEnabled, err := model.GetGroupModelAvailabilityForPath(group, routingModel, param.RequestPath, blockedChannels)
+		if err != nil {
+			return &ChannelSelectionError{Kind: ChannelSelectionInternalError, Group: group, Model: param.ModelName, Err: err}
+		}
+		configured = configured || groupConfigured
+		enabled = enabled || groupEnabled
+		if permittedEnabled {
+			return &ChannelSelectionError{Kind: ChannelSelectionTemporarilyUnavailable, Group: group, Model: param.ModelName}
+		}
+	}
+	if enabled {
+		return &ChannelSelectionError{Kind: ChannelSelectionAccessDenied, Group: selectedGroup, Model: param.ModelName}
+	}
+	if accessDenied {
+		return &ChannelSelectionError{Kind: ChannelSelectionAccessDenied, Group: selectedGroup, Model: param.ModelName}
+	}
+	if configured {
+		return &ChannelSelectionError{Kind: ChannelSelectionTemporarilyUnavailable, Group: selectedGroup, Model: param.ModelName}
+	}
+	return &ChannelSelectionError{Kind: ChannelSelectionModelNotConfigured, Group: selectedGroup, Model: param.ModelName}
 }
 
 func setResolvedModelContext(c *gin.Context, modelName string, compactAlias bool) {

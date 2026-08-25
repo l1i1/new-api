@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -282,4 +283,137 @@ func TestCacheGetRandomSatisfiedChannelRestartsAtHighestRemainingPriorityAfterEx
 	require.NotNil(t, channel)
 	assert.Equal(t, "default", selectedGroup)
 	assert.Equal(t, 2353, channel.Id)
+}
+
+func TestCacheGetRandomSatisfiedChannelContinuesAfterAutoGroupSelectionError(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	const modelName = "auto-group-selection-error-model"
+	priority := int64(0)
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "default", Model: modelName, ChannelId: 2391, Enabled: true, Priority: &priority,
+	}).Error)
+	createChannelSelectAutoGroupsChannel(t, db, 2392, "vip", modelName)
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["default","vip"]`))
+
+	useChannelSelectAutoGroupsDatabasePath(t)
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"default", "vip"})
+	retry := 0
+	channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: ctx, TokenGroup: "auto", ModelName: modelName, Retry: &retry,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 2392, channel.Id)
+	assert.Equal(t, "vip", selectedGroup)
+}
+
+func TestCacheGetRandomSatisfiedChannelClassifiesUnknownAndUnavailableModels(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	createChannelSelectAutoGroupsChannel(t, db, 2401, "default", "configured-disabled-model")
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 2401).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	retry := 0
+	param := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: "missing-model", Retry: &retry}
+	channel, _, err := CacheGetRandomSatisfiedChannel(param)
+	require.Nil(t, channel)
+	var selectionErr *ChannelSelectionError
+	require.ErrorAs(t, err, &selectionErr)
+	assert.Equal(t, ChannelSelectionModelNotConfigured, selectionErr.Kind)
+
+	param.ModelName = "configured-disabled-model"
+	channel, _, err = CacheGetRandomSatisfiedChannel(param)
+	require.Nil(t, channel)
+	require.ErrorAs(t, err, &selectionErr)
+	assert.Equal(t, ChannelSelectionTemporarilyUnavailable, selectionErr.Kind)
+}
+
+func TestCacheGetRandomSatisfiedChannelClassifiesUnsupportedAdvancedCustomRouteAsUnknown(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	priority := int64(0)
+	weight := uint(100)
+	channel := &model.Channel{
+		Id: 2451, Type: constant.ChannelTypeAdvancedCustom, Key: "key-2451", Status: common.ChannelStatusEnabled,
+		Name: "advanced-custom", Weight: &weight, Models: "path-model", Group: "default", Priority: &priority,
+	}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{AdvancedCustom: &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{
+		IncomingPath: "/v1/responses",
+		Models:       []string{"path-model"},
+	}}}})
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "default", Model: "path-model", ChannelId: channel.Id, Enabled: true, Priority: &priority, Weight: weight,
+	}).Error)
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	retry := 0
+	channel, _, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: ctx, TokenGroup: "default", ModelName: "path-model", RequestPath: "/v1/chat/completions", Retry: &retry,
+	})
+	require.Nil(t, channel)
+	var selectionErr *ChannelSelectionError
+	require.ErrorAs(t, err, &selectionErr)
+	assert.Equal(t, ChannelSelectionModelNotConfigured, selectionErr.Kind)
+}
+
+func TestCacheGetRandomSatisfiedChannelFallsBackFromBlockedCompactAlias(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	createChannelSelectAutoGroupsChannel(t, db, 2461, "default", "gpt-5.5-openai-compact")
+	createChannelSelectAutoGroupsChannel(t, db, 2462, "default", "gpt-5.5")
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{
+		GroupName:         "default",
+		BlockedChannelIDs: model.GroupAccessPolicyIntList{2461},
+	})
+	retry := 0
+	selected, _, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: ctx, TokenGroup: "default", ModelName: "gpt-5.5-openai-compact", RequestPath: "/v1/chat/completions", Retry: &retry,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 2462, selected.Id)
+	assert.Equal(t, "gpt-5.5", common.GetContextKeyString(ctx, constant.ContextKeyResolvedModel))
+}
+
+func TestCacheGetRandomSatisfiedChannelClassifiesPolicyAndConsistencyFailures(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	createChannelSelectAutoGroupsChannel(t, db, 2501, "default", "policy-blocked-model")
+	priority := int64(0)
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "default", Model: "dangling-channel-model", ChannelId: 2599, Enabled: true, Priority: &priority,
+	}).Error)
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyGroupAccessPolicy, model.GroupAccessPolicySnapshot{
+		GroupName:         "default",
+		BlockedChannelIDs: model.GroupAccessPolicyIntList{2501},
+	})
+	retry := 0
+	channel, _, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: ctx, TokenGroup: "default", ModelName: "policy-blocked-model", Retry: &retry,
+	})
+	require.Nil(t, channel)
+	var selectionErr *ChannelSelectionError
+	require.ErrorAs(t, err, &selectionErr)
+	assert.Equal(t, ChannelSelectionAccessDenied, selectionErr.Kind)
+
+	channel, _, err = CacheGetRandomSatisfiedChannel(&RetryParam{
+		Ctx: ctx, TokenGroup: "default", ModelName: "dangling-channel-model", Retry: &retry,
+	})
+	require.Nil(t, channel)
+	require.ErrorAs(t, err, &selectionErr)
+	assert.Equal(t, ChannelSelectionInternalError, selectionErr.Kind)
 }
