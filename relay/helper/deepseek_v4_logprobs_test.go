@@ -48,11 +48,6 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":1.5}`,
 			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
 		},
-		{
-			name:    "required tool choice is rejected",
-			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"天气？"}],"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object"}}}],"tool_choice":"required"}`,
-			message: "Invalid tool_choice value, tool_choice=required is not supported.",
-		},
 	}
 
 	for _, tt := range tests {
@@ -69,6 +64,17 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			assert.Nil(t, oaiErr.Param)
 		})
 	}
+}
+
+func TestDeepSeekV4RequiredToolChoiceIsAccepted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"天气？"}],"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object"}}}],"tool_choice":"required"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	request, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
+	require.NoError(t, err)
+	assert.Equal(t, "required", request.ToolChoice)
 }
 
 func TestDeepSeekV4LogprobsValidationLeavesOtherModelsUntouched(t *testing.T) {

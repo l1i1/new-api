@@ -19,7 +19,7 @@ func TestFeatureProbeMatrixIsCompleteAndUnique(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 	require.Len(t, seen, 85)
-	require.Len(t, implementedLiveCases, 45)
+	require.Len(t, implementedLiveCases, 49)
 	for id := range implementedLiveCases {
 		_, exists := seen[id]
 		require.Truef(t, exists, "implemented live case %s is missing from the matrix", id)
@@ -225,6 +225,19 @@ func TestExpectedPassStreamingToolCallRequiresValidArguments(t *testing.T) {
 	assert.False(t, expectedPass("DS-F09", "official", http.StatusOK, evidence))
 }
 
+func TestExpectedPassRequiredToolChoiceRequiresValidToolCall(t *testing.T) {
+	evidence := map[string]any{
+		"json":                true,
+		"has_error":           false,
+		"has_tool_calls":      true,
+		"tool_arguments_json": true,
+	}
+	assert.True(t, expectedPass("DS-F02", "official", http.StatusOK, evidence))
+
+	evidence["tool_arguments_json"] = false
+	assert.False(t, expectedPass("DS-F02", "official", http.StatusOK, evidence))
+}
+
 func TestExpectedPassStreamingLogprobsRequiresUsageAndBound(t *testing.T) {
 	evidence := map[string]any{
 		"stream":           true,
@@ -335,6 +348,157 @@ func TestAnnotateFitEvidenceSeparatesProtocolAcceptanceFromEffectiveSuccess(t *t
 	assert.Equal(t, true, evidence["protocol_accepted"])
 	assert.Equal(t, false, evidence["effective_success"])
 	assert.Equal(t, "empty_final_content", evidence["failure_reason"])
+}
+
+func TestResponsesFixturesUseResponsesInputAndFunctionCallItems(t *testing.T) {
+	request := responsesRequest("deepseek-v4-flash")
+	assert.Equal(t, "deepseek-v4-flash", request["model"])
+	assert.Equal(t, "1+1=?", request["input"])
+	assert.NotContains(t, request, "messages")
+
+	toolRequest := responsesToolRequest("deepseek-v4-flash")
+	tools, ok := toolRequest["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "function", tool["type"])
+	assert.Equal(t, map[string]any{"type": "function", "name": "get_weather"}, toolRequest["tool_choice"])
+}
+
+func TestSummarizeResponsesNonStreamReportsStructuralEvidence(t *testing.T) {
+	evidence := summarizeResponses([]byte(`{"object":"response","status":"completed","output":[{"type":"reasoning","id":"rs_secret","status":"completed","summary":[{"type":"summary_text","text":"compare values"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"2"}]},{"type":"function_call","call_id":"call_secret","name":"get_weather","arguments":"{\"city\":\"Beijing\"}"}],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6,"input_tokens_details":{"cached_tokens":3}}}`), false)
+
+	assert.Equal(t, true, evidence["json"])
+	assert.Equal(t, true, evidence["response_object"])
+	assert.Equal(t, "completed", evidence["response_status"])
+	assert.Equal(t, true, evidence["has_output_text"])
+	assert.Equal(t, true, evidence["has_reasoning_output"])
+	assert.Equal(t, true, evidence["has_function_call"])
+	assert.Equal(t, true, evidence["function_call_arguments_json"])
+	assert.Equal(t, true, evidence["usage"])
+	assert.Equal(t, true, evidence["usage_valid"])
+	assert.Equal(t, float64(3), evidence["cached_tokens"])
+	assert.NotContains(t, evidence, "text")
+	assert.NotContains(t, evidence, "arguments")
+	assert.NotContains(t, evidence, "call_id")
+}
+
+func TestSummarizeResponsesStreamTracksSemanticTerminalWithoutDoneMarker(t *testing.T) {
+	payload := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"object":"response","status":"in_progress"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"2"}`,
+		``,
+		`event: response.reasoning_text.delta`,
+		`data: {"type":"response.reasoning_text.delta","delta":"thinking"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"2"}]}],"usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}}`,
+	}, "\n") + "\n\n"
+	evidence := summarizeResponses([]byte(payload), true)
+
+	assert.Equal(t, true, evidence["json"])
+	assert.Equal(t, true, evidence["response_object"])
+	assert.Equal(t, true, evidence["response_terminal"])
+	assert.Equal(t, "response.completed", evidence["response_terminal_event"])
+	assert.Equal(t, true, evidence["response_terminal_last"])
+	assert.Equal(t, true, evidence["has_output_text"])
+	assert.Equal(t, true, evidence["has_reasoning_output"])
+	assert.Equal(t, true, evidence["usage"])
+	assert.NotContains(t, evidence, "done_marker")
+}
+
+func TestResponsesExpectedPassRequiresSemanticShape(t *testing.T) {
+	base := map[string]any{
+		"response_object":         true,
+		"response_status":         "completed",
+		"has_error":               false,
+		"has_output_text":         true,
+		"usage_valid":             true,
+		"stream":                  true,
+		"response_terminal":       true,
+		"response_terminal_last":  true,
+		"response_terminal_event": "response.completed",
+		"has_reasoning_output":    true,
+	}
+	assert.True(t, responsesExpected("DS-G01", http.StatusOK, base))
+	assert.True(t, responsesExpected("DS-G02", http.StatusOK, base))
+	assert.True(t, responsesExpected("DS-G03", http.StatusOK, base))
+	delete(base, "has_reasoning_output")
+	assert.False(t, responsesExpected("DS-G03", http.StatusOK, base))
+	base["response_terminal"] = false
+	assert.False(t, responsesExpected("DS-G02", http.StatusOK, base))
+	base["response_terminal"] = true
+	base["response_terminal_last"] = false
+	assert.False(t, responsesExpected("DS-G02", http.StatusOK, base))
+	base["response_terminal_last"] = true
+	base["response_terminal_event"] = "response.failed"
+	assert.False(t, responsesExpected("DS-G02", http.StatusOK, base))
+}
+
+func TestResponsesUnsupportedClassificationDoesNotHideValidationErrors(t *testing.T) {
+	assert.False(t, responsesUnsupported(http.StatusNotFound, nil))
+	assert.True(t, responsesUnsupported(http.StatusMethodNotAllowed, nil))
+	assert.False(t, responsesUnsupported(http.StatusNotFound, map[string]any{"error_message_fingerprint": "model not found"}))
+	assert.True(t, responsesUnsupported(http.StatusNotFound, map[string]any{"error_message_fingerprint": "responses endpoint not found"}))
+	assert.True(t, responsesUnsupported(http.StatusBadRequest, map[string]any{"error_message_fingerprint": "responses endpoint is not supported"}))
+	assert.False(t, responsesUnsupported(http.StatusBadRequest, map[string]any{"error_message_fingerprint": "input is required"}))
+}
+
+func TestSummarizeResponsesValidationDoesNotInventUsageOrReasoning(t *testing.T) {
+	emptyUsage := summarizeResponses([]byte(`{"object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"2"}]}],"usage":{}}`), false)
+	assert.Equal(t, true, emptyUsage["usage"])
+	assert.Equal(t, false, emptyUsage["usage_valid"])
+	assert.False(t, responsesExpected("DS-G01", http.StatusOK, emptyUsage))
+
+	emptyReasoning := summarizeResponses([]byte(`{"object":"response","status":"completed","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"2"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), false)
+	assert.NotEqual(t, true, emptyReasoning["has_reasoning_output"])
+
+	summaryReasoning := summarizeResponses([]byte(`{"object":"response","status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"compare values"}]},{"type":"message","content":[{"type":"output_text","text":"2"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), false)
+	assert.Equal(t, true, summaryReasoning["has_reasoning_output"])
+}
+
+func TestSummarizeResponsesStreamRejectsLateTerminalAndRecognizesSummaryReasoning(t *testing.T) {
+	payload := strings.Join([]string{
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"object":"response","status":"completed"}}`,
+		``,
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}`,
+	}, "\n") + "\n\n"
+	evidence := summarizeResponses([]byte(payload), true)
+	assert.Equal(t, true, evidence["has_reasoning_output"])
+	assert.Equal(t, false, evidence["response_terminal_last"])
+	assert.False(t, responsesExpected("DS-G02", http.StatusOK, evidence))
+
+	failedPayload := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		``,
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"object":"response","status":"failed"}}`,
+	}, "\n") + "\n\n"
+	failedEvidence := summarizeResponses([]byte(failedPayload), true)
+	assert.Equal(t, true, failedEvidence["response_terminal_last"])
+	assert.Equal(t, "response.failed", failedEvidence["response_terminal_event"])
+	assert.False(t, responsesExpected("DS-G02", http.StatusOK, failedEvidence))
+}
+
+func TestFirstResponsesFunctionCallKeepsOnlyContinuationFields(t *testing.T) {
+	call, ok := firstResponsesFunctionCall(map[string]any{
+		"object": "response",
+		"output": []any{map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_1",
+			"name":      "get_weather",
+			"arguments": `{"city":"Beijing"}`,
+		}},
+	})
+	require.True(t, ok)
+	assert.Equal(t, responsesFunctionCall{callID: "call_1", name: "get_weather", arguments: `{"city":"Beijing"}`}, call)
 }
 
 type assertionError string

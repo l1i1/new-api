@@ -1,6 +1,6 @@
 # DeepSeek V4 Feature Probe Test Specification
 
-Status: Partially implemented (45/85 live fixture IDs; live tiers require runtime credentials)
+Status: Partially implemented (49/85 live fixture IDs; live tiers require runtime credentials)
 Owner: Tokeness New API relay
 Last reviewed: 2026-08-25
 
@@ -59,10 +59,10 @@ shape flags were retained.
   the same V4 inputs at the request boundary instead of clamping or renaming
   them, so the gateway does not claim an extension while measuring official
   parity.
-- The official endpoint rejected `tool_choice=required` with a 400-style
-  `invalid_request_error`. The local candidate now returns the same validation
-  envelope for V4 instead of turning this provider-invalid request into a
-  successful tool call.
+- A post-rollout recheck found the official endpoint now accepts
+  `tool_choice=required` and returns a valid tool call. The earlier 400 result
+  was a provider snapshot, not a durable constraint. The follow-up candidate
+  therefore preserves `required` instead of rejecting it locally.
 - `stream=true` without `include_usage` returned a usage event on all three
   routes. This is observable parity, not transparent passthrough parity:
   Tokeness defaults `ShouldIncludeUsage=true` when `stream_options` is omitted
@@ -89,7 +89,7 @@ shape flags were retained.
   `choices[0].logprobs.content` and `reasoning_content` arrays as received. The
   gateway never synthesizes reasoning logprobs; an upstream DFLASH capability
   error remains a typed retryable unsupported-feature result.
-- The public middleware error boundary is locally normalized to the official
+- The public middleware error boundary is normalized to the official
   OpenAI-compatible shape: `param` is JSON null, authentication uses
   `authentication_error` plus `invalid_request_error`, validation uses
   `invalid_request_error`, and internal `new_api_error` is not exposed. This is
@@ -102,14 +102,14 @@ shape flags were retained.
   content in 13 completion tokens. The probe therefore records
   `protocol_accepted=true` separately from `effective_success=false` when final
   content is empty.
-- A focused main-route repeat found the complex SSE, disabled-thinking tools,
-  and repeated stop cases structurally valid. The tools assertion now accepts
-  a valid function call when text content is absent. The production route still
-  accepts the two invalid `top_logprobs` requests in the pre-rollout sample;
-  this is the release-gate probe for the next image.
+- A focused post-rollout repeat found the complex SSE, disabled-thinking tools,
+  and repeated stop cases structurally valid. The primary route had one K08
+  stream with reasoning-only chunks and no terminal usage/content; the runner
+  records this as `empty_final_content` rather than a successful 200. K02/K03
+  and the normalized authentication envelope passed on both gateway routes.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
-remaining 40 matrix cases are intentionally `inconclusive` until their live
+remaining 36 matrix cases are intentionally `inconclusive` until their live
 fixtures and mock-upstream tests are implemented.
 
 ### 2b. Compliance Verdict
@@ -119,15 +119,15 @@ fixtures and mock-upstream tests are implemented.
 | Basic non-stream response | Partially aligned | Probe requires non-empty `content`; the 256-token named-message fit case is protocol-accepted but frequently has no final content after reasoning exhausts the limit |
 | Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and a separate usage event when requested |
 | Thinking disabled | Compatible in candidate and observed production sample | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
-| Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking and tool replay cases remain unimplemented |
+| Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking/tool replay is now covered by live fixtures; broader provider variance remains |
 | Sampling validation | Aligned in candidate; rollout recheck pending | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the candidate returns the same validation class |
 | JSON, stop, logprobs | Aligned for observed valid and invalid cases | Probe validates JSON parsing, stop termination, usage arithmetic/cache bounds, both reasoning/content logprob arrays when supported, the `top_logprobs <= 20` bound, and official validation fingerprints |
-| Tools | Aligned in candidate; rollout recheck pending | Official rejects `tool_choice=required`; the candidate returns the official-shaped validation envelope |
+| Tools | Follow-up candidate ready | Official currently accepts `tool_choice=required`; release `.5` still rejects it from an older probe snapshot, while the follow-up candidate preserves the value |
 | Stream usage when omitted | Observable parity with different semantics | Official emitted usage; Tokeness may preserve or synthesize it because omission defaults to include |
 | Unknown model | Production not aligned; local candidate ready | Official 400 versus current production 503; local typed classification maps only truly unconfigured models to `400 model_not_found` and keeps unavailable/inconsistent selection failures at 503/500 with the public server-error envelope |
 | Capability failover | Locally verified | DFLASH unsupported-logprob errors are retryable, queryable as `channel:unsupported_feature`, and do not auto-disable the channel |
 | Logging safety | Locally hardened | Debug and direct response-body diagnostics are credential-masked and bounded to 2 KiB; no live response bodies are persisted by the probe |
-| Full matrix / release gate | Not complete | 40 case IDs, including Responses, live failover, and single-charge billing assertions, remain inconclusive; full official/gateway paired runs still require controlled runtime credentials |
+| Full matrix / release gate | Not complete | 36 case IDs, including live failover and single-charge billing assertions, remain inconclusive; full official/gateway paired runs still require controlled runtime credentials |
 
 ## 3. Environment and Safety
 
@@ -303,7 +303,7 @@ response bodies, or credentials.
 | ID | Request | Required assertion | Severity |
 | --- | --- | --- | --- |
 | DS-F01 | `tools` with `tool_choice=auto` | Model may return text or a function call; both are valid and structurally distinct | P0 |
-| DS-F02 | `tool_choice=required` | Official provider and gateway both return the official-shaped 400 `invalid_request_error`; a successful tool call is not accepted as parity | P0 |
+| DS-F02 | `tool_choice=required` | Official provider and gateway both accept the request and return a valid function call with parseable JSON arguments | P0 |
 | DS-F03 | Named function tool choice | Requested function name is selected | P1 |
 | DS-F04 | `tool_choice=none` | No tool call is returned | P1 |
 | DS-F05 | Malformed function schema | Clear client error; no partial billing or retry to a different channel | P1 |

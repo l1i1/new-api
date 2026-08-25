@@ -394,14 +394,6 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			Code:    "invalid_request_error",
 		}, http.StatusBadRequest)
 	}
-	if choice, ok := request.ToolChoice.(string); ok && strings.EqualFold(strings.TrimSpace(choice), "required") {
-		return types.WithOpenAIError(types.OpenAIError{
-			Message: "Invalid tool_choice value, tool_choice=required is not supported.",
-			Type:    "invalid_request_error",
-			Param:   nil,
-			Code:    "invalid_request_error",
-		}, http.StatusBadRequest)
-	}
 	return nil
 }
 

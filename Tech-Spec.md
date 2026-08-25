@@ -345,7 +345,7 @@ request matrix without fabricating token probabilities or changing billing seman
 ### Acceptance Criteria
 
 - The four customer request shapes (basic, streaming usage, tools with disabled thinking, and stop) convert without request-local 400 validation errors.
-- `reasoning_effort=extreme`, invalid `top_p`, and `tool_choice=required` return the official-shaped 400 validation envelope.
+- `reasoning_effort=extreme` and invalid `top_p` return the official-shaped 400 validation envelope; `tool_choice=required` is preserved because the official API currently accepts it.
 - A valid `top_p` and an omitted `top_p` are preserved.
 - A request with `logprobs=true` and `top_logprobs=5` preserves both fields and returns the upstream `logprobs` object when the selected channel supports it.
 - Conversion tests cover the above cases and assert no API key or credential is present in fixtures.

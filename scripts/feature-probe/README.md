@@ -17,9 +17,11 @@ go run ./scripts/feature-probe
 
 Without credentials the runner performs the offline coverage audit and reports
 the live tiers as `inconclusive`; it never invents pass results. The current
-runner has live fixtures for 45 of the 85 matrix IDs, including the P0
+runner has live fixtures for 49 of the 85 matrix IDs, including the P0
 authentication/model, role replay, thinking multi-turn, parameter-boundary,
-streaming-logprobs, and tool-round-trip cases. Multi-turn fixtures keep the
+streaming-logprobs, tool-round-trip, and Responses API cases. Responses probes
+cover non-stream output, semantic event streams, reasoning output, and a
+function-call/function_call_output continuation. Multi-turn fixtures keep the
 first response only in memory so the output remains structural and redacted.
 
 For a bounded normal-profile run, select only the cases needed for the current
@@ -32,6 +34,22 @@ remain visible as `inconclusive`:
 $env:FEATURE_PROBE_CASES = 'DS-A01,DS-A02,DS-A03,DS-A04,DS-A05,DS-B05,DS-C08,DS-C09,DS-C10,DS-C11,DS-D01,DS-D02,DS-D06,DS-D07,DS-D08,DS-D09,DS-D10,DS-E05,DS-E06,DS-E07,DS-F06,DS-F07,DS-F08,DS-F09'
 go run ./scripts/feature-probe
 ```
+
+Responses cases can be run explicitly with the same selector:
+
+```powershell
+$env:FEATURE_PROBE_CASES = 'DS-G01,DS-G02,DS-G03,DS-G04'
+go run ./scripts/feature-probe
+```
+
+The Responses stream assertion uses semantic terminal events
+(`response.completed`, `response.incomplete`, or `response.failed`) and does
+not require Chat Completions' `data: [DONE]`. A `response.failed` event is
+recorded as a terminal protocol event but cannot pass the successful output
+assertion. A missing endpoint is reported as `expected_unsupported` only when
+the HTTP error fingerprint identifies the Responses endpoint; ordinary 404s,
+validation errors, and malformed responses remain failures, while transport
+errors remain `inconclusive`.
 
 `DS-E06` is reported as `expected_unsupported` only when the redacted
 `return_logprob` capability fingerprint is observed; a successful request is

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -52,6 +53,7 @@ var implementedLiveCases = map[string]struct{}{
 	"DS-D01": {}, "DS-D02": {}, "DS-D03": {}, "DS-D04": {}, "DS-D05": {}, "DS-D06": {}, "DS-D07": {}, "DS-D08": {}, "DS-D09": {}, "DS-D10": {},
 	"DS-E01": {}, "DS-E02": {}, "DS-E03": {}, "DS-E04": {}, "DS-E05": {}, "DS-E06": {}, "DS-E07": {},
 	"DS-F01": {}, "DS-F02": {}, "DS-F06": {}, "DS-F07": {}, "DS-F08": {}, "DS-F09": {},
+	"DS-G01": {}, "DS-G02": {}, "DS-G03": {}, "DS-G04": {},
 }
 
 var fingerprintSecretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_-]+|bearer\s+[a-z0-9._-]+)`)
@@ -367,7 +369,260 @@ func runBasic(client *http.Client, route, base, key, tier string) []result {
 			results = append(results, runAdvancedBasicCase(client, route, base, key, tier, p.model, id))
 		}
 	}
+	results = append(results, runResponses(client, route, base, key, tier, p.model, selected)...)
 	return results
+}
+
+type responsesCheck struct {
+	id   string
+	body map[string]any
+}
+
+func runResponses(client *http.Client, route, base, key, tier, model string, selected map[string]struct{}) []result {
+	checks := []responsesCheck{
+		{"DS-G01", responsesRequest(model)},
+		{"DS-G02", responsesStreamRequest(model)},
+		{"DS-G03", responsesReasoningRequest(model)},
+		{"DS-G04", responsesToolRequest(model)},
+	}
+	results := make([]result, 0, len(checks))
+	for _, check := range checks {
+		if !caseSelected(check.id, selected) {
+			continue
+		}
+		if check.id == "DS-G04" {
+			results = append(results, runResponsesToolCase(client, route, base, key, tier, model))
+			continue
+		}
+		results = append(results, runSingleResponsesCase(client, route, base, key, tier, check))
+	}
+	return results
+}
+
+func runSingleResponsesCase(client *http.Client, route, base, key, tier string, check responsesCheck) result {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	body, _ := json.Marshal(check.body)
+	status, evidence, _, err := requestPayload(ctx, client, base, key, http.MethodPost, "/responses", body)
+	item := result{CaseID: check.id, Tier: tier, Surface: "responses", Route: route, HTTP: status, Evidence: evidence, Status: "fail"}
+	if code, ok := evidence["error_code"].(string); ok {
+		item.ErrorCode = code
+	}
+	if err != nil {
+		item.Status = "inconclusive"
+		item.Evidence["reason"] = "responses_transport_error"
+		return item
+	}
+	if responsesUnsupported(status, evidence) {
+		item.Status = "expected_unsupported"
+		return item
+	}
+	if check.id == "DS-G03" && status == http.StatusOK && evidence["response_object"] == true && evidence["has_reasoning_output"] != true {
+		item.Status = "expected_unsupported"
+		item.Evidence["reason"] = "responses_reasoning_not_advertised"
+		return item
+	}
+	if responsesExpected(check.id, status, evidence) {
+		item.Status = "pass"
+	}
+	return item
+}
+
+func runResponsesToolCase(client *http.Client, route, base, key, tier, model string) result {
+	item := result{CaseID: "DS-G04", Tier: tier, Surface: "responses", Route: route, Status: "fail"}
+	firstBody := responsesToolRequest(model)
+	firstBytes, _ := json.Marshal(firstBody)
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	firstStatus, firstEvidence, firstPayload, firstErr := requestPayload(firstCtx, client, base, key, http.MethodPost, "/responses", firstBytes)
+	firstCancel()
+	evidence := map[string]any{
+		"first_http_status":       firstStatus,
+		"first_response_object":   firstEvidence["response_object"] == true,
+		"first_status":            firstEvidence["response_status"],
+		"first_has_output_text":   firstEvidence["has_output_text"] == true,
+		"first_has_function_call": firstEvidence["has_function_call"] == true,
+	}
+	item.HTTP, item.Evidence = firstStatus, evidence
+	if code, ok := firstEvidence["error_code"].(string); ok {
+		item.ErrorCode = code
+	}
+	if firstErr != nil {
+		item.Status = "inconclusive"
+		evidence["reason"] = "responses_first_turn_transport_error"
+		return item
+	}
+	if responsesUnsupported(firstStatus, firstEvidence) {
+		item.Status = "expected_unsupported"
+		return item
+	}
+	call, ok := firstResponsesFunctionCall(firstPayload)
+	if !ok {
+		if firstStatus == http.StatusOK && firstEvidence["response_object"] == true && firstEvidence["has_error"] != true {
+			item.Status = "expected_unsupported"
+			evidence["reason"] = "responses_function_call_not_advertised"
+		} else {
+			item.Status = "fail"
+			evidence["reason"] = "responses_first_turn_invalid_or_missing_function_call"
+		}
+		return item
+	}
+	evidence["first_function_arguments_json"] = json.Valid([]byte(call.arguments))
+	if evidence["first_function_arguments_json"] != true {
+		item.Status = "fail"
+		evidence["reason"] = "responses_function_call_arguments_invalid"
+		return item
+	}
+	secondBody := map[string]any{
+		"model": model,
+		"input": []any{
+			map[string]any{"role": "user", "content": "Beijing weather?"},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   call.callID,
+				"name":      call.name,
+				"arguments": call.arguments,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": call.callID,
+				"output":  "Beijing: sunny, 25C.",
+			},
+		},
+		"max_output_tokens": 128,
+	}
+	secondBytes, _ := json.Marshal(secondBody)
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	secondStatus, secondEvidence, _, secondErr := requestPayload(secondCtx, client, base, key, http.MethodPost, "/responses", secondBytes)
+	secondCancel()
+	evidence["second_http_status"] = secondStatus
+	evidence["second_response_object"] = secondEvidence["response_object"] == true
+	evidence["second_status"] = secondEvidence["response_status"]
+	evidence["second_has_output_text"] = secondEvidence["has_output_text"] == true
+	if secondErr != nil {
+		item.Status = "inconclusive"
+		evidence["reason"] = "responses_second_turn_transport_error"
+		item.HTTP = secondStatus
+		return item
+	}
+	if responsesUnsupported(secondStatus, secondEvidence) {
+		item.Status = "expected_unsupported"
+		item.HTTP = secondStatus
+		return item
+	}
+	item.HTTP = secondStatus
+	secondResponseStatus := secondEvidence["response_status"]
+	validSecondStatus := secondResponseStatus == "completed" || secondResponseStatus == "incomplete"
+	if secondStatus == http.StatusOK && secondEvidence["response_object"] == true && validSecondStatus && secondEvidence["has_output_text"] == true && secondEvidence["has_error"] != true {
+		item.Status = "pass"
+	}
+	return item
+}
+
+type responsesFunctionCall struct {
+	callID    string
+	name      string
+	arguments string
+}
+
+func firstResponsesFunctionCall(payload map[string]any) (responsesFunctionCall, bool) {
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		response = payload
+	}
+	output, ok := response["output"].([]any)
+	if !ok {
+		return responsesFunctionCall{}, false
+	}
+	for _, raw := range output {
+		item, ok := raw.(map[string]any)
+		if !ok || item["type"] != "function_call" {
+			continue
+		}
+		callID, _ := item["call_id"].(string)
+		name, _ := item["name"].(string)
+		arguments, _ := item["arguments"].(string)
+		if callID == "" || name == "" || arguments == "" {
+			continue
+		}
+		return responsesFunctionCall{callID: callID, name: name, arguments: arguments}, true
+	}
+	return responsesFunctionCall{}, false
+}
+
+func responsesRequest(model string) map[string]any {
+	return map[string]any{
+		"model":             model,
+		"input":             "1+1=?",
+		"max_output_tokens": 64,
+	}
+}
+
+func responsesStreamRequest(model string) map[string]any {
+	request := responsesRequest(model)
+	request["stream"] = true
+	return request
+}
+
+func responsesReasoningRequest(model string) map[string]any {
+	request := responsesRequest(model)
+	request["input"] = "Compare 17 and 19, then answer with the larger number."
+	request["reasoning"] = map[string]string{"effort": "low"}
+	request["max_output_tokens"] = 128
+	return request
+}
+
+func responsesToolRequest(model string) map[string]any {
+	request := responsesRequest(model)
+	request["input"] = "Beijing weather?"
+	request["tools"] = []any{map[string]any{
+		"type":        "function",
+		"name":        "get_weather",
+		"description": "Get current weather",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"city": map[string]any{"type": "string"},
+			},
+			"required": []string{"city"},
+		},
+	}}
+	request["tool_choice"] = map[string]any{"type": "function", "name": "get_weather"}
+	request["max_output_tokens"] = 128
+	return request
+}
+
+func responsesExpected(caseID string, status int, evidence map[string]any) bool {
+	if status != http.StatusOK || evidence["response_object"] != true || evidence["has_error"] == true {
+		return false
+	}
+	validStatus := evidence["response_status"] == "completed" || evidence["response_status"] == "incomplete"
+	switch caseID {
+	case "DS-G01":
+		return validStatus && evidence["has_output_text"] == true && evidence["usage_valid"] == true
+	case "DS-G02":
+		terminalEvent, _ := evidence["response_terminal_event"].(string)
+		return evidence["stream"] == true && evidence["has_output_text"] == true && evidence["response_terminal"] == true && evidence["response_terminal_last"] == true && (terminalEvent == "response.completed" || terminalEvent == "response.incomplete")
+	case "DS-G03":
+		return validStatus && evidence["has_output_text"] == true && evidence["has_reasoning_output"] == true
+	default:
+		return false
+	}
+}
+
+func responsesUnsupported(status int, evidence map[string]any) bool {
+	if status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented {
+		return true
+	}
+	fingerprint := strings.ToLower(evidenceString(evidence, "error_message_fingerprint"))
+	if status == http.StatusNotFound && !strings.Contains(fingerprint, "responses") {
+		return false
+	}
+	for _, marker := range []string{"responses api is not supported", "responses endpoint is not supported", "responses endpoint not found", "endpoint not supported", "unsupported endpoint", "not implemented"} {
+		if strings.Contains(fingerprint, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func runSingleBasicCase(client *http.Client, route, base, key, tier, model string, check basicCheck) result {
@@ -942,7 +1197,7 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 	case "DS-D10":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["content_json"] == true
 	case "DS-F02":
-		return expectedOfficialValidation(status, evidence)
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true
 	case "DS-E01":
 		count, ok := evidence["logprobs_content"].(int)
 		maxEntries, maxOK := evidence["max_top_logprobs"].(int)
@@ -1035,7 +1290,11 @@ func requestPayload(ctx context.Context, client *http.Client, base, key, method,
 		return resp.StatusCode, map[string]any{"read_error": safeError(readErr)}, nil, readErr
 	}
 	stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+	isResponses := strings.HasSuffix(strings.TrimRight(path, "/"), "/responses")
 	evidence := summarize(data, stream)
+	if isResponses {
+		evidence = summarizeResponses(data, stream)
+	}
 	evidence["initial_scheme"] = req.URL.Scheme
 	evidence["tls"] = resp.TLS != nil
 	if resp.Request != nil && resp.Request.URL != nil {
@@ -1240,6 +1499,282 @@ func summarize(data []byte, stream bool) map[string]any {
 		addErrorEvidence(evidence, errValue)
 	}
 	return evidence
+}
+
+func summarizeResponses(data []byte, stream bool) map[string]any {
+	evidence := map[string]any{"bytes": len(data), "stream": stream}
+	if stream {
+		return summarizeResponsesStream(data, evidence)
+	}
+	var payload map[string]any
+	if json.Unmarshal(data, &payload) != nil {
+		evidence["json"] = false
+		return evidence
+	}
+	evidence["json"] = true
+	if errValue, ok := payload["error"].(map[string]any); ok {
+		addErrorEvidence(evidence, errValue)
+	}
+	response := payload
+	if nested, ok := payload["response"].(map[string]any); ok {
+		response = nested
+	}
+	if object, ok := response["object"].(string); ok {
+		evidence["response_object"] = object == "response"
+		evidence["response_object_type"] = object
+	}
+	if status, ok := response["status"].(string); ok && status != "" {
+		evidence["response_status"] = status
+	}
+	if output, ok := response["output"].([]any); ok {
+		summarizeResponsesOutput(evidence, output)
+	}
+	if usage, ok := response["usage"].(map[string]any); ok {
+		addResponsesUsageEvidence(evidence, usage)
+	}
+	return evidence
+}
+
+func summarizeResponsesStream(data []byte, evidence map[string]any) map[string]any {
+	seenTypes := make(map[string]struct{})
+	eventTypes := make([]string, 0, 16)
+	argumentBuilders := make(map[string]*strings.Builder)
+	var eventName string
+	var dataLines []string
+	var lastEventType string
+	flush := func() {
+		if eventName == "" && len(dataLines) == 0 {
+			return
+		}
+		payloadText := strings.Join(dataLines, "\n")
+		dataLines = nil
+		eventType := strings.TrimSpace(eventName)
+		eventName = ""
+		if payloadText == "[DONE]" {
+			evidence["done_marker"] = true
+			return
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(payloadText), &payload) != nil {
+			return
+		}
+		if value, ok := payload["type"].(string); ok && value != "" {
+			eventType = value
+		}
+		if eventType != "" {
+			lastEventType = eventType
+			if _, exists := seenTypes[eventType]; !exists {
+				seenTypes[eventType] = struct{}{}
+				if len(eventTypes) < 32 {
+					eventTypes = append(eventTypes, eventType)
+				}
+			}
+		}
+		if eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.failed" {
+			evidence["response_terminal"] = true
+			evidence["response_terminal_event"] = eventType
+		}
+		if errValue, ok := payload["error"].(map[string]any); ok {
+			addErrorEvidence(evidence, errValue)
+		}
+		response, _ := payload["response"].(map[string]any)
+		if response != nil {
+			if object, ok := response["object"].(string); ok {
+				evidence["response_object"] = object == "response"
+				evidence["response_object_type"] = object
+			}
+			if status, ok := response["status"].(string); ok && status != "" {
+				evidence["response_status"] = status
+			}
+			if output, ok := response["output"].([]any); ok {
+				summarizeResponsesOutput(evidence, output)
+			}
+			if usage, ok := response["usage"].(map[string]any); ok {
+				addResponsesUsageEvidence(evidence, usage)
+			}
+		}
+		if delta, ok := payload["delta"].(string); ok && strings.TrimSpace(delta) != "" {
+			switch eventType {
+			case "response.output_text.delta":
+				evidence["has_output_text"] = true
+			case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
+				evidence["has_reasoning_output"] = true
+			case "response.function_call_arguments.delta":
+				key := responsesStreamItemKey(payload)
+				builder := argumentBuilders[key]
+				if builder == nil {
+					builder = &strings.Builder{}
+					argumentBuilders[key] = builder
+				}
+				builder.WriteString(delta)
+			}
+		}
+		if (eventType == "response.reasoning_text.done" || eventType == "response.reasoning_summary_text.done") && hasNonEmptyString(payload["text"]) {
+			evidence["has_reasoning_output"] = true
+		}
+		if item, ok := payload["item"].(map[string]any); ok {
+			summarizeResponsesOutput(evidence, []any{item})
+		}
+		if eventType == "response.function_call_arguments.done" {
+			arguments, _ := payload["arguments"].(string)
+			if arguments == "" {
+				arguments = argumentBuilders[responsesStreamItemKey(payload)].String()
+			}
+			if arguments != "" {
+				evidence["function_call_arguments_json"] = json.Valid([]byte(arguments))
+			}
+		}
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	flush()
+	evidence["json"] = len(eventTypes) > 0 || evidence["done_marker"] == true
+	evidence["responses_event_types"] = eventTypes
+	evidence["responses_event_count"] = len(eventTypes)
+	evidence["response_terminal_last"] = isResponsesTerminalEvent(lastEventType)
+	return evidence
+}
+
+func isResponsesTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.incomplete", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func responsesStreamItemKey(payload map[string]any) string {
+	if itemID, ok := payload["item_id"].(string); ok && itemID != "" {
+		return itemID
+	}
+	if index, ok := payload["output_index"].(float64); ok {
+		return fmt.Sprintf("output-%d", int(index))
+	}
+	return "default"
+}
+
+func summarizeResponsesOutput(evidence map[string]any, output []any) {
+	typesSeen := make(map[string]struct{})
+	outputTypes, _ := evidence["output_types"].([]string)
+	functionCalls := 0
+	functionArgumentsValid := true
+	for _, raw := range output {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeName, _ := item["type"].(string)
+		if typeName != "" {
+			if _, exists := typesSeen[typeName]; !exists {
+				typesSeen[typeName] = struct{}{}
+				outputTypes = append(outputTypes, typeName)
+			}
+		}
+		switch typeName {
+		case "message", "output_text":
+			if content, ok := item["content"].([]any); ok {
+				for _, rawContent := range content {
+					part, ok := rawContent.(map[string]any)
+					if !ok {
+						continue
+					}
+					partType, _ := part["type"].(string)
+					if partType == "output_text" && hasNonEmptyString(part["text"]) {
+						evidence["has_output_text"] = true
+					}
+					if strings.Contains(partType, "reasoning") && hasNonEmptyString(part["text"]) {
+						evidence["has_reasoning_output"] = true
+					}
+				}
+			}
+		case "reasoning", "reasoning_text":
+			if responsesItemHasText(item) {
+				evidence["has_reasoning_output"] = true
+			}
+		case "function_call":
+			functionCalls++
+			arguments, _ := item["arguments"].(string)
+			if arguments == "" || !json.Valid([]byte(arguments)) {
+				functionArgumentsValid = false
+			}
+		}
+	}
+	if len(outputTypes) > 0 {
+		evidence["output_types"] = outputTypes
+	}
+	if functionCalls > 0 {
+		evidence["has_function_call"] = true
+		evidence["function_call_count"] = functionCalls
+		evidence["function_call_arguments_json"] = functionArgumentsValid
+	}
+}
+
+func responsesItemHasText(item map[string]any) bool {
+	if hasNonEmptyString(item["text"]) {
+		return true
+	}
+	for _, field := range []string{"content", "summary"} {
+		parts, ok := item[field].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if ok && hasNonEmptyString(part["text"]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func addResponsesUsageEvidence(evidence map[string]any, usage map[string]any) {
+	evidence["usage"] = true
+	values := make(map[string]float64, 3)
+	valid := true
+	for _, field := range []string{"input_tokens", "output_tokens", "total_tokens"} {
+		value, ok := usage[field]
+		if !ok {
+			valid = false
+			continue
+		}
+		number, ok := responsesUsageNumber(value)
+		if !ok {
+			valid = false
+			continue
+		}
+		evidence[field] = value
+		values[field] = number
+	}
+	if valid && values["total_tokens"] != values["input_tokens"]+values["output_tokens"] {
+		valid = false
+	}
+	evidence["usage_valid"] = valid
+	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
+		if cached, ok := details["cached_tokens"]; ok {
+			evidence["cached_tokens"] = cached
+		}
+	}
+}
+
+func responsesUsageNumber(value any) (float64, bool) {
+	number, ok := value.(float64)
+	return number, ok && !math.IsNaN(number) && !math.IsInf(number, 0) && number >= 0 && math.Trunc(number) == number
 }
 
 func hasNonEmptyString(value any) bool {
