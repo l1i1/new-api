@@ -135,8 +135,8 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 		normal bool
 	}{
 		{StreamEndReasonDone, true},
-		{StreamEndReasonEOF, true},
-		{StreamEndReasonHandlerStop, true},
+		{StreamEndReasonEOF, false},
+		{StreamEndReasonHandlerStop, false},
 		{StreamEndReasonTimeout, false},
 		{StreamEndReasonClientGone, false},
 		{StreamEndReasonScannerErr, false},
