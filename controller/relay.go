@@ -647,8 +647,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func isMultiKeyCredentialRetryStatus(statusCode int) bool {
+	// A 401 is a channel-level authentication/configuration failure. Retrying
+	// another key on the same channel only repeats the same invalid route.
 	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+	case http.StatusForbidden, http.StatusTooManyRequests:
 		return true
 	default:
 		return false

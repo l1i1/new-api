@@ -100,13 +100,13 @@ func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
 	require.Zero(t, param.PreferredChannelID())
 }
 
-func TestAffinitySkipStillAllowsMultiKeyCredentialRetry(t *testing.T) {
+func TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Set("channel_affinity_skip_retry_on_failure", true)
 	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 
-	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusUnauthorized))
+	require.True(t, shouldSkipRetryAfterAffinity(c, http.StatusUnauthorized))
 	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusForbidden))
 	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusTooManyRequests))
 	require.True(t, shouldSkipRetryAfterAffinity(c, http.StatusBadRequest))
@@ -124,14 +124,13 @@ func TestRetryParamCancelResetAfterMultiKeyExhaustion(t *testing.T) {
 	require.False(t, param.IsChannelExcluded(42))
 }
 
-func TestCredentialErrorsRetryAnotherKeyOnSameChannel(t *testing.T) {
+func TestCredentialErrorsRetryAnotherKeyOnSameChannelExceptUnauthorized(t *testing.T) {
 	originalRetryTimes := common.RetryTimes
 	common.RetryTimes = 1
 	t.Cleanup(func() { common.RetryTimes = originalRetryTimes })
 
 	gin.SetMode(gin.TestMode)
 	for _, statusCode := range []int{
-		http.StatusUnauthorized,
 		http.StatusForbidden,
 		http.StatusTooManyRequests,
 	} {
@@ -165,6 +164,23 @@ func TestCredentialErrorsRetryAnotherKeyOnSameChannel(t *testing.T) {
 			require.NotEqual(t, firstIndex, common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex))
 		})
 	}
+}
+
+func TestUnauthorizedMultiKeyFailureMovesToNextChannel(t *testing.T) {
+	param := &service.RetryParam{Retry: new(int)}
+	channel := &model.Channel{
+		Id: 4103,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+
+	require.False(t, prepareChannelRetry(param, channel, http.StatusUnauthorized, false))
+	require.Zero(t, param.PreferredChannelID())
+	require.True(t, param.IsChannelExcluded(channel.Id))
+
+	param.IncreaseRetry()
+	require.Equal(t, 1, param.GetRetry())
 }
 
 func TestFirstAttemptWithoutRelayChannelMetaKeepsMultiKeyRetry(t *testing.T) {
