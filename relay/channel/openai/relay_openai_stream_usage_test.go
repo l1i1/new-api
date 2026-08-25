@@ -195,6 +195,7 @@ func TestOaiStreamHandlerRetainsCacheAcrossUsageEvents(t *testing.T) {
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 
 	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"gemini-3.7-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
@@ -338,6 +339,7 @@ func TestOaiStreamHandlerPromotesExactCompletionFromUpstreamUsage(t *testing.T) 
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 
 	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":151,"completion_tokens":0,"total_tokens":151,"billing_usage":{"source":"oai_chat","semantic":"openai","openai_usage":{"prompt_tokens":151,"completion_tokens":0,"output_tokens":7,"total_tokens":158}}}}`,
 		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		`data: [DONE]`,
@@ -425,7 +427,7 @@ func TestOaiStreamHandlerPromotesTopLevelOutputTokens(t *testing.T) {
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
 }
 
-func TestOaiStreamHandlerKeepsZeroCompletionWithoutOutput(t *testing.T) {
+func TestOaiStreamHandlerRejectsEmptyFinalOutput(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
