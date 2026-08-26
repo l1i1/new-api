@@ -1,5 +1,30 @@
 # New API Fork Memory
 
+- On 2026-08-27, the "upstream returned empty final content" failures on
+  channel tests ("测试渠道连接" and multi-key management probes) were root-caused
+  and fixed in `v1.0.0-rc.25-tokeness-channel-test.1` (commit `ec0f73a9e`;
+  digest `sha256:1ea9fca3923ed1b5dad8c62b8d44a9e4e016de191a00beca1999fdbc93c68f3d`;
+  publish run `33002566711`, staged deploy `33004251186` after a first attempt
+  `33003566385` failed because JP-N2's disk was 100% full — 21 stale new-api
+  images were pruned to free 2.4 GB, keeping only the running digest). Root
+  cause was two-layered: (1) `buildTestRequest` sent chat probes with
+  `max_tokens=16`, which reasoning models (glm-5.x, hy3, kimi, mimo,
+  deepseek-v4-pro) exhaust inside thinking, returning reasoning-only +
+  `finish_reason=length`; (2) the empty-output guard exemption recognized only
+  the `deepseek-v4-` prefix, so every other reasoning model was misjudged as a
+  broken channel. This also 502'd real client requests with small budgets
+  (production logs showed 865 ox-alpha-free, 706 hy3, 164 glm-5.3, 139
+  mimo-v2.5, 85 deepseek-v4-flash in one day, plus 21 multi-key probe failures
+  on channels 93/117). Fix: the exemption is now behavior-based — any chat
+  completion whose only output is reasoning and whose finish_reason is length
+  passes (stream and non-stream guards, `hasReasoningOnlyLengthOutput`);
+  probes now send `max_tokens=500` (`testChatMaxTokens`; o-series uses
+  max_completion_tokens, claude keeps 64). Post-deploy: 6 channel-test model
+  combos and a 4-key multi-key probe all succeed (remaining failures are real
+  upstream 429 quota states), and zero new empty-content log entries after
+  deploy. JP-N2's tiny 5 GB disk needs periodic `docker image prune` — every
+  staged deploy accumulates a stale image until pull fails.
+
 - On 2026-08-26, per user decision ("我的意思是实在不可拟合的才走官方渠道"), the
   full-flash official pin was reverted to a conditional pin and deployed as
   `v1.0.0-rc.25-tokeness-deepseek-v4.8.2` (commits `6270cce6d`,
