@@ -151,6 +151,15 @@ func (p *RetryParam) IsChannelExcluded(channelID int) bool {
 //
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
+//
+// v4OfficialPin reports whether the request context marks this deepseek-v4
+// request for the official-channel pin (extreme sampling parameters that
+// aggregators cannot fit).
+func v4OfficialPin(param *RetryParam) bool {
+	return param != nil && param.Ctx != nil &&
+		common.GetContextKeyBool(param.Ctx, constant.ContextKeyV4OfficialPin)
+}
+
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
@@ -223,7 +232,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels)
+			channel, err = model.GetRandomSatisfiedChannelPinned(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels, v4OfficialPin(param))
 			if err != nil {
 				lastAutoGroupSelectionErr = err
 				lastAutoGroupSelectionErrGroup = autoGroup
@@ -288,7 +297,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if len(param.excludedChannelIDs) > 0 {
 			selectionRetry = 0
 		}
-		channel, err = model.GetRandomSatisfiedChannelWithBlockedChannels(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels)
+		channel, err = model.GetRandomSatisfiedChannelPinned(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param))
 		if err != nil {
 			return nil, param.TokenGroup, &ChannelSelectionError{
 				Kind:  ChannelSelectionInternalError,

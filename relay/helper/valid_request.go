@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -356,6 +357,7 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
 			return nil, err
 		}
+		markDeepSeekV4OfficialPin(c, textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
 		// It will be filled by provider-specific adaptors if needed (e.g., SiliconFlow)。Or it is allowed by model vendor(s) (e.g., DeepSeek)
 		if len(textRequest.Messages) == 0 && textRequest.Prefix == nil && textRequest.Suffix == nil {
@@ -421,6 +423,35 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 		}, http.StatusBadRequest)
 	}
 	return nil
+}
+
+// markDeepSeekV4OfficialPin flags deepseek-v4 requests whose sampling
+// parameters are known to drive aggregator upstreams into divergent behavior
+// (the K08 reasoning-loop class). Only these requests are pinned to the
+// official channel; ordinary fit-able requests keep normal aggregator routing.
+func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest) {
+	if c == nil || request == nil {
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+		return
+	}
+	pinned := false
+	if request.Temperature != nil && *request.Temperature > 1.5 {
+		pinned = true
+	}
+	if request.TopP != nil && *request.TopP < 0.3 {
+		pinned = true
+	}
+	if request.FrequencyPenalty != nil && *request.FrequencyPenalty > 1.0 {
+		pinned = true
+	}
+	if request.PresencePenalty != nil && *request.PresencePenalty > 1.0 {
+		pinned = true
+	}
+	if pinned {
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	}
 }
 
 func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {

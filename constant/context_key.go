@@ -72,6 +72,12 @@ const (
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
+	// ContextKeyV4OfficialPin marks a deepseek-v4 request whose sampling
+	// parameters are known to diverge on aggregator upstreams, so channel
+	// selection pins it to the official DeepSeek channel. Ordinary fit-able
+	// requests keep normal aggregator routing.
+	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
+
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 	ContextKeyOllamaPromptCache    ContextKey = "ollama_prompt_cache"
 

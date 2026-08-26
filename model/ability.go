@@ -230,6 +230,13 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 }
 
 func GetChannelWithBlockedChannels(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}) (*Channel, error) {
+	return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, false)
+}
+
+// GetChannelWithBlockedChannelsPinned behaves like
+// GetChannelWithBlockedChannels but can narrow deepseek-v4 candidates to the
+// official channel when pinOfficial is set for the request.
+func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
@@ -249,7 +256,7 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
-	abilities = preferDeepSeekOfficialAbilities(abilities, model)
+	abilities = preferDeepSeekOfficialAbilities(abilities, model, pinOfficial)
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -275,15 +282,15 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 }
 
 // preferDeepSeekOfficialAbilities narrows deepseek-v4-* candidates to official
-// DeepSeek channels when any are present, mirroring the memory-cache path so
-// both selection modes stay byte-compatible with api.deepseek.com. Without an
-// official channel the candidate set is unchanged.
-func preferDeepSeekOfficialAbilities(abilities []Ability, model string) []Ability {
+// DeepSeek channels when the request is marked for the official pin,
+// mirroring the memory-cache path. Without an official channel the candidate
+// set is unchanged.
+func preferDeepSeekOfficialAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
 	// A single candidate cannot be narrowed: if it is official the filter would
 	// keep it, and if it is not there is no official candidate to prefer.
 	// Skipping the type query keeps the pinned single-channel hot path
 	// query-free.
-	if len(abilities) <= 1 || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+	if len(abilities) <= 1 || !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
 		return abilities
 	}
 	channelIDs := make([]int, 0, len(abilities))

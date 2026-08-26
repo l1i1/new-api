@@ -155,12 +155,20 @@ func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekForV4Models(t *testing.
 		channelSyncLock.Unlock()
 	})
 
-	// Even when the aggregator has the higher weight, the V4 model must always
-	// select the official DeepSeek channel.
+	// Unpinned requests keep weighted selection across both channel types;
+	// pinned requests narrow to the official channel.
+	unpinned := map[int]bool{}
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannel("default", "deepseek-v4-flash", 0, "")
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, false)
 		require.NoError(t, err)
-		require.Equal(t, 1, selected.Id)
+		unpinned[selected.Id] = true
+	}
+	require.True(t, unpinned[1] && unpinned[2], "unpinned V4 requests keep weighted selection across channel types")
+
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true)
+		require.NoError(t, err)
+		require.Equal(t, 1, selected.Id, "pinned V4 requests always select the official channel")
 	}
 }
 
@@ -271,8 +279,8 @@ func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekWithMultipleOfficial(t 
 	})
 
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannel("default", "deepseek-v4-flash", 0, "")
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true)
 		require.NoError(t, err)
-		require.Contains(t, []int{1, 5}, selected.Id, "aggregator channel must never be selected for V4 when official exists")
+		require.Contains(t, []int{1, 5}, selected.Id, "pinned V4 requests must never select the aggregator when officials exist")
 	}
 }

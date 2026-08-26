@@ -132,11 +132,26 @@ func TestGetChannelWithBlockedChannelsPinsDeepSeekV4ToOfficialDatabaseCandidates
 		{Group: "default", Model: "deepseek-v4-flash", ChannelId: official.Id, Enabled: true, Priority: ptrInt64(9), Weight: 0},
 	}).Error)
 
-	for i := 0; i < 20; i++ {
-		selected, err := GetChannelWithBlockedChannels("default", "deepseek-v4-flash", 0, "", nil)
+	// Unpinned requests keep normal weighted selection: the aggregator's
+	// weight (100 vs 0, plus the +10 base) dominates, so it is selected in
+	// the large majority of draws.
+	aggregatorPicks := 0
+	for i := 0; i < 100; i++ {
+		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, false)
 		require.NoError(t, err)
 		require.NotNil(t, selected)
-		require.Equal(t, official.Id, selected.Id, "same-priority V4 candidates must narrow to the official channel despite the aggregator's higher weight")
+		if selected.Id == aggregator.Id {
+			aggregatorPicks++
+		}
+	}
+	require.Greater(t, aggregatorPicks, 80, "unpinned V4 requests keep weighted aggregator routing")
+
+	// Pinned requests narrow to the official channel.
+	for i := 0; i < 20; i++ {
+		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, true)
+		require.NoError(t, err)
+		require.NotNil(t, selected)
+		require.Equal(t, official.Id, selected.Id, "pinned V4 requests narrow to the official channel despite the aggregator's higher weight")
 	}
 }
 

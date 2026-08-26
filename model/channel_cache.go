@@ -141,18 +141,17 @@ func SyncChannelCache(frequency int) {
 }
 
 func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
-	return GetRandomSatisfiedChannelWithBlockedChannels(group, model, retry, requestPath, nil)
+	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false)
 }
 
 // preferDeepSeekOfficialChannels narrows deepseek-v4-* candidates to official
-// DeepSeek channels when any are present. Aggregator upstreams diverge from the
-// official wire contract (sampling behavior, max_tokens truncation, reasoning
-// loops, missing system_fingerprint), so official-direct selection is the only
-// way to keep V4 responses byte-compatible with api.deepseek.com. Without an
-// official channel the candidate set is unchanged. Caller must hold
-// channelSyncLock (read lock).
-func preferDeepSeekOfficialChannels(channels []int, model string) []int {
-	if len(channels) == 0 || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+// DeepSeek channels when the request is marked for the official pin. The mark
+// is set only for requests whose sampling parameters are known to drive
+// aggregator upstreams into divergent behavior; ordinary fit-able requests
+// keep normal aggregator routing. Without an official channel the candidate
+// set is unchanged. Caller must hold channelSyncLock (read lock).
+func preferDeepSeekOfficialChannels(channels []int, model string, pinOfficial bool) []int {
+	if len(channels) == 0 || !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
 		return channels
 	}
 	official := make([]int, 0, len(channels))
@@ -170,8 +169,8 @@ func preferDeepSeekOfficialChannels(channels []int, model string) []int {
 // deepSeekOfficialPreferenceApplied reports whether the previous narrowing kept
 // only a strict subset of the cached candidates, meaning the prebuilt selection
 // metadata no longer describes the candidate set and must not be used.
-func deepSeekOfficialPreferenceApplied(channels []int, model string) bool {
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+func deepSeekOfficialPreferenceApplied(channels []int, model string, pinOfficial bool) bool {
+	if !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
 		return false
 	}
 	for _, channelID := range channels {
@@ -182,13 +181,13 @@ func deepSeekOfficialPreferenceApplied(channels []int, model string) bool {
 	return true
 }
 
-// GetRandomSatisfiedChannelWithBlockedChannels applies a request-scoped deny
-// list before priority and weight selection. Keeping the predicate in this
-// layer makes memory-cache and database fallback selection behave identically.
-func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}) (*Channel, error) {
+// GetRandomSatisfiedChannelPinned behaves like
+// GetRandomSatisfiedChannelWithBlockedChannels but can narrow deepseek-v4
+// candidates to the official channel when pinOfficial is set for the request.
+func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithBlockedChannels(group, model, retry, requestPath, blockedChannels)
+		return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, pinOfficial)
 	}
 
 	channelSyncLock.RLock()
@@ -200,14 +199,14 @@ func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, re
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-	channels = preferDeepSeekOfficialChannels(channels, model)
+	channels = preferDeepSeekOfficialChannels(channels, model, pinOfficial)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-		channels = preferDeepSeekOfficialChannels(channels, model)
+		channels = preferDeepSeekOfficialChannels(channels, model, pinOfficial)
 	}
 
 	if len(channels) == 0 {
@@ -221,7 +220,7 @@ func GetRandomSatisfiedChannelWithBlockedChannels(group string, model string, re
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
 	}
 
-	if requestPath == "" && len(blockedChannels) == 0 && !deepSeekOfficialPreferenceApplied(channels, model) {
+	if requestPath == "" && len(blockedChannels) == 0 && !deepSeekOfficialPreferenceApplied(channels, model, pinOfficial) {
 		if model2selection, ok := group2model2channelSelection[group]; ok {
 			if selection := model2selection[model]; selection != nil {
 				return selectChannelFromMetadata(group, model, retry, selection)
