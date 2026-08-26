@@ -1,5 +1,31 @@
 # New API Fork Memory
 
+- On 2026-08-26, commit `afc38b6ec` was published as
+  `v1.0.0-rc.25-tokeness-deepseek-v4.7` at immutable GHCR digest
+  `sha256:6a75152a91c92b396ad08f793e0f6366daadfdf31890f5a69a7108480d3113a6`
+  and deployed to all four nodes (JP-N2, EV-JP, JP-M, EV-JP2) by staged
+  workflow `32963866950`; public routes verified the new version. Both
+  environment approvals (tokeness-release, tokeness-production) were granted
+  by the owner through the pending-deployments review API using local `gh`
+  credentials (user-authorized self-approval). The release contains five
+  fixes: byte-level splice fidelity for V4 responses, upstream key-order
+  preservation on thinking-disabled paths, aggregator message-key
+  whitelisting, V4 reasoning-only-length stream passthrough, and the code-level
+  official-channel pin (`preferDeepSeekOfficialChannels`, `model/`), which
+  complements the DB-level pin by keeping V4 official-direct even if an
+  aggregator re-adds the model. Post-deploy K01-K13 paired rerun (evidence
+  `E:\Temp\ds-fit\results5`, untracked): 13/13 cases official-shaped — every
+  response routed official-direct (no `router-` ids), `system_fingerprint`
+  present on all, K02/K03 400 bodies byte-identical with
+  `application/octet-stream`, SSE `text/event-stream; charset=utf-8` with
+  `usage: null` on non-terminal chunks, usage on the final finish chunk in
+  official key order, K12 dual-path logprobs bounded at 5, K06 penalties
+  truncating at 64 tokens with `finish_reason=length` matching official.
+  Remaining differences are provider sampling nondeterminism only (e.g. K07
+  content length varies between official runs; completion-token counts differ
+  between independent official calls on K04/K05/K11/K12), which the paired
+  probe accepts because each gateway response is a fresh official call.
+
 - On 2026-08-26, fresh post-pin verification (39-record probe: 37 pass) exposed
   a real gateway stream defect beyond provider nondeterminism. K08
   (`temperature=2, top_p=0.1`) reasoning-loop streams and K11 stop-case
@@ -715,3 +741,4 @@
 - On 2026-08-26, the K01-K13 acceptance runner and V4 response boundary were audited and repaired locally. The Go `fit` profile sends the exact supplied request bodies, requires exact HTTP 400 and official logprobs error fingerprints, validates official non-stream/SSE/usage/logprobs schemas, and gates every gateway `pass` on a passing same-status official baseline. K04/K06/K07 now accept the official reasoning-only `finish_reason=length` truncation, and the relay preserves that response when thinking is enabled; disabled thinking strips both reasoning text and reasoning logprobs. V4 streams no longer emit a successful `[DONE]` without a finish reason, and fitted usage is normalized to non-negative, arithmetic-consistent official fields. Full root tests/vet, standalone RelayKit test/build, focused race tests, and `git diff --check` passed. With gateway and official API-key environment variables explicitly empty, the fit runner produced 39/39 `inconclusive` records and made no live request. No authenticated K01-K13 production verdict, commit, publication, or deployment is claimed; no credential or response body was stored.
 - On 2026-08-26, stream failures reported as `stream state: error eof` were traced to two compatibility cases: the scanner mishandled bare `[DONE]`, and some OpenAI-compatible upstreams closed after a non-empty terminal `finish_reason` without sending `[DONE]`. The scanner now accepts bare and `data:` DONE markers, drains all chunk workers before final classification, promotes only terminal-finish EOF to normal completion, and keeps genuinely truncated streams as 502 with skip-retry. DeepSeek V4 regression coverage also rejects DONE without a finish reason and preserves the terminal usage/finish chunk shape. No production credential or response body was stored.
 - On 2026-08-26, the production `stream state: error eof` incident was traced to Tokeness commit `f4f65939d`, which changed New API's upstream-compatible clean EOF from normal to `server_error` and required `[DONE]`/`finish_reason` in `OaiStreamHandler`. Official new-api treats clean EOF, `[DONE]`, and handler stop as normal completion. Commit `fdbbbd6503` restored that behavior while retaining scanner errors, timeouts, client disconnects, upstream error events, and empty-output rejection. It was published as `v1.0.0-rc.25-tokeness-stream-eof.2` at immutable digest `sha256:636f67c3aa930c2dd6b274d07333476b43edf91dafa9dacf2184afdcbf66cbd9` by workflow `32949087397`. The first rollout `32949803929` failed because EV-JP's 15 GB root disk was full; the failed atomic write left `release.env` empty while the old container remained healthy. Unused Docker images and archived journals were removed, `release.env` was atomically restored from the running immutable image, and all four nodes were verified on the old baseline before retrying. Rollout `32954050267` then deployed the target digest to all four nodes and passed public route checks. A real temporary-token SSE acceptance returned HTTP 200 with `[DONE]`, usage, and `finish_reason=stop`; its usage log recorded `stream_status=ok`, `end_reason=done`, and the token was deleted. In the first 8.5 minutes after deployment, 850 stream logs contained 610 normal EOFs and zero `error/eof`; residual errors were 60 HTTP/2 scanner failures for `claude-opus-5` channel 76, three canceled scans for `gpt-5.6-sol` channel 33, and nine client disconnects, which are separate from this incident.
+- On 2026-08-26, a read-only production investigation of `claude-opus-5` stream rows showed a separate incident from the fixed clean-EOF regression. The two reported rows ran on EV-JP2 and ended on Anthropic channel 76 (`Claude_apijing`, `apijing.com`) with Go HTTP/2 reader errors `INTERNAL_ERROR; received from peer`; each received three SSE data events, then failed about 125 seconds after the first event. One request first hit channel 78, which returned HTTP 400 because `temperature` is deprecated for this model, before fallback to channel 76. From 17:23 through the final audit snapshot, every channel-76 `scanner_error` belonged to one user/token (`token_id=14018`, token name `kc`) and one source IP, indicating a client/workload-specific retry storm rather than a platform-wide outage; repeated failed attempts wrote large Claude cache prefixes and accumulated billable usage. The deployed OpenAI-compatible handler records `scanner_error` in consume-log metadata but, after any usable output, still finalizes with synthetic `[DONE]`, HTTP 200, and normal settlement because it no longer gates completion on `StreamStatus`; clean EOF compatibility and real scanner/timeout failures therefore need separate handling in any fix. Channel 76 currently uses automatic HTTP negotiation with one connection shard. No production configuration or data was changed.
