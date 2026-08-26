@@ -152,6 +152,25 @@ func TestStreamScannerHandler_DoneStopsScanner(t *testing.T) {
 	assert.Equal(t, int64(50), count.Load(), "data after [DONE] must not be processed")
 }
 
+func TestStreamScannerHandler_AcceptsAllDoneMarkerForms(t *testing.T) {
+	for _, marker := range []string{"[DONE]", "data:[DONE]", "data: [DONE]"} {
+		t.Run(marker, func(t *testing.T) {
+			body := "data: payload\n" + marker + "\ndata: after\n"
+			c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+			var count atomic.Int64
+			StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+				count.Add(1)
+			})
+
+			assert.Equal(t, int64(1), count.Load())
+			require.NotNil(t, info.StreamStatus)
+			assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+			assert.True(t, info.StreamStatus.IsNormalEnd())
+		})
+	}
+}
+
 func TestStreamScannerHandler_StopStopsStream(t *testing.T) {
 	t.Parallel()
 

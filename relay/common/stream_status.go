@@ -52,6 +52,17 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	})
 }
 
+// PromoteEOFToDone converts a provisional EOF into a normal end after the
+// stream workers have drained a terminal response chunk. Callers must invoke
+// this only after all concurrent stream processing has stopped.
+func (s *StreamStatus) PromoteEOFToDone() {
+	if s == nil || s.EndReason != StreamEndReasonEOF {
+		return
+	}
+	s.EndReason = StreamEndReasonDone
+	s.EndError = nil
+}
+
 func (s *StreamStatus) RecordError(msg string) {
 	if s == nil {
 		return

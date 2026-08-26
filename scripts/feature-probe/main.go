@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -124,11 +125,12 @@ func main() {
 }
 
 func runFitProfile(client *http.Client) error {
+	officialRequested := strings.EqualFold(strings.TrimSpace(os.Getenv("FEATURE_PROBE_INCLUDE_OFFICIAL")), "true")
 	routes := []struct{ name, base, key, tier string }{
 		{"main", envOr("NEW_API_BASE_URL", "https://n.tokeness.dev/v1"), os.Getenv("NEW_API_KEY"), "gateway-live"},
 		{"backup", envOr("NEW_API_BACKUP_URL", "https://n-cf.tokeness.dev/v1"), os.Getenv("NEW_API_KEY"), "gateway-live"},
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("FEATURE_PROBE_INCLUDE_OFFICIAL")), "true") {
+	if officialRequested {
 		routes = append([]struct{ name, base, key, tier string }{
 			{"official", envOr("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), os.Getenv("DEEPSEEK_API_KEY"), "official-live"},
 		}, routes...)
@@ -138,6 +140,7 @@ func runFitProfile(client *http.Client) error {
 	if err != nil {
 		return err
 	}
+	results := make([]result, 0, len(routes)*len(selected))
 	for _, route := range routes {
 		if strings.TrimSpace(route.base) == "" || strings.TrimSpace(route.key) == "" {
 			reason := "live_api_key_not_injected"
@@ -145,7 +148,7 @@ func runFitProfile(client *http.Client) error {
 				reason = "live_route_not_injected"
 			}
 			for _, check := range selected {
-				_ = json.NewEncoder(os.Stdout).Encode(result{
+				results = append(results, result{
 					CaseID:  check.id,
 					Tier:    route.tier,
 					Surface: "chat-completions",
@@ -163,7 +166,7 @@ func runFitProfile(client *http.Client) error {
 			body, _ := json.Marshal(check.body)
 			status, evidence, err := request(ctx, client, route.base, route.key, http.MethodPost, "/chat/completions", body)
 			cancel()
-			annotateFitEvidence(status, evidence)
+			annotateFitEvidence(status, evidence, check.body)
 			item := result{CaseID: check.id, Tier: route.tier, Surface: "chat-completions", Route: route.name, HTTP: status, Evidence: evidence, Status: "fail"}
 			if code, ok := evidence["error_code"].(string); ok {
 				item.ErrorCode = code
@@ -181,10 +184,90 @@ func runFitProfile(client *http.Client) error {
 					item.Status = "doc_drift"
 				}
 			}
-			json.NewEncoder(os.Stdout).Encode(item)
+			results = append(results, item)
+		}
+	}
+	applyFitOfficialBaseline(results, officialRequested)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(true)
+	for _, item := range results {
+		if err := enc.Encode(item); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func applyFitOfficialBaseline(results []result, officialRequested bool) {
+	official := make(map[string]result)
+	if officialRequested {
+		for _, item := range results {
+			if item.Tier == "official-live" {
+				official[item.CaseID] = item
+			}
+		}
+	}
+	for i := range results {
+		item := &results[i]
+		if item.Tier != "gateway-live" || item.Status != "pass" {
+			continue
+		}
+		if item.Evidence == nil {
+			item.Evidence = make(map[string]any)
+		}
+		item.Evidence["contract_status"] = "pass"
+		if !officialRequested {
+			item.Status = "inconclusive"
+			item.Evidence["reason"] = "official_baseline_not_requested"
+			continue
+		}
+		baseline, ok := official[item.CaseID]
+		if !ok || baseline.Status != "pass" {
+			item.Status = "inconclusive"
+			item.Evidence["reason"] = "official_baseline_unavailable"
+			continue
+		}
+		if item.HTTP != baseline.HTTP {
+			item.Status = "fail"
+			item.Evidence["reason"] = "official_http_status_mismatch"
+			continue
+		}
+		if field := fitEvidenceMismatch(item.CaseID, baseline.Evidence, item.Evidence); field != "" {
+			item.Status = "fail"
+			item.Evidence["reason"] = "official_contract_mismatch"
+			item.Evidence["mismatch_field"] = field
+			continue
+		}
+		item.Evidence["official_baseline_matched"] = true
+	}
+}
+
+func fitEvidenceMismatch(caseID string, official, gateway map[string]any) string {
+	fields := []string{"json", "has_error", "error_type", "error_code", "error_param_null", "error_message_fingerprint", "stream", "has_response_id", "has_created", "object", "response_model", "choices", "choice_index_zero", "has_message", "message_role_assistant", "finish_reason_valid", "unexpected_top_level_fields", "unexpected_choice_fields", "unexpected_message_fields", "message_tool_calls_null", "done", "done_events", "done_last", "sse_json_errors", "stream_shape_valid", "official_usage_shape", "usage_shape", "usage_consistent", "cache_tokens_consistent", "completion_within_requested_max", "usage_events", "usage_only_events", "usage_on_finish_event", "usage_on_final_event"}
+	caseID = normalizeFitCaseID(caseID)
+	switch caseID {
+	case "K01", "K11":
+		fields = append(fields, "finish_reason", "contains_stop_sequence", "contains_pre_stop_content")
+	case "K05":
+		fields = append(fields, "has_content", "has_reasoning_content")
+	case "K08", "K09", "K13":
+		fields = append(fields, "has_content")
+	case "K10":
+		fields = append(fields, "has_reasoning_content")
+	case "K12":
+		fields = append(fields, "has_logprobs", "logprobs_content_valid", "logprobs_reasoning_content_valid")
+	}
+	for _, field := range fields {
+		officialValue, officialOK := official[field]
+		gatewayValue, gatewayOK := gateway[field]
+		if !officialOK && !gatewayOK {
+			continue
+		}
+		if !officialOK || !gatewayOK || !reflect.DeepEqual(officialValue, gatewayValue) {
+			return field
+		}
+	}
+	return ""
 }
 
 type fitCheck struct {
@@ -193,22 +276,21 @@ type fitCheck struct {
 }
 
 func fitChecks(model string) []fitCheck {
-	checks := make([]fitCheck, 0, 13)
-	stop := map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "依次说出：苹果、香蕉、橙子、西瓜。"}}, "stop": "香蕉", "max_tokens": 256, "reasoning_effort": "low", "model": model}
-	checks = append(checks, fitCheck{"K01", stop})
-	checks = append(checks, fitCheck{"K02", withFields(basicRequest(model), "top_logprobs", 5)})
-	checks = append(checks, fitCheck{"K03", withFields(withFields(basicRequest(model), "logprobs", true), "top_logprobs", 21)})
-	checks = append(checks, fitCheck{"K04", withFields(withFields(basicRequest(model), "max_tokens", 393216), "reasoning_effort", "low")})
-	checks = append(checks, fitCheck{"K05", withFields(withFields(withFields(basicRequest(model), "temperature", 0), "max_tokens", 256), "thinking", map[string]string{"type": "disabled"})})
-	checks = append(checks, fitCheck{"K06", withFields(withFields(withFields(withFields(basicRequest(model), "frequency_penalty", 2), "presence_penalty", 2), "max_tokens", 64), "reasoning_effort", "low")})
-	checks = append(checks, fitCheck{"K07", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "system", "name": "teacher", "content": "你是一位数学老师。"}, map[string]any{"role": "user", "name": "student_a", "content": "1+1=?"}}, "max_tokens": 256, "reasoning_effort": "low", "model": model}})
-	checks = append(checks, fitCheck{"K08", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "用一个词描述秋天。"}}, "temperature": 2, "top_p": 0.1, "presence_penalty": 1.5, "frequency_penalty": 1.5, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}})
-	checks = append(checks, fitCheck{"K09", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}})
-	checks = append(checks, fitCheck{"K10", toolRequestWithThinking(model)})
-	checks = append(checks, fitCheck{"K11", stop})
-	checks = append(checks, fitCheck{"K12", withFields(withFields(withFields(basicRequest(model), "logprobs", true), "top_logprobs", 5), "reasoning_effort", "low")})
-	checks = append(checks, fitCheck{"K13", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}})
-	return checks
+	return []fitCheck{
+		{"K01", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "依次说出：苹果、香蕉、橙子、西瓜。"}}, "stop": "香蕉", "max_tokens": 256, "reasoning_effort": "low", "model": model}},
+		{"K02", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "top_logprobs": 5, "max_tokens": 64, "reasoning_effort": "low", "model": model}},
+		{"K03", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "logprobs": true, "top_logprobs": 21, "max_tokens": 64, "reasoning_effort": "low", "model": model}},
+		{"K04", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 393216, "reasoning_effort": "low", "model": model}},
+		{"K05", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "用一个词描述春天。"}}, "temperature": 0, "max_tokens": 256, "thinking": map[string]string{"type": "disabled"}, "model": model}},
+		{"K06", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "你好"}}, "frequency_penalty": 2, "presence_penalty": 2, "max_tokens": 64, "reasoning_effort": "low", "model": model}},
+		{"K07", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "system", "name": "teacher", "content": "你是一位数学老师。"}, map[string]any{"role": "user", "name": "student_a", "content": "1+1=?"}}, "max_tokens": 256, "reasoning_effort": "low", "model": model}},
+		{"K08", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "用一个词描述秋天。"}}, "temperature": 2, "top_p": 0.1, "presence_penalty": 1.5, "frequency_penalty": 1.5, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}},
+		{"K09", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}},
+		{"K10", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "北京今天天气怎么样？"}}, "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "get_weather", "description": "查询指定城市的当前天气", "parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "description": "城市名，例如 北京"}}, "required": []string{"city"}}}}}, "tool_choice": "auto", "max_tokens": 1024, "thinking": map[string]string{"type": "disabled"}, "model": model}},
+		{"K11", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "依次说出：苹果、香蕉、橙子、西瓜。"}}, "stop": "香蕉", "max_tokens": 256, "reasoning_effort": "low", "model": model}},
+		{"K12", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "logprobs": true, "top_logprobs": 5, "max_tokens": 1024, "reasoning_effort": "low", "model": model}},
+		{"K13", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": model, "stream": true, "stream_options": map[string]any{"include_usage": true}}},
+	}
 }
 
 func fitCaseSelection() []string {
@@ -256,37 +338,38 @@ func selectFitChecks(checks []fitCheck, requested []string) ([]fitCheck, error) 
 	return selected, nil
 }
 
-func toolRequestWithThinking(model string) map[string]any {
-	request := toolRequest(model, "auto")
-	request["thinking"] = map[string]string{"type": "disabled"}
-	return request
-}
-
 func fitExpected(caseID string, status int, evidence map[string]any) bool {
 	caseID = normalizeFitCaseID(caseID)
-	validJSON := evidence["json"] == true && evidence["has_error"] != true
 	switch caseID {
 	case "K02":
-		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs and logprobs value")
+		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used.")
 	case "K03":
-		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs value")
+		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs value, the valid range of top_logprobs is [0, 20].")
 	case "K01", "K11":
-		return status == http.StatusOK && validJSON && evidence["has_content"] == true && evidence["finish_reason"] == "stop" && evidence["contains_stop_sequence"] != true
-	case "K08", "K09", "K13":
-		return status == http.StatusOK && evidence["stream"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["done"] == true && evidence["usage_events"] != nil
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) && evidence["has_content"] == true && evidence["contains_pre_stop_content"] == true && evidence["finish_reason"] == "stop" && evidence["contains_stop_sequence"] != true
+	case "K08":
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true &&
+			(evidence["has_content"] == true || (evidence["has_reasoning_content"] == true && evidence["finish_reason"] == "length")) &&
+			hasOfficialFinalUsage(evidence)
+	case "K09", "K13":
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true && evidence["has_content"] == true && hasOfficialFinalUsage(evidence)
 	case "K12":
 		contentCount, contentOK := evidence["logprobs_content"].(int)
 		reasoningCount, reasoningOK := evidence["logprobs_reasoning_content"].(int)
 		contentMax, contentMaxOK := evidence["max_top_logprobs"].(int)
 		reasoningMax, reasoningMaxOK := evidence["max_reasoning_top_logprobs"].(int)
-		return status == http.StatusOK && validJSON && evidence["has_logprobs"] == true && contentOK && contentCount > 0 && reasoningOK && reasoningCount > 0 && contentMaxOK && contentMax <= 5 && reasoningMaxOK && reasoningMax <= 5
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) && evidence["has_logprobs"] == true && evidence["logprobs_content_valid"] == true && evidence["logprobs_reasoning_content_valid"] == true && contentOK && contentCount > 0 && reasoningOK && reasoningCount > 0 && contentMaxOK && contentMax <= 5 && reasoningMaxOK && reasoningMax <= 5
 	case "K05":
-		return status == http.StatusOK && validJSON && evidence["has_content"] == true && evidence["has_reasoning_content"] != true
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) && evidence["has_content"] == true && evidence["has_reasoning_content"] != true
+	case "K04", "K06", "K07":
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) &&
+			(evidence["has_content"] == true ||
+				(evidence["has_reasoning_content"] == true && evidence["finish_reason"] == "length"))
 	case "K10":
-		return status == http.StatusOK && validJSON && evidence["has_reasoning_content"] != true &&
-			(evidence["has_content"] == true || (evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true))
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) && evidence["has_reasoning_content"] != true &&
+			(evidence["has_content"] == true || (evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true && evidence["fit_tool_calls_valid"] == true && evidence["finish_reason"] == "tool_calls"))
 	default:
-		return status == http.StatusOK && validJSON && evidence["has_content"] == true
+		return status == http.StatusOK && hasOfficialNonStreamResponse(evidence) && evidence["has_content"] == true
 	}
 }
 
@@ -294,9 +377,17 @@ func isInsufficientBalance(evidence map[string]any) bool {
 	return strings.Contains(evidenceString(evidence, "error_message_fingerprint"), "insufficient balance") || strings.Contains(evidenceString(evidence, "error_message_fingerprint"), "quota")
 }
 
-func annotateFitEvidence(status int, evidence map[string]any) {
+func annotateFitEvidence(status int, evidence map[string]any, requestBody ...map[string]any) {
 	if status != http.StatusOK || evidence == nil || evidence["has_error"] == true {
 		return
+	}
+	if len(requestBody) > 0 {
+		if maxTokens, ok := requestBody[0]["max_tokens"].(int); ok && maxTokens > 0 {
+			evidence["requested_max_tokens"] = maxTokens
+			if completionTokens, ok := evidence["completion_tokens"].(float64); ok {
+				evidence["completion_within_requested_max"] = completionTokens <= float64(maxTokens)
+			}
+		}
 	}
 	evidence["protocol_accepted"] = true
 	effectiveSuccess := evidence["has_content"] == true || (evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true)
@@ -1167,9 +1258,9 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 	case "DS-B05":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["finish_reason"] != nil && evidence["request_has_tool_role"] == true
 	case "DS-B02":
-		return status == http.StatusOK && evidence["stream"] == true && evidence["has_error"] != true && evidence["done"] == true && evidence["has_content"] == true && evidence["usage_events"] != nil && evidence["usage_event_empty_choices"] == true
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true && evidence["has_content"] == true && hasOfficialFinalUsage(evidence)
 	case "DS-B03":
-		return status == http.StatusOK && evidence["stream"] == true && evidence["has_error"] != true && evidence["done"] == true && evidence["has_content"] == true
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true && evidence["has_content"] == true
 	case "DS-C01":
 		return status >= 200 && status < 300 && evidence["json"] == true && evidence["has_error"] != true && evidence["has_content"] == true
 	case "DS-C02":
@@ -1201,27 +1292,26 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 	case "DS-E01":
 		count, ok := evidence["logprobs_content"].(int)
 		maxEntries, maxOK := evidence["max_top_logprobs"].(int)
-		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && ok && count > 0 && maxOK && maxEntries <= 5
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && evidence["logprobs_content_valid"] == true && ok && count > 0 && maxOK && maxEntries <= 5
 	case "DS-E02":
 		contentCount, contentOK := evidence["logprobs_content"].(int)
 		reasoningCount, reasoningOK := evidence["logprobs_reasoning_content"].(int)
 		contentMax, contentMaxOK := evidence["max_top_logprobs"].(int)
 		reasoningMax, reasoningMaxOK := evidence["max_reasoning_top_logprobs"].(int)
-		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && contentOK && contentCount > 0 && reasoningOK && reasoningCount > 0 && contentMaxOK && contentMax <= 5 && reasoningMaxOK && reasoningMax <= 5
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && evidence["logprobs_content_valid"] == true && evidence["logprobs_reasoning_content_valid"] == true && contentOK && contentCount > 0 && reasoningOK && reasoningCount > 0 && contentMaxOK && contentMax <= 5 && reasoningMaxOK && reasoningMax <= 5
 	case "DS-E03":
 		maxEntries, maxOK := evidence["max_top_logprobs"].(int)
-		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && maxOK && maxEntries <= 20
+		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && evidence["has_logprobs"] == true && evidence["logprobs_content_valid"] == true && maxOK && maxEntries <= 20
 	case "DS-E04":
-		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs and logprobs value")
+		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used.")
 	case "DS-E05":
 		count, ok := evidence["logprobs_content"].(int)
 		maxEntries, maxOK := evidence["max_top_logprobs"].(int)
-		usageEvents, usageOK := evidence["usage_events"].(int)
-		return status == http.StatusOK && evidence["stream"] == true && evidence["done"] == true && evidence["has_error"] != true && evidence["has_content"] == true && evidence["has_logprobs"] == true && ok && count > 0 && maxOK && maxEntries <= 5 && usageOK && usageEvents > 0
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true && evidence["has_content"] == true && evidence["has_logprobs"] == true && evidence["logprobs_content_valid"] == true && ok && count > 0 && maxOK && maxEntries <= 5 && hasOfficialFinalUsage(evidence)
 	case "DS-E06":
 		return false
 	case "DS-E07":
-		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs value")
+		return expectedLogprobsValidation(status, evidence, "invalid top_logprobs value, the valid range of top_logprobs is [0, 20].")
 	case "DS-F01":
 		return status == http.StatusOK && evidence["json"] == true && evidence["has_error"] != true && (evidence["has_content"] == true || evidence["has_tool_calls"] == true)
 	case "DS-F06":
@@ -1231,7 +1321,7 @@ func expectedPass(caseID, route string, status int, evidence map[string]any) boo
 	case "DS-F08":
 		return evidence["first_http_status"] == http.StatusOK && evidence["first_has_tool_calls"] == true && expectedOfficialValidation(status, evidence)
 	case "DS-F09":
-		return status == http.StatusOK && evidence["stream"] == true && evidence["done"] == true && evidence["has_error"] != true && evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true && (evidence["finish_reason"] == "tool_calls" || evidence["finish_reason"] == "stop")
+		return status == http.StatusOK && hasCompleteChatSSE(evidence) && evidence["has_error"] != true && evidence["has_tool_calls"] == true && evidence["tool_arguments_json"] == true && (evidence["finish_reason"] == "tool_calls" || evidence["finish_reason"] == "stop")
 	default:
 		return status >= 200 && status < 300 && evidence["has_error"] != true
 	}
@@ -1241,8 +1331,97 @@ func isValidationStatus(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
 }
 
-func expectedLogprobsValidation(status int, evidence map[string]any, prefix string) bool {
-	return isValidationStatus(status) && evidence["json"] == true && evidence["has_error"] == true && evidence["error_param_null"] == true && evidenceString(evidence, "error_type") == "invalid_request_error" && evidenceString(evidence, "error_code") == "invalid_request_error" && strings.HasPrefix(evidenceString(evidence, "error_message_fingerprint"), prefix)
+func expectedLogprobsValidation(status int, evidence map[string]any, message string) bool {
+	return status == http.StatusBadRequest && evidence["json"] == true && evidence["has_error"] == true && evidence["error_param_null"] == true && evidenceString(evidence, "error_type") == "invalid_request_error" && evidenceString(evidence, "error_code") == "invalid_request_error" && evidenceString(evidence, "error_message_fingerprint") == message
+}
+
+func hasOfficialFinalUsage(evidence map[string]any) bool {
+	usageEvents, usageOK := evidence["usage_events"].(int)
+	usageOnlyEvents, usageOnlyOK := evidence["usage_only_events"].(int)
+	return usageOK && usageEvents == 1 && usageOnlyOK && usageOnlyEvents == 0 && evidence["usage_on_finish_event"] == true && evidence["usage_on_final_event"] == true && evidence["official_usage_shape"] == true && evidence["usage_consistent"] == true && evidence["cache_tokens_consistent"] == true && evidence["completion_within_requested_max"] != false
+}
+
+func hasCompleteChatSSE(evidence map[string]any) bool {
+	doneEvents, doneOK := evidence["done_events"].(int)
+	jsonErrors, jsonOK := evidence["sse_json_errors"].(int)
+	return evidence["stream"] == true && evidence["done"] == true && doneOK && doneEvents == 1 && evidence["done_last"] == true && jsonOK && jsonErrors == 0 && evidence["sse_scan_error"] != true && evidence["stream_shape_valid"] == true
+}
+
+func validChatStreamEvent(value map[string]any) bool {
+	if !hasOnlyKeys(value, "id", "object", "created", "model", "choices", "usage", "system_fingerprint") || !hasNonEmptyString(value["id"]) || value["object"] != "chat.completion.chunk" || value["model"] != "deepseek-v4-flash" {
+		return false
+	}
+	created, createdOK := value["created"].(float64)
+	if !createdOK || created <= 0 || math.Trunc(created) != created {
+		return false
+	}
+	if fingerprint, exists := value["system_fingerprint"]; exists && fingerprint != nil {
+		if _, ok := fingerprint.(string); !ok {
+			return false
+		}
+	}
+	if usage, exists := value["usage"]; exists && usage != nil {
+		if _, ok := usage.(map[string]any); !ok {
+			return false
+		}
+	}
+	choices, ok := value["choices"].([]any)
+	if !ok || len(choices) != 1 {
+		return false
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok || !hasOnlyKeys(choice, "index", "delta", "logprobs", "finish_reason") || choice["index"] != float64(0) {
+		return false
+	}
+	delta, ok := choice["delta"].(map[string]any)
+	if !ok || !hasOnlyKeys(delta, "role", "content", "reasoning_content", "tool_calls") {
+		return false
+	}
+	if role, exists := delta["role"]; exists && role != nil && role != "assistant" {
+		return false
+	}
+	for _, field := range []string{"content", "reasoning_content"} {
+		if item, exists := delta[field]; exists && item != nil {
+			if _, ok := item.(string); !ok {
+				return false
+			}
+		}
+	}
+	if calls, exists := delta["tool_calls"]; exists && calls != nil {
+		if _, ok := calls.([]any); !ok {
+			return false
+		}
+	}
+	if logprobs, exists := choice["logprobs"]; exists && logprobs != nil {
+		if _, ok := logprobs.(map[string]any); !ok {
+			return false
+		}
+	}
+	finishReason, exists := choice["finish_reason"]
+	if !exists {
+		return false
+	}
+	if finishReason != nil {
+		reason, ok := finishReason.(string)
+		if !ok || !validFinishReason(reason) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasOfficialNonStreamResponse(evidence map[string]any) bool {
+	choices, choicesOK := evidence["choices"].(int)
+	return evidence["stream"] == false && evidence["json"] == true && evidence["has_error"] != true && evidence["has_response_id"] == true && evidence["has_created"] == true && evidenceString(evidence, "object") == "chat.completion" && evidenceString(evidence, "response_model") == "deepseek-v4-flash" && choicesOK && choices == 1 && evidence["choice_index_zero"] == true && evidence["has_message"] == true && evidence["message_role_assistant"] == true && evidence["finish_reason_valid"] == true && evidence["unexpected_top_level_fields"] != true && evidence["unexpected_choice_fields"] != true && evidence["unexpected_message_fields"] != true && evidence["message_tool_calls_null"] != true && evidence["official_usage_shape"] == true && evidence["usage_consistent"] == true && evidence["cache_tokens_consistent"] == true && evidence["completion_within_requested_max"] != false
+}
+
+func validFinishReason(reason string) bool {
+	switch reason {
+	case "stop", "length", "tool_calls", "content_filter", "insufficient_system_resource":
+		return true
+	default:
+		return false
+	}
 }
 
 func expectedOfficialValidation(status int, evidence map[string]any) bool {
@@ -1324,8 +1503,11 @@ func summarize(data []byte, stream bool) map[string]any {
 	if stream {
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		scanner.Buffer(make([]byte, 64*1024), 2<<20)
-		events, done, usageEvents := 0, false, 0
+		events, done, doneEvents, usageEvents, usageOnlyEvents := 0, false, 0, 0, 0
+		jsonErrors, parsedEvents, doneLast := 0, 0, false
+		streamShapeValid := true
 		contentChunks, reasoningChunks := 0, 0
+		usageOnFinishEvent, usageOnFinalEvent := false, false
 		var finishReason string
 		toolCalls := make(map[int]*streamedToolCall)
 		for scanner.Scan() {
@@ -1335,22 +1517,25 @@ func summarize(data []byte, stream bool) map[string]any {
 				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 				if payload == "[DONE]" {
 					done = true
+					doneEvents++
+					doneLast = true
 					continue
 				}
+				doneLast = false
+				usageOnFinalEvent = false
 				var value map[string]any
 				if json.Unmarshal([]byte(payload), &value) != nil {
+					jsonErrors++
 					continue
+				}
+				parsedEvents++
+				if !validChatStreamEvent(value) {
+					streamShapeValid = false
 				}
 				if errValue, ok := value["error"].(map[string]any); ok {
 					addErrorEvidence(evidence, errValue)
 				}
-				if usage, ok := value["usage"].(map[string]any); ok {
-					usageEvents++
-					addUsageEvidence(evidence, usage)
-					if choices, ok := value["choices"].([]any); ok && len(choices) == 0 {
-						evidence["usage_event_empty_choices"] = true
-					}
-				}
+				eventHasFinish := false
 				if choices, ok := value["choices"].([]any); ok {
 					for _, rawChoice := range choices {
 						choice, ok := rawChoice.(map[string]any)
@@ -1359,6 +1544,7 @@ func summarize(data []byte, stream bool) map[string]any {
 						}
 						if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
 							finishReason = reason
+							eventHasFinish = true
 						}
 						if logprobs, ok := choice["logprobs"].(map[string]any); ok {
 							addLogprobsEvidence(evidence, logprobs)
@@ -1404,9 +1590,27 @@ func summarize(data []byte, stream bool) map[string]any {
 						}
 					}
 				}
+				if usage, ok := value["usage"].(map[string]any); ok {
+					usageEvents++
+					addUsageEvidence(evidence, usage)
+					choices, hasChoices := value["choices"].([]any)
+					if !hasChoices || len(choices) == 0 {
+						usageOnlyEvents++
+						evidence["usage_event_empty_choices"] = true
+					}
+					if eventHasFinish {
+						usageOnFinishEvent = true
+						usageOnFinalEvent = true
+					}
+				}
 			}
 		}
 		evidence["sse_events"], evidence["done"] = events, done
+		evidence["done_events"], evidence["done_last"], evidence["sse_json_errors"] = doneEvents, doneLast, jsonErrors
+		evidence["stream_shape_valid"] = parsedEvents > 0 && streamShapeValid
+		if scanner.Err() != nil {
+			evidence["sse_scan_error"] = true
+		}
 		evidence["content_chunks"], evidence["reasoning_chunks"] = contentChunks, reasoningChunks
 		evidence["has_content"], evidence["has_reasoning_content"] = contentChunks > 0, reasoningChunks > 0
 		if len(toolCalls) > 0 {
@@ -1422,6 +1626,9 @@ func summarize(data []byte, stream bool) map[string]any {
 		}
 		if usageEvents > 0 {
 			evidence["usage_events"] = usageEvents
+			evidence["usage_only_events"] = usageOnlyEvents
+			evidence["usage_on_finish_event"] = usageOnFinishEvent
+			evidence["usage_on_final_event"] = usageOnFinalEvent
 		}
 		if finishReason != "" {
 			evidence["finish_reason"] = finishReason
@@ -1435,6 +1642,16 @@ func summarize(data []byte, stream bool) map[string]any {
 	}
 	evidence["json"] = true
 	evidence["has_content"], evidence["has_reasoning_content"] = false, false
+	evidence["unexpected_top_level_fields"] = !hasOnlyKeys(value, "id", "object", "created", "model", "choices", "usage", "system_fingerprint")
+	if id, ok := value["id"].(string); ok && strings.TrimSpace(id) != "" {
+		evidence["has_response_id"] = true
+	}
+	if created, ok := value["created"].(float64); ok && created > 0 {
+		evidence["has_created"] = true
+	}
+	if model, ok := value["model"].(string); ok && model != "" {
+		evidence["response_model"] = model
+	}
 	if models, ok := value["data"].([]any); ok {
 		evidence["model_count"] = len(models)
 		for _, rawModel := range models {
@@ -1448,17 +1665,31 @@ func summarize(data []byte, stream bool) map[string]any {
 		evidence["choices"] = len(choices)
 		if len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]any); ok {
+				evidence["unexpected_choice_fields"] = !hasOnlyKeys(choice, "index", "message", "logprobs", "finish_reason")
+				if index, ok := choice["index"].(float64); ok && index == 0 {
+					evidence["choice_index_zero"] = true
+				}
 				if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
 					evidence["finish_reason"] = reason
+					evidence["finish_reason_valid"] = validFinishReason(reason)
 				}
 				for _, field := range []string{"message", "delta"} {
 					part, ok := choice[field].(map[string]any)
 					if !ok {
 						continue
 					}
+					if field == "message" {
+						evidence["has_message"] = true
+						evidence["unexpected_message_fields"] = !hasOnlyKeys(part, "role", "content", "reasoning_content", "tool_calls")
+						evidence["message_role_assistant"] = part["role"] == "assistant"
+						if toolCalls, exists := part["tool_calls"]; exists && toolCalls == nil {
+							evidence["message_tool_calls_null"] = true
+						}
+					}
 					if content, ok := part["content"].(string); ok && strings.TrimSpace(content) != "" {
 						evidence["has_content"] = true
-						evidence["contains_stop_sequence"] = strings.Contains(content, "banana")
+						evidence["contains_stop_sequence"] = strings.Contains(content, "香蕉") || strings.Contains(strings.ToLower(content), "banana")
+						evidence["contains_pre_stop_content"] = strings.Contains(content, "苹果") || strings.Contains(strings.ToLower(content), "apple")
 						if json.Valid([]byte(content)) {
 							evidence["content_json"] = true
 						}
@@ -1472,16 +1703,19 @@ func summarize(data []byte, stream bool) map[string]any {
 					if content, ok := logprobs["content"].([]any); ok {
 						evidence["logprobs_content"] = len(content)
 						evidence["max_top_logprobs"] = maxTopLogprobs(content)
+						evidence["logprobs_content_valid"] = validLogprobsEntries(content)
 					}
 					if reasoningContent, ok := logprobs["reasoning_content"].([]any); ok {
 						evidence["logprobs_reasoning_content"] = len(reasoningContent)
 						evidence["max_reasoning_top_logprobs"] = maxTopLogprobs(reasoningContent)
+						evidence["logprobs_reasoning_content_valid"] = validLogprobsEntries(reasoningContent)
 					}
 				}
 				if message, ok := choice["message"].(map[string]any); ok {
 					if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
 						evidence["has_tool_calls"] = true
 						validArguments := true
+						fitToolCallsValid := true
 						for _, rawToolCall := range toolCalls {
 							toolCall, ok := rawToolCall.(map[string]any)
 							function, functionOK := toolCall["function"].(map[string]any)
@@ -1489,8 +1723,13 @@ func summarize(data []byte, stream bool) map[string]any {
 							if !ok || !functionOK || !hasNonEmptyString(function["name"]) || !argumentsOK || !json.Valid([]byte(arguments)) {
 								validArguments = false
 							}
+							var decodedArguments map[string]any
+							if !ok || toolCall["type"] != "function" || function["name"] != "get_weather" || !argumentsOK || json.Unmarshal([]byte(arguments), &decodedArguments) != nil || !hasNonEmptyString(decodedArguments["city"]) {
+								fitToolCallsValid = false
+							}
 						}
 						evidence["tool_arguments_json"] = validArguments
+						evidence["fit_tool_calls_valid"] = fitToolCallsValid
 					}
 				}
 			}
@@ -1804,11 +2043,46 @@ func maxTopLogprobs(entries []any) int {
 	return maxEntries
 }
 
+func validLogprobsEntries(entries []any) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	for _, rawEntry := range entries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			return false
+		}
+		if _, ok := entry["token"].(string); !ok || !finiteNumber(entry["logprob"]) {
+			return false
+		}
+		topLogprobs, ok := entry["top_logprobs"].([]any)
+		if !ok {
+			return false
+		}
+		for _, rawCandidate := range topLogprobs {
+			candidate, ok := rawCandidate.(map[string]any)
+			if !ok {
+				return false
+			}
+			if _, ok := candidate["token"].(string); !ok || !finiteNumber(candidate["logprob"]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func finiteNumber(value any) bool {
+	number, ok := value.(float64)
+	return ok && !math.IsNaN(number) && !math.IsInf(number, 0)
+}
+
 func addLogprobsEvidence(evidence map[string]any, logprobs map[string]any) {
 	evidence["has_logprobs"] = true
 	if content, ok := logprobs["content"].([]any); ok {
 		count, _ := evidence["logprobs_content"].(int)
 		evidence["logprobs_content"] = count + len(content)
+		mergeBoolEvidence(evidence, "logprobs_content_valid", validLogprobsEntries(content))
 		maxEntries := maxTopLogprobs(content)
 		if current, ok := evidence["max_top_logprobs"].(int); !ok || maxEntries > current {
 			evidence["max_top_logprobs"] = maxEntries
@@ -1817,6 +2091,7 @@ func addLogprobsEvidence(evidence map[string]any, logprobs map[string]any) {
 	if reasoningContent, ok := logprobs["reasoning_content"].([]any); ok {
 		count, _ := evidence["logprobs_reasoning_content"].(int)
 		evidence["logprobs_reasoning_content"] = count + len(reasoningContent)
+		mergeBoolEvidence(evidence, "logprobs_reasoning_content_valid", validLogprobsEntries(reasoningContent))
 		maxEntries := maxTopLogprobs(reasoningContent)
 		if current, ok := evidence["max_reasoning_top_logprobs"].(int); !ok || maxEntries > current {
 			evidence["max_reasoning_top_logprobs"] = maxEntries
@@ -1824,8 +2099,17 @@ func addLogprobsEvidence(evidence map[string]any, logprobs map[string]any) {
 	}
 }
 
+func mergeBoolEvidence(evidence map[string]any, key string, value bool) {
+	if current, ok := evidence[key].(bool); ok {
+		evidence[key] = current && value
+		return
+	}
+	evidence[key] = value
+}
+
 func addUsageEvidence(evidence map[string]any, usage map[string]any) {
 	evidence["usage"] = true
+	evidence["usage_shape"] = usageShape(usage)
 	for _, field := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
 		if value, ok := usage[field]; ok {
 			evidence[field] = value
@@ -1850,6 +2134,73 @@ func addUsageEvidence(evidence map[string]any, usage map[string]any) {
 	if cached, cachedOK := evidence["cached_tokens"].(float64); cachedOK && promptOK {
 		evidence["cached_tokens_valid"] = cached >= 0 && cached <= prompt
 	}
+	promptDetails, promptDetailsOK := usage["prompt_tokens_details"].(map[string]any)
+	completionDetails, completionDetailsOK := usage["completion_tokens_details"].(map[string]any)
+	completionDetailsPresent := completionDetailsOK
+	cached, cachedOK := promptDetails["cached_tokens"].(float64)
+	reasoning, reasoningOK := completionDetails["reasoning_tokens"].(float64)
+	cacheHit, cacheHitOK := usage["prompt_cache_hit_tokens"].(float64)
+	cacheMiss, cacheMissOK := usage["prompt_cache_miss_tokens"].(float64)
+	usageKeysOK := hasExactKeys(usage, "prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "completion_tokens_details", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens") ||
+		hasExactKeys(usage, "prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
+	completionDetailsOK = !completionDetailsPresent || hasExactKeys(completionDetails, "reasoning_tokens")
+	reasoningNumberOK := !completionDetailsPresent || (reasoningOK && reasoning >= 0 && math.Trunc(reasoning) == reasoning)
+	evidence["official_usage_shape"] = usageKeysOK &&
+		promptDetailsOK && hasExactKeys(promptDetails, "cached_tokens") && completionDetailsOK &&
+		promptOK && completionOK && totalOK && cachedOK && cacheHitOK && cacheMissOK && reasoningNumberOK &&
+		prompt >= 0 && completion >= 0 && total >= 0 && cached >= 0 && cacheHit >= 0 && cacheMiss >= 0 &&
+		math.Trunc(prompt) == prompt && math.Trunc(completion) == completion && math.Trunc(total) == total && math.Trunc(cached) == cached && math.Trunc(cacheHit) == cacheHit && math.Trunc(cacheMiss) == cacheMiss
+	if promptOK && cachedOK && cacheHitOK && cacheMissOK {
+		evidence["cache_tokens_consistent"] = cached == cacheHit && cacheHit >= 0 && cacheMiss >= 0 && cacheHit+cacheMiss == prompt
+	}
+}
+
+func usageShape(usage map[string]any) string {
+	keys := make([]string, 0, len(usage))
+	for key := range usage {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := []string{strings.Join(keys, ",")}
+	for _, field := range []string{"prompt_tokens_details", "completion_tokens_details"} {
+		details, ok := usage[field].(map[string]any)
+		if !ok {
+			parts = append(parts, field+":-")
+			continue
+		}
+		detailKeys := make([]string, 0, len(details))
+		for key := range details {
+			detailKeys = append(detailKeys, key)
+		}
+		sort.Strings(detailKeys)
+		parts = append(parts, field+":"+strings.Join(detailKeys, ","))
+	}
+	return strings.Join(parts, "|")
+}
+
+func hasExactKeys(value map[string]any, keys ...string) bool {
+	if len(value) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := value[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func hasOnlyKeys(value map[string]any, keys ...string) bool {
+	allowed := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		allowed[key] = struct{}{}
+	}
+	for key := range value {
+		if _, ok := allowed[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func addErrorEvidence(evidence map[string]any, errValue map[string]any) {

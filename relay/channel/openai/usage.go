@@ -63,7 +63,19 @@ func stripReasoningContentFromTextResponse(response *dto.OpenAITextResponse) {
 	for i := range response.Choices {
 		response.Choices[i].Message.ReasoningContent = nil
 		response.Choices[i].Message.Reasoning = nil
+		stripReasoningLogprobs(response.Choices[i].Logprobs)
 	}
+}
+
+func stripReasoningLogprobs(logprobs *any) {
+	if logprobs == nil {
+		return
+	}
+	values, ok := (*logprobs).(map[string]any)
+	if !ok {
+		return
+	}
+	delete(values, "reasoning_content")
 }
 
 func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
@@ -85,11 +97,13 @@ func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
 	}
 	for _, choice := range choices {
 		message, ok := choice["message"].(map[string]interface{})
-		if !ok {
-			continue
+		if ok {
+			delete(message, "reasoning_content")
+			delete(message, "reasoning")
 		}
-		delete(message, "reasoning_content")
-		delete(message, "reasoning")
+		if logprobs, ok := choice["logprobs"].(map[string]interface{}); ok {
+			delete(logprobs, "reasoning_content")
+		}
 	}
 	payload["choices"] = choices
 	stripped, err := common.Marshal(payload)

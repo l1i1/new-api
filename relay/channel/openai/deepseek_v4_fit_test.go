@@ -18,7 +18,7 @@ func TestDeepSeekV4UsagePayloadMatchesOfficialKeys(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 30},
 	}
 
-	encoded, err := json.Marshal(deepSeekV4UsagePayload(usage))
+	encoded, err := json.Marshal(deepSeekV4UsagePayload(usage, true))
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -55,9 +55,49 @@ func TestDeepSeekV4UsagePayloadFallsBackToHitTokensField(t *testing.T) {
 		PromptCacheHitTokens: 10,
 	}
 
-	payload := deepSeekV4UsagePayload(usage)
+	payload := deepSeekV4UsagePayload(usage, true)
 	assert.Equal(t, 10, payload["prompt_cache_hit_tokens"])
 	assert.Equal(t, 6, payload["prompt_cache_miss_tokens"])
+}
+
+func TestDeepSeekV4UsagePayloadEnforcesOfficialArithmetic(t *testing.T) {
+	usage := &dto.Usage{
+		PromptTokens:         8,
+		CompletionTokens:     3,
+		TotalTokens:          99,
+		PromptCacheHitTokens: 10,
+		CompletionTokenDetails: dto.OutputTokenDetails{
+			ReasoningTokens: -1,
+		},
+	}
+
+	payload := deepSeekV4UsagePayload(usage, true)
+	assert.Equal(t, 8, payload["prompt_tokens"])
+	assert.Equal(t, 3, payload["completion_tokens"])
+	assert.Equal(t, 11, payload["total_tokens"])
+	assert.Equal(t, 8, payload["prompt_cache_hit_tokens"])
+	assert.Equal(t, 0, payload["prompt_cache_miss_tokens"])
+	assert.Equal(t, map[string]any{"cached_tokens": 8}, payload["prompt_tokens_details"])
+	assert.Equal(t, map[string]any{"reasoning_tokens": 0}, payload["completion_tokens_details"])
+}
+
+func TestDeepSeekV4UsagePayloadOmitsReasoningDetailsWhenThinkingDisabled(t *testing.T) {
+	payload := deepSeekV4UsagePayload(&dto.Usage{
+		PromptTokens:           9,
+		CompletionTokens:       95,
+		TotalTokens:            104,
+		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 90},
+	}, false)
+
+	assert.Equal(t, []string{
+		"completion_tokens",
+		"prompt_cache_hit_tokens",
+		"prompt_cache_miss_tokens",
+		"prompt_tokens",
+		"prompt_tokens_details",
+		"total_tokens",
+	}, keysOf(payload))
+	assert.NotContains(t, payload, "completion_tokens_details")
 }
 
 func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
@@ -69,7 +109,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 28},
 	}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -104,7 +144,7 @@ func TestFitDeepSeekV4TextResponseBodyPreservesOfficialBody(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 30},
 	}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -120,7 +160,7 @@ func TestFitDeepSeekV4TextResponseBodyKeepsToolCalls(t *testing.T) {
 	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}],"usage":{"prompt_tokens":371,"completion_tokens":63,"total_tokens":434},"cost":"0"}`)
 	usage := &dto.Usage{PromptTokens: 371, CompletionTokens: 63, TotalTokens: 434}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -139,7 +179,7 @@ func TestFitDeepSeekV4StreamUsageEventInjectsOfficialUsage(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 50},
 	}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -158,7 +198,7 @@ func TestFitDeepSeekV4StreamUsageEventReplacesClaudeExtensionUsage(t *testing.T)
 	data := `{"choices":[],"created":1787662155,"id":"router-1","model":"deepseek-v4-flash","object":"chat.completion.chunk","usage":{"claude_cache_creation_1_h_tokens":0,"claude_cache_creation_5_m_tokens":0,"completion_tokens":1093,"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":0},"input_tokens":0,"input_tokens_details":null,"output_tokens":0,"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"total_tokens":1102}}`
 	usage := &dto.Usage{PromptTokens: 9, CompletionTokens: 1093, TotalTokens: 1102}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
 	require.NoError(t, err)
 
 	var payload struct {
@@ -198,7 +238,7 @@ func sortStrings(s []string) {
 func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
 	require.NoError(t, err)
 
 	var payload struct {
@@ -215,7 +255,7 @@ func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
 func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","system_fingerprint":null,"choices":[]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
 	require.NoError(t, err)
 
 	var payload struct {
@@ -228,7 +268,7 @@ func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
 	data := `{"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":1}}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false)
+	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false, true)
 	require.NoError(t, err)
 
 	var payload map[string]any

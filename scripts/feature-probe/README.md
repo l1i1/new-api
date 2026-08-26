@@ -56,17 +56,36 @@ errors remain `inconclusive`.
 reported as `inconclusive` because it did not exercise the DFLASH capability
 error path.
 
-For the 13 fit cases, use the PowerShell runner. Case IDs are `K01` through
-`K13`; multiple IDs may be comma- or space-separated. The runner emits only
-status and structural evidence (including redacted error fingerprints), never
-request or response bodies:
+For acceptance of the 13 fit cases, use the Go `fit` profile. It sends the exact
+K01-K13 request bodies, emits a `pass`, `fail`, or `inconclusive` verdict per
+route, and rejects response-shape drift such as non-400 logprobs validation,
+stop-sequence leakage, aggregator usage extensions, malformed SSE, usage-only
+tail events, or a non-final `[DONE]` marker. Case IDs are `K01` through `K13`;
+legacy `DS-Kxx` aliases are also accepted:
+
+```powershell
+$env:FEATURE_PROBE_PROFILE = 'fit'
+$env:FEATURE_PROBE_CASES = 'K01,K02,K03,K08,K09,K12,K13'
+$env:FEATURE_PROBE_INCLUDE_OFFICIAL = 'true'
+go run ./scripts/feature-probe
+```
+
+Official probing is opt-in with `FEATURE_PROBE_INCLUDE_OFFICIAL=true`; gateway
+main and backup default to `https://n.tokeness.dev/v1` and
+`https://n-cf.tokeness.dev/v1`. Missing credentials produce `inconclusive`
+records and never synthetic passes. A gateway contract match remains
+`inconclusive` unless the same case also has a passing official baseline with
+the same HTTP status; the record keeps `contract_status=pass` for diagnosis.
+K04, K06, and K07 accept the official bounded-reasoning outcome where
+`reasoning_content` is present, final `content` is absent, and
+`finish_reason=length`; other successful non-stream cases still require usable
+content or a valid function tool call.
+
+The PowerShell runner is a diagnostic evidence collector only. It emits status
+and redacted structural evidence without a pass/fail contract or paired route
+comparison, so its output must not be used alone as acceptance evidence:
 
 ```powershell
 ./scripts/feature-probe/run-fit-probe.ps1 -CaseId K02,K03
 ./scripts/feature-probe/run-fit-probe.ps1 -IncludeBackup -IncludeOfficial -CaseId K01,K05,K12
 ```
-
-The Go fit profile accepts the same canonical IDs (and legacy `DS-Kxx` aliases)
-through `FEATURE_PROBE_CASES` or `FEATURE_PROBE_CASE_ID`. Official probing is
-opt-in with `FEATURE_PROBE_INCLUDE_OFFICIAL=true`; gateway main and backup
-default to `https://n.tokeness.dev/v1` and `https://n-cf.tokeness.dev/v1`.

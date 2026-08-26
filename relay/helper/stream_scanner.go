@@ -251,18 +251,20 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
-			if len(data) < 6 {
+			if strings.TrimSpace(data) == "[DONE]" {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+				logger.LogDebug(c, "received [DONE], stopping scanner")
+				return
+			}
+			if !strings.HasPrefix(data, "data:") {
 				continue
 			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
-				continue
-			}
-			data = data[5:]
+			data = data[len("data:"):]
 			data = strings.TrimSpace(data)
 			if data == "" {
 				continue
 			}
-			if !strings.HasPrefix(data, "[DONE]") {
+			if data != "[DONE]" {
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 
@@ -307,6 +309,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
+	// Some OpenAI-compatible upstreams close immediately after their terminal
+	// finish chunk and omit the optional [DONE] marker. The scanner marks EOF
+	// provisionally; after queued chunks are drained, a non-empty finish reason
+	// proves that the provider emitted a terminal response.
+	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF &&
+		strings.TrimSpace(info.StreamFinishReason) != "" {
+		info.StreamStatus.PromoteEOFToDone()
+	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
 	} else {

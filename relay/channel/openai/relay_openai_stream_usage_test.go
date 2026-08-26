@@ -644,7 +644,7 @@ func TestOpenaiHandlerStripsBillingUsageWhenForceFormatting(t *testing.T) {
 }
 
 func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
-	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5,"input_tokens":2,"output_tokens":3,"claude_cache_creation_1_h_tokens":1}}`
+	body := `{"id":"chatcmpl_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":99,"input_tokens":2,"output_tokens":3,"claude_cache_creation_1_h_tokens":1}}`
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -658,13 +658,16 @@ func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
 		RelayFormat:     types.RelayFormatOpenAI,
 	}
 
-	_, err := OpenaiHandler(c, info, &http.Response{
+	usage, err := OpenaiHandler(c, info, &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(body)),
 	})
 
 	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, 5, usage.TotalTokens)
 	responseBody := recorder.Body.String()
+	assert.Contains(t, responseBody, `"total_tokens":5`)
 	assert.Contains(t, responseBody, `"prompt_cache_hit_tokens"`)
 	assert.Contains(t, responseBody, `"completion_tokens_details"`)
 	assert.NotContains(t, responseBody, `"input_tokens"`)
@@ -723,19 +726,20 @@ func TestOpenaiHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"name":"lookup"`)
 }
 
-func TestOpenaiHandlerRejectsReasoningOnlyOutput(t *testing.T) {
+func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyNonLengthOutput(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
-		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
-		RelayMode:   relayconstant.RelayModeChatCompletions,
-		RelayFormat: types.RelayFormatOpenAI,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+		OriginModelName: "deepseek-v4-flash",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
 	}
 
 	usage, err := OpenaiHandler(c, info, &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal reasoning"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
 	require.Nil(t, usage)
@@ -744,8 +748,53 @@ func TestOpenaiHandlerRejectsReasoningOnlyOutput(t *testing.T) {
 	assert.False(t, recorder.Flushed)
 }
 
+func TestOpenaiHandlerAcceptsDeepSeekV4ReasoningOnlyLengthOutput(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+		OriginModelName: "deepseek-v4-flash",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
+	}
+
+	usage, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), `"reasoning_content":"internal reasoning"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
+}
+
+func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyLengthWhenThinkingDisabled(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+		OriginModelName: "deepseek-v4-flash",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
+		Request:         &dto.GeneralOpenAIRequest{THINKING: json.RawMessage(`{"type":"disabled"}`)},
+	}
+
+	usage, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
+	})
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
+	assert.Empty(t, recorder.Body.String())
+}
+
 func TestOpenaiHandlerSuppressesReasoningWhenDisabled(t *testing.T) {
-	body := `{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"answer","reasoning_content":"internal reasoning"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`
+	body := `{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"answer","reasoning_content":"internal reasoning"},"logprobs":{"content":[{"token":"answer"}],"reasoning_content":[{"token":"internal"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -762,6 +811,7 @@ func TestOpenaiHandlerSuppressesReasoningWhenDisabled(t *testing.T) {
 
 	require.Nil(t, err)
 	assert.Contains(t, recorder.Body.String(), `"content":"answer"`)
+	assert.Contains(t, recorder.Body.String(), `"token":"answer"`)
 	assert.NotContains(t, recorder.Body.String(), "reasoning_content")
 }
 
@@ -785,7 +835,7 @@ func TestOaiStreamHandlerRejectsReasoningOnlyOutputAfterCommit(t *testing.T) {
 		DisablePing: true,
 	}
 	body := strings.Join([]string{
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"internal reasoning"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"internal reasoning"},"logprobs":{"content":[{"token":"answer"}],"reasoning_content":[{"token":"internal"}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
 		`data: [DONE]`,
 		``,
@@ -802,6 +852,7 @@ func TestOaiStreamHandlerRejectsReasoningOnlyOutputAfterCommit(t *testing.T) {
 	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
 	assert.True(t, types.IsSkipRetryError(err))
 	assert.True(t, recorder.Flushed)
+	assert.Contains(t, recorder.Body.String(), `"token":"answer"`)
 	assert.NotContains(t, recorder.Body.String(), "reasoning_content")
 }
 

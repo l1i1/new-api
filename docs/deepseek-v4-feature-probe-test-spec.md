@@ -128,27 +128,39 @@ shape flags were retained.
     official-shaped chunks verbatim and merge aggregator usage-only events into
     the delayed final `finish_reason` chunk instead of forwarding a separate
     event. Unknown fingerprints remain absent.
-  - K06/K07 completion-token divergence (official truncates at `max_tokens`
-    after exhausting the budget on reasoning; the aggregator upstream returns
-    full answers) is upstream channel behavior, not a gateway contract issue;
-    it is recorded as a channel-selection risk, not fitted locally.
+  - K04/K06/K07 may legally exhaust `max_tokens` in reasoning and return
+    reasoning-only output with `finish_reason=length`. The V4 non-stream relay
+    now preserves that official response instead of converting it to a 502;
+    the exception is disabled thinking, where reasoning-only output would be
+    stripped and must still fail as empty output.
+  - V4 streams that reach `[DONE]` without any non-empty `finish_reason` are
+    rejected as incomplete instead of emitting a false-success `[DONE]` to the
+    client. Disabled thinking removes both reasoning text and
+    `logprobs.reasoning_content`. V4 usage is normalized to non-negative values
+    with `total=prompt+completion` and `cache_hit+cache_miss=prompt`.
   These fixes are local and verified by unit tests plus offline build; they are
   not deployed to the public routes yet.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
 remaining 36 matrix cases are intentionally `inconclusive` until their live
-fixtures and mock-upstream tests are implemented.
+fixtures and mock-upstream tests are implemented. For the separate K01-K13 fit
+profile, `scripts/feature-probe` sends the exact supplied request bodies and
+requires a passing official baseline before a gateway result can be reported as
+`pass`; missing official credentials or an unavailable official case produces
+`inconclusive`, never a synthetic pass. The fit evaluator also rejects usage
+only tails, malformed or post-`[DONE]` SSE, non-official usage extensions,
+placeholder logprob entries, and non-400 logprobs validation responses.
 
 ### 2b. Compliance Verdict
 
 | Area | Verdict | Evidence / remaining risk |
 | --- | --- | --- |
-| Basic non-stream response | Partially aligned | Probe requires non-empty `content`; the 256-token named-message fit case is protocol-accepted but frequently has no final content after reasoning exhausts the limit |
-| Streaming response | Aligned in the observed sample | Probe requires non-empty content, `[DONE]`, and usage on the final `finish_reason` chunk when requested |
-| Thinking disabled | Compatible in candidate and observed production sample | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and preserves the raw thinking field |
+| Basic non-stream response | Locally aligned for K01-K07 | Content or a valid tool call remains required, except official V4 reasoning-only truncation with `finish_reason=length` for K04/K06/K07 |
+| Streaming response | Locally hardened; live recheck pending | Probe requires non-empty content, exactly one final `[DONE]`, and usage on the final `finish_reason` chunk; the relay now rejects `[DONE]` without a finish reason |
+| Thinking disabled | Locally aligned; live recheck pending | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and strips both reasoning text and reasoning logprobs |
 | Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking/tool replay is now covered by live fixtures; broader provider variance remains |
 | Sampling validation | Aligned in candidate; rollout recheck pending | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the candidate returns the same validation class |
-| JSON, stop, logprobs | Aligned for observed valid and invalid cases | Probe validates JSON parsing, stop termination, usage arithmetic/cache bounds, both reasoning/content logprob arrays when supported, the `top_logprobs <= 20` bound, and official validation fingerprints |
+| JSON, stop, logprobs | Locally aligned for K01-K13; live recheck pending | Probe validates JSON parsing, stop termination, usage arithmetic/cache bounds, both reasoning/content logprob arrays when supported, the `top_logprobs <= 20` bound, and official validation fingerprints; V4 response fitting enforces the usage arithmetic |
 | Tools | Follow-up candidate ready | Official currently accepts `tool_choice=required`; release `.5` still rejects it from an older probe snapshot, while the follow-up candidate preserves the value |
 | Stream usage when omitted | Observable parity with different semantics | Official emitted usage; Tokeness may preserve or synthesize it because omission defaults to include |
 | Unknown model | Production not aligned; local candidate ready | Official 400 versus current production 503; local typed classification maps only truly unconfigured models to `400 model_not_found` and keeps unavailable/inconsistent selection failures at 503/500 with the public server-error envelope |

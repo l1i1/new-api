@@ -122,6 +122,47 @@ func TestSummarizeNonStreamRedactsContentButReportsProtocolShape(t *testing.T) {
 	assert.False(t, leaked)
 }
 
+func TestSummarizeNonStreamDetectsFitStopSequence(t *testing.T) {
+	for _, content := range []string{"苹果、香蕉、橙子", "apple, BaNaNa, orange"} {
+		evidence := summarize([]byte(fmt.Sprintf(`{"choices":[{"message":{"content":%q},"finish_reason":"stop"}]}`, content)), false)
+		assert.Equal(t, true, evidence["contains_stop_sequence"], content)
+		assert.Equal(t, true, evidence["contains_pre_stop_content"], content)
+	}
+}
+
+func TestFitExpectedRequiresOfficialNonStreamResponseShape(t *testing.T) {
+	official := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning_content":"think"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":1},"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":3}}`), false)
+	assert.True(t, fitExpected("K04", http.StatusOK, official))
+
+	aggregator := summarize([]byte(`{"id":"router_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning_content":"think","tool_calls":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"input_tokens":4},"cost":"0"}`), false)
+	assert.False(t, fitExpected("K04", http.StatusOK, aggregator))
+
+	wrongEnvelope := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":1,"message":{"role":"user","content":"2"},"finish_reason":"invented"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":1},"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":3}}`), false)
+	assert.False(t, fitExpected("K04", http.StatusOK, wrongEnvelope))
+}
+
+func TestFitExpectedRequiresExpectedContentBeforeStop(t *testing.T) {
+	usage := `"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":4}`
+	unrelated := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"梨"},"finish_reason":"stop"}],`+usage+`}`), false)
+	assert.False(t, fitExpected("K01", http.StatusOK, unrelated))
+
+	stopped := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"苹果、"},"finish_reason":"stop"}],`+usage+`}`), false)
+	assert.True(t, fitExpected("K01", http.StatusOK, stopped))
+}
+
+func TestFitExpectedAcceptsReasoningOnlyLengthForBoundedReasoningCases(t *testing.T) {
+	evidence := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"thinking"},"finish_reason":"length"}],"usage":{"prompt_tokens":8,"completion_tokens":64,"total_tokens":72,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":64},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`), false)
+	assert.True(t, fitExpected("K06", http.StatusOK, evidence))
+	assert.True(t, fitExpected("K07", http.StatusOK, evidence))
+	assert.False(t, fitExpected("K05", http.StatusOK, evidence))
+}
+
+func TestFitExpectedAcceptsCompleteReasoningOnlyLengthStreamForK08(t *testing.T) {
+	evidence := summarize([]byte("data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":1024,\"total_tokens\":1033,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":1024},\"prompt_cache_hit_tokens\":0,\"prompt_cache_miss_tokens\":9}}\n\ndata: [DONE]\n"), true)
+	annotateFitEvidence(http.StatusOK, evidence, map[string]any{"max_tokens": 1024})
+	assert.True(t, fitExpected("K08", http.StatusOK, evidence))
+}
+
 func TestSummarizeStreamCountsUsageAndTermination(t *testing.T) {
 	evidence := summarize([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"x\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"2\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\ndata: [DONE]\n"), true)
 
@@ -129,7 +170,37 @@ func TestSummarizeStreamCountsUsageAndTermination(t *testing.T) {
 	assert.Equal(t, true, evidence["has_content"])
 	assert.Equal(t, true, evidence["has_reasoning_content"])
 	assert.Equal(t, 1, evidence["usage_events"])
+	assert.Equal(t, true, evidence["usage_on_finish_event"])
+	assert.Equal(t, 0, evidence["usage_only_events"])
 	assert.Equal(t, "stop", evidence["finish_reason"])
+}
+
+func TestFitExpectedRejectsUsageOnlyStreamTail(t *testing.T) {
+	officialShape := summarize([]byte("data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"2\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens_details\":{\"reasoning_tokens\":0},\"prompt_cache_hit_tokens\":1,\"prompt_cache_miss_tokens\":3}}\n\ndata: [DONE]\n"), true)
+	assert.True(t, fitExpected("K09", http.StatusOK, officialShape))
+	assert.True(t, expectedPass("DS-B02", "official", http.StatusOK, officialShape))
+
+	wrongChunk := summarize([]byte("data: {\"id\":\"chat_1\",\"object\":\"chat.completion\",\"created\":1710000000,\"model\":\"wrong-model\",\"choices\":[{\"index\":1,\"delta\":{\"role\":\"user\",\"content\":\"2\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens_details\":{\"reasoning_tokens\":0},\"prompt_cache_hit_tokens\":1,\"prompt_cache_miss_tokens\":3}}\n\ndata: [DONE]\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, wrongChunk))
+
+	usageOnlyTail := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\ndata: [DONE]\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, usageOnlyTail))
+	assert.False(t, expectedPass("DS-B02", "official", http.StatusOK, usageOnlyTail))
+
+	aggregatorUsage := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"input_tokens\":4}}\n\ndata: [DONE]\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, aggregatorUsage))
+
+	fractionalUsage := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4.5,\"completion_tokens\":1.5,\"total_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":1.5},\"completion_tokens_details\":{\"reasoning_tokens\":0.5},\"prompt_cache_hit_tokens\":1.5,\"prompt_cache_miss_tokens\":3}}\n\ndata: [DONE]\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, fractionalUsage))
+}
+
+func TestFitExpectedRejectsMalformedOrPostDoneStreamEvents(t *testing.T) {
+	usage := `"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":0},"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":3}`
+	malformed := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"}}]}\n\ndata: {not-json}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+usage+"}\n\ndata: [DONE]\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, malformed))
+
+	postDone := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"}}]}\n\ndata: [DONE]\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"+usage+"}\n"), true)
+	assert.False(t, fitExpected("K09", http.StatusOK, postDone))
 }
 
 func TestSummarizeStreamAcceptsDataFieldWithoutSpace(t *testing.T) {
@@ -195,15 +266,24 @@ func TestExpectedPassRequiresClientErrorForUnknownModel(t *testing.T) {
 
 func TestExpectedPassRequiresUsageForRequestedStreamUsage(t *testing.T) {
 	evidence := map[string]any{
-		"stream":                    true,
-		"done":                      true,
-		"has_content":               true,
-		"sse_events":                3,
-		"usage_events":              1,
-		"usage_event_empty_choices": true,
+		"stream":                  true,
+		"done":                    true,
+		"done_events":             1,
+		"done_last":               true,
+		"sse_json_errors":         0,
+		"stream_shape_valid":      true,
+		"has_content":             true,
+		"sse_events":              3,
+		"usage_events":            1,
+		"usage_only_events":       0,
+		"usage_on_finish_event":   true,
+		"usage_on_final_event":    true,
+		"official_usage_shape":    true,
+		"usage_consistent":        true,
+		"cache_tokens_consistent": true,
 	}
 	assert.True(t, expectedPass("DS-B02", "official", 200, evidence))
-	delete(evidence, "usage_events")
+	evidence["usage_only_events"] = 1
 	assert.False(t, expectedPass("DS-B02", "official", 200, evidence))
 }
 
@@ -256,6 +336,10 @@ func TestExpectedPassStreamingToolCallRequiresValidArguments(t *testing.T) {
 	evidence := map[string]any{
 		"stream":              true,
 		"done":                true,
+		"done_events":         1,
+		"done_last":           true,
+		"sse_json_errors":     0,
+		"stream_shape_valid":  true,
 		"has_error":           false,
 		"has_tool_calls":      true,
 		"tool_arguments_json": true,
@@ -281,17 +365,28 @@ func TestExpectedPassRequiredToolChoiceRequiresValidToolCall(t *testing.T) {
 
 func TestExpectedPassStreamingLogprobsRequiresUsageAndBound(t *testing.T) {
 	evidence := map[string]any{
-		"stream":           true,
-		"done":             true,
-		"has_error":        false,
-		"has_content":      true,
-		"has_logprobs":     true,
-		"logprobs_content": 1,
-		"max_top_logprobs": 5,
-		"usage_events":     1,
+		"stream":                  true,
+		"done":                    true,
+		"done_events":             1,
+		"done_last":               true,
+		"sse_json_errors":         0,
+		"stream_shape_valid":      true,
+		"has_error":               false,
+		"has_content":             true,
+		"has_logprobs":            true,
+		"logprobs_content":        1,
+		"logprobs_content_valid":  true,
+		"max_top_logprobs":        5,
+		"usage_events":            1,
+		"usage_only_events":       0,
+		"usage_on_finish_event":   true,
+		"usage_on_final_event":    true,
+		"official_usage_shape":    true,
+		"usage_consistent":        true,
+		"cache_tokens_consistent": true,
 	}
 	assert.True(t, expectedPass("DS-E05", "official", http.StatusOK, evidence))
-	delete(evidence, "usage_events")
+	evidence["usage_on_final_event"] = false
 	assert.False(t, expectedPass("DS-E05", "official", http.StatusOK, evidence))
 }
 
@@ -311,11 +406,32 @@ func TestSummarizeUsageReportsArithmeticConsistency(t *testing.T) {
 	assert.Equal(t, true, evidence["cached_tokens_valid"])
 }
 
+func TestSummarizeUsageAcceptsOfficialDisabledThinkingShape(t *testing.T) {
+	withoutReasoningDetails := summarize([]byte(`{"choices":[{"message":{"content":"spring"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":95,"total_tokens":104,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":9}}`), false)
+	assert.Equal(t, true, withoutReasoningDetails["official_usage_shape"])
+	assert.Equal(t, "completion_tokens,prompt_cache_hit_tokens,prompt_cache_miss_tokens,prompt_tokens,prompt_tokens_details,total_tokens|prompt_tokens_details:cached_tokens|completion_tokens_details:-", withoutReasoningDetails["usage_shape"])
+
+	withReasoningDetails := summarize([]byte(`{"choices":[{"message":{"content":"2","reasoning_content":"think"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":30,"total_tokens":38,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":28},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`), false)
+	assert.Equal(t, true, withReasoningDetails["official_usage_shape"])
+	assert.NotEqual(t, withoutReasoningDetails["usage_shape"], withReasoningDetails["usage_shape"])
+}
+
 func TestSummarizeLogprobsReportsMaximumTopEntries(t *testing.T) {
 	evidence := summarize([]byte(`{"choices":[{"message":{"content":"2"},"finish_reason":"stop","logprobs":{"content":[{"token":"2","top_logprobs":[{},{},{}]}],"reasoning_content":[{"token":"thinking","top_logprobs":[{},{}]}]}}]}`), false)
 
 	assert.Equal(t, 3, evidence["max_top_logprobs"])
 	assert.Equal(t, 2, evidence["max_reasoning_top_logprobs"])
+	assert.Equal(t, false, evidence["logprobs_content_valid"])
+	assert.Equal(t, false, evidence["logprobs_reasoning_content_valid"])
+}
+
+func TestFitExpectedRejectsPlaceholderLogprobs(t *testing.T) {
+	usage := `"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":1},"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":3}`
+	fake := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning_content":"think"},"logprobs":{"content":[{}],"reasoning_content":[{}]},"finish_reason":"stop"}],`+usage+`}`), false)
+	assert.False(t, fitExpected("K12", http.StatusOK, fake))
+
+	valid := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning_content":"think"},"logprobs":{"content":[{"token":"2","logprob":-0.1,"top_logprobs":[{"token":"2","logprob":-0.1}]}],"reasoning_content":[{"token":"think","logprob":-0.2,"top_logprobs":[{"token":"think","logprob":-0.2}]}]},"finish_reason":"stop"}],`+usage+`}`), false)
+	assert.True(t, fitExpected("K12", http.StatusOK, valid))
 }
 
 func TestExpectedPassRecognizesLogprobsValidationFingerprint(t *testing.T) {
@@ -328,27 +444,109 @@ func TestExpectedPassRecognizesLogprobsValidationFingerprint(t *testing.T) {
 		"error_message_fingerprint": "invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used.",
 	}
 	assert.True(t, expectedPass("DS-E04", "official", 400, evidence))
+	assert.False(t, expectedPass("DS-E04", "official", 422, evidence))
 	assert.False(t, expectedPass("DS-E07", "official", 400, evidence))
 }
 
-func TestFitExpectedAcceptsToolCallWithThinkingDisabled(t *testing.T) {
-	evidence := map[string]any{
-		"json":                  true,
-		"has_content":           false,
-		"has_reasoning_content": false,
-		"has_tool_calls":        true,
-		"tool_arguments_json":   true,
+func TestFitExpectedRequiresHTTP400ForLogprobsValidation(t *testing.T) {
+	pairEvidence := map[string]any{
+		"json":                      true,
+		"has_error":                 true,
+		"error_type":                "invalid_request_error",
+		"error_code":                "invalid_request_error",
+		"error_param_null":          true,
+		"error_message_fingerprint": "invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used.",
 	}
+	assert.True(t, fitExpected("K02", http.StatusBadRequest, pairEvidence))
+	assert.False(t, fitExpected("K02", http.StatusUnprocessableEntity, pairEvidence))
+	pairEvidence["error_message_fingerprint"] = "invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used. (request id: redacted)"
+	assert.False(t, fitExpected("K02", http.StatusBadRequest, pairEvidence))
+
+	rangeEvidence := map[string]any{
+		"json":                      true,
+		"has_error":                 true,
+		"error_type":                "invalid_request_error",
+		"error_code":                "invalid_request_error",
+		"error_param_null":          true,
+		"error_message_fingerprint": "invalid top_logprobs value, the valid range of top_logprobs is [0, 20].",
+	}
+	assert.True(t, fitExpected("K03", http.StatusBadRequest, rangeEvidence))
+	assert.False(t, fitExpected("K03", http.StatusUnprocessableEntity, rangeEvidence))
+}
+
+func TestApplyFitOfficialBaselineGatesGatewayPasses(t *testing.T) {
+	withoutOfficial := []result{{CaseID: "K01", Route: "main", Tier: "gateway-live", HTTP: http.StatusOK, Status: "pass", Evidence: map[string]any{}}}
+	applyFitOfficialBaseline(withoutOfficial, false)
+	assert.Equal(t, "inconclusive", withoutOfficial[0].Status)
+	assert.Equal(t, "official_baseline_not_requested", withoutOfficial[0].Evidence["reason"])
+
+	paired := []result{
+		{CaseID: "K02", Route: "official", Tier: "official-live", HTTP: http.StatusBadRequest, Status: "pass", Evidence: map[string]any{"json": true, "has_error": true, "error_type": "invalid_request_error", "error_code": "invalid_request_error", "error_param_null": true, "error_message_fingerprint": "same"}},
+		{CaseID: "K02", Route: "main", Tier: "gateway-live", HTTP: http.StatusBadRequest, Status: "pass", Evidence: map[string]any{"json": true, "has_error": true, "error_type": "invalid_request_error", "error_code": "invalid_request_error", "error_param_null": true, "error_message_fingerprint": "same"}},
+	}
+	applyFitOfficialBaseline(paired, true)
+	assert.Equal(t, "pass", paired[1].Status)
+	assert.Equal(t, true, paired[1].Evidence["official_baseline_matched"])
+
+	httpMismatch := []result{
+		{CaseID: "K03", Route: "official", Tier: "official-live", HTTP: http.StatusBadRequest, Status: "pass", Evidence: map[string]any{}},
+		{CaseID: "K03", Route: "main", Tier: "gateway-live", HTTP: http.StatusUnprocessableEntity, Status: "pass", Evidence: map[string]any{}},
+	}
+	applyFitOfficialBaseline(httpMismatch, true)
+	assert.Equal(t, "fail", httpMismatch[1].Status)
+	assert.Equal(t, "official_http_status_mismatch", httpMismatch[1].Evidence["reason"])
+
+	evidenceMismatch := []result{
+		{CaseID: "K02", Route: "official", Tier: "official-live", HTTP: http.StatusBadRequest, Status: "pass", Evidence: map[string]any{"error_message_fingerprint": "official"}},
+		{CaseID: "K02", Route: "main", Tier: "gateway-live", HTTP: http.StatusBadRequest, Status: "pass", Evidence: map[string]any{"error_message_fingerprint": "gateway"}},
+	}
+	applyFitOfficialBaseline(evidenceMismatch, true)
+	assert.Equal(t, "fail", evidenceMismatch[1].Status)
+	assert.Equal(t, "official_contract_mismatch", evidenceMismatch[1].Evidence["reason"])
+
+	nondeterministicOutput := []result{
+		{CaseID: "K07", Route: "official", Tier: "official-live", HTTP: http.StatusOK, Status: "pass", Evidence: map[string]any{"has_content": false, "has_reasoning_content": true, "finish_reason": "length"}},
+		{CaseID: "K07", Route: "main", Tier: "gateway-live", HTTP: http.StatusOK, Status: "pass", Evidence: map[string]any{"has_content": true, "has_reasoning_content": true, "finish_reason": "stop"}},
+	}
+	applyFitOfficialBaseline(nondeterministicOutput, true)
+	assert.Equal(t, "pass", nondeterministicOutput[1].Status)
+
+	usageShapeMismatch := []result{
+		{CaseID: "K05", Route: "official", Tier: "official-live", HTTP: http.StatusOK, Status: "pass", Evidence: map[string]any{"usage_shape": "official-disabled"}},
+		{CaseID: "K05", Route: "main", Tier: "gateway-live", HTTP: http.StatusOK, Status: "pass", Evidence: map[string]any{"usage_shape": "seven-fields"}},
+	}
+	applyFitOfficialBaseline(usageShapeMismatch, true)
+	assert.Equal(t, "fail", usageShapeMismatch[1].Status)
+	assert.Equal(t, "usage_shape", usageShapeMismatch[1].Evidence["mismatch_field"])
+}
+
+func TestFitExpectedAcceptsToolCallWithThinkingDisabled(t *testing.T) {
+	evidence := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]},"logprobs":null,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":20}}`), false)
 
 	assert.True(t, fitExpected("DS-K10", http.StatusOK, evidence))
+
+	wrongTool := summarize([]byte(`{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"logprobs":null,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":20}}`), false)
+	assert.False(t, fitExpected("DS-K10", http.StatusOK, wrongTool))
 }
 
 func TestFitChecksCoverProvidedRequests(t *testing.T) {
 	checks := fitChecks("deepseek-v4-flash")
-	require.Len(t, checks, 13)
-	for index, check := range checks {
-		assert.Equal(t, fmt.Sprintf("K%02d", index+1), check.id)
+	expected := []fitCheck{
+		{"K01", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "依次说出：苹果、香蕉、橙子、西瓜。"}}, "stop": "香蕉", "max_tokens": 256, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K02", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "top_logprobs": 5, "max_tokens": 64, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K03", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "logprobs": true, "top_logprobs": 21, "max_tokens": 64, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K04", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 393216, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K05", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "用一个词描述春天。"}}, "temperature": 0, "max_tokens": 256, "thinking": map[string]string{"type": "disabled"}, "model": "deepseek-v4-flash"}},
+		{"K06", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "你好"}}, "frequency_penalty": 2, "presence_penalty": 2, "max_tokens": 64, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K07", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "system", "name": "teacher", "content": "你是一位数学老师。"}, map[string]any{"role": "user", "name": "student_a", "content": "1+1=?"}}, "max_tokens": 256, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K08", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "用一个词描述秋天。"}}, "temperature": 2, "top_p": 0.1, "presence_penalty": 1.5, "frequency_penalty": 1.5, "max_tokens": 1024, "reasoning_effort": "low", "model": "deepseek-v4-flash", "stream": true, "stream_options": map[string]any{"include_usage": true}}},
+		{"K09", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": "deepseek-v4-flash", "stream": true, "stream_options": map[string]any{"include_usage": true}}},
+		{"K10", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "北京今天天气怎么样？"}}, "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "get_weather", "description": "查询指定城市的当前天气", "parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "description": "城市名，例如 北京"}}, "required": []string{"city"}}}}}, "tool_choice": "auto", "max_tokens": 1024, "thinking": map[string]string{"type": "disabled"}, "model": "deepseek-v4-flash"}},
+		{"K11", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "依次说出：苹果、香蕉、橙子、西瓜。"}}, "stop": "香蕉", "max_tokens": 256, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K12", map[string]any{"stream": false, "messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "logprobs": true, "top_logprobs": 5, "max_tokens": 1024, "reasoning_effort": "low", "model": "deepseek-v4-flash"}},
+		{"K13", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "1+1=?"}}, "max_tokens": 1024, "reasoning_effort": "low", "model": "deepseek-v4-flash", "stream": true, "stream_options": map[string]any{"include_usage": true}}},
 	}
+	assert.Equal(t, expected, checks)
 }
 
 func TestSelectFitChecksAcceptsCanonicalAndLegacyIDs(t *testing.T) {
@@ -389,6 +587,13 @@ func TestAnnotateFitEvidenceSeparatesProtocolAcceptanceFromEffectiveSuccess(t *t
 	assert.Equal(t, true, evidence["protocol_accepted"])
 	assert.Equal(t, false, evidence["effective_success"])
 	assert.Equal(t, "empty_final_content", evidence["failure_reason"])
+}
+
+func TestAnnotateFitEvidenceChecksRequestedMaxTokens(t *testing.T) {
+	evidence := map[string]any{"completion_tokens": float64(65), "has_content": true}
+	annotateFitEvidence(http.StatusOK, evidence, map[string]any{"max_tokens": 64})
+	assert.Equal(t, false, evidence["completion_within_requested_max"])
+	assert.Equal(t, 64, evidence["requested_max_tokens"])
 }
 
 func TestResponsesFixturesUseResponsesInputAndFunctionCallItems(t *testing.T) {

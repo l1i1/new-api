@@ -144,6 +144,34 @@ func TestOaiStreamHandlerDeepSeekV4FitsAggregatorShape(t *testing.T) {
 	}
 }
 
+func TestOaiStreamHandlerDeepSeekV4EmitsRepeatedUpstreamUsageOnlyOnce(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"reasoning_content":"A"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	_, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	events := dataEvents(recorder)
+	require.Len(t, events, 4, "expected two output chunks, one final chunk, and [DONE]")
+	usageEvents := 0
+	for _, event := range events[:len(events)-1] {
+		if strings.Contains(event, `"usage":`) {
+			usageEvents++
+		}
+	}
+	assert.Equal(t, 1, usageEvents)
+	assert.Contains(t, events[len(events)-2], `"finish_reason":"stop"`)
+	assert.Contains(t, events[len(events)-2], `"completion_tokens":2`)
+}
+
 func TestOaiStreamHandlerDeepSeekV4MergesUsageOnlyTailIntoFinishChunk(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"router-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"delta":{"content":"ok"}}]}`,
@@ -290,4 +318,43 @@ func TestOaiStreamHandlerDeepSeekV4HonorsIncludeUsageFalse(t *testing.T) {
 	assert.Contains(t, final, `"finish_reason":"stop"`)
 	assert.NotContains(t, final, `"prompt_tokens"`)
 	assert.NotContains(t, final, `"completion_tokens"`)
+}
+
+func TestOaiStreamHandlerDeepSeekV4RejectsDoneWithoutFinishReason(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":" tail"},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	usage, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.NotNil(t, usage)
+	require.NotNil(t, err)
+	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
+	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
+	assert.True(t, types.IsSkipRetryError(err))
+	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
+}
+
+func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalFinishWithoutDone(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":"stop"}]}`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := deepSeekV4RelayInfo()
+	usage, err := OaiStreamHandler(c, info, resp)
+
+	require.NotNil(t, usage)
+	require.Nil(t, err)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }

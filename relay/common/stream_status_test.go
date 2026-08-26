@@ -31,6 +31,18 @@ func TestStreamStatus_SetEndReason_WithError(t *testing.T) {
 	assert.Equal(t, expectedErr, s.EndError)
 }
 
+func TestStreamStatus_PromoteEOFToDone(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonEOF, fmt.Errorf("unexpected eof"))
+	s.PromoteEOFToDone()
+
+	assert.Equal(t, StreamEndReasonDone, s.EndReason)
+	assert.NoError(t, s.EndError)
+	assert.True(t, s.IsNormalEnd())
+}
+
 func TestStreamStatus_SetEndReason_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus

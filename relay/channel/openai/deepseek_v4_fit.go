@@ -22,32 +22,57 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 	return strings.HasPrefix(modelName, "deepseek-v4-")
 }
 
-// deepSeekV4UsagePayload renders usage in the official DeepSeek shape: the
-// seven documented keys only. The generic dto.Usage marshals Claude/OpenRouter
-// extensions (claude_cache_*, input_tokens, output_tokens, cost), which the
-// official endpoint never emits, so the payload is built as an explicit map.
-// Missing upstream cache fields keep the official arithmetic identity
-// prompt_cache_miss_tokens = prompt_tokens - prompt_cache_hit_tokens.
-func deepSeekV4UsagePayload(usage *dto.Usage) map[string]any {
+// deepSeekV4UsagePayload renders usage in the observed official DeepSeek
+// shape. Disabled-thinking responses omit completion_tokens_details; thinking
+// responses include reasoning_tokens. Generic provider extensions never cross
+// this client boundary.
+func deepSeekV4UsagePayload(usage *dto.Usage, includeReasoningDetails bool) map[string]any {
 	if usage == nil {
 		return nil
 	}
+	normalizeDeepSeekV4Usage(usage)
+	cacheHit := usage.PromptCacheHitTokens
+	cacheMiss := usage.PromptTokens - cacheHit
+	payload := map[string]any{
+		"prompt_tokens":            usage.PromptTokens,
+		"completion_tokens":        usage.CompletionTokens,
+		"total_tokens":             usage.TotalTokens,
+		"prompt_tokens_details":    map[string]any{"cached_tokens": cacheHit},
+		"prompt_cache_hit_tokens":  cacheHit,
+		"prompt_cache_miss_tokens": cacheMiss,
+	}
+	if includeReasoningDetails {
+		payload["completion_tokens_details"] = map[string]any{"reasoning_tokens": usage.CompletionTokenDetails.ReasoningTokens}
+	}
+	return payload
+}
+
+func normalizeDeepSeekV4Usage(usage *dto.Usage) {
+	if usage == nil {
+		return
+	}
+	if usage.PromptTokens < 0 {
+		usage.PromptTokens = 0
+	}
+	if usage.CompletionTokens < 0 {
+		usage.CompletionTokens = 0
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
 	cacheHit := usage.PromptCacheHitTokens
 	if cacheHit == 0 {
 		cacheHit = usage.PromptTokensDetails.CachedTokens
 	}
-	cacheMiss := usage.PromptTokens - cacheHit
-	if cacheMiss < 0 {
-		cacheMiss = 0
+	if cacheHit < 0 {
+		cacheHit = 0
 	}
-	return map[string]any{
-		"prompt_tokens":             usage.PromptTokens,
-		"completion_tokens":         usage.CompletionTokens,
-		"total_tokens":              usage.TotalTokens,
-		"prompt_tokens_details":     map[string]any{"cached_tokens": cacheHit},
-		"completion_tokens_details": map[string]any{"reasoning_tokens": usage.CompletionTokenDetails.ReasoningTokens},
-		"prompt_cache_hit_tokens":   cacheHit,
-		"prompt_cache_miss_tokens":  cacheMiss,
+	if cacheHit > usage.PromptTokens {
+		cacheHit = usage.PromptTokens
+	}
+	usage.PromptCacheHitTokens = cacheHit
+	usage.PromptTokensDetails.CachedTokens = cacheHit
+	if usage.CompletionTokenDetails.ReasoningTokens < 0 {
+		usage.CompletionTokenDetails.ReasoningTokens = 0
 	}
 }
 
@@ -56,7 +81,7 @@ func deepSeekV4UsagePayload(usage *dto.Usage) map[string]any {
 // null message.tool_calls), replace usage with the official seven-key shape,
 // while preserving an upstream-provided system_fingerprint. Values that only
 // the real upstream knows are never replaced with a fabricated identity.
-func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage) ([]byte, error) {
+func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoningDetails bool) ([]byte, error) {
 	var payload map[string]json.RawMessage
 	if err := common.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -71,7 +96,7 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage) ([]byte, error
 		payload["choices"] = choices
 	}
 	if _, ok := payload["usage"]; ok {
-		encodedUsage, err := common.Marshal(deepSeekV4UsagePayload(usage))
+		encodedUsage, err := common.Marshal(deepSeekV4UsagePayload(usage, includeReasoningDetails))
 		if err != nil {
 			return nil, err
 		}
@@ -109,7 +134,7 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
 
 // fitDeepSeekV4StreamEvent renders usage in the official seven-key shape while
 // preserving only a real upstream-provided system_fingerprint.
-func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool) (string, error) {
+func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, includeReasoningDetails bool) (string, error) {
 	if data == "" {
 		return data, nil
 	}
@@ -118,7 +143,7 @@ func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool) 
 		return data, err
 	}
 	if includeUsage && usage != nil {
-		encodedUsage, err := common.Marshal(deepSeekV4UsagePayload(usage))
+		encodedUsage, err := common.Marshal(deepSeekV4UsagePayload(usage, includeReasoningDetails))
 		if err != nil {
 			return data, err
 		}
