@@ -128,6 +128,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var toolCount int
 	var hasContentOutput bool
 	var hasToolOutput bool
+	var hasReasoningOutput bool
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var pendingUsageData string
@@ -289,6 +290,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					if strings.TrimSpace(choice.Delta.GetContentString()) != "" {
 						hasContentOutput = true
 					}
+					if strings.TrimSpace(choice.Delta.GetReasoningContent()) != "" {
+						hasReasoningOutput = true
+					}
 					for _, toolCall := range choice.Delta.ToolCalls {
 						if isValidStreamFunctionToolCall(toolCall) {
 							hasToolOutput = true
@@ -302,7 +306,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamErr != nil {
 		return usage, streamErr
 	}
-	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput {
+	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput &&
+		// Official DeepSeek V4 can exhaust max_tokens inside reasoning and end the
+		// stream reasoning-only with finish_reason=length; the non-stream path
+		// already preserves that outcome, so the stream guard must not 502 (and
+		// drop the held terminal chunk plus [DONE]) before flushing it.
+		// Disabled thinking strips reasoning, so such streams still fail empty.
+		!(isV4OpenAIStream && !shouldSuppressReasoningContent(info) && hasReasoningOutput && info.StreamFinishReason == constant.FinishReasonLength) {
 		return usage, emptyChatCompletionError(c.Writer.Written())
 	}
 

@@ -1,5 +1,60 @@
 # New API Fork Memory
 
+- On 2026-08-26, fresh post-pin verification (39-record probe: 37 pass) exposed
+  a real gateway stream defect beyond provider nondeterminism. K08
+  (`temperature=2, top_p=0.1`) reasoning-loop streams and K11 stop-case
+  `finish_reason=length` runs ended client-side truncated: no terminal
+  finish_reason chunk, no `[DONE]`, HTTP 200. JP-M logs showed those requests
+  recorded as 502 `upstream returned empty final content`; the ev-jp2
+  (actual `n.tokeness.dev` origin) logs showed `stream ended: reason=done`
+  followed by that 502 — the OaiStreamHandler empty-output guard
+  (`relay-openai.go`) fired after a fully received upstream stream and
+  returned before flushing the held terminal chunk. Official reproduces the
+  same streams correctly: official K08 looped 3/3 to `finish_reason=length`
+  with terminal chunk + `[DONE]`, and official K11 run13 produced
+  `finish_reason=length` with empty content (12-sample distribution: mostly
+  13 tokens, tail 116-203, one length exhaustion) — the reasoning-only-length
+  outcome is official behavior the guard was rejecting. Root fix: the stream
+  guard now carries the same V4 reasoning-only-length exemption as the
+  non-stream path (`isV4OpenAIStream && !shouldSuppressReasoningContent &&
+  hasReasoningOutput && StreamFinishReason == "length"`), tracking
+  `hasReasoningOutput` from delta reasoning_content; disabled-thinking
+  streams still fail empty. Two new unit tests cover the passthrough and the
+  disabled-thinking failure; full relay/controller/common/probe tests, vet,
+  and build pass. The change is local, not yet deployed — until it rolls out,
+  pinned-official deepseek-v4-flash streaming requests that exhaust
+  `max_tokens` in reasoning will still truncate instead of ending like
+  official. Pin effectiveness re-verified: post-pin logs show 100% of flash
+  requests on channel 1. Note: the earlier K08 aggregator-routing attribution
+  was incomplete — this guard defect also fired on official-direct routing
+  and explains the truncated tails observed before the pin as well.
+
+- On 2026-08-26, `deepseek-v4-flash` was pinned to the official-direct channel
+  to guarantee official behavioral parity, per user decision ("实在不行的就把
+  特定难处理的请求直接固定到官方渠道"). Aggregator channels 93/117
+  (CN_OpenCode-GO_A/B, priorities 9/8) previously outranked official channel 1
+  (CN_DeepSeek, type 43, priority 7), so most flash traffic hit OpenCode GO
+  aggregators whose sampling/limits diverge from official (K05 `temperature=0`
+  token divergence, K06/K07 `max_tokens` non-truncation, K08 reasoning loop,
+  K10 extra message keys). The pin removed `deepseek-v4-flash` from channels
+  93/117 `models` and deleted their `abilities` rows in one transaction on the
+  shared JP-M PostgreSQL (no Redis, no `MEMORY_CACHE_ENABLED`, so it took
+  effect immediately on all four nodes); `deepseek-v4-pro` and
+  `deepseek-v4-flash-vision-exp` still route to the aggregators. Pre-change
+  backup: JP-M `/root/dsv4-pin-backup-20260826.txt` (channels + abilities
+  rows). Post-pin full K01-K13 paired rerun: 39/39 pass on official + both
+  gateway routes, every response official-shaped with `system_fingerprint`,
+  K05 = 16 completion tokens on all routes, K08 completes normally. Trade-offs:
+  flash now has NO failover (channel 1 failure = model error until rollback),
+  and ~73% of flash volume moved from subscription aggregators to pay-per-token
+  official billing (flash is the highest-volume model, 82,647 requests / 104.6M
+  quota in the preceding 7 days; 2-hour pre-pin split: 117 64%, channel 1 26%,
+  93 9%). Also local (not deployed, not committed): the V4 fit layer now strips
+  non-official message keys (`role`/`content`/`reasoning_content`/`tool_calls`
+  whitelist) in both the surgical and map-fallback paths, fixing the K10
+  aggregator extra-message-field leak; all relay/controller/common/probe tests
+  pass. Evidence: `E:\Temp\dsv4-fit-20260826\fit-pinned.jsonl` (untracked).
+
 - On 2026-08-26, a post-deploy official-vs-gateway K01-K13 paired rerun against
   production `v1.0.0-rc.25-tokeness-deepseek-v4.4` confirmed the deployed fixes
   are live: K02/K03 400 bodies are byte-identical to official with
@@ -659,3 +714,4 @@
 - On 2026-08-25, the production performance audit confirmed the existing isolated `scripts/performance` harness cannot measure real DeepSeek V4 KV-cache hit rate, effective success, TTFT P90, TPOT P90, or TPM: it uses a deterministic mock upstream, counts every 2xx as success, drops response bodies and SSE timestamps, fixes the model to `gpt-4o-mini`, and uses a 30-second timeout. A small production run therefore requires a separate transient-key load generator that records only structural usage/timing evidence; no usable runtime credential was present in the process, so no production load was started and no performance target is claimed.
 - On 2026-08-26, the K01-K13 acceptance runner and V4 response boundary were audited and repaired locally. The Go `fit` profile sends the exact supplied request bodies, requires exact HTTP 400 and official logprobs error fingerprints, validates official non-stream/SSE/usage/logprobs schemas, and gates every gateway `pass` on a passing same-status official baseline. K04/K06/K07 now accept the official reasoning-only `finish_reason=length` truncation, and the relay preserves that response when thinking is enabled; disabled thinking strips both reasoning text and reasoning logprobs. V4 streams no longer emit a successful `[DONE]` without a finish reason, and fitted usage is normalized to non-negative, arithmetic-consistent official fields. Full root tests/vet, standalone RelayKit test/build, focused race tests, and `git diff --check` passed. With gateway and official API-key environment variables explicitly empty, the fit runner produced 39/39 `inconclusive` records and made no live request. No authenticated K01-K13 production verdict, commit, publication, or deployment is claimed; no credential or response body was stored.
 - On 2026-08-26, stream failures reported as `stream state: error eof` were traced to two compatibility cases: the scanner mishandled bare `[DONE]`, and some OpenAI-compatible upstreams closed after a non-empty terminal `finish_reason` without sending `[DONE]`. The scanner now accepts bare and `data:` DONE markers, drains all chunk workers before final classification, promotes only terminal-finish EOF to normal completion, and keeps genuinely truncated streams as 502 with skip-retry. DeepSeek V4 regression coverage also rejects DONE without a finish reason and preserves the terminal usage/finish chunk shape. No production credential or response body was stored.
+- On 2026-08-26, the production `stream state: error eof` incident was traced to Tokeness commit `f4f65939d`, which changed New API's upstream-compatible clean EOF from normal to `server_error` and required `[DONE]`/`finish_reason` in `OaiStreamHandler`. The official new-api behavior treats clean EOF as normal and emits the downstream terminator. The local fix restores that behavior while retaining scanner errors, timeouts, client disconnects, upstream error events, and empty-output rejection; it is validated locally and awaits release.

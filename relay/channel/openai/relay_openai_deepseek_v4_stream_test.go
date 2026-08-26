@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -434,4 +435,55 @@ func TestOaiStreamHandlerDeepSeekV4SetsOfficialContentType(t *testing.T) {
 
 	require.Nil(t, err)
 	assert.Equal(t, "text/event-stream; charset=utf-8", recorder.Header().Get("Content-Type"))
+}
+
+// Official DeepSeek V4 can exhaust max_tokens inside reasoning and end the
+// stream reasoning-only with finish_reason=length. The stream guard must not
+// 502 before flushing the held terminal chunk and [DONE]; the outcome mirrors
+// the non-stream reasoning-only-length exemption.
+func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamPassesThrough(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"loop"},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":9,"completion_tokens":256,"total_tokens":265,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":256},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	usage, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	require.Equal(t, 9, usage.PromptTokens)
+	require.Equal(t, 256, usage.CompletionTokens)
+
+	events := dataEvents(recorder)
+	require.Len(t, events, 4, "expected 3 data events plus [DONE]")
+	assert.Equal(t, "[DONE]", events[len(events)-1])
+	final := events[len(events)-2]
+	assert.Contains(t, final, `"finish_reason":"length"`)
+}
+
+// The same reasoning-only stream with thinking disabled must still fail as
+// empty output: suppressed reasoning cannot satisfy the exemption.
+func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamFailsWhenThinkingDisabled(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"loop"},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":9,"completion_tokens":256,"total_tokens":265}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := deepSeekV4RelayInfo()
+	info.Request = &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", THINKING: json.RawMessage(`{"type":"disabled"}`)}
+	_, err := OaiStreamHandler(c, info, resp)
+
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "upstream returned empty final content")
 }
