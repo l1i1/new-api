@@ -1,6 +1,10 @@
 package middleware
 
 import (
+	"bytes"
+	"github.com/stretchr/testify/assert"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -179,4 +183,30 @@ func TestSetupContextForSelectedChannelUsesCredentialProxyOverride(t *testing.T)
 	settings, ok = common.GetContextKeyType[dto.ChannelSettings](ctx, constant.ContextKeyChannelSetting)
 	require.True(t, ok)
 	require.Empty(t, settings.Proxy)
+}
+
+func TestMarkV4OfficialPinFromDistributorMatchesRelayThresholds(t *testing.T) {
+	newCtx := func(body, path string) *gin.Context {
+		gin.SetMode(gin.TestMode)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		return c
+	}
+
+	pinned := newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5}`, "/v1/chat/completions")
+	markV4OfficialPinFromDistributor(pinned)
+	assert.True(t, common.GetContextKeyBool(pinned, constant.ContextKeyV4OfficialPin))
+
+	mild := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
+	markV4OfficialPinFromDistributor(mild)
+	assert.False(t, common.GetContextKeyBool(mild, constant.ContextKeyV4OfficialPin))
+
+	nonV4 := newCtx(`{"model":"gpt-test","temperature":2}`, "/v1/chat/completions")
+	markV4OfficialPinFromDistributor(nonV4)
+	assert.False(t, common.GetContextKeyBool(nonV4, constant.ContextKeyV4OfficialPin))
+
+	other := newCtx(`{"model":"deepseek-v4-flash","temperature":2}`, "/v1/embeddings")
+	markV4OfficialPinFromDistributor(other)
+	assert.False(t, common.GetContextKeyBool(other, constant.ContextKeyV4OfficialPin))
 }

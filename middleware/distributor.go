@@ -39,6 +39,10 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// Channel selection happens here, before relay validation; mark the
+		// official-channel pin for unfit-able deepseek-v4 sampling before
+		// selecting a channel.
+		markV4OfficialPinFromDistributor(c)
 		// Existing async task fetch/result routes intentionally skip channel
 		// selection and must remain pollable after a policy change. New relay
 		// submissions load the base-group snapshot and fail closed on errors.
@@ -318,6 +322,55 @@ func channelSupportsRequestPath(channel *model.Channel, requestPath string, requ
 	}
 	config := channel.GetOtherSettings().AdvancedCustom
 	return config != nil && config.SupportsPathForModel(requestPath, requestModel)
+}
+
+// v4OfficialPinSampling mirrors the relay validation thresholds that mark a
+// deepseek-v4 request for the official-channel pin.
+type v4OfficialPinSampling struct {
+	Model            string   `json:"model"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+}
+
+// markV4OfficialPinFromDistributor applies the same official-pin marking the
+// relay validation performs, but at distributor time — channel selection runs
+// in this middleware, before the relay parses the request. Failure to read
+// the body leaves the pin unset, matching the unpinned default.
+func markV4OfficialPinFromDistributor(c *gin.Context) {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return
+	}
+	if c.Request.Method != http.MethodPost {
+		return
+	}
+	if !strings.HasSuffix(c.Request.URL.Path, "/chat/completions") {
+		return
+	}
+	var sampling v4OfficialPinSampling
+	if err := common.UnmarshalBodyReusable(c, &sampling); err != nil {
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(sampling.Model)), "deepseek-v4-") {
+		return
+	}
+	pinned := false
+	if sampling.Temperature != nil && *sampling.Temperature > 1.5 {
+		pinned = true
+	}
+	if sampling.TopP != nil && *sampling.TopP < 0.3 {
+		pinned = true
+	}
+	if sampling.FrequencyPenalty != nil && *sampling.FrequencyPenalty > 1.0 {
+		pinned = true
+	}
+	if sampling.PresencePenalty != nil && *sampling.PresencePenalty > 1.0 {
+		pinned = true
+	}
+	if pinned {
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	}
 }
 
 // getModelFromRequest 从请求中读取模型信息
