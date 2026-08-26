@@ -665,7 +665,7 @@ func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
 
 	require.Nil(t, err)
 	require.NotNil(t, usage)
-	assert.Equal(t, 5, usage.TotalTokens)
+	assert.Equal(t, 99, usage.TotalTokens, "client response fitting must not rewrite billing usage")
 	responseBody := recorder.Body.String()
 	assert.Contains(t, responseBody, `"total_tokens":5`)
 	assert.Contains(t, responseBody, `"prompt_cache_hit_tokens"`)
@@ -673,7 +673,7 @@ func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
 	assert.NotContains(t, responseBody, `"input_tokens"`)
 	assert.NotContains(t, responseBody, `"output_tokens"`)
 	assert.NotContains(t, responseBody, `"claude_cache_creation"`)
-	assert.NotContains(t, responseBody, `"system_fingerprint"`)
+	assert.NotContains(t, responseBody, `"system_fingerprint"`, "fingerprint is never fabricated")
 }
 
 func TestOpenaiHandlerRejectsEmptyFinalOutput(t *testing.T) {

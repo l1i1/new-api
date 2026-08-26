@@ -79,6 +79,9 @@ func TestDeepSeekV4UsagePayloadEnforcesOfficialArithmetic(t *testing.T) {
 	assert.Equal(t, 0, payload["prompt_cache_miss_tokens"])
 	assert.Equal(t, map[string]any{"cached_tokens": 8}, payload["prompt_tokens_details"])
 	assert.Equal(t, map[string]any{"reasoning_tokens": 0}, payload["completion_tokens_details"])
+	assert.Equal(t, 99, usage.TotalTokens, "response shaping must not mutate billing usage")
+	assert.Equal(t, 10, usage.PromptCacheHitTokens)
+	assert.Equal(t, -1, usage.CompletionTokenDetails.ReasoningTokens)
 }
 
 func TestDeepSeekV4UsagePayloadOmitsReasoningDetailsWhenThinkingDisabled(t *testing.T) {
@@ -116,7 +119,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
 	require.NoError(t, json.Unmarshal(fitted, &payload))
 
 	assert.NotContains(t, payload, "cost")
-	assert.NotContains(t, payload, "system_fingerprint")
+	assert.NotContains(t, payload, "system_fingerprint", "fingerprint is never fabricated")
 
 	choices := payload["choices"].([]any)
 	message := choices[0].(map[string]any)["message"].(map[string]any)
@@ -185,7 +188,7 @@ func TestFitDeepSeekV4StreamUsageEventInjectsOfficialUsage(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
 
-	assert.NotContains(t, payload, "system_fingerprint")
+	assert.NotContains(t, payload, "system_fingerprint", "fingerprint is never fabricated")
 	usagePayload := payload["usage"].(map[string]any)
 	assert.Equal(t, float64(9), usagePayload["prompt_tokens"])
 	assert.Equal(t, float64(64), usagePayload["completion_tokens"])
@@ -238,31 +241,32 @@ func sortStrings(s []string) {
 func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
 	require.NoError(t, err)
 
-	var payload struct {
-		SystemFingerprint *string          `json:"system_fingerprint"`
-		Usage             map[string]any   `json:"usage"`
-		Choices           []map[string]any `json:"choices"`
-	}
+	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
-	assert.Nil(t, payload.SystemFingerprint)
-	assert.Nil(t, payload.Usage, "usage must not be synthesized for intermediate events")
-	require.Len(t, payload.Choices, 1)
+	assert.NotContains(t, payload, "system_fingerprint", "fingerprint is never fabricated")
+	usage, ok := payload["usage"]
+	require.True(t, ok, "official intermediate chunks carry an explicit usage field")
+	assert.Nil(t, usage)
+	require.Len(t, payload["choices"].([]any), 1)
 }
 
 func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","system_fingerprint":null,"choices":[]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
 	require.NoError(t, err)
 
-	var payload struct {
-		SystemFingerprint *string `json:"system_fingerprint"`
-	}
+	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
-	assert.Nil(t, payload.SystemFingerprint)
+	fingerprint, ok := payload["system_fingerprint"]
+	require.True(t, ok)
+	assert.Nil(t, fingerprint)
+	usage, ok := payload["usage"]
+	require.True(t, ok)
+	assert.Nil(t, usage)
 }
 
 func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {

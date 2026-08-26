@@ -215,8 +215,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					// Usage-only metadata is folded into the held final chunk.
 				} else {
 					streamData := lastStreamData
-					if stripped, stripErr := stripStreamUsageData(streamData); stripErr == nil {
-						streamData = stripped
+					// Official chunks carry an explicit null usage on every
+					// non-terminal event.
+					if patched, fitErr := fitDeepSeekV4StreamEvent(streamData, nil, false, false); fitErr == nil {
+						streamData = patched
+					} else {
+						common.SysLog("error fitting DeepSeek V4 stream event: " + fitErr.Error())
 					}
 					if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 						common.SysLog("error handling stream format: " + err.Error())
@@ -337,9 +341,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
-	if isDeepSeekV4ChatModel(info) {
-		normalizeDeepSeekV4Usage(usage)
-	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
@@ -613,7 +614,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info) {
 		// Apply the V4 client contract after both passthrough and ForceFormat
 		// paths so generic usage extensions cannot escape either route.
-		normalizeDeepSeekV4Usage(&simpleResponse.Usage)
 		fitted, fitErr := fitDeepSeekV4TextResponseBody(responseBody, &simpleResponse.Usage, !suppressReasoningContent)
 		if fitErr != nil {
 			return nil, types.NewOpenAIError(fitErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)

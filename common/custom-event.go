@@ -81,7 +81,11 @@ func (r CustomEvent) Render(w http.ResponseWriter) error {
 
 func (r CustomEvent) WriteContentType(w http.ResponseWriter) {
 	header := w.Header()
-	header["Content-Type"] = writeContentType
+	// Preserve provider-specific SSE parameters without retaining an unrelated
+	// content type left by a caller.
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(header.Get("Content-Type"))), "text/event-stream") {
+		header["Content-Type"] = writeContentType
+	}
 
 	if _, exist := header["Cache-Control"]; !exist {
 		header["Cache-Control"] = noCache

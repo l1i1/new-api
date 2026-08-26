@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,27 @@ func dataEvents(recorder *httptest.ResponseRecorder) []string {
 	return events
 }
 
+func assertDeepSeekV4StreamUsage(t *testing.T, events []string, wantObjects int) {
+	t.Helper()
+	objects := 0
+	for _, event := range events {
+		if event == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(event), &payload))
+		usage, ok := payload["usage"]
+		require.True(t, ok, "every V4 JSON chunk must carry usage")
+		if usage == nil {
+			continue
+		}
+		_, ok = usage.(map[string]any)
+		require.True(t, ok, "non-null usage must be an object")
+		objects++
+	}
+	assert.Equal(t, wantObjects, objects)
+}
+
 // An official-shaped upstream (usage attached to the final finish_reason
 // chunk, fingerprint on every chunk) must reach the client unchanged, with no
 // synthetic usage-only event.
@@ -99,17 +121,18 @@ func TestOaiStreamHandlerDeepSeekV4ForwardsOfficialShapeVerbatim(t *testing.T) {
 	for _, event := range events {
 		assert.NotContains(t, event, `"choices":[]`, "no usage-only event may be synthesized for V4")
 	}
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 // An aggregator upstream that omits system_fingerprint and merges Claude
 // extension usage fields must retain the unknown fingerprint state while
-// exposing the official seven-key usage shape on the final chunk.
+// exposing the official seven-key usage shape.
 func TestOaiStreamHandlerDeepSeekV4FitsAggregatorShape(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"router-1","object":"chat.completion.chunk","created":1787661827,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":null}}]}`,
 		`data: {"id":"router-1","object":"chat.completion.chunk","created":1787661827,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`,
 		`data: {"id":"router-1","object":"chat.completion.chunk","created":1787661827,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":"2"}}]}`,
-		`data: {"id":"router-1","object":"chat.completion.chunk","created":1787661827,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"delta":{"reasoning_content":null}}],"usage":{"claude_cache_creation_1_h_tokens":0,"claude_cache_creation_5_m_tokens":0,"completion_tokens":32,"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":20},"input_tokens":0,"input_tokens_details":null,"output_tokens":0,"prompt_tokens":8,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"total_tokens":40}}`,
+		`data: {"id":"router-1","object":"chat.completion.chunk","created":1787661827,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"delta":{"reasoning_content":null}}],"usage":{"claude_cache_creation_1_h_tokens":0,"claude_cache_creation_5_m_tokens":0,"completion_tokens":32,"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":20},"input_tokens":0,"input_tokens_details":null,"output_tokens":0,"prompt_tokens":8,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"total_tokens":99}}`,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -122,6 +145,7 @@ func TestOaiStreamHandlerDeepSeekV4FitsAggregatorShape(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, 8, usage.PromptTokens)
 	require.Equal(t, 32, usage.CompletionTokens)
+	require.Equal(t, 99, usage.TotalTokens, "client response fitting must not rewrite billing usage")
 	require.Equal(t, 20, usage.CompletionTokenDetails.ReasoningTokens)
 
 	events := dataEvents(recorder)
@@ -139,9 +163,10 @@ func TestOaiStreamHandlerDeepSeekV4FitsAggregatorShape(t *testing.T) {
 	assert.NotContains(t, final, `"claude_cache_creation`)
 	assert.NotContains(t, final, `"input_tokens"`)
 	for _, event := range events[:len(events)-1] {
-		assert.NotContains(t, event, `"system_fingerprint"`)
+		assert.NotContains(t, event, `"system_fingerprint"`, "fingerprint is never fabricated")
 		assert.NotContains(t, event, `"choices":[]`)
 	}
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4EmitsRepeatedUpstreamUsageOnlyOnce(t *testing.T) {
@@ -161,13 +186,7 @@ func TestOaiStreamHandlerDeepSeekV4EmitsRepeatedUpstreamUsageOnlyOnce(t *testing
 	require.Nil(t, err)
 	events := dataEvents(recorder)
 	require.Len(t, events, 4, "expected two output chunks, one final chunk, and [DONE]")
-	usageEvents := 0
-	for _, event := range events[:len(events)-1] {
-		if strings.Contains(event, `"usage":`) {
-			usageEvents++
-		}
-	}
-	assert.Equal(t, 1, usageEvents)
+	assertDeepSeekV4StreamUsage(t, events, 1)
 	assert.Contains(t, events[len(events)-2], `"finish_reason":"stop"`)
 	assert.Contains(t, events[len(events)-2], `"completion_tokens":2`)
 }
@@ -194,6 +213,7 @@ func TestOaiStreamHandlerDeepSeekV4MergesUsageOnlyTailIntoFinishChunk(t *testing
 	assert.Contains(t, final, `"finish_reason":"stop"`)
 	assert.Contains(t, final, `"prompt_tokens":8`)
 	assert.NotContains(t, final, `"choices":[]`)
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4PreservesFinishAcrossConsecutiveUsageOnlyTail(t *testing.T) {
@@ -219,6 +239,7 @@ func TestOaiStreamHandlerDeepSeekV4PreservesFinishAcrossConsecutiveUsageOnlyTail
 	for _, event := range events {
 		assert.NotContains(t, event, `"choices":[]`, "consecutive usage-only events must stay internal")
 	}
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4PreservesContentBeforeConsecutiveUsageOnlyEvents(t *testing.T) {
@@ -244,6 +265,7 @@ func TestOaiStreamHandlerDeepSeekV4PreservesContentBeforeConsecutiveUsageOnlyEve
 	for _, event := range events {
 		assert.NotContains(t, event, `"choices":[]`, "usage-only events must not become V4 protocol events")
 	}
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4KeepsFinishAcrossRepeatedUsageTail(t *testing.T) {
@@ -270,6 +292,7 @@ func TestOaiStreamHandlerDeepSeekV4KeepsFinishAcrossRepeatedUsageTail(t *testing
 	assert.Contains(t, events[1], `"finish_reason":"stop"`)
 	assert.Contains(t, events[1], `"completion_tokens":2`)
 	assert.NotContains(t, events[1], `"choices":[]`)
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4KeepsContentBeforeRepeatedUsage(t *testing.T) {
@@ -294,6 +317,7 @@ func TestOaiStreamHandlerDeepSeekV4KeepsContentBeforeRepeatedUsage(t *testing.T)
 	assert.Contains(t, events[0], `"content":"kept"`)
 	assert.Contains(t, events[1], `"finish_reason":"stop"`)
 	assert.NotContains(t, events[1], `"choices":[]`)
+	assertDeepSeekV4StreamUsage(t, events, 1)
 }
 
 func TestOaiStreamHandlerDeepSeekV4HonorsIncludeUsageFalse(t *testing.T) {
@@ -318,6 +342,7 @@ func TestOaiStreamHandlerDeepSeekV4HonorsIncludeUsageFalse(t *testing.T) {
 	assert.Contains(t, final, `"finish_reason":"stop"`)
 	assert.NotContains(t, final, `"prompt_tokens"`)
 	assert.NotContains(t, final, `"completion_tokens"`)
+	assertDeepSeekV4StreamUsage(t, events, 0)
 }
 
 func TestOaiStreamHandlerDeepSeekV4RejectsDoneWithoutFinishReason(t *testing.T) {
@@ -343,7 +368,7 @@ func TestOaiStreamHandlerDeepSeekV4RejectsDoneWithoutFinishReason(t *testing.T) 
 
 func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalFinishWithoutDone(t *testing.T) {
 	body := strings.Join([]string{
-		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":"stop"}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`,
 		``,
 	}, "\n")
 
@@ -357,4 +382,59 @@ func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalFinishWithoutDone(t *testing.T
 	require.Nil(t, err)
 	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
+	assertDeepSeekV4StreamUsage(t, dataEvents(recorder), 1)
+}
+
+func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalEOFWithoutUsage(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	usage, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.NotNil(t, usage)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
+	assertDeepSeekV4StreamUsage(t, dataEvents(recorder), 1)
+}
+
+func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalEOFWhenUsageNotRequested(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":"stop"}]}`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := deepSeekV4RelayInfo()
+	info.ShouldIncludeUsage = false
+	usage, err := OaiStreamHandler(c, info, resp)
+
+	require.NotNil(t, usage)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
+	assertDeepSeekV4StreamUsage(t, dataEvents(recorder), 0)
+}
+
+func TestOaiStreamHandlerDeepSeekV4SetsOfficialContentType(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"2"},"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	_, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
+
+	require.Nil(t, err)
+	assert.Equal(t, "text/event-stream; charset=utf-8", recorder.Header().Get("Content-Type"))
 }

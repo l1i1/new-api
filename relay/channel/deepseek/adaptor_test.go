@@ -56,12 +56,14 @@ func TestConvertOpenAIRequestNormalizesDeepSeekV4CompatibilityFields(t *testing.
 }
 
 func TestConvertOpenAIRequestPreservesCustomerControls(t *testing.T) {
+	maxTokens := uint(256)
 	request := &dto.GeneralOpenAIRequest{
 		Model:       "deepseek-v4-flash",
 		THINKING:    []byte(`{"type":"disabled"}`),
 		Stop:        "香蕉",
 		LogProbs:    boolPointer(true),
 		TopLogProbs: intPointer(5),
+		MaxTokens:   &maxTokens,
 	}
 	converted, err := (&Adaptor{}).ConvertOpenAIRequest(nil, &relaycommon.RelayInfo{
 		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
@@ -73,6 +75,8 @@ func TestConvertOpenAIRequestPreservesCustomerControls(t *testing.T) {
 	assert.Equal(t, "香蕉", got.Stop)
 	assert.True(t, *got.LogProbs)
 	assert.Equal(t, 5, *got.TopLogProbs)
+	require.NotNil(t, got.MaxTokens)
+	assert.Equal(t, uint(256), *got.MaxTokens)
 }
 
 func TestConvertOpenAIRequestMapsDisabledThinkingToNone(t *testing.T) {

@@ -130,6 +130,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					"error": newAPIError.ToClaudeError(),
 				})
 			default:
+				if isDeepSeekV4Validation {
+					// The official endpoint returns validation errors with
+					// Content-Type application/octet-stream; keep the wire
+					// response identical, including the struct field order.
+					if body, marshalErr := common.Marshal(gin.H{"error": newAPIError.ToOpenAIError()}); marshalErr == nil {
+						c.Data(newAPIError.StatusCode, "application/octet-stream", body)
+						return
+					}
+				}
 				c.JSON(newAPIError.StatusCode, gin.H{
 					"error": newAPIError.ToOpenAIError(),
 				})

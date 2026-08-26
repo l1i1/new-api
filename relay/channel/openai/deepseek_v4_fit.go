@@ -25,24 +25,26 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 // deepSeekV4UsagePayload renders usage in the observed official DeepSeek
 // shape. Disabled-thinking responses omit completion_tokens_details; thinking
 // responses include reasoning_tokens. Generic provider extensions never cross
-// this client boundary.
+// this client boundary. The billing usage is never mutated; normalization is
+// applied to a copy.
 func deepSeekV4UsagePayload(usage *dto.Usage, includeReasoningDetails bool) map[string]any {
 	if usage == nil {
 		return nil
 	}
-	normalizeDeepSeekV4Usage(usage)
-	cacheHit := usage.PromptCacheHitTokens
-	cacheMiss := usage.PromptTokens - cacheHit
+	normalized := *usage
+	normalizeDeepSeekV4Usage(&normalized)
+	cacheHit := normalized.PromptCacheHitTokens
+	cacheMiss := normalized.PromptTokens - cacheHit
 	payload := map[string]any{
-		"prompt_tokens":            usage.PromptTokens,
-		"completion_tokens":        usage.CompletionTokens,
-		"total_tokens":             usage.TotalTokens,
+		"prompt_tokens":            normalized.PromptTokens,
+		"completion_tokens":        normalized.CompletionTokens,
+		"total_tokens":             normalized.TotalTokens,
 		"prompt_tokens_details":    map[string]any{"cached_tokens": cacheHit},
 		"prompt_cache_hit_tokens":  cacheHit,
 		"prompt_cache_miss_tokens": cacheMiss,
 	}
 	if includeReasoningDetails {
-		payload["completion_tokens_details"] = map[string]any{"reasoning_tokens": usage.CompletionTokenDetails.ReasoningTokens}
+		payload["completion_tokens_details"] = map[string]any{"reasoning_tokens": normalized.CompletionTokenDetails.ReasoningTokens}
 	}
 	return payload
 }
@@ -149,9 +151,8 @@ func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, 
 		}
 		payload["usage"] = encodedUsage
 	} else if !includeUsage {
-		if _, ok := payload["usage"]; ok {
-			payload["usage"] = json.RawMessage("null")
-		}
+		// Official chunks always carry a usage field; non-carriers are null.
+		payload["usage"] = json.RawMessage("null")
 	}
 	patched, err := common.Marshal(payload)
 	if err != nil {

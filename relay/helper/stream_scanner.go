@@ -143,6 +143,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	scanner.Split(bufio.ScanLines)
 	copyCodexSSEHeaders(c, resp)
 	SetEventStreamHeaders(c)
+	if isDeepSeekV4StreamModel(info) {
+		// The official DeepSeek V4 endpoint advertises its SSE stream as
+		// "text/event-stream; charset=utf-8"; mirror that exactly.
+		c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	}
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)
 

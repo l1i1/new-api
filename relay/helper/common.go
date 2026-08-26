@@ -4,15 +4,29 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// isDeepSeekV4StreamModel reports whether the relay is streaming a DeepSeek V4
+// chat completion, so protocol-shape details (SSE Content-Type, chunk fields)
+// can mirror the official endpoint.
+func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions {
+		return false
+	}
+	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
+	return strings.HasPrefix(modelName, "deepseek-v4-")
+}
 
 func FlushWriter(c *gin.Context) (err error) {
 	defer func() {
