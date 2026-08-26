@@ -133,9 +133,12 @@ shape flags were retained.
     now preserves that official response instead of converting it to a 502;
     the exception is disabled thinking, where reasoning-only output would be
     stripped and must still fail as empty output.
-  - V4 streams that reach `[DONE]` without any non-empty `finish_reason` are
-    rejected as incomplete instead of emitting a false-success `[DONE]` to the
-    client. Disabled thinking removes both reasoning text and
+  - The relay keeps the upstream project's compatibility behavior for
+    OpenAI-compatible streams: a response that contains output may end at
+    reader EOF without a `[DONE]` marker, and the gateway emits its own
+    downstream `[DONE]`. The fit probe remains stricter for official-parity
+    scoring and records missing terminal markers as an upstream-quality
+    deviation. Disabled thinking removes both reasoning text and
     `logprobs.reasoning_content`. V4 usage is normalized to non-negative values
     with `total=prompt+completion` and `cache_hit+cache_miss=prompt`.
   These fixes are local and verified by unit tests plus offline build; they are
@@ -162,10 +165,12 @@ shape flags were retained.
     its 131072-token completion cap and the stream terminated without
     `finish_reason` or `[DONE]` (23439 events, 8.3 MB). That is an upstream
     sampling-behavior difference, not a gateway protocol-shape difference; the
-    local terminal-usage and finish-reason guards classify such streams as
-    incomplete instead of success. K06/K07 completion-token divergence
-    (aggregator ignores `max_tokens` truncation) remains a channel-selection
-    risk, not fitted locally.
+    the fit probe classifies such streams as incomplete instead of official
+    parity success. The relay itself follows the upstream-compatible EOF
+    behavior so this provider variance does not surface as a generic
+    `stream_status=eof` failure for every streaming channel. K06/K07
+    completion-token divergence (aggregator ignores `max_tokens` truncation)
+    remains a channel-selection risk, not fitted locally.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
 remaining 36 matrix cases are intentionally `inconclusive` until their live
@@ -182,7 +187,7 @@ placeholder logprob entries, and non-400 logprobs validation responses.
 | Area | Verdict | Evidence / remaining risk |
 | --- | --- | --- |
 | Basic non-stream response | Locally aligned for K01-K07 | Content or a valid tool call remains required, except official V4 reasoning-only truncation with `finish_reason=length` for K04/K06/K07 |
-| Streaming response | Locally hardened; live recheck pending | Probe requires non-empty content, exactly one final `[DONE]`, and usage on the final `finish_reason` chunk; the relay now rejects `[DONE]` without a finish reason |
+| Streaming response | Locally hardened; live recheck pending | The fit probe requires non-empty content, exactly one final `[DONE]`, and usage on the final `finish_reason` chunk for official parity; the relay accepts compatible EOF after output and emits a downstream `[DONE]` |
 | Thinking disabled | Locally aligned; live recheck pending | V4 maps `thinking.type=disabled` to `reasoning_effort=none` and strips both reasoning text and reasoning logprobs |
 | Thinking enabled / reasoning fields | Aligned in the observed sample | Multi-round thinking/tool replay is now covered by live fixtures; broader provider variance remains |
 | Sampling validation | Aligned in candidate; rollout recheck pending | Official rejects `extreme`, `top_p=1.5`, and `top_p=0`; the candidate returns the same validation class |

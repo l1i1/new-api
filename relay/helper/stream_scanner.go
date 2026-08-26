@@ -287,18 +287,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			if err == io.EOF {
-				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, io.ErrUnexpectedEOF)
-			} else {
-				logger.LogError(c, "scanner error: "+err.Error())
-				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
-			}
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			logger.LogError(c, "scanner error: "+err.Error())
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			return
 		}
-		// A clean reader EOF is not a valid SSE completion. OpenAI-compatible
-		// streams must terminate with an explicit data: [DONE] event.
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, io.ErrUnexpectedEOF)
+		// The upstream may close a compatible SSE response without an explicit
+		// [DONE] marker. This is the behavior accepted by the upstream project.
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
 	// 主循环等待完成或超时

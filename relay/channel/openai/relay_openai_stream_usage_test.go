@@ -856,7 +856,7 @@ func TestOaiStreamHandlerRejectsReasoningOnlyOutputAfterCommit(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "reasoning_content")
 }
 
-func TestOaiStreamHandlerRejectsPartialStreamWithoutDone(t *testing.T) {
+func TestOaiStreamHandlerAcceptsEOFWithoutDone(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -887,13 +887,10 @@ func TestOaiStreamHandlerRejectsPartialStreamWithoutDone(t *testing.T) {
 	})
 
 	require.NotNil(t, usage)
-	require.Error(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
-	assert.True(t, types.IsSkipRetryError(err))
+	require.Nil(t, err)
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
-	assert.False(t, info.StreamStatus.IsNormalEnd())
-	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
 func TestOaiStreamHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {

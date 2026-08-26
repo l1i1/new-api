@@ -302,14 +302,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamErr != nil {
 		return usage, streamErr
 	}
-	if info.StreamStatus == nil || info.StreamStatus.EndReason != relaycommon.StreamEndReasonDone {
-		return usage, incompleteStreamError(info, c.Writer.Written())
-	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput {
 		return usage, emptyChatCompletionError(c.Writer.Written())
-	}
-	if isDeepSeekV4ChatModel(info) && strings.TrimSpace(info.StreamFinishReason) == "" {
-		return usage, missingStreamFinishReasonError(c.Writer.Written())
 	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
@@ -670,41 +664,6 @@ func emptyChatCompletionError(committed ...bool) *types.NewAPIError {
 	}
 	return types.NewOpenAIError(
 		errors.New("upstream returned empty final content"),
-		types.ErrorCode("server_error"),
-		http.StatusBadGateway,
-		options...,
-	)
-}
-
-func incompleteStreamError(info *relaycommon.RelayInfo, committed bool) *types.NewAPIError {
-	message := "upstream stream did not complete"
-	if info != nil && info.StreamStatus != nil {
-		switch info.StreamStatus.EndReason {
-		case relaycommon.StreamEndReasonEOF:
-			message = "upstream stream ended before [DONE]"
-		case relaycommon.StreamEndReasonTimeout:
-			message = "upstream stream timed out before [DONE]"
-		}
-	}
-	options := make([]types.NewAPIErrorOptions, 0, 1)
-	if committed {
-		options = append(options, types.ErrOptionWithSkipRetry())
-	}
-	return types.NewOpenAIError(
-		errors.New(message),
-		types.ErrorCode("server_error"),
-		http.StatusBadGateway,
-		options...,
-	)
-}
-
-func missingStreamFinishReasonError(committed bool) *types.NewAPIError {
-	options := make([]types.NewAPIErrorOptions, 0, 1)
-	if committed {
-		options = append(options, types.ErrOptionWithSkipRetry())
-	}
-	return types.NewOpenAIError(
-		errors.New("upstream stream ended without finish_reason"),
 		types.ErrorCode("server_error"),
 		http.StatusBadGateway,
 		options...,

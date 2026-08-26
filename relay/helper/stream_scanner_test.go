@@ -415,7 +415,7 @@ func TestStreamScannerHandler_StreamStatus_DoneReason(t *testing.T) {
 	assert.False(t, info.StreamStatus.HasErrors())
 }
 
-func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
+func TestStreamScannerHandler_StreamStatus_EOFWithoutDoneIsNormal(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
@@ -428,8 +428,8 @@ func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
 
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
-	assert.ErrorIs(t, info.StreamStatus.EndError, io.ErrUnexpectedEOF)
-	assert.False(t, info.StreamStatus.IsNormalEnd())
+	assert.NoError(t, info.StreamStatus.EndError)
+	assert.True(t, info.StreamStatus.IsNormalEnd())
 }
 
 func TestStreamScannerHandler_StreamStatus_HandlerStop(t *testing.T) {

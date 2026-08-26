@@ -345,7 +345,7 @@ func TestOaiStreamHandlerDeepSeekV4HonorsIncludeUsageFalse(t *testing.T) {
 	assertDeepSeekV4StreamUsage(t, events, 0)
 }
 
-func TestOaiStreamHandlerDeepSeekV4RejectsDoneWithoutFinishReason(t *testing.T) {
+func TestOaiStreamHandlerDeepSeekV4AcceptsDoneWithoutFinishReason(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":" tail"},"finish_reason":null}]}`,
@@ -359,11 +359,8 @@ func TestOaiStreamHandlerDeepSeekV4RejectsDoneWithoutFinishReason(t *testing.T) 
 	usage, err := OaiStreamHandler(c, deepSeekV4RelayInfo(), resp)
 
 	require.NotNil(t, usage)
-	require.NotNil(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
-	assert.True(t, types.IsSkipRetryError(err))
-	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
 func TestOaiStreamHandlerDeepSeekV4AcceptsTerminalFinishWithoutDone(t *testing.T) {
