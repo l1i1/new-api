@@ -1,5 +1,36 @@
 # New API Fork Memory
 
+- On 2026-08-26, per user decision ("我的意思是实在不可拟合的才走官方渠道"), the
+  full-flash official pin was reverted to a conditional pin and deployed as
+  `v1.0.0-rc.25-tokeness-deepseek-v4.8.2` (commits `6270cce6d`,
+  `951ea65d3`, `a46a4be8d`; digest
+  `sha256:9b89b7d810a8cd1550718134d17aa8dffe696d9e97726d037b737fe56c224b2a`;
+  publish run `32993944196`, staged deploy `32994959232`). Fit-able
+  deepseek-v4 requests now route normally to aggregators (fit layer shapes the
+  response); only requests with unfit-able sampling (temperature > 1.5,
+  top_p < 0.3, or a penalty > 1.0 — the K08 reasoning-loop class) pin to the
+  official channel. The pin is marked at distributor time (channel selection
+  precedes relay parsing) and also bypasses an aggregator channel-affinity
+  hit, since sticky affinity outranked the pin and kept extreme requests on
+  aggregators. Two operational lessons from the rollout: (1) the DB models
+  restore after the earlier pin used `LIKE '%deepseek-v4-flash%'` to verify,
+  which matched `deepseek-v4-flash-vision-exp` too, so flash was never
+  actually re-added to channels 93/117 models and all traffic stayed on
+  channel 1 — model-list checks must use exact boundary matching
+  (`,deepseek-v4-flash,`); the fix re-inserted flash into 93/117 models and
+  restored channel 1's list. (2) Channel affinity keys
+  (`new-api:channel_affinity:v1:chat completion affinity:deepseek-v4-flash:
+  <group>:<token>`) pin a token to its last channel for ~40 minutes, so
+  routing experiments must clear the key first; one transient 01:11 three-
+  channel `do request failed` burst was a node egress blip, not a code issue.
+  Post-deploy verification: mild requests stick to aggregator 93 with
+  official-shaped usage (seven-key order), correct message key order, and
+  stop-sequence behavior matching official; extreme requests bypass affinity
+  and land on the official channel. `system_fingerprint` is present on
+  official-direct routes and absent on aggregator routes by the no-fabrication
+  policy. v4.7's unconditional pin remains available as rollback knowledge:
+  it was commit `6cc90b0fb` before `6270cce6d` narrowed it.
+
 - On 2026-08-26, commit `afc38b6ec` was published as
   `v1.0.0-rc.25-tokeness-deepseek-v4.7` at immutable GHCR digest
   `sha256:6a75152a91c92b396ad08f793e0f6366daadfdf31890f5a69a7108480d3113a6`
