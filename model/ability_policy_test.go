@@ -114,3 +114,46 @@ func TestGetGroupModelAvailabilityForPathExcludesUnsupportedAdvancedCustomRoute(
 func ptrInt64(value int64) *int64 {
 	return &value
 }
+
+func TestGetChannelWithBlockedChannelsPinsDeepSeekV4ToOfficialDatabaseCandidates(t *testing.T) {
+	previousDB := DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+	DB = db
+	t.Cleanup(func() { DB = previousDB })
+
+	aggregator := Channel{Name: "aggregator", Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
+	official := Channel{Name: "official", Type: constant.ChannelTypeDeepSeek, Status: common.ChannelStatusEnabled}
+	require.NoError(t, DB.Create(&aggregator).Error)
+	require.NoError(t, DB.Create(&official).Error)
+	require.NoError(t, DB.Create(&[]Ability{
+		{Group: "default", Model: "deepseek-v4-flash", ChannelId: aggregator.Id, Enabled: true, Priority: ptrInt64(9), Weight: 100},
+		{Group: "default", Model: "deepseek-v4-flash", ChannelId: official.Id, Enabled: true, Priority: ptrInt64(9), Weight: 0},
+	}).Error)
+
+	for i := 0; i < 20; i++ {
+		selected, err := GetChannelWithBlockedChannels("default", "deepseek-v4-flash", 0, "", nil)
+		require.NoError(t, err)
+		require.NotNil(t, selected)
+		require.Equal(t, official.Id, selected.Id, "same-priority V4 candidates must narrow to the official channel despite the aggregator's higher weight")
+	}
+}
+
+func TestGetChannelWithBlockedChannelsKeepsSoleDeepSeekV4Candidate(t *testing.T) {
+	previousDB := DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+	DB = db
+	t.Cleanup(func() { DB = previousDB })
+
+	aggregator := Channel{Name: "sole-aggregator", Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
+	require.NoError(t, DB.Create(&aggregator).Error)
+	require.NoError(t, DB.Create(&Ability{Group: "default", Model: "deepseek-v4-flash", ChannelId: aggregator.Id, Enabled: true, Priority: ptrInt64(9)}).Error)
+
+	selected, err := GetChannelWithBlockedChannels("default", "deepseek-v4-flash", 0, "", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, aggregator.Id, selected.Id, "a sole candidate is returned unchanged with no official channel to prefer")
+}
