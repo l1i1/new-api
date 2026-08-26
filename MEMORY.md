@@ -1,5 +1,19 @@
 # New API Fork Memory
 
+- On 2026-08-26, the final DeepSeek V4 closeout review removed a billing
+  integrity regression before commit: client-facing usage normalization now
+  operates on a copy, while the usage returned to quota settlement preserves
+  upstream values. The fit probe now compares exact response Content-Type,
+  excludes the terminal finish/usage carrier from
+  `intermediate_usage_shape`, and rejects HTTPS downgrade redirects. The SSE
+  renderer preserves only explicit `text/event-stream` parameters, so unrelated
+  content types are still replaced. An authorized official-only K01-K13 rerun
+  passed all 13 cases; the concurrent gateway rerun was stopped at the user's
+  request and is not a post-change gateway acceptance result. Full root tests
+  and vet, focused race tests, standalone RelayKit test/vet/build, and
+  `git diff --check` passed. No deployment or production state change was made,
+  and no credential was stored.
+
 - On 2026-08-26, a second official-vs-gateway K01-K13 rerun against deployed
   `v1.0.0-rc.25-tokeness-performance.1` validated the live fit layer and found
   three residual protocol-shape gaps, all fixed locally (not deployed):
@@ -7,8 +21,8 @@
   (gateway now writes that for V4 validation errors, `controller/relay.go`);
   official SSE is `text/event-stream; charset=utf-8` (V4 streams now mirror
   it via `relay/helper/stream_scanner.go` + `isDeepSeekV4StreamModel`, and
-  `common/custom-event.go` `WriteContentType` no longer overwrites an
-  explicitly set Content-Type); official chunks carry `"usage": null` on every
+  `common/custom-event.go` preserves explicit SSE Content-Type parameters);
+  official chunks carry `"usage": null` on every
   non-terminal event (`fitDeepSeekV4StreamEvent` with `includeUsage=false`
   now forces the explicit null, replacing the strip). K02/K03 error bodies
   are byte-identical to official on production. `system_fingerprint` stays
@@ -20,9 +34,9 @@
   completion cap, terminating 8.3 MB of SSE without `finish_reason` or
   `[DONE]`; this is upstream sampling behavior, not a gateway shape issue,
   and the finish-reason guard classifies such streams as incomplete. A
-  terminal chunk with `finish_reason` remains successful when the optional
-  `[DONE]` marker or upstream usage is absent; the gateway estimates usage
-  through the existing path and emits its normal terminal event. K06/K07
+  terminal chunk with `finish_reason` may replace an omitted optional `[DONE]`
+  marker, but a V4 `include_usage=true` stream that reaches promoted EOF without
+  real usage is rejected as incomplete. K06/K07
   aggregator `max_tokens` non-truncation remains a
   channel-selection risk. Full `go test ./relay/... ./controller/ ./common/
   ./scripts/feature-probe/`, vet, build, and `git diff --check` pass. Evidence
