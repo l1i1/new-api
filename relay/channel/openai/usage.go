@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -78,8 +80,12 @@ func stripReasoningLogprobs(logprobs *any) {
 	delete(values, "reasoning_content")
 }
 
+// stripReasoningContentFromResponseBody removes reasoning fields from a
+// non-stream response body. Editing is surgical via the byte-level splice
+// layer so upstream key order and formatting survive; the map round-trip is
+// kept only as a fallback for structurally unexpected inputs.
 func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
-	var payload map[string]interface{}
+	var payload map[string]json.RawMessage
 	if err := common.Unmarshal(body, &payload); err != nil {
 		return body, err
 	}
@@ -87,12 +93,19 @@ func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
 	if !ok {
 		return body, nil
 	}
+	if stripped, ok := stripReasoningFromChoicesInPlace(rawChoices); ok {
+		if patched, ok := replaceTopLevelJSONValue(body, "choices", stripped); ok {
+			return patched, nil
+		}
+		return body, nil
+	}
+
 	encodedChoices, err := common.Marshal(rawChoices)
 	if err != nil {
 		return body, err
 	}
 	var choices []map[string]interface{}
-	if err := common.Unmarshal(encodedChoices, &choices); err != nil {
+	if err = common.Unmarshal(encodedChoices, &choices); err != nil {
 		return body, err
 	}
 	for _, choice := range choices {
@@ -105,12 +118,111 @@ func stripReasoningContentFromResponseBody(body []byte) ([]byte, error) {
 			delete(logprobs, "reasoning_content")
 		}
 	}
-	payload["choices"] = choices
+	payload["choices"], _ = json.Marshal(choices)
 	stripped, err := common.Marshal(payload)
 	if err != nil {
 		return body, err
 	}
 	return stripped, nil
+}
+
+// stripReasoningFromChoicesInPlace removes reasoning keys from every choice's
+// message and logprobs objects while preserving every other byte. ok=false
+// lets the caller fall back to the map rewrite.
+func stripReasoningFromChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, bool) {
+	spans, ok := jsonArrayElementSpans(rawChoices)
+	if !ok {
+		return nil, false
+	}
+	if len(spans) == 0 {
+		return rawChoices, true
+	}
+	type edit struct {
+		start, end int
+		bytes      []byte
+	}
+	edits := make([]edit, 0, len(spans))
+	for _, span := range spans {
+		element := rawChoices[span[0]:span[1]]
+		fitted, ok := stripReasoningFromChoiceInPlace(element)
+		if !ok {
+			return nil, false
+		}
+		if !bytes.Equal(fitted, element) {
+			edits = append(edits, edit{start: span[0], end: span[1], bytes: fitted})
+		}
+	}
+	if len(edits) == 0 {
+		return rawChoices, true
+	}
+	out := make([]byte, 0, len(rawChoices))
+	prev := 0
+	for _, e := range edits {
+		out = append(out, rawChoices[prev:e.start]...)
+		out = append(out, e.bytes...)
+		prev = e.end
+	}
+	out = append(out, rawChoices[prev:]...)
+	return out, true
+}
+
+// stripReasoningFromChoiceInPlace deletes reasoning keys from one choice
+// object's message and logprobs without disturbing any other byte.
+func stripReasoningFromChoiceInPlace(choice []byte) ([]byte, bool) {
+	result := choice
+	changed := false
+	choicePairs, _, err := parseTopLevelPairs(choice)
+	if err != nil {
+		return nil, false
+	}
+	for _, key := range []string{"message", "logprobs"} {
+		pair, found, err := findJSONPair(choicePairs, key)
+		if err != nil || !found {
+			if err != nil {
+				return nil, false
+			}
+			continue
+		}
+		value := result[pair.valueStart:pair.valueEnd]
+		trimmed := bytes.TrimLeft(value, " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			// null / non-object values carry no reasoning keys.
+			continue
+		}
+		removals := []string{"reasoning_content", "reasoning"}
+		if key == "logprobs" {
+			removals = []string{"reasoning_content"}
+		}
+		stripped := value
+		valueChanged := false
+		for _, remove := range removals {
+			patched, ok := deleteTopLevelJSONKey(stripped, remove)
+			if !ok {
+				return nil, false
+			}
+			if !bytes.Equal(patched, stripped) {
+				valueChanged = true
+			}
+			stripped = patched
+		}
+		if valueChanged {
+			out := make([]byte, 0, len(choice))
+			out = append(out, result[:pair.valueStart]...)
+			out = append(out, stripped...)
+			out = append(out, result[pair.valueEnd:]...)
+			result = out
+			changed = true
+			// Offsets shifted; re-parse for the next key.
+			choicePairs, _, err = parseTopLevelPairs(result)
+			if err != nil {
+				return nil, false
+			}
+		}
+	}
+	if !changed {
+		return choice, true
+	}
+	return result, true
 }
 
 // patchZeroCompletionUsage fills a missing output count from content that was

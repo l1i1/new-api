@@ -552,13 +552,22 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			}
 		}
 		if usageModified {
-			var bodyMap map[string]interface{}
-			err = common.Unmarshal(responseBody, &bodyMap)
+			encodedUsage, err := common.Marshal(helper.UsageForClient(&simpleResponse.Usage))
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
-			bodyMap["usage"] = helper.UsageForClient(&simpleResponse.Usage)
-			responseBody, _ = common.Marshal(bodyMap)
+			// Splice the usage value so upstream key order survives; the map
+			// rewrite remains only as a fallback.
+			if patched, ok := replaceTopLevelJSONValue(responseBody, "usage", encodedUsage); ok {
+				responseBody = patched
+			} else {
+				var bodyMap map[string]interface{}
+				if err = common.Unmarshal(responseBody, &bodyMap); err != nil {
+					return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+				}
+				bodyMap["usage"] = helper.UsageForClient(&simpleResponse.Usage)
+				responseBody, _ = common.Marshal(bodyMap)
+			}
 		}
 		if forceFormat {
 			responseBody, err = common.Marshal(helper.OpenAITextResponseForClient(&simpleResponse))

@@ -409,3 +409,45 @@ func usageValueOf(t *testing.T, body []byte) string {
 func joinedKeyOrder(s string) string {
 	return strings.Join(rawKeyOrder(s), ",")
 }
+
+func TestStripReasoningContentPreservesKeyOrder(t *testing.T) {
+	// Regression for the thinking-disabled path: reasoning keys are removed
+	// surgically so the upstream key order survives (K05/K10 evidence).
+	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787728809,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"生机","reasoning_content":"think"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`)
+
+	stripped, err := stripReasoningContentFromResponseBody(body)
+	require.NoError(t, err)
+
+	want := `{"id":"router-1","object":"chat.completion","created":1787728809,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"生机"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`
+	assert.Equal(t, want, string(stripped))
+}
+
+func TestStripReasoningContentRemovesReasoningLogprobs(t *testing.T) {
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning_content":"t"},"logprobs":{"content":[{"token":"a"}],"reasoning_content":[{"token":"b"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+
+	stripped, err := stripReasoningContentFromResponseBody(body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(stripped, &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	assert.NotContains(t, message, "reasoning_content")
+	logprobs := choice["logprobs"].(map[string]any)
+	assert.NotContains(t, logprobs, "reasoning_content")
+	assert.Contains(t, logprobs, "content")
+}
+
+func TestStripReasoningContentFallbackOnDuplicateKeys(t *testing.T) {
+	// Duplicate keys defeat the splice scan; the map fallback still strips.
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"t"},"message":{"role":"assistant","reasoning_content":"t"}}],"usage":{"prompt_tokens":1}}`)
+
+	stripped, err := stripReasoningContentFromResponseBody(body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(stripped, &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	assert.NotContains(t, message, "reasoning_content")
+}
