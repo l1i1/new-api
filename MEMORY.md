@@ -1,5 +1,33 @@
 # New API Fork Memory
 
+- On 2026-08-26, a second official-vs-gateway K01-K13 rerun against deployed
+  `v1.0.0-rc.25-tokeness-performance.1` validated the live fit layer and found
+  three residual protocol-shape gaps, all fixed locally (not deployed):
+  official 400 validation bodies use `Content-Type: application/octet-stream`
+  (gateway now writes that for V4 validation errors, `controller/relay.go`);
+  official SSE is `text/event-stream; charset=utf-8` (V4 streams now mirror
+  it via `relay/helper/stream_scanner.go` + `isDeepSeekV4StreamModel`, and
+  `common/custom-event.go` `WriteContentType` no longer overwrites an
+  explicitly set Content-Type); official chunks carry `"usage": null` on every
+  non-terminal event (`fitDeepSeekV4StreamEvent` with `includeUsage=false`
+  now forces the explicit null, replacing the strip). K02/K03 error bodies
+  are byte-identical to official on production. `system_fingerprint` stays
+  absent on aggregator routes by explicit decision: fingerprints are never
+  fabricated (user-confirmed 2026-08-26); only upstream-provided values are
+  forwarded, and official-direct channels already carry the field. K08 also
+  exposed an aggregator channel-quality failure — `temperature=2, top_p=0.1`
+  drove the router upstream into a reasoning loop until its 131072-token
+  completion cap, terminating 8.3 MB of SSE without `finish_reason` or
+  `[DONE]`; this is upstream sampling behavior, not a gateway shape issue,
+  and the finish-reason guard classifies such streams as incomplete. A
+  terminal chunk with `finish_reason` remains successful when the optional
+  `[DONE]` marker or upstream usage is absent; the gateway estimates usage
+  through the existing path and emits its normal terminal event. K06/K07
+  aggregator `max_tokens` non-truncation remains a
+  channel-selection risk. Full `go test ./relay/... ./controller/ ./common/
+  ./scripts/feature-probe/`, vet, build, and `git diff --check` pass. Evidence
+  under `E:\Temp\ds-fit` (untracked); credentials only via env.
+
 - On 2026-08-26, the reviewed performance, DeepSeek compatibility, stream
   integrity, and wallet presentation consolidation was deployed from commit
   `0c33d4a55f085954f5ac8f4ec57097f7cacd8693` as

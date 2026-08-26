@@ -140,6 +140,32 @@ shape flags were retained.
     with `total=prompt+completion` and `cache_hit+cache_miss=prompt`.
   These fixes are local and verified by unit tests plus offline build; they are
   not deployed to the public routes yet.
+- On 2026-08-26 a second full K01-K13 paired rerun against production
+  `v1.0.0-rc.25-tokeness-performance.1` confirmed the deployed fit layer: all
+  13 cases matched the official contract except the following.
+  - K02/K03 error bodies are byte-identical to official (193/170 bytes), but
+    the official 400 responses use `Content-Type: application/octet-stream`
+    while the gateway used `application/json; charset=utf-8`. The local error
+    boundary now writes the official content type for V4 validation errors.
+  - Official SSE is `text/event-stream; charset=utf-8`; the gateway emitted
+    `text/event-stream`. The V4 stream path now mirrors the official header,
+    and `CustomEvent.WriteContentType` no longer overwrites an explicitly set
+    Content-Type.
+  - Official stream chunks carry `"usage": null` on every non-terminal event;
+    aggregator chunks either omit usage or embed cumulative usage objects. The
+    V4 stream fit now emits the explicit null on non-terminal events.
+  - `system_fingerprint` remains absent on aggregator-routed responses by
+    design: fingerprints are never fabricated. Only upstream-provided values
+    are forwarded. Official-direct channels already carry the field.
+  - K08 exposed an aggregator channel-quality failure: with
+    `temperature=2, top_p=0.1` the router upstream looped in reasoning until
+    its 131072-token completion cap and the stream terminated without
+    `finish_reason` or `[DONE]` (23439 events, 8.3 MB). That is an upstream
+    sampling-behavior difference, not a gateway protocol-shape difference; the
+    local terminal-usage and finish-reason guards classify such streams as
+    incomplete instead of success. K06/K07 completion-token divergence
+    (aggregator ignores `max_tokens` truncation) remains a channel-selection
+    risk, not fitted locally.
 
 This baseline is a compatibility snapshot, not a production-release claim. The
 remaining 36 matrix cases are intentionally `inconclusive` until their live
@@ -212,6 +238,9 @@ Each case emits one record:
     "prompt_tokens": 0,
     "completion_tokens": 0,
     "total_tokens": 0,
+    "system_fingerprint_shape": "missing",
+    "system_fingerprint_consistent": true,
+    "intermediate_usage_shape": "object",
     "has_content": true,
     "has_reasoning_content": false
   }
@@ -230,6 +259,14 @@ Allowed statuses:
 
 Natural-language output is compared only for exact protocol fixtures such as
 the `stop` prefix and JSON validity. Otherwise assertions are structural.
+For successful official/gateway fit pairs, `content_type` and `prompt_tokens`
+are compared exactly;
+`system_fingerprint_shape` is compared as `missing`, `null`, `string`, or
+`mixed`, and
+streaming also requires `system_fingerprint_consistent` across every JSON
+chunk. `intermediate_usage_shape` is compared as `missing`, `null`, `object`,
+or `mixed` across non-terminal stream chunks; the terminal finish/usage carrier
+is excluded. The probe refuses any redirect that ends on a non-HTTPS URL.
 
 ## 5. Test Tiers
 
