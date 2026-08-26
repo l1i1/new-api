@@ -487,3 +487,94 @@ func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamFailsWhenThinkingDis
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error(), "upstream returned empty final content")
 }
+
+// The reasoning-only-length exemption is behavior-based, not a deepseek-v4
+// whitelist: any OpenAI-compatible reasoning model (glm, hy3, kimi, mimo ...)
+// that exhausts max_tokens inside thinking must pass the stream guard instead
+// of surfacing "upstream returned empty final content" to channel tests.
+func TestOaiStreamHandlerReasoningOnlyLengthStreamPassesForNonV4ReasoningModel(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"Let me consider"},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":9,"completion_tokens":256,"total_tokens":265}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := deepSeekV4RelayInfo()
+	info.OriginModelName = "glm-5.3"
+	info.ChannelMeta.UpstreamModelName = "glm-5.3"
+
+	usage, err := OaiStreamHandler(c, info, resp)
+
+	require.Nil(t, err)
+	require.Equal(t, 9, usage.PromptTokens)
+	require.Equal(t, 256, usage.CompletionTokens)
+	events := dataEvents(recorder)
+	assert.Equal(t, "[DONE]", events[len(events)-1])
+}
+
+// Non-stream twin: a glm-5.3 body with empty content, non-empty reasoning, and
+// finish_reason=length is a valid response and must not trigger the empty
+// final content guard.
+func TestOpenaiHandlerReasoningOnlyLengthPassesForNonV4ReasoningModel(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "glm-5.3",
+		},
+		OriginModelName: "glm-5.3",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
+	}
+	body := `{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"Let me consider"},"finish_reason":"length"}],"usage":{"prompt_tokens":9,"completion_tokens":16,"total_tokens":25}}`
+
+	usage, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
+}
+
+// Non-stream: empty content with finish_reason=stop and no reasoning is a real
+// empty response and must keep failing.
+func TestOpenaiHandlerEmptyStopResponseStillFails(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "glm-5.3",
+		},
+		OriginModelName: "glm-5.3",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
+	}
+	body := `{"id":"chat_1","object":"chat.completion","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}}`
+
+	_, err := OpenaiHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	})
+
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error(), "upstream returned empty final content")
+}

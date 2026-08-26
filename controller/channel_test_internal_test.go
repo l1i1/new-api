@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -407,4 +408,39 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
+}
+
+func TestBuildTestRequestChatBudgets(t *testing.T) {
+	cases := []struct {
+		name          string
+		model         string
+		endpointType  string
+		wantMaxTokens *uint
+		wantMaxComp   *uint
+	}{
+		{name: "reasoning model gets enough budget", model: "glm-5.3", endpointType: "", wantMaxTokens: lo.ToPtr(uint(testChatMaxTokens))},
+		{name: "deepseek v4 pro gets enough budget", model: "deepseek-v4-pro", endpointType: "", wantMaxTokens: lo.ToPtr(uint(testChatMaxTokens))},
+		{name: "thinking model gets enough budget", model: "qwen3.7-max-thinking", endpointType: "", wantMaxTokens: lo.ToPtr(uint(testChatMaxTokens))},
+		{name: "o-series uses max_completion_tokens", model: "o4-mini", endpointType: "", wantMaxComp: lo.ToPtr(uint(testChatMaxTokens))},
+		{name: "claude keeps a small budget", model: "claude-sonnet-5", endpointType: "", wantMaxTokens: lo.ToPtr(uint(64))},
+		{name: "explicit openai endpoint gets enough budget", model: "glm-5.3", endpointType: "openai", wantMaxTokens: lo.ToPtr(uint(testChatMaxTokens))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, ok := buildTestRequest(tc.model, tc.endpointType, nil, false).(*dto.GeneralOpenAIRequest)
+			require.True(t, ok, "expected a GeneralOpenAIRequest")
+			if tc.wantMaxTokens == nil {
+				require.Nil(t, req.MaxTokens)
+			} else {
+				require.NotNil(t, req.MaxTokens)
+				assert.Equal(t, *tc.wantMaxTokens, *req.MaxTokens)
+			}
+			if tc.wantMaxComp == nil {
+				require.Nil(t, req.MaxCompletionTokens)
+			} else {
+				require.NotNil(t, req.MaxCompletionTokens)
+				assert.Equal(t, *tc.wantMaxComp, *req.MaxCompletionTokens)
+			}
+		})
+	}
 }

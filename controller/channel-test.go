@@ -722,6 +722,11 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 	return message
 }
 
+// testChatMaxTokens is the completion budget for channel-test chat probes.
+// Reasoning models spend dozens of tokens thinking before any content, so a
+// tiny budget produces reasoning-only responses that look like empty output.
+const testChatMaxTokens uint = 500
+
 func buildTestRequest(model string, endpointType string, channel *model.Channel, isStream bool) dto.Request {
 	testResponsesInput := json.RawMessage(`[{"role":"user","content":"hi"}]`)
 
@@ -797,7 +802,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 						Content: "hi",
 					},
 				},
-				MaxTokens: lo.ToPtr(uint(16)),
+				MaxTokens: lo.ToPtr(testChatMaxTokens),
 			}
 			if isStream {
 				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
@@ -860,15 +865,12 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	}
 
 	if dto.IsOpenAIReasoningOModel(model) {
-		testRequest.MaxCompletionTokens = lo.ToPtr(uint(16))
-	} else if strings.Contains(model, "thinking") {
-		if !strings.Contains(model, "claude") {
-			testRequest.MaxTokens = lo.ToPtr(uint(50))
-		}
-	} else if strings.Contains(model, "gemini") {
-		testRequest.MaxTokens = lo.ToPtr(uint(3000))
+		testRequest.MaxCompletionTokens = lo.ToPtr(testChatMaxTokens)
+	} else if strings.Contains(model, "claude") {
+		// Anthropic requires max_tokens but answers "hi" directly.
+		testRequest.MaxTokens = lo.ToPtr(uint(64))
 	} else {
-		testRequest.MaxTokens = lo.ToPtr(uint(16))
+		testRequest.MaxTokens = lo.ToPtr(testChatMaxTokens)
 	}
 
 	return testRequest

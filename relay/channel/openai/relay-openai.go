@@ -338,12 +338,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		)
 	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput &&
-		// Official DeepSeek V4 can exhaust max_tokens inside reasoning and end the
-		// stream reasoning-only with finish_reason=length; the non-stream path
-		// already preserves that outcome, so the stream guard must not 502 (and
-		// drop the held terminal chunk plus [DONE]) before flushing it.
+		// A reasoning model can exhaust max_tokens inside reasoning and end the
+		// stream reasoning-only with finish_reason=length (glm-5.x, hy3, kimi,
+		// mimo, deepseek-v4 ...); the non-stream path already preserves that
+		// outcome, so the stream guard must not 502 (and drop the held terminal
+		// chunk plus [DONE]) before flushing it.
 		// Disabled thinking strips reasoning, so such streams still fail empty.
-		!(isV4OpenAIStream && !shouldSuppressReasoningContent(info) && hasReasoningOutput && info.StreamFinishReason == constant.FinishReasonLength) {
+		!(!shouldSuppressReasoningContent(info) && hasReasoningOutput && info.StreamFinishReason == constant.FinishReasonLength) {
 		return usage, emptyChatCompletionError(c.Writer.Written())
 	}
 
@@ -512,7 +513,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		return nil, missingReasoningLogprobsError()
 	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) &&
-		!(isDeepSeekV4ChatModel(info) && !shouldSuppressReasoningContent(info) && hasDeepSeekV4ReasoningOnlyLengthOutput(simpleResponse.Choices)) {
+		!(!shouldSuppressReasoningContent(info) && hasReasoningOnlyLengthOutput(simpleResponse.Choices)) {
 		return nil, emptyChatCompletionError()
 	}
 
@@ -685,7 +686,13 @@ func hasUsableChatCompletionOutput(choices []dto.OpenAITextResponseChoice) bool 
 	return false
 }
 
-func hasDeepSeekV4ReasoningOnlyLengthOutput(choices []dto.OpenAITextResponseChoice) bool {
+// hasReasoningOnlyLengthOutput reports whether every visible signal points to a
+// completion that spent its whole max_tokens budget inside reasoning: the only
+// non-empty output is reasoning content and the stream ended with
+// finish_reason=length. Any OpenAI-compatible reasoning model can produce this
+// shape (glm-5.x, hy3, kimi, mimo, deepseek-v4 ...), so the empty-output guard
+// must treat it as a valid upstream answer, not a broken channel.
+func hasReasoningOnlyLengthOutput(choices []dto.OpenAITextResponseChoice) bool {
 	for _, choice := range choices {
 		if choice.FinishReason == constant.FinishReasonLength && strings.TrimSpace(choice.Message.GetReasoningContent()) != "" {
 			return true
