@@ -81,6 +81,17 @@ K04, K06, and K07 accept the official bounded-reasoning outcome where
 `finish_reason=length`; other successful non-stream cases still require usable
 content or a valid function tool call.
 
+Successful official/gateway fit pairs compare `prompt_tokens` exactly. They
+also compare the exact response `content_type` and record
+`system_fingerprint_shape` (`missing`, `null`, `string`, or
+`mixed`); streaming records `system_fingerprint_consistent` across every JSON
+chunk. `intermediate_usage_shape` records `missing`, `null`, `object`, or
+`mixed` across non-terminal stream chunks (or the single non-stream response),
+and is included in the paired comparison. The terminal finish/usage carrier is
+excluded from the streaming value.
+The probe rejects redirects whose final URL is not HTTPS, including an
+HTTPS-to-HTTP downgrade.
+
 The PowerShell runner is a diagnostic evidence collector only. It emits status
 and redacted structural evidence without a pass/fail contract or paired route
 comparison, so its output must not be used alone as acceptance evidence:

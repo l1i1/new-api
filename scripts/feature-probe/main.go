@@ -60,7 +60,7 @@ var implementedLiveCases = map[string]struct{}{
 var fingerprintSecretPattern = regexp.MustCompile(`(?i)(sk-[a-z0-9_-]+|bearer\s+[a-z0-9._-]+)`)
 
 func main() {
-	client := &http.Client{Timeout: 45 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}
+	client := newFeatureProbeClient()
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("FEATURE_PROBE_PROFILE")), "fit") {
 		if err := runFitProfile(client); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -121,6 +121,19 @@ func main() {
 			fmt.Fprintln(os.Stderr, "encode result:", err)
 			os.Exit(1)
 		}
+	}
+}
+
+func newFeatureProbeClient() *http.Client {
+	return &http.Client{
+		Timeout:   45 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if req == nil || req.URL == nil || !strings.EqualFold(req.URL.Scheme, "https") {
+				return fmt.Errorf("feature probe refused non-HTTPS redirect")
+			}
+			return nil
+		},
 	}
 }
 
@@ -243,7 +256,7 @@ func applyFitOfficialBaseline(results []result, officialRequested bool) {
 }
 
 func fitEvidenceMismatch(caseID string, official, gateway map[string]any) string {
-	fields := []string{"json", "has_error", "error_type", "error_code", "error_param_null", "error_message_fingerprint", "stream", "has_response_id", "has_created", "object", "response_model", "choices", "choice_index_zero", "has_message", "message_role_assistant", "finish_reason_valid", "unexpected_top_level_fields", "unexpected_choice_fields", "unexpected_message_fields", "message_tool_calls_null", "done", "done_events", "done_last", "sse_json_errors", "stream_shape_valid", "official_usage_shape", "usage_shape", "usage_consistent", "cache_tokens_consistent", "completion_within_requested_max", "usage_events", "usage_only_events", "usage_on_finish_event", "usage_on_final_event"}
+	fields := []string{"content_type", "json", "has_error", "error_type", "error_code", "error_param_null", "error_message_fingerprint", "stream", "has_response_id", "has_created", "object", "response_model", "choices", "choice_index_zero", "has_message", "message_role_assistant", "finish_reason_valid", "unexpected_top_level_fields", "unexpected_choice_fields", "unexpected_message_fields", "message_tool_calls_null", "done", "done_events", "done_last", "sse_json_errors", "stream_shape_valid", "prompt_tokens", "official_usage_shape", "usage_shape", "usage_consistent", "cache_tokens_consistent", "completion_within_requested_max", "usage_events", "usage_only_events", "usage_on_finish_event", "usage_on_final_event", "system_fingerprint_shape", "system_fingerprint_consistent", "intermediate_usage_shape"}
 	caseID = normalizeFitCaseID(caseID)
 	switch caseID {
 	case "K01", "K11":
@@ -1410,6 +1423,51 @@ func validChatStreamEvent(value map[string]any) bool {
 	return true
 }
 
+func systemFingerprintShape(value map[string]any) string {
+	fingerprint, exists := value["system_fingerprint"]
+	if !exists {
+		return "missing"
+	}
+	if fingerprint == nil {
+		return "null"
+	}
+	if _, ok := fingerprint.(string); ok {
+		return "string"
+	}
+	return "mixed"
+}
+
+func intermediateUsageShape(value map[string]any) string {
+	usage, exists := value["usage"]
+	if !exists {
+		return "missing"
+	}
+	if usage == nil {
+		return "null"
+	}
+	if _, ok := usage.(map[string]any); ok {
+		return "object"
+	}
+	return "mixed"
+}
+
+func collapseShapeSet(shapes map[string]struct{}) string {
+	if len(shapes) == 0 {
+		return ""
+	}
+	if len(shapes) > 1 {
+		return "mixed"
+	}
+	for shape := range shapes {
+		return shape
+	}
+	return ""
+}
+
+func consistentShapeSet(shapes map[string]struct{}) bool {
+	return len(shapes) == 1 && collapseShapeSet(shapes) != "mixed"
+}
+
 func hasOfficialNonStreamResponse(evidence map[string]any) bool {
 	choices, choicesOK := evidence["choices"].(int)
 	return evidence["stream"] == false && evidence["json"] == true && evidence["has_error"] != true && evidence["has_response_id"] == true && evidence["has_created"] == true && evidenceString(evidence, "object") == "chat.completion" && evidenceString(evidence, "response_model") == "deepseek-v4-flash" && choicesOK && choices == 1 && evidence["choice_index_zero"] == true && evidence["has_message"] == true && evidence["message_role_assistant"] == true && evidence["finish_reason_valid"] == true && evidence["unexpected_top_level_fields"] != true && evidence["unexpected_choice_fields"] != true && evidence["unexpected_message_fields"] != true && evidence["message_tool_calls_null"] != true && evidence["official_usage_shape"] == true && evidence["usage_consistent"] == true && evidence["cache_tokens_consistent"] == true && evidence["completion_within_requested_max"] != false
@@ -1464,15 +1522,26 @@ func requestPayload(ctx context.Context, client *http.Client, base, key, method,
 		return 0, map[string]any{"transport_error": safeError(err)}, nil, err
 	}
 	defer resp.Body.Close()
+	finalScheme := req.URL.Scheme
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalScheme = resp.Request.URL.Scheme
+	}
+	if !strings.EqualFold(finalScheme, "https") {
+		return resp.StatusCode, map[string]any{
+			"initial_scheme": req.URL.Scheme,
+			"final_scheme":   finalScheme,
+		}, nil, fmt.Errorf("feature probe refused non-HTTPS final URL")
+	}
 	stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if readErr != nil {
 		evidence := summarize(data, stream)
+		evidence["content_type"] = resp.Header.Get("Content-Type")
 		evidence["read_error"] = safeError(readErr)
 		evidence["initial_scheme"] = req.URL.Scheme
 		evidence["tls"] = resp.TLS != nil
 		if resp.Request != nil && resp.Request.URL != nil {
-			evidence["final_scheme"] = resp.Request.URL.Scheme
+			evidence["final_scheme"] = finalScheme
 		}
 		return resp.StatusCode, evidence, nil, readErr
 	}
@@ -1481,10 +1550,11 @@ func requestPayload(ctx context.Context, client *http.Client, base, key, method,
 	if isResponses {
 		evidence = summarizeResponses(data, stream)
 	}
+	evidence["content_type"] = resp.Header.Get("Content-Type")
 	evidence["initial_scheme"] = req.URL.Scheme
 	evidence["tls"] = resp.TLS != nil
 	if resp.Request != nil && resp.Request.URL != nil {
-		evidence["final_scheme"] = resp.Request.URL.Scheme
+		evidence["final_scheme"] = finalScheme
 	}
 	var payload map[string]any
 	if !stream {
@@ -1508,6 +1578,8 @@ func summarize(data []byte, stream bool) map[string]any {
 		streamShapeValid := true
 		contentChunks, reasoningChunks := 0, 0
 		usageOnFinishEvent, usageOnFinalEvent := false, false
+		fingerprintShapes := make(map[string]struct{})
+		intermediateUsageShapes := make(map[string]struct{})
 		var finishReason string
 		toolCalls := make(map[int]*streamedToolCall)
 		for scanner.Scan() {
@@ -1529,14 +1601,16 @@ func summarize(data []byte, stream bool) map[string]any {
 					continue
 				}
 				parsedEvents++
+				fingerprintShapes[systemFingerprintShape(value)] = struct{}{}
 				if !validChatStreamEvent(value) {
 					streamShapeValid = false
 				}
 				if errValue, ok := value["error"].(map[string]any); ok {
 					addErrorEvidence(evidence, errValue)
 				}
-				eventHasFinish := false
+				eventHasChoices, eventHasFinish := false, false
 				if choices, ok := value["choices"].([]any); ok {
+					eventHasChoices = len(choices) > 0
 					for _, rawChoice := range choices {
 						choice, ok := rawChoice.(map[string]any)
 						if !ok {
@@ -1603,6 +1677,9 @@ func summarize(data []byte, stream bool) map[string]any {
 						usageOnFinalEvent = true
 					}
 				}
+				if eventHasChoices && !eventHasFinish {
+					intermediateUsageShapes[intermediateUsageShape(value)] = struct{}{}
+				}
 			}
 		}
 		evidence["sse_events"], evidence["done"] = events, done
@@ -1610,6 +1687,13 @@ func summarize(data []byte, stream bool) map[string]any {
 		evidence["stream_shape_valid"] = parsedEvents > 0 && streamShapeValid
 		if scanner.Err() != nil {
 			evidence["sse_scan_error"] = true
+		}
+		if parsedEvents > 0 {
+			evidence["system_fingerprint_shape"] = collapseShapeSet(fingerprintShapes)
+			evidence["system_fingerprint_consistent"] = consistentShapeSet(fingerprintShapes)
+		}
+		if len(intermediateUsageShapes) > 0 {
+			evidence["intermediate_usage_shape"] = collapseShapeSet(intermediateUsageShapes)
 		}
 		evidence["content_chunks"], evidence["reasoning_chunks"] = contentChunks, reasoningChunks
 		evidence["has_content"], evidence["has_reasoning_content"] = contentChunks > 0, reasoningChunks > 0
@@ -1643,6 +1727,8 @@ func summarize(data []byte, stream bool) map[string]any {
 	evidence["json"] = true
 	evidence["has_content"], evidence["has_reasoning_content"] = false, false
 	evidence["unexpected_top_level_fields"] = !hasOnlyKeys(value, "id", "object", "created", "model", "choices", "usage", "system_fingerprint")
+	evidence["system_fingerprint_shape"] = systemFingerprintShape(value)
+	evidence["intermediate_usage_shape"] = intermediateUsageShape(value)
 	if id, ok := value["id"].(string); ok && strings.TrimSpace(id) != "" {
 		evidence["has_response_id"] = true
 	}

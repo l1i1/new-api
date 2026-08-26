@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -175,6 +176,101 @@ func TestSummarizeStreamCountsUsageAndTermination(t *testing.T) {
 	assert.Equal(t, "stop", evidence["finish_reason"])
 }
 
+func TestSummarizeRecordsFingerprintAndIntermediateUsageShapes(t *testing.T) {
+	tests := []struct {
+		name              string
+		body              string
+		fingerprintShape  string
+		intermediateShape string
+	}{
+		{
+			name:              "missing",
+			body:              `{"choices":[{"message":{"content":"2"},"finish_reason":"stop"}]}`,
+			fingerprintShape:  "missing",
+			intermediateShape: "missing",
+		},
+		{
+			name:              "null",
+			body:              `{"system_fingerprint":null,"choices":[{"message":{"content":"2"},"finish_reason":"stop"}],"usage":null}`,
+			fingerprintShape:  "null",
+			intermediateShape: "null",
+		},
+		{
+			name:              "string and object",
+			body:              `{"system_fingerprint":"fp","choices":[{"message":{"content":"2"},"finish_reason":"stop"}],"usage":{}}`,
+			fingerprintShape:  "string",
+			intermediateShape: "object",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			evidence := summarize([]byte(test.body), false)
+			assert.Equal(t, test.fingerprintShape, evidence["system_fingerprint_shape"])
+			assert.Equal(t, test.intermediateShape, evidence["intermediate_usage_shape"])
+		})
+	}
+}
+
+func TestSummarizeStreamTracksFingerprintConsistencyAndIntermediateUsageShape(t *testing.T) {
+	consistent := summarize([]byte("data: {\"system_fingerprint\":\"fp\",\"choices\":[{\"delta\":{\"content\":\"2\"}}],\"usage\":null}\n\ndata: {\"system_fingerprint\":\"fp\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{}}\n\ndata: [DONE]\n"), true)
+	assert.Equal(t, "string", consistent["system_fingerprint_shape"])
+	assert.Equal(t, true, consistent["system_fingerprint_consistent"])
+	assert.Equal(t, "null", consistent["intermediate_usage_shape"])
+
+	inconsistent := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"}}]}\n\ndata: {\"system_fingerprint\":null,\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n"), true)
+	assert.Equal(t, "mixed", inconsistent["system_fingerprint_shape"])
+	assert.Equal(t, false, inconsistent["system_fingerprint_consistent"])
+	assert.Equal(t, "missing", inconsistent["intermediate_usage_shape"])
+
+	cumulative := summarize([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"2\"}}],\"usage\":{}}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{}}\n\ndata: [DONE]\n"), true)
+	assert.Equal(t, "object", cumulative["intermediate_usage_shape"])
+}
+
+func TestFitEvidenceMismatchComparesUsageAndFingerprintEvidence(t *testing.T) {
+	official := map[string]any{
+		"prompt_tokens":                 float64(10),
+		"system_fingerprint_shape":      "string",
+		"system_fingerprint_consistent": true,
+		"intermediate_usage_shape":      "object",
+	}
+	gateway := map[string]any{
+		"prompt_tokens":                 float64(11),
+		"system_fingerprint_shape":      "string",
+		"system_fingerprint_consistent": true,
+		"intermediate_usage_shape":      "object",
+	}
+	assert.Equal(t, "prompt_tokens", fitEvidenceMismatch("K04", official, gateway))
+
+	gateway["prompt_tokens"] = float64(10)
+	gateway["system_fingerprint_shape"] = "null"
+	assert.Equal(t, "system_fingerprint_shape", fitEvidenceMismatch("K04", official, gateway))
+
+	gateway["system_fingerprint_shape"] = "string"
+	gateway["intermediate_usage_shape"] = "mixed"
+	assert.Equal(t, "intermediate_usage_shape", fitEvidenceMismatch("K04", official, gateway))
+}
+
+func TestFeatureProbeClientRejectsHTTPSDowngrade(t *testing.T) {
+	client := newFeatureProbeClient()
+	calls := 0
+	client.Transport = probeRoundTripper(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://insecure.example/"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+
+	status, evidence, _, err := requestPayload(context.Background(), client, "https://example.test/v1", "", http.MethodGet, "/models", nil)
+
+	assert.Error(t, err)
+	assert.Equal(t, 0, status)
+	assert.Equal(t, 1, calls)
+	assert.NotEmpty(t, evidence["transport_error"])
+}
+
 func TestFitExpectedRejectsUsageOnlyStreamTail(t *testing.T) {
 	officialShape := summarize([]byte("data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"2\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens_details\":{\"reasoning_tokens\":0},\"prompt_cache_hit_tokens\":1,\"prompt_cache_miss_tokens\":3}}\n\ndata: [DONE]\n"), true)
 	assert.True(t, fitExpected("K09", http.StatusOK, officialShape))
@@ -225,6 +321,7 @@ func TestRequestPayloadPreservesPartialStreamEvidenceOnReadError(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, status)
 	assert.Error(t, err)
+	assert.Equal(t, "text/event-stream", evidence["content_type"])
 	assert.Equal(t, true, evidence["has_content"])
 	assert.NotEmpty(t, evidence["read_error"])
 }
