@@ -141,6 +141,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
+	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info)
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
@@ -169,12 +170,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				if streamResp.Usage != nil {
 					currentHasUsage = true
 					currentHasChoices = len(streamResp.Choices) > 0
-					stripped, stripErr := stripStreamUsageData(data)
-					if stripErr != nil {
-						common.SysLog("error stripping stream usage; suppressing the client event: " + stripErr.Error())
-						currentWithoutUsage = ""
-					} else {
-						currentWithoutUsage = stripped
+					if !isV4OpenAIStream {
+						// V4 streams consume the raw event through the fit
+						// layer and never use the stripped copy.
+						stripped, stripErr := stripStreamUsageData(data)
+						if stripErr != nil {
+							common.SysLog("error stripping stream usage; suppressing the client event: " + stripErr.Error())
+							currentWithoutUsage = ""
+						} else {
+							currentWithoutUsage = stripped
+						}
 					}
 					if service.ValidUsage(streamResp.Usage) {
 						usage = dto.MergeUsage(usage, streamResp.Usage)
@@ -344,7 +349,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
-		case isDeepSeekV4ChatModel(info):
+		case isV4OpenAIStream:
 			// Official DeepSeek V4 emits usage inside the final chunk that
 			// carries finish_reason and never sends a usage-only event. When
 			// the upstream already matched that shape, the raw chunk is
@@ -389,7 +394,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 			}
 		}
-		if info.ShouldIncludeUsage && pendingUsageData != "" && !isDeepSeekV4ChatModel(info) {
+		if info.ShouldIncludeUsage && pendingUsageData != "" && !isV4OpenAIStream {
 			streamData := pendingUsageData
 			patched, err := patchStreamUsageData(streamData, usage)
 			if err != nil {

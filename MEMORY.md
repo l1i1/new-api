@@ -1,5 +1,28 @@
 # New API Fork Memory
 
+- On 2026-08-26, the pre-deployment deep review of the DeepSeek V4 fit work
+  was resolved and shipped forward. The unused `WasEOFPromoted` API and its
+  dead commit were dropped by rebase (no production consumer existed; the
+  promoted-EOF-without-usage guard it implied was never in the code, and the
+  earlier memory claim about it was corrected above). The V4 fit layer now
+  edits responses surgically instead of round-tripping through a map:
+  `deepseek_v4_fit.go` gained a byte-level JSON splice layer
+  (parseTopLevelPairs/replaceTopLevelJSONValue/appendTopLevelJSONValue/
+  deleteTopLevelJSONKey) that replaces only the usage value, deletes top-level
+  `cost`, and strips null `message.tool_calls`, forwarding every other byte
+  (including upstream key order) verbatim; usage itself is rendered by
+  `deepSeekV4UsageJSON` in the exact official key order
+  (prompt_tokens, completion_tokens, total_tokens, prompt_tokens_details,
+  completion_tokens_details when thinking, prompt_cache_hit_tokens,
+  prompt_cache_miss_tokens). Official-shaped bodies and chunks now pass
+  through byte-identical (regression-tested against the captured K01/K13
+  official bytes); aggregator inputs get the official shape spliced in;
+  structurally surprising inputs (duplicate keys) fall back to the map
+  rewrite. The V4 stream path also skips the never-consumed
+  `stripStreamUsageData` computation on usage-bearing chunks. Byte-level
+  divergence on non-fingerprint chunks is therefore closed for both official
+  and aggregator routes.
+
 - On 2026-08-26, the final DeepSeek V4 closeout review removed a billing
   integrity regression before commit: client-facing usage normalization now
   operates on a copy, while the usage returned to quota settlement preserves
@@ -35,8 +58,10 @@
   `[DONE]`; this is upstream sampling behavior, not a gateway shape issue,
   and the finish-reason guard classifies such streams as incomplete. A
   terminal chunk with `finish_reason` may replace an omitted optional `[DONE]`
-  marker, but a V4 `include_usage=true` stream that reaches promoted EOF without
-  real usage is rejected as incomplete. K06/K07
+  marker; a promoted-EOF stream without real upstream usage is settled from
+  the gateway's own token accounting instead (correction 2026-08-26: the
+  earlier claim that such streams are rejected as incomplete described a
+  usage guard that never existed in the shipped code). K06/K07
   aggregator `max_tokens` non-truncation remains a
   channel-selection risk. Full `go test ./relay/... ./controller/ ./common/
   ./scripts/feature-probe/`, vet, build, and `git diff --check` pass. Evidence

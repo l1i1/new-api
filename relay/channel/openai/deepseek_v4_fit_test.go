@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -9,7 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDeepSeekV4UsagePayloadMatchesOfficialKeys(t *testing.T) {
+// Official usage key order observed from api.deepseek.com on 2026-08-26
+// (K01/K04/K13 evidence under E:\Temp\ds-fit, untracked).
+const officialV4UsageKeyOrder = "prompt_tokens,completion_tokens,total_tokens,prompt_tokens_details,completion_tokens_details,prompt_cache_hit_tokens,prompt_cache_miss_tokens"
+
+func TestDeepSeekV4UsageJSONMatchesOfficialKeyOrder(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:           8,
 		CompletionTokens:       32,
@@ -18,36 +23,28 @@ func TestDeepSeekV4UsagePayloadMatchesOfficialKeys(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 30},
 	}
 
-	encoded, err := json.Marshal(deepSeekV4UsagePayload(usage, true))
+	encoded, err := deepSeekV4UsageJSON(usage, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(encoded, &payload))
 
 	assert.Equal(t, []string{
+		"prompt_tokens",
 		"completion_tokens",
+		"total_tokens",
+		"prompt_tokens_details",
 		"completion_tokens_details",
 		"prompt_cache_hit_tokens",
 		"prompt_cache_miss_tokens",
-		"prompt_tokens",
-		"prompt_tokens_details",
-		"total_tokens",
-	}, keysOf(payload))
+	}, rawKeyOrder(string(encoded)))
 	assert.Equal(t, float64(4), payload["prompt_cache_hit_tokens"])
 	assert.Equal(t, float64(4), payload["prompt_cache_miss_tokens"])
 	assert.Equal(t, map[string]any{"cached_tokens": float64(4)}, payload["prompt_tokens_details"])
 	assert.Equal(t, map[string]any{"reasoning_tokens": float64(30)}, payload["completion_tokens_details"])
-
-	var details struct {
-		PromptTokensDetails     map[string]any `json:"prompt_tokens_details"`
-		CompletionTokensDetails map[string]any `json:"completion_tokens_details"`
-	}
-	require.NoError(t, json.Unmarshal(encoded, &details))
-	assert.Equal(t, []string{"cached_tokens"}, keysOf(details.PromptTokensDetails))
-	assert.Equal(t, []string{"reasoning_tokens"}, keysOf(details.CompletionTokensDetails))
 }
 
-func TestDeepSeekV4UsagePayloadFallsBackToHitTokensField(t *testing.T) {
+func TestDeepSeekV4UsageJSONFallsBackToHitTokensField(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:         16,
 		CompletionTokens:     13,
@@ -55,12 +52,16 @@ func TestDeepSeekV4UsagePayloadFallsBackToHitTokensField(t *testing.T) {
 		PromptCacheHitTokens: 10,
 	}
 
-	payload := deepSeekV4UsagePayload(usage, true)
-	assert.Equal(t, 10, payload["prompt_cache_hit_tokens"])
-	assert.Equal(t, 6, payload["prompt_cache_miss_tokens"])
+	encoded, err := deepSeekV4UsageJSON(usage, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+	assert.Equal(t, float64(10), payload["prompt_cache_hit_tokens"])
+	assert.Equal(t, float64(6), payload["prompt_cache_miss_tokens"])
 }
 
-func TestDeepSeekV4UsagePayloadEnforcesOfficialArithmetic(t *testing.T) {
+func TestDeepSeekV4UsageJSONEnforcesOfficialArithmetic(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:         8,
 		CompletionTokens:     3,
@@ -71,36 +72,41 @@ func TestDeepSeekV4UsagePayloadEnforcesOfficialArithmetic(t *testing.T) {
 		},
 	}
 
-	payload := deepSeekV4UsagePayload(usage, true)
-	assert.Equal(t, 8, payload["prompt_tokens"])
-	assert.Equal(t, 3, payload["completion_tokens"])
-	assert.Equal(t, 11, payload["total_tokens"])
-	assert.Equal(t, 8, payload["prompt_cache_hit_tokens"])
-	assert.Equal(t, 0, payload["prompt_cache_miss_tokens"])
-	assert.Equal(t, map[string]any{"cached_tokens": 8}, payload["prompt_tokens_details"])
-	assert.Equal(t, map[string]any{"reasoning_tokens": 0}, payload["completion_tokens_details"])
+	encoded, err := deepSeekV4UsageJSON(usage, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+	assert.Equal(t, float64(8), payload["prompt_tokens"])
+	assert.Equal(t, float64(3), payload["completion_tokens"])
+	assert.Equal(t, float64(11), payload["total_tokens"])
+	assert.Equal(t, float64(8), payload["prompt_cache_hit_tokens"])
+	assert.Equal(t, float64(0), payload["prompt_cache_miss_tokens"])
+	assert.Equal(t, map[string]any{"cached_tokens": float64(8)}, payload["prompt_tokens_details"])
+	assert.Equal(t, map[string]any{"reasoning_tokens": float64(0)}, payload["completion_tokens_details"])
 	assert.Equal(t, 99, usage.TotalTokens, "response shaping must not mutate billing usage")
 	assert.Equal(t, 10, usage.PromptCacheHitTokens)
 	assert.Equal(t, -1, usage.CompletionTokenDetails.ReasoningTokens)
 }
 
-func TestDeepSeekV4UsagePayloadOmitsReasoningDetailsWhenThinkingDisabled(t *testing.T) {
-	payload := deepSeekV4UsagePayload(&dto.Usage{
+func TestDeepSeekV4UsageJSONOmitsReasoningDetailsWhenThinkingDisabled(t *testing.T) {
+	encoded, err := deepSeekV4UsageJSON(&dto.Usage{
 		PromptTokens:           9,
 		CompletionTokens:       95,
 		TotalTokens:            104,
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 90},
 	}, false)
+	require.NoError(t, err)
 
-	assert.Equal(t, []string{
-		"completion_tokens",
-		"prompt_cache_hit_tokens",
-		"prompt_cache_miss_tokens",
-		"prompt_tokens",
-		"prompt_tokens_details",
-		"total_tokens",
-	}, keysOf(payload))
-	assert.NotContains(t, payload, "completion_tokens_details")
+	assert.Equal(t,
+		"prompt_tokens,completion_tokens,total_tokens,prompt_tokens_details,prompt_cache_hit_tokens,prompt_cache_miss_tokens",
+		joinedKeyOrder(string(encoded)))
+}
+
+func TestDeepSeekV4UsageJSONNilUsageRendersNull(t *testing.T) {
+	encoded, err := deepSeekV4UsageJSON(nil, true)
+	require.NoError(t, err)
+	assert.Equal(t, "null", string(encoded))
 }
 
 func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
@@ -125,38 +131,45 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
 	message := choices[0].(map[string]any)["message"].(map[string]any)
 	assert.NotContains(t, message, "tool_calls")
 
-	usagePayload := payload["usage"].(map[string]any)
-	assert.Equal(t, []string{
-		"completion_tokens",
-		"completion_tokens_details",
-		"prompt_cache_hit_tokens",
-		"prompt_cache_miss_tokens",
-		"prompt_tokens",
-		"prompt_tokens_details",
-		"total_tokens",
-	}, keysOf(usagePayload))
-
+	usageEncoded := usageValueOf(t, fitted)
+	assert.Equal(t, officialV4UsageKeyOrder, joinedKeyOrder(usageEncoded))
 }
 
 func TestFitDeepSeekV4TextResponseBodyPreservesOfficialBody(t *testing.T) {
+	// Key order mirrors the observed official non-stream response exactly,
+	// including system_fingerprint last.
 	body := []byte(`{"id":"d80a","object":"chat.completion","created":1787661619,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"message":{"role":"assistant","content":"2","reasoning_content":"think"}}],"usage":{"prompt_tokens":8,"completion_tokens":32,"total_tokens":40,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":30},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8},"system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e"}`)
 	usage := &dto.Usage{
 		PromptTokens:           8,
 		CompletionTokens:       32,
 		TotalTokens:            40,
+		PromptTokensDetails:    dto.InputTokenDetails{CachedTokens: 0},
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 30},
 	}
 
 	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
 	require.NoError(t, err)
 
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal(fitted, &payload))
-	assert.Equal(t, "a26a7955944dc5c60445bff77fac9c8e", payload["system_fingerprint"])
+	want := `{"id":"d80a","object":"chat.completion","created":1787661619,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"message":{"role":"assistant","content":"2","reasoning_content":"think"}}],"usage":{"prompt_tokens":8,"completion_tokens":32,"total_tokens":40,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":30},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8},"system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e"}`
+	assert.Equal(t, want, string(fitted), "an official-shaped body must be forwarded byte-identical")
+}
 
-	usagePayload := payload["usage"].(map[string]any)
-	assert.Equal(t, float64(8), usagePayload["prompt_cache_miss_tokens"])
-	assert.Equal(t, map[string]any{"reasoning_tokens": float64(30)}, usagePayload["completion_tokens_details"])
+func TestFitDeepSeekV4TextResponseBodyReplacesUsageInPlace(t *testing.T) {
+	// Aggregator body whose usage needs replacement; every other byte,
+	// including key order, must survive.
+	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","system_fingerprint":null,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39}}`)
+	usage := &dto.Usage{
+		PromptTokens:           8,
+		CompletionTokens:       31,
+		TotalTokens:            39,
+		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 28},
+	}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	require.NoError(t, err)
+
+	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","system_fingerprint":null,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":28},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`
+	assert.Equal(t, want, string(fitted))
 }
 
 func TestFitDeepSeekV4TextResponseBodyKeepsToolCalls(t *testing.T) {
@@ -195,6 +208,35 @@ func TestFitDeepSeekV4StreamUsageEventInjectsOfficialUsage(t *testing.T) {
 	assert.Equal(t, float64(0), usagePayload["prompt_cache_hit_tokens"])
 	assert.Equal(t, float64(9), usagePayload["prompt_cache_miss_tokens"])
 	assert.Equal(t, map[string]any{"reasoning_tokens": float64(50)}, usagePayload["completion_tokens_details"])
+	assert.Equal(t, officialV4UsageKeyOrder, joinedKeyOrder(usageValueOf(t, []byte(patched))))
+}
+
+func TestFitDeepSeekV4StreamEventForwardsOfficialChunkByteIdentical(t *testing.T) {
+	// Byte-for-byte official terminal chunk from K13 evidence: usage must be
+	// re-rendered identically, leaving the whole chunk unchanged.
+	data := `{"id":"4ba49bcb-e585-4194-b6a1-21fa19b5810a","object":"chat.completion.chunk","created":1787714309,"model":"deepseek-v4-flash","system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":28,"total_tokens":36,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":26},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`
+	usage := &dto.Usage{
+		PromptTokens:           8,
+		CompletionTokens:       28,
+		TotalTokens:            36,
+		PromptTokensDetails:    dto.InputTokenDetails{CachedTokens: 0},
+		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 26},
+	}
+
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	require.NoError(t, err)
+	assert.Equal(t, data, patched, "an official-shaped chunk must be forwarded byte-identical")
+}
+
+func TestFitDeepSeekV4StreamEventInjectsUsageLastOnAggregatorChunk(t *testing.T) {
+	// Aggregator chunk without usage: the null lands last, matching official.
+	data := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`
+
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	require.NoError(t, err)
+
+	want := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}],"usage":null}`
+	assert.Equal(t, want, patched)
 }
 
 func TestFitDeepSeekV4StreamUsageEventReplacesClaudeExtensionUsage(t *testing.T) {
@@ -208,34 +250,56 @@ func TestFitDeepSeekV4StreamUsageEventReplacesClaudeExtensionUsage(t *testing.T)
 		Usage map[string]any `json:"usage"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
-	assert.Equal(t, []string{
-		"completion_tokens",
-		"completion_tokens_details",
-		"prompt_cache_hit_tokens",
-		"prompt_cache_miss_tokens",
-		"prompt_tokens",
-		"prompt_tokens_details",
-		"total_tokens",
-	}, keysOf(payload.Usage))
+	assert.Equal(t, officialV4UsageKeyOrder, joinedKeyOrder(usageValueOf(t, []byte(patched))))
 	assert.NotContains(t, payload.Usage, "claude_cache_creation_1_h_tokens")
 	assert.NotContains(t, payload.Usage, "input_tokens")
 }
 
-func keysOf(m map[string]any) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sortStrings(out)
-	return out
+func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
+	data := `{"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":1}}`
+
+	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
+	assert.Nil(t, payload["usage"])
 }
 
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
+func TestFitDeepSeekV4StreamEventKeepUpstreamBytesWhenUsageRequestedButMissing(t *testing.T) {
+	data := `{"id":"router-1","object":"chat.completion.chunk","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`
+
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
+	require.NoError(t, err)
+	assert.Equal(t, data, patched, "usage requested but nothing to render keeps upstream bytes")
+}
+
+func TestFitDeepSeekV4StreamEventHandlesDuplicateUsageKeyFallback(t *testing.T) {
+	// Duplicate keys defeat the surgical splice; the fallback must still
+	// emit exactly one official usage value.
+	data := `{"id":"router-1","usage":{"prompt_tokens":1},"usage":{"prompt_tokens":2},"choices":[]}`
+	usage := &dto.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}
+
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
+	usagePayload := payload["usage"].(map[string]any)
+	assert.Equal(t, float64(2), usagePayload["prompt_tokens"])
+	assert.Equal(t, officialV4UsageKeyOrder, joinedKeyOrder(usageValueOf(t, []byte(patched))))
+}
+
+func TestFitDeepSeekV4StreamEventHandlesWeirdWhitespace(t *testing.T) {
+	data := " {\n \"id\" : \"router-1\" , \"choices\": [ ] } "
+
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
+	assert.Nil(t, payload["usage"])
+	assert.Equal(t, "router-1", payload["id"])
 }
 
 func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
@@ -269,13 +333,79 @@ func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 	assert.Nil(t, usage)
 }
 
-func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
-	data := `{"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":1}}`
+func TestFitDeepSeekV4TextResponseBodySoleCostPair(t *testing.T) {
+	// Degenerate single-pair bodies exercise the delete path's brace handling.
+	body := []byte(`{"cost":"0"}`)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, nil, true)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(fitted))
+}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false, true)
+func TestFitDeepSeekV4TextResponseBodyMultipleNullToolCalls(t *testing.T) {
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":null},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant","tool_calls":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	usage := &dto.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
 	require.NoError(t, err)
 
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
-	assert.Nil(t, payload["usage"])
+	want := `{"choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1}}`
+	assert.Equal(t, want, string(fitted))
+}
+
+func rawKeyOrder(s string) []string {
+	var keys []string
+	depth := 0
+	inString := false
+	escaped := false
+	expectKey := false
+	var current strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+				if expectKey && depth == 1 {
+					keys = append(keys, current.String())
+				}
+			} else {
+				current.WriteByte(c)
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			current.Reset()
+			if depth == 1 {
+				expectKey = true
+			}
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		case ':':
+			if depth == 1 {
+				expectKey = false
+			}
+		}
+	}
+	return keys
+}
+
+func usageValueOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	require.NoError(t, json.Unmarshal(body, &payload))
+	return string(payload.Usage)
+}
+
+// joinedKeyOrder formats rawKeyOrder output for direct comparison.
+func joinedKeyOrder(s string) string {
+	return strings.Join(rawKeyOrder(s), ",")
 }
