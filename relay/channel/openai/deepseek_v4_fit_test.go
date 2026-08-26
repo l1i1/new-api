@@ -186,6 +186,36 @@ func TestFitDeepSeekV4TextResponseBodyKeepsToolCalls(t *testing.T) {
 	assert.Contains(t, message, "tool_calls")
 }
 
+func TestFitDeepSeekV4TextResponseBodyStripsAggregatorMessageKeys(t *testing.T) {
+	// Aggregator tool-call variant observed in the 2026-08-26 K10 main-route
+	// run: extra message keys beyond the official four must be stripped while
+	// every other byte survives.
+	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}],"reasoning":"inner","refusal":null}}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342}}`)
+	usage := &dto.Usage{PromptTokens: 289, CompletionTokens: 53, TotalTokens: 342}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
+	require.NoError(t, err)
+
+	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":289}}`
+	assert.Equal(t, want, string(fitted))
+}
+
+func TestFitDeepSeekV4TextResponseBodyStripsAggregatorMessageKeysViaFallback(t *testing.T) {
+	// Duplicate message key makes the surgical editor decline; the map-based
+	// fallback must still strip the non-official keys.
+	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2","reasoning":"inner","reasoning":"inner2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39}}`)
+	usage := &dto.Usage{PromptTokens: 8, CompletionTokens: 31, TotalTokens: 39}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(fitted, &payload))
+	choices := payload["choices"].([]any)
+	message := choices[0].(map[string]any)["message"].(map[string]any)
+	assert.Equal(t, map[string]any{"role": "assistant", "content": "2"}, message)
+}
+
 func TestFitDeepSeekV4StreamUsageEventInjectsOfficialUsage(t *testing.T) {
 	data := `{"id":"router-145508b3edb6f4079306d8e9a4ee71e0","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"delta":{"reasoning_content":null}}],"usage":null}`
 	usage := &dto.Usage{

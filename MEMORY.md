@@ -1,5 +1,32 @@
 # New API Fork Memory
 
+- On 2026-08-26, a post-deploy official-vs-gateway K01-K13 paired rerun against
+  production `v1.0.0-rc.25-tokeness-deepseek-v4.4` confirmed the deployed fixes
+  are live: K02/K03 400 bodies are byte-identical to official with
+  `Content-Type: application/octet-stream` on both gateway routes; SSE carries
+  `text/event-stream; charset=utf-8`; usage stays attached to the final
+  finish_reason chunk with no usage-only events; K12 keeps bounded dual-path
+  logprobs (content + reasoning_content, all positions `top_logprobs <= 5`);
+  paired `prompt_tokens` matched exactly on every case. The backup route
+  `n-cf.tokeness.dev` passed 13/13 against the official baseline. The main
+  route `n.tokeness.dev` failed 9/13 in that run, all attributable to
+  aggregator-channel selections: `system_fingerprint` absent by design
+  (never fabricated), one K10 aggregator response added extra message fields
+  plus text content alongside a valid tool call (official returns the tool
+  call only; 8 immediate manual retries all routed official-direct and were
+  clean, so the aggregator variant is intermittent channel selection, not a
+  deterministic gap), K05 at `temperature=0` produced 64 completion tokens vs
+  official 16 (aggregator sampling divergence), and K08 repeated the known
+  aggregator reasoning-loop without terminal `finish_reason`/`[DONE]`
+  (1022 events, 266 KB — smaller than the 08-25 8.3 MB occurrence). K01
+  `finish_reason=length` nondeterminism was measured on official too
+  (reasoning lengths 85/131/180 across three identical requests), so the fit
+  stop assertion can fail on any route; it is provider-side nondeterminism,
+  not a gateway defect. Evidence: `E:\Temp\dsv4-fit-20260826\fit-full.jsonl`
+  (untracked); credentials only via env.
+
+- On 2026-08-26, the reviewed DeepSeek V4 compatibility release was published and deployed to production. Commit `d70c6f200` was published as `v1.0.0-rc.25-tokeness-deepseek-v4.4` with immutable GHCR digest `sha256:9706ae4a2879156587119f8baab2e860ef95dbbfc2c4321ac9ed6a8f4d0f6eb7`. Publish workflow `32932250921` passed; staged production rollout `32938642746` passed across JP-N2, EV-JP, JP-M, and EV-JP2. Independent public verification passed: `n.tokeness.dev` and `n-cf.tokeness.dev` returned the expected unauthenticated 401, while `tokeness.ai/` and `/api/status` returned 200, all exposing the new version header. A duplicate unapproved rollout `32938647007` was cancelled after the successful deployment.
+
 - On 2026-08-26, the pre-deployment deep review of the DeepSeek V4 fit work
   was resolved and shipped forward. The unused `WasEOFPromoted` API and its
   dead commit were dropped by rebase (no production consumer existed; the

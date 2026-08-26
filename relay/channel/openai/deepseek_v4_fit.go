@@ -101,13 +101,24 @@ func normalizeDeepSeekV4Usage(usage *dto.Usage) {
 	}
 }
 
+// deepSeekV4OfficialMessageKeys is the official message key set observed on
+// the DeepSeek V4 API. Aggregator-added message keys are stripped so clients
+// always receive the official shape.
+var deepSeekV4OfficialMessageKeys = map[string]struct{}{
+	"role":              {},
+	"content":           {},
+	"reasoning_content": {},
+	"tool_calls":        {},
+}
+
 // fitDeepSeekV4TextResponseBody normalizes a non-stream chat completion body to
 // the official DeepSeek V4 schema: strip aggregator extensions (top-level cost,
-// null message.tool_calls), replace usage with the official seven-key shape,
-// while preserving an upstream-provided system_fingerprint. Values that only
-// the real upstream knows are never replaced with a fabricated identity.
-// Editing is surgical: key order and formatting outside the touched values are
-// forwarded exactly as the upstream sent them.
+// null message.tool_calls, non-official message keys), replace usage with the
+// official seven-key shape, while preserving an upstream-provided
+// system_fingerprint. Values that only the real upstream knows are never
+// replaced with a fabricated identity. Editing is surgical: key order and
+// formatting outside the touched values are forwarded exactly as the upstream
+// sent them.
 func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoningDetails bool) ([]byte, error) {
 	var payload map[string]json.RawMessage
 	if err := common.Unmarshal(body, &payload); err != nil {
@@ -189,6 +200,11 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
 		if err := common.Unmarshal(rawMessage, &message); err != nil {
 			return nil, err
 		}
+		for key := range message {
+			if _, official := deepSeekV4OfficialMessageKeys[key]; !official {
+				delete(message, key)
+			}
+		}
 		if isJSONNull(message["tool_calls"]) {
 			delete(message, "tool_calls")
 		}
@@ -202,8 +218,9 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
 	return common.Marshal(choices)
 }
 
-// fitDeepSeekV4ChoicesInPlace removes null message.tool_calls entries from a
-// choices array without disturbing any other byte.
+// fitDeepSeekV4ChoicesInPlace removes null message.tool_calls entries and
+// non-official message keys from a choices array without disturbing any other
+// byte.
 func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, bool) {
 	spans, ok := jsonArrayElementSpans(rawChoices)
 	if !ok {
@@ -241,8 +258,9 @@ func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, b
 	return out, true
 }
 
-// stripNullToolCallsInChoice deletes a null tool_calls key from the choice's
-// message object, preserving every other byte of the choice.
+// stripNullToolCallsInChoice deletes non-official keys from the choice's
+// message object — aggregator-added keys plus a null tool_calls — preserving
+// every other byte of the choice.
 func stripNullToolCallsInChoice(choice []byte) ([]byte, bool) {
 	choicePairs, _, err := parseTopLevelPairs(choice)
 	if err != nil {
@@ -261,12 +279,40 @@ func stripNullToolCallsInChoice(choice []byte) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if !found || !isJSONNull(message[toolCallsPair.valueStart:toolCallsPair.valueEnd]) {
+	dropToolCalls := found && isJSONNull(message[toolCallsPair.valueStart:toolCallsPair.valueEnd])
+	var extraKeys []string
+	for _, pair := range messagePairs {
+		if _, official := deepSeekV4OfficialMessageKeys[pair.key]; official {
+			continue
+		}
+		// A duplicated non-official key is a structural surprise; decline so the
+		// map-based fallback decides the outcome.
+		for _, seen := range extraKeys {
+			if seen == pair.key {
+				return nil, false
+			}
+		}
+		extraKeys = append(extraKeys, pair.key)
+	}
+	if len(extraKeys) == 0 && !dropToolCalls {
 		return choice, true
 	}
-	stripped, ok := deleteTopLevelJSONKey(message, "tool_calls")
-	if !ok {
-		return nil, false
+	stripped := message
+	if len(extraKeys) > 0 {
+		for _, key := range extraKeys {
+			patched, ok := deleteTopLevelJSONKey(stripped, key)
+			if !ok {
+				return nil, false
+			}
+			stripped = patched
+		}
+	}
+	if dropToolCalls {
+		patched, ok := deleteTopLevelJSONKey(stripped, "tool_calls")
+		if !ok {
+			return nil, false
+		}
+		stripped = patched
 	}
 	out := make([]byte, 0, len(choice))
 	out = append(out, choice[:messagePair.valueStart]...)
