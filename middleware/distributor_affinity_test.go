@@ -210,3 +210,27 @@ func TestMarkV4OfficialPinFromDistributorMatchesRelayThresholds(t *testing.T) {
 	markV4OfficialPinFromDistributor(other)
 	assert.False(t, common.GetContextKeyBool(other, constant.ContextKeyV4OfficialPin))
 }
+
+func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
+	// A pinned deepseek-v4 request with affinity cached to an aggregator
+	// channel must not reuse the sticky channel.
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash","temperature":2}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+
+	markV4OfficialPinFromDistributor(c)
+	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+
+	// Simulate affinity returning an aggregator channel and the bypass check.
+	aggregator := &model.Channel{Id: 93, Type: constant.ChannelTypeOpenAI}
+	bypass := aggregator != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
+		aggregator.Type != constant.ChannelTypeDeepSeek
+	assert.True(t, bypass, "aggregator affinity must be bypassed for pinned requests")
+
+	official := &model.Channel{Id: 1, Type: constant.ChannelTypeDeepSeek}
+	bypassOfficial := official != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
+		official.Type != constant.ChannelTypeDeepSeek
+	assert.False(t, bypassOfficial, "official affinity stays usable for pinned requests")
+}

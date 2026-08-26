@@ -176,6 +176,14 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
+					// A pinned deepseek-v4 request must reach the official
+					// channel even when affinity cached an aggregator: extreme
+					// sampling diverges on aggregators, so the sticky channel
+					// is unusable for this request.
+					if preferred != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
+						preferred.Type != constant.ChannelTypeDeepSeek {
+						preferred = nil
+					}
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && !service.GroupAccessPolicyBlocksChannel(c, preferred.Id) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
