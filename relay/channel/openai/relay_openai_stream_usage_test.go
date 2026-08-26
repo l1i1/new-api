@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +16,19 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type streamErrorReader struct {
+	err error
+}
+
+func (r streamErrorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
 
 func TestOaiStreamHandlerKeepsUsageBeforeFinalEvent(t *testing.T) {
 	oldMode := gin.Mode()
@@ -891,6 +901,94 @@ func TestOaiStreamHandlerAcceptsEOFWithoutDone(t *testing.T) {
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
 	assert.True(t, info.StreamStatus.IsNormalEnd())
 	assert.Contains(t, recorder.Body.String(), `data: [DONE]`)
+}
+
+func TestOaiStreamHandlerRejectsScannerErrorAfterPartialData(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+		OriginModelName:    "test-model",
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	info.SetEstimatePromptTokens(12)
+	operation_setting.SetToolPriceForTest("lookup_partial", 5)
+	t.Cleanup(func() { operation_setting.DeleteToolPriceForTest("lookup_partial") })
+	readerErr := errors.New("stream reset by upstream CDN")
+	body := io.MultiReader(
+		strings.NewReader(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup_partial","arguments":"{}"}}]},"finish_reason":null}]}`+"\n"),
+		streamErrorReader{err: readerErr},
+	)
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(body),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, usage)
+	require.Error(t, err)
+	assert.Equal(t, 12, usage.PromptTokens)
+	assert.Greater(t, usage.CompletionTokens, 0)
+	assert.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
+	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
+	assert.True(t, types.IsSkipRetryError(err))
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+	assert.Contains(t, err.Error(), "stream reset by upstream CDN")
+	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
+	require.NotNil(t, info.ResponsesUsageInfo)
+	require.Contains(t, info.ResponsesUsageInfo.BuiltInTools, "lookup_partial")
+	assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools["lookup_partial"].CallCount)
+}
+
+func TestOaiStreamHandlerAllowsRetryBeforeAnyUpstreamData(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "test-model"},
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatOpenAI,
+		DisablePing: true,
+	}
+	readerErr := errors.New("upstream connection failed before response")
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(streamErrorReader{err: readerErr}),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, usage)
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
+	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
+	assert.False(t, types.IsSkipRetryError(err))
+	assert.Zero(t, info.ReceivedResponseCount)
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+	assert.Contains(t, err.Error(), "upstream connection failed before response")
+	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
 }
 
 func TestOaiStreamHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {

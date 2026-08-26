@@ -81,6 +81,27 @@ func TestBillingSessionSettleRefundRecordsWalletUsage(t *testing.T) {
 	assert.Equal(t, 1, user.RequestCount)
 }
 
+func TestBillingSessionRefundAfterSettleIsNoOp(t *testing.T) {
+	truncate(t)
+
+	const userID = 709
+	seedUser(t, userID, 100_000)
+
+	relayInfo := &common.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+	}
+	session, apiErr := NewBillingSession(newBillingSessionTestContext(), relayInfo, 12_000)
+	require.Nil(t, apiErr)
+	require.NoError(t, session.Settle(8_000))
+
+	session.Refund(newBillingSessionTestContext())
+
+	var user model.User
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	assert.Equal(t, 92_000, user.Quota)
+}
+
 func TestBillingSessionSettleExactMatchRecordsZeroQuotaRequest(t *testing.T) {
 	truncate(t)
 

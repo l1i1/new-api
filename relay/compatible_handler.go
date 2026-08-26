@@ -197,6 +197,24 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
+		// A failed stream can still have produced billable upstream usage before
+		// the transport terminated. Settle that observed usage before returning;
+		// the outer relay defer is idempotent and will not refund a settled billing
+		// session. This keeps provider charges auditable without fabricating a
+		// successful terminal SSE marker for the client.
+		streamUsage, hasStreamUsage := usage.(*dto.Usage)
+		isTextCompletion := info.RelayMode == relayconstant.RelayModeChatCompletions ||
+			info.RelayMode == relayconstant.RelayModeCompletions
+		if isTextCompletion && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() &&
+			info.ReceivedResponseCount > 0 && hasStreamUsage {
+			containAudioTokens := streamUsage.CompletionTokenDetails.AudioTokens > 0 || streamUsage.PromptTokensDetails.AudioTokens > 0
+			containsAudioRatios := ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
+			if containAudioTokens && containsAudioRatios {
+				service.PostAudioConsumeQuota(c, info, streamUsage, "incomplete upstream stream")
+			} else {
+				service.PostTextConsumeQuota(c, info, streamUsage, []string{"incomplete upstream stream"})
+			}
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr

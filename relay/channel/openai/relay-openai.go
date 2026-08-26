@@ -306,6 +306,37 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamErr != nil {
 		return usage, streamErr
 	}
+	for _, name := range streamFunctionCallNames {
+		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
+	}
+	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		responseText := responseTextBuilder.String()
+		if !containStreamUsage {
+			usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+			usage.CompletionTokens += toolCount * 7
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		} else {
+			patchZeroCompletionUsage(c, info, usage, responseText, toolCount)
+		}
+		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+
+		terminationErr := info.StreamStatus.EndError
+		if terminationErr == nil {
+			terminationErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)
+		} else {
+			terminationErr = fmt.Errorf("upstream stream terminated (%s): %w", info.StreamStatus.EndReason, terminationErr)
+		}
+		options := make([]types.NewAPIErrorOptions, 0, 1)
+		if c.Writer.Written() || info.ReceivedResponseCount > 0 {
+			options = append(options, types.ErrOptionWithSkipRetry())
+		}
+		return usage, types.NewOpenAIError(
+			terminationErr,
+			types.ErrorCode("server_error"),
+			http.StatusBadGateway,
+			options...,
+		)
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput &&
 		// Official DeepSeek V4 can exhaust max_tokens inside reasoning and end the
 		// stream reasoning-only with finish_reason=length; the non-stream path
@@ -408,10 +439,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
-	}
-
-	for _, name := range streamFunctionCallNames {
-		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
