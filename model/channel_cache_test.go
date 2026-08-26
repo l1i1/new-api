@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,4 +124,155 @@ func int64Ptr(value int64) *int64 {
 
 func uintPtr(value uint) *uint {
 	return &value
+}
+
+func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekForV4Models(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	group2model2channels = map[string]map[string][]int{
+		"default": {"deepseek-v4-flash": {1, 2}},
+	}
+	channelsIDM = map[int]*Channel{
+		1: {Id: 1, Type: constant.ChannelTypeDeepSeek, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		2: {Id: 2, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"deepseek-v4-flash": buildChannelSelectionMetadata(group2model2channels["default"]["deepseek-v4-flash"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channelSyncLock.Unlock()
+	})
+
+	// Even when the aggregator has the higher weight, the V4 model must always
+	// select the official DeepSeek channel.
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannel("default", "deepseek-v4-flash", 0, "")
+		require.NoError(t, err)
+		require.Equal(t, 1, selected.Id)
+	}
+}
+
+func TestGetRandomSatisfiedChannelKeepsAggregatorsWhenNoOfficialDeepSeek(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	group2model2channels = map[string]map[string][]int{
+		"default": {"deepseek-v4-flash": {3, 4}},
+	}
+	channelsIDM = map[int]*Channel{
+		3: {Id: 3, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		4: {Id: 4, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"deepseek-v4-flash": buildChannelSelectionMetadata(group2model2channels["default"]["deepseek-v4-flash"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channelSyncLock.Unlock()
+	})
+
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannel("default", "deepseek-v4-flash", 0, "")
+		require.NoError(t, err)
+		require.Contains(t, []int{3, 4}, selected.Id)
+	}
+}
+
+func TestGetRandomSatisfiedChannelUnaffectedForNonV4Models(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	group2model2channels = map[string]map[string][]int{
+		"default": {"gpt-test": {1, 2}},
+	}
+	channelsIDM = map[int]*Channel{
+		1: {Id: 1, Type: constant.ChannelTypeDeepSeek, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		2: {Id: 2, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"gpt-test": buildChannelSelectionMetadata(group2model2channels["default"]["gpt-test"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channelSyncLock.Unlock()
+	})
+
+	seen := map[int]bool{}
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannel("default", "gpt-test", 0, "")
+		require.NoError(t, err)
+		seen[selected.Id] = true
+	}
+	require.True(t, seen[1] && seen[2], "non-V4 models must keep weighted selection across channel types")
+}
+
+func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekWithMultipleOfficial(t *testing.T) {
+	// Two official channels at the same priority: the metadata fast path must
+	// be bypassed so both remain selectable but no aggregator leaks in.
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	group2model2channels = map[string]map[string][]int{
+		"default": {"deepseek-v4-flash": {1, 5, 2}},
+	}
+	channelsIDM = map[int]*Channel{
+		1: {Id: 1, Type: constant.ChannelTypeDeepSeek, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		5: {Id: 5, Type: constant.ChannelTypeDeepSeek, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		2: {Id: 2, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"deepseek-v4-flash": buildChannelSelectionMetadata(group2model2channels["default"]["deepseek-v4-flash"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channelSyncLock.Unlock()
+	})
+
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannel("default", "deepseek-v4-flash", 0, "")
+		require.NoError(t, err)
+		require.Contains(t, []int{1, 5}, selected.Id, "aggregator channel must never be selected for V4 when official exists")
+	}
 }

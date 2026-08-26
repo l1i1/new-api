@@ -249,6 +249,7 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
+	abilities = preferDeepSeekOfficialAbilities(abilities, model)
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -271,6 +272,43 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+// preferDeepSeekOfficialAbilities narrows deepseek-v4-* candidates to official
+// DeepSeek channels when any are present, mirroring the memory-cache path so
+// both selection modes stay byte-compatible with api.deepseek.com. Without an
+// official channel the candidate set is unchanged.
+func preferDeepSeekOfficialAbilities(abilities []Ability, model string) []Ability {
+	if len(abilities) == 0 || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+		return abilities
+	}
+	channelIDs := make([]int, 0, len(abilities))
+	for _, ability := range abilities {
+		channelIDs = append(channelIDs, ability.ChannelId)
+	}
+	var officialChannels []struct {
+		Id   int
+		Type int
+	}
+	if err := DB.Model(&Channel{}).Select("id, type").Where("id IN ?", channelIDs).Find(&officialChannels).Error; err != nil {
+		return abilities
+	}
+	officialIDs := make(map[int]struct{}, len(officialChannels))
+	for _, channel := range officialChannels {
+		if channel.Type == constant.ChannelTypeDeepSeek {
+			officialIDs[channel.Id] = struct{}{}
+		}
+	}
+	if len(officialIDs) == 0 {
+		return abilities
+	}
+	official := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := officialIDs[ability.ChannelId]; ok {
+			official = append(official, ability)
+		}
+	}
+	return official
 }
 
 func blockedChannelIDs(blockedChannels map[int]struct{}) []int {
