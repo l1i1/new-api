@@ -48,6 +48,21 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":1.5}`,
 			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
 		},
+		{
+			name:    "temperature above two is rejected",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":2.5}`,
+			message: "Invalid temperature value, the valid range of temperature is [0, 2]",
+		},
+		{
+			name:    "negative temperature is rejected",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":-0.5}`,
+			message: "Invalid temperature value, the valid range of temperature is [0, 2]",
+		},
+		{
+			name:    "zero top_p is rejected",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":0}`,
+			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
+		},
 	}
 
 	for _, tt := range tests {
@@ -86,4 +101,37 @@ func TestDeepSeekV4LogprobsValidationLeavesOtherModelsUntouched(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, request.TopLogProbs)
 	assert.Equal(t, 21, *request.TopLogProbs)
+}
+
+func TestDeepSeekV4SamplingBoundsAreAccepted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// temperature=0, temperature=2 (upper boundary) and top_p=0.1 are all
+	// inside the official ranges and must pass validation untouched.
+	tests := []struct {
+		name    string
+		body    string
+		field   string
+		want    float64
+	}{
+		{"temperature zero", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":0}`, "temperature", 0},
+		{"temperature upper boundary", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":2}`, "temperature", 2},
+		{"top_p lower sample", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"top_p":0.1}`, "top_p", 0.1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(tt.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			request, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
+			require.NoError(t, err)
+			switch tt.field {
+			case "temperature":
+				require.NotNil(t, request.Temperature)
+				assert.Equal(t, tt.want, *request.Temperature)
+			case "top_p":
+				require.NotNil(t, request.TopP)
+				assert.Equal(t, tt.want, *request.TopP)
+			}
+		})
+	}
 }

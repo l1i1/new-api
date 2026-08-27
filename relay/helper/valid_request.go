@@ -381,6 +381,7 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 const (
 	deepSeekV4ReasoningEffortMessage  = "Invalid reasoning_effort value, the valid values are [low, high, max]."
 	deepSeekV4TopPMessage             = "Invalid top_p value, the valid range of top_p is (0, 1]."
+	deepSeekV4TemperatureMessage      = "Invalid temperature value, the valid range of temperature is [0, 2]"
 	deepSeekV4TopLogprobsPairMessage  = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
 	deepSeekV4TopLogprobsRangeMessage = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
 )
@@ -392,6 +393,7 @@ func IsDeepSeekV4ValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		deepSeekV4ReasoningEffortMessage,
 		deepSeekV4TopPMessage,
+		deepSeekV4TemperatureMessage,
 		deepSeekV4TopLogprobsPairMessage,
 		deepSeekV4TopLogprobsRangeMessage,
 	} {
@@ -409,6 +411,14 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "extreme") {
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4ReasoningEffortMessage,
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if request.Temperature != nil && (*request.Temperature < 0 || *request.Temperature > 2) {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4TemperatureMessage,
 			Type:    "invalid_request_error",
 			Param:   nil,
 			Code:    "invalid_request_error",
