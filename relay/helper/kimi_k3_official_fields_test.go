@@ -89,6 +89,11 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 				Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get.weather"}}}},
 			kimiK3ToolNameMessage,
 		},
+		{
+			"empty messages",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3"},
+			kimiK3MessagesEmptyMessage,
+		},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,21 +111,25 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 // reasoning_effort strings are accepted, and none of these may be rejected
 // locally when fit mode is on.
 func TestKimiK3OfficialFieldsAccept(t *testing.T) {
+	base := dto.GeneralOpenAIRequest{Model: "kimi-k3", Messages: []dto.Message{{Role: "user", Content: "1+1=?"}}}
 	accepted := []*dto.GeneralOpenAIRequest{
-		{Model: "kimi-k3", Messages: []dto.Message{{Role: "user", Content: "1+1=?"}}},
-		{Model: "kimi-k3", THINKING: []byte(`{"type":"disabled"}`)},
-		{Model: "kimi-k3", ReasoningEffort: "ultra"},
-		{Model: "kimi-k3", ReasoningEffort: "low"},
-		{Model: "kimi-k3", ReasoningEffort: "max"},
-		{Model: "kimi-k3", Temperature: floatPtr(1.0)},
-		{Model: "kimi-k3", TopP: floatPtr(0.95)},
-		{Model: "kimi-k3", N: intPtr(1)},
-		{Model: "kimi-k3", PresencePenalty: floatPtr(0)},
-		{Model: "kimi-k3", FrequencyPenalty: floatPtr(0)},
-		{Model: "kimi-k3", LogProbs: boolPtr(false)},
-		{Model: "kimi-k3", ToolChoice: "required"},
-		{Model: "kimi-k3", ToolChoice: "none"},
-		{Model: "kimi-k3", ToolChoice: "auto"},
+		&base,
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: []byte(`{"type":"disabled"}`)},
+		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "ultra"},
+		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "low"},
+		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "max"},
+		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(1.0)},
+		{Model: "kimi-k3", Messages: base.Messages, TopP: floatPtr(0.95)},
+		{Model: "kimi-k3", Messages: base.Messages, N: intPtr(1)},
+		{Model: "kimi-k3", Messages: base.Messages, PresencePenalty: floatPtr(0)},
+		{Model: "kimi-k3", Messages: base.Messages, FrequencyPenalty: floatPtr(0)},
+		{Model: "kimi-k3", Messages: base.Messages, LogProbs: boolPtr(false)},
+		{Model: "kimi-k3", Messages: base.Messages, ToolChoice: "required"},
+		{Model: "kimi-k3", Messages: base.Messages, ToolChoice: "none"},
+		{Model: "kimi-k3", Messages: base.Messages, ToolChoice: "auto"},
+		// FIM-style prefix/suffix requests may omit messages (same exemption
+		// as the generic path).
+		{Model: "kimi-k3", Prefix: "<fill>", Suffix: "</fill>"},
 		// non-kimi models are never inspected
 		{Model: "deepseek-v4-flash", ReasoningEffort: "extreme", Temperature: floatPtr(0)},
 		{Model: "kimi-k2.6", THINKING: []byte(`{"type":"disabled"}`)},
@@ -140,6 +149,7 @@ func TestKimiK3ValidationMessageRecognized(t *testing.T) {
 		kimiK3LogprobsFalseMessage,
 		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
+		kimiK3MessagesEmptyMessage,
 	} {
 		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
 	}

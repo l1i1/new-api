@@ -526,6 +526,7 @@ const (
 	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolNameMessage            = "Invalid request: function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
+	kimiK3MessagesEmptyMessage       = "Invalid request: messages must not be empty"
 )
 
 func isKimiK3Model(model string) bool {
@@ -533,12 +534,13 @@ func isKimiK3Model(model string) bool {
 }
 
 // validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 request
-// contract as observed live: fixed sampling values (temperature=1.0,
-// top_p=0.95, n=1, both penalties 0), logprobs disabled by design, the
-// top_logprobs pair requirement and no specified tool_choice. Only requests
-// targeting a kimi-k3 model are inspected; other fields (thinking,
-// reasoning_effort strings, max_completion_tokens) are passed through as the
-// official endpoint accepts them.
+// contract as observed live: non-fixed sampling values (temperature must be
+// 1.0, top_p 0.95, n 1, both penalties 0), logprobs disabled by design, the
+// top_logprobs pair requirement, no specified tool_choice and non-empty
+// messages. Explicit fixed values are accepted exactly as the official
+// endpoint does. Only requests targeting a kimi-k3 model are inspected; other
+// fields (thinking, reasoning_effort strings, max_completion_tokens) are
+// passed through as the official endpoint accepts them.
 func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isKimiK3Model(request.Model) {
 		return nil
@@ -575,6 +577,9 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 		if !validKimiK3FunctionName(request.Tools[i].Function.Name) {
 			return kimiK3Error(kimiK3ToolNameMessage)
 		}
+	}
+	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
+		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
 	return nil
 }
@@ -628,6 +633,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
 		kimiK3ToolNameMessage,
+		kimiK3MessagesEmptyMessage,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true
