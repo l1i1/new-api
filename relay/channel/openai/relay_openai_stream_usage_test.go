@@ -739,7 +739,11 @@ func TestOpenaiHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"name":"lookup"`)
 }
 
-func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyNonLengthOutput(t *testing.T) {
+func TestOpenaiHandlerAcceptsReasoningOnlyStopOutput(t *testing.T) {
+	// A reasoning model can match a stop word while still thinking and end
+	// with content empty + reasoning non-empty + finish_reason=stop; the
+	// official endpoints return 200 for that shape (e.g. GLM-5.3 stop
+	// probes), so the empty-output guard must not turn it into a 502.
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -755,10 +759,10 @@ func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyNonLengthOutput(t *testing.T
 		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"internal reasoning"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
-	require.Nil(t, usage)
-	require.Error(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.False(t, recorder.Flushed)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), `"reasoning_content":"internal reasoning"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
 }
 
 func TestOpenaiHandlerAcceptsDeepSeekV4ReasoningOnlyLengthOutput(t *testing.T) {
