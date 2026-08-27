@@ -525,6 +525,7 @@ const (
 	kimiK3LogprobsFalseMessage       = "invalid logprobs: only false is allowed for this model"
 	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
+	kimiK3ToolNameMessage            = "Invalid request: function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
 )
 
 func isKimiK3Model(model string) bool {
@@ -570,7 +571,31 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			}
 		}
 	}
+	for i := range request.Tools {
+		if !validKimiK3FunctionName(request.Tools[i].Function.Name) {
+			return kimiK3Error(kimiK3ToolNameMessage)
+		}
+	}
 	return nil
+}
+
+// validKimiK3FunctionName mirrors the official tool-name rule: must start with
+// a letter and may contain letters, numbers, underscores and dashes.
+func validKimiK3FunctionName(name string) bool {
+	if name == "" || !isLetter(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !isLetter(c) && (c < '0' || c > '9') && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 func kimiK3Error(message string) error {
@@ -602,6 +627,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		kimiK3LogprobsFalseMessage,
 		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
+		kimiK3ToolNameMessage,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true

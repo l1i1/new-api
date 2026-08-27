@@ -71,6 +71,24 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 				ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
 			kimiK3ToolChoiceSpecifiedMessage,
 		},
+		{
+			"illegal tool name with space",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3",
+				Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get weather"}}}},
+			kimiK3ToolNameMessage,
+		},
+		{
+			"tool name starting with a digit",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3",
+				Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "1weather"}}}},
+			kimiK3ToolNameMessage,
+		},
+		{
+			"tool name with a dot",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3",
+				Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get.weather"}}}},
+			kimiK3ToolNameMessage,
+		},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {
