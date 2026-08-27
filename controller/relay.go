@@ -59,6 +59,17 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+// officialFitErrorsEnabled reports whether the requesting user has the
+// official-fit Errors dimension enabled for the model family of originalModel.
+func officialFitErrorsEnabled(c *gin.Context, originalModel string) bool {
+	setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
+	if !ok {
+		return false
+	}
+	profile, ok := setting.OfficialFitProfileFor(originalModel)
+	return ok && profile.Errors
+}
+
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -112,13 +123,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			filteredMessage := operation_setting.FilterErrorMessage(newAPIError.Error())
-			// Official DeepSeek V4 validation errors carry no gateway request
-			// ID suffix; keep such messages byte-identical to the provider.
+			// Official-fit validation errors (DeepSeek V4 / Kimi K3) carry no
+			// gateway request ID suffix and render with the official content
+			// type; keep such messages byte-identical to the provider whenever
+			// the requesting user has the Errors dimension enabled.
 			originalModel := strings.ToLower(strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyOriginalModel)))
-			isDeepSeekV4Validation := relayFormat == types.RelayFormatOpenAI &&
-				strings.HasPrefix(originalModel, "deepseek-v4-") &&
-				helper.IsDeepSeekV4ValidationMessage(filteredMessage)
-			if !isDeepSeekV4Validation {
+			isStrictFitValidation := relayFormat == types.RelayFormatOpenAI &&
+				helper.IsStrictFitValidationMessage(filteredMessage) &&
+				officialFitErrorsEnabled(c, originalModel)
+			if !isStrictFitValidation {
 				newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
 			}
 			switch relayFormat {
@@ -130,8 +143,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					"error": newAPIError.ToClaudeError(),
 				})
 			default:
-				if isDeepSeekV4Validation {
-					// The official endpoint returns validation errors with
+				if isStrictFitValidation {
+					// The official endpoints return validation errors with
 					// Content-Type application/octet-stream; keep the wire
 					// response identical, including the struct field order.
 					if body, marshalErr := common.Marshal(gin.H{"error": newAPIError.ToOpenAIError()}); marshalErr == nil {

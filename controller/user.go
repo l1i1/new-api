@@ -1508,13 +1508,14 @@ func UpdateUserSetting(c *gin.Context) {
 		upstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
 	}
 
-	// 构建设置
+	// 构建设置（保留管理员配置的官方一致性 profile，自服务保存不得覆盖）
 	settings := dto.UserSetting{
 		NotifyType:                       req.QuotaWarningType,
 		QuotaWarningThreshold:            req.QuotaWarningThreshold,
 		UpstreamModelUpdateNotifyEnabled: upstreamModelUpdateNotifyEnabled,
 		AcceptUnsetRatioModel:            req.AcceptUnsetModelRatioModel,
 		RecordIpLog:                      req.RecordIpLog,
+		OfficialFit:                      existingSettings.OfficialFit,
 	}
 
 	// 如果是webhook类型,添加webhook相关设置
@@ -1554,4 +1555,41 @@ func UpdateUserSetting(c *gin.Context) {
 	}
 
 	common.ApiSuccessI18n(c, i18n.MsgSettingSaved, nil)
+}
+
+// UpdateOfficialFitRequest is the admin-only payload for a user's official-fit
+// configuration. A nil config clears the profile.
+type UpdateOfficialFitRequest struct {
+	UserId int                    `json:"user_id"`
+	Config *dto.OfficialFitConfig `json:"official_fit"`
+}
+
+// UpdateUserOfficialFit replaces the official-fit (官方一致性) profile of a
+// user. The setting blob is read-modified-written so user self-service
+// settings are never clobbered, and vice versa.
+func UpdateUserOfficialFit(c *gin.Context) {
+	var req UpdateOfficialFitRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if req.UserId <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	user, err := model.GetUserById(req.UserId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	setting := user.GetSetting()
+	setting.OfficialFit = req.Config
+	if err := model.UpdateUserSetting(user.Id, setting); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
+		return
+	}
+	recordManageAuditFor(c, user.Id, "update_official_fit", map[string]interface{}{
+		"official_fit": req.Config,
+	})
+	common.ApiSuccess(c, nil)
 }

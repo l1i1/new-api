@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
@@ -38,6 +39,13 @@ func TestRelayUsesOfficialContentTypeForDeepSeekV4Validation(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_logprobs":5}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	common.SetContextKey(c, constant.ContextKeyOriginalModel, "deepseek-v4-flash")
+	// The strict-fit path in this test requires the official-fit profile
+	// (Validate rejects the request, Errors keeps the message verbatim).
+	common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Validate: true, Errors: true},
+		}},
+	})
 
 	Relay(c, types.RelayFormatOpenAI)
 

@@ -666,6 +666,9 @@ func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
 		OriginModelName: "deepseek-v4-flash",
 		RelayMode:       relayconstant.RelayModeChatCompletions,
 		RelayFormat:     types.RelayFormatOpenAI,
+		UserSetting: dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Validate: true, Shape: true},
+		}}},
 	}
 
 	usage, err := OpenaiHandler(c, info, &http.Response{
@@ -1060,6 +1063,9 @@ func TestDeepSeekThinkingLogprobsRequireBothOutputStreams(t *testing.T) {
 		OriginModelName: "deepseek-v4-flash",
 		RelayMode:       relayconstant.RelayModeChatCompletions,
 		Request:         &dto.GeneralOpenAIRequest{LogProbs: boolPtr(true)},
+		UserSetting: dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Validate: true},
+		}}},
 	}
 
 	assert.True(t, requiresDeepSeekV4ReasoningLogprobs(info))

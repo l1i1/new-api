@@ -30,6 +30,7 @@ import type {
   ManageUserQuotaPayload,
   ApiResponse,
   UserModelRateLimit,
+  OfficialFitConfig,
 } from './types'
 
 // ============================================================================
@@ -108,6 +109,20 @@ export async function updateUser(
   data: UserFormData & { id: number }
 ): Promise<ApiResponse<Partial<User>>> {
   const res = await api.put('/api/user/', data)
+  return res.data
+}
+
+/**
+ * Replace a user's official-fit (官方一致性) profile. Admin only.
+ */
+export async function updateUserOfficialFit(
+  userId: number,
+  officialFit: OfficialFitConfig | undefined
+): Promise<ApiResponse> {
+  const res = await api.put('/api/user/official-fit', {
+    user_id: userId,
+    official_fit: officialFit,
+  })
   return res.data
 }
 

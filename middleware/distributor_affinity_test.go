@@ -211,6 +211,36 @@ func TestMarkV4OfficialPinFromDistributorMatchesRelayThresholds(t *testing.T) {
 	assert.False(t, common.GetContextKeyBool(other, constant.ContextKeyV4OfficialPin))
 }
 
+func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
+	newCtx := func(body, path string) *gin.Context {
+		gin.SetMode(gin.TestMode)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		return c
+	}
+
+	// Mild sampling but the user profile enables official routing: pinned.
+	routeOn := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
+	common.SetContextKey(routeOn, constant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Route: true},
+		}},
+	})
+	markV4OfficialPinFromDistributor(routeOn)
+	assert.True(t, common.GetContextKeyBool(routeOn, constant.ContextKeyV4OfficialPin))
+
+	// Profile present but Route off: mild sampling stays unpinned.
+	routeOff := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
+	common.SetContextKey(routeOff, constant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Validate: true},
+		}},
+	})
+	markV4OfficialPinFromDistributor(routeOff)
+	assert.False(t, common.GetContextKeyBool(routeOff, constant.ContextKeyV4OfficialPin))
+}
+
 func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
 	// A pinned deepseek-v4 request with affinity cached to an aggregator
 	// channel must not reuse the sticky channel.

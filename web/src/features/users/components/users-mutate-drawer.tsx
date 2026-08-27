@@ -33,6 +33,7 @@ import {
 } from '@/components/drawer-layout'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import {
   Form,
   FormControl,
@@ -80,6 +81,7 @@ import {
   getUser,
   getGroups,
   getPermissionCatalog,
+  updateUserOfficialFit,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
@@ -89,7 +91,14 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
-import type { User } from '../types'
+import {
+  OFFICIAL_FIT_FIELDS,
+  OFFICIAL_FIT_MATCHES,
+  parseOfficialFit,
+  type OfficialFitConfig,
+  type OfficialFitField,
+  type User,
+} from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -110,6 +119,7 @@ export function UsersMutateDrawer({
   const currentUser = useAuthStore((s) => s.auth.user)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
+  const [officialFit, setOfficialFit] = useState<OfficialFitConfig>({})
 
   // Fetch groups
   const { data: groupsData } = useQuery({
@@ -140,6 +150,7 @@ export function UsersMutateDrawer({
         .then((result) => {
           if (result.success && result.data) {
             form.reset(transformUserToFormDefaults(result.data))
+            setOfficialFit(parseOfficialFit(result.data.setting))
           }
         })
         .catch(() => {
@@ -148,8 +159,29 @@ export function UsersMutateDrawer({
     } else if (open && !isUpdate) {
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
+      setOfficialFit({})
+    } else {
+      setOfficialFit({})
     }
   }, [open, isUpdate, currentRow, form, t])
+
+  const setFitField = (match: string, field: OfficialFitField, value: boolean) => {
+    setOfficialFit((prev) => {
+      const profile = { ...prev.profile }
+      const current = { ...profile[match] }
+      if (value) {
+        current[field] = true
+      } else {
+        delete current[field]
+      }
+      if (Object.keys(current).length === 0) {
+        delete profile[match]
+      } else {
+        profile[match] = current
+      }
+      return { profile }
+    })
+  }
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -183,22 +215,36 @@ export function UsersMutateDrawer({
         ? await updateUser(payload as typeof payload & { id: number })
         : await createUser(payload)
 
-      if (result.success) {
-        toast.success(
-          isUpdate
-            ? t(SUCCESS_MESSAGES.USER_UPDATED)
-            : t(SUCCESS_MESSAGES.USER_CREATED)
-        )
-        onOpenChange(false)
-        triggerRefresh()
-      } else {
+      if (!result.success) {
         toast.error(
           result.message ||
             (isUpdate
               ? t(ERROR_MESSAGES.UPDATE_FAILED)
               : t(ERROR_MESSAGES.CREATE_FAILED))
         )
+        return
       }
+
+      // Official-fit profile is written by a dedicated admin endpoint so the
+      // user self-service settings endpoint never clobbers it.
+      if (isUpdate && currentRow) {
+        const fitResult = await updateUserOfficialFit(
+          currentRow.id,
+          officialFit
+        )
+        if (!fitResult.success) {
+          toast.error(fitResult.message || t(ERROR_MESSAGES.UPDATE_FAILED))
+          return
+        }
+      }
+
+      toast.success(
+        isUpdate
+          ? t(SUCCESS_MESSAGES.USER_UPDATED)
+          : t(SUCCESS_MESSAGES.USER_CREATED)
+      )
+      onOpenChange(false)
+      triggerRefresh()
     } catch {
       toast.error(t(ERROR_MESSAGES.UNEXPECTED))
     } finally {
@@ -543,6 +589,56 @@ export function UsersMutateDrawer({
                     )}
                   </SideDrawerSection>
                 )}
+
+              {/* Official Fit (官方一致性) — per-user strict official protocol */}
+              {isUpdate && (
+                <SideDrawerSection>
+                  <h3 className='text-sm font-medium'>{t('Official Fit')}</h3>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Strict official-API behavior per model family. Everything is off by default (platform-compatible behavior).'
+                    )}
+                  </p>
+                  <div className='space-y-3'>
+                    {OFFICIAL_FIT_MATCHES.map(({ match, label }) => {
+                      const profile = officialFit.profile?.[match] ?? {}
+                      return (
+                        <div
+                          key={match}
+                          className='space-y-2 rounded-md border p-3'
+                        >
+                          <div className='text-sm font-medium'>
+                            {label}{' '}
+                            <span className='text-muted-foreground font-mono'>
+                              {match}
+                            </span>
+                          </div>
+                          <div className='grid grid-cols-2 gap-2'>
+                            {OFFICIAL_FIT_FIELDS.map(
+                              ({ field, label: fieldLabel }) => (
+                                <div
+                                  key={field}
+                                  className='flex items-center justify-between gap-2'
+                                >
+                                  <span className='text-muted-foreground text-xs'>
+                                    {t(fieldLabel)}
+                                  </span>
+                                  <Switch
+                                    checked={profile[field] === true}
+                                    onCheckedChange={(v) =>
+                                      setFitField(match, field, v)
+                                    }
+                                  />
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </SideDrawerSection>
+              )}
 
               {/* Binding Information (Read-only) */}
               {isUpdate && (

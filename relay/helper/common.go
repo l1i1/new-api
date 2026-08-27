@@ -18,14 +18,18 @@ import (
 )
 
 // isDeepSeekV4StreamModel reports whether the relay is streaming a DeepSeek V4
-// chat completion, so protocol-shape details (SSE Content-Type, chunk fields)
-// can mirror the official endpoint.
+// chat completion with the official-fit shape enabled, so protocol-shape
+// details (SSE Content-Type, chunk fields) can mirror the official endpoint.
 func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
 	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	return strings.HasPrefix(modelName, "deepseek-v4-")
+	if !strings.HasPrefix(modelName, "deepseek-v4-") {
+		return false
+	}
+	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
+	return ok && profile.Shape
 }
 
 func FlushWriter(c *gin.Context) (err error) {

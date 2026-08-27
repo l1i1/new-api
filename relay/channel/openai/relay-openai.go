@@ -142,7 +142,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
-	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info)
+	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
@@ -211,7 +211,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 
 		if lastStreamData != "" {
-			if info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info) {
+			if info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info) {
 				// Some compatible providers attach cumulative usage to every
 				// chunk. Keep it internal and emit usage exactly once on the
 				// terminal finish chunk, matching the official V4 stream.
@@ -657,7 +657,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		responseBody = geminiRespStr
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI && isDeepSeekV4ChatModel(info) {
+	if info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info) {
 		// Apply the V4 client contract after both passthrough and ForceFormat
 		// paths so generic usage extensions cannot escape either route.
 		fitted, fitErr := fitDeepSeekV4TextResponseBody(responseBody, &simpleResponse.Usage, !suppressReasoningContent)
@@ -720,6 +720,10 @@ func requiresDeepSeekV4ReasoningLogprobs(info *relaycommon.RelayInfo) bool {
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
 	if !strings.HasPrefix(modelName, "deepseek-v4-") || strings.HasSuffix(modelName, "-none") {
+		return false
+	}
+	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
+	if !ok || !profile.Validate {
 		return false
 	}
 	request, ok := info.Request.(*dto.GeneralOpenAIRequest)

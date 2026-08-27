@@ -351,11 +351,17 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			return nil, errors.New("field prompt is required")
 		}
 	case relayconstant.RelayModeChatCompletions:
-		if err := validateDeepSeekV4OfficialFields(textRequest); err != nil {
-			return nil, err
-		}
-		if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
-			return nil, err
+		profile, fitEnabled := officialFitProfile(c, textRequest.Model)
+		if fitEnabled && profile.Validate {
+			if err := validateDeepSeekV4OfficialFields(textRequest); err != nil {
+				return nil, err
+			}
+			if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
+				return nil, err
+			}
+			if err := validateKimiK3OfficialFields(textRequest); err != nil {
+				return nil, err
+			}
 		}
 		markDeepSeekV4OfficialPin(c, textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
@@ -386,25 +392,6 @@ const (
 	deepSeekV4TopLogprobsPairMessage  = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
 	deepSeekV4TopLogprobsRangeMessage = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
 )
-
-// IsDeepSeekV4ValidationMessage reports whether an error message carries one of
-// the official DeepSeek V4 request-validation texts. Official error bodies do
-// not append gateway request IDs, so callers keep such messages verbatim.
-func IsDeepSeekV4ValidationMessage(message string) bool {
-	for _, prefix := range []string{
-		deepSeekV4ReasoningEffortMessage,
-		deepSeekV4TopPMessage,
-		deepSeekV4TemperatureMessage,
-		deepSeekV4JsonObjectMessage,
-		deepSeekV4TopLogprobsPairMessage,
-		deepSeekV4TopLogprobsRangeMessage,
-	} {
-		if strings.HasPrefix(message, prefix) {
-			return true
-		}
-	}
-	return false
-}
 
 // deepSeekV4MessagesText concatenates the visible text of every message. The
 // official json_object validation scans the whole conversation (system and
@@ -507,6 +494,122 @@ func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
 		}, http.StatusBadRequest)
 	}
 	return nil
+}
+
+// officialFitProfile resolves the user's official-fit profile for a model from
+// the request context. TokenAuth writes the user setting before any relay
+// handler runs, so both validation (here) and error rendering (controller)
+// consult the same profile.
+func officialFitProfile(c *gin.Context, model string) (dto.OfficialFitProfile, bool) {
+	if c == nil {
+		return dto.OfficialFitProfile{}, false
+	}
+	setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
+	if !ok {
+		return dto.OfficialFitProfile{}, false
+	}
+	return setting.OfficialFitProfileFor(model)
+}
+
+// Kimi K3 official validation texts. Moonshot's exact wordings are being
+// calibrated against the official baseline (customer callback cases); the
+// rules implement documented K3 behavior, the strings mirror the official
+// style until calibrated.
+const (
+	kimiK3ThinkingMessage            = "thinking is not a valid parameter for kimi-k3."
+	kimiK3ReasoningEffortMessage     = "Invalid reasoning_effort value, the valid values are [low, high, max]."
+	kimiK3TemperatureMessage         = "Invalid temperature value, the valid value of temperature is 1.0."
+	kimiK3TopPMessage                = "Invalid top_p value, the valid value of top_p is 0.95."
+	kimiK3NMessage                   = "Invalid n value, the valid value of n is 1."
+	kimiK3PresencePenaltyMessage     = "Invalid presence_penalty value, the valid value of presence_penalty is 0."
+	kimiK3FrequencyPenaltyMessage    = "Invalid frequency_penalty value, the valid value of frequency_penalty is 0."
+	kimiK3TopLogprobsRangeMessage    = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
+)
+
+func isKimiK3Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "kimi-k3")
+}
+
+// validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 contract:
+// the model always reasons (thinking is an illegal K2.x field), sampling values
+// are fixed, reasoning_effort has an enum and top_logprobs is bounded. Only
+// requests targeting a kimi-k3 model are inspected.
+func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !isKimiK3Model(request.Model) {
+		return nil
+	}
+	if len(request.THINKING) > 0 {
+		return kimiK3Error(kimiK3ThinkingMessage)
+	}
+	if effort := strings.ToLower(strings.TrimSpace(request.ReasoningEffort)); effort != "" &&
+		effort != "low" && effort != "high" && effort != "max" {
+		return kimiK3Error(kimiK3ReasoningEffortMessage)
+	}
+	if request.Temperature != nil && math.Abs(*request.Temperature-1.0) > 1e-9 {
+		return kimiK3Error(kimiK3TemperatureMessage)
+	}
+	if request.TopP != nil && math.Abs(*request.TopP-0.95) > 1e-9 {
+		return kimiK3Error(kimiK3TopPMessage)
+	}
+	if request.N != nil && *request.N != 1 {
+		return kimiK3Error(kimiK3NMessage)
+	}
+	if request.PresencePenalty != nil && *request.PresencePenalty != 0 {
+		return kimiK3Error(kimiK3PresencePenaltyMessage)
+	}
+	if request.FrequencyPenalty != nil && *request.FrequencyPenalty != 0 {
+		return kimiK3Error(kimiK3FrequencyPenaltyMessage)
+	}
+	if request.TopLogProbs != nil && (*request.TopLogProbs < 0 || *request.TopLogProbs > 20) {
+		return kimiK3Error(kimiK3TopLogprobsRangeMessage)
+	}
+	if tc, ok := request.ToolChoice.(map[string]any); ok {
+		if t, _ := tc["type"].(string); strings.EqualFold(t, "function") {
+			if _, hasFn := tc["function"]; hasFn {
+				return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
+			}
+		}
+	}
+	return nil
+}
+
+func kimiK3Error(message string) error {
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: message,
+		Type:    "invalid_request_error",
+		Param:   nil,
+		Code:    "invalid_request_error",
+	}, http.StatusBadRequest)
+}
+
+// IsStrictFitValidationMessage reports whether an error message carries one of
+// the official request-validation texts (DeepSeek V4 and Kimi K3). Official
+// error bodies do not append gateway request IDs, so callers keep such
+// messages verbatim.
+func IsStrictFitValidationMessage(message string) bool {
+	for _, prefix := range []string{
+		deepSeekV4ReasoningEffortMessage,
+		deepSeekV4TopPMessage,
+		deepSeekV4TemperatureMessage,
+		deepSeekV4JsonObjectMessage,
+		deepSeekV4TopLogprobsPairMessage,
+		deepSeekV4TopLogprobsRangeMessage,
+		kimiK3ThinkingMessage,
+		kimiK3ReasoningEffortMessage,
+		kimiK3TemperatureMessage,
+		kimiK3TopPMessage,
+		kimiK3NMessage,
+		kimiK3PresencePenaltyMessage,
+		kimiK3FrequencyPenaltyMessage,
+		kimiK3TopLogprobsRangeMessage,
+		kimiK3ToolChoiceSpecifiedMessage,
+	} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {

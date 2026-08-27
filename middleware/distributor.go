@@ -363,6 +363,15 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(sampling.Model)), "deepseek-v4-") {
 		return
 	}
+	// A user with the official-fit Route dimension pins the whole family,
+	// regardless of sampling params, so strict-fit traffic stays on the
+	// official channel and never lands on a tolerant aggregator.
+	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
+		if profile, ok := setting.OfficialFitProfileFor(sampling.Model); ok && profile.Route {
+			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+			return
+		}
+	}
 	pinned := false
 	if sampling.Temperature != nil && *sampling.Temperature > 1.5 {
 		pinned = true

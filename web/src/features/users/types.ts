@@ -59,6 +59,7 @@ export const userSchema = z.object({
   last_login_at: z.number().optional(),
   DeletedAt: z.any().nullable().optional(),
   remark: z.string().optional(),
+  setting: z.string().optional(),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
@@ -66,6 +67,46 @@ export const userSchema = z.object({
 export type User = z.infer<typeof userSchema>
 
 export const userListSchema = z.array(userSchema)
+
+// ============================================================================
+// Official Fit (官方一致性) Configuration
+// ============================================================================
+
+export interface OfficialFitProfile {
+  validate?: boolean
+  errors?: boolean
+  shape?: boolean
+  route?: boolean
+}
+
+export interface OfficialFitConfig {
+  profile?: Record<string, OfficialFitProfile>
+}
+
+export const OFFICIAL_FIT_MATCHES = [
+  { match: 'deepseek-v4-', label: 'DeepSeek V4' },
+  { match: 'kimi-k3', label: 'Kimi K3' },
+] as const
+
+export const OFFICIAL_FIT_FIELDS = [
+  { field: 'validate', label: 'Param validation' },
+  { field: 'errors', label: 'Verbatim errors' },
+  { field: 'shape', label: 'Response shape' },
+  { field: 'route', label: 'Official route' },
+] as const
+
+export type OfficialFitField = (typeof OFFICIAL_FIT_FIELDS)[number]['field']
+
+/** Parse users.setting JSON and extract the official_fit config (if any). */
+export function parseOfficialFit(setting?: string): OfficialFitConfig {
+  if (!setting) return {}
+  try {
+    const parsed = JSON.parse(setting)
+    return (parsed?.official_fit as OfficialFitConfig | undefined) ?? {}
+  } catch {
+    return {}
+  }
+}
 
 // ============================================================================
 // API Request/Response Types

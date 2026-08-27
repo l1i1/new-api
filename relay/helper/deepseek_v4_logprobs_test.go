@@ -7,7 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	coreconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -20,6 +23,13 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
+		// The strict validators run only for users with the official-fit
+		// Validate dimension; inject it here.
+		common.SetContextKey(c, coreconstant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"deepseek-v4-": {Validate: true},
+			}},
+		})
 		return c
 	}
 
@@ -84,6 +94,49 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			assert.Nil(t, oaiErr.Param)
 		})
 	}
+}
+
+func TestDeepSeekV4ValidationGatedByOfficialFitProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// Without an official-fit profile the strict validators are skipped and
+	// the platform-compatible behavior applies: the request passes validation.
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":1.5,"top_logprobs":5,"reasoning_effort":"extreme"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	req, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
+	require.NoError(t, err)
+	require.NotNil(t, req.TopP)
+	assert.Equal(t, 1.5, *req.TopP)
+	require.NotNil(t, req.TopLogProbs)
+	assert.Equal(t, 5, *req.TopLogProbs)
+	assert.Equal(t, "extreme", req.ReasoningEffort)
+}
+
+func TestKimiK3ValidationGatedByOfficialFitProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// kimi-k3 validation is likewise gated: with the profile enabled the
+	// fixed-sampling rules reject, without it the request passes.
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"1+1=?"}],"temperature":0}`
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	_, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
+	require.NoError(t, err)
+
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	c2.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c2, coreconstant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"kimi-k3": {Validate: true},
+		}},
+	})
+	_, err = GetAndValidateTextRequest(c2, constant.RelayModeChatCompletions)
+	require.Error(t, err)
+	var apiErr *types.NewAPIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+	assert.Equal(t, kimiK3TemperatureMessage, apiErr.ToOpenAIError().Message)
 }
 
 func TestDeepSeekV4RequiredToolChoiceIsAccepted(t *testing.T) {

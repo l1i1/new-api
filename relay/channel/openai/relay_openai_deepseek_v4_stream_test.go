@@ -49,6 +49,10 @@ func deepSeekV4RelayInfo() *relaycommon.RelayInfo {
 		RelayFormat:        types.RelayFormatOpenAI,
 		ShouldIncludeUsage: true,
 		DisablePing:        true,
+		// The fit-layer tests exercise the strict-fit mode; attach the profile.
+		UserSetting: dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"deepseek-v4-": {Validate: true, Shape: true},
+		}}},
 	}
 	return info
 }
@@ -84,6 +88,40 @@ func assertDeepSeekV4StreamUsage(t *testing.T, events []string, wantObjects int)
 		objects++
 	}
 	assert.Equal(t, wantObjects, objects)
+}
+
+// Without the official-fit Shape flag the DS stream runs the generic path:
+// chunks are forwarded and the final usage is synthesized as a separate event
+// (the pre-fit platform behavior), instead of the official one-chunk splice.
+func TestOaiStreamHandlerDeepSeekV4GenericPathWithoutFitProfile(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":17,"total_tokens":25}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	recorder, resp := newDeepSeekV4StreamTestContext(t, body)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := deepSeekV4RelayInfo()
+	info.UserSetting = dto.UserSetting{} // fit disabled
+	usage, err := OaiStreamHandler(c, info, resp)
+
+	require.Nil(t, err)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.Equal(t, 17, usage.CompletionTokens)
+
+	events := dataEvents(recorder)
+	require.Len(t, events, 4, "expected 3 data events plus [DONE]")
+	assert.Equal(t, "[DONE]", events[len(events)-1])
+	// Generic path: a synthetic usage-only chunk event is emitted at the end
+	// (empty choices array + usage), unlike the fit path which splices the
+	// usage into the terminal finish chunk.
+	final := events[len(events)-2]
+	assert.Contains(t, final, `"usage"`)
+	assert.Contains(t, final, `"prompt_tokens":8`)
+	assert.Contains(t, final, `"choices":[]`)
 }
 
 // An official-shaped upstream (usage attached to the final finish_reason

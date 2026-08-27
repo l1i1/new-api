@@ -25,6 +25,18 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 	return strings.HasPrefix(modelName, "deepseek-v4-")
 }
 
+// deepSeekV4FitEnabled reports whether the official response-shape fit layer
+// applies to this request: the DeepSeek V4 model family plus the user's
+// official-fit Shape flag. Without the flag the generic relay path runs
+// (upstream-shaped responses), i.e. the platform's compatible behavior.
+func deepSeekV4FitEnabled(info *relaycommon.RelayInfo) bool {
+	if !isDeepSeekV4ChatModel(info) {
+		return false
+	}
+	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
+	return ok && profile.Shape
+}
+
 type deepSeekV4PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
 }
