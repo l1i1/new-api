@@ -437,3 +437,134 @@ func TestOaiResponsesStreamHandlerDoesNotCountPartialImageEvent(t *testing.T) {
 
 	assert.Equal(t, 0, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolImageGeneration].CallCount)
 }
+
+func TestOaiResponsesStreamHandlerRejectsEmptyEOFWithoutTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	// Upstream sends non-terminal metadata events, then closes the connection
+	// without response.completed/done, a finish chunk, or any usage.
+	stream := strings.Join([]string{
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n",
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"in_progress\",\"content\":[]}}\n\n",
+	}, "")
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	_, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
+	// Stream headers/status already committed by the intermediate events; the
+	// client-visible result must carry a synthetic failed event, not a clean end.
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "response.failed")
+	require.Contains(t, w.Body.String(), "server_error")
+	require.Contains(t, w.Body.String(), "data: [DONE]")
+}
+
+func TestOaiResponsesStreamHandlerKeepsCleanEOFWithoutTerminalEventWhenEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	// No events at all and an immediate clean EOF: nothing was committed, so the
+	// guard returns a retryable 502 instead of emitting a synthetic event.
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	_, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	require.NotContains(t, w.Body.String(), "response.failed")
+}
+
+func TestOaiResponsesStreamHandlerAllowsCompletedEventWithoutOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	stream := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\ndata: [DONE]\n\n"
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 0, usage.TotalTokens)
+	require.NotContains(t, w.Body.String(), "response.failed")
+}
+
+func TestOaiResponsesStreamHandlerAllowsTextDeltaWithoutTerminalEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "mytest-model",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mytest-model"},
+	}
+	// A partial stream with text but no terminal event is a genuine truncation;
+	// whatever was delivered stays committed, so no synthetic event is injected.
+	stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Greater(t, usage.TotalTokens, 0)
+	require.NotContains(t, w.Body.String(), "response.failed")
+}

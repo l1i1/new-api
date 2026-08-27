@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,6 +83,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
 	responseDataSent := false
+	sawTerminalEvent := false
+	hasToolCall := false
 	var streamErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -123,6 +126,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		}
 		if streamResponse.Type == "response.failed" || streamResponse.Type == "response.error" {
+			sawTerminalEvent = true
 			var oaiError *types.OpenAIError
 			if streamResponse.Response != nil {
 				oaiError = streamResponse.Response.GetOpenAIError()
@@ -150,6 +154,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		responseDataSent = true
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
+			sawTerminalEvent = true
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
@@ -185,6 +190,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				imageCommitted = true
 			}
 		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			sawTerminalEvent = true
 			if !imageCommitted {
 				imageCounter.Reset()
 				imageCounter.Commit(info)
@@ -198,10 +204,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
 					info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
+					hasToolCall = true
 				case dto.BuildInCallFileSearchCall:
 					info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
+					hasToolCall = true
 				case dto.BuildInCallFunctionCall:
 					info.CountBillableToolCall(dto.BuildInCallFunctionCall, streamResponse.Item.Name)
+					hasToolCall = true
 				case dto.ResponsesOutputTypeImageGenerationCall:
 					if !imageCommitted {
 						imageCounter.Observe(streamResponse.Item, streamResponse.OutputIndex)
@@ -233,6 +242,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
+	// 流以 EOF 结束，但从未发送终端事件（response.completed/done/failed/
+	// incomplete/cancelled），且没有任何可交付输出（文本、工具调用、图片或
+	// usage）。这说明上游在产出结果前就关闭了流：把它标记为失败，而不是
+	// 静默记一笔 0-token 成功（此前 record 为"上游没有返回计费信息"）。
+	// 已提交响应时补发合成 response.failed 事件，让客户端（如 Codex CLI）
+	// 走重试；未提交时直接返回错误，由 relay 按普通上游错误处理/重试。
+	if !sawTerminalEvent && responseTextBuilder.Len() == 0 && !hasToolCall &&
+		imageCounter.Count() == 0 && usage.TotalTokens == 0 {
+		return usage, emptyResponsesStreamError(c, c.Writer.Written())
+	}
+
 	return usage, nil
 }
 
@@ -251,4 +271,41 @@ func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usag
 		usage.PromptTokensDetails.CacheWriteTokens = response.Usage.InputTokensDetails.CacheWriteTokens
 	}
 	return usage
+}
+
+// emptyResponsesStreamError marks a Responses stream that ended without a
+// terminal event and without any deliverable output as an upstream failure,
+// mirroring emptyChatCompletionError for the chat-completions path. When the
+// response has already been committed, a synthetic response.failed event is
+// forwarded so protocol clients can retry instead of treating the truncated
+// stream as a completed empty response.
+func emptyResponsesStreamError(c *gin.Context, committed bool) *types.NewAPIError {
+	ops := []types.NewAPIErrorOptions{}
+	if committed {
+		ops = append(ops, types.ErrOptionWithSkipRetry())
+	}
+	apiErr := types.NewOpenAIError(
+		errors.New("upstream returned empty final content"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+		ops...,
+	)
+	if !committed {
+		return apiErr
+	}
+	synthetic := dto.ResponsesStreamResponse{
+		Type: "response.failed",
+		Response: &dto.OpenAIResponsesResponse{
+			Status: []byte(`"failed"`),
+			Error: &types.OpenAIError{
+				Type:    "server_error",
+				Message: apiErr.Error(),
+			},
+		},
+	}
+	if data, err := common.Marshal(synthetic); err == nil {
+		_ = helper.ResponseChunkData(c, synthetic, string(data))
+		helper.Done(c)
+	}
+	return apiErr
 }
