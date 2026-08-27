@@ -1582,6 +1582,11 @@ func UpdateUserOfficialFit(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	myRole := c.GetInt("role")
+	if !canManageTargetRole(myRole, user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
+		return
+	}
 	setting := user.GetSetting()
 	setting.OfficialFit = req.Config
 	if err := model.UpdateUserSetting(user.Id, setting); err != nil {
