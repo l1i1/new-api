@@ -144,19 +144,34 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false)
 }
 
-// preferDeepSeekOfficialChannels narrows deepseek-v4-* candidates to official
-// DeepSeek channels when the request is marked for the official pin. The mark
-// is set only for requests whose sampling parameters are known to drive
-// aggregator upstreams into divergent behavior; ordinary fit-able requests
-// keep normal aggregator routing. Without an official channel the candidate
-// set is unchanged. Caller must hold channelSyncLock (read lock).
-func preferDeepSeekOfficialChannels(channels []int, model string, pinOfficial bool) []int {
-	if len(channels) == 0 || !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+// officialFitChannelType returns the channel type that counts as the official
+// upstream for an official-fit model family: deepseek-v4-* -> official
+// DeepSeek (type 43), kimi-k3 -> Moonshot (type 25). Zero for other models.
+func officialFitChannelType(model string) int {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(m, "deepseek-v4-") {
+		return constant.ChannelTypeDeepSeek
+	}
+	if strings.HasPrefix(m, "kimi-k3") {
+		return constant.ChannelTypeMoonshot
+	}
+	return 0
+}
+
+// preferOfficialFitChannels narrows official-fit candidates to the official
+// upstream channel type when the request is marked for the official pin. For
+// deepseek-v4-* the mark is set for the extreme-sampling class or by the
+// user's Route profile; kimi-k3 only via the Route profile. Without an
+// official channel the candidate set is unchanged. Caller must hold
+// channelSyncLock (read lock).
+func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) []int {
+	officialType := officialFitChannelType(model)
+	if len(channels) == 0 || !pinOfficial || officialType == 0 {
 		return channels
 	}
 	official := make([]int, 0, len(channels))
 	for _, channelID := range channels {
-		if channel, ok := channelsIDM[channelID]; ok && channel.Type == constant.ChannelTypeDeepSeek {
+		if channel, ok := channelsIDM[channelID]; ok && channel.Type == officialType {
 			official = append(official, channelID)
 		}
 	}
@@ -166,15 +181,16 @@ func preferDeepSeekOfficialChannels(channels []int, model string, pinOfficial bo
 	return official
 }
 
-// deepSeekOfficialPreferenceApplied reports whether the previous narrowing kept
+// officialFitPreferenceApplied reports whether the previous narrowing kept
 // only a strict subset of the cached candidates, meaning the prebuilt selection
 // metadata no longer describes the candidate set and must not be used.
-func deepSeekOfficialPreferenceApplied(channels []int, model string, pinOfficial bool) bool {
-	if !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+func officialFitPreferenceApplied(channels []int, model string, pinOfficial bool) bool {
+	officialType := officialFitChannelType(model)
+	if !pinOfficial || officialType == 0 {
 		return false
 	}
 	for _, channelID := range channels {
-		if channel, ok := channelsIDM[channelID]; ok && channel.Type != constant.ChannelTypeDeepSeek {
+		if channel, ok := channelsIDM[channelID]; ok && channel.Type != officialType {
 			return false
 		}
 	}
@@ -199,14 +215,14 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-	channels = preferDeepSeekOfficialChannels(channels, model, pinOfficial)
+	channels = preferOfficialFitChannels(channels, model, pinOfficial)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-		channels = preferDeepSeekOfficialChannels(channels, model, pinOfficial)
+		channels = preferOfficialFitChannels(channels, model, pinOfficial)
 	}
 
 	if len(channels) == 0 {
@@ -220,7 +236,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
 	}
 
-	if requestPath == "" && len(blockedChannels) == 0 && !deepSeekOfficialPreferenceApplied(channels, model, pinOfficial) {
+	if requestPath == "" && len(blockedChannels) == 0 && !officialFitPreferenceApplied(channels, model, pinOfficial) {
 		if model2selection, ok := group2model2channelSelection[group]; ok {
 			if selection := model2selection[model]; selection != nil {
 				return selectChannelFromMetadata(group, model, retry, selection)

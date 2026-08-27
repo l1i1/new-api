@@ -208,6 +208,55 @@ func TestGetRandomSatisfiedChannelKeepsAggregatorsWhenNoOfficialDeepSeek(t *test
 	}
 }
 
+func TestGetRandomSatisfiedChannelPinnedKimiK3PrefersMoonshot(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	group2model2channels = map[string]map[string][]int{
+		"default": {"kimi-k3": {1, 2}},
+	}
+	channelsIDM = map[int]*Channel{
+		1: {Id: 1, Type: constant.ChannelTypeMoonshot, Priority: int64Ptr(10), Weight: uintPtr(1)},
+		2: {Id: 2, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"kimi-k3": buildChannelSelectionMetadata(group2model2channels["default"]["kimi-k3"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channelSyncLock.Unlock()
+	})
+
+	// Unpinned kimi-k3 keeps weighted selection across aggregators and the
+	// official Moonshot channel; the Route pin narrows to the official one.
+	unpinned := map[int]bool{}
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, false)
+		require.NoError(t, err)
+		unpinned[selected.Id] = true
+	}
+	require.True(t, unpinned[1] && unpinned[2], "unpinned kimi-k3 keeps weighted selection across channel types")
+
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, true)
+		require.NoError(t, err)
+		require.Equal(t, 1, selected.Id, "pinned kimi-k3 requests always select the Moonshot official channel")
+	}
+
+	// Non-fit families are unaffected by the pin.
+	require.Equal(t, 0, officialFitChannelType("qwen3.7-max"))
+}
+
 func TestGetRandomSatisfiedChannelUnaffectedForNonV4Models(t *testing.T) {
 	oldMemoryCacheEnabled := common.MemoryCacheEnabled
 	channelSyncLock.Lock()

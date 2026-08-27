@@ -256,7 +256,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
-	abilities = preferDeepSeekOfficialAbilities(abilities, model, pinOfficial)
+	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial)
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -281,16 +281,17 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	return &channel, err
 }
 
-// preferDeepSeekOfficialAbilities narrows deepseek-v4-* candidates to official
-// DeepSeek channels when the request is marked for the official pin,
+// preferOfficialFitAbilities narrows official-fit candidates to the official
+// upstream channel type when the request is marked for the official pin,
 // mirroring the memory-cache path. Without an official channel the candidate
 // set is unchanged.
-func preferDeepSeekOfficialAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
+func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
+	officialType := officialFitChannelType(model)
 	// A single candidate cannot be narrowed: if it is official the filter would
 	// keep it, and if it is not there is no official candidate to prefer.
 	// Skipping the type query keeps the pinned single-channel hot path
 	// query-free.
-	if len(abilities) <= 1 || !pinOfficial || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-") {
+	if len(abilities) <= 1 || !pinOfficial || officialType == 0 {
 		return abilities
 	}
 	channelIDs := make([]int, 0, len(abilities))
@@ -306,7 +307,7 @@ func preferDeepSeekOfficialAbilities(abilities []Ability, model string, pinOffic
 	}
 	officialIDs := make(map[int]struct{}, len(officialChannels))
 	for _, channel := range officialChannels {
-		if channel.Type == constant.ChannelTypeDeepSeek {
+		if channel.Type == officialType {
 			officialIDs[channel.Id] = struct{}{}
 		}
 	}

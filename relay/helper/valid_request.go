@@ -511,19 +511,19 @@ func officialFitProfile(c *gin.Context, model string) (dto.OfficialFitProfile, b
 	return setting.OfficialFitProfileFor(model)
 }
 
-// Kimi K3 official validation texts. Moonshot's exact wordings are being
-// calibrated against the official baseline (customer callback cases); the
-// rules implement documented K3 behavior, the strings mirror the official
-// style until calibrated.
+// Kimi K3 official validation texts, calibrated 2026-08-27 against the live
+// api.moonshot.cn API. The official endpoint does NOT enum-check
+// reasoning_effort strings and silently ignores the K2.x thinking field; only
+// fixed sampling params, the logprobs pair and a specified tool_choice are
+// rejected, with the exact wordings below.
 const (
-	kimiK3ThinkingMessage            = "thinking is not a valid parameter for kimi-k3."
-	kimiK3ReasoningEffortMessage     = "Invalid reasoning_effort value, the valid values are [low, high, max]."
-	kimiK3TemperatureMessage         = "Invalid temperature value, the valid value of temperature is 1.0."
-	kimiK3TopPMessage                = "Invalid top_p value, the valid value of top_p is 0.95."
-	kimiK3NMessage                   = "Invalid n value, the valid value of n is 1."
-	kimiK3PresencePenaltyMessage     = "Invalid presence_penalty value, the valid value of presence_penalty is 0."
-	kimiK3FrequencyPenaltyMessage    = "Invalid frequency_penalty value, the valid value of frequency_penalty is 0."
-	kimiK3TopLogprobsRangeMessage    = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	kimiK3TemperatureMessage         = "invalid temperature: only 1 is allowed for this model"
+	kimiK3TopPMessage                = "invalid top_p: only 0.95 is allowed for this model"
+	kimiK3NMessage                   = "invalid n: only 1 is allowed for this model"
+	kimiK3PresencePenaltyMessage     = "invalid presence_penalty: only 0 is allowed for this model"
+	kimiK3FrequencyPenaltyMessage    = "invalid frequency_penalty: only 0 is allowed for this model"
+	kimiK3LogprobsFalseMessage       = "invalid logprobs: only false is allowed for this model"
+	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 )
 
@@ -531,20 +531,16 @@ func isKimiK3Model(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "kimi-k3")
 }
 
-// validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 contract:
-// the model always reasons (thinking is an illegal K2.x field), sampling values
-// are fixed, reasoning_effort has an enum and top_logprobs is bounded. Only
-// requests targeting a kimi-k3 model are inspected.
+// validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 request
+// contract as observed live: fixed sampling values (temperature=1.0,
+// top_p=0.95, n=1, both penalties 0), logprobs disabled by design, the
+// top_logprobs pair requirement and no specified tool_choice. Only requests
+// targeting a kimi-k3 model are inspected; other fields (thinking,
+// reasoning_effort strings, max_completion_tokens) are passed through as the
+// official endpoint accepts them.
 func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isKimiK3Model(request.Model) {
 		return nil
-	}
-	if len(request.THINKING) > 0 {
-		return kimiK3Error(kimiK3ThinkingMessage)
-	}
-	if effort := strings.ToLower(strings.TrimSpace(request.ReasoningEffort)); effort != "" &&
-		effort != "low" && effort != "high" && effort != "max" {
-		return kimiK3Error(kimiK3ReasoningEffortMessage)
 	}
 	if request.Temperature != nil && math.Abs(*request.Temperature-1.0) > 1e-9 {
 		return kimiK3Error(kimiK3TemperatureMessage)
@@ -561,8 +557,11 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request.FrequencyPenalty != nil && *request.FrequencyPenalty != 0 {
 		return kimiK3Error(kimiK3FrequencyPenaltyMessage)
 	}
-	if request.TopLogProbs != nil && (*request.TopLogProbs < 0 || *request.TopLogProbs > 20) {
-		return kimiK3Error(kimiK3TopLogprobsRangeMessage)
+	if request.LogProbs != nil && *request.LogProbs {
+		return kimiK3Error(kimiK3LogprobsFalseMessage)
+	}
+	if request.TopLogProbs != nil && (request.LogProbs == nil || !*request.LogProbs) {
+		return kimiK3Error(kimiK3TopLogprobsPairMessage)
 	}
 	if tc, ok := request.ToolChoice.(map[string]any); ok {
 		if t, _ := tc["type"].(string); strings.EqualFold(t, "function") {
@@ -595,14 +594,13 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4JsonObjectMessage,
 		deepSeekV4TopLogprobsPairMessage,
 		deepSeekV4TopLogprobsRangeMessage,
-		kimiK3ThinkingMessage,
-		kimiK3ReasoningEffortMessage,
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,
 		kimiK3PresencePenaltyMessage,
 		kimiK3FrequencyPenaltyMessage,
-		kimiK3TopLogprobsRangeMessage,
+		kimiK3LogprobsFalseMessage,
+		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
 	} {
 		if strings.HasPrefix(message, prefix) {

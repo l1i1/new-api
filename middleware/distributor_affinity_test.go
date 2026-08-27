@@ -239,6 +239,21 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 	})
 	markV4OfficialPinFromDistributor(routeOff)
 	assert.False(t, common.GetContextKeyBool(routeOff, constant.ContextKeyV4OfficialPin))
+
+	// kimi-k3 with the Route profile pins to the Moonshot official channel;
+	// without the profile it stays unpinned even for "extreme" sampling.
+	k3Route := newCtx(`{"model":"kimi-k3","temperature":0.7}`, "/v1/chat/completions")
+	common.SetContextKey(k3Route, constant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"kimi-k3": {Route: true},
+		}},
+	})
+	markV4OfficialPinFromDistributor(k3Route)
+	assert.True(t, common.GetContextKeyBool(k3Route, constant.ContextKeyV4OfficialPin))
+
+	k3Plain := newCtx(`{"model":"kimi-k3","temperature":2}`, "/v1/chat/completions")
+	markV4OfficialPinFromDistributor(k3Plain)
+	assert.False(t, common.GetContextKeyBool(k3Plain, constant.ContextKeyV4OfficialPin))
 }
 
 func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {

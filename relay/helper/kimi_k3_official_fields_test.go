@@ -11,6 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The rejection matrix is calibrated against the live api.moonshot.cn API
+// (2026-08-27): fixed sampling values, logprobs disabled, top_logprobs pair
+// requirement and no specified tool_choice.
 func TestKimiK3OfficialFieldsReject(t *testing.T) {
 	rejected := []struct {
 		name    string
@@ -18,23 +21,13 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 		message string
 	}{
 		{
-			"thinking parameter is illegal on kimi-k3",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: []byte(`{"type":"disabled"}`)},
-			kimiK3ThinkingMessage,
-		},
-		{
-			"reasoning_effort invalid enum",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", ReasoningEffort: "ultra"},
-			kimiK3ReasoningEffortMessage,
+			"temperature zero",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0)},
+			kimiK3TemperatureMessage,
 		},
 		{
 			"temperature non-fixed",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0.5)},
-			kimiK3TemperatureMessage,
-		},
-		{
-			"temperature zero",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0)},
 			kimiK3TemperatureMessage,
 		},
 		{
@@ -58,9 +51,19 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 			kimiK3FrequencyPenaltyMessage,
 		},
 		{
-			"top_logprobs above 20",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", TopLogProbs: intPtr(21)},
-			kimiK3TopLogprobsRangeMessage,
+			"logprobs true is rejected by design",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", LogProbs: boolPtr(true)},
+			kimiK3LogprobsFalseMessage,
+		},
+		{
+			"top_logprobs without logprobs rejects the pair",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", TopLogProbs: intPtr(5)},
+			kimiK3TopLogprobsPairMessage,
+		},
+		{
+			"top_logprobs with logprobs false rejects the pair",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", LogProbs: boolPtr(false), TopLogProbs: intPtr(5)},
+			kimiK3TopLogprobsPairMessage,
 		},
 		{
 			"tool_choice specified function object",
@@ -81,9 +84,14 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 	}
 }
 
+// The official API is laxer than the docs: thinking and arbitrary
+// reasoning_effort strings are accepted, and none of these may be rejected
+// locally when fit mode is on.
 func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 	accepted := []*dto.GeneralOpenAIRequest{
 		{Model: "kimi-k3", Messages: []dto.Message{{Role: "user", Content: "1+1=?"}}},
+		{Model: "kimi-k3", THINKING: []byte(`{"type":"disabled"}`)},
+		{Model: "kimi-k3", ReasoningEffort: "ultra"},
 		{Model: "kimi-k3", ReasoningEffort: "low"},
 		{Model: "kimi-k3", ReasoningEffort: "max"},
 		{Model: "kimi-k3", Temperature: floatPtr(1.0)},
@@ -91,9 +99,10 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "kimi-k3", N: intPtr(1)},
 		{Model: "kimi-k3", PresencePenalty: floatPtr(0)},
 		{Model: "kimi-k3", FrequencyPenalty: floatPtr(0)},
-		{Model: "kimi-k3", TopLogProbs: intPtr(20)},
+		{Model: "kimi-k3", LogProbs: boolPtr(false)},
 		{Model: "kimi-k3", ToolChoice: "required"},
 		{Model: "kimi-k3", ToolChoice: "none"},
+		{Model: "kimi-k3", ToolChoice: "auto"},
 		// non-kimi models are never inspected
 		{Model: "deepseek-v4-flash", ReasoningEffort: "extreme", Temperature: floatPtr(0)},
 		{Model: "kimi-k2.6", THINKING: []byte(`{"type":"disabled"}`)},
@@ -105,14 +114,13 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 
 func TestKimiK3ValidationMessageRecognized(t *testing.T) {
 	for _, msg := range []string{
-		kimiK3ThinkingMessage,
-		kimiK3ReasoningEffortMessage,
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,
 		kimiK3PresencePenaltyMessage,
 		kimiK3FrequencyPenaltyMessage,
-		kimiK3TopLogprobsRangeMessage,
+		kimiK3LogprobsFalseMessage,
+		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
 	} {
 		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
@@ -121,5 +129,7 @@ func TestKimiK3ValidationMessageRecognized(t *testing.T) {
 	assert.True(t, IsStrictFitValidationMessage("Invalid top_p value, the valid range of top_p is (0, 1]."))
 	assert.False(t, IsStrictFitValidationMessage("some internal platform error"))
 }
+
+func boolPtr(value bool) *bool { return &value }
 
 func intPtr(v int) *int { return &v }

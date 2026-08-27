@@ -342,10 +342,10 @@ type v4OfficialPinSampling struct {
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 }
 
-// markV4OfficialPinFromDistributor applies the same official-pin marking the
-// relay validation performs, but at distributor time — channel selection runs
-// in this middleware, before the relay parses the request. Failure to read
-// the body leaves the pin unset, matching the unpinned default.
+// markV4OfficialPinFromDistributor applies the official-pin marking at
+// distributor time — channel selection runs in this middleware, before the
+// relay parses the request. Failure to read the body leaves the pin unset,
+// matching the unpinned default.
 func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if c == nil || c.Request == nil || c.Request.Body == nil {
 		return
@@ -360,17 +360,25 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if err := common.UnmarshalBodyReusable(c, &sampling); err != nil {
 		return
 	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(sampling.Model)), "deepseek-v4-") {
+	modelName := strings.ToLower(strings.TrimSpace(sampling.Model))
+	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4-")
+	isKimiK3 := strings.HasPrefix(modelName, "kimi-k3")
+	if !isDeepSeekV4 && !isKimiK3 {
 		return
 	}
 	// A user with the official-fit Route dimension pins the whole family,
 	// regardless of sampling params, so strict-fit traffic stays on the
-	// official channel and never lands on a tolerant aggregator.
+	// official channel and never lands on a tolerant aggregator. The pin
+	// narrows per family: DeepSeek V4 -> type 43, kimi-k3 -> type 25.
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		if profile, ok := setting.OfficialFitProfileFor(sampling.Model); ok && profile.Route {
 			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 			return
 		}
+	}
+	// The extreme-sampling pin is a DeepSeek V4 family behavior (K08 class).
+	if !isDeepSeekV4 {
+		return
 	}
 	pinned := false
 	if sampling.Temperature != nil && *sampling.Temperature > 1.5 {

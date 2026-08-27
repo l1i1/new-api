@@ -26,15 +26,19 @@
 - 四个维度互相独立：
   - `validate`：官方参数校验，本地按官方 400 拦截（DS：temperature∈[0,2]、top_p∈(0,1]、
     reasoning_effort 枚举、json_object 需含 "json" 字样、top_logprobs 规则、双路 logprobs 硬校验；
-    K3：`thinking` 参数非法、reasoning_effort∈{low,high,max}、temperature=1.0 / top_p=0.95 /
-    n=1 / presence_penalty=0 / frequency_penalty=0 / top_logprobs∈[0,20]、
-    tool_choice 指定函数对象 → 400）。
+    K3（2026-08-27 对照 api.moonshot.cn 实测校准）：temperature=1.0 / top_p=0.95 / n=1 /
+    presence_penalty=0 / frequency_penalty=0、logprobs=true 拒绝、top_logprobs 成对要求、
+    tool_choice 指定函数对象 → 400。注意：实测官方**不**校验 reasoning_effort 字符串枚举
+    （"ultra" 也 200）、**接受** K2.x 的 thinking 字段（静默忽略）、max_completion_tokens
+    也不做 1M 硬校验——这些本地一律不拦截）。
   - `errors`：校验错误消息保持官方原文（不附加网关 request id、以官方 Content-Type 返回）。
   - `shape`：响应形态拟合（DS 官方 7 键 usage、流式 usage 单次拼接、剥离聚合器扩展字段、
     SSE Content-Type 镜像；K3 暂无非官方形状可处理，保持透传）。
-  - `route`：整族请求固定路由到官方渠道（ChannnelTypeDeepSeek 43，复用
-    `ContextKeyV4OfficialPin` 机制）；K3 暂时 no-op——当前平台没有 Moonshot 官方直连渠道，
-    接入后可复用同一 pin 机制。
+  - `route`：整族请求固定路由到官方渠道——DS 按渠道类型 43（官方 api.deepseek.com）、
+    K3 按渠道类型 25（Moonshot，渠道 CN_Kimi id 130），复用 `ContextKeyV4OfficialPin`
+    机制（distributor 选路前标记，选路时按模型族窄化到对应类型）。
+    注意：CN_Kimi 当前为 Moonshot 官方账号最低档限速（org RPM 3）且 priority=0——
+    开启 K3 route 前必须先与 Moonshot 谈大额限速，否则买家流量会持续 429。
 
 ## 行为映射
 
@@ -46,7 +50,7 @@
 | `relay/helper/common.go` `isDeepSeekV4StreamModel`（stream_scanner Content-Type） | 加入 profile.Shape 判定 |
 | `relay/channel/openai/relay-openai.go` `requiresDeepSeekV4ReasoningLogprobs` | 加入 profile.Validate 判定 |
 | `controller/relay.go` 错误原文 + octet-stream | `IsDeepSeekV4ValidationMessage`（仅 DS）→ `IsStrictFitValidationMessage`（DS+K3），并加 `profile.Errors` 门控 |
-| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时整族 pin（选路前生效） |
+| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时整族 pin（选路前生效）；DS 与 K3 均可（按模型族类型窄化） |
 
 ## 管理入口
 
@@ -58,10 +62,13 @@
 
 ## 已知限制
 
-- K3 校验错误文案按官方风格落地，**精确文案以 Moonshot 官方基准为准**（客户基准校准后
-  只改 `relay/helper/valid_request.go` 顶部消息常量）。
-- K3 `route` 维度当前无效：无 Moonshot 官方渠道（channels 表 2026-08-27 核查：
-  kimi-k3 全部为 OpenAI 类型聚合渠道）；仅需通过 `validate` 保证拒绝语义确定性。
+- K3 校验规则的官方行为与文案已按 2026-08-27 实测校准（`relay/helper/valid_request.go`
+  顶部常量）：官方接受 thinking 字段与任意 reasoning_effort 字符串、不校验
+  max_completion_tokens 上限，本地校验仅覆盖固定采样参数 / logprobs / 指定 tool_choice。
+- `reasoning_effort` 传非字符串（数字）时官方返回专属类型错误文案；网关在 DTO 反序列化层
+  报错，无法复刻该文案（占位偏差，记录中，暂不处理）。
+- K3 官方渠道（type 25）已达最低限速档（org RPM 3）；大用量场景启用 K3 `route` 前需
+  先与 Moonshot 协商限速，或将 CN_Kimi 仅作为基准/校验渠道。
 - 无配置用户（绝大多数）行为与启用前完全一致，仅当 profile 命中才改变。
 
 ## 验收
