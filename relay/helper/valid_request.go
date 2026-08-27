@@ -385,13 +385,14 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 // DeepSeek V4 official validation messages. The official endpoint returns these
 // verbatim; keep the wording in sync with api.deepseek.com when it drifts.
 const (
-	deepSeekV4TopPMessage                        = "Invalid top_p value, the valid range of top_p is (0, 1]."
+	deepSeekV4TopPMessage                        = "Invalid top_p value, the valid range of top_p is (0, 1.0]"
 	deepSeekV4TemperatureMessage                 = "Invalid temperature value, the valid range of temperature is [0, 2]"
 	deepSeekV4JsonObjectMessage                  = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
 	deepSeekV4TopLogprobsPairMessage             = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
 	deepSeekV4TopLogprobsRangeMessage            = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
 	deepSeekV4ReasoningEffortDeserMessagePrefix  = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix  = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
+	deepSeekV4UnknownModelMessagePrefix          = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
 )
 
 // deepSeekV4ReasoningEffortAllowed mirrors the official serde enum: the
@@ -408,6 +409,35 @@ var deepSeekV4ReasoningEffortAllowed = map[string]bool{
 func deepSeekV4ReasoningEffortDeserMessage(effort string) string {
 	return deepSeekV4ReasoningEffortDeserMessagePrefix + " `" + effort +
 		"`" + deepSeekV4ReasoningEffortDeserMessageSuffix
+}
+
+// deepSeekV4TopLogprobsDeserMessage renders the official deserialization
+// error for a negative top_logprobs: the wire type is `u8` so the endpoint
+// fails before the range check (the [0, 20] range text applies to 21 and up).
+func deepSeekV4TopLogprobsDeserMessage(value int) string {
+	return fmt.Sprintf("Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `%d`, expected u8", value)
+}
+
+// DeepSeekV4OfficialModelNames is the exact model-id list the official
+// api.deepseek.com endpoint accepts (from the live unknown-model error text).
+var DeepSeekV4OfficialModelNames = []string{
+	"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+}
+
+// IsDeepSeekV4OfficialModelName reports whether model is one of the exact
+// official DeepSeek V4 model ids.
+func IsDeepSeekV4OfficialModelName(model string) bool {
+	for _, n := range DeepSeekV4OfficialModelNames {
+		if strings.EqualFold(strings.TrimSpace(model), n) {
+			return true
+		}
+	}
+	return false
+}
+
+// DeepSeekV4UnknownModelMessage renders the official unknown-model error text.
+func DeepSeekV4UnknownModelMessage(model string) string {
+	return deepSeekV4UnknownModelMessagePrefix + model + "."
 }
 
 // deepSeekV4MessagesText concatenates the visible text of every message. The
@@ -502,7 +532,17 @@ func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
 			Code:    "invalid_request_error",
 		}, http.StatusBadRequest)
 	}
-	if *request.TopLogProbs < 0 || *request.TopLogProbs > 20 {
+	if *request.TopLogProbs < 0 {
+		// The official endpoint deserializes top_logprobs as u8, so negatives
+		// fail before the range check with the deserialization text.
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4TopLogprobsDeserMessage(*request.TopLogProbs),
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if *request.TopLogProbs > 20 {
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4TopLogprobsRangeMessage,
 			Type:    "invalid_request_error",
@@ -641,6 +681,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4JsonObjectMessage,
 		deepSeekV4TopLogprobsPairMessage,
 		deepSeekV4TopLogprobsRangeMessage,
+		"Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer",
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,

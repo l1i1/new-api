@@ -154,7 +154,7 @@ func TestKimiK3ValidationMessageRecognized(t *testing.T) {
 		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
 	}
 	// DeepSeek texts are still recognized by the combined predicate.
-	assert.True(t, IsStrictFitValidationMessage("Invalid top_p value, the valid range of top_p is (0, 1]."))
+	assert.True(t, IsStrictFitValidationMessage("Invalid top_p value, the valid range of top_p is (0, 1.0]"))
 	assert.False(t, IsStrictFitValidationMessage("some internal platform error"))
 }
 

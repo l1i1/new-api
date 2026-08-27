@@ -61,7 +61,7 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 		{
 			name:    "top_p above one is rejected",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":1.5}`,
-			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
+			message: "Invalid top_p value, the valid range of top_p is (0, 1.0]",
 		},
 		{
 			name:    "temperature above two is rejected",
@@ -76,7 +76,12 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 		{
 			name:    "zero top_p is rejected",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":0}`,
-			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
+			message: "Invalid top_p value, the valid range of top_p is (0, 1.0]",
+		},
+		{
+			name:    "negative top_logprobs is a deserialization error",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"logprobs":true,"top_logprobs":-1}`,
+			message: "Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `-1`, expected u8",
 		},
 		{
 			name:    "json_object requires the word json in the prompt",

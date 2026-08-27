@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -284,6 +285,24 @@ func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
 	}
 }
 
+// abortOfficialFitMessage renders an official-fit validation error exactly
+// like the controller's strict-fit path: the official text, no gateway
+// request ID suffix and Content-Type application/octet-stream.
+func abortOfficialFitMessage(c *gin.Context, status int, message string) {
+	payload, marshalErr := common.Marshal(gin.H{"error": types.OpenAIError{
+		Message: message,
+		Type:    "invalid_request_error",
+		Param:   nil,
+		Code:    "invalid_request_error",
+	}})
+	if marshalErr != nil {
+		abortWithOpenAiMessage(c, status, message)
+		return
+	}
+	c.Data(status, "application/octet-stream", payload)
+	c.Abort()
+}
+
 func tokenModelLimitAllowsExact(tokenModelLimit map[string]bool, modelName string) bool {
 	return tokenModelLimit[modelName] || tokenModelLimit[ratio_setting.FormatMatchingModelName(modelName)]
 }
@@ -370,11 +389,21 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// regardless of sampling params, so strict-fit traffic stays on the
 	// official channel and never lands on a tolerant aggregator. The pin
 	// narrows per family: DeepSeek V4 -> type 43, kimi-k3 -> type 25.
+	var profile dto.OfficialFitProfile
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
-		if profile, ok := setting.OfficialFitProfileFor(sampling.Model); ok && profile.Route {
-			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-			return
-		}
+		profile, _ = setting.OfficialFitProfileFor(sampling.Model)
+	}
+	if profile.Route {
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	}
+	// Official-fit DeepSeek V4 requests reject a non-official model id with
+	// the official text BEFORE channel selection: the platform's
+	// model_not_configured wording differs from the official "supported API
+	// model names" 400. The Moonshot official model set is not enumerable
+	// from the gateway, so kimi-k3 keeps the platform wording.
+	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(sampling.Model) {
+		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(sampling.Model))
+		return
 	}
 	// The extreme-sampling pin is a DeepSeek V4 family behavior (K08 class).
 	if !isDeepSeekV4 {
