@@ -1,5 +1,29 @@
 # New API Fork Memory
 
+- On 2026-08-27, out-of-range sampling parameters (`temperature: 2.5`,
+  `top_p: 1.5`) on deepseek-v4-flash probes timed out (300 s, http 0) instead
+  of returning the official 400. Root cause: `validateDeepSeekV4OfficialFields`
+  did not validate temperature, so the invalid request left the gateway and hit
+  the unhealthy aggregator chain (93/117) where each channel hung ~5 minutes
+  ("do request failed") during the OpenCode weekly-quota-429 window (09:42-10:04
+  JST); the client's 300 s timeout fired first. Fixed in
+  `v1.0.0-rc.25-tokeness-temp-bounds.1` (commit `bd52fac78`; digest
+  `sha256:be0116f7cf1ad229a57e85b4e00057e4ebd73a07089c6c7817ee6b68a4ef5135`;
+  publish run `33033160119`, deploy run `33033808069`): temperature outside
+  [0, 2] is now rejected locally with the official byte-for-byte message
+  ("Invalid temperature value, the valid range of temperature is [0, 2]", no
+  trailing period) and never reaches an upstream; `top_p` bounds (0, 1] were
+  already enforced. Verified live: 2.5/1.5 → 400 (1.2 s, exact official text);
+  0/2/0.1 → 200; relay log shows local `relay error:` with no channel error.
+  Two operational notes from the investigation: (1) docker logs on this fleet
+  use local time (+0800) while nginx access logs also +0800 — the request-id
+  prefix inside a relay log line marks arrival, the log-line timestamp marks
+  completion, so a 10-minute gap per request means the two aggregator channels
+  each hung ~5 min. (2) Requests with Content-Type `application/json` are
+  required for the V4 pin/distributor body re-read (`UnmarshalBodyReusable`
+  silently skips non-JSON content types, leaving the pin unset) — the official
+  pairing test suite runs with JSON bodies.
+
 - On 2026-08-27, the "upstream returned empty final content" failures on
   channel tests ("测试渠道连接" and multi-key management probes) were root-caused
   and fixed in `v1.0.0-rc.25-tokeness-channel-test.1` (commit `ec0f73a9e`;
