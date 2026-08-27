@@ -146,7 +146,8 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 
 // officialFitChannelType returns the channel type that counts as the official
 // upstream for an official-fit model family: deepseek-v4-* -> official
-// DeepSeek (type 43), kimi-k3 -> Moonshot (type 25). Zero for other models.
+// DeepSeek (type 43), kimi-k3 -> Moonshot (type 25), glm-5.3 -> Zhipu v4
+// API (type 26). Zero for other models.
 func officialFitChannelType(model string) int {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if strings.HasPrefix(m, "deepseek-v4-") {
@@ -154,6 +155,9 @@ func officialFitChannelType(model string) int {
 	}
 	if strings.HasPrefix(m, "kimi-k3") {
 		return constant.ChannelTypeMoonshot
+	}
+	if strings.HasPrefix(m, "glm-5.3") {
+		return constant.ChannelTypeZhipu_v4
 	}
 	return 0
 }

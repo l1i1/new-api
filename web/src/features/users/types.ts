@@ -86,6 +86,7 @@ export interface OfficialFitConfig {
 export const OFFICIAL_FIT_MATCHES = [
   { match: 'deepseek-v4-', label: 'DeepSeek V4' },
   { match: 'kimi-k3', label: 'Kimi K3' },
+  { match: 'glm-5.3', label: 'GLM 5.3' },
 ] as const
 
 export const OFFICIAL_FIT_FIELDS = [

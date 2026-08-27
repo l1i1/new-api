@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"encoding/json"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
@@ -362,6 +364,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			if err := validateKimiK3OfficialFields(textRequest); err != nil {
 				return nil, err
 			}
+			if err := validateGlm53OfficialFields(textRequest); err != nil {
+				return nil, err
+			}
 		}
 		markDeepSeekV4OfficialPin(c, textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
@@ -586,6 +591,36 @@ const (
 	kimiK3MessagesEmptyMessage       = "Invalid request: messages must not be empty"
 )
 
+// GLM-5.3 official validation texts calibrated 2026-08-28 against the live
+// open.bigmodel.cn/api/paas/v4 endpoint. The error wire format differs from
+// OpenAI: {"error":{"code":"1210","message":"..."}} (1210=parameter,
+// 1214=model/input) with Content-Type application/json. GLM-5.3 accepts
+// n, penalties, logprobs, top_logprobs, tool names, specified tool_choice,
+// json_object without the "json" keyword and explicit default sampling
+// values — those must NEVER be rejected locally.
+const (
+	glm53ThinkingMessage      = "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"
+	glm53TemperatureMessage   = "temperature参数非法：限制数值范围[0,1]"
+	glm53TopPMessage          = "top_p参数非法：限制数值范围[0,1]"
+	glm53ModelNotFoundMessage = "modelCode：不存在"
+	glm53EmptyMessagesMessage = "输入不能为空"
+)
+
+func isGlm53Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm-5.3")
+}
+
+// glm53Error wraps a GLM official validation error with its numeric code so
+// the controller can render the Zhipu wire shape byte-identically.
+func glm53Error(code, message string) error {
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: message,
+		Type:    "invalid_request_error",
+		Param:   nil,
+		Code:    code,
+	}, http.StatusBadRequest)
+}
+
 func isKimiK3Model(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "kimi-k3")
 }
@@ -639,6 +674,88 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
 	return nil
+}
+
+// validateGlm53OfficialFields mirrors the live Zhipu glm-5.3 contract: the
+// endpoint rejects only excluded thinking, a reasoning_effort outside
+// low/high/max (any other string gets the thinking text), temperature/top_p
+// outside [0,1], empty messages and unknown model ids. Everything the
+// official endpoint tolerates — n, penalties, logprobs, top_logprobs with or
+// without logprobs, arbitrary tool names, specified tool_choice, json_object
+// without the "json" keyword, explicit default sampling values — must pass.
+func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !isGlm53Model(request.Model) {
+		return nil
+	}
+	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
+		return glm53Error("1214", glm53EmptyMessagesMessage)
+	}
+	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" &&
+		!strings.Contains("|low|high|max|", "|"+strings.ToLower(effort)+"|") {
+		return glm53Error("1210", glm53ThinkingMessage)
+	}
+	if request.Temperature != nil && (*request.Temperature < 0 || *request.Temperature > 1) {
+		return glm53Error("1210", glm53TemperatureMessage)
+	}
+	if request.TopP != nil && (*request.TopP < 0 || *request.TopP > 1) {
+		return glm53Error("1210", glm53TopPMessage)
+	}
+	if thinking := compileGlmThinking(request.THINKING); thinking != nil {
+		if t, _ := thinking["type"].(string); !strings.EqualFold(t, "enabled") {
+			return glm53Error("1210", glm53ThinkingMessage)
+		}
+	}
+	return nil
+}
+
+// compileGlmThinking decodes the raw thinking field; nil means absent or
+// unparseable (the official endpoint ignores malformed types the same way).
+func compileGlmThinking(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+// IsStrictGlmValidationMessage reports whether an error message carries one
+// of the official Zhipu validation texts; the caller renders the Zhipu wire
+// format ({error:{code,message}}) for them and keeps them byte-identical.
+func IsStrictGlmValidationMessage(message string) bool {
+	for _, prefix := range []string{
+		glm53ThinkingMessage,
+		glm53TemperatureMessage,
+		glm53TopPMessage,
+		glm53ModelNotFoundMessage,
+		glm53EmptyMessagesMessage,
+	} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Glm53ModelNotFoundText mirrors the official unknown-model text so the
+// distributor can render it without importing package-internal constants.
+var Glm53ModelNotFoundText = glm53ModelNotFoundMessage
+
+// Glm53OfficialModelNames is the exact model-id list of the glm-5.3 family
+// (glm-5.2 and older are not part of this fit family).
+var Glm53OfficialModelNames = []string{"glm-5.3", "glm-5.3-flash"}
+
+// IsGlm53OfficialModelName reports whether model is one of the glm-5.3
+// family ids the official endpoint accepts.
+func IsGlm53OfficialModelName(model string) bool {
+	for _, n := range Glm53OfficialModelNames {
+		if strings.EqualFold(strings.TrimSpace(model), n) {
+			return true
+		}
+	}
+	return false
 }
 
 // validKimiK3FunctionName mirrors the official tool-name rule: must start with

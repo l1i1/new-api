@@ -131,7 +131,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			isStrictFitValidation := relayFormat == types.RelayFormatOpenAI &&
 				helper.IsStrictFitValidationMessage(filteredMessage) &&
 				officialFitErrorsEnabled(c, originalModel)
-			if !isStrictFitValidation {
+			// Zhipu GLM validation errors use their own wire shape: the error
+			// object carries {code: "1210"/"1214", message} and
+			// Content-Type application/json; charset=UTF-8.
+			isStrictGlmValidation := relayFormat == types.RelayFormatOpenAI &&
+				helper.IsStrictGlmValidationMessage(filteredMessage) &&
+				officialFitErrorsEnabled(c, originalModel)
+			if !isStrictFitValidation && !isStrictGlmValidation {
 				newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
 			}
 			switch relayFormat {
@@ -143,6 +149,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					"error": newAPIError.ToClaudeError(),
 				})
 			default:
+				if isStrictGlmValidation {
+					// Zhipu renders errors without type/param plus their own
+					// numeric code; kept byte-identical including the charset
+					// suffix in the content type.
+					if body, marshalErr := common.Marshal(gin.H{"error": gin.H{
+						"code":    newAPIError.ToOpenAIError().Code,
+						"message": filteredMessage,
+					}}); marshalErr == nil {
+						c.Data(newAPIError.StatusCode, "application/json; charset=UTF-8", body)
+						return
+					}
+				}
 				if isStrictFitValidation {
 					// The official endpoints return validation errors with
 					// Content-Type application/octet-stream; keep the wire

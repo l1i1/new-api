@@ -309,6 +309,22 @@ func abortOfficialFitMessage(c *gin.Context, status int, message string) {
 	c.Abort()
 }
 
+// abortGlmMessage renders a Zhipu-shaped validation error ({error:{code,
+// message}}) with the official content type; used by the glm-5.3
+// unknown-model rejection before channel selection.
+func abortGlmMessage(c *gin.Context, status int, code, message string) {
+	payload, marshalErr := common.Marshal(gin.H{"error": gin.H{
+		"code":    code,
+		"message": message,
+	}})
+	if marshalErr != nil {
+		abortWithOpenAiMessage(c, status, message)
+		return
+	}
+	c.Data(status, "application/json; charset=UTF-8", payload)
+	c.Abort()
+}
+
 func tokenModelLimitAllowsExact(tokenModelLimit map[string]bool, modelName string) bool {
 	return tokenModelLimit[modelName] || tokenModelLimit[ratio_setting.FormatMatchingModelName(modelName)]
 }
@@ -388,7 +404,8 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	modelName := strings.ToLower(strings.TrimSpace(sampling.Model))
 	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4-")
 	isKimiK3 := strings.HasPrefix(modelName, "kimi-k3")
-	if !isDeepSeekV4 && !isKimiK3 {
+	isGlm53 := strings.HasPrefix(modelName, "glm-5.3")
+	if !isDeepSeekV4 && !isKimiK3 && !isGlm53 {
 		return
 	}
 	// A user with the official-fit Route dimension pins the whole family,
@@ -406,9 +423,15 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// the official text BEFORE channel selection: the platform's
 	// model_not_configured wording differs from the official "supported API
 	// model names" 400. The Moonshot official model set is not enumerable
-	// from the gateway, so kimi-k3 keeps the platform wording.
+	// from the gateway, so kimi-k3 keeps the platform wording. The glm-5.3
+	// family is enumerable (glm-5.3 / glm-5.3-flash) and uses the Zhipu
+	// 1214 wire shape.
 	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(sampling.Model) {
 		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(sampling.Model))
+		return
+	}
+	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(sampling.Model) {
+		abortGlmMessage(c, http.StatusBadRequest, "1214", relayhelper.Glm53ModelNotFoundText)
 		return
 	}
 	// The extreme-sampling pin is a DeepSeek V4 family behavior (K08 class).
