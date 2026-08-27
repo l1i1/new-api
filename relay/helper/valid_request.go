@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -317,6 +318,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	textRequest := &dto.GeneralOpenAIRequest{}
 	err := common.UnmarshalBodyReusable(c, textRequest)
 	if err != nil {
+		if officialFitErr := officialFitEffortTypeError(c, err); officialFitErr != nil {
+			return nil, officialFitErr
+		}
 		return nil, err
 	}
 
@@ -390,14 +394,19 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 // DeepSeek V4 official validation messages. The official endpoint returns these
 // verbatim; keep the wording in sync with api.deepseek.com when it drifts.
 const (
-	deepSeekV4TopPMessage                        = "Invalid top_p value, the valid range of top_p is (0, 1.0]"
-	deepSeekV4TemperatureMessage                 = "Invalid temperature value, the valid range of temperature is [0, 2]"
-	deepSeekV4JsonObjectMessage                  = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
-	deepSeekV4TopLogprobsPairMessage             = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
-	deepSeekV4TopLogprobsRangeMessage            = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
-	deepSeekV4ReasoningEffortDeserMessagePrefix  = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
-	deepSeekV4ReasoningEffortDeserMessageSuffix  = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
-	deepSeekV4UnknownModelMessagePrefix          = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
+	deepSeekV4TopPMessage                       = "Invalid top_p value, the valid range of top_p is (0, 1.0]"
+	deepSeekV4TemperatureMessage                = "Invalid temperature value, the valid range of temperature is [0, 2]"
+	deepSeekV4JsonObjectMessage                 = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
+	deepSeekV4TopLogprobsPairMessage            = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
+	deepSeekV4TopLogprobsRangeMessage           = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
+	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
+	deepSeekV4UnknownModelMessagePrefix         = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
+	// deepSeekV4ReasoningEffortTypeErrorMessage mirrors the official wording for
+	// a non-string reasoning_effort: the endpoint's own parser fails the type
+	// before any enum check. The live response appends " at line 1 column N",
+	// which is body-specific and dropped like the serde column suffix.
+	deepSeekV4ReasoningEffortTypeErrorMessage = "Failed to parse the request body as JSON: reasoning_effort: expected value"
 )
 
 // deepSeekV4ReasoningEffortAllowed mirrors the official serde enum: the
@@ -443,6 +452,60 @@ func IsDeepSeekV4OfficialModelName(model string) bool {
 // DeepSeekV4UnknownModelMessage renders the official unknown-model error text.
 func DeepSeekV4UnknownModelMessage(model string) string {
 	return deepSeekV4UnknownModelMessagePrefix + model + "."
+}
+
+// officialFitEffortTypeError maps a JSON type error on reasoning_effort to the
+// official per-family 400. The dto field is a Go string, so a numeric/bool
+// value fails the decode and would otherwise surface as a gateway 500; the
+// official endpoints reject the type with their own wording. Runs only in the
+// decode-error path (it re-reads the stored body) and only when the user's
+// official-fit profile enables validation for the request's model family —
+// non-fit users keep the original decode error.
+func officialFitEffortTypeError(c *gin.Context, unmarshalErr error) error {
+	if unmarshalErr == nil || !strings.Contains(unmarshalErr.Error(), "reasoning_effort") {
+		return nil
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil
+	}
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(storage).Decode(&raw); err != nil {
+		return nil
+	}
+	modelRaw, ok := raw["model"]
+	if !ok || len(modelRaw) == 0 || modelRaw[0] != '"' {
+		return nil
+	}
+	var model string
+	if err := json.Unmarshal(modelRaw, &model); err != nil {
+		return nil
+	}
+	effRaw, ok := raw["reasoning_effort"]
+	if !ok || len(effRaw) == 0 || effRaw[0] == '"' {
+		return nil
+	}
+	profile, fitEnabled := officialFitProfile(c, model)
+	if !fitEnabled || !profile.Validate {
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-"):
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4ReasoningEffortTypeErrorMessage,
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	case isKimiK3Model(model):
+		return kimiK3Error(kimiK3ReasoningEffortTypeMessage)
+	case isGlm53Model(model):
+		return glm53Error("1210", glm53ReasoningEffortTypeMessage)
+	}
+	return nil
 }
 
 // deepSeekV4MessagesText concatenates the visible text of every message. The
@@ -589,6 +652,7 @@ const (
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolNameMessage            = "Invalid request: function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
 	kimiK3MessagesEmptyMessage       = "Invalid request: messages must not be empty"
+	kimiK3ReasoningEffortTypeMessage = "Invalid request: the `reasoning_effort` field in the request (expected type string) is illegal, and number is not acceptable"
 )
 
 // GLM-5.3 official validation texts calibrated 2026-08-28 against the live
@@ -604,6 +668,10 @@ const (
 	glm53TopPMessage          = "top_p参数非法：限制数值范围[0,1]"
 	glm53ModelNotFoundMessage = "modelCode：不存在"
 	glm53EmptyMessagesMessage = "输入不能为空"
+	// glm53ReasoningEffortTypeMessage mirrors the live Zhipu wording for a
+	// non-string reasoning_effort (the numeric probe returned code 1210 with
+	// the enum-list text, unlike string values which get the thinking text).
+	glm53ReasoningEffortTypeMessage = "reasoning_effort 参数值非法，可选值为：none、minimal、low、medium、high、xhigh、max"
 )
 
 func isGlm53Model(model string) bool {
@@ -731,6 +799,7 @@ func IsStrictGlmValidationMessage(message string) bool {
 		glm53TopPMessage,
 		glm53ModelNotFoundMessage,
 		glm53EmptyMessagesMessage,
+		glm53ReasoningEffortTypeMessage,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true
@@ -793,6 +862,7 @@ func kimiK3Error(message string) error {
 func IsStrictFitValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		deepSeekV4ReasoningEffortDeserMessagePrefix,
+		deepSeekV4ReasoningEffortTypeErrorMessage,
 		deepSeekV4TopPMessage,
 		deepSeekV4TemperatureMessage,
 		deepSeekV4JsonObjectMessage,
@@ -809,6 +879,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		kimiK3ToolChoiceSpecifiedMessage,
 		kimiK3ToolNameMessage,
 		kimiK3MessagesEmptyMessage,
+		kimiK3ReasoningEffortTypeMessage,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true
