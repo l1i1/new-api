@@ -61,6 +61,10 @@ func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIReq
 		ToolChoice:      request.ToolChoice,
 		THINKING:        request.THINKING,
 		ReasoningEffort: request.ReasoningEffort,
+		// Without response_format the upstream model answers prose for
+		// json_object requests; GLM-5.3 official-fit must keep it (the suite's
+		// json_object probe failed exactly this way).
+		ResponseFormat: request.ResponseFormat,
 	}
 	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
 		maxTokens := request.GetMaxTokens()
