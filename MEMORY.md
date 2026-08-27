@@ -1,5 +1,85 @@
 # New API Fork Memory
 
+- On 2026-08-27, the multi-key management UX was overhauled (local-only, no
+  commit/publish/deploy): (1) manage dialog now uses one bounded scroll
+  container for both axes — the old double-container layout buried the
+  horizontal scrollbar at the content bottom; index/status are pinned left and
+  actions pinned right; default page size 50 (25/50/100); disabled-reason and
+  test errors are truncated with tooltips; "上次测试" split into compact result
+  + separate time column; four 24h metric columns merged into one tooltiped
+  column; custom `multi-key-scrollbar` styling added. (2) "测试已启用密钥" now
+  tests the whole enabled pool (backend `all=true`) instead of the visible
+  page; test progress is live: `runMultiKeyCredentialTests` used to call the
+  report callback only after `workers.Wait()` — the collector now runs
+  concurrently so `SystemTask.State {processed,total,progress}` updates every
+  ~2s and the button shows "测试中 X/Y" with a progress bar. (3) New
+  `POST /api/channel/:id/multi-key/credentials` (ChannelSensitiveWrite) appends
+  keys with a keys_revision guard; dialog gains an "添加密钥" box with a live
+  parse preview. (4) Row-level enable/disable/delete now send keys_revision and
+  `ManageMultiKeys` rejects stale position actions with 409. (5) Multi-key
+  strategy (random/polling/affinity) is changeable when editing (update already
+  accepted it; the form never sent it); single-key channels can be upgraded
+  into a pool via `mode=multi_to_single` on update (append keeps the original
+  key as position 0). Max per-test keys raised 100→500. (6) "删除所选" bulk
+  delete: `ManageMultiKeys` gained `delete_keys` (credential_ids +
+  keys_revision guard, ChannelSensitiveWrite) mirroring the single `delete_key`
+  semantics — removed credentials stay as historical rows (`position=-id`,
+  manual_disabled, reason `legacy_key_removed`), deleting all keys is rejected,
+  and the reindex logic was extracted to `rebuildMultiKeyChannelState` with
+  unit tests. Verified live: 60-key pool append (60→62 with per-key proxy),
+  polling→affinity change, single→multi conversion, live progress polls,
+  compact failure cells, bulk delete UI (toast "已删除 3 个密钥", pool 60→57,
+  history rows correct), and stale-revision rejection. NOTE: as of this entry
+  `relay/` contains parallel in-flight DeepSeek V4 validation work
+  (`relay/channel/openai/{deepseek_v4_fit,helper,relay-openai}.go`,
+  `relay/helper/{common,valid_request}.go`) that changes error wording and
+  currently fails `TestRelayUsesOfficialContentTypeForDeepSeekV4Validation`;
+  not touched by this change.
+
+- On 2026-08-27, investigation of "no input/output tokens" log rows for
+  `gpt-5.6-luna` (type=2 consume rows with `prompt_tokens=0`,
+  `completion_tokens=0`, `quota=0`, content "上游没有返回计费信息，无法扣费"
+  from `service/text_quota.go` `hasBillableUsage` false path) found the row is
+  an honest record, not a billing bug: the upstream SSE stream ended cleanly
+  with `stream_status={"status":"ok","end_reason":"eof"}` and NO
+  `finish_reason` (unlike billed rows which log `end_reason=done` and a
+  finish_reason). Live reproduce against channel 11 (`GPT-E_AiB`,
+  `node5-ev2.tokeness.cn:8317`) showed the upstream /v1/responses
+  `response.completed` event carries a real `usage` (e.g. input 304 /
+  output 11), so the gateway could bill it; the zero rows instead mean the
+  upstream closed the connection without a terminal chunk, which the
+  stream-eof compatibility layer treats as normal (see
+  `relay/helper/stream_scanner.go` promote-EOF path), so usage stays empty:
+  no `response.completed`, no `output_text.delta` — `OaiResponsesStreamHandler`
+  (`relay/channel/openai/relay_responses.go`) cannot synthesize usage. The
+  rows cluster on token 11089 (codex CLI, user dearice, 3611 of 11624
+  requests, 31%) driving `/v1/responses` with the "codex cli trace" channel
+  affinity rule (`prompt_cache_key` key source, zero-TTL sticky affinity); the
+  summary view "首字 3.0s / 耗时 5.0s / ¥0" rows are these same records.
+  Not yet fixed; candidate directions: upstream needs to return a proper
+  terminal event even when output is empty, or the gateway should mark
+  `response.completed`-less clean EOF with a non-empty received count as
+  incomplete.
+- On 2026-08-27, the fix for the above landed in the working tree (not yet
+  committed/published/deployed): `OaiResponsesStreamHandler`
+  (`relay/channel/openai/relay_responses.go`) now tracks whether a terminal
+  event (`response.completed/done/failed/error/incomplete/cancelled`)
+  arrived and rejects a stream that ended with no terminal event AND no
+  deliverable output (no text delta, no tool call, no image, no usage) as
+  `502 server_error "upstream returned empty final content"` — mirroring
+  `emptyChatCompletionError` for the chat path. If the response was already
+  committed (metadata events like `response.created` went out, as in the
+  production zero rows), a synthetic `response.failed` event plus `[DONE]` is
+  emitted so Codex-style clients retry instead of settling an empty 200, and
+  the error carries skip-retry; if nothing was committed it stays retryable.
+  The scanner promote-EOF condition (`stream_scanner.go`) was deliberately
+  NOT changed: channel 11's normal billed `/v1/responses` rows also end as
+  clean EOF with no finish_reason (e.g. log id 7431696), so EOF alone cannot
+  distinguish truncation. Four new unit tests cover reject-on-empty, reject
+  with committed synthetic event, completed-event exemption, and
+  text-delta exemption; full `go build ./...`, relay/service tests, vet, and
+  `git diff --check` pass.
+
 - On 2026-08-27, out-of-range sampling parameters (`temperature: 2.5`,
   `top_p: 1.5`) on deepseek-v4-flash probes timed out (300 s, http 0) instead
   of returning the official 400. Root cause: `validateDeepSeekV4OfficialFields`
