@@ -25,8 +25,22 @@
   pairing test suite runs with JSON bodies. One known cosmetic drift at
   the time of writing: the gateway's top_p rejection text is `(0, 1].`
   while api.deepseek.com now returns `(0, 1.0]` (no trailing period);
-  the fix is staged in the working tree only (per owner: small, defer
-  deployment) — align the wording on the next release.
+  per owner this is a small wording issue and deferred — align the
+  constant on the next release (no staged changes; working tree matches
+  the deployed version).
+
+- On 2026-08-27, paired probes caught another divergence: requests with
+  `response_format: json_object` whose conversation text lacks the word
+  "json" got 200 from the gateway (aggregator chain `router-` ids) while
+  api.deepseek.com replies 400 ("Prompt must contain the word 'json' in
+  some form to use 'response_format' of type 'json_object'."). Fixed in
+  `v1.0.0-rc.25-tokeness-json-object.1` (commit `d9dd6a8ad`; digest
+  `sha256:c7fd5cf47df8a14cb5aa5dd0858d5fae8ff01e2781fb83ed563a6800f7440492`;
+  publish run `33046072577`, deploy run `33046596842`): the gateway now
+  rejects locally, scanning the concatenated message text for "json"
+  case-insensitively (verified against official: lowercase/uppercase and
+  system-position all pass; json_schema and non-V4 models untouched).
+  Live-checked: screenshot probe → 400/1.8 s with byte-identical text.
 
 - On 2026-08-27, the "upstream returned empty final content" failures on
   channel tests ("测试渠道连接" and multi-key management probes) were root-caused
