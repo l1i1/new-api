@@ -63,6 +63,11 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"top_p":0}`,
 			message: "Invalid top_p value, the valid range of top_p is (0, 1].",
 		},
+		{
+			name:    "json_object requires the word json in the prompt",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"世界上最长的河是哪条？尼罗河。"}],"response_format":{"type":"json_object"}}`,
+			message: "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'.",
+		},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +97,29 @@ func TestDeepSeekV4RequiredToolChoiceIsAccepted(t *testing.T) {
 	assert.Equal(t, "required", request.ToolChoice)
 }
 
+func TestDeepSeekV4JsonObjectValidationBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"json word in user message", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"请用json表示最长的河。"}],"response_format":{"type":"json_object"}}`},
+		{"json word uppercase is accepted", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"请用JSON表示最长的河。"}],"response_format":{"type":"json_object"}}`},
+		{"json word in system message", `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"Respond in json."},{"role":"user","content":"最长的河？"}],"response_format":{"type":"json_object"}}`},
+		{"other response_format types are untouched", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"最长的河？"}],"response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object"}},"strict":true}}`},
+		{"non-V4 model json_object is untouched", `{"model":"gpt-4o","messages":[{"role":"user","content":"最长的河？"}],"response_format":{"type":"json_object"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(tt.body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			_, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestDeepSeekV4LogprobsValidationLeavesOtherModelsUntouched(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -108,10 +136,10 @@ func TestDeepSeekV4SamplingBoundsAreAccepted(t *testing.T) {
 	// temperature=0, temperature=2 (upper boundary) and top_p=0.1 are all
 	// inside the official ranges and must pass validation untouched.
 	tests := []struct {
-		name    string
-		body    string
-		field   string
-		want    float64
+		name  string
+		body  string
+		field string
+		want  float64
 	}{
 		{"temperature zero", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":0}`, "temperature", 0},
 		{"temperature upper boundary", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}],"temperature":2}`, "temperature", 2},

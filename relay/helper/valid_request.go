@@ -382,6 +382,7 @@ const (
 	deepSeekV4ReasoningEffortMessage  = "Invalid reasoning_effort value, the valid values are [low, high, max]."
 	deepSeekV4TopPMessage             = "Invalid top_p value, the valid range of top_p is (0, 1]."
 	deepSeekV4TemperatureMessage      = "Invalid temperature value, the valid range of temperature is [0, 2]"
+	deepSeekV4JsonObjectMessage       = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
 	deepSeekV4TopLogprobsPairMessage  = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
 	deepSeekV4TopLogprobsRangeMessage = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
 )
@@ -394,6 +395,7 @@ func IsDeepSeekV4ValidationMessage(message string) bool {
 		deepSeekV4ReasoningEffortMessage,
 		deepSeekV4TopPMessage,
 		deepSeekV4TemperatureMessage,
+		deepSeekV4JsonObjectMessage,
 		deepSeekV4TopLogprobsPairMessage,
 		deepSeekV4TopLogprobsRangeMessage,
 	} {
@@ -404,6 +406,17 @@ func IsDeepSeekV4ValidationMessage(message string) bool {
 	return false
 }
 
+// deepSeekV4MessagesText concatenates the visible text of every message. The
+// official json_object validation scans the whole conversation (system and
+// user turns alike, case-insensitive) for the word "json".
+func deepSeekV4MessagesText(messages []dto.Message) string {
+	var sb strings.Builder
+	for i := range messages {
+		sb.WriteString(messages[i].StringContent())
+	}
+	return sb.String()
+}
+
 func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
 		return nil
@@ -411,6 +424,15 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "extreme") {
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4ReasoningEffortMessage,
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if request.ResponseFormat != nil && request.ResponseFormat.Type == "json_object" &&
+		!strings.Contains(strings.ToLower(deepSeekV4MessagesText(request.Messages)), "json") {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4JsonObjectMessage,
 			Type:    "invalid_request_error",
 			Param:   nil,
 			Code:    "invalid_request_error",
