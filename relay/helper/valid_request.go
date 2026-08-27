@@ -385,13 +385,30 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 // DeepSeek V4 official validation messages. The official endpoint returns these
 // verbatim; keep the wording in sync with api.deepseek.com when it drifts.
 const (
-	deepSeekV4ReasoningEffortMessage  = "Invalid reasoning_effort value, the valid values are [low, high, max]."
-	deepSeekV4TopPMessage             = "Invalid top_p value, the valid range of top_p is (0, 1]."
-	deepSeekV4TemperatureMessage      = "Invalid temperature value, the valid range of temperature is [0, 2]"
-	deepSeekV4JsonObjectMessage       = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
-	deepSeekV4TopLogprobsPairMessage  = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
-	deepSeekV4TopLogprobsRangeMessage = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	deepSeekV4TopPMessage                        = "Invalid top_p value, the valid range of top_p is (0, 1]."
+	deepSeekV4TemperatureMessage                 = "Invalid temperature value, the valid range of temperature is [0, 2]"
+	deepSeekV4JsonObjectMessage                  = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
+	deepSeekV4TopLogprobsPairMessage             = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
+	deepSeekV4TopLogprobsRangeMessage            = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	deepSeekV4ReasoningEffortDeserMessagePrefix  = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
+	deepSeekV4ReasoningEffortDeserMessageSuffix  = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
 )
+
+// deepSeekV4ReasoningEffortAllowed mirrors the official serde enum: the
+// endpoint deserializes reasoning_effort into one of these variants and
+// returns a deserialization error for anything else.
+var deepSeekV4ReasoningEffortAllowed = map[string]bool{
+	"none": true, "minimal": true, "low": true, "medium": true,
+	"high": true, "xhigh": true, "max": true,
+}
+
+// deepSeekV4ReasoningEffortDeserMessage renders the official deserialization
+// error for an unknown reasoning_effort variant (the gateway drops the
+// request-specific "at line 1 column N" suffix the live endpoint appends).
+func deepSeekV4ReasoningEffortDeserMessage(effort string) string {
+	return deepSeekV4ReasoningEffortDeserMessagePrefix + " `" + effort +
+		"`" + deepSeekV4ReasoningEffortDeserMessageSuffix
+}
 
 // deepSeekV4MessagesText concatenates the visible text of every message. The
 // official json_object validation scans the whole conversation (system and
@@ -408,9 +425,9 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "extreme") {
+	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" && !deepSeekV4ReasoningEffortAllowed[strings.ToLower(effort)] {
 		return types.WithOpenAIError(types.OpenAIError{
-			Message: deepSeekV4ReasoningEffortMessage,
+			Message: deepSeekV4ReasoningEffortDeserMessage(effort),
 			Type:    "invalid_request_error",
 			Param:   nil,
 			Code:    "invalid_request_error",
@@ -618,7 +635,7 @@ func kimiK3Error(message string) error {
 // messages verbatim.
 func IsStrictFitValidationMessage(message string) bool {
 	for _, prefix := range []string{
-		deepSeekV4ReasoningEffortMessage,
+		deepSeekV4ReasoningEffortDeserMessagePrefix,
 		deepSeekV4TopPMessage,
 		deepSeekV4TemperatureMessage,
 		deepSeekV4JsonObjectMessage,

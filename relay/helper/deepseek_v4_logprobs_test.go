@@ -49,9 +49,14 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			message: "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20].",
 		},
 		{
-			name:    "extreme reasoning effort is rejected",
+			name:    "extreme reasoning effort is rejected with the official deserialization text",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"reasoning_effort":"extreme"}`,
-			message: "Invalid reasoning_effort value, the valid values are [low, high, max].",
+			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `extreme`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`",
+		},
+		{
+			name:    "ultra reasoning effort is rejected with the official deserialization text",
+			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"reasoning_effort":"ultra"}`,
+			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `ultra`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`",
 		},
 		{
 			name:    "top_p above one is rejected",
@@ -92,6 +97,44 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			assert.Equal(t, "invalid_request_error", oaiErr.Type)
 			assert.Equal(t, "invalid_request_error", oaiErr.Code)
 			assert.Nil(t, oaiErr.Param)
+		})
+	}
+}
+
+func TestDeepSeekV4EffortEnumMatchesOfficial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// The official endpoint accepts exactly these serde variants (verified
+	// live 2026-08-27); anything else is a deserialization 400.
+	dialect := func(effort string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			bytes.NewBufferString(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"reasoning_effort":"`+effort+`"}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		common.SetContextKey(c, coreconstant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"deepseek-v4-": {Validate: true},
+			}},
+		})
+		return c
+	}
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		t.Run("accept_"+effort, func(t *testing.T) {
+			_, err := GetAndValidateTextRequest(dialect(effort), constant.RelayModeChatCompletions)
+			assert.NoError(t, err)
+		})
+	}
+	for _, effort := range []string{"extreme", "ultra", "OFF", ""} {
+		if effort == "" {
+			// empty string is absent-default, not a variant
+			continue
+		}
+		t.Run("reject_"+effort, func(t *testing.T) {
+			_, err := GetAndValidateTextRequest(dialect(effort), constant.RelayModeChatCompletions)
+			require.Error(t, err)
+			var apiErr *types.NewAPIError
+			require.True(t, errors.As(err, &apiErr))
+			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			assert.Equal(t, deepSeekV4ReasoningEffortDeserMessage(effort), apiErr.ToOpenAIError().Message)
 		})
 	}
 }
