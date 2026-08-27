@@ -22,7 +22,11 @@
   each hung ~5 min. (2) Requests with Content-Type `application/json` are
   required for the V4 pin/distributor body re-read (`UnmarshalBodyReusable`
   silently skips non-JSON content types, leaving the pin unset) — the official
-  pairing test suite runs with JSON bodies.
+  pairing test suite runs with JSON bodies. One known cosmetic drift at
+  the time of writing: the gateway's top_p rejection text is `(0, 1].`
+  while api.deepseek.com now returns `(0, 1.0]` (no trailing period);
+  the fix is staged in the working tree only (per owner: small, defer
+  deployment) — align the wording on the next release.
 
 - On 2026-08-27, the "upstream returned empty final content" failures on
   channel tests ("测试渠道连接" and multi-key management probes) were root-caused
