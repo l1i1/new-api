@@ -34,23 +34,33 @@ func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIReq
 			ToolCallId: message.ToolCallId,
 		})
 	}
+	// The official endpoint only accepts stop as an array (a string is a
+	// deserialization 400), and the JSON decoder yields []any — coerce both
+	// shapes so the client's stop words are never dropped.
 	str, ok := request.Stop.(string)
 	var Stop []string
 	if ok {
 		Stop = []string{str}
+	} else if arr, ok := request.Stop.([]any); ok {
+		for _, v := range arr {
+			if s, ok := v.(string); ok {
+				Stop = append(Stop, s)
+			}
+		}
 	} else {
 		Stop, _ = request.Stop.([]string)
 	}
 	out := &dto.GeneralOpenAIRequest{
-		Model:       request.Model,
-		Stream:      request.Stream,
-		Messages:    messages,
-		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		Stop:        Stop,
-		Tools:       request.Tools,
-		ToolChoice:  request.ToolChoice,
-		THINKING:    request.THINKING,
+		Model:           request.Model,
+		Stream:          request.Stream,
+		Messages:        messages,
+		Temperature:     request.Temperature,
+		TopP:            request.TopP,
+		Stop:            Stop,
+		Tools:           request.Tools,
+		ToolChoice:      request.ToolChoice,
+		THINKING:        request.THINKING,
+		ReasoningEffort: request.ReasoningEffort,
 	}
 	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
 		maxTokens := request.GetMaxTokens()

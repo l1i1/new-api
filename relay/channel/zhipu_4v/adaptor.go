@@ -14,7 +14,6 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -87,9 +86,10 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	if lo.FromPtrOr(request.TopP, 0) >= 1 {
-		request.TopP = lo.ToPtr(0.99)
-	}
+	// NOTE: the official endpoint accepts top_p in [0,1] including 1.0
+	// (calibrated 2026-08-28) — the old >=1 -> 0.99 rewrite is a
+	// compatibility hack that would change sampling behavior for
+	// official-fit traffic; do not re-add it.
 	return requestOpenAI2Zhipu(*request), nil
 }
 
