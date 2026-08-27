@@ -44,6 +44,12 @@ func Distribute() func(c *gin.Context) {
 		// official-channel pin for unfit-able deepseek-v4 sampling before
 		// selecting a channel.
 		markV4OfficialPinFromDistributor(c)
+		// The official-fit unknown-model rejection aborts the request; stop
+		// the middleware body so channel selection cannot overwrite the
+		// official 400 with the platform's model_not_configured text.
+		if c.IsAborted() {
+			return
+		}
 		// Existing async task fetch/result routes intentionally skip channel
 		// selection and must remain pollable after a policy change. New relay
 		// submissions load the base-group snapshot and fail closed on errors.
