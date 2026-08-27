@@ -34,6 +34,8 @@ import { staticDataTableClassNames } from './static-data-table-classnames'
 type StaticDataTableBaseProps = {
   className?: string
   tableClassName?: string
+  /** Overrides the wrapper's overflow classes; the outer scroll container owns both axes. */
+  tableContainerClassName?: string
   containerProps?: Omit<React.ComponentProps<'div'>, 'className' | 'children'>
   tableProps?: Omit<
     React.ComponentProps<typeof Table>,
@@ -69,19 +71,27 @@ export type StaticDataTableColumn<TData = unknown> = {
   className?: string
   cellClassName?: string | ((row: TData, index: number) => string | undefined)
   cell?: (row: TData, index: number) => React.ReactNode
+  /** Pin the column to the left edge of the scroll container at this pixel offset. */
+  stickyLeft?: number
+  /** Pin the column to the right edge of the scroll container. */
+  stickyRight?: boolean
 }
 
 export function StaticDataTable<TData = unknown>(
   props: StaticDataTableProps<TData>
 ) {
-  const { className, tableClassName, containerProps, tableProps } = props
+  const { className, tableClassName, tableContainerClassName, containerProps, tableProps } = props
 
   return (
     <div
       className={cn(staticDataTableClassNames.container, className)}
       {...containerProps}
     >
-      <Table className={tableClassName} {...tableProps}>
+      <Table
+        className={tableClassName}
+        containerClassName={tableContainerClassName}
+        {...tableProps}
+      >
         {props.columns !== undefined ? (
           <StaticDataTableWithColumns {...props} />
         ) : (
@@ -119,11 +129,18 @@ function StaticDataTableWithColumns<TData>({
     <>
       <TableHeader>
         <TableRow className={headerRowClassName}>
-          {columns.map((column) => (
-            <TableHead key={column.id} className={column.className}>
-              {column.header}
-            </TableHead>
-          ))}
+          {columns.map((column) => {
+            const pinned = getStaticPinnedProps(column, 'header')
+            return (
+              <TableHead
+                key={column.id}
+                className={cn(column.className, pinned.className)}
+                style={pinned.style}
+              >
+                {column.header}
+              </TableHead>
+            )
+          })}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -163,17 +180,22 @@ function StaticDataTableRow<TData>({
 
   return (
     <TableRow className={getRowClassName?.(row, index)}>
-      {columns.map((column) => (
-        <TableCell
-          key={column.id}
-          className={cn(
-            'max-w-full min-w-0 overflow-hidden',
-            getStaticCellClassName(column, row, index)
-          )}
-        >
-          {renderStaticCellContent(column, row, index)}
-        </TableCell>
-      ))}
+      {columns.map((column) => {
+        const pinned = getStaticPinnedProps(column, 'cell')
+        return (
+          <TableCell
+            key={column.id}
+            className={cn(
+              'max-w-full min-w-0 overflow-hidden',
+              getStaticCellClassName(column, row, index),
+              pinned.className
+            )}
+            style={pinned.style}
+          >
+            {renderStaticCellContent(column, row, index)}
+          </TableCell>
+        )
+      })}
     </TableRow>
   )
 }
@@ -205,6 +227,29 @@ function getPrimitiveTextContent(content: React.ReactNode): string | null {
   }
 
   return null
+}
+
+function getStaticPinnedProps<TData>(
+  column: StaticDataTableColumn<TData>,
+  kind: 'header' | 'cell'
+): { className: string | undefined; style: React.CSSProperties | undefined } {
+  if (column.stickyLeft !== undefined) {
+    return {
+      // z-index is set inline so pinned cells always sit above the scroll
+      // content while pinned headers stay above pinned cells.
+      className:
+        'sticky bg-background shadow-[8px_0_10px_-10px_hsl(var(--foreground))]',
+      style: { left: column.stickyLeft, zIndex: kind === 'header' ? 50 : 40 },
+    }
+  }
+  if (column.stickyRight) {
+    return {
+      className:
+        'sticky bg-background shadow-[-8px_0_10px_-10px_hsl(var(--foreground))]',
+      style: { right: 0, zIndex: kind === 'header' ? 50 : 40 },
+    }
+  }
+  return { className: undefined, style: undefined }
 }
 
 function getStaticCellClassName<TData>(

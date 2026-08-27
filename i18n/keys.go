@@ -175,6 +175,7 @@ const (
 	MsgChannelNotExists          = "channel.not_exists"
 	MsgChannelIdFormatError      = "channel.id_format_error"
 	MsgChannelNoAvailableKey     = "channel.no_available_key"
+	MsgChannelCredentialConflict = "channel.credential_revision_conflict"
 	MsgChannelGetListFailed      = "channel.get_list_failed"
 	MsgChannelGetTagsFailed      = "channel.get_tags_failed"
 	MsgChannelGetKeyFailed       = "channel.get_key_failed"

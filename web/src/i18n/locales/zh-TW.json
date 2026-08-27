@@ -5829,6 +5829,20 @@
     "Reset violation count": "重置違規次數",
     "Violation count reset successfully": "違規次數已重置",
     "Failed to reset violation count": "重置違規次數失敗",
-    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置使用者 {{userID}} 的累計違規次數？審核記錄將保留。"
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置使用者 {{userID}} 的累計違規次數？審核記錄將保留。",
+    "Add keys": "新增金鑰",
+    "Enter at least one key": "請至少輸入一個金鑰",
+    "Parsed {{count}} keys ({{proxies}} with proxy)": "解析到 {{count}} 個金鑰（{{proxies}} 個帶代理）",
+    "No valid keys recognized": "未識別到有效金鑰",
+    "Testing {{processed}}/{{total}}": "測試中 {{processed}}/{{total}}",
+    "No enabled keys to test": "沒有已啟用的金鑰可測試",
+    "A test task supports at most {{count}} keys; select a smaller group": "單一測試任務最多支援 {{count}} 個金鑰，請選擇更小的範圍",
+    "Added {{count}} keys": "已新增 {{count}} 個金鑰",
+    "Last test time": "最近測試時間",
+    "24h metrics": "24小時指標",
+    "Key Pool Mode": "金鑰池模式",
+    "Test is still running in the background": "測試仍在背景進行中",
+    "Delete selected": "刪除所選",
+    "Are you sure you want to delete the selected keys? This action cannot be undone.": "確定刪除所選的金鑰嗎？此操作無法復原。"
   }
 }

@@ -723,6 +723,13 @@ export function ChannelMutateDrawer({
 
   // Watch form values for conditional rendering
   const multiKeyMode = form.watch('multi_key_mode')
+  // Editing a single-key channel while the add-mode select is switched to the
+  // multi-key pool option upgrades it in place on submit.
+  const isConvertingToMultiKey =
+    isEditing && !isMultiKeyChannel && multiKeyMode === 'multi_to_single'
+  const strategyVisible = isEditing
+    ? isMultiKeyChannel || isConvertingToMultiKey
+    : multiKeyMode === 'multi_to_single'
   const multiKeyType = form.watch('multi_key_type')
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
@@ -2882,20 +2889,25 @@ export function ChannelMutateDrawer({
                             )}
 
                             <ChannelAuthSection>
-                              {!isEditing && (
+                              {(!isEditing || !isMultiKeyChannel) && (
                                 <FormField
                                   control={form.control}
                                   name='multi_key_mode'
                                   render={({ field }) => (
                                     <FormItem className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
                                       <FormLabel className='text-muted-foreground text-xs font-medium'>
-                                        {t('Add Mode')}
+                                        {t(isEditing ? 'Key Pool Mode' : 'Add Mode')}
                                       </FormLabel>
                                       <Select
-                                        items={addModeOptions.map((option) => ({
-                                          value: option.value,
-                                          label: t(option.label),
-                                        }))}
+                                        items={addModeOptions
+                                          .filter(
+                                            (option) =>
+                                              !isEditing || option.value !== 'batch'
+                                          )
+                                          .map((option) => ({
+                                            value: option.value,
+                                            label: t(option.label),
+                                          }))}
                                         onValueChange={field.onChange}
                                         value={field.value}
                                       >
@@ -2911,14 +2923,20 @@ export function ChannelMutateDrawer({
                                           alignItemWithTrigger={false}
                                         >
                                           <SelectGroup>
-                                            {addModeOptions.map((option) => (
-                                              <SelectItem
-                                                key={option.value}
-                                                value={option.value}
-                                              >
-                                                {t(option.label)}
-                                              </SelectItem>
-                                            ))}
+                                            {addModeOptions
+                                              .filter(
+                                                (option) =>
+                                                  !isEditing ||
+                                                  option.value !== 'batch'
+                                              )
+                                              .map((option) => (
+                                                <SelectItem
+                                                  key={option.value}
+                                                  value={option.value}
+                                                >
+                                                  {t(option.label)}
+                                                </SelectItem>
+                                              ))}
                                           </SelectGroup>
                                         </SelectContent>
                                       </Select>
@@ -3149,7 +3167,7 @@ export function ChannelMutateDrawer({
                                 </div>
                               )}
 
-                              {isEditing && isMultiKeyChannel && (
+                              {isEditing && (isMultiKeyChannel || isConvertingToMultiKey) && (
                                 <FormField
                                   control={form.control}
                                   name='key_mode'
@@ -3207,8 +3225,7 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
-                              {!isEditing &&
-                                multiKeyMode === 'multi_to_single' && (
+                              {strategyVisible && (
                                   <FormField
                                     control={form.control}
                                     name='multi_key_type'

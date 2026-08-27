@@ -122,6 +122,8 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
           }
           delete payload.key_mode
           delete payload.multi_key_credentials
+          delete payload.mode
+          delete payload.multi_key_mode
         }
 
         const response = await updateChannel(props.currentRow.id, payload)

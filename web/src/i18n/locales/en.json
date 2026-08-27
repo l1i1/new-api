@@ -5829,6 +5829,20 @@
     "Reset violation count": "Reset violation count",
     "Violation count reset successfully": "Violation count reset successfully",
     "Failed to reset violation count": "Failed to reset violation count",
-    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained."
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.",
+    "Add keys": "Add keys",
+    "Enter at least one key": "Enter at least one key",
+    "Parsed {{count}} keys ({{proxies}} with proxy)": "Parsed {{count}} keys ({{proxies}} with proxy)",
+    "No valid keys recognized": "No valid keys recognized",
+    "Testing {{processed}}/{{total}}": "Testing {{processed}}/{{total}}",
+    "No enabled keys to test": "No enabled keys to test",
+    "A test task supports at most {{count}} keys; select a smaller group": "A test task supports at most {{count}} keys; select a smaller group",
+    "Added {{count}} keys": "Added {{count}} keys",
+    "Last test time": "Last test time",
+    "24h metrics": "24h metrics",
+    "Key Pool Mode": "Key Pool Mode",
+    "Test is still running in the background": "Test is still running in the background",
+    "Delete selected": "Delete selected",
+    "Are you sure you want to delete the selected keys? This action cannot be undone.": "Are you sure you want to delete the selected keys? This action cannot be undone."
   }
 }

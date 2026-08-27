@@ -22,7 +22,9 @@ import { describe, test } from 'node:test'
 import {
   aggregateMultiKeyObservability,
   formatMultiKeyTestResult,
+  formatMultiKeyTestResultCompact,
   getMultiKeyIndex,
+  getMultiKeyTestErrorDetail,
   getMultiKeyTestResult,
 } from '../multi-key-utils'
 
@@ -144,6 +146,60 @@ describe('multi-key test result formatting', () => {
     )
 
     assert.equal(formatted, 'Failed · HTTP status: 401 · authentication')
+  })
+})
+
+describe('multi-key compact test result formatting', () => {
+  test('keeps upstream error text out of the compact cell text', () => {
+    const compact = formatMultiKeyTestResultCompact(
+      {
+        credential_id: 17,
+        index: 3,
+        fingerprint: 'fingerprint',
+        status: 'failed',
+        http_status: 429,
+        latency_ms: 25,
+        error_class: 'rate_limit',
+        error_message: 'upstream rate limit exceeded',
+      },
+      undefined
+    )
+
+    assert.equal(compact, 'Failed · HTTP 429 · rate_limit')
+  })
+
+  test('moves the full detail into the tooltip string', () => {
+    const detail = getMultiKeyTestErrorDetail(
+      {
+        credential_id: 17,
+        index: 3,
+        fingerprint: 'fingerprint',
+        status: 'failed',
+        http_status: 401,
+        latency_ms: 25,
+        error_class: 'authentication',
+        error_message: 'invalid key',
+      },
+      undefined
+    )
+
+    assert.equal(detail, 'HTTP 401 · 25 ms · authentication · invalid key')
+  })
+
+  test('returns no detail when the last test was not a failure', () => {
+    assert.equal(
+      getMultiKeyTestErrorDetail(
+        {
+          credential_id: 17,
+          index: 3,
+          fingerprint: 'f',
+          status: 'success',
+          latency_ms: 25,
+        },
+        undefined
+      ),
+      null
+    )
   })
 })
 

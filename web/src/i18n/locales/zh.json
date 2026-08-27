@@ -5829,6 +5829,20 @@
     "Reset violation count": "重置违规次数",
     "Violation count reset successfully": "违规次数已重置",
     "Failed to reset violation count": "重置违规次数失败",
-    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置用户 {{userID}} 的累计违规次数？审核日志将保留。"
+    "Reset the cumulative violation count for user {{userID}}? Moderation logs are retained.": "重置用户 {{userID}} 的累计违规次数？审核日志将保留。",
+    "Add keys": "添加密钥",
+    "Enter at least one key": "请至少输入一个密钥",
+    "Parsed {{count}} keys ({{proxies}} with proxy)": "解析到 {{count}} 个密钥（{{proxies}} 个带代理）",
+    "No valid keys recognized": "未识别到有效密钥",
+    "Testing {{processed}}/{{total}}": "测试中 {{processed}}/{{total}}",
+    "No enabled keys to test": "没有已启用的密钥可测试",
+    "A test task supports at most {{count}} keys; select a smaller group": "单个测试任务最多支持 {{count}} 个密钥，请选择更小的范围",
+    "Added {{count}} keys": "已添加 {{count}} 个密钥",
+    "Last test time": "最近测试时间",
+    "24h metrics": "24小时指标",
+    "Key Pool Mode": "密钥池模式",
+    "Test is still running in the background": "测试仍在后台进行中",
+    "Delete selected": "删除所选",
+    "Are you sure you want to delete the selected keys? This action cannot be undone.": "确定删除所选的密钥吗？此操作无法撤销。"
   }
 }

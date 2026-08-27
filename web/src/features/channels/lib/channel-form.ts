@@ -822,8 +822,10 @@ export function transformFormDataToUpdatePayload(
   channelId: number,
   options: { isMultiKeyChannel?: boolean } = {}
 ): ChannelUpdatePayload {
+  const convertingToMultiKey =
+    !options.isMultiKeyChannel && formData.multi_key_mode === 'multi_to_single'
   const supportsMultiKeyText =
-    Boolean(options.isMultiKeyChannel) &&
+    (Boolean(options.isMultiKeyChannel) || convertingToMultiKey) &&
     supportsLineOrientedMultiKeyCredentials(
       formData.type,
       formData.vertex_key_type
@@ -865,8 +867,18 @@ export function transformFormDataToUpdatePayload(
   if (supportsMultiKeyText && formData.key?.trim()) {
     payloadWithCredentials.multi_key_credentials = multiKeyCredentials
   }
-  if (options.isMultiKeyChannel && formData.key?.trim() && formData.key_mode) {
+  if (
+    (options.isMultiKeyChannel || convertingToMultiKey) &&
+    formData.key?.trim() &&
+    formData.key_mode
+  ) {
     payloadWithCredentials.key_mode = formData.key_mode
+  }
+  if (supportsMultiKeyText && formData.multi_key_type) {
+    payloadWithCredentials.multi_key_mode = formData.multi_key_type
+  }
+  if (convertingToMultiKey) {
+    payloadWithCredentials.mode = 'multi_to_single'
   }
 
   // Clean up empty strings to null for optional fields

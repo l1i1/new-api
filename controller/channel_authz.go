@@ -1,6 +1,9 @@
 package controller
 
-import "github.com/QuantumNous/new-api/model"
+import (
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
+)
 
 func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, requestData map[string]any) bool {
 	if _, ok := requestData["type"]; ok && channel.Type != origin.Type {
@@ -35,6 +38,17 @@ func channelHasSensitiveChanges(channel *PatchChannel, origin *model.Channel, re
 	}
 	if _, ok := requestData["multi_key_credentials"]; ok {
 		return true
+	}
+	if _, ok := requestData["mode"]; ok && channel.Mode != nil && *channel.Mode == "multi_to_single" {
+		return true
+	}
+	if _, ok := requestData["multi_key_mode"]; ok && channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {
+		if origin.ChannelInfo.IsMultiKey && origin.ChannelInfo.MultiKeyMode != constant.MultiKeyMode(*channel.MultiKeyMode) {
+			return true
+		}
+		if !origin.ChannelInfo.IsMultiKey && (channel.Mode == nil || *channel.Mode != "multi_to_single") {
+			return true
+		}
 	}
 	// Fail closed: any field present in the request that is neither a known
 	// sensitive field (gated above) nor an explicitly classified non-sensitive
@@ -75,6 +89,8 @@ var channelSensitiveFields = map[string]struct{}{
 	"settings":              {},
 	"key_mode":              {},
 	"multi_key_credentials": {},
+	"mode":                  {},
+	"multi_key_mode":        {},
 }
 
 // channelOperationalFields lists fields managed by operation endpoints instead

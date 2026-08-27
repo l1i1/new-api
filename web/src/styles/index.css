@@ -236,6 +236,48 @@ For commercial licensing, please contact support@quantumnous.com
   }
 }
 
+@utility multi-key-scrollbar {
+  /* Dense table area: keep both native scrollbars visible and readable in
+     light and dark themes, with a slightly wider hit area on hover. */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)
+    transparent;
+
+  &::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: color-mix(
+      in oklch,
+      var(--muted-foreground) 35%,
+      transparent
+    );
+    border-radius: 8px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  &::-webkit-scrollbar-thumb:hover,
+  &::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(
+      in oklch,
+      var(--muted-foreground) 60%,
+      transparent
+    );
+    background-clip: content-box;
+  }
+
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
 @utility faded-bottom {
   @apply after:pointer-events-none after:absolute after:start-0 after:bottom-0 after:hidden after:h-32 after:w-full after:rounded-b-2xl after:bg-[linear-gradient(180deg,_transparent_10%,_var(--background)_70%)] md:after:block;
 }

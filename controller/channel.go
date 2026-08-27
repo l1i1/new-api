@@ -1099,6 +1099,7 @@ func DeleteChannelBatch(c *gin.Context) {
 
 type PatchChannel struct {
 	model.Channel
+	Mode                *string                         `json:"mode,omitempty"` // "multi_to_single" upgrades a single-key channel to a key pool
 	MultiKeyMode        *string                         `json:"multi_key_mode"`
 	KeyMode             *string                         `json:"key_mode"` // 多key模式下密钥覆盖或者追加
 	MultiKeyCredentials *[]model.ChannelCredentialInput `json:"multi_key_credentials,omitempty"`
@@ -1171,6 +1172,18 @@ func UpdateChannel(c *gin.Context) {
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
 
+	// A single-key channel can be upgraded into a key pool in one update. The
+	// supplied key list is reconciled by fingerprint below (append keeps the
+	// original key as position 0), and the strategy defaults to random when
+	// the client does not send one.
+	if channel.Mode != nil && *channel.Mode == "multi_to_single" {
+		if originChannel.ChannelInfo.IsMultiKey {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "channel is already a multi-key channel"})
+			return
+		}
+		channel.ChannelInfo.IsMultiKey = true
+	}
+
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
 		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
@@ -1180,6 +1193,9 @@ func UpdateChannel(c *gin.Context) {
 	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
 	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {
 		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
+	}
+	if channel.ChannelInfo.IsMultiKey && channel.ChannelInfo.MultiKeyMode == "" {
+		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyModeRandom
 	}
 
 	var credentialInputs []model.ChannelCredentialInput
@@ -1788,12 +1804,14 @@ func CopyChannel(c *gin.Context) {
 
 // MultiKeyManageRequest represents the request for multi-key management operations
 type MultiKeyManageRequest struct {
-	ChannelId int    `json:"channel_id"`
-	Action    string `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
-	KeyIndex  *int   `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
-	Page      int    `json:"page,omitempty"`      // for get_key_status pagination
-	PageSize  int    `json:"page_size,omitempty"` // for get_key_status pagination
-	Status    *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	ChannelId     int    `json:"channel_id"`
+	Action        string `json:"action"`                   // "disable_key", "enable_key", "delete_key", "delete_keys", "delete_disabled_keys", "get_key_status"
+	KeyIndex      *int   `json:"key_index,omitempty"`      // for disable_key, enable_key, and delete_key actions
+	CredentialIDs []int  `json:"credential_ids,omitempty"` // for delete_keys
+	KeysRevision  int64  `json:"keys_revision,omitempty"`
+	Page          int    `json:"page,omitempty"`      // for get_key_status pagination
+	PageSize      int    `json:"page_size,omitempty"` // for get_key_status pagination
+	Status        *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
 }
 
 // MultiKeyStatusResponse represents the response for key status query
@@ -1824,6 +1842,58 @@ type KeyStatus struct {
 	LastTestHTTPStatus   int    `json:"last_test_http_status,omitempty"`
 	LastTestErrorCode    string `json:"last_test_error_code,omitempty"`
 	LastTestErrorMessage string `json:"last_test_error_message,omitempty"`
+}
+
+// resolveRemovedMultiKeyPositions maps durable credential IDs to their
+// current pool positions. Only active rows (position >= 0) are eligible.
+func resolveRemovedMultiKeyPositions(channel *model.Channel, credentialIDs []int) map[int]bool {
+	selected := make(map[int]bool, len(credentialIDs))
+	for _, credentialID := range credentialIDs {
+		selected[credentialID] = true
+	}
+	removedPositions := make(map[int]bool)
+	for index := range channel.Credentials {
+		credential := &channel.Credentials[index]
+		if selected[credential.Id] && credential.Position >= 0 {
+			removedPositions[credential.Position] = true
+		}
+	}
+	return removedPositions
+}
+
+// rebuildMultiKeyChannelState removes the given key positions from the legacy
+// newline list and re-indexes the related status map entries. Removed keys are
+// kept as historical disabled credentials during the follow-up sync.
+func rebuildMultiKeyChannelState(channel *model.Channel, removedPositions map[int]bool) ([]string, map[int]int, map[int]int64, map[int]string) {
+	keys := channel.GetKeys()
+	remainingKeys := make([]string, 0, len(keys))
+	newStatusList := make(map[int]int)
+	newDisabledTime := make(map[int]int64)
+	newDisabledReason := make(map[int]string)
+	newIndex := 0
+	for i, key := range keys {
+		if removedPositions[i] {
+			continue
+		}
+		remainingKeys = append(remainingKeys, key)
+		if channel.ChannelInfo.MultiKeyStatusList != nil {
+			if status, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists && status != 1 {
+				newStatusList[newIndex] = status
+			}
+		}
+		if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+			if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
+				newDisabledTime[newIndex] = t
+			}
+		}
+		if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+			if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
+				newDisabledReason[newIndex] = r
+			}
+		}
+		newIndex++
+	}
+	return remainingKeys, newStatusList, newDisabledTime, newDisabledReason
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1870,6 +1940,21 @@ func ManageMultiKeys(c *gin.Context) {
 	lock := model.GetChannelPollingLock(channel.Id)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Position-based legacy actions can target the wrong key after a concurrent
+	// pool edit. Require the revision the client loaded so a stale action is
+	// rejected instead of silently acting on a shifted position.
+	if request.Action != "get_key_status" && request.KeysRevision > 0 {
+		currentRevision, revErr := model.GetChannelCredentialRevision(model.DB, channel.Id)
+		if revErr != nil {
+			common.ApiError(c, revErr)
+			return
+		}
+		if currentRevision != request.KeysRevision {
+			writeChannelCredentialError(c, model.ErrChannelCredentialRevisionConflict)
+			return
+		}
+	}
 
 	// Keep the legacy action API compatible while routing state changes through
 	// the transactional credential store. This also synchronizes the aggregate
@@ -2276,40 +2361,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-
-		newIndex := 0
-		for i, key := range keys {
-			// 跳过要删除的密钥
-			if i == keyIndex {
-				continue
-			}
-
-			remainingKeys = append(remainingKeys, key)
-
-			// 保留其他密钥的状态信息，重新索引
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if status, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists && status != 1 {
-					newStatusList[newIndex] = status
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-				if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-					newDisabledTime[newIndex] = t
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-				if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-					newDisabledReason[newIndex] = r
-				}
-			}
-			newIndex++
-		}
-
+		remainingKeys, newStatusList, newDisabledTime, newDisabledReason := rebuildMultiKeyChannelState(channel, map[int]bool{keyIndex: true})
 		if len(remainingKeys) == 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -2336,9 +2388,63 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		revision, _ := model.GetChannelCredentialRevision(model.DB, channel.Id)
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥已删除",
+			"success":       true,
+			"message":       "密钥已删除",
+			"keys_revision": revision,
+		})
+		return
+
+	case "delete_keys":
+		if len(request.CredentialIDs) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "未指定要删除的密钥",
+			})
+			return
+		}
+		// Resolve durable credential IDs to their current positions so the
+		// delete always targets the intended keys even after earlier edits.
+		removedPositions := resolveRemovedMultiKeyPositions(channel, request.CredentialIDs)
+		if len(removedPositions) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "未找到要删除的密钥",
+			})
+			return
+		}
+		remainingKeys, newStatusList, newDisabledTime, newDisabledReason := rebuildMultiKeyChannelState(channel, removedPositions)
+		if len(remainingKeys) == 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "不能删除最后一个密钥",
+			})
+			return
+		}
+
+		channel.Key = strings.Join(remainingKeys, "\n")
+		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
+		channel.ChannelInfo.MultiKeyStatusList = newStatusList
+		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+
+		err = channel.Update()
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.SyncChannelCredentialsForChannel(model.DB, channel.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		model.InitChannelCache()
+		revision, _ := model.GetChannelCredentialRevision(model.DB, channel.Id)
+		c.JSON(http.StatusOK, gin.H{
+			"success":       true,
+			"message":       fmt.Sprintf("已删除 %d 个密钥", len(removedPositions)),
+			"keys_revision": revision,
 		})
 		return
 
@@ -2425,7 +2531,7 @@ func ManageMultiKeys(c *gin.Context) {
 }
 
 func multiKeyActionRequiresSensitiveWrite(action string) bool {
-	return action == "delete_key" || action == "delete_disabled_keys"
+	return action == "delete_key" || action == "delete_keys" || action == "delete_disabled_keys"
 }
 
 // OllamaPullModel 拉取 Ollama 模型

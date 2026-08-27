@@ -140,6 +140,56 @@ export function formatMultiKeyTestResult(
 }
 
 /**
+ * Compact one-line test result for table cells: status plus HTTP code, no
+ * upstream error text. The full detail goes into the cell tooltip instead.
+ */
+export function formatMultiKeyTestResultCompact(
+  result: MultiKeyTestResult | undefined,
+  key: KeyStatus | undefined,
+  translate: (value: string) => string = (value) => value
+): string | null {
+  const status = result?.status ?? key?.last_test_status
+  if (!status) return null
+  if (status !== 'failed') return translate(status)
+
+  const httpStatus = result?.http_status ?? key?.last_test_http_status
+  const errorClass =
+    result?.error_class ?? key?.last_test_error_class
+  return [
+    translate('Failed'),
+    httpStatus ? `HTTP ${httpStatus}` : null,
+    ...(errorClass ? [errorClass] : []),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** Full failed-test detail for a cell tooltip; null when there is no failure. */
+export function getMultiKeyTestErrorDetail(
+  result: MultiKeyTestResult | undefined,
+  key: KeyStatus | undefined
+): string | null {
+  const status = result?.status ?? key?.last_test_status
+  if (!status || status !== 'failed') return null
+
+  const httpStatus = result?.http_status ?? key?.last_test_http_status
+  const errorCode = result?.error_code ?? key?.last_test_error_code
+  const errorClass = result?.error_class ?? key?.last_test_error_class
+  const errorMessage = result?.error_message ?? key?.last_test_error_message
+  const latencyMs = result?.latency_ms ?? key?.last_test_latency_ms
+  const detail = [errorCode, errorClass, errorMessage]
+    .filter(Boolean)
+    .join(' · ')
+  return [
+    httpStatus ? `HTTP ${httpStatus}` : null,
+    latencyMs != null ? `${latencyMs} ms` : null,
+    detail || 'Failed',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/**
  * Get status badge configuration for multi-key status
  */
 export function getMultiKeyStatusConfig(status: number) {
@@ -162,6 +212,8 @@ export function getMultiKeyConfirmMessage(
   switch (action.type) {
     case 'delete':
       return MULTI_KEY_CONFIRM_MESSAGES.DELETE
+    case 'delete-selected':
+      return MULTI_KEY_CONFIRM_MESSAGES.DELETE_SELECTED
     case 'enable':
       return MULTI_KEY_CONFIRM_MESSAGES.ENABLE
     case 'disable':
@@ -190,6 +242,7 @@ export function isDestructiveAction(
   if (!action) return false
   return (
     action.type === 'delete' ||
+    action.type === 'delete-selected' ||
     action.type === 'delete-disabled' ||
     action.type === 'disable-all' ||
     action.type === 'disable-selected'

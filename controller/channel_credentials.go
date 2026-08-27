@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	channelobservability "github.com/QuantumNous/new-api/pkg/channel_observability"
 	"github.com/QuantumNous/new-api/service"
@@ -48,6 +49,11 @@ type multiKeyTestRequest struct {
 	KeysRevision    int64  `json:"keys_revision"`
 	Concurrency     int    `json:"concurrency"`
 	TimeoutSeconds  int    `json:"timeout"`
+}
+
+type multiKeyAppendRequest struct {
+	Credentials  []model.ChannelCredentialInput `json:"credentials"`
+	KeysRevision int64                          `json:"keys_revision"`
 }
 
 type multiKeyTestResult struct {
@@ -229,6 +235,63 @@ func ListMultiKeyCredentials(c *gin.Context) {
 	}})
 }
 
+// AppendMultiKeyCredentials appends secrets (with optional per-key proxy URLs)
+// to the end of a multi-key channel pool. It reuses the same transactional
+// reconciliation as channel edits, so credential identity, the legacy Key
+// mirror, and the revision counter stay consistent. The call is rejected when
+// the client's revision is stale, which prevents double-append races.
+func AppendMultiKeyCredentials(c *gin.Context) {
+	channelID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || channelID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid channel id"})
+		return
+	}
+	var request multiKeyAppendRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if len(request.Credentials) == 0 {
+		writeChannelCredentialError(c, model.ErrChannelCredentialSelectionEmpty)
+		return
+	}
+	channel, err := model.GetChannelById(channelID, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "channel is not a multi-key channel"})
+		return
+	}
+	currentRevision, err := model.GetChannelCredentialRevision(model.DB, channelID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if request.KeysRevision > 0 && request.KeysRevision != currentRevision {
+		writeChannelCredentialError(c, model.ErrChannelCredentialRevisionConflict)
+		return
+	}
+	oldProxies, newProxies, err := channel.UpdateWithCredentialInputs(request.Credentials, "append")
+	if err != nil {
+		writeChannelCredentialError(c, err)
+		return
+	}
+	for _, proxy := range append(oldProxies, newProxies...) {
+		if proxy != "" {
+			service.InvalidateProxyClient(proxy)
+		}
+	}
+	model.InitChannelCache()
+	revision, err := model.GetChannelCredentialRevision(model.DB, channelID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "keys_revision": revision})
+}
+
 // TestMultiKeys enqueues a bounded asynchronous probe. Empty selections are
 // rejected; callers must opt into the whole pool with all=true.
 func TestMultiKeys(c *gin.Context) {
@@ -273,8 +336,8 @@ func TestMultiKeys(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "no keys selected"})
 		return
 	}
-	if len(credentialIDs) > 100 {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "at most 100 keys can be tested per request"})
+	if len(credentialIDs) > maxMultiKeyTestKeys {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "at most 500 keys can be tested per request"})
 		return
 	}
 	if request.Concurrency <= 0 {
@@ -442,6 +505,25 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 			}
 		}()
 	}
+	ordered := make([]multiKeyTestResult, len(selected))
+	// Collect results concurrently with the workers so the progress reporter
+	// persists live {processed,total} state instead of only the final 100%.
+	// The collector goroutine writes completed before closing collectorDone;
+	// receiving from that channel establishes the happens-before for the read.
+	completed := 0
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		for item := range results {
+			if item.order >= 0 && item.order < len(ordered) {
+				ordered[item.order] = item.result
+				completed++
+				if report != nil {
+					report(completed, len(selected))
+				}
+			}
+		}
+	}()
 	for order, credential := range selected {
 		jobs <- struct {
 			order      int
@@ -451,17 +533,7 @@ func runMultiKeyCredentialTests(ctx context.Context, payload channelCredentialTe
 	close(jobs)
 	workers.Wait()
 	close(results)
-	ordered := make([]multiKeyTestResult, len(selected))
-	completed := 0
-	for item := range results {
-		if item.order >= 0 && item.order < len(ordered) {
-			ordered[item.order] = item.result
-			completed++
-			if report != nil {
-				report(completed, len(selected))
-			}
-		}
-	}
+	<-collectorDone
 	if err := ctx.Err(); err != nil {
 		return channelCredentialTestTaskResult{}, err
 	}
@@ -588,11 +660,18 @@ func CancelMultiKeyTestTask(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"success": true, "message": "test task cancellation requested"})
 }
 
+const (
+	// maxMultiKeyTestKeys bounds one credential-test task. Pools beyond this
+	// need an explicit selection split; the frontend surfaces that guidance.
+	maxMultiKeyTestKeys = 500
+)
+
 func writeChannelCredentialError(c *gin.Context, err error) {
-	status := http.StatusBadRequest
 	if errors.Is(err, model.ErrChannelCredentialRevisionConflict) {
-		status = http.StatusConflict
+		common.ApiErrorI18n(c, i18n.MsgChannelCredentialConflict)
+		return
 	}
+	status := http.StatusBadRequest
 	if errors.Is(err, model.ErrChannelCredentialNotFound) {
 		status = http.StatusNotFound
 	}

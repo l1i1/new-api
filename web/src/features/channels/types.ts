@@ -245,6 +245,7 @@ export type MultiKeyConfirmAction = {
     | 'enable'
     | 'disable'
     | 'delete'
+    | 'delete-selected'
     | 'enable-all'
     | 'disable-all'
     | 'enable-selected'
@@ -283,6 +284,12 @@ export interface MultiKeyTestResult {
   tested_at?: number
 }
 
+export interface MultiKeyTestTaskState {
+  total: number
+  processed: number
+  progress: number
+}
+
 export interface MultiKeyTestResponse {
   success: boolean
   message?: string
@@ -291,6 +298,7 @@ export interface MultiKeyTestResponse {
   data?: {
     task_id: string
     status: string
+    state?: MultiKeyTestTaskState
     result?: {
       results?: MultiKeyTestResult[]
     }
@@ -435,8 +443,11 @@ export interface MultiKeyManageParams {
     | 'enable_all_keys'
     | 'disable_all_keys'
     | 'delete_key'
+    | 'delete_keys'
     | 'delete_disabled_keys'
   key_index?: number
+  credential_ids?: number[]
+  keys_revision?: number
   page?: number
   page_size?: number
   status?: number // 1=enabled, 2=manual_disabled, 3=auto_disabled
@@ -513,4 +524,7 @@ export interface AddChannelRequest {
 export type ChannelUpdatePayload = Partial<Channel> & {
   key_mode?: 'append' | 'replace'
   multi_key_credentials?: MultiKeyCredentialPayload[]
+  /** 'multi_to_single' upgrades a single-key channel into a key pool. */
+  mode?: 'multi_to_single'
+  multi_key_mode?: 'random' | 'polling' | 'affinity'
 }

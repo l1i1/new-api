@@ -214,6 +214,8 @@ export const MULTI_KEY_FILTER_OPTIONS = [
 export const MULTI_KEY_CONFIRM_MESSAGES = {
   DELETE:
     'Are you sure you want to delete this key? This action cannot be undone.',
+  DELETE_SELECTED:
+    'Are you sure you want to delete the selected keys? This action cannot be undone.',
   ENABLE: 'Enable this key?',
   DISABLE: 'Disable this key?',
   ENABLE_ALL: 'Are you sure you want to enable all keys?',

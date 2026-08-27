@@ -38,9 +38,11 @@ import type {
   GetChannelsParams,
   GetChannelsResponse,
   MultiKeyManageParams,
+  MultiKeyCredentialPayload,
   MultiKeyMutationResponse,
   MultiKeyStatusResponse,
   MultiKeyTestResponse,
+  MultiKeyTestTaskState,
   SearchChannelsParams,
   SearchChannelsResponse,
   TagOperationParams,
@@ -447,12 +449,14 @@ export async function getMultiKeyStatus(
  */
 export async function enableMultiKey(
   channelId: number,
-  keyIndex: number
+  keyIndex: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'enable_key',
     key_index: keyIndex,
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string }>
 }
 
@@ -461,12 +465,14 @@ export async function enableMultiKey(
  */
 export async function disableMultiKey(
   channelId: number,
-  keyIndex: number
+  keyIndex: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'disable_key',
     key_index: keyIndex,
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string }>
 }
 
@@ -475,12 +481,14 @@ export async function disableMultiKey(
  */
 export async function deleteMultiKey(
   channelId: number,
-  keyIndex: number
+  keyIndex: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'delete_key',
     key_index: keyIndex,
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string }>
 }
 
@@ -488,11 +496,13 @@ export async function deleteMultiKey(
  * Enable all keys in multi-key channel
  */
 export async function enableAllMultiKeys(
-  channelId: number
+  channelId: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'enable_all_keys',
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string }>
 }
 
@@ -500,11 +510,13 @@ export async function enableAllMultiKeys(
  * Disable all keys in multi-key channel
  */
 export async function disableAllMultiKeys(
-  channelId: number
+  channelId: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'disable_all_keys',
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string }>
 }
 
@@ -512,12 +524,30 @@ export async function disableAllMultiKeys(
  * Delete all disabled keys in multi-key channel
  */
 export async function deleteDisabledMultiKeys(
-  channelId: number
+  channelId: number,
+  keysRevision?: number
 ): Promise<{ success: boolean; message?: string; data?: number }> {
   return manageMultiKeys({
     channel_id: channelId,
     action: 'delete_disabled_keys',
+    keys_revision: keysRevision,
   }) as Promise<{ success: boolean; message?: string; data?: number }>
+}
+
+/**
+ * Delete selected keys (by durable credential id) in multi-key channel
+ */
+export async function deleteMultiKeyCredentials(
+  channelId: number,
+  credentialIds: number[],
+  keysRevision?: number
+): Promise<{ success: boolean; message?: string }> {
+  return manageMultiKeys({
+    channel_id: channelId,
+    action: 'delete_keys',
+    credential_ids: credentialIds,
+    keys_revision: keysRevision,
+  }) as Promise<{ success: boolean; message?: string }>
 }
 
 export async function testMultiKeys(
@@ -581,12 +611,28 @@ export async function updateMultiKeyProxy(
   return res.data
 }
 
+export async function appendMultiKeyCredentials(
+  channelId: number,
+  params: {
+    credentials: MultiKeyCredentialPayload[]
+    keys_revision?: number
+  }
+): Promise<MultiKeyMutationResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/multi-key/credentials`,
+    params,
+    channelActionConfig()
+  )
+  return res.data
+}
+
 export type MultiKeyTestTaskResponse = {
   success: boolean
   message?: string
   data?: {
     task_id: string
     status: string
+    state?: MultiKeyTestTaskState
     result?: {
       results?: MultiKeyTestResponse['results']
     }
