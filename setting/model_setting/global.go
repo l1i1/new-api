@@ -36,6 +36,11 @@ type GlobalSettings struct {
 	PassThroughRequestEnabled        bool                             `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist           []string                         `json:"thinking_model_blacklist"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
+	// MaskUpstreamModelName hides the upstream (channel-mapped) model name
+	// from client responses: when a channel maps the request model to a
+	// different upstream id, the response model field is rewritten to the
+	// origin request model. Billing/usage/logging keep the upstream name.
+	MaskUpstreamModelName bool `json:"mask_upstream_model_name"`
 }
 
 // 默认配置

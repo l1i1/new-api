@@ -769,6 +769,22 @@ func (info *RelayInfo) GetUpstreamModelName() string {
 	return info.UpstreamModelName
 }
 
+// GetClientModelName returns the model name the client should see in the
+// response. With the global hide-upstream-model setting on and a channel
+// mapping in effect, the origin request model is returned; otherwise the
+// upstream (channel-mapped) model is the response model as usual.
+func (info *RelayInfo) GetClientModelName() string {
+	if info == nil {
+		return ""
+	}
+	if model_setting.GetGlobalSettings().MaskUpstreamModelName {
+		if origin := strings.TrimSpace(info.OriginModelName); origin != "" {
+			return origin
+		}
+	}
+	return info.GetUpstreamModelName()
+}
+
 func (info *RelayInfo) HasChannelMeta() bool { return info != nil && info.ChannelMeta != nil }
 
 func (info *RelayInfo) GetChannelID() int {

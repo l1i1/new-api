@@ -90,6 +90,7 @@ const jsonString = z.string().refine((value) => {
 const schema = z.object({
   global: z.object({
     pass_through_request_enabled: z.boolean(),
+    mask_upstream_model_name: z.boolean(),
     thinking_model_blacklist: jsonString,
     chat_completions_to_responses_policy: jsonString,
   }),
@@ -104,6 +105,7 @@ type GlobalModelSettingsFormInput = z.input<typeof schema>
 
 type FlatGlobalModelSettings = {
   'global.pass_through_request_enabled': boolean
+  'global.mask_upstream_model_name': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
   'general_setting.ping_interval_enabled': boolean
@@ -115,6 +117,8 @@ const flattenGlobalValues = (
 ): FlatGlobalModelSettings => ({
   'global.pass_through_request_enabled':
     values.global.pass_through_request_enabled,
+  'global.mask_upstream_model_name':
+    values.global.mask_upstream_model_name,
   'global.thinking_model_blacklist': normalizeJsonText(
     values.global.thinking_model_blacklist,
     '[]'
@@ -196,6 +200,29 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                   <FormDescription>
                     {t(
                       'Forward requests directly to upstream providers without any post-processing.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='global.mask_upstream_model_name'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Hide Upstream Model Name')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>

@@ -78,6 +78,12 @@ const (
 	// requests keep normal aggregator routing.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
 
+	// ContextKeyRelayInfoPtr stores the active *relaycommon.RelayInfo so
+	// shared response writers (e.g. IOCopyBytesGracefully) can rewrite the
+	// client-facing model name after per-format handlers resolved the
+	// upstream (channel-mapped) model id.
+	ContextKeyRelayInfoPtr ContextKey = "relay_info_ptr"
+
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 	ContextKeyOllamaPromptCache    ContextKey = "ollama_prompt_cache"
 

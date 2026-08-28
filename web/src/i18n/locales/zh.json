@@ -1638,6 +1638,8 @@
     "Enable Performance Monitoring": "启用性能监控",
     "Enable rate limiting": "启用速率限制",
     "Enable Request Passthrough": "启用请求透传",
+    "Hide Upstream Model Name": "隐藏上游模型名称",
+    "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.": "当渠道将模型映射到不同的上游 id 时，响应中使用请求的模型名称。计费和用量日志仍保留实际上游 id。",
     "Enable selected channels": "启用选定的渠道",
     "Enable selected models": "启用选定的模型",
     "Enable SSL/TLS": "启用 SSL/TLS",

@@ -189,6 +189,7 @@ export type ContentSettings = {
 
 export type ModelSettings = {
   'global.pass_through_request_enabled': boolean
+  'global.mask_upstream_model_name': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
   'general_setting.ping_interval_enabled': boolean

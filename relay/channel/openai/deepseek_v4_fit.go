@@ -11,6 +11,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 )
 
 // isDeepSeekV4ChatModel reports whether the client-facing request targets a
@@ -679,4 +680,37 @@ func isJSONNull(raw json.RawMessage) bool {
 		return true
 	}
 	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// maskUpstreamModelNameEnabled reports whether the global setting that hides
+// the upstream (channel-mapped) model id from client responses is on. It is a
+// platform-wide switch, independent of per-user official-fit profiles.
+func maskUpstreamModelNameEnabled() bool {
+	return model_setting.GetGlobalSettings().MaskUpstreamModelName
+}
+
+// maskModelNameInResponse rewrites the top-level "model" field of one JSON
+// document (stream chunk or non-stream response body) back to the origin
+// request model when the upstream channel mapped it to a different id. The
+// replacement is byte-level so the rest of the payload keeps its original
+// key order. ok=false leaves data untouched (caller forwards it as-is).
+func maskModelNameInResponse(data []byte, info *relaycommon.RelayInfo) ([]byte, bool) {
+	if !maskUpstreamModelNameEnabled() || info == nil {
+		return data, false
+	}
+	origin := strings.TrimSpace(info.OriginModelName)
+	upstream := strings.TrimSpace(info.GetUpstreamModelName())
+	if origin == "" || upstream == "" || origin == upstream {
+		return data, false
+	}
+	return replaceTopLevelJSONValue(data, "model", json.RawMessage(strconv.Quote(origin)))
+}
+
+// maskModelNameInStreamData applies the same rewrite to one raw SSE event.
+func maskModelNameInStreamData(data string, info *relaycommon.RelayInfo) string {
+	patched, ok := maskModelNameInResponse([]byte(data), info)
+	if !ok {
+		return data
+	}
+	return string(patched)
 }

@@ -27,6 +27,15 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
+	// Global mask: when a channel maps the request model to a different
+	// upstream id, hide it from every SSE chunk (the model field is echoed
+	// per chunk). Applies before any other transformation so even the raw
+	// passthrough branch cannot leak the upstream id.
+	if maskUpstreamModelNameEnabled() && info != nil && info.OriginModelName != "" &&
+		info.GetUpstreamModelName() != "" && info.OriginModelName != info.GetUpstreamModelName() {
+		data = maskModelNameInStreamData(data, info)
+	}
+
 	suppressReasoningContent := shouldSuppressReasoningContent(info)
 	if !forceFormat && !thinkToContent && !suppressReasoningContent {
 		return helper.StringData(c, data)
@@ -667,6 +676,15 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewOpenAIError(fitErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		responseBody = fitted
+	}
+
+	if info.RelayFormat == types.RelayFormatOpenAI {
+		// Global mask: hide the upstream-mapped model id from the client.
+		// Byte-level rewrite preserves the upstream key order; the fit
+		// branch above already ran, so this only affects the final body.
+		if patched, ok := maskModelNameInResponse(responseBody, info); ok {
+			responseBody = patched
+		}
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

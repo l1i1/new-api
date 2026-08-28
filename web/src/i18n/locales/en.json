@@ -1638,6 +1638,8 @@
     "Enable Performance Monitoring": "Enable Performance Monitoring",
     "Enable rate limiting": "Enable rate limiting",
     "Enable Request Passthrough": "Enable Request Passthrough",
+    "Hide Upstream Model Name": "Hide Upstream Model Name",
+    "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.": "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.",
     "Enable selected channels": "Enable selected channels",
     "Enable selected models": "Enable selected models",
     "Enable SSL/TLS": "Enable SSL/TLS",

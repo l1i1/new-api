@@ -193,6 +193,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	// Shared response writers (IOCopyBytesGracefully) need the relay
+	// metadata to hide the upstream-mapped model id. The pointer is filled
+	// by ModelMappedHelper once the channel is selected.
+	common.SetContextKey(c, constant.ContextKeyRelayInfoPtr, relayInfo)
 	if decision := checkRelayContentModeration(c, relayFormat, relayInfo); decision != nil && decision.Blocked && !decision.Overloaded {
 		message := decision.Message
 		if message == "" {

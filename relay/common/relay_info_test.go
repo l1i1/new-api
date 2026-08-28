@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -225,4 +226,35 @@ func TestInitChannelMetaRestoresRequestReasoningEffortForRetry(t *testing.T) {
 	info.SetReasoningEffort("low")
 	info.InitChannelMeta(ctx)
 	assert.Equal(t, "max", info.ReasoningEffort)
+}
+
+func TestGetClientModelNameHidesUpstreamWhenEnabled(t *testing.T) {
+	model_setting.GetGlobalSettings().MaskUpstreamModelName = true
+	defer func() { model_setting.GetGlobalSettings().MaskUpstreamModelName = false }()
+
+	info := &RelayInfo{
+		OriginModelName: "deepseek-v4-flash",
+		ChannelMeta:     &ChannelMeta{UpstreamModelName: "@cf/deepseek-ai/deepseek-v4-flash-0731"},
+	}
+	require.Equal(t, "deepseek-v4-flash", info.GetClientModelName())
+}
+
+func TestGetClientModelNameUsesUpstreamWhenDisabled(t *testing.T) {
+	model_setting.GetGlobalSettings().MaskUpstreamModelName = false
+
+	info := &RelayInfo{
+		OriginModelName: "deepseek-v4-flash",
+		ChannelMeta:     &ChannelMeta{UpstreamModelName: "@cf/deepseek-ai/deepseek-v4-flash-0731"},
+	}
+	require.Equal(t, "@cf/deepseek-ai/deepseek-v4-flash-0731", info.GetClientModelName())
+}
+
+func TestGetClientModelNameFallsBackOnEmptyOrigin(t *testing.T) {
+	model_setting.GetGlobalSettings().MaskUpstreamModelName = true
+	defer func() { model_setting.GetGlobalSettings().MaskUpstreamModelName = false }()
+
+	info := &RelayInfo{
+		ChannelMeta: &ChannelMeta{UpstreamModelName: "@cf/gpt"},
+	}
+	require.Equal(t, "@cf/gpt", info.GetClientModelName())
 }
