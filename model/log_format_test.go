@@ -91,3 +91,24 @@ func TestFormatUserLogsFiltersErrorContentForNonAdminViews(t *testing.T) {
 	require.Empty(t, logs[0].UpstreamRequestId)
 	require.Equal(t, "providers=should-remain-in-non-error-log", logs[1].Content)
 }
+
+// TestFormatUserLogsHidesUpstreamModel verifies the upstream (channel-mapped)
+// model id is stripped from regular-user log views, while admin-only views
+// (which do not call formatUserLogs) keep it.
+func TestFormatUserLogsHidesUpstreamModel(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"model_price":         0.004,
+		"is_model_mapped":     true,
+		"upstream_model_name": "deepseek-v4-flash-0731",
+	})
+	logs := []*Log{{Other: other}}
+
+	formatUserLogs(logs, 0)
+
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.NotContains(t, parsed, "upstream_model_name")
+	require.NotContains(t, parsed, "is_model_mapped")
+	// Non-admin billing fields remain visible.
+	require.Contains(t, parsed, "model_price")
+}
