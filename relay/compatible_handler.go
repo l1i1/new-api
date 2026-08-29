@@ -191,6 +191,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			newApiErr := service.RelayErrorHandlerWithFormat(c, httpResp, false, info.RelayFormat)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
+			sendMappedStreamError(c, info, newApiErr)
 			return newApiErr
 		}
 	}
@@ -229,4 +230,45 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	}
 	return nil
+}
+
+// sendMappedStreamError 处理「上游非 2xx 错误被 status_code_mapping 映射为 2xx 的流式请求」。
+// 此时响应头已被 doRequest 在流式请求下设为 text/event-stream（SetEventStreamHeaders），
+// 但错误体是普通 JSON（无 data: 行），SSE 客户端会把它解析成一个空流（无 finish_reason、
+// 无内容），从而出现 empty_model_response 类问题。这里向客户端发送标准格式的 SSE 错误事件，
+// 让客户端读到明确的错误而非空响应。已写入（c.Writer.Written()==true）后，
+// controller/relay.go 的 defer 不会再写重复的错误 JSON。
+func sendMappedStreamError(c *gin.Context, info *relaycommon.RelayInfo, newApiErr *types.NewAPIError) {
+	if newApiErr == nil || info == nil || !info.IsStream || c.Writer.Written() {
+		return
+	}
+	statusCode := newApiErr.StatusCode
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return
+	}
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		_ = helper.ClaudeData(c, dto.ClaudeResponse{
+			Type:  "error",
+			Error: newApiErr.ToClaudeError(),
+		})
+	case types.RelayFormatGemini:
+		message := newApiErr.Error()
+		code := statusCode
+		if code < 400 || code > 599 {
+			code = http.StatusBadRequest
+		}
+		payload, marshalErr := common.Marshal(gin.H{"error": gin.H{
+			"code":    code,
+			"message": message,
+			"status":  "UPSTREAM_ERROR",
+		}})
+		if marshalErr == nil {
+			c.Render(-1, common.CustomEvent{Data: "data: " + string(payload) + "\n\n"})
+			_ = helper.FlushWriter(c)
+		}
+	default:
+		_ = helper.ObjectData(c, gin.H{"error": newApiErr.ToOpenAIError()})
+		helper.Done(c)
+	}
 }

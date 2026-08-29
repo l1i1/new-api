@@ -189,6 +189,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			newAPIError = service.RelayErrorHandlerWithFormat(c, httpResp, false, info.RelayFormat)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			sendMappedStreamError(c, info, newAPIError)
 			return newAPIError
 		}
 	}
@@ -196,6 +197,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
+		sendMappedStreamError(c, info, openaiErr)
 		return openaiErr
 	}
 
@@ -289,6 +291,7 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 		if httpResp.StatusCode != http.StatusOK {
 			newAPIError = service.RelayErrorHandlerWithFormat(c, httpResp, false, info.RelayFormat)
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			sendMappedStreamError(c, info, newAPIError)
 			return newAPIError
 		}
 	}
@@ -296,6 +299,7 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
+		sendMappedStreamError(c, info, openaiErr)
 		return openaiErr
 	}
 

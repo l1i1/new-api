@@ -213,6 +213,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			newAPIError = service.RelayErrorHandlerWithFormat(c, httpResp, false, info.RelayFormat)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			sendMappedStreamError(c, info, newAPIError)
 			return newAPIError
 		}
 	}
@@ -221,6 +222,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	if newAPIError != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+		sendMappedStreamError(c, info, newAPIError)
 		return newAPIError
 	}
 

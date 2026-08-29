@@ -137,6 +137,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			sendMappedStreamError(c, info, newAPIError)
 			return newAPIError
 		}
 	}
@@ -145,6 +146,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	if newAPIError != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+		sendMappedStreamError(c, info, newAPIError)
 		return newAPIError
 	}
 
