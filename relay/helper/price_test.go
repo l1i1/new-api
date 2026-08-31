@@ -181,6 +181,60 @@ func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
 	require.Equal(t, common.QuotaClampOverflow, clamp.Kind)
 }
 
+func TestModelPriceHelperRatioPreConsumeMatchesSettlementRatios(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	savedModelPrices := ratio_setting.ModelPrice2JSONString()
+	savedModelRatios := ratio_setting.ModelRatio2JSONString()
+	savedCompletionRatios := ratio_setting.CompletionRatio2JSONString()
+	savedGroupRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedModelPrices))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedModelRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(savedCompletionRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(savedGroupRatios))
+	})
+
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"ratio-preconsume-model":2,"ratio-preconsume-fractional":1.2}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"ratio-preconsume-model":3,"ratio-preconsume-fractional":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"paid":1.5,"fractional":0.7}`))
+
+	tests := []struct {
+		name         string
+		model        string
+		group        string
+		promptTokens int
+		maxTokens    int
+		wantQuota    int
+	}{
+		{name: "minimum input estimate and completion ratio", model: "ratio-preconsume-model", group: "paid", promptTokens: 100, maxTokens: 200, wantQuota: 3300},
+		{name: "prompt above minimum without completion estimate", model: "ratio-preconsume-model", group: "paid", promptTokens: 1000, maxTokens: 0, wantQuota: 3000},
+		{name: "fractional quota rounds like settlement", model: "ratio-preconsume-fractional", group: "fractional", promptTokens: 501, maxTokens: 0, wantQuota: 421},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Set("group", tt.group)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: tt.model,
+				UserGroup:       tt.group,
+				UsingGroup:      tt.group,
+			}
+
+			priceData, err := ModelPriceHelper(ctx, info, tt.promptTokens, &types.TokenCountMeta{MaxTokens: tt.maxTokens})
+
+			require.NoError(t, err)
+			require.Equal(t, tt.wantQuota, priceData.QuotaToPreConsume)
+			if tt.model == "ratio-preconsume-model" {
+				require.Equal(t, 2.0, priceData.ModelRatio)
+				require.Equal(t, 3.0, priceData.CompletionRatio)
+				require.Equal(t, 1.5, priceData.GroupRatioInfo.GroupRatio)
+			}
+		})
+	}
+}
+
 func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	savedModelPrices := ratio_setting.ModelPrice2JSONString()

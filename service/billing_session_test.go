@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	hostcommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
@@ -58,6 +59,12 @@ func TestBillingSessionSettleExactMatchRecordsWalletUsage(t *testing.T) {
 func TestBillingSessionSettleRefundRecordsWalletUsage(t *testing.T) {
 	truncate(t)
 
+	previousBatchUpdateEnabled := hostcommon.BatchUpdateEnabled
+	hostcommon.BatchUpdateEnabled = true
+	t.Cleanup(func() {
+		hostcommon.BatchUpdateEnabled = previousBatchUpdateEnabled
+	})
+
 	const userID = 707
 	seedUser(t, userID, 100_000)
 
@@ -100,6 +107,36 @@ func TestBillingSessionRefundAfterSettleIsNoOp(t *testing.T) {
 	var user model.User
 	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
 	assert.Equal(t, 92_000, user.Quota)
+}
+
+func TestBillingSessionRefundPersistsWalletQuotaBeforeReturn(t *testing.T) {
+	truncate(t)
+
+	previousBatchUpdateEnabled := hostcommon.BatchUpdateEnabled
+	hostcommon.BatchUpdateEnabled = true
+	t.Cleanup(func() {
+		hostcommon.BatchUpdateEnabled = previousBatchUpdateEnabled
+	})
+
+	const userID = 710
+	seedUser(t, userID, 100_000)
+
+	relayInfo := &common.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+	}
+	session, apiErr := NewBillingSession(newBillingSessionTestContext(), relayInfo, 12_000)
+	require.Nil(t, apiErr)
+
+	var user model.User
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	require.Equal(t, 88_000, user.Quota)
+
+	session.Refund(newBillingSessionTestContext())
+	require.NoError(t, session.Settle(8_000))
+
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	assert.Equal(t, 100_000, user.Quota)
 }
 
 func TestBillingSessionSettleExactMatchRecordsZeroQuotaRequest(t *testing.T) {

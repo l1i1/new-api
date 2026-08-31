@@ -81,9 +81,9 @@ func (w *WalletFunding) Settle(delta int) error {
 		return model.DecreaseUserQuota(w.userId, delta, false)
 	}
 	if w.recordUsage {
-		return model.IncreaseUserQuotaWithUsage(w.userId, -delta, w.usageDelta, 1)
+		return model.IncreaseUserQuotaWithUsageImmediate(w.userId, -delta, w.usageDelta, 1)
 	}
-	return model.IncreaseUserQuota(w.userId, -delta, false)
+	return model.IncreaseUserQuota(w.userId, -delta, true)
 }
 
 func (w *WalletFunding) Refund() error {

@@ -45,13 +45,13 @@ func (s *BillingSession) FoldUsageIntoWalletSettle(usageDelta int) {
 	}
 }
 
-// Settle 根据实际消耗额度进行结算。
+// Settle 根据实际消耗额度进行结算。Refund 抢先标记后，结算直接跳过，避免退款与结算并发修改同一笔预扣。
 // 资金来源和令牌额度分两步提交：若资金来源已提交但令牌调整失败，
 // 会标记 fundingSettled 防止 Refund 对已提交的资金来源执行退款。
 func (s *BillingSession) Settle(actualQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.settled {
+	if s.settled || s.refunded {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
@@ -97,7 +97,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	return tokenErr
 }
 
-// Refund 退还所有预扣费，幂等安全，异步执行。
+// Refund 退还所有预扣费，幂等安全。钱包退款同步完成，避免失败响应返回前余额仍被预扣。
 func (s *BillingSession) Refund(c *gin.Context) {
 	s.mu.Lock()
 	if s.settled || s.refunded || !s.needsRefundLocked() {
@@ -121,11 +121,20 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	extraReserved := s.extraReserved
 	subscriptionId := s.relayInfo.SubscriptionId
 	funding := s.funding
+	isWalletFunding := funding.Source() == BillingSourceWallet
+	if isWalletFunding {
+		// 钱包余额是下一次预扣的权威来源，必须在失败响应返回前恢复。
+		if err := funding.Refund(); err != nil {
+			common.SysLog("error refunding wallet funding: " + err.Error())
+		}
+	}
 
 	gopool.Go(func() {
-		// 1) 退还资金来源
-		if err := funding.Refund(); err != nil {
-			common.SysLog("error refunding billing source: " + err.Error())
+		// 1) 退还非钱包资金来源；钱包退款已在启动异步任务前同步完成。
+		if !isWalletFunding {
+			if err := funding.Refund(); err != nil {
+				common.SysLog("error refunding billing source: " + err.Error())
+			}
 		}
 		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
 			if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
@@ -248,7 +257,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		if errors.Is(err, ErrInsufficientWalletQuota) {
-			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
+			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, true)
 			if quotaErr != nil {
 				userQuota = 0
 			}

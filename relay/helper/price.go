@@ -16,6 +16,7 @@ import (
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 func modelPriceNotConfiguredError(modelName string, userId int) error {
@@ -92,10 +93,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var audioCompletionRatio float64
 	var freeModel bool
 	if !usePrice {
-		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
-		if meta.MaxTokens != 0 {
-			preConsumedTokens += meta.MaxTokens
-		}
 		var success bool
 		var matchName string
 		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
@@ -117,8 +114,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		imageRatio, _ = ratio_setting.GetImageRatio(info.OriginModelName)
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
-		ratio := modelRatio * groupRatioInfo.GroupRatio
-		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
+		inputTokens := decimal.NewFromInt(int64(common.Max(promptTokens, common.PreConsumedQuota)))
+		completionTokens := decimal.NewFromInt(int64(meta.MaxTokens)).Mul(decimal.NewFromFloat(completionRatio))
+		ratio := decimal.NewFromFloat(modelRatio).Mul(decimal.NewFromFloat(groupRatioInfo.GroupRatio))
+		quota, err := common.QuotaFromDecimalStrict(inputTokens.Add(completionTokens).Mul(ratio))
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}

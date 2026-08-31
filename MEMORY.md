@@ -1,5 +1,8 @@
 # New API Fork Memory
 
+- On 2026-08-31, production logs confirmed the reported wallet pre-consume failure was caused by an asynchronous refund window: a request reserved about ¥6.527444, consumed about ¥0.267498, and returned about ¥6.259946 in a background goroutine, so a concurrent request briefly observed the reduced balance. Wallet refunds now execute synchronously both in `BillingSession.Refund` and in the negative-delta wallet `Settle` path before returning, while token/subscription follow-up remains asynchronous; `Settle` also skips sessions already marked refunded to avoid a refund/settle race. The database remains the synchronous authority; Redis cache refresh is still asynchronous. Tiered billing keeps the conservative full `max_tokens` estimate until a reservation ledger exists.
+- On 2026-08-31, wallet pre-consume investigation found two correctness issues. The atomic wallet reservation remains database-authoritative and must retain its `quota >= amount` guard; `aff_quota` is not part of ordinary wallet pre-consume. The insufficient-wallet error path now reads the balance from the database instead of Redis so the diagnostic matches the reservation source. In ratio billing, ordinary pre-consume now estimates input tokens with `modelRatio` and the requested completion limit with `completionRatio`, using decimal arithmetic, matching final text settlement and avoiding float truncation drift. The conservative full `max_tokens` reservation policy remains unchanged.
+
 - On 2026-08-27, the multi-key management UX was overhauled (local-only, no
   commit/publish/deploy): (1) manage dialog now uses one bounded scroll
   container for both axes — the old double-container layout buried the

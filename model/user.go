@@ -1383,7 +1383,17 @@ func DecreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCo
 
 // IncreaseUserQuotaWithUsage atomically applies a wallet refund and the usage
 // statistics of one request in a single UPDATE on the users row.
-func IncreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCount int) (err error) {
+func IncreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCount int) error {
+	return increaseUserQuotaWithUsage(id, quota, usedQuotaDelta, requestCount, true)
+}
+
+// IncreaseUserQuotaWithUsageImmediate persists a wallet refund and usage
+// statistics before returning, bypassing the batch updater.
+func IncreaseUserQuotaWithUsageImmediate(id int, quota int, usedQuotaDelta int, requestCount int) error {
+	return increaseUserQuotaWithUsage(id, quota, usedQuotaDelta, requestCount, false)
+}
+
+func increaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCount int, allowBatch bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -1394,7 +1404,7 @@ func IncreaseUserQuotaWithUsage(id int, quota int, usedQuotaDelta int, requestCo
 			}
 		})
 	}
-	if common.BatchUpdateEnabled && addUserBatchUpdate(id, quota, usedQuotaDelta, requestCount) {
+	if allowBatch && common.BatchUpdateEnabled && addUserBatchUpdate(id, quota, usedQuotaDelta, requestCount) {
 		return nil
 	}
 	result := DB.Exec("UPDATE users SET quota = quota + ?, used_quota = used_quota + ?, request_count = request_count + ? WHERE id = ? AND deleted_at IS NULL",
