@@ -205,3 +205,19 @@ func TestDeepSeekV4ToolCallChainValidation(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+func TestIsStrictFitValidationMessageCoversRound23Texts(t *testing.T) {
+	recognized := []string{
+		"Invalid max_tokens value, the valid range of max_tokens is [1, 393216]",
+		"Stop string array too long: 17",
+		"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
+		"An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id', The following tool_call_ids did not have response messages: call_other",
+		"An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)",
+		"Failed to deserialize the JSON body into the target type: messages[2]: missing field `tool_call_id`",
+		"The `reasoning_content` in the thinking mode must be passed back to the API.",
+	}
+	for _, msg := range recognized {
+		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
+	}
+	assert.False(t, IsStrictFitValidationMessage("some internal platform error"))
+}
