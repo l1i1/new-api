@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -652,6 +653,9 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if err := validateDeepSeekV4Messages(request); err != nil {
 		return err
 	}
+	if err := validateDeepSeekV4Thinking(request); err != nil {
+		return err
+	}
 	if count, isArray := deepSeekV4StopArrayLength(request.Stop); isArray && count > deepSeekV4StopArrayLimit {
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4StopTooLongMessage(count),
@@ -748,6 +752,77 @@ func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
 // input (live-probed: the vision-exp variant, not pro/flash).
 func deepSeekV4VisionModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "vision")
+}
+
+// validateDeepSeekV4Thinking mirrors the official thinking contract
+// (live-probed 2026-09-02, buyer round 6): the object's type enum is exactly
+// adaptive/enabled/disabled (adaptive behaves like enabled and unknown extra
+// fields are ignored), a missing type key and scalar thinking values each get
+// their own deserialization text, a non-string type is a plain-text body
+// parse failure, and a null thinking value is ignored.
+func validateDeepSeekV4Thinking(request *dto.GeneralOpenAIRequest) error {
+	if len(request.THINKING) == 0 {
+		return nil
+	}
+	if string(bytes.TrimSpace(request.THINKING)) == "null" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := common.Unmarshal(request.THINKING, &fields); err != nil {
+		return deepSeekV4ThinkingScalarError(request.THINKING)
+	}
+	typeRaw, hasType := fields["type"]
+	if !hasType {
+		return deepSeekV4ToolChainError("Failed to deserialize the JSON body into the target type: thinking: missing field `type`")
+	}
+	typeValue := bytes.TrimSpace(typeRaw)
+	if len(typeValue) == 0 || typeValue[0] != '"' {
+		return deepSeekV4ToolChainError(deepSeekV4ThinkingParseExpectedValueText)
+	}
+	var thinkingType string
+	if err := json.Unmarshal(typeValue, &thinkingType); err != nil {
+		return deepSeekV4ToolChainError(deepSeekV4ThinkingParseExpectedValueText)
+	}
+	switch thinkingType {
+	case "adaptive", "enabled", "disabled":
+		return nil
+	default:
+		return deepSeekV4ToolChainError("Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `" +
+			thinkingType + "`, expected one of `adaptive`, `enabled`, `disabled`")
+	}
+}
+
+// deepSeekV4ThinkingParseExpectedValueText is the official plain-text body
+// rendered (no JSON error wrapper) when thinking.type is not a string
+// (number/bool/object/array; live-probed 2026-09-02).
+const deepSeekV4ThinkingParseExpectedValueText = "Failed to parse the request body as JSON: thinking.type: expected value"
+
+// deepSeekV4ThinkingScalarError renders the official deserialization text for
+// a scalar thinking value: string/boolean/integer/floating point each get a
+// type-specific wording; null never reaches here (accepted upstream of this
+// check).
+func deepSeekV4ThinkingScalarError(raw json.RawMessage) error {
+	value := bytes.TrimSpace(raw)
+	invalid := "Failed to deserialize the JSON body into the target type: thinking: invalid type: "
+	switch {
+	case len(value) > 0 && value[0] == '"':
+		var scalar string
+		if err := json.Unmarshal(value, &scalar); err != nil {
+			return deepSeekV4ToolChainError(invalid + "string, expected struct ThinkingOptions")
+		}
+		return deepSeekV4ToolChainError(invalid + "string \"" + scalar + "\", expected struct ThinkingOptions")
+	case string(value) == "true" || string(value) == "false":
+		return deepSeekV4ToolChainError(invalid + "boolean `" + string(value) + "`, expected struct ThinkingOptions")
+	case len(value) > 0 && value[0] == '[':
+		return deepSeekV4ToolChainError(invalid + "sequence, expected struct ThinkingOptions")
+	case len(value) > 0 && value[0] == '{':
+		return deepSeekV4ToolChainError(invalid + "map, expected struct ThinkingOptions")
+	default:
+		if strings.ContainsAny(string(value), ".eE") {
+			return deepSeekV4ToolChainError(invalid + "floating point `" + string(value) + "`, expected struct ThinkingOptions")
+		}
+		return deepSeekV4ToolChainError(invalid + "integer `" + string(value) + "`, expected struct ThinkingOptions")
+	}
 }
 
 
@@ -1218,6 +1293,14 @@ func StrictFitContentType(message string) string {
 	return "application/octet-stream"
 }
 
+// StrictFitRendersPlainText reports whether the official endpoint returns
+// this strict-fit message as a bare-text body with no JSON error wrapper —
+// the body-parse failure class (live-probed 2026-09-02: a non-string
+// thinking.type renders as plain application/octet-stream text).
+func StrictFitRendersPlainText(message string) bool {
+	return strings.HasPrefix(message, "Failed to parse the request body as JSON:")
+}
+
 func IsStrictFitValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		deepSeekV4ReasoningEffortDeserMessagePrefix,
@@ -1243,6 +1326,10 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4EmptyMessagesMessage,
 		deepSeekV4ImageUnsupportedMessage,
 		deepSeekV4RoleDeserMessagePrefix,
+		"Failed to deserialize the JSON body into the target type: thinking.type: unknown variant",
+		"Failed to deserialize the JSON body into the target type: thinking: missing field",
+		"Failed to deserialize the JSON body into the target type: thinking: invalid type:",
+		deepSeekV4ThinkingParseExpectedValueText,
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,

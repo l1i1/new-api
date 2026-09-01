@@ -105,6 +105,90 @@ func TestStrictFitContentTypeSplitsSerdeClass(t *testing.T) {
 	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ToolChoiceThinkingMessage))
 }
 
+func TestDeepSeekV4ThinkingValidationMatchesOfficial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// Official thinking contract (live-probed 2026-09-02, buyer round 6):
+	// the type enum is exactly adaptive/enabled/disabled (adaptive behaves
+	// like enabled, unknown extra fields are ignored); a missing type key,
+	// scalar thinking values, and non-string types each carry their own
+	// official text; thinking:null is ignored.
+	tests := []struct {
+		name    string
+		thinking string
+		wantErr string
+	}{
+		{"adaptive is an accepted official variant", `{"type":"adaptive"}`, ""},
+		{"enabled is accepted", `{"type":"enabled"}`, ""},
+		{"disabled is accepted", `{"type":"disabled"}`, ""},
+		{"unknown extra fields are ignored", `{"type":"adaptive","bogus":1}`, ""},
+		{"bogus type string is the unknown-variant serde error", `{"type":"didn't"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled`"},
+		{"case differs from the enum is rejected", `{"type":"Enabled"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `Enabled`, expected one of `adaptive`, `enabled`, `disabled`"},
+		{"missing type key is a serde error", `{}`, "Failed to deserialize the JSON body into the target type: thinking: missing field `type`"},
+		{"numeric type is the plain-text parse failure", `{"type":123}`, deepSeekV4ThinkingParseExpectedValueText},
+		{"boolean type is the plain-text parse failure", `{"type":true}`, deepSeekV4ThinkingParseExpectedValueText},
+		{"null type is the plain-text parse failure", `{"type":null}`, deepSeekV4ThinkingParseExpectedValueText},
+		{"scalar string thinking is a serde error", `"disabled"`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: string \"disabled\", expected struct ThinkingOptions"},
+		{"scalar boolean thinking is a serde error", `true`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: boolean `true`, expected struct ThinkingOptions"},
+		{"scalar integer thinking is a serde error", `1`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: integer `1`, expected struct ThinkingOptions"},
+		{"scalar floating point thinking is a serde error", `1.5`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: floating point `1.5`, expected struct ThinkingOptions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"用一个词描述春天。"}],"max_tokens":32,"thinking":` + tt.thinking + `}`
+			_, err := GetAndValidateTextRequest(newDeepSeekV4FitContext(body), constant.RelayModeChatCompletions)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			var apiErr *types.NewAPIError
+			require.True(t, errors.As(err, &apiErr))
+			// apiErr.Error() carries the raw official text; ToOpenAIError()
+			// runs the generic info masker whose domain pattern rewrites
+			// thinking.type into ***.type (the controller render path
+			// restores the unmasked message for strict-fit errors).
+			assert.Equal(t, tt.wantErr, apiErr.Error())
+		})
+	}
+
+	t.Run("null thinking is ignored like the official endpoint", func(t *testing.T) {
+		body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"用一个词描述春天。"}],"max_tokens":32,"thinking":null}`
+		_, err := GetAndValidateTextRequest(newDeepSeekV4FitContext(body), constant.RelayModeChatCompletions)
+		require.NoError(t, err)
+	})
+
+	t.Run("vision variant carries the same enum", func(t *testing.T) {
+		body := `{"model":"deepseek-v4-flash-vision-exp","messages":[{"role":"user","content":"用一个词描述春天。"}],"max_tokens":32,"thinking":{"type":"didn't"}}`
+		_, err := GetAndValidateTextRequest(newDeepSeekV4FitContext(body), constant.RelayModeChatCompletions)
+		require.Error(t, err)
+		var apiErr *types.NewAPIError
+		require.True(t, errors.As(err, &apiErr))
+		assert.Equal(t, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled`", apiErr.Error())
+	})
+}
+
+func TestStrictFitPlainRenderClass(t *testing.T) {
+	assert.True(t, StrictFitRendersPlainText(deepSeekV4ThinkingParseExpectedValueText))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ThinkingParseExpectedValueText))
+	assert.False(t, StrictFitRendersPlainText("Failed to deserialize the JSON body into the target type: thinking: missing field `type`"))
+	assert.Equal(t, "application/json", StrictFitContentType("Failed to deserialize the JSON body into the target type: thinking: missing field `type`"))
+}
+
+func TestIsStrictFitValidationMessageCoversRound6ThinkingTexts(t *testing.T) {
+	recognized := []string{
+		"Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled`",
+		"Failed to deserialize the JSON body into the target type: thinking: missing field `type`",
+		"Failed to deserialize the JSON body into the target type: thinking: invalid type: string \"disabled\", expected struct ThinkingOptions",
+		"Failed to deserialize the JSON body into the target type: thinking: invalid type: boolean `true`, expected struct ThinkingOptions",
+		"Failed to deserialize the JSON body into the target type: thinking: invalid type: integer `1`, expected struct ThinkingOptions",
+		"Failed to deserialize the JSON body into the target type: thinking: invalid type: floating point `1.5`, expected struct ThinkingOptions",
+		deepSeekV4ThinkingParseExpectedValueText,
+	}
+	for _, msg := range recognized {
+		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
+	}
+}
+
 func TestIsStrictFitValidationMessageCoversAuditR6Texts(t *testing.T) {
 	recognized := []string{
 		"Invalid presence_penalty value, the valid range of presence_penalty is [-2, 2]",
