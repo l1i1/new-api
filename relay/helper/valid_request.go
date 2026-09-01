@@ -365,6 +365,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
 				return nil, err
 			}
+			if err := validateDeepSeekV4ToolCallChain(textRequest); err != nil {
+				return nil, err
+			}
 			if err := validateKimiK3OfficialFields(textRequest); err != nil {
 				return nil, err
 			}
@@ -395,11 +398,11 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 // DeepSeek V4 official validation messages. The official endpoint returns these
 // verbatim; keep the wording in sync with api.deepseek.com when it drifts.
 const (
-	deepSeekV4TopPMessage                       = "Invalid top_p value, the valid range of top_p is (0, 1.0]"
-	deepSeekV4TemperatureMessage                = "Invalid temperature value, the valid range of temperature is [0, 2]"
-	deepSeekV4JsonObjectMessage                 = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
-	deepSeekV4TopLogprobsPairMessage            = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
-	deepSeekV4TopLogprobsRangeMessage           = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	deepSeekV4TopPMessage             = "Invalid top_p value, the valid range of top_p is (0, 1.0]"
+	deepSeekV4TemperatureMessage      = "Invalid temperature value, the valid range of temperature is [0, 2]"
+	deepSeekV4JsonObjectMessage       = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
+	deepSeekV4TopLogprobsPairMessage  = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
+	deepSeekV4TopLogprobsRangeMessage = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
 	// deepSeekV4MaxTokensRangeMessage mirrors the official wording for a
 	// max_tokens above the model limit (384K = 393216, probed live: 393216 is
 	// accepted, 393217 returns this exact text).
@@ -410,7 +413,26 @@ const (
 	deepSeekV4StopArrayLimit                    = 16
 	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
-	deepSeekV4UnknownModelMessagePrefix         = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
+	// Official tool-call state machine texts (live-probed 2026-09-01). A tool
+	// message that responds to nothing gets the orphan text; a tool message
+	// whose tool_call_id matches no pending call gets the unanswered-ids text
+	// (note the comma after 'tool_call_id'); unanswered pending calls when the
+	// conversation moves on or ends get the insufficient text (note the
+	// period); a tool message without tool_call_id fails the official
+	// deserialization with the message index (the body-specific
+	// "at line 1 column N" suffix is dropped per the established convention).
+	deepSeekV4OrphanToolMessage         = "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+	deepSeekV4UnansweredToolCallIDsText = "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id', The following tool_call_ids did not have response messages: "
+	deepSeekV4InsufficientToolMsgsText  = "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)"
+	deepSeekV4MissingToolCallIDPrefix   = "Failed to deserialize the JSON body into the target type: messages["
+	// deepSeekV4ReasoningPassbackText fires when a tool exchange is continued
+	// (the last message is not a user turn) but the most recent assistant turn
+	// carries no reasoning_content: the thinking-mode docs require passing the
+	// chain of thought back for every prior turn once tools are involved
+	// (live-probed 2026-09-01; conversations ending on a user turn and
+	// tool-free conversations are exempt).
+	deepSeekV4ReasoningPassbackText     = "The `reasoning_content` in the thinking mode must be passed back to the API."
+	deepSeekV4UnknownModelMessagePrefix = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
 	// deepSeekV4ReasoningEffortTypeErrorMessage mirrors the official wording for
 	// a non-string reasoning_effort: the endpoint's own parser fails the type
 	// before any enum check. The live response appends " at line 1 column N",
@@ -655,6 +677,145 @@ func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest
 	if pinned {
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 	}
+}
+
+// validateDeepSeekV4ToolCallChain mirrors the official tool-call state machine
+// before any channel is selected, so an invalid conversation fails fast with
+// the official 400 instead of burning the retry cascade on aggregators that
+// tolerate it (live incident 202609010547405945577378268d9d6IIbIbXcv: official
+// and two aggregators rejected the orphan tool message while the ollama
+// channel accepted it and ran inference).
+//
+// Rules, all live-probed against api.deepseek.com:
+//   - a tool message with no pending tool_call is an orphan;
+//   - a tool message whose tool_call_id matches no pending call lists that id;
+//   - pending calls must all be answered before any non-tool message or the
+//     end of the conversation;
+//   - a tool message without tool_call_id is a deserialization failure.
+//
+// Answering a call consumes it, so a duplicated answer degrades into the
+// orphan rule exactly like the official endpoint.
+func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+		return nil
+	}
+	pending := map[string]bool{}
+	for i := range request.Messages {
+		msg := &request.Messages[i]
+		switch msg.Role {
+		case "assistant":
+			if len(pending) > 0 {
+				return deepSeekV4ToolChainError(deepSeekV4InsufficientToolMsgsText)
+			}
+			pending = deepSeekV4ToolCallIDs(msg.ToolCalls)
+		case "tool":
+			if len(pending) == 0 {
+				return deepSeekV4ToolChainError(deepSeekV4OrphanToolMessage)
+			}
+			id := strings.TrimSpace(msg.ToolCallId)
+			if id == "" {
+				return deepSeekV4ToolChainError(deepSeekV4MissingToolCallIDPrefix +
+					strconv.Itoa(i) + "]: missing field `tool_call_id`")
+			}
+			if !pending[id] {
+				return deepSeekV4ToolChainError(deepSeekV4UnansweredToolCallIDsText + id)
+			}
+			delete(pending, id)
+		default:
+			if len(pending) > 0 {
+				return deepSeekV4ToolChainError(deepSeekV4InsufficientToolMsgsText)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return deepSeekV4ToolChainError(deepSeekV4InsufficientToolMsgsText)
+	}
+	// Thinking-mode passback: once the conversation involves tool calls, a
+	// request that continues from a model turn (last message not a user turn)
+	// must carry the most recent assistant turn's reasoning_content. Official
+	// enforcement is scoped exactly this way (probed 2026-09-01): tool-free
+	// conversations and user-terminated ones are exempt, thinking-off
+	// requests have nothing to pass back.
+	if !deepSeekV4ConversationUsesTools(request.Messages) || deepSeekV4ThinkingOff(request) {
+		return nil
+	}
+	last := request.Messages[len(request.Messages)-1]
+	if last.Role == "user" {
+		return nil
+	}
+	for i := len(request.Messages) - 1; i >= 0; i-- {
+		msg := &request.Messages[i]
+		if msg.Role != "assistant" {
+			continue
+		}
+		if msg.ReasoningContent == nil || strings.TrimSpace(*msg.ReasoningContent) == "" {
+			return deepSeekV4ToolChainError(deepSeekV4ReasoningPassbackText)
+		}
+		break
+	}
+	return nil
+}
+
+// deepSeekV4ConversationUsesTools reports whether any message participates in
+// a tool exchange (a tool response or an assistant declaring tool_calls).
+func deepSeekV4ConversationUsesTools(messages []dto.Message) bool {
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role == "tool" {
+			return true
+		}
+		if msg.Role == "assistant" && len(deepSeekV4ToolCallIDs(msg.ToolCalls)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// deepSeekV4ThinkingOff reports whether the request disables thinking
+// (explicit thinking.type=disabled or the effort=none equivalent).
+func deepSeekV4ThinkingOff(request *dto.GeneralOpenAIRequest) bool {
+	if len(request.THINKING) > 0 {
+		var thinking struct {
+			Type string `json:"type"`
+		}
+		if err := common.Unmarshal(request.THINKING, &thinking); err == nil &&
+			strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled") {
+			return true
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(request.ReasoningEffort), "none")
+}
+
+// deepSeekV4ToolCallIDs extracts the ids an assistant message declares for
+// tool calling. Unparsable or absent tool_calls yields no pending calls and
+// the upstream sees the request verbatim.
+func deepSeekV4ToolCallIDs(raw json.RawMessage) map[string]bool {
+	ids := map[string]bool{}
+	if len(raw) == 0 {
+		return ids
+	}
+	var calls []struct {
+		ID string `json:"id"`
+	}
+	if err := common.Unmarshal(raw, &calls); err != nil {
+		return ids
+	}
+	for _, call := range calls {
+		if id := strings.TrimSpace(call.ID); id != "" {
+			ids[id] = true
+		}
+	}
+	return ids
+}
+
+// deepSeekV4ToolChainError renders one of the official 400 bodies.
+func deepSeekV4ToolChainError(message string) error {
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: message,
+		Type:    "invalid_request_error",
+		Param:   nil,
+		Code:    "invalid_request_error",
+	}, http.StatusBadRequest)
 }
 
 func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
