@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -59,12 +60,27 @@ var (
 	ErrPaymentMethodMismatch    = errors.New("payment method mismatch")
 	ErrPaymentAmountInvalid     = errors.New("payment amount invalid")
 	ErrPaymentAmountMismatch    = errors.New("payment amount mismatch")
+	ErrPaymentCurrencyMismatch  = errors.New("payment currency mismatch")
 	ErrTopUpNotFound            = errors.New("topup not found")
 	ErrTopUpStatusInvalid       = errors.New("topup status invalid")
 	ErrInvalidTopUpQuota        = errors.New("invalid top-up quota")
 	ErrTopUpQuotaLimitExceeded  = errors.New("top-up quota limit exceeded")
 	ErrWalletQuotaLimitExceeded = errors.New("wallet quota limit exceeded")
 )
+
+type WaffoSettlement struct {
+	Amount   string
+	Currency string
+}
+
+func WaffoAmountScale(currency string) int32 {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "IDR", "JPY", "KRW", "VND":
+		return 0
+	default:
+		return 2
+	}
+}
 
 func topUpQuotaMaxCurrent(creditedQuota int) (int, error) {
 	if creditedQuota <= 0 || creditedQuota >= common.MaxQuota {
@@ -674,7 +690,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 	return nil
 }
 
-func RechargeWaffo(tradeNo string, callerIp string) (err error) {
+func RechargeWaffo(tradeNo string, callerIp string, settlement WaffoSettlement) (err error) {
 	if tradeNo == "" {
 		return errors.New("未提供支付单号")
 	}
@@ -704,6 +720,27 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 
 		if topUp.Status != common.TopUpStatusPending {
 			return errors.New("充值订单状态错误")
+		}
+
+		expectedCurrency := strings.ToUpper(strings.TrimSpace(topUp.PaymentCurrency))
+		actualCurrency := strings.ToUpper(strings.TrimSpace(settlement.Currency))
+		if expectedCurrency == "" || actualCurrency == "" || actualCurrency != expectedCurrency {
+			return ErrPaymentCurrencyMismatch
+		}
+		actualAmount, parseErr := decimal.NewFromString(strings.TrimSpace(settlement.Amount))
+		if parseErr != nil || actualAmount.LessThanOrEqual(decimal.Zero) {
+			return ErrPaymentAmountInvalid
+		}
+		scale := WaffoAmountScale(expectedCurrency)
+		if !actualAmount.Equal(actualAmount.Round(scale)) {
+			return ErrPaymentAmountInvalid
+		}
+		expectedAmount := decimal.NewFromFloat(topUp.Money).Round(scale)
+		if expectedAmount.LessThanOrEqual(decimal.Zero) {
+			return ErrPaymentAmountInvalid
+		}
+		if !actualAmount.Equal(expectedAmount) {
+			return ErrPaymentAmountMismatch
 		}
 
 		quotaDecimal := decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit))

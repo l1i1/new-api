@@ -9,6 +9,8 @@ import (
 )
 
 func ConfigureTrustedProxies(engine *gin.Engine) error {
+	// Unset keeps the legacy compatibility defaults; explicit proxy
+	// trust is opt-in via TRUSTED_PROXIES.
 	trustedProxies, usedDefaults, err := common.ResolveTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
 	if err != nil {
 		return err
