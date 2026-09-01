@@ -165,10 +165,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				if isStrictFitValidation {
 					// The official endpoints return validation errors with
-					// Content-Type application/octet-stream; keep the wire
-					// response identical, including the struct field order.
+					// their own content types (live-probed 2026-09-01):
+					// deserialization failures as application/json, plain
+					// business rejections as application/octet-stream; keep
+					// the wire response identical, including the struct field
+					// order.
+					contentType := helper.StrictFitContentType(filteredMessage)
 					if body, marshalErr := common.Marshal(gin.H{"error": newAPIError.ToOpenAIError()}); marshalErr == nil {
-						c.Data(newAPIError.StatusCode, "application/octet-stream", body)
+						c.Data(newAPIError.StatusCode, contentType, body)
 						return
 					}
 				}
