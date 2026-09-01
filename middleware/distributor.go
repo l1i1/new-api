@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -508,11 +509,13 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 // v4OfficialPinSampling mirrors the relay validation thresholds that mark a
 // deepseek-v4 request for the official-channel pin.
 type v4OfficialPinSampling struct {
-	Model            string   `json:"model"`
-	Temperature      *float64 `json:"temperature,omitempty"`
-	TopP             *float64 `json:"top_p,omitempty"`
-	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+	Model            string          `json:"model"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"top_p,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	THINKING         json.RawMessage `json:"thinking,omitempty"`
+	LogProbs         *bool           `json:"logprobs,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -567,6 +570,9 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		return
 	}
 	// The extreme-sampling pin is a DeepSeek V4 family behavior (K08 class).
+	// Explicit thinking toggles and logprobs requests pin too: aggregators
+	// ignore thinking.type (leaking the chain of thought the client disabled)
+	// and drop the logprobs object entirely.
 	if !isDeepSeekV4 {
 		return
 	}
@@ -581,6 +587,12 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		pinned = true
 	}
 	if sampling.PresencePenalty != nil && *sampling.PresencePenalty > 1.0 {
+		pinned = true
+	}
+	if len(sampling.THINKING) > 0 {
+		pinned = true
+	}
+	if sampling.LogProbs != nil && *sampling.LogProbs {
 		pinned = true
 	}
 	if pinned {

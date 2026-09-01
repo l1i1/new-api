@@ -49,6 +49,22 @@ func resolveOllamaThink(r *dto.GeneralOpenAIRequest) (json.RawMessage, error) {
 		return r.Think, nil
 	}
 
+	// DeepSeek/GLM-style thinking object: an explicit disabled toggle maps to
+	// ollama's boolean think=false so the client's off request is honored even
+	// when this adaptor is the serving path. enabled falls through to the
+	// effort mapping below.
+	if len(r.THINKING) > 0 {
+		var thinking struct {
+			Type string `json:"type"`
+		}
+		if err := common.Unmarshal(r.THINKING, &thinking); err != nil {
+			return nil, fmt.Errorf("invalid ollama thinking: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled") {
+			return json.RawMessage("false"), nil
+		}
+	}
+
 	effort := r.ReasoningEffort
 	if len(r.Reasoning) > 0 {
 		var reasoning dto.Reasoning

@@ -57,3 +57,46 @@ func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
 		assert.False(t, c.IsAborted())
 	})
 }
+
+func TestMarkV4OfficialPinFromDistributorThinkingAndLogprobs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newContext := func(body string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		// Validate-only profile: the Route dimension would pin the whole
+		// family and mask the per-request criteria under test.
+		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"deepseek-v4-": {Validate: true},
+			}},
+		})
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
+		return c
+	}
+
+	t.Run("explicit thinking object pins", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("logprobs true pins", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":5}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("logprobs false does not pin", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":false}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("plain request does not pin", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}]}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+}
