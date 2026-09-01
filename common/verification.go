@@ -30,8 +30,11 @@ var VerificationValidMinutes = 10
 func GenerateVerificationCode(length int) string {
 	code := uuid.New().String()
 	code = strings.Replace(code, "-", "", -1)
-	if length == 0 {
+	if length <= 0 {
 		return code
+	}
+	if length > len(code) {
+		length = len(code)
 	}
 	return code[:length]
 }
@@ -43,8 +46,15 @@ func RegisterVerificationCodeWithKey(key string, code string, purpose string) {
 		codeHash: sha256.Sum256([]byte(code)),
 		time:     time.Now(),
 	}
-	if len(verificationMap) > verificationMapMaxSize {
+	maxSize := verificationMapMaxSize
+	if maxSize < 1 {
+		maxSize = 1
+	}
+	if len(verificationMap) > maxSize {
 		removeExpiredPairs()
+		for len(verificationMap) > maxSize {
+			removeOldestPair()
+		}
 	}
 }
 
@@ -59,6 +69,7 @@ func VerifyCodeWithKey(key string, code string, purpose string) bool {
 	}
 	providedHash := sha256.Sum256([]byte(code))
 	if subtle.ConstantTimeCompare(value.codeHash[:], providedHash[:]) == 1 {
+		delete(verificationMap, purpose+key)
 		return true
 	}
 	value.attempts++
@@ -83,6 +94,21 @@ func removeExpiredPairs() {
 		if int(now.Sub(verificationMap[key].time).Seconds()) >= VerificationValidMinutes*60 {
 			delete(verificationMap, key)
 		}
+	}
+}
+
+// no lock inside, so the caller must lock the verificationMap before calling!
+func removeOldestPair() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, value := range verificationMap {
+		if oldestKey == "" || value.time.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = value.time
+		}
+	}
+	if oldestKey != "" {
+		delete(verificationMap, oldestKey)
 	}
 }
 

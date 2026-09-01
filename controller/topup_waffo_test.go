@@ -1,13 +1,43 @@
 package controller
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/waffo-com/waffo-go/config"
+	"github.com/waffo-com/waffo-go/core"
 )
+
+func TestSendWaffoWebhookResponseStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		success    bool
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "success", success: true, wantStatus: http.StatusOK, wantBody: `{"message":"success"}`},
+		{name: "failure", success: false, wantStatus: http.StatusBadRequest, wantBody: `{"message":"failed"}`},
+	}
+
+	wh := core.NewWebhookHandler(&config.WaffoConfig{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+
+			sendWaffoWebhookResponse(ctx, wh, tt.success, "test error")
+
+			require.Equal(t, tt.wantStatus, recorder.Code)
+			require.JSONEq(t, tt.wantBody, recorder.Body.String())
+		})
+	}
+}
 
 func TestWaffoPaymentAmountsSeparateLocalCNYAndProviderUSD(t *testing.T) {
 	originalUnitPrice := setting.WaffoUnitPrice

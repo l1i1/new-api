@@ -436,5 +436,9 @@ func sendWaffoWebhookResponse(c *gin.Context, wh *core.WebhookHandler, success b
 		body, sig = wh.BuildFailedResponse(msg)
 	}
 	c.Header("X-SIGNATURE", sig)
-	c.Data(http.StatusOK, "application/json", []byte(body))
+	status := http.StatusOK
+	if !success {
+		status = http.StatusBadRequest
+	}
+	c.Data(status, "application/json", []byte(body))
 }
