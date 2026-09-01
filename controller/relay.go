@@ -165,13 +165,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				if isStrictFitValidation {
 					// The official endpoints return validation errors with
-					// their own content types (live-probed 2026-09-01):
-					// deserialization failures as application/json, plain
-					// business rejections as application/octet-stream; keep
-					// the wire response identical, including the struct field
-					// order.
+					// their own wire shapes (live-probed 2026-09-01/02):
+					// deserialization failures as application/json JSON
+					// objects, plain business rejections as
+					// application/octet-stream JSON objects, and the
+					// body-parse class as bare application/octet-stream text.
 					contentType := helper.StrictFitContentType(filteredMessage)
-					if body, marshalErr := common.Marshal(gin.H{"error": newAPIError.ToOpenAIError()}); marshalErr == nil {
+					if helper.StrictFitRendersPlainText(filteredMessage) {
+						c.Data(newAPIError.StatusCode, contentType, []byte(filteredMessage))
+						return
+					}
+					// Strict-fit messages are first-party official texts, so
+					// the response object must carry the unmasked message:
+					// ToOpenAIError runs the generic info masker whose domain
+					// pattern corrupts serde field paths (thinking.type →
+					// ***.type).
+					oaiErr := newAPIError.ToOpenAIError()
+					oaiErr.Message = filteredMessage
+					if body, marshalErr := common.Marshal(gin.H{"error": oaiErr}); marshalErr == nil {
 						c.Data(newAPIError.StatusCode, contentType, body)
 						return
 					}
