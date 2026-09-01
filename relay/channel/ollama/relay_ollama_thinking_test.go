@@ -32,6 +32,16 @@ func TestResolveOllamaThinkHonorsThinkingToggle(t *testing.T) {
 			wantNil: true,
 		},
 		{
+			name:    "boolean thinking keeps legacy ignore behavior",
+			request: &dto.GeneralOpenAIRequest{THINKING: []byte(`true`)},
+			wantNil: true,
+		},
+		{
+			name:    "string thinking keeps legacy ignore behavior",
+			request: &dto.GeneralOpenAIRequest{THINKING: []byte(`"disabled"`)},
+			wantNil: true,
+		},
+		{
 			name:      "thinking enabled with effort maps through the effort enum",
 			request:   &dto.GeneralOpenAIRequest{THINKING: []byte(`{"type":"enabled"}`), ReasoningEffort: "high"},
 			wantThink: `"high"`,

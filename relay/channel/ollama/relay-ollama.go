@@ -51,9 +51,9 @@ func resolveOllamaThink(r *dto.GeneralOpenAIRequest) (json.RawMessage, error) {
 
 	// DeepSeek/GLM-style thinking object: an explicit disabled toggle maps to
 	// ollama's boolean think=false so the client's off request is honored even
-	// when this adaptor is the serving path. enabled falls through to the
-	// effort mapping below.
-	if len(r.THINKING) > 0 {
+	// when this adaptor is the serving path. Scalar thinking values retain the
+	// legacy ignore behavior, while malformed objects remain invalid input.
+	if len(r.THINKING) > 0 && common.GetJsonType(r.THINKING) == "object" {
 		var thinking struct {
 			Type string `json:"type"`
 		}
