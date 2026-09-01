@@ -695,7 +695,10 @@ func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest
 //   - a tool message whose tool_call_id matches no pending call lists that id;
 //   - pending calls must all be answered before any non-tool message or the
 //     end of the conversation;
-//   - a tool message without tool_call_id is a deserialization failure.
+//   - a tool message without tool_call_id is a deserialization failure;
+//   - when the conversation ends on a tool response, the tool-call issuer's
+//     reasoning_content must be present (pro/flash only, thinking mode, the
+//     vision variant is exempt — see deepSeekV4PassbackExemptModel).
 //
 // Answering a call consumes it, so a duplicated answer degrades into the
 // orphan rule exactly like the official endpoint.
@@ -734,45 +737,36 @@ func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
 	if len(pending) > 0 {
 		return deepSeekV4ToolChainError(deepSeekV4InsufficientToolMsgsText)
 	}
-	// Thinking-mode passback: once the conversation involves tool calls, a
-	// request that continues from a model turn (last message not a user turn)
-	// must carry the most recent assistant turn's reasoning_content. Official
-	// enforcement is scoped exactly this way (probed 2026-09-01): tool-free
-	// conversations and user-terminated ones are exempt, thinking-off
-	// requests have nothing to pass back.
-	if !deepSeekV4ConversationUsesTools(request.Messages) || deepSeekV4ThinkingOff(request) {
-		return nil
-	}
-	last := request.Messages[len(request.Messages)-1]
-	if last.Role == "user" {
-		return nil
-	}
-	for i := len(request.Messages) - 1; i >= 0; i-- {
-		msg := &request.Messages[i]
-		if msg.Role != "assistant" {
-			continue
+	// Thinking-mode passback (live-probed 2026-09-01): pro and flash reject a
+	// request that makes the model continue a tool loop — last message is a
+	// tool response — unless the nearest preceding assistant (the tool-call
+	// issuer) carries a reasoning_content field. The check is presence-based:
+	// empty and blank strings satisfy it, absent/null does not. Ending on a
+	// bare assistant or user turn is exempt, and the vision variant never
+	// enforces the rule at all, while the state machine above applies to
+	// every deepseek-v4-* variant.
+	if last := request.Messages[len(request.Messages)-1]; last.Role == "tool" &&
+		!deepSeekV4ThinkingOff(request) && !deepSeekV4PassbackExemptModel(request.Model) {
+		for i := len(request.Messages) - 1; i >= 0; i-- {
+			msg := &request.Messages[i]
+			if msg.Role != "assistant" {
+				continue
+			}
+			if msg.ReasoningContent == nil {
+				return deepSeekV4ToolChainError(deepSeekV4ReasoningPassbackText)
+			}
+			break
 		}
-		if msg.ReasoningContent == nil || strings.TrimSpace(*msg.ReasoningContent) == "" {
-			return deepSeekV4ToolChainError(deepSeekV4ReasoningPassbackText)
-		}
-		break
 	}
 	return nil
 }
 
-// deepSeekV4ConversationUsesTools reports whether any message participates in
-// a tool exchange (a tool response or an assistant declaring tool_calls).
-func deepSeekV4ConversationUsesTools(messages []dto.Message) bool {
-	for i := range messages {
-		msg := &messages[i]
-		if msg.Role == "tool" {
-			return true
-		}
-		if msg.Role == "assistant" && len(deepSeekV4ToolCallIDs(msg.ToolCalls)) > 0 {
-			return true
-		}
-	}
-	return false
+// deepSeekV4PassbackExemptModel reports whether the model variant skips the
+// thinking-mode reasoning passback rule. Live-probed 2026-09-01:
+// deepseek-v4-flash-vision-exp accepts tool-loop continuations without
+// reasoning_content while pro and flash reject them.
+func deepSeekV4PassbackExemptModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "vision")
 }
 
 // deepSeekV4ThinkingOff reports whether the request disables thinking
