@@ -456,10 +456,14 @@ func deepSeekV4ReasoningEffortDeserMessage(effort string) string {
 		"`" + deepSeekV4ReasoningEffortDeserMessageSuffix
 }
 
+// deepSeekV4StopTooLongPrefix matches the official stop-array overflow text
+// before the item count.
+const deepSeekV4StopTooLongPrefix = "Stop string array too long: "
+
 // deepSeekV4StopTooLongMessage renders the official error for a stop array
 // above the 16-item cap (probed live: "Stop string array too long: 17").
 func deepSeekV4StopTooLongMessage(count int) string {
-	return fmt.Sprintf("Stop string array too long: %d", count)
+	return deepSeekV4StopTooLongPrefix + fmt.Sprintf("%d", count)
 }
 
 // deepSeekV4StopArrayLength reports the item count when stop carries an array
@@ -1099,6 +1103,13 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4TopLogprobsPairMessage,
 		deepSeekV4TopLogprobsRangeMessage,
 		"Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer",
+		deepSeekV4MaxTokensRangeMessage,
+		deepSeekV4StopTooLongPrefix,
+		deepSeekV4OrphanToolMessage,
+		deepSeekV4UnansweredToolCallIDsText,
+		deepSeekV4InsufficientToolMsgsText,
+		deepSeekV4MissingToolCallIDPrefix,
+		deepSeekV4ReasoningPassbackText,
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,
