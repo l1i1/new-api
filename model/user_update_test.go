@@ -579,6 +579,95 @@ func TestIncreaseUserQuotaWithUsageMergesStatistics(t *testing.T) {
 	assert.Equal(t, 6, updated.RequestCount)
 }
 
+func TestIncreaseUserQuotaWithUsageEnforcesWalletLimit(t *testing.T) {
+	setupUserUpdateTestState(t)
+	user := User{
+		Username:     "merged-refund-limit-user",
+		Password:     "unused",
+		Role:         common.RoleCommonUser,
+		Status:       common.UserStatusEnabled,
+		Quota:        common.MaxWalletQuota - 50,
+		UsedQuota:    100,
+		RequestCount: 5,
+		AffCode:      "merged-refund-limit-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	err := IncreaseUserQuotaWithUsageImmediate(user.Id, 100, 80, 1)
+	require.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+
+	var updated User
+	require.NoError(t, DB.First(&updated, user.Id).Error)
+	assert.Equal(t, common.MaxWalletQuota-50, updated.Quota)
+	assert.Equal(t, 100, updated.UsedQuota)
+	assert.Equal(t, 5, updated.RequestCount)
+}
+
+func TestIncreaseUserQuotaEnforcesWalletLimitInBatchMode(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+	user := User{
+		Username: "refund-batch-limit-user",
+		Password: "unused",
+		Status:   common.UserStatusEnabled,
+		Quota:    common.MaxWalletQuota - 50,
+		AffCode:  "refund-batch-limit-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	err := IncreaseUserQuota(user.Id, 100, false)
+	require.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+	assert.Equal(t, common.MaxWalletQuota-50, getUserQuotaFromDB(t, user.Id))
+}
+
+func TestIncreaseUserQuotaRejectDoesNotChangeRedisCache(t *testing.T) {
+	setupUserUpdateTestState(t)
+	useUserCacheMiniRedis(t)
+	user := User{
+		Username: "refund-limit-cache-user",
+		Password: "unused",
+		Status:   common.UserStatusEnabled,
+		Quota:    common.MaxWalletQuota - 50,
+		AffCode:  "refund-limit-cache-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, updateUserCache(user))
+
+	err := IncreaseUserQuota(user.Id, 100, true)
+	require.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+	assert.Never(t, func() bool {
+		cached, cacheErr := GetUserCache(user.Id)
+		return cacheErr != nil || cached.Quota != common.MaxWalletQuota-50
+	}, 100*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestIncreaseUserQuotaWithUsageEnforcesWalletLimitInBatchMode(t *testing.T) {
+	setupUserUpdateTestState(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+	user := User{
+		Username:     "merged-refund-batch-limit-user",
+		Password:     "unused",
+		Role:         common.RoleCommonUser,
+		Status:       common.UserStatusEnabled,
+		Quota:        common.MaxWalletQuota - 50,
+		UsedQuota:    100,
+		RequestCount: 5,
+		AffCode:      "merged-refund-batch-limit-aff",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	err := IncreaseUserQuotaWithUsage(user.Id, 100, 80, 1)
+	require.ErrorIs(t, err, ErrWalletQuotaLimitExceeded)
+
+	var updated User
+	require.NoError(t, DB.First(&updated, user.Id).Error)
+	assert.Equal(t, common.MaxWalletQuota-50, updated.Quota)
+	assert.Equal(t, 100, updated.UsedQuota)
+	assert.Equal(t, 5, updated.RequestCount)
+}
+
 func TestMergedUsageUpdatesRejectSoftDeletedUser(t *testing.T) {
 	setupUserUpdateTestState(t)
 	user := User{

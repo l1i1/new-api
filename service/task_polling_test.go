@@ -178,6 +178,67 @@ func (a *taskPollingFetchAdaptor) fetchedTaskIDs() []string {
 	return append([]string(nil), a.taskIDs...)
 }
 
+func TestUpdateBatchTasksMissingChannelKeepsTaskPending(t *testing.T) {
+	truncate(t)
+
+	const (
+		userID    = 801
+		channelID = 9801
+	)
+	seedUser(t, userID, 900)
+	task := seedPollingTask(t, channelID, "task_missing_channel", "upstream_missing_channel")
+	task.UserId = userID
+	task.Quota = 100
+	require.NoError(t, model.DB.Model(task).Updates(map[string]any{
+		"user_id": userID,
+		"quota":   100,
+	}).Error)
+
+	taskMap := map[string]*model.Task{task.GetUpstreamTaskID(): task}
+	err := updateBatchTasks(context.Background(), &batchPollingAdaptor{}, channelID, []string{task.GetUpstreamTaskID()}, taskMap)
+	require.Error(t, err)
+
+	var updatedTask model.Task
+	require.NoError(t, model.DB.First(&updatedTask, task.ID).Error)
+	assert.Equal(t, task.Status, updatedTask.Status)
+	assert.Equal(t, task.Progress, updatedTask.Progress)
+	assert.Equal(t, 100, updatedTask.Quota)
+
+	var user model.User
+	require.NoError(t, model.DB.First(&user, userID).Error)
+	assert.Equal(t, 900, user.Quota)
+
+	require.Error(t, updateBatchTasks(context.Background(), &batchPollingAdaptor{}, channelID, []string{task.GetUpstreamTaskID()}, taskMap))
+	require.NoError(t, model.DB.First(&user, userID).Error)
+	assert.Equal(t, 900, user.Quota)
+}
+
+func TestUpdateBatchTasksKeepsSuccessWithDiagnosticReason(t *testing.T) {
+	truncate(t)
+
+	const channelID = 9802
+	seedTaskPollingChannel(t, channelID, true)
+	task := seedPollingTask(t, channelID, "task_success_reason", "upstream_success_reason")
+	adaptor := &batchPollingAdaptor{results: map[string]*BatchTaskResult{
+		task.GetUpstreamTaskID(): {
+			TaskInfo: relaycommon.TaskInfo{
+				TaskID: task.GetUpstreamTaskID(),
+				Status: model.TaskStatusSuccess,
+				Reason: "provider summary",
+			},
+		},
+	}}
+
+	require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{task.GetUpstreamTaskID()}, map[string]*model.Task{
+		task.GetUpstreamTaskID(): task,
+	}))
+
+	var updated model.Task
+	require.NoError(t, model.DB.First(&updated, task.ID).Error)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), updated.Status)
+	assert.Equal(t, "100%", updated.Progress)
+}
+
 func TestRedactVideoResponseBodyPreservesPollingPayloadShape(t *testing.T) {
 	rawVideo := strings.Repeat("a", 300)
 	body, err := common.Marshal(map[string]any{

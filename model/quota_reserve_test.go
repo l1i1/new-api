@@ -130,21 +130,22 @@ func TestDecreaseTokenQuotaRejectsSoftDeletedToken(t *testing.T) {
 	assert.Zero(t, deleted.UsedQuota)
 }
 
-func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
+func TestUserReservationInvalidatesCachedBalance(t *testing.T) {
 	truncateTables(t)
 	resetBatchUpdateTestState(t)
 	useUserCacheMiniRedis(t)
 	common.BatchUpdateEnabled = true
 
 	user := createReserveTestUser(t, 10)
+	require.NoError(t, updateUserCache(user))
 	reserved, err := TryReserveUserQuota(user.Id, 8)
 	require.NoError(t, err)
 	assert.True(t, reserved)
-	assert.Equal(t, 2, getUserQuotaFromDB(t, user.Id), "reservation is persisted before cache synchronization")
+	assert.Equal(t, 2, getUserQuotaFromDB(t, user.Id))
 
 	reserved, err = TryReserveUserQuota(user.Id, 3)
 	require.NoError(t, err)
-	assert.False(t, reserved, "stale DB balance must not authorize a second spend")
+	assert.False(t, reserved, "the database balance must reject a second spend")
 	cachedUser, err := GetUserCache(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, 2, cachedUser.Quota)

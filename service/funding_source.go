@@ -76,9 +76,9 @@ func (w *WalletFunding) Settle(delta int) error {
 	}
 	if delta > 0 {
 		if w.recordUsage {
-			return model.DecreaseUserQuotaWithUsage(w.userId, delta, w.usageDelta, 1)
+			return model.DecreaseUserQuotaWithUsageImmediate(w.userId, delta, w.usageDelta, 1)
 		}
-		return model.DecreaseUserQuota(w.userId, delta, false)
+		return model.DecreaseUserQuota(w.userId, delta, true)
 	}
 	if w.recordUsage {
 		return model.IncreaseUserQuotaWithUsageImmediate(w.userId, -delta, w.usageDelta, 1)

@@ -88,6 +88,34 @@ func TestBillingSessionSettleRefundRecordsWalletUsage(t *testing.T) {
 	assert.Equal(t, 1, user.RequestCount)
 }
 
+func TestBillingSessionSettleDebitPersistsBeforeReturn(t *testing.T) {
+	truncate(t)
+
+	previousBatchUpdateEnabled := hostcommon.BatchUpdateEnabled
+	hostcommon.BatchUpdateEnabled = true
+	t.Cleanup(func() {
+		hostcommon.BatchUpdateEnabled = previousBatchUpdateEnabled
+	})
+
+	const userID = 711
+	seedUser(t, userID, 100_000)
+
+	session := &BillingSession{
+		relayInfo:        &common.RelayInfo{UserId: userID, IsPlayground: true},
+		funding:          &WalletFunding{userId: userID},
+		preConsumedQuota: 12_000,
+	}
+	session.FoldUsageIntoWalletSettle(15_000)
+
+	require.NoError(t, session.Settle(15_000))
+
+	var user model.User
+	require.NoError(t, model.DB.Select("quota", "used_quota", "request_count").First(&user, userID).Error)
+	assert.Equal(t, 97_000, user.Quota)
+	assert.Equal(t, 15_000, user.UsedQuota)
+	assert.Equal(t, 1, user.RequestCount)
+}
+
 func TestBillingSessionRefundAfterSettleIsNoOp(t *testing.T) {
 	truncate(t)
 
@@ -137,6 +165,37 @@ func TestBillingSessionRefundPersistsWalletQuotaBeforeReturn(t *testing.T) {
 
 	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
 	assert.Equal(t, 100_000, user.Quota)
+}
+
+func TestBillingSessionRefundFailureRetainsPendingState(t *testing.T) {
+	truncate(t)
+
+	const userID = 712
+	seedUser(t, userID, 100_000)
+
+	session, apiErr := NewBillingSession(newBillingSessionTestContext(), &common.RelayInfo{
+		UserId:       userID,
+		IsPlayground: true,
+	}, 12_000)
+	require.Nil(t, apiErr)
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", userID).Update("quota", hostcommon.MaxWalletQuota).Error)
+
+	session.Refund(newBillingSessionTestContext())
+
+	assert.True(t, session.NeedsRefund())
+	var user model.User
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	assert.Equal(t, hostcommon.MaxWalletQuota, user.Quota)
+
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", userID).Update("quota", hostcommon.MaxWalletQuota-12_000).Error)
+	session.Refund(newBillingSessionTestContext())
+	assert.False(t, session.NeedsRefund())
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	assert.Equal(t, hostcommon.MaxWalletQuota, user.Quota)
+
+	session.Refund(newBillingSessionTestContext())
+	require.NoError(t, model.DB.Select("quota").First(&user, userID).Error)
+	assert.Equal(t, hostcommon.MaxWalletQuota, user.Quota)
 }
 
 func TestBillingSessionSettleExactMatchRecordsZeroQuotaRequest(t *testing.T) {

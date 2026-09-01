@@ -243,20 +243,6 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	ch, err := model.CacheGetChannel(channelId)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("CacheGetChannel: %v", err))
-		failedIDs := make([]int64, 0, len(taskIds))
-		for _, upstreamID := range taskIds {
-			if task, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, task.ID)
-			}
-		}
-		updateErr := model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": fmt.Sprintf("获取渠道信息失败，请联系管理员，渠道ID：%d", channelId),
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if updateErr != nil {
-			common.SysLog(fmt.Sprintf("UpdateBatchTask error: %v", updateErr))
-		}
 		return err
 	}
 	baseURL := ch.GetBaseURL()
@@ -301,9 +287,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if responseItem.TaskInfo.Progress != "" {
 			task.Progress = responseItem.TaskInfo.Progress
 		}
-		if responseItem.TaskInfo.Reason != "" || task.Status == model.TaskStatusFailure {
-			task.FailReason = responseItem.TaskInfo.Reason
-			task.Status = model.TaskStatusFailure
+		if task.Status == model.TaskStatusFailure {
 			task.Progress = "100%"
 		}
 		if responseItem.TaskInfo.Status == model.TaskStatusSuccess {

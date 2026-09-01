@@ -3,8 +3,6 @@ package model
 import (
 	"errors"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"
 )
 
@@ -31,15 +29,6 @@ func DecreaseUserQuotaIfEnough(id int, quota int) error {
 		return ErrInsufficientUserQuota
 	}
 
-	if common.RedisAvailable() {
-		gopool.Go(func() {
-			if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
-				common.SysLog("failed to decrease user quota cache: " + err.Error())
-				if invalidateErr := invalidateUserCache(id); invalidateErr != nil {
-					common.SysLog("failed to invalidate user quota cache: " + invalidateErr.Error())
-				}
-			}
-		})
-	}
+	invalidateUserQuotaCacheAfterMutation(id)
 	return nil
 }
