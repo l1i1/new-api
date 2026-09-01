@@ -381,7 +381,7 @@ func TestWalletSettlementProvidersPersistExactCreditedQuota(t *testing.T) {
 			money:         2.5,
 			expectedQuota: common.QuotaFromDecimal(decimal.NewFromInt(2).Mul(decimal.NewFromFloat(common.QuotaPerUnit))),
 			settle: func(tradeNo string) error {
-				return RechargeWaffo(tradeNo, "127.0.0.1")
+				return RechargeWaffo(tradeNo, "127.0.0.1", WaffoSettlement{Amount: "2.50", Currency: PaymentCurrencyUSD})
 			},
 		},
 		{
@@ -414,6 +414,7 @@ func TestWalletSettlementProvidersPersistExactCreditedQuota(t *testing.T) {
 				TradeNo:         tradeNo,
 				PaymentMethod:   test.provider,
 				PaymentProvider: test.provider,
+				PaymentCurrency: PaymentCurrencyUSD,
 				CreateTime:      now,
 				Status:          common.TopUpStatusPending,
 			}

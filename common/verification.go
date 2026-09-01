@@ -1,6 +1,8 @@
 package common
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"strings"
 	"sync"
 	"time"
@@ -9,13 +11,15 @@ import (
 )
 
 type verificationValue struct {
-	code string
-	time time.Time
+	codeHash [sha256.Size]byte
+	time     time.Time
+	attempts int
 }
 
 const (
 	EmailVerificationPurpose = "v"
 	PasswordResetPurpose     = "r"
+	verificationMaxAttempts  = 5
 )
 
 var verificationMutex sync.Mutex
@@ -36,8 +40,8 @@ func RegisterVerificationCodeWithKey(key string, code string, purpose string) {
 	verificationMutex.Lock()
 	defer verificationMutex.Unlock()
 	verificationMap[purpose+key] = verificationValue{
-		code: code,
-		time: time.Now(),
+		codeHash: sha256.Sum256([]byte(code)),
+		time:     time.Now(),
 	}
 	if len(verificationMap) > verificationMapMaxSize {
 		removeExpiredPairs()
@@ -50,9 +54,20 @@ func VerifyCodeWithKey(key string, code string, purpose string) bool {
 	value, okay := verificationMap[purpose+key]
 	now := time.Now()
 	if !okay || int(now.Sub(value.time).Seconds()) >= VerificationValidMinutes*60 {
+		delete(verificationMap, purpose+key)
 		return false
 	}
-	return code == value.code
+	providedHash := sha256.Sum256([]byte(code))
+	if subtle.ConstantTimeCompare(value.codeHash[:], providedHash[:]) == 1 {
+		return true
+	}
+	value.attempts++
+	if value.attempts >= verificationMaxAttempts {
+		delete(verificationMap, purpose+key)
+	} else {
+		verificationMap[purpose+key] = value
+	}
+	return false
 }
 
 func DeleteKey(key string, purpose string) {

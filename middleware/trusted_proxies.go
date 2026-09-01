@@ -22,6 +22,8 @@ var defaultTrustedProxyCIDRs = []string{
 func ConfigureTrustedProxies(engine *gin.Engine) error {
 	rawTrustedProxies := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
 	if rawTrustedProxies == "" {
+		// Unset keeps the legacy compatibility defaults; explicit proxy
+		// trust is opt-in via TRUSTED_PROXIES.
 		log.Print("WARNING: TRUSTED_PROXIES is unset or blank; trusting loopback, RFC 1918, and IPv6 ULA proxy addresses for compatibility. Set TRUSTED_PROXIES=none to trust no proxies, or configure explicit proxy IPs/CIDRs to replace these defaults.")
 		return engine.SetTrustedProxies(defaultTrustedProxyCIDRs)
 	}

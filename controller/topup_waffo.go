@@ -72,13 +72,8 @@ func buildWaffoTopUpGoodsInfo(amount int64) *order.GoodsInfo {
 	}
 }
 
-// zeroDecimalCurrencies 零小数位币种，金额不能带小数点
-var zeroDecimalCurrencies = map[string]bool{
-	"IDR": true, "JPY": true, "KRW": true, "VND": true,
-}
-
 func formatWaffoAmount(amount float64, currency string) string {
-	if zeroDecimalCurrencies[currency] {
+	if model.WaffoAmountScale(currency) == 0 {
 		return fmt.Sprintf("%.0f", amount)
 	}
 	return fmt.Sprintf("%.2f", amount)
@@ -419,7 +414,10 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 	LockOrder(merchantOrderId)
 	defer UnlockOrder(merchantOrderId)
 
-	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP()); err != nil {
+	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP(), model.WaffoSettlement{
+		Amount:   result.OrderAmount,
+		Currency: result.OrderCurrency,
+	}); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 充值处理失败 trade_no=%s client_ip=%s error=%q", merchantOrderId, c.ClientIP(), err.Error()))
 		sendWaffoWebhookResponse(c, wh, false, err.Error())
 		return
