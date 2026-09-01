@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	// StreamScannerHandler reads this global; InitEnv() (main-only) normally
+	// sets it, matching the stream_scanner_test.go convention.
+	if constant.StreamingTimeout == 0 {
+		constant.StreamingTimeout = 30
+	}
+	os.Exit(m.Run())
+}
 
 func TestOllamaChatHandlerNonStreamToolCalls(t *testing.T) {
 	gin.SetMode(gin.TestMode)

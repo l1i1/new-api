@@ -8,28 +8,30 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
-	// Video proxy: accepts either session auth (dashboard) or token auth (API clients)
-	videoProxyRouter := router.Group("/v1")
-	videoProxyRouter.Use(middleware.RouteTag("relay"))
-	videoProxyRouter.Use(middleware.TokenOrUserAuth())
-	{
-		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
-	}
+	videoSharedRouter := router.Group("/v1")
+	videoSharedRouter.Use(middleware.RouteTag("relay"))
+	videoSharedRouter.Use(middleware.TokenAuth())
+	videoSharedRouter.Use(middleware.SystemPerformanceCheck())
+	videoSharedRouter.POST(
+		"/video/generations",
+		middleware.PinTaskPluginEndpoint(),
+		middleware.TaskPluginEndpointOnly(middleware.ModelRequestRateLimit()),
+		middleware.PrepareTaskPluginEndpoint(),
+		middleware.Distribute(),
+		func(c *gin.Context) {
+			controller.RelayTaskPluginEndpoint(c, controller.RelayTask)
+		},
+	)
 
 	videoV1Router := router.Group("/v1")
 	videoV1Router.Use(middleware.RouteTag("relay"))
 	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute(), middleware.UserModelRateLimit(), middleware.GroupModelRateLimit())
 	{
-		videoV1Router.POST("/video/generations", controller.RelayTask)
 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
 		videoV1Router.POST("/videos/:video_id/remix", controller.RelayTask)
 	}
-	// openai compatible API video routes
-	// docs: https://platform.openai.com/docs/api-reference/videos/create
-	{
-		videoV1Router.POST("/videos", controller.RelayTask)
-		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
-	}
+	// POST /v1/videos, GET /v1/videos/:task_id and GET /v1/videos/:task_id/content
+	// are registered by the task-plugin protocol router (openai_video operations).
 
 	klingV1Router := router.Group("/kling/v1")
 	klingV1Router.Use(middleware.RouteTag("relay"))

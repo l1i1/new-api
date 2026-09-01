@@ -42,7 +42,7 @@ func KlingRequestConvert() func(c *gin.Context) {
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
 		c.Request.URL.Path = "/v1/video/generations"
 		if image, ok := originalReq["image"]; !ok || image == "" {
-			c.Set("action", constant.TaskActionTextGenerate)
+			c.Set("action", constant.TaskActionTextToVideo)
 		}
 
 		// We have to reset the request body for the next handlers

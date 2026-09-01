@@ -102,9 +102,16 @@ function buildDetailSegments(
   // backend already strips admin_info for non-admins; gate on isAdmin too as
   // defense in depth so the marker never leaks if that changes.
   if (isAdmin && other?.admin_info?.quota_saturation) {
-    return [{ text: t('Quota clamped'), danger: true }, ...segments]
+    adminSegments.push({ text: t('Quota clamped'), danger: true })
   }
-  return segments
+  const plugin = isAdmin ? other?.admin_info?.task_plugin : undefined
+  if (plugin) {
+    const version = plugin.version ? ` @ ${plugin.version}` : ''
+    adminSegments.push({
+      text: `${t('Plugin')}: ${plugin.name || plugin.key}${version}`,
+    })
+  }
+  return [...adminSegments, ...segments]
 }
 
 function buildTypeDetailSegments(
@@ -637,6 +644,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         return (
           <StreamTpsCell
             isStream={log.is_stream}
+            isTask={other?.is_task === true}
             tokensPerSecond={tokensPerSecond}
             streamStatus={other?.stream_status}
           />
@@ -780,6 +788,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             <DetailsDialog
               log={log}
               isAdmin={isAdmin}
+              isRoot={isRoot}
               open={dialogOpen}
               onOpenChange={setDialogOpen}
             />

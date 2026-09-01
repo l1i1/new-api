@@ -27,9 +27,13 @@ import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import {
+  getCardExamplePrice,
   getDynamicDisplayGroupRatio,
+  getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
+  isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
+import { getTaskNumberFields } from '../lib/task-expr'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPriceParts, formatRequestPriceParts } from '../lib/price'
@@ -101,7 +105,18 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const isDynamicPricing =
     props.model.billing_mode === 'tiered_expr' &&
     Boolean(props.model.billing_expr)
+  const isUnconfiguredTaskUsage = isUnconfiguredTaskUsageModel(props.model)
   const hasCachedPrice = isTokenBased && props.model.cache_ratio != null
+  const dynamicPriceOptions = {
+    tokenUnit,
+    showRechargePrice,
+    priceRate,
+    usdExchangeRate,
+    groupRatioMultiplier: getDynamicDisplayGroupRatio(
+      props.model,
+      props.selectedGroup
+    ),
+  }
   const dynamicSummary = isDynamicPricing
     ? getDynamicPricingSummary(props.model, {
         tokenUnit,
@@ -175,6 +190,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         </span>
       )
     }
+  } else if (isUnconfiguredTaskUsage) {
+    priceSummary = (
+      <span className='text-muted-foreground text-sm'>
+        {t('Usage-based billing · price not configured')}
+      </span>
+    )
   } else if (isTokenBased) {
     const inputParts = formatPriceParts(
       props.model,

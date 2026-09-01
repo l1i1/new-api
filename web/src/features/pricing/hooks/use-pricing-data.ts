@@ -35,6 +35,7 @@ export function usePricingData() {
     queryKey: ['pricing'],
     queryFn: getPricing,
     staleTime: 5 * 60 * 1000,
+    enabled,
   })
 
   // Ensure rates never reach zero to prevent division errors

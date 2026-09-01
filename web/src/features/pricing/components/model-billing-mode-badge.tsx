@@ -20,8 +20,8 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 
+import { getBillingModeLabelKey } from '../lib/billing-mode'
 import { isDynamicPricingModel } from '../lib/dynamic-price'
-import { isTokenBasedModel } from '../lib/model-helpers'
 import type { PricingModel } from '../types'
 
 interface ModelBillingModeBadgeProps {

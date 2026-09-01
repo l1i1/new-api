@@ -3,12 +3,14 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
@@ -225,8 +227,106 @@ func getChannelQueryWithBlockedChannels(group string, model string, retry int, b
 	return channelQuery, nil
 }
 
-func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetChannel(group string, model string, retry int, requestPathOrFilters interface{}) (*Channel, error) {
+	if filters, ok := requestPathOrFilters.([]dto.ChannelFilter); ok {
+		return getChannelWithFilters(group, model, retry, filters)
+	}
+	requestPath, _ := requestPathOrFilters.(string)
 	return GetChannelWithBlockedChannels(group, model, retry, requestPath, nil)
+}
+
+func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) []Ability {
+	if len(abilities) == 0 {
+		return nil
+	}
+	channelIDs := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, exists := seen[ability.ChannelId]; exists {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIDs = append(channelIDs, ability.ChannelId)
+	}
+	var channels []*Channel
+	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		if identityFilterRequiresKey(filters) {
+			return nil
+		}
+		return abilities
+	}
+	channelsByID := make(map[int]*Channel, len(channels))
+	for _, channel := range channels {
+		channelsByID[channel.Id] = channel
+	}
+	filtered := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if ok, _ := ChannelSatisfiesFilters(channelsByID[ability.ChannelId], modelName, filters); ok {
+			filtered = append(filtered, ability)
+		}
+	}
+	return filtered
+}
+
+func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
+	for _, filter := range filters {
+		if filter.Kind == dto.FilterTaskPluginIdentity && filter.TaskPluginKey != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func getChannelWithFilters(group string, model string, retry int, filters []dto.ChannelFilter) (*Channel, error) {
+	var abilities []Ability
+	if err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
+		Order("priority DESC, weight DESC").Find(&abilities).Error; err != nil {
+		return nil, err
+	}
+	abilities = filterAbilitiesByConstraints(abilities, model, filters)
+	if len(abilities) > 0 {
+		priorities := make([]int64, 0)
+		seen := make(map[int64]bool)
+		for _, ability := range abilities {
+			priority := int64(0)
+			if ability.Priority != nil {
+				priority = *ability.Priority
+			}
+			if !seen[priority] {
+				seen[priority] = true
+				priorities = append(priorities, priority)
+			}
+		}
+		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+		if retry >= len(priorities) {
+			retry = len(priorities) - 1
+		}
+		targetPriority := priorities[retry]
+		abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
+			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
+		})
+	}
+	return selectAbilityChannel(abilities)
+}
+
+func selectAbilityChannel(abilities []Ability) (*Channel, error) {
+	channel := Channel{}
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+	weightSum := uint(0)
+	for _, ability := range abilities {
+		weightSum += ability.Weight + 10
+	}
+	weight := common.GetRandomInt(int(weightSum))
+	for _, ability := range abilities {
+		weight -= int(ability.Weight) + 10
+		if weight <= 0 {
+			channel.Id = ability.ChannelId
+			break
+		}
+	}
+	return &channel, DB.First(&channel, "id = ?", channel.Id).Error
 }
 
 func GetChannelWithBlockedChannels(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}) (*Channel, error) {
@@ -371,7 +471,7 @@ func filterAbilitiesByRequestPathAndModel(abilities []Ability, requestPath strin
 		return abilities
 	}
 
-	advancedConfigs := make(map[int]*dto.AdvancedCustomConfig)
+	advancedConfigs := make(map[int]*kitdto.AdvancedCustomConfig)
 	for _, channel := range channels {
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
 			advancedConfigs[channel.Id] = channel.GetOtherSettings().AdvancedCustom

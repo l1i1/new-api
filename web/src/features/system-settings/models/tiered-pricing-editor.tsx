@@ -947,7 +947,7 @@ function RuleConditionRow({
       case MATCH_LTE:
         return t('Less than or equal')
       case MATCH_RANGE:
-        return t('Overnight range')
+        return t('Time range')
       default:
         return mode
     }
@@ -1181,6 +1181,11 @@ function RuleConditionRow({
       >
         <Trash2 className='text-destructive h-4 w-4' />
       </Button>
+      {condition.source === SOURCE_TIME && condition.mode === MATCH_RANGE && (
+        <p className='text-muted-foreground w-full text-xs'>
+          {t('Start ≤ end: within the day; start > end: across midnight')}
+        </p>
+      )}
     </div>
   )
 }

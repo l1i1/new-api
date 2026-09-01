@@ -3,6 +3,8 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -120,22 +122,34 @@ func addNewRecord(type_ int, id int, value int) bool {
 	}
 	batchUpdateMu.Lock()
 	if type_ == BatchUpdateTypeTokenQuota {
-		batchTokenUpdates[id] += value
+		batchTokenUpdates[id] = saturatingBatchAdd(batchTokenUpdates[id], value, type_, id)
 	} else {
 		update := batchUserUpdates[id]
 		switch type_ {
 		case BatchUpdateTypeUserQuota:
-			update.quota += value
+			update.quota = saturatingBatchAdd(update.quota, value, type_, id)
 		case BatchUpdateTypeUsedQuota:
-			update.usedQuota += value
+			update.usedQuota = saturatingBatchAdd(update.usedQuota, value, type_, id)
 		case BatchUpdateTypeRequestCount:
-			update.requestCount += value
+			update.requestCount = saturatingBatchAdd(update.requestCount, value, type_, id)
 		}
 		batchUserUpdates[id] = update
 	}
 	batchUpdateMu.Unlock()
 	batchUpdaterMu.RUnlock()
 	return true
+}
+
+func saturatingBatchAdd(old, value, type_, id int) int {
+	sum := old + value
+	if (value > 0 && sum < old) || (value < 0 && sum > old) {
+		common.SysError(fmt.Sprintf("batch update overflow: type=%d id=%d old=%d value=%d", type_, id, old, value))
+		if value > 0 {
+			return math.MaxInt
+		}
+		return math.MinInt
+	}
+	return sum
 }
 
 func addUserBatchUpdate(id int, quota int, usedQuota int, requestCount int) bool {

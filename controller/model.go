@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/ai360"
 	"github.com/QuantumNous/new-api/relay/channel/lingyiwanwu"
@@ -97,6 +98,9 @@ func init() {
 	for i := 1; i <= constant.ChannelTypeDummy; i++ {
 		apiType, success := common.ChannelType2APIType(i)
 		if !success || apiType == constant.APITypeAIProxyLibrary {
+			if plugin, ok := jsplugin.DefaultRegistry.GetByChannelType(i); ok {
+				channelId2Models[i] = append([]string(nil), plugin.Meta.Models...)
+			}
 			continue
 		}
 		meta := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
@@ -105,6 +109,11 @@ func init() {
 		adaptor := relay.GetAdaptor(apiType)
 		adaptor.Init(meta)
 		channelId2Models[i] = adaptor.GetModelList()
+		if len(channelId2Models[i]) == 0 {
+			if plugin, ok := jsplugin.DefaultRegistry.GetByChannelType(i); ok {
+				channelId2Models[i] = append([]string(nil), plugin.Meta.Models...)
+			}
+		}
 	}
 	openAIModels = lo.UniqBy(openAIModels, func(m dto.OpenAIModels) string {
 		return m.Id

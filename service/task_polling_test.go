@@ -70,7 +70,6 @@ func (a *sunoFailurePollingAdaptor) FetchTask(_ string, _ string, body map[strin
 			FinishTime: time.Now().Unix(),
 		})
 	}
-
 	responseBody, err := common.Marshal(taskdto.TaskResponse[[]taskdto.SunoDataResponse]{
 		Code: taskdto.TaskSuccessCode,
 		Data: items,
@@ -90,6 +89,32 @@ func (a *sunoFailurePollingAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskIn
 
 func (a *sunoFailurePollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
 	return 0
+}
+
+type batchPollingAdaptor struct {
+	taskPollingFetchAdaptor
+	batchCalls int
+	batchIDs   []string
+	results    map[string]*BatchTaskResult
+}
+
+func (a *batchPollingAdaptor) FetchMode() string { return "batch" }
+
+func (a *batchPollingAdaptor) FetchBatchTasks(_ string, _ string, taskIDs []string, _ string) (*http.Response, error) {
+	a.batchCalls++
+	a.batchIDs = append([]string(nil), taskIDs...)
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader([]byte(`{}`)))}, nil
+}
+
+func (a *batchPollingAdaptor) ParseBatchResult([]byte) (map[string]*BatchTaskResult, error) {
+	if a.results != nil {
+		return a.results, nil
+	}
+	results := make(map[string]*BatchTaskResult, len(a.batchIDs))
+	for _, taskID := range a.batchIDs {
+		results[taskID] = &BatchTaskResult{TaskInfo: relaycommon.TaskInfo{TaskID: taskID, Status: model.TaskStatusInProgress, Url: "https://example.com/result"}}
+	}
+	return results, nil
 }
 
 func (a *taskPollingFetchAdaptor) Init(_ *relaycommon.RelayInfo) {}
@@ -153,6 +178,43 @@ func (a *taskPollingFetchAdaptor) fetchedTaskIDs() []string {
 	return append([]string(nil), a.taskIDs...)
 }
 
+func TestRedactVideoResponseBodyPreservesPollingPayloadShape(t *testing.T) {
+	rawVideo := strings.Repeat("a", 300)
+	body, err := common.Marshal(map[string]any{
+		"done": true,
+		"name": "operations/provider-task",
+		"response": map[string]any{
+			"bytesBase64Encoded": "secret-bytes",
+			"video":              rawVideo,
+			"videos": []any{
+				map[string]any{
+					"bytesBase64Encoded": "other-secret-bytes",
+					"mimeType":           "video/mp4",
+					"uri":                "https://media.example/video.mp4",
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	var stored map[string]any
+	require.NoError(t, common.Unmarshal(redactVideoResponseBody(body), &stored))
+	assert.Equal(t, true, stored["done"])
+	assert.Equal(t, "operations/provider-task", stored["name"])
+	response, ok := stored["response"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, response, "bytesBase64Encoded")
+	assert.Equal(t, strings.Repeat("a", 256)+"...", response["video"])
+	videos, ok := response["videos"].([]any)
+	require.True(t, ok)
+	require.Len(t, videos, 1)
+	video, ok := videos[0].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, video, "bytesBase64Encoded")
+	assert.Equal(t, "video/mp4", video["mimeType"])
+	assert.Equal(t, "https://media.example/video.mp4", video["uri"])
+}
+
 func seedTaskPollingChannel(t *testing.T, id int, disableSleep bool) {
 	t.Helper()
 	ch := &model.Channel{
@@ -175,7 +237,7 @@ func seedPollingTask(t *testing.T, channelID int, publicID string, upstreamID st
 		Platform:  constant.TaskPlatform("kling"),
 		UserId:    1,
 		ChannelId: channelID,
-		Action:    constant.TaskActionGenerate,
+		Action:    constant.TaskActionImageToVideo,
 		Status:    model.TaskStatusInProgress,
 		Progress:  "30%",
 		CreatedAt: time.Now().Unix(),
@@ -467,15 +529,21 @@ func TestUpdateSunoTasksStalePollsRefundExactlyOnce(t *testing.T) {
 	require.NoError(t, model.DB.First(&firstPollTask, task.ID).Error)
 	require.NoError(t, model.DB.First(&staleSecondPollTask, task.ID).Error)
 
-	adaptor := &sunoFailurePollingAdaptor{failReason: "upstream failed"}
+	adaptor := &batchPollingAdaptor{results: map[string]*BatchTaskResult{
+		upstreamTaskID: {TaskInfo: relaycommon.TaskInfo{
+			TaskID: upstreamTaskID,
+			Status: model.TaskStatusFailure,
+			Reason: "upstream failed",
+		}},
+	}}
 	previousFactory := GetTaskAdaptorFunc
 	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
 	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
 
-	require.NoError(t, updateSunoTasks(context.Background(), channelID, []string{upstreamTaskID}, map[string]*model.Task{
+	require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{upstreamTaskID}, map[string]*model.Task{
 		upstreamTaskID: &firstPollTask,
 	}))
-	require.NoError(t, updateSunoTasks(context.Background(), channelID, []string{upstreamTaskID}, map[string]*model.Task{
+	require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{upstreamTaskID}, map[string]*model.Task{
 		upstreamTaskID: &staleSecondPollTask,
 	}))
 

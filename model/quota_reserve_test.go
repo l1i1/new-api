@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -162,6 +163,38 @@ func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	reloadedToken := getTokenFromDB(t, token.Id)
 	assert.Equal(t, 2, reloadedToken.RemainQuota)
 	assert.Equal(t, 7, reloadedToken.UsedQuota)
+}
+
+func TestBatchUpdateAccumulatesTwoMaximumRequestCharges(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+	common.BatchUpdateEnabled = true
+
+	user := createReserveTestUser(t, common.MaxQuota*2+100)
+	require.NoError(t, DecreaseUserQuota(user.Id, common.MaxQuota, false))
+	require.NoError(t, DecreaseUserQuota(user.Id, common.MaxQuota, false))
+
+	batchUpdate(context.Background())
+	assert.Equal(t, 100, getUserQuotaFromDB(t, user.Id))
+}
+
+func TestBatchUpdateAccumulatorSaturatesOverflow(t *testing.T) {
+	resetBatchUpdateTestState(t)
+
+	require.True(t, addNewRecord(BatchUpdateTypeUserQuota, 1, math.MaxInt))
+	require.True(t, addNewRecord(BatchUpdateTypeUserQuota, 1, 1))
+	batchUpdateMu.Lock()
+	assert.Equal(t, math.MaxInt, batchUserUpdates[1].quota)
+	batchUpdateMu.Unlock()
+
+	batchUpdateMu.Lock()
+	batchUserUpdates[1] = userBatchUpdate{}
+	batchUpdateMu.Unlock()
+	require.True(t, addNewRecord(BatchUpdateTypeUserQuota, 1, math.MinInt))
+	require.True(t, addNewRecord(BatchUpdateTypeUserQuota, 1, -1))
+	batchUpdateMu.Lock()
+	assert.Equal(t, math.MinInt, batchUserUpdates[1].quota)
+	batchUpdateMu.Unlock()
 }
 
 func TestReserveFallsBackToDatabaseWhenRedisIsUnavailable(t *testing.T) {

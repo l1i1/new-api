@@ -30,6 +30,7 @@ import {
   getEndpointTypeLabels,
   getQuotaTypeLabels,
 } from '../constants'
+import { hasTaskUsageSchema } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { formatGroupDiscount } from '../lib/model-helpers'
 import { localizePricingVendorName } from '../lib/vendor-localization'
@@ -184,12 +185,23 @@ export function PricingSidebar(props: PricingSidebarProps) {
     {
       value: QUOTA_TYPES.TOKEN,
       label: quotaTypeLabels[QUOTA_TYPES.TOKEN],
-      count: countBy(props.models, (model) => model.quota_type === 0),
+      count: countBy(
+        props.models,
+        (model) => model.quota_type === 0 && !hasTaskUsageSchema(model)
+      ),
     },
     {
       value: QUOTA_TYPES.REQUEST,
       label: quotaTypeLabels[QUOTA_TYPES.REQUEST],
-      count: countBy(props.models, (model) => model.quota_type === 1),
+      count: countBy(
+        props.models,
+        (model) => model.quota_type === 1 && !hasTaskUsageSchema(model)
+      ),
+    },
+    {
+      value: QUOTA_TYPES.TASK,
+      label: quotaTypeLabels[QUOTA_TYPES.TASK],
+      count: countBy(props.models, (model) => hasTaskUsageSchema(model)),
     },
   ]
 
