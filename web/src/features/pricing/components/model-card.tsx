@@ -27,13 +27,11 @@ import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
 import {
-  getCardExamplePrice,
   getDynamicDisplayGroupRatio,
   getDynamicPriceUnitLabelKey,
   getDynamicPricingSummary,
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
-import { getTaskNumberFields } from '../lib/task-expr'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPriceParts, formatRequestPriceParts } from '../lib/price'
@@ -107,16 +105,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     Boolean(props.model.billing_expr)
   const isUnconfiguredTaskUsage = isUnconfiguredTaskUsageModel(props.model)
   const hasCachedPrice = isTokenBased && props.model.cache_ratio != null
-  const dynamicPriceOptions = {
-    tokenUnit,
-    showRechargePrice,
-    priceRate,
-    usdExchangeRate,
-    groupRatioMultiplier: getDynamicDisplayGroupRatio(
-      props.model,
-      props.selectedGroup
-    ),
-  }
   const dynamicSummary = isDynamicPricing
     ? getDynamicPricingSummary(props.model, {
         tokenUnit,
@@ -175,14 +163,22 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         </div>
       )
     } else if (dynamicSummary.primaryEntries.length > 0) {
-      priceContent = dynamicSummary.primaryEntries.map((entry) => (
-        <PriceRow
-          key={entry.key}
-          label={t(entry.shortLabel)}
-          value={entry.formatted}
-          original={entry.original}
-        />
-      ))
+      priceContent = dynamicSummary.primaryEntries.map((entry) => {
+        const unitLabelKey = getDynamicPriceUnitLabelKey(entry)
+        return (
+          <PriceRow
+            key={entry.key}
+            label={
+              entry.labelKind === 'schema'
+                ? entry.shortLabel
+                : t(entry.shortLabel)
+            }
+            value={entry.formattedRange ?? entry.formatted}
+            original={entry.formattedRange ? undefined : entry.original}
+            unit={unitLabelKey ? `/ ${t(unitLabelKey)}` : undefined}
+          />
+        )
+      })
     } else {
       priceContent = (
         <span className='text-muted-foreground col-span-2 text-xs'>
@@ -191,7 +187,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       )
     }
   } else if (isUnconfiguredTaskUsage) {
-    priceSummary = (
+    priceContent = (
       <span className='text-muted-foreground text-sm'>
         {t('Usage-based billing · price not configured')}
       </span>

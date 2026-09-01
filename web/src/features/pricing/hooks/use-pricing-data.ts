@@ -26,7 +26,7 @@ import { resolveTntContent } from '@/lib/tnt-content'
 import { getPricing } from '../api'
 import { localizePricingVendorName } from '../lib/vendor-localization'
 
-export function usePricingData() {
+export function usePricingData(enabled = true) {
   const { i18n } = useTranslation()
   const { status } = useStatus()
   const language = i18n.resolvedLanguage || i18n.language

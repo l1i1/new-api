@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Tag as TagIcon } from 'lucide-react'
-import { useMemo, type ReactNode } from 'react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
@@ -46,8 +46,28 @@ import {
   type RequestRuleTrace,
   type TierCondition,
 } from '../lib/billing-expr'
-import { formatDynamicUnitPrice } from '../lib/dynamic-price'
-import type { PricingCurrency, TokenUnit } from '../types'
+import { isBreakdownTierMatched } from '../lib/breakdown-tier-match'
+import {
+  formatDynamicUnitPrice,
+  formatTaskUsageUnitPrice,
+} from '../lib/dynamic-price'
+import { getTaskMatrixDisplayTiers } from '../lib/task-matrix-display'
+import type {
+  BillingUsageSchema,
+  BillingUsageUnit,
+  PricingCurrency,
+  TokenUnit,
+} from '../types'
+
+type BreakdownTier = ParsedTier | ParsedTaskTier
+type BreakdownPriceField = {
+  id: string
+  label: string
+  shortLabel: string
+  labelKind: 'i18n' | 'schema'
+  unit: BillingUsageUnit | 'request'
+  value: (tier: BreakdownTier) => number
+}
 
 type DynamicPricingBreakdownProps = {
   billingExpr: string | null | undefined
@@ -76,6 +96,8 @@ type DynamicPricingBreakdownProps = {
   priceRate?: number
   usdExchangeRate?: number
   displayCurrency?: PricingCurrency
+  usageSchema?: BillingUsageSchema | null
+  usageFacts?: Record<string, string | number>
 }
 
 const VAR_LABELS: Record<string, string> = {
@@ -127,6 +149,13 @@ function isTaskBreakdownTier(tier: BreakdownTier): tier is ParsedTaskTier {
   return 'unitPrices' in tier
 }
 
+function breakdownPriceFieldLabel(
+  field: BreakdownPriceField,
+  t: (key: string) => string
+): string {
+  return field.labelKind === 'schema' ? field.label : t(field.label)
+}
+
 function formatBreakdownConditionSummary(
   tier: BreakdownTier,
   t: (key: string) => string
@@ -137,27 +166,6 @@ function formatBreakdownConditionSummary(
   return tier.conditions
     .map((condition) => `${condition.field} = ${condition.value}`)
     .join(' && ')
-}
-
-function formatBreakdownPrice(
-  value: number,
-  field: BreakdownPriceField,
-  symbol: string,
-  rate: number,
-  t: (key: string) => string
-): string {
-  const amount = `${symbol}${(value * rate).toFixed(4)}`
-  if (field.unit === 'second') return `${amount}/${t('s')}`
-  if (field.unit === 'count') return `${amount}/${t('unit')}`
-  if (field.unit === 'credit') return `${amount}/${t('credit')}`
-  if (
-    field.unit === 'token' &&
-    !BILLING_PRICING_VARS.some((variable) => variable.field === field.id)
-  ) {
-    return `${amount}/${t('1M token')}`
-  }
-  if (field.unit === 'request') return `${amount}/${t('request')}`
-  return amount
 }
 
 function describeCondition(
@@ -223,6 +231,8 @@ export function DynamicPricingBreakdown({
   priceRate = 1,
   usdExchangeRate = 1,
   displayCurrency,
+  usageSchema,
+  usageFacts,
 }: DynamicPricingBreakdownProps) {
   const { t } = useTranslation()
   const expr = billingExpr || ''
@@ -247,7 +257,7 @@ export function DynamicPricingBreakdown({
       split.billingExpr,
       usageSchema
     )
-    let parsedTiers
+    let parsedTiers: BreakdownTier[]
     if (matrixTiers) {
       parsedTiers = matrixTiers
     } else if (usageSchema) {
@@ -269,6 +279,15 @@ export function DynamicPricingBreakdown({
   const hasRules = ruleGroups.length > 0
 
   const formatPrice = (value: number) => {
+    if (usageSchema) {
+      return formatTaskUsageUnitPrice(value, {
+        tokenUnit,
+        showRechargePrice,
+        priceRate,
+        usdExchangeRate,
+        displayCurrency,
+      })
+    }
     if (!displayCurrency) return `${symbol}${(value * rate).toFixed(4)}`
     return formatDynamicUnitPrice(value, {
       tokenUnit,
@@ -327,6 +346,7 @@ export function DynamicPricingBreakdown({
         .map(([field, definition]) => ({
           id: field,
           label: field,
+          shortLabel: field,
           labelKind: 'schema' as const,
           unit: definition.unit as BillingUsageUnit,
           value: (tier: BreakdownTier) =>
@@ -338,6 +358,7 @@ export function DynamicPricingBreakdown({
         fields.push({
           id: 'constant',
           label: 'Base charge',
+          shortLabel: 'Base charge',
           labelKind: 'i18n',
           unit: 'request',
           value: (tier: BreakdownTier) =>
@@ -356,6 +377,7 @@ export function DynamicPricingBreakdown({
     }).map((variable, index) => ({
       id: variable.field ?? `price-${index}`,
       label: variable.shortLabel,
+      shortLabel: variable.shortLabel,
       labelKind: 'i18n' as const,
       unit: 'token',
       value: (tier: BreakdownTier) =>
@@ -452,9 +474,11 @@ export function DynamicPricingBreakdown({
                     {visiblePriceFields.map((field) => {
                       const value = field.value(tier)
                       return (
-                        <div key={v.field} className='min-w-0'>
+                        <div key={field.id} className='min-w-0'>
                           <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider'>
-                            {t(v.shortLabel)}
+                            {field.labelKind === 'schema'
+                              ? field.shortLabel
+                              : t(field.shortLabel)}
                           </div>
                           <div
                             className={cn(

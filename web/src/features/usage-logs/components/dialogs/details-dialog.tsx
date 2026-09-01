@@ -58,6 +58,7 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Label } from '@/components/ui/label'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
+import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
@@ -1133,7 +1134,11 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Request model */}
-        <DetailRow label={t('Request Model')} value={props.log.model_name} mono />
+        <DetailRow
+          label={t('Request Model')}
+          value={props.log.model_name}
+          mono
+        />
 
         {/* Token breakdown (for consume/error types with token data) */}
         {isDisplayableType(props.log.type) && other && (

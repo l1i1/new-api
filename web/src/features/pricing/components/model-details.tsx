@@ -80,6 +80,12 @@ import {
   isTokenBasedModel,
 } from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import {
+  evaluateTaskUsageExamples,
+  getTaskEnumFields,
+  getTaskNumberFields,
+} from '../lib/task-expr'
+import { getTaskMatrixDisplayTiers } from '../lib/task-matrix-display'
 import { localizePricingVendorName } from '../lib/vendor-localization'
 import type {
   ModelCapability,
@@ -1393,6 +1399,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 priceRate={props.priceRate}
                 usdExchangeRate={props.usdExchangeRate}
                 displayCurrency={props.displayCurrency}
+                usageSchema={props.model.billing_usage_schema}
               />
             )}
           </section>

@@ -84,7 +84,7 @@ const i18n = createInstance()
 await i18n.use(initReactI18next).init({
   lng: 'en',
   fallbackLng: 'en',
-  resources: { en: { translation: {} } },
+  resources: { en: { translation: { seconds: 'translated-seconds' } } },
 })
 
 const reactTestGlobals = globalThis as typeof globalThis & {
@@ -115,6 +115,56 @@ describe('model card grid pagination', () => {
 
   after(() => {
     domWindow.close()
+  })
+
+  test('renders task price ranges, units, and schema labels', async () => {
+    api.get = (async () => ({
+      data: { data: { models: [] } },
+    })) as typeof api.get
+    const taskModel: PricingModel = {
+      id: 32,
+      model_name: 'task-tiered-model',
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 1,
+      enable_groups: ['default'],
+      group_ratio: { default: 1 },
+      billing_mode: 'tiered_expr',
+      billing_expr:
+        'u("mode") == "pro" ? tier("pro", u("seconds") * 0.8) : tier("std", u("seconds") * 0.4)',
+      billing_usage_schema: {
+        seconds: { type: 'number', unit: 'second' },
+        mode: { enum: ['std', 'pro'] },
+      },
+    }
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const queryClient = new QueryClient()
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <ModelCardGrid
+              models={[taskModel]}
+              onModelClick={() => undefined}
+              displayCurrency='CNY'
+              usdExchangeRate={7}
+              selectedGroup='default'
+            />
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+
+    assert.ok(container.textContent?.includes('seconds'))
+    assert.ok(!container.textContent?.includes('translated-seconds'))
+    assert.ok(container.textContent?.includes('¥2.8 – ¥5.6'))
+    assert.ok(container.textContent?.includes('/ s'))
+
+    await act(async () => root.unmount())
+    queryClient.clear()
   })
 
   test('changes the number of visible models from the pagination control', async () => {

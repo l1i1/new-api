@@ -1694,6 +1694,8 @@
     "Enable plugin {{key}}": "Activer le plugin {{key}}",
     "Enable rate limiting": "Activer la limitation de débit",
     "Enable Request Passthrough": "Activer le Passthrough de requêtes",
+    "Hide Upstream Model Name": "Masquer le nom du modèle en amont",
+    "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.": "Lorsqu’un canal associe un modèle à un identifiant amont différent, répondre avec le nom du modèle demandé. La facturation et les journaux d’utilisation conservent l’identifiant amont réel.",
     "Enable selected channels": "Activer les canaux sélectionnés",
     "Enable selected models": "Activer les modèles sélectionnés",
     "Enable SSL/TLS": "Activer SSL/TLS",

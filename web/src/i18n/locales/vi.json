@@ -1694,6 +1694,8 @@
     "Enable plugin {{key}}": "Bật plugin {{key}}",
     "Enable rate limiting": "Bật giới hạn tốc độ",
     "Enable Request Passthrough": "Bật Truyền qua Yêu cầu",
+    "Hide Upstream Model Name": "Ẩn tên mô hình upstream",
+    "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.": "Khi một kênh ánh xạ mô hình sang ID upstream khác, phản hồi sẽ sử dụng tên mô hình được yêu cầu. Thông tin thanh toán và nhật ký sử dụng vẫn giữ ID upstream thực tế.",
     "Enable selected channels": "Kích hoạt các kênh đã chọn",
     "Enable selected models": "Kích hoạt các mô hình đã chọn",
     "Enable SSL/TLS": "Bật SSL/TLS",

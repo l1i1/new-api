@@ -102,6 +102,19 @@ const dynamicModel: PricingModel = {
   billing_expr: 'tier("base", p * 1 + c * 2)',
 }
 
+const taskModel: PricingModel = {
+  ...dynamicModel,
+  id: 2,
+  model_name: 'task-tiered-test',
+  group_ratio: { default: 1 },
+  billing_expr:
+    'u("mode") == "pro" ? tier("pro", u("seconds") * 0.8) : tier("std", u("seconds") * 0.4)',
+  billing_usage_schema: {
+    seconds: { type: 'number', unit: 'second' },
+    mode: { enum: ['std', 'pro'] },
+  },
+}
+
 function PricingCellProbe(props: {
   model: PricingModel
   groupRatioMultiplier?: number
@@ -173,6 +186,16 @@ describe('pricing table dynamic price display', () => {
     assert.equal(container.querySelector('.line-through'), null)
     assert.ok(container.textContent?.includes('¥7'))
     assert.ok(container.textContent?.includes('¥14'))
+
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  test('renders task tier ranges with their usage unit', async () => {
+    const { container, root } = await renderProbe(taskModel, 1)
+
+    assert.ok(container.textContent?.includes('¥2.8 – ¥5.6'))
+    assert.ok(container.textContent?.includes('/ s'))
 
     await act(async () => root.unmount())
     container.remove()

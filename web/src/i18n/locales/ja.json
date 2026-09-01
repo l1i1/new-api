@@ -1694,6 +1694,8 @@
     "Enable plugin {{key}}": "プラグイン {{key}} を有効化",
     "Enable rate limiting": "レート制限を有効にする",
     "Enable Request Passthrough": "リクエストパススルーを有効にする",
+    "Hide Upstream Model Name": "上流モデル名を隠す",
+    "When a channel maps a model to a different upstream id, respond with the requested model name instead. Billing and usage logs keep the actual upstream id.": "チャネルがモデルを別の上流 ID にマッピングした場合は、要求されたモデル名で応答します。請求と使用量ログには実際の上流 ID が保持されます。",
     "Enable selected channels": "選択したチャネルを有効にする",
     "Enable selected models": "選択したモデルを有効にする",
     "Enable SSL/TLS": "SSL/TLSを有効にする",

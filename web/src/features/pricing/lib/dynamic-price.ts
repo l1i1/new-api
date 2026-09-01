@@ -16,8 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+
 import { TOKEN_UNIT_DIVISORS } from '../constants'
-import type { PricingCurrency, PricingModel, TokenUnit } from '../types'
+import type {
+  BillingUsageSchema,
+  BillingUsageUnit,
+  PricingCurrency,
+  PricingModel,
+  TokenUnit,
+} from '../types'
 import {
   BILLING_PRICING_VARS,
   parseTaskTiersFromExpr,
@@ -30,9 +38,14 @@ import {
 } from './billing-expr'
 import { getDisplayGroupRatio } from './model-helpers'
 import { formatPricingCurrencyFromUSD } from './price'
+import {
+  evaluateTaskVisualConfig,
+  getTaskNumberFields,
+  tryParseTaskVisualConfig,
+} from './task-expr'
 import { evalExprLocally } from './tier-expr'
 
-type DynamicPriceOptions = {
+export type DynamicPriceOptions = {
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
   priceRate?: number
@@ -40,6 +53,7 @@ type DynamicPriceOptions = {
   displayCurrency?: PricingCurrency
   groupRatioMultiplier?: number
   now?: Date
+  usageSchema?: BillingUsageSchema | null
 }
 
 export type DynamicPriceLabelKind = 'i18n' | 'schema'
@@ -53,9 +67,11 @@ export type DynamicPriceEntry = {
   labelKind: DynamicPriceLabelKind
   value: number
   formatted: string
+  formattedRange?: string
+  unit: BillingUsageUnit | 'request'
   /** Undiscounted price shown struck through when a group ratio applies. */
   original?: string
-  variable: BillingVar
+  variable?: BillingVar
 }
 
 export type CardExamplePrice = {
@@ -211,11 +227,19 @@ export function formatTaskUsageUnitPrice(
     usdExchangeRate
   )
 
-  return formatBillingCurrencyFromUSD(displayPrice, {
-    digitsLarge: 4,
-    digitsSmall: 6,
-    abbreviate: false,
-  })
+  if (!options.displayCurrency) {
+    return formatBillingCurrencyFromUSD(displayPrice, {
+      digitsLarge: 4,
+      digitsSmall: 6,
+      abbreviate: false,
+    })
+  }
+  return formatPricingCurrencyFromUSD(
+    displayPrice,
+    options.displayCurrency,
+    usdExchangeRate,
+    { digitsLarge: 4, digitsSmall: 6 }
+  )
 }
 
 export function getDynamicPricingTiers(
@@ -268,6 +292,58 @@ export function getDynamicPriceEntries(
   if (!tier) return []
 
   const groupRatio = options.groupRatioMultiplier ?? 1
+  if (isTaskPricingTier(tier)) {
+    const schema = options.usageSchema
+    if (!schema) return []
+    const taskTiers = options.usageSchema
+      ? getTaskNumberFields(options.usageSchema)
+      : []
+    const entries: DynamicPriceEntry[] = taskTiers.flatMap(
+      ([field, definition]) => {
+        const value = Number(tier.unitPrices[field] || 0)
+        if (!Number.isFinite(value) || value <= 0 || !definition.unit) return []
+        return [
+          {
+            key: field,
+            field,
+            label: field,
+            shortLabel: field,
+            labelKind: 'schema' as const,
+            value,
+            formatted: formatTaskUsageUnitPrice(value, options),
+            original:
+              groupRatio === 1
+                ? undefined
+                : formatTaskUsageUnitPrice(value, {
+                    ...options,
+                    groupRatioMultiplier: 1,
+                  }),
+            unit: definition.unit,
+          },
+        ]
+      }
+    )
+    if (tier.constant > 0) {
+      entries.push({
+        key: 'constant',
+        field: 'constant',
+        label: 'Base charge',
+        shortLabel: 'Base',
+        labelKind: 'i18n' as const,
+        value: tier.constant,
+        formatted: formatTaskUsageUnitPrice(tier.constant, options),
+        original:
+          groupRatio === 1
+            ? undefined
+            : formatTaskUsageUnitPrice(tier.constant, {
+                ...options,
+                groupRatioMultiplier: 1,
+              }),
+        unit: 'request',
+      })
+    }
+    return entries
+  }
 
   return BILLING_PRICING_VARS.flatMap((variable) => {
     if (!variable.field) return []
@@ -283,6 +359,7 @@ export function getDynamicPriceEntries(
         labelKind: 'i18n' as const,
         value,
         formatted: formatDynamicUnitPrice(value, options),
+        unit: 'token' as const,
         original:
           groupRatio === 1
             ? undefined
@@ -310,9 +387,33 @@ export function getDynamicPricingSummary(
   const { billingExpr } = splitBillingExprAndRequestRules(
     model.billing_expr || ''
   )
-  const tiers = parseTiersFromExpr(billingExpr)
-  const tier = getDisplayedTier(tiers, billingExpr, options.now)
-  const entries = getDynamicPriceEntries(tier, options)
+  const isTaskUsage = isTaskUsagePricingModel(model)
+  const tiers: DynamicPricingTier[] = isTaskUsage
+    ? parseTaskTiersFromExpr(billingExpr, model.billing_usage_schema)
+    : parseTiersFromExpr(billingExpr)
+  const tier = isTaskUsage
+    ? (tiers.at(-1) ?? null)
+    : getDisplayedTier(tiers as ParsedTier[], billingExpr, options.now)
+  const entries = getDynamicPriceEntries(tier, {
+    ...options,
+    usageSchema: model.billing_usage_schema,
+  })
+  if (isTaskUsage && entries.length > 0) {
+    for (const entry of entries) {
+      const values = tiers
+        .filter(isTaskPricingTier)
+        .map((candidate) => {
+          if (entry.field === 'constant') return candidate.constant
+          return candidate.unitPrices[entry.field] ?? 0
+        })
+        .filter((value) => Number.isFinite(value) && value > 0)
+      const minimum = Math.min(...values)
+      const maximum = Math.max(...values)
+      if (values.length > 1 && minimum !== maximum) {
+        entry.formattedRange = `${formatTaskUsageUnitPrice(minimum, options)} – ${formatTaskUsageUnitPrice(maximum, options)}`
+      }
+    }
+  }
   const rawExpression = model.billing_expr || ''
 
   return {

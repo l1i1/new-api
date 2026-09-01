@@ -96,6 +96,7 @@ function buildDetailSegments(
   language: string,
   isAdmin: boolean
 ): DetailSegment[] {
+  const adminSegments: DetailSegment[] = []
   const segments = buildTypeDetailSegments(log, other, t, language)
   // Quota saturation is a rare, admin-only anomaly marker; surface it first
   // and in danger styling so it stands out on the related billing log. The
@@ -287,7 +288,10 @@ function buildTypeDetailSegments(
   return segments
 }
 
-export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
+export function useCommonLogsColumns(
+  isAdmin: boolean,
+  isRoot: boolean
+): ColumnDef<UsageLog>[] {
   const { i18n, t } = useTranslation()
   const language = i18n.resolvedLanguage || i18n.language
   const columns: ColumnDef<UsageLog>[] = [

@@ -25,6 +25,7 @@ import {
   LayoutDashboard,
   ListTodo,
   MessageCircle,
+  PlugZap,
   Radio,
   Receipt,
   ServerCog,
