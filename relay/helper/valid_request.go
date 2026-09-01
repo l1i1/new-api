@@ -411,6 +411,18 @@ const (
 	// the model & pricing page (384K).
 	deepSeekV4MaxTokensUpperLimit               = 393216
 	deepSeekV4StopArrayLimit                    = 16
+	// Live-probed 2026-09-01 (audit r6): the official endpoint also rejects
+	// these with their own texts; the penalty ranges surfaced via
+	// presence/frequency_penalty 2.5 probes, the rest via dedicated shapes.
+	deepSeekV4JSONSchemaMessage         = "This response_format type is unavailable now"
+	deepSeekV4ToolChoiceThinkingMessage = "Thinking mode does not support this tool_choice"
+	deepSeekV4EmptyMessagesMessage      = "Empty input messages"
+	deepSeekV4ImageUnsupportedMessage   = "This model does not support image"
+	// Official role serde enum (live-probed): `developer` is rejected with the
+	// standard deserialization text listing five variants, latest_reminder
+	// included.
+	deepSeekV4RoleDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: messages["
+	deepSeekV4ToolChoiceDeserMessage = "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool"
 	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
 	// Official tool-call state machine texts (live-probed 2026-09-01). A tool
@@ -611,6 +623,35 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			Code:    "invalid_request_error",
 		}, http.StatusBadRequest)
 	}
+	// Penalty ranges, live-probed 2026-09-01 (audit r6): presence 2.5 →
+	// `Invalid presence_penalty value, the valid range of presence_penalty is
+	// [-2, 2]`, same shape for frequency_penalty.
+	if msg := deepSeekV4PenaltyRangeMessage("presence_penalty", request.PresencePenalty); msg != "" {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: msg, Type: "invalid_request_error", Param: nil, Code: "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if msg := deepSeekV4PenaltyRangeMessage("frequency_penalty", request.FrequencyPenalty); msg != "" {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: msg, Type: "invalid_request_error", Param: nil, Code: "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	// json_schema is rejected for every V4 model, vision included (the docs
+	// never advertised it; probed 2026-09-01).
+	if request.ResponseFormat != nil && request.ResponseFormat.Type == "json_schema" {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4JSONSchemaMessage,
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if err := validateDeepSeekV4ToolChoice(request); err != nil {
+		return err
+	}
+	if err := validateDeepSeekV4Messages(request); err != nil {
+		return err
+	}
 	if count, isArray := deepSeekV4StopArrayLength(request.Stop); isArray && count > deepSeekV4StopArrayLimit {
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4StopTooLongMessage(count),
@@ -630,7 +671,86 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	return nil
 }
 
-// mapDeepSeekV4ReasoningEffort applies the official effort mapping silently
+// deepSeekV4PenaltyRangeMessage renders the official out-of-range text for a
+// penalty field, or "" when the value is inside [-2, 2] (or absent).
+func deepSeekV4PenaltyRangeMessage(field string, value *float64) string {
+	if value == nil || (*value >= -2 && *value <= 2) {
+		return ""
+	}
+	return "Invalid " + field + " value, the valid range of " + field + " is [-2, 2]"
+}
+
+// validateDeepSeekV4ToolChoice mirrors the official tool_choice contract
+// (live-probed 2026-09-01): strings outside the `none`/`auto`/`required` enum
+// are a deserialization failure; `required` and the named-object form are
+// rejected in thinking mode (anything except thinking disabled / effort none)
+// whenever the request actually declares tools — without tools every choice
+// is accepted.
+func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest) error {
+	switch choice := request.ToolChoice.(type) {
+	case nil:
+		return nil
+	case string:
+		switch choice {
+		case "auto", "none":
+			return nil
+		case "required":
+			if len(request.Tools) > 0 && !deepSeekV4ThinkingOff(request) {
+				return deepSeekV4ToolChainError(deepSeekV4ToolChoiceThinkingMessage)
+			}
+			return nil
+		default:
+			return deepSeekV4ToolChainError(deepSeekV4ToolChoiceDeserMessage)
+		}
+	case map[string]any:
+		if len(request.Tools) > 0 && !deepSeekV4ThinkingOff(request) {
+			if kind, ok := choice["type"].(string); ok && strings.EqualFold(kind, "function") {
+				return deepSeekV4ToolChainError(deepSeekV4ToolChoiceThinkingMessage)
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// validateDeepSeekV4Messages mirrors the official per-message contract: the
+// role serde enum accepts exactly system/user/assistant/tool/latest_reminder
+// (developer and friends are deserialization failures), an empty message list
+// is `Empty input messages`, and text-only models reject image content parts
+// (the vision variants accept them and download the URLs upstream).
+func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
+	if len(request.Messages) == 0 {
+		return deepSeekV4ToolChainError(deepSeekV4EmptyMessagesMessage)
+	}
+	visionModel := deepSeekV4VisionModel(request.Model)
+	for i := range request.Messages {
+		role := request.Messages[i].Role
+		switch role {
+		case "system", "user", "assistant", "tool", "latest_reminder":
+		default:
+			return deepSeekV4ToolChainError(deepSeekV4RoleDeserMessagePrefix + strconv.Itoa(i) +
+				"].role: unknown variant `" + role + "`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`")
+		}
+		if visionModel {
+			continue
+		}
+		for _, part := range request.Messages[i].ParseContent() {
+			if strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
+				return deepSeekV4ToolChainError(deepSeekV4ImageUnsupportedMessage)
+			}
+		}
+	}
+	return nil
+}
+
+// deepSeekV4VisionModel reports whether the V4 model variant accepts image
+// input (live-probed: the vision-exp variant, not pro/flash).
+func deepSeekV4VisionModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "vision")
+}
+
+
 // (docs thinking_mode table: medium and xhigh both map to high) so every
 // upstream — including ollama-backed aggregators with a narrower effort enum —
 // observes official-equivalent behavior. Only the exact lowercase variants are
@@ -1087,6 +1207,17 @@ func kimiK3Error(message string) error {
 // the official request-validation texts (DeepSeek V4 and Kimi K3). Official
 // error bodies do not append gateway request IDs, so callers keep such
 // messages verbatim.
+// StrictFitContentType reports the wire content type the official endpoint
+// uses for a strict-fit validation message (live-probed 2026-09-01):
+// deserialization failures come back as application/json while the plain
+// business rejections use application/octet-stream.
+func StrictFitContentType(message string) string {
+	if strings.HasPrefix(message, "Failed to deserialize the JSON body into the target type") {
+		return "application/json"
+	}
+	return "application/octet-stream"
+}
+
 func IsStrictFitValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		deepSeekV4ReasoningEffortDeserMessagePrefix,
@@ -1104,6 +1235,14 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4InsufficientToolMsgsText,
 		deepSeekV4MissingToolCallIDPrefix,
 		deepSeekV4ReasoningPassbackText,
+		"Invalid presence_penalty value, the valid range of presence_penalty is [-2, 2]",
+		"Invalid frequency_penalty value, the valid range of frequency_penalty is [-2, 2]",
+		deepSeekV4JSONSchemaMessage,
+		deepSeekV4ToolChoiceThinkingMessage,
+		deepSeekV4ToolChoiceDeserMessage,
+		deepSeekV4EmptyMessagesMessage,
+		deepSeekV4ImageUnsupportedMessage,
+		deepSeekV4RoleDeserMessagePrefix,
 		kimiK3TemperatureMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,

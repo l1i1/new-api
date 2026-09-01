@@ -4,15 +4,61 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/gin-gonic/gin"
 )
+
+// FitDeepSeekV4StreamEventForAdapters exposes the V4 stream-event fit to
+// channel adapters that assemble their own stream chunks (ollama's default
+// chat stream path). usage==nil marks a non-usage chunk, which the official
+// contract renders as "usage":null.
+func FitDeepSeekV4StreamEventForAdapters(c *gin.Context, info *relaycommon.RelayInfo, data string, usage *dto.Usage) string {
+	if !deepSeekV4FitEnabled(info) || info == nil || info.RelayFormat != types.RelayFormatOpenAI {
+		return data
+	}
+	// The ollama stream path only fills Usage on its final chunk; chunks that
+	// were assembled without usage render the official usage:null.
+	includeUsage := info.ShouldIncludeUsage && usage != nil
+	suppress := shouldSuppressReasoningContent(info)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, includeUsage, !suppress)
+	if err != nil {
+		if c != nil {
+			logger.LogError(c, fmt.Sprintf("deepseek v4 stream fit rewrite failed: %v", err))
+		}
+		return data
+	}
+	return patched
+}
+
+// FitDeepSeekV4TextResponseBodyForAdapters exposes the V4 response-shape fit
+// to channel adapters that assemble their own client body (ollama aggregates
+// upstream chunks into an OpenAI response whose generic Usage marshal leaks
+// non-official keys like input_tokens / claude_cache_creation_*). No-op
+// outside the DeepSeek V4 chat family or when the user's official-fit Shape
+// flag is off.
+func FitDeepSeekV4TextResponseBodyForAdapters(c *gin.Context, info *relaycommon.RelayInfo, body []byte, usage *dto.Usage) []byte {
+	if !deepSeekV4FitEnabled(info) || info == nil || info.RelayFormat != types.RelayFormatOpenAI {
+		return body
+	}
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, !shouldSuppressReasoningContent(info))
+	if err != nil {
+		if c != nil {
+			logger.LogError(c, fmt.Sprintf("deepseek v4 fit rewrite failed: %v", err))
+		}
+		return body
+	}
+	return fitted
+}
 
 // isDeepSeekV4ChatModel reports whether the client-facing request targets a
 // DeepSeek V4 chat-completions model. The fit layer must key off the origin

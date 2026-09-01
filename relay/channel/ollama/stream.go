@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -438,6 +439,9 @@ func writeOllamaStreamChunk(c *gin.Context, info *relaycommon.RelayInfo, respons
 		if err != nil {
 			return types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 		}
+		// Official-fit users get the V4 stream contract (official usage view,
+		// usage:null on non-usage chunks) like the openai adapter path.
+		data = []byte(openai.FitDeepSeekV4StreamEventForAdapters(c, info, string(data), response.Usage))
 		if err := helper.StringData(c, string(data)); err != nil {
 			return ollamaStreamAPIError(err)
 		}
@@ -749,6 +753,11 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		out, err = common.Marshal(completion)
 	} else {
 		out, err = common.Marshal(helper.OpenAITextResponseForClient(&full))
+		// The generic dto.Usage marshal leaks non-official keys
+		// (input_tokens, claude_cache_creation_*); official-fit users get the
+		// V4 usage/message contract applied here exactly like the openai
+		// adapter path.
+		out = openai.FitDeepSeekV4TextResponseBodyForAdapters(c, info, out, helper.UsageForClient(usage))
 	}
 	if err != nil {
 		return usage, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
