@@ -372,6 +372,7 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 				return nil, err
 			}
 		}
+		mapDeepSeekV4ReasoningEffort(textRequest)
 		markDeepSeekV4OfficialPin(c, textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
 		// It will be filled by provider-specific adaptors if needed (e.g., SiliconFlow)。Or it is allowed by model vendor(s) (e.g., DeepSeek)
@@ -399,6 +400,14 @@ const (
 	deepSeekV4JsonObjectMessage                 = "Prompt must contain the word 'json' in some form to use 'response_format' of type 'json_object'."
 	deepSeekV4TopLogprobsPairMessage            = "Invalid top_logprobs and logprobs value, logprobs must be set to true if top_logprobs is used."
 	deepSeekV4TopLogprobsRangeMessage           = "Invalid top_logprobs value, the valid range of top_logprobs is [0, 20]."
+	// deepSeekV4MaxTokensRangeMessage mirrors the official wording for a
+	// max_tokens above the model limit (384K = 393216, probed live: 393216 is
+	// accepted, 393217 returns this exact text).
+	deepSeekV4MaxTokensRangeMessage = "Invalid max_tokens value, the valid range of max_tokens is [1, 393216]"
+	// deepSeekV4MaxTokensUpperLimit is the official per-request output cap from
+	// the model & pricing page (384K).
+	deepSeekV4MaxTokensUpperLimit               = 393216
+	deepSeekV4StopArrayLimit                    = 16
 	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
 	deepSeekV4UnknownModelMessagePrefix         = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
@@ -423,6 +432,26 @@ var deepSeekV4ReasoningEffortAllowed = map[string]bool{
 func deepSeekV4ReasoningEffortDeserMessage(effort string) string {
 	return deepSeekV4ReasoningEffortDeserMessagePrefix + " `" + effort +
 		"`" + deepSeekV4ReasoningEffortDeserMessageSuffix
+}
+
+// deepSeekV4StopTooLongMessage renders the official error for a stop array
+// above the 16-item cap (probed live: "Stop string array too long: 17").
+func deepSeekV4StopTooLongMessage(count int) string {
+	return fmt.Sprintf("Stop string array too long: %d", count)
+}
+
+// deepSeekV4StopArrayLength reports the item count when stop carries an array
+// (JSON arrays decode to []any; []string covers programmatic callers). A bare
+// string stop is always within the cap.
+func deepSeekV4StopArrayLength(stop any) (int, bool) {
+	switch value := stop.(type) {
+	case []any:
+		return len(value), true
+	case []string:
+		return len(value), true
+	default:
+		return 0, false
+	}
 }
 
 // deepSeekV4TopLogprobsDeserMessage renders the official deserialization
@@ -556,13 +585,47 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			Code:    "invalid_request_error",
 		}, http.StatusBadRequest)
 	}
+	if count, isArray := deepSeekV4StopArrayLength(request.Stop); isArray && count > deepSeekV4StopArrayLimit {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4StopTooLongMessage(count),
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
+	if request.MaxTokens != nil && *request.MaxTokens > deepSeekV4MaxTokensUpperLimit {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: deepSeekV4MaxTokensRangeMessage,
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusBadRequest)
+	}
 	return nil
 }
 
-// markDeepSeekV4OfficialPin flags deepseek-v4 requests whose sampling
-// parameters are known to drive aggregator upstreams into divergent behavior
-// (the K08 reasoning-loop class). Only these requests are pinned to the
-// official channel; ordinary fit-able requests keep normal aggregator routing.
+// mapDeepSeekV4ReasoningEffort applies the official effort mapping silently
+// (docs thinking_mode table: medium and xhigh both map to high) so every
+// upstream — including ollama-backed aggregators with a narrower effort enum —
+// observes official-equivalent behavior. Only the exact lowercase variants are
+// mapped; anything else keeps the deserialization contract of the enum check.
+func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+		return
+	}
+	switch strings.TrimSpace(request.ReasoningEffort) {
+	case "medium", "xhigh":
+		request.ReasoningEffort = "high"
+	}
+}
+
+// markDeepSeekV4OfficialPin flags deepseek-v4 requests whose parameters are
+// known to drive aggregator upstreams into divergent behavior, so they must be
+// served by the official channel: the K08 extreme-sampling class, plus explicit
+// thinking toggles (aggregators may ignore thinking.type and leak the chain of
+// thought the client asked to disable) and logprobs requests (aggregators drop
+// the logprobs object entirely; the official response carries content and
+// reasoning_content paths).
 func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest) {
 	if c == nil || request == nil {
 		return
@@ -581,6 +644,12 @@ func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest
 		pinned = true
 	}
 	if request.PresencePenalty != nil && *request.PresencePenalty > 1.0 {
+		pinned = true
+	}
+	if len(request.THINKING) > 0 {
+		pinned = true
+	}
+	if request.LogProbs != nil && *request.LogProbs {
 		pinned = true
 	}
 	if pinned {
