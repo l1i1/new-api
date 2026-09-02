@@ -922,7 +922,7 @@ func TestCaptureOllamaPromptCacheIdentityUsesFinalGenerateRequest(t *testing.T) 
 	assert.NotEqual(t, finalIdentity.MessageHashes, other.MessageHashes)
 }
 
-func TestCaptureOllamaPromptCacheIdentityKeepsFinalImageRequestUncacheable(t *testing.T) {
+func TestCaptureOllamaPromptCacheIdentityCachesImageRequestViaDigests(t *testing.T) {
 	resetPromptCache()
 	gin.SetMode(gin.TestMode)
 	setting := dto.ChannelSettings{OllamaCacheEstimationEnabled: true}
@@ -949,10 +949,25 @@ func TestCaptureOllamaPromptCacheIdentityKeepsFinalImageRequestUncacheable(t *te
 	require.True(t, exists)
 	observation, ok := value.(promptCacheObservation)
 	require.True(t, ok)
-	assert.Equal(t, "uncacheable", observation.Outcome)
+	assert.Equal(t, "cold_miss", observation.Outcome)
+
+	// A replay carrying the identical screenshot must hit the stored candidate.
+	replayBody, replayCloser, err := relaycommon.NewOutboundJSONBody(jsonData)
+	require.NoError(t, err)
+	defer replayCloser.Close()
+	replayCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	captureOllamaPromptCacheIdentity(replayCtx, info, replayBody)
+	replayUsage := &dto.Usage{PromptTokens: 200}
+	applyOllamaPromptCacheEstimation(info, replayUsage, replayCtx)
+	assert.Equal(t, 200, replayUsage.PromptTokensDetails.CachedTokens)
+	replayValue, exists := replayCtx.Get(string(constant.ContextKeyOllamaPromptCache))
+	require.True(t, exists)
+	replayObservation, ok := replayValue.(promptCacheObservation)
+	require.True(t, ok)
+	assert.Equal(t, "hit_estimated", replayObservation.Outcome)
 }
 
-func TestOllamaPromptCacheIdentityDoesNotHashImagePayload(t *testing.T) {
+func TestOllamaPromptCacheIdentityDigestsImagesWithoutStoringPayload(t *testing.T) {
 	largeImage := strings.Repeat("a", 8*1024*1024)
 	identity := buildOllamaChatPromptCacheIdentity(&OllamaChatRequest{
 		Model: "llama3",
@@ -961,10 +976,29 @@ func TestOllamaPromptCacheIdentityDoesNotHashImagePayload(t *testing.T) {
 		}},
 	})
 
-	assert.True(t, identity.Uncacheable)
-	assert.Empty(t, identity.MessageHashes)
+	assert.False(t, identity.Uncacheable)
+	assert.Len(t, identity.MessageHashes, 1)
 	assert.Len(t, identity.RootHash, sha256.Size*2)
 	assert.NotContains(t, string(identity.KeyMaterial), largeImage)
+	for _, hash := range identity.MessageHashes {
+		assert.NotContains(t, hash, largeImage)
+	}
+
+	// The digest chain is stable for identical payloads and isolates changed ones.
+	changed := buildOllamaChatPromptCacheIdentity(&OllamaChatRequest{
+		Model: "llama3",
+		Messages: []OllamaChatMessage{{
+			Role: "user", Content: "describe this image", Images: []string{strings.Repeat("a", 8*1024*1024-1)},
+		}},
+	})
+	assert.NotEqual(t, identity.MessageHashes, changed.MessageHashes)
+	same := buildOllamaChatPromptCacheIdentity(&OllamaChatRequest{
+		Model: "llama3",
+		Messages: []OllamaChatMessage{{
+			Role: "user", Content: "describe this image", Images: []string{largeImage},
+		}},
+	})
+	assert.Equal(t, identity.MessageHashes, same.MessageHashes)
 }
 
 func TestOllamaPromptCacheIdentityIsolatesFormatAndOptions(t *testing.T) {
@@ -1021,6 +1055,33 @@ func TestCaptureOllamaPromptCacheIdentityKeepAliveZeroIsUncacheable(t *testing.T
 	applyOllamaPromptCacheEstimation(info, usage, c)
 
 	assert.Zero(t, usage.PromptTokensDetails.CachedTokens)
+	value, exists := c.Get(string(constant.ContextKeyOllamaPromptCache))
+	require.True(t, exists)
+	observation, ok := value.(promptCacheObservation)
+	require.True(t, ok)
+	assert.Equal(t, "uncacheable", observation.Outcome)
+	assert.Equal(t, "keep_alive_zero", observation.Cause)
+}
+
+func TestOllamaGeneratePromptCacheIdentityDigestsImages(t *testing.T) {
+	base := &OllamaGenerateRequest{Model: "llama3", Prompt: "describe", Images: []string{"image-a"}}
+	identity := buildOllamaGeneratePromptCacheIdentity(base)
+
+	assert.False(t, identity.Uncacheable)
+	assert.Len(t, identity.MessageHashes, 1)
+	assert.Equal(t, identity.MessageHashes, []string{identity.RootHash})
+
+	// Same prompt with a different image must not share cache state; the same
+	// image must produce a stable identity.
+	different := buildOllamaGeneratePromptCacheIdentity(&OllamaGenerateRequest{Model: "llama3", Prompt: "describe", Images: []string{"image-b"}})
+	assert.NotEqual(t, identity.MessageHashes, different.MessageHashes)
+
+	same := buildOllamaGeneratePromptCacheIdentity(&OllamaGenerateRequest{Model: "llama3", Prompt: "describe", Images: []string{"image-a"}})
+	assert.Equal(t, identity.MessageHashes, same.MessageHashes)
+
+	// The image digest must not degrade the image-free generate identity.
+	imageFree := buildOllamaGeneratePromptCacheIdentity(&OllamaGenerateRequest{Model: "llama3", Prompt: "describe"})
+	assert.NotEqual(t, identity.MessageHashes, imageFree.MessageHashes)
 }
 
 func TestBuildPromptCacheKeyIsolatesUpstreamBaseURL(t *testing.T) {

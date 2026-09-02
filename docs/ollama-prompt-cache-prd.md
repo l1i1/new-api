@@ -41,9 +41,11 @@ token-level fallback can mix many independent conversations.
 - A validated prefix is estimated as the complete previous prompt-token count,
   capped at the current prompt-token count. Do not apply an arbitrary discount
   to an already matched prefix.
-- The final Ollama request body is authoritative. Images, explicit
-  `keep_alive: 0`, and unreadable final bodies are uncacheable rather than
-  falling back to a looser client request identity.
+- The final Ollama request body is authoritative. An explicit `keep_alive: 0`
+  or an unreadable final body is uncacheable rather than falling back to a
+  looser client request identity. Images participate in cache identity through
+  content digests so identical screenshots keep the prefix stable, and raw
+  multimodal data is never serialized, stored, or logged.
 - Cache state is isolated by upstream base URL and final upstream model, and its
   TTL never exceeds either five minutes or an explicit shorter `keep_alive`.
 - Redis entries store compact cumulative prefix identities so long and

@@ -28,6 +28,9 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
 - Cache read/write failures are fail-open for the request but must be returned by
   the cache helper and logged with channel/model metadata; prompt content and
   credentials must never be logged.
+- Uncacheable outcomes carry a cause (`no_user`, `keep_alive_zero`,
+  `unreadable_body`, `empty_messages`) so production logs explain why a request
+  was excluded from estimation.
 - Normalize Claude `/v1/messages` through the existing Claude-to-OpenAI
   converter before matching. OpenAI chat and Claude Messages belong to the
   Ollama chat prompt family; `/v1/completions` uses a separate generate family.
@@ -38,9 +41,12 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
   overwrite each other.
 - Completion prompt normalization must match `openAIToGenerate` and include the
   suffix. Semantically different generate requests must not share cache state.
-- Final Ollama bodies containing images, an explicit `keep_alive: 0`, or an
-  unreadable shape are uncacheable. Explicit shorter keep-alive values cap the
-  Redis TTL; negative keep-alive values retain the normal five-minute bound.
+- Final Ollama chat messages are hashed per message with images reduced to
+  content digests: identical screenshots keep the chain stable for prefix
+  matching while raw image data is never serialized into keys, candidates, or
+  logs. An explicit `keep_alive: 0` or an unreadable final body is uncacheable.
+  Explicit shorter keep-alive values cap the Redis TTL; negative keep-alive
+  values retain the normal five-minute bound.
 - The partition includes the normalized channel base URL and final Ollama model
   so a channel endpoint or model override cannot reuse stale simulated state.
 - A completed chat response may add a separate assistant-prefix candidate using
@@ -86,6 +92,9 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
 - Claude Messages exact replay and prefix extension receive the same estimator
   behavior as OpenAI chat.
 - Conflicting header aliases resolve deterministically.
+- A conversation whose sent messages contain identical screenshots receives
+  estimated cache hits through the digest chain; a changed or removed image no
+  longer matches.
 - Generate requests with equal normalized prompts and suffixes can match;
   different suffixes remain isolated.
 - Focused Ollama tests, race tests, `go vet`, RelayKit build, and `git diff --check` pass.

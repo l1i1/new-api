@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,6 +57,7 @@ type promptCacheSnapshot struct {
 
 type promptCacheObservation struct {
 	Outcome       string `json:"outcome"`
+	Cause         string `json:"cause,omitempty"`
 	Family        string `json:"family,omitempty"`
 	PartitionHash string `json:"partition_hash,omitempty"`
 	ChainHash     string `json:"message_chain_hash,omitempty"`
@@ -137,7 +139,7 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 	identity := resolvePromptCacheIdentity(info, contexts...)
 	cacheKey := buildPromptCacheKeyWithIdentity(info, identity)
 	if cacheKey == "" {
-		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family})
+		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Cause: "no_user", Family: identity.Family})
 		return
 	}
 	// keep_alive=0 means the upstream model is being unloaded. Remove the
@@ -146,15 +148,15 @@ func applyOllamaPromptCacheEstimationWithUpstreamUsage(info *relaycommon.RelayIn
 		if _, err := cacheDeletePromptCache(cacheKey); err != nil {
 			logger.LogWarn(nil, fmt.Sprintf("ollama prompt cache clear failed channel=%d model=%q: %v", info.ChannelId, info.UpstreamModelName, err))
 		}
-		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family, PartitionHash: cacheKey})
+		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Cause: "keep_alive_zero", Family: identity.Family, PartitionHash: cacheKey})
 		return
 	}
 	if identity.Uncacheable {
-		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family, PartitionHash: cacheKey})
+		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Cause: "unreadable_body", Family: identity.Family, PartitionHash: cacheKey})
 		return
 	}
 	if len(identity.MessageHashes) == 0 {
-		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Family: identity.Family, PartitionHash: cacheKey})
+		setPromptCacheObservation(contexts, promptCacheObservation{Outcome: "uncacheable", Cause: "empty_messages", Family: identity.Family, PartitionHash: cacheKey})
 		return
 	}
 	if usage == nil || usage.PromptTokens <= 0 {
@@ -612,20 +614,10 @@ func buildOllamaChatPromptCacheIdentity(request *OllamaChatRequest) promptCacheI
 	hashes := make([]string, 0, len(request.Messages))
 	rootHash := ""
 	for _, message := range request.Messages {
-		if len(message.Images) > 0 {
-			// Do not serialize/hash image base64 data. Keep a stable root based
-			// on the non-image fields only so keep_alive=0 can clear the same
-			// fallback partition without retaining multimodal content.
-			return promptCacheIdentity{
-				Family:      "chat",
-				RootHash:    promptCacheRootHashWithoutImages(request.Messages),
-				KeyMaterial: keyMaterial,
-				TTL:         ttl,
-				Clear:       !cacheable,
-				Uncacheable: true,
-			}
-		}
-		hash := hashPromptCacheValue(message)
+		// Images participate through content digests: identical screenshots
+		// keep the chain stable for prefix matching while raw multimodal data
+		// is never serialized into keys, candidates, or logs.
+		hash := hashPromptCacheMessage(message)
 		hashes = append(hashes, hash)
 		if rootHash == "" && message.Role == "user" {
 			rootHash = hash
@@ -643,9 +635,10 @@ func buildOllamaGeneratePromptCacheIdentity(request *OllamaGenerateRequest) prom
 	}
 	ttl, cacheable := promptCacheTTLForKeepAlive(request.KeepAlive)
 	hash := hashPromptCacheValue(struct {
-		Prompt string `json:"prompt"`
-		Suffix string `json:"suffix,omitempty"`
-	}{Prompt: request.Prompt, Suffix: request.Suffix})
+		Prompt       string `json:"prompt"`
+		Suffix       string `json:"suffix,omitempty"`
+		ImagesDigest string `json:"images_digest,omitempty"`
+	}{Prompt: request.Prompt, Suffix: request.Suffix, ImagesDigest: promptCacheImagesDigest(request.Images)})
 	keyMaterial, _ := common.Marshal(struct {
 		Model   string          `json:"model"`
 		Format  any             `json:"format,omitempty"`
@@ -655,42 +648,54 @@ func buildOllamaGeneratePromptCacheIdentity(request *OllamaGenerateRequest) prom
 	if request.Prompt == "" {
 		return promptCacheIdentity{Family: "generate", KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
 	}
-	if len(request.Images) > 0 {
-		// The prompt/suffix hash is safe; never include image base64 in the
-		// identity and never store this request as cacheable.
-		return promptCacheIdentity{Family: "generate", RootHash: hash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable, Uncacheable: true}
-	}
-	return promptCacheIdentity{Family: "generate", MessageHashes: []string{hash}, RootHash: hash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable, Uncacheable: len(request.Images) > 0}
+	return promptCacheIdentity{Family: "generate", MessageHashes: []string{hash}, RootHash: hash, KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
 }
 
-func promptCacheRootHashWithoutImages(messages []OllamaChatMessage) string {
-	for _, message := range messages {
-		if message.Role == "user" {
-			return hashPromptCacheMessageWithoutImages(message)
-		}
+// hashPromptCacheMessage hashes one message for conversation-prefix identity.
+// Image payloads are reduced to content digests so the chain stays stable for
+// identical screenshots while raw base64 never enters keys or stored state.
+func hashPromptCacheMessage(message OllamaChatMessage) string {
+	if len(message.Images) == 0 {
+		return hashPromptCacheValue(message)
 	}
-	if len(messages) > 0 {
-		return hashPromptCacheMessageWithoutImages(messages[0])
-	}
-	return ""
-}
-
-func hashPromptCacheMessageWithoutImages(message OllamaChatMessage) string {
 	return hashPromptCacheValue(struct {
-		Role       string           `json:"role"`
-		Content    string           `json:"content,omitempty"`
-		ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
-		ToolName   string           `json:"tool_name,omitempty"`
-		ToolCallID string           `json:"tool_call_id,omitempty"`
-		Thinking   json.RawMessage  `json:"thinking,omitempty"`
+		Role         string           `json:"role"`
+		Content      string           `json:"content,omitempty"`
+		ImageDigests []string         `json:"image_digests,omitempty"`
+		ToolCalls    []OllamaToolCall `json:"tool_calls,omitempty"`
+		ToolName     string           `json:"tool_name,omitempty"`
+		ToolCallID   string           `json:"tool_call_id,omitempty"`
+		Thinking     json.RawMessage  `json:"thinking,omitempty"`
 	}{
-		Role:       message.Role,
-		Content:    message.Content,
-		ToolCalls:  message.ToolCalls,
-		ToolName:   message.ToolName,
-		ToolCallID: message.ToolCallID,
-		Thinking:   message.Thinking,
+		Role:         message.Role,
+		Content:      message.Content,
+		ImageDigests: promptCacheImageDigests(message.Images),
+		ToolCalls:    message.ToolCalls,
+		ToolName:     message.ToolName,
+		ToolCallID:   message.ToolCallID,
+		Thinking:     message.Thinking,
 	})
+}
+
+func promptCacheImageDigests(images []string) []string {
+	digests := make([]string, 0, len(images))
+	for _, image := range images {
+		sum := sha256.Sum256([]byte(image))
+		digests = append(digests, hex.EncodeToString(sum[:]))
+	}
+	return digests
+}
+
+func promptCacheImagesDigest(images []string) string {
+	if len(images) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, image := range images {
+		h.Write([]byte(image))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func promptCacheTTLForKeepAlive(value any) (time.Duration, bool) {
