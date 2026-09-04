@@ -5654,6 +5654,7 @@
     "home.legacy.steps.03": "Use the Key in your code with the OpenAI-compatible protocol.",
     "home.legacy.steps.title": "Integration Steps",
     "home.legacy.supplier": "30+ providers connected: OpenAI / Claude / Gemini / DeepSeek / Qwen and more",
+    "home.legacy.supplierMainland": "多数の国内モデルプロバイダーが接続 — DeepSeek / Qwen / Moonshot / Zhipu など",
     "home.legacy.system.copy": "Tokeness checks key permissions and quota, applies routing rules, selects a model, and returns the response. Caller, cost, and failover events remain auditable.",
     "home.legacy.system.label": "System Layer",
     "home.legacy.system.title": "Every request is fully traced",

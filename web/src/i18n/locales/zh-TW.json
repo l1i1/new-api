@@ -5654,6 +5654,7 @@
     "home.legacy.steps.03": "Key 丢进代码里，OpenAI 协议通用，SDK 不用动。",
     "home.legacy.steps.title": "接入流程",
     "home.legacy.supplier": "30+ 供应商已接入，OpenAI / Claude / Gemini / DeepSeek / Qwen 都有",
+    "home.legacy.supplierMainland": "多個國產模型供應商已接入 — DeepSeek / Qwen / Moonshot / Zhipu 等",
     "home.legacy.system.copy": "请求进来，先查 Key 权限和额度，再按路由规则选模型，返回结果。整个过程全留痕，谁调的、花了多少、切了哪个模型，都能查到。",
     "home.legacy.system.label": "System Layer",
     "home.legacy.system.title": "请求到模型，每一步都有记录",

@@ -5654,6 +5654,7 @@
     "home.legacy.steps.03": "Ajoutez la cle dans votre code: protocole compatible OpenAI, sans changer de SDK.",
     "home.legacy.steps.title": "Etapes d'integration",
     "home.legacy.supplier": "30+ fournisseurs connectes: OpenAI / Claude / Gemini / DeepSeek / Qwen et plus",
+    "home.legacy.supplierMainland": "Plusieurs fournisseurs de modeles CN connectes — DeepSeek / Qwen / Moonshot / Zhipu etc.",
     "home.legacy.system.copy": "La requete arrive, les droits et le quota de la cle sont verifies, puis les regles de routage choisissent le modele et renvoient la reponse. Appelant, cout et bascule restent auditables.",
     "home.legacy.system.label": "System Layer",
     "home.legacy.system.title": "Chaque requete est tracee de bout en bout",

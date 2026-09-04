@@ -5654,6 +5654,7 @@
     "home.legacy.steps.03": "Drop the Key into your code — OpenAI-compatible protocol, no SDK changes needed.",
     "home.legacy.steps.title": "Integration Steps",
     "home.legacy.supplier": "30+ Providers Connected — OpenAI / Claude / Gemini / DeepSeek / Qwen and more",
+    "home.legacy.supplierMainland": "多个国产模型供应商已接入 — DeepSeek / Qwen / Moonshot / Zhipu 等",
     "home.legacy.system.copy": "Requests come in — Key permissions and quotas are checked first, then routing rules select a model and return the result. The entire process is logged: who called, how much was spent, which model was used — all traceable.",
     "home.legacy.system.label": "System Layer",
     "home.legacy.system.title": "Every Request, Fully Traced",

@@ -55,6 +55,25 @@ interface Provider {
   name: string
 }
 
+// Domestic (mainland) editions hide overseas model providers and show a
+// compliant ICP filing number. The flavour is baked at build time via
+// VITE_SITE_FLAVOR (='mainland' | 'overseas' | unset). Overseas/unset keeps
+// the full provider matrix below unchanged.
+const isMainland = import.meta.env.VITE_SITE_FLAVOR === 'mainland'
+
+// Providers shown only on the overseas edition.
+const OVERSEAS_ONLY_PROVIDER_IDS = new Set([
+  'openai',
+  'xai',
+  'grok',
+  'cohere',
+  'claude',
+  'gemini',
+  'suno',
+  'midjourney',
+  'azure-ai',
+])
+
 const PROVIDERS: Provider[] = [
   { id: 'moonshot', name: 'MoonshotAI', icon: Moonshot },
   { id: 'openai', name: 'OpenAI', icon: LegacyOpenAIIcon },
@@ -77,6 +96,17 @@ const PROVIDERS: Provider[] = [
   { id: 'hunyuan', name: 'Hunyuan', icon: Hunyuan.Color },
   { id: 'xinference', name: 'Xinference', icon: Xinference.Color },
 ]
+
+// Domestic edition renders only domestic providers and a compliant badge.
+const DOMESTIC_PROVIDERS = PROVIDERS.filter(
+  (provider) => !OVERSEAS_ONLY_PROVIDER_IDS.has(provider.id),
+)
+
+// ICP filing number for the mainland edition. Baked at build time. Empty on
+// the overseas edition so the footer stays unchanged.
+const ICP_BEIAN = import.meta.env.VITE_ICP_BEIAN as string | undefined
+// Public-security (公安联网备案) filing number for the mainland edition.
+const POLICE_BEIAN = import.meta.env.VITE_POLICE_BEIAN as string | undefined
 
 const HOME_KEYS = {
   dashboard: 'home.legacy.actions.dashboard',
@@ -210,7 +240,7 @@ export function TokenessHome() {
           </div>
           <div className='tokeness-home__band-stats'>
             <div className='tokeness-home__stat'>
-              <b>30+</b>
+              <b>{isMainland ? DOMESTIC_PROVIDERS.length : '30+'}</b>
               <span>providers</span>
             </div>
             <div className='tokeness-home__stat'>
@@ -226,13 +256,15 @@ export function TokenessHome() {
 
         <section className='tokeness-home__block tokeness-home__supplier'>
           <h2 className='tokeness-home__supplier-label'>
-            {t(HOME_KEYS.supplier)}
+            {isMainland
+              ? t('home.legacy.supplierMainland')
+              : t(HOME_KEYS.supplier)}
           </h2>
           <div
             className='tokeness-home__provider-matrix'
-            aria-label={t(HOME_KEYS.supplier)}
+            aria-label={isMainland ? t('home.legacy.supplierMainland') : t(HOME_KEYS.supplier)}
           >
-            {PROVIDERS.map((provider) => {
+            {(isMainland ? DOMESTIC_PROVIDERS : PROVIDERS).map((provider) => {
               const Icon = provider.icon
               return (
                 <div
@@ -246,7 +278,7 @@ export function TokenessHome() {
               )
             })}
             <div className='tokeness-home__provider-tile tokeness-home__provider-more'>
-              30+
+              {isMainland ? DOMESTIC_PROVIDERS.length : '30+'}
             </div>
           </div>
         </section>
@@ -273,7 +305,7 @@ export function TokenessHome() {
             <dl className='tokeness-home__spec-table'>
               <div className='tokeness-home__spec-row'>
                 <dt>SDK</dt>
-                <dd>OpenAI / Claude / Gemini / Qwen</dd>
+                <dd>{isMainland ? 'OpenAI 兼容 / Qwen / DeepSeek' : 'OpenAI / Claude / Gemini / Qwen'}</dd>
               </div>
               <div className='tokeness-home__spec-row'>
                 <dt>Routing</dt>
@@ -307,6 +339,31 @@ export function TokenessHome() {
               >
                 {t(HOME_KEYS.footerPoweredBy)}
               </a>
+              {isMainland && ICP_BEIAN ? (
+                <a
+                  href='https://beian.miit.gov.cn/'
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  className='tokeness-home__footer-link'
+                >
+                  {ICP_BEIAN}
+                </a>
+              ) : null}
+              {isMainland && POLICE_BEIAN ? (
+                <a
+                  href='https://beian.mps.gov.cn/#/query/webSearch?code=51052202010119'
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  className='tokeness-home__police-link'
+                >
+                  <img
+                    src='/beian-icon.png'
+                    alt='公安联网备案'
+                    className='tokeness-home__police-icon'
+                  />
+                  {POLICE_BEIAN}
+                </a>
+              ) : null}
             </div>
             <nav
               className='tokeness-home__footer-nav'

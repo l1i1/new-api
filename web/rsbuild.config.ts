@@ -56,6 +56,20 @@ export default defineConfig(({ envMode }) => {
       entry: {
         index: './src/main.tsx',
       },
+      // Bake site flavour + ICP filing number into import.meta.env at build
+      // time. overseas (or unset) keeps full provider matrix & no filing;
+      // mainland hides overseas providers and renders VITE_ICP_BEIAN.
+      define: {
+        'import.meta.env.VITE_SITE_FLAVOR': JSON.stringify(
+          process.env.VITE_SITE_FLAVOR || env.rawPublicVars.VITE_SITE_FLAVOR || 'overseas',
+        ),
+        'import.meta.env.VITE_ICP_BEIAN': JSON.stringify(
+          process.env.VITE_ICP_BEIAN || env.rawPublicVars.VITE_ICP_BEIAN || '',
+        ),
+        'import.meta.env.VITE_POLICE_BEIAN': JSON.stringify(
+          process.env.VITE_POLICE_BEIAN || env.rawPublicVars.VITE_POLICE_BEIAN || '',
+        ),
+      },
     },
     resolve: {
       alias: {

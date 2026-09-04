@@ -545,6 +545,27 @@ For commercial licensing, please contact support@quantumnous.com
   font-size: inherit;
 }
 
+.tokeness-home__police-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--tokeness-home-muted-foreground);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+
+.tokeness-home__police-link:hover {
+  color: var(--tokeness-home-foreground);
+}
+
+.tokeness-home__police-icon {
+  width: 18px;
+  height: 20px;
+  object-fit: contain;
+}
+
 .tokeness-home__footer-nav,
 .tokeness-home__footer-legal {
   display: flex;

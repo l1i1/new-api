@@ -1,0 +1,37 @@
+# CNB cloud-native build pipeline for the Tokeness China mainland image.
+# Same source as GitHub l1i1/new-api (tokeness/main). This pipeline bakes the
+# mainland flavour (VITE_SITE_FLAVOR=mainland) + compliance filing numbers into
+# the frontend, then pushes the image to this repo's CNB Docker registry.
+#
+# Trigger: push to the `main` branch.
+# Build args are declared in Dockerfile.tokeness (ARG VITE_*).
+#
+# The pushed image is addressable as:
+#   docker.cnb.cool/imvhb/new-api-cn:ml-<commit-short>
+#   docker.cnb.cool/imvhb/new-api-cn:ml-latest
+
+main:
+  push:
+    - services:
+        - docker
+      env:
+        IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+        # Mainland flavour + compliance filing (baked into the frontend).
+        CNB_SITE_FLAVOR: mainland
+        CNB_ICP_BEIAN: 蜀ICP备2026014369号-5
+        CNB_POLICE_BEIAN: 川公网安备51052202010119号
+      stages:
+        - name: build mainland image
+          script: |
+            docker build \
+              --build-arg VITE_SITE_FLAVOR=$CNB_SITE_FLAVOR \
+              --build-arg VITE_ICP_BEIAN=$CNB_ICP_BEIAN \
+              --build-arg VITE_POLICE_BEIAN=$CNB_POLICE_BEIAN \
+              -t $IMAGE_NAME:ml-${CNB_COMMIT_SHORT} \
+              -t $IMAGE_NAME:ml-latest \
+              -f Dockerfile.tokeness \
+              .
+        - name: push mainland image
+          script: |
+            docker push $IMAGE_NAME:ml-${CNB_COMMIT_SHORT}
+            docker push $IMAGE_NAME:ml-latest
