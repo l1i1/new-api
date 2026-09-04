@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ "${TOKENESS_TEST_DOCKER_FAIL:-0}" -eq 0 ]] || exit 1
-[[ "$*" == buildx\ imagetools\ inspect\ * ]] || exit 2
+# Distinguish the remote command by its port-protocol argument; tokensess.cn
+# public check uses the EDGEONE url, everything else is the direct probe.
+found_url=0
+inspect_url=''
+if [[ "${TOKENESS_TEST_DOCKER_FAIL:-0}" -eq 1 ]]; then
+  exit 1
+fi
+# Ensure the inspect argument uses @sha256:, not :sha256:.
+if [[ "$*" != buildx\ imagetools\ inspect\ * ]]; then
+  exit 2
+fi
+ref="${*##* }"
+if [[ "$ref" != *@sha256:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]* ]]; then
+  echo "ERROR: expected an @sha256: digest reference, got $ref" >&2
+  exit 1
+fi
+exit 0

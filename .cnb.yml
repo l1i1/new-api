@@ -21,14 +21,30 @@ tokeness/main:
         - name: validate mainland deployment tooling
           script: |
             bash -n deployment/tokeness-cn/deploy.sh
+            for helper in deployment/tokeness-cn/tests/fake-bin/*; do
+              bash -n "$helper"
+            done
+            bash -n deployment/tokeness-cn/tests/deploy-test.sh
             bash deployment/tokeness-cn/tests/deploy-test.sh
             jq -e . deployment/tokeness-cn/nodes.json >/dev/null
         - name: build mainland image
           script: |
             IMAGE_TAG="ml-${CNB_COMMIT}"
-            if docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" >/dev/null 2>&1; then
+            # Fail closed: only a confirmed missing manifest may proceed.
+            # Reuses the tokeness-publish.yml guard (inspect exit 0 = exists;
+            # manifest unknown/not found = free; anything else = block).
+            set +e
+            CHECK_OUTPUT=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" 2>&1)
+            CHECK_STATUS=$?
+            set -e
+            if [ "$CHECK_STATUS" -eq 0 ]; then
               echo "ERROR: immutable image tag already exists: $IMAGE_NAME:$IMAGE_TAG" >&2
               exit 1
+            fi
+            if ! printf '%s' "$CHECK_OUTPUT" | grep -Eiq 'manifest unknown|not found'; then
+              echo "ERROR: could not confirm $IMAGE_NAME:$IMAGE_TAG is free (exit $CHECK_STATUS)" >&2
+              printf '%s\n' "$CHECK_OUTPUT" >&2
+              exit "$CHECK_STATUS"
             fi
             # 备案号直接内联为 build-arg 值，避免 CNB env -> docker 中转时中文丢失。
             docker build \
@@ -54,7 +70,23 @@ $:
       stages:
         - name: validate approved mainland image
           script: |
-            IMAGE_TAG="ml-${CNB_COMMIT}"
+            # Production deployments only accept cn-prod-<full-commit> tags.
+            TAG="$CNB_BRANCH"
+            TAG_PREFIX='cn-prod-'
+            if [[ "$TAG" != "$TAG_PREFIX"* ]]; then
+              echo "ERROR: cn-production accepts only cn-prod-<40-hex-commit> tags (got '${TAG:-}')" >&2
+              exit 1
+            fi
+            COMMIT="${TAG#$TAG_PREFIX}"
+            if ! printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "ERROR: cn-production tag commit must be 40 lowercase hex (got '${COMMIT:-}')" >&2
+              exit 1
+            fi
+            if [ "$COMMIT" != "$CNB_COMMIT" ]; then
+              echo "ERROR: cn-prod-$COMMIT does not match tag commit '${CNB_COMMIT:-}'" >&2
+              exit 1
+            fi
+            IMAGE_TAG="ml-$COMMIT"
             IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" \
               | awk '/^Digest:/ { print $2; exit }')
             if ! printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then

@@ -18,7 +18,7 @@
       "instance_id": "eci-uf6g7iikg1hghn1xi21h",
       "private_ip": "10.0.0.207",
       "public_ip": "101.132.163.127",
-      "current_image_source": "docker.cnb.cool/imvhb/new-api-cn:ml-latest",
+      "current_image_source": "docker.cnb.cool/imvhb/new-api-cn:ml-latest (legacy mutable tag; migrate to a digest reference on the next ECI recreate)",
       "note": "Alibaba Cloud ECI. The existing instance predates digest-only deployments; its private IP changes on recreate."
     }
   ],

@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Faithful stand-in for `ssh host -- <args...>`: drop ssh options and host,
+# then run the remote command locally with our inherited stdin as the remote
+# process stdin. This mirrors real OpenSSH, which starts the remote command
+# with the heredoc on its stdin.
 while [[ $# -gt 0 && "$1" != -- ]]; do
   shift
 done
 [[ "${1:-}" == -- ]] || exit 2
 shift
-bash -c "$1"
+
+if [[ "${1:-}" == bash ]]; then
+  shift
+  exec bash "$@"
+fi
+
+# Fallback for simple one-string commands.
+exec bash -c "$1"

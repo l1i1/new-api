@@ -83,6 +83,20 @@ if run_deploy "$direct_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 verify; then
   fail "direct failure unexpectedly passed verification"
 fi
 
+# Non-success body / invalid JSON must be treated as unhealthy.
+bad_body_case="$test_root/bad-body"
+mkdir -p "$bad_body_case"
+make_conf "$bad_body_case/nginx.conf"
+if run_deploy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='{"success":false}' verify; then
+  fail "non-success public body unexpectedly passed verification"
+fi
+if run_deploy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='not-json' verify; then
+  fail "invalid public JSON unexpectedly passed verification"
+fi
+if run_deploy "$bad_body_case" TOKENESS_TEST_DIRECT_BODY='{"success":false}' verify; then
+  fail "non-success direct body unexpectedly passed verification"
+fi
+
 duplicate_case="$test_root/duplicate"
 mkdir -p "$duplicate_case"
 make_conf "$duplicate_case/nginx.conf"
@@ -95,6 +109,15 @@ mv -- "$tmp_conf" "$duplicate_case/nginx.conf"
 if run_deploy "$duplicate_case" verify; then
   fail "duplicate upstream unexpectedly passed verification"
 fi
+
+# A parameterized server line (weight=, max_fails=) must be rewritten too.
+param_case="$test_root/parameterized"
+mkdir -p "$param_case"
+make_conf "$param_case/nginx.conf"
+sed -i 's|server 10.0.0.207:3000;|server 10.0.0.207:3000 max_fails=3 fail_timeout=30s;|' "$param_case/nginx.conf"
+run_deploy "$param_case" nginx-update 10.0.0.209
+assert_contains "$param_case/nginx.conf" 'server 10.0.0.209:3000 max_fails=3 fail_timeout=30s;'
+assert_not_contains "$param_case/nginx.conf" 'server 10.0.0.207:3000;'
 
 success_case="$test_root/success"
 mkdir -p "$success_case"
@@ -145,6 +168,27 @@ fi
 assert_contains "$post_verify_case/nginx.conf" 'server 10.0.0.207:3000;'
 assert_not_contains "$post_verify_case/nginx.conf" 'server 10.0.0.208:3000;'
 
+# Public (EdgeOne) failure after an nginx update must also roll back.
+post_public_failure_case="$test_root/post-public-failure"
+mkdir -p "$post_public_failure_case"
+make_conf "$post_public_failure_case/nginx.conf"
+if run_deploy "$post_public_failure_case" TOKENESS_TEST_PUBLIC_FAIL=1 nginx-update 10.0.0.208; then
+  fail "post-update public failure unexpectedly succeeded"
+fi
+assert_contains "$post_public_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
+assert_not_contains "$post_public_failure_case/nginx.conf" 'server 10.0.0.208:3000;'
+
+# Rollback must run a post-rollback probe; when even that fails, the script
+# must exit nonzero and leave the old config in place.
+post_rollback_probe_failure_case="$test_root/post-rollback-probe-failure"
+mkdir -p "$post_rollback_probe_failure_case"
+make_conf "$post_rollback_probe_failure_case/nginx.conf"
+if run_deploy "$post_rollback_probe_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 nginx-update 10.0.0.208; then
+  fail "post-rollback probe failure unexpectedly succeeded"
+fi
+assert_contains "$post_rollback_probe_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
+assert_not_contains "$post_rollback_probe_failure_case/nginx.conf" 'server 10.0.0.208:3000;'
+
 image_case="$test_root/image"
 mkdir -p "$image_case"
 make_conf "$image_case/nginx.conf"
@@ -157,5 +201,14 @@ fi
 image_ref="$(run_deploy "$image_case" image-ref "$VALID_DIGEST")"
 [[ "$image_ref" == "docker.cnb.cool/imvhb/new-api-cn@$VALID_DIGEST" ]] ||
   fail "unexpected immutable image reference: $image_ref"
+
+# IPv4 boundary checks: leading-zero and out-of-range octets must be rejected.
+for bad_ip in 10.0.0.008 10.0.0.256 10.0.0 10.0.0.0.1 10.0.0.a; do
+  mkdir -p "$test_root/ip-$bad_ip"
+  make_conf "$test_root/ip-$bad_ip/nginx.conf"
+  if run_deploy "$test_root/ip-$bad_ip" nginx-update "$bad_ip"; then
+    fail "invalid IPv4 '$bad_ip' unexpectedly accepted"
+  fi
+done
 
 printf 'Tokeness China deployment tests passed\n'
