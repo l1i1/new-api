@@ -18,15 +18,14 @@ main:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
         # Mainland flavour + compliance filing (baked into the frontend).
         CNB_SITE_FLAVOR: mainland
-        CNB_ICP_BEIAN: 蜀ICP备2026014369号-5
-        CNB_POLICE_BEIAN: 川公网安备51052202010119号
       stages:
         - name: build mainland image
           script: |
+            # 备案号直接内联为 build-arg 值，避免 CNB env -> docker 中转时中文丢失。
             docker build \
               --build-arg VITE_SITE_FLAVOR=$CNB_SITE_FLAVOR \
-              --build-arg VITE_ICP_BEIAN=$CNB_ICP_BEIAN \
-              --build-arg VITE_POLICE_BEIAN=$CNB_POLICE_BEIAN \
+              --build-arg "VITE_ICP_BEIAN=蜀ICP备2026014369号-5" \
+              --build-arg "VITE_POLICE_BEIAN=川公网安备51052202010119号" \
               -t $IMAGE_NAME:ml-${CNB_COMMIT_SHORT} \
               -t $IMAGE_NAME:ml-latest \
               -f Dockerfile.tokeness \
