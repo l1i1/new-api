@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "${TOKENESS_TEST_NGINX_FAIL:-0}" -eq 0 ]]

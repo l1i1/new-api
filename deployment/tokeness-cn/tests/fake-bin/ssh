@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+while [[ $# -gt 0 && "$1" != -- ]]; do
+  shift
+done
+[[ "${1:-}" == -- ]] || exit 2
+shift
+bash -c "$1"

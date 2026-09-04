@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "${TOKENESS_TEST_DOCKER_FAIL:-0}" -eq 0 ]] || exit 1
+[[ "$*" == buildx\ imagetools\ inspect\ * ]] || exit 2

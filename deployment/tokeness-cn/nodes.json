@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "site": "China mainland (CN)",
+  "registry_image": "docker.cnb.cool/imvhb/new-api-cn",
+  "production_image_policy": "digest-only",
+  "nodes": [
+    {
+      "name": "swas-lw",
+      "role": "reverse-proxy",
+      "host": "8.133.172.195",
+      "user": "root",
+      "ssh_key": "private/access/keys/swas-ml",
+      "note": "Shanghai lightweight nginx reverse proxy; upstream newapi_ml points to the ECI private IP."
+    },
+    {
+      "name": "eci-ml",
+      "role": "api",
+      "instance_id": "eci-uf6g7iikg1hghn1xi21h",
+      "private_ip": "10.0.0.207",
+      "public_ip": "101.132.163.127",
+      "current_image_source": "docker.cnb.cool/imvhb/new-api-cn:ml-latest",
+      "note": "Alibaba Cloud ECI. The existing instance predates digest-only deployments; its private IP changes on recreate."
+    }
+  ],
+  "public_endpoints": [
+    "https://tokeness.cn/api/status"
+  ],
+  "upstream_conf": "/etc/nginx/sites-available/tokeness-ml.conf",
+  "upstream_name": "newapi_ml",
+  "port": 3000
+}

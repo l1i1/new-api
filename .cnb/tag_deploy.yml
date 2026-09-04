@@ -1,0 +1,13 @@
+environments:
+  - name: cn-production
+    description: Tokeness China production on Alibaba Cloud ECI
+    permissions:
+      roles:
+        - owner
+        - master
+    require:
+      - approver:
+          roles:
+            - owner
+            - master
+          title: Approve Tokeness China production image

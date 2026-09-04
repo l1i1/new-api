@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+state_file="$TOKENESS_TEST_STATE_DIR/reload-attempts"
+attempts=0
+[[ ! -f "$state_file" ]] || attempts="$(<"$state_file")"
+printf '%s\n' "$((attempts + 1))" > "$state_file"
+
+if [[ "${TOKENESS_TEST_RELOAD_FAIL_ALWAYS:-0}" -eq 1 ]]; then
+  exit 1
+fi
+if [[ "${TOKENESS_TEST_RELOAD_FAIL_ONCE:-0}" -eq 1 && "$attempts" -eq 0 ]]; then
+  exit 1
+fi

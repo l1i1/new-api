@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+url="${*: -1}"
+if [[ "$url" == "${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}" ]]; then
+  [[ "${TOKENESS_TEST_PUBLIC_FAIL:-0}" -eq 0 ]] || exit 22
+  printf '%s\n' "${TOKENESS_TEST_PUBLIC_BODY:-{\"success\":true}}"
+else
+  [[ "${TOKENESS_TEST_DIRECT_FAIL:-0}" -eq 0 ]] || exit 22
+  printf '%s\n' "${TOKENESS_TEST_DIRECT_BODY:-{\"success\":true}}"
+fi

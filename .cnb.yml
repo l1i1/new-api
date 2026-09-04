@@ -3,34 +3,62 @@
 # mainland flavour (VITE_SITE_FLAVOR=mainland) + compliance filing numbers into
 # the frontend, then pushes the image to this repo's CNB Docker registry.
 #
-# Trigger: push to the `main` branch.
-# Build args are declared in Dockerfile.tokeness (ARG VITE_*).
+# A branch push only builds images. Production release requires the separately
+# approved cn-production tag-deploy event below.
 #
 # The pushed image is addressable as:
-#   docker.cnb.cool/imvhb/new-api-cn:ml-<commit-short>
+#   docker.cnb.cool/imvhb/new-api-cn:ml-<full-commit-sha>
 #   docker.cnb.cool/imvhb/new-api-cn:ml-latest
 
-main:
+tokeness/main:
   push:
     - services:
         - docker
       env:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
-        # Mainland flavour + compliance filing (baked into the frontend).
         CNB_SITE_FLAVOR: mainland
       stages:
+        - name: validate mainland deployment tooling
+          script: |
+            bash -n deployment/tokeness-cn/deploy.sh
+            bash deployment/tokeness-cn/tests/deploy-test.sh
+            jq -e . deployment/tokeness-cn/nodes.json >/dev/null
         - name: build mainland image
           script: |
+            IMAGE_TAG="ml-${CNB_COMMIT}"
+            if docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" >/dev/null 2>&1; then
+              echo "ERROR: immutable image tag already exists: $IMAGE_NAME:$IMAGE_TAG" >&2
+              exit 1
+            fi
             # 备案号直接内联为 build-arg 值，避免 CNB env -> docker 中转时中文丢失。
             docker build \
-              --build-arg VITE_SITE_FLAVOR=$CNB_SITE_FLAVOR \
+              --build-arg "VITE_SITE_FLAVOR=$CNB_SITE_FLAVOR" \
               --build-arg "VITE_ICP_BEIAN=蜀ICP备2026014369号-5" \
               --build-arg "VITE_POLICE_BEIAN=川公网安备51052202010119号" \
-              -t $IMAGE_NAME:ml-${CNB_COMMIT_SHORT} \
-              -t $IMAGE_NAME:ml-latest \
+              -t "$IMAGE_NAME:$IMAGE_TAG" \
+              -t "$IMAGE_NAME:ml-latest" \
               -f Dockerfile.tokeness \
               .
         - name: push mainland image
           script: |
-            docker push $IMAGE_NAME:ml-${CNB_COMMIT_SHORT}
-            docker push $IMAGE_NAME:ml-latest
+            IMAGE_TAG="ml-${CNB_COMMIT}"
+            docker push "$IMAGE_NAME:$IMAGE_TAG"
+            docker push "$IMAGE_NAME:ml-latest"
+
+$:
+  tag_deploy.cn-production:
+    - services:
+        - docker
+      env:
+        IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+      stages:
+        - name: validate approved mainland image
+          script: |
+            IMAGE_TAG="ml-${CNB_COMMIT}"
+            IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" \
+              | awk '/^Digest:/ { print $2; exit }')
+            if ! printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "ERROR: could not resolve an immutable digest for $IMAGE_NAME:$IMAGE_TAG" >&2
+              exit 1
+            fi
+            bash deployment/tokeness-cn/deploy.sh image-ref "$IMAGE_DIGEST"
