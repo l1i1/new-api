@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"embed"
 	"net/http"
 	"strings"
@@ -19,6 +20,31 @@ type WebAssets struct {
 	IndexPage []byte
 }
 
+// headHTMLPlaceholder marks the administrator-editable region inside the
+// embedded index.html (see common.DefaultCustomHeadHTML).
+var headHTMLPlaceholder = []byte("<!--head-html-->")
+
+// rsbuildTitle is the empty <title> tag the build tool injects because the
+// template no longer ships one (the title belongs to the editable head
+// region); it must not leak into the served page next to the injected one.
+var rsbuildTitle = []byte("<title></title>")
+
+// renderIndexPage injects the current CustomHeadHTML option into the index
+// template. Rendering per request keeps edits effective immediately and lets
+// follower nodes pick up the synced option without a restart; the replacement
+// is a couple of bytes.ReplaceAll calls over a small page, so the cost is
+// negligible next to the existing gzip middleware.
+func renderIndexPage(indexPage []byte) []byte {
+	common.OptionMapRWMutex.RLock()
+	headHTML := common.OptionMap["CustomHeadHTML"]
+	common.OptionMapRWMutex.RUnlock()
+	if strings.TrimSpace(headHTML) == "" {
+		headHTML = common.DefaultCustomHeadHTML
+	}
+	page := bytes.ReplaceAll(indexPage, rsbuildTitle, nil)
+	return bytes.ReplaceAll(page, headHTMLPlaceholder, []byte(headHTML))
+}
+
 func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.HandlerFunc) {
 	frontendFS := common.EmbedFolder(assets.BuildFS, "web/dist")
 
@@ -35,7 +61,7 @@ func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.Han
 				return
 			}
 			c.Header("Cache-Control", "no-cache")
-			c.Data(http.StatusOK, "text/html; charset=utf-8", assets.IndexPage)
+			c.Data(http.StatusOK, "text/html; charset=utf-8", renderIndexPage(assets.IndexPage))
 		},
 	)
 }

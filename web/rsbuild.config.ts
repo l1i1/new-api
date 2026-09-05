@@ -61,13 +61,17 @@ export default defineConfig(({ envMode }) => {
       // mainland hides overseas providers and renders VITE_ICP_BEIAN.
       define: {
         'import.meta.env.VITE_SITE_FLAVOR': JSON.stringify(
-          process.env.VITE_SITE_FLAVOR || env.rawPublicVars.VITE_SITE_FLAVOR || 'overseas',
+          process.env.VITE_SITE_FLAVOR ||
+            env.rawPublicVars.VITE_SITE_FLAVOR ||
+            'overseas'
         ),
         'import.meta.env.VITE_ICP_BEIAN': JSON.stringify(
-          process.env.VITE_ICP_BEIAN || env.rawPublicVars.VITE_ICP_BEIAN || '',
+          process.env.VITE_ICP_BEIAN || env.rawPublicVars.VITE_ICP_BEIAN || ''
         ),
         'import.meta.env.VITE_POLICE_BEIAN': JSON.stringify(
-          process.env.VITE_POLICE_BEIAN || env.rawPublicVars.VITE_POLICE_BEIAN || '',
+          process.env.VITE_POLICE_BEIAN ||
+            env.rawPublicVars.VITE_POLICE_BEIAN ||
+            ''
         ),
       },
     },
@@ -78,6 +82,12 @@ export default defineConfig(({ envMode }) => {
     },
     html: {
       template: './index.html',
+      // The <title> lives in the server-injected head region
+      // (CustomHeadHTML option, default common.DefaultCustomHeadHTML);
+      // injecting a build-time title would produce a duplicate tag. The
+      // runtime accepts `false` to skip the tag even though the typings only
+      // allow string.
+      title: false as unknown as string,
     },
     server: {
       host: '0.0.0.0',

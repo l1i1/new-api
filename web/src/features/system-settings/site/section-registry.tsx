@@ -23,6 +23,7 @@ import {
   serializeHeaderNavModules,
   serializeSidebarModulesAdmin,
 } from '../maintenance/config'
+import { HeadHtmlSection } from '../maintenance/head-html-section'
 import { HeaderNavigationSection } from '../maintenance/header-navigation-section'
 import { NoticeSection } from '../maintenance/notice-section'
 import { SidebarModulesSection } from '../maintenance/sidebar-modules-section'
@@ -49,6 +50,13 @@ const SITE_SECTIONS = [
           },
         }}
       />
+    ),
+  },
+  {
+    id: 'html-head',
+    titleKey: 'HTML head',
+    build: (settings: SiteSettings) => (
+      <HeadHtmlSection defaultValue={settings.CustomHeadHTML ?? ''} />
     ),
   },
   {
