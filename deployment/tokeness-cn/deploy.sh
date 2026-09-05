@@ -326,7 +326,7 @@ resolve_ml_digest() {
   digest="$(curl -fsSL -H "Authorization: Bearer $token" \
     -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
     -D - -o /dev/null "https://docker.cnb.cool/v2/imvhb/new-api-cn/manifests/ml-$tag" \
-    | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}')"
+    | awk 'tolower($1)=="docker-content-digest:"{digest=$2; gsub(/\r/, "", digest); print digest; exit}')"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "could not resolve an immutable digest for ml-$tag"
   printf '%s\n' "$digest"
 }
@@ -353,8 +353,9 @@ apply_ml_digest() {
     "--Container.1.Image" "docker.cnb.cool/imvhb/new-api-cn@$digest"
     "--Container.1.ImagePullPolicy" "$image_pull_policy"
   )
-  local i=0 key value
-  while IFS= read -r key && IFS= read -r value; do
+  local env_count i=0 key value
+  env_count="$(jq '.EnvironmentVars | length' <<<"$ct")"
+  while IFS=$'\t' read -r key value; do
     # Skip internal/immutable keys the API rejects on modify.
     case "$key" in
       SQL_DSN|BATCH_UPDATE_ENABLED|ERROR_LOG_ENABLED|REDIS_CONN_STRING|TZ|SESSION_SECRET|CRYPTO_SECRET|GLOBAL_API_RATE_LIMIT|GLOBAL_API_RATE_LIMIT_DURATION) ;;
@@ -363,6 +364,7 @@ apply_ml_digest() {
     i=$((i + 1))
     args+=("--Container.1.EnvironmentVar.$i.Key" "$key" "--Container.1.EnvironmentVar.$i.Value" "$value")
   done < <(jq -r '.EnvironmentVars[] | [.Key, .Value] | @tsv' <<<"$ct")
+  [[ "$i" -eq "$env_count" ]] || die "could not preserve all existing environment variables (kept $i of $env_count)"
 
   aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
   log "scaling configuration image set to $digest (env preserved: $i)"
