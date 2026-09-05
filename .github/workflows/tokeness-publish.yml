@@ -1,9 +1,12 @@
 name: Tokeness Publish GHCR
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable image tag; must match VERSION
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,14 +18,11 @@ concurrency:
 
 env:
   REGISTRY_IMAGE: ghcr.io/l1i1/new-api
-  # The pushing tag is the version identity: the tag name is written into
-  # VERSION, used as the immutable image tag, and stamped on the image label.
-  RELEASE_VERSION: ${{ github.ref_name }}
 
 jobs:
   test-and-publish:
     name: Test and publish linux/amd64
-    if: github.repository == 'l1i1/new-api' && startsWith(github.ref, 'refs/tags/')
+    if: github.repository == 'l1i1/new-api' && github.ref == 'refs/heads/tokeness/main'
     runs-on: ubuntu-latest
     environment: tokeness-release
     steps:
@@ -34,7 +34,7 @@ jobs:
 
       - name: Validate and set release version
         env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           if ! printf '%s' "$RELEASE_VERSION" | grep -Eq '^v[0-9A-Za-z._-]+-tokeness-[0-9A-Za-z._-]+$'; then
             echo "::error::Version must be a Tokeness immutable tag, for example v1.0.0-rc.21-tokeness-affinity.3"
@@ -76,7 +76,7 @@ jobs:
 
       - name: Build frontend distribution for CDN
         env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           OUTPUT_DIR="$RUNNER_TEMP/newapi-webdist"
@@ -100,7 +100,7 @@ jobs:
 
       - name: Reject an existing release tag
         env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set +e
           INSPECT_OUTPUT=$(docker buildx imagetools inspect \
@@ -129,12 +129,12 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY_IMAGE }}:${{ env.RELEASE_VERSION }}
+            ${{ env.REGISTRY_IMAGE }}:${{ inputs.version }}
             ${{ env.REGISTRY_IMAGE }}:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+            org.opencontainers.image.version=${{ inputs.version }}
           cache-from: type=gha,scope=tokeness-amd64
           cache-to: type=gha,mode=max,scope=tokeness-amd64
           provenance: mode=max
@@ -142,7 +142,7 @@ jobs:
 
       - name: Publish summary
         env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
@@ -157,7 +157,7 @@ jobs:
       - name: Publish frontend distribution to CDN repository
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/newapi-webdist/dist
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_VERSION: ${{ inputs.version }}
           SOURCE_COMMIT: ${{ github.sha }}
           TARGET_BRANCH: web-dist
           WEBDIST_REPO_SLUG: l1i1/newapi-webdist
