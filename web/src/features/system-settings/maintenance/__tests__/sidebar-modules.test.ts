@@ -59,4 +59,14 @@ describe('sidebar module configuration ordering', () => {
 
     assert.equal(parsed.admin.system_info, true)
   })
+
+  test('registers Task Plugins as an administrator module appended last', () => {
+    const parsed = parseSidebarModulesAdmin('')
+
+    assert.equal(parsed.admin.task_plugins, true)
+    const moduleKeys = Object.keys(parsed.admin).filter(
+      (key) => key !== 'enabled'
+    )
+    assert.equal(moduleKeys.at(-1), 'task_plugins')
+  })
 })

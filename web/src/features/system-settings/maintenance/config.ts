@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { isSafeHeaderNavUrl, type HeaderNavItem } from '@/lib/nav-modules'
+import { buildDefaultSidebarModules } from '@/lib/sidebar-modules'
 
 export { isSafeHeaderNavUrl }
 export type { HeaderNavItem }
@@ -96,38 +97,11 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
   ],
 }
 
-export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
-  chat: {
-    enabled: true,
-    playground: true,
-    chat: true,
-  },
-  console: {
-    enabled: true,
-    detail: true,
-    token: true,
-    log: true,
-    midjourney: true,
-    task: true,
-  },
-  personal: {
-    enabled: true,
-    topup: true,
-    personal: true,
-    invoice: true,
-  },
-  admin: {
-    enabled: true,
-    channel: true,
-    models: true,
-    redemption: true,
-    user: true,
-    setting: true,
-    subscription: true,
-    invoice_admin: true,
-    system_info: true,
-  },
-}
+/**
+ * Default sidebar modules configuration for the admin editor, derived from
+ * the registered sidebar modules (see lib/sidebar-modules.ts).
+ */
+export const SIDEBAR_MODULES_DEFAULT = buildDefaultSidebarModules()
 
 const toBoolean = (value: unknown, fallback: boolean): boolean => {
   if (typeof value === 'boolean') return value

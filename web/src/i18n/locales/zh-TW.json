@@ -2730,6 +2730,7 @@
     "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.": "管理伺服器執行日誌檔案。日誌檔案會隨執行時間不斷累積，建議定期清理以釋放磁碟空間。",
     "Manage sources": "管理來源",
     "Manage subscription plans and pricing.": "管理訂閱計劃和定價。",
+    "Manage installed task plugins and the marketplace.": "管理已安裝的任務外掛與外掛市場。",
     "Manage Subscriptions": "管理訂閱",
     "Manage Vendors": "管理供應商",
     "Manage your LinuxDO OAuth app": "管理你的 LinuxDO OAuth 應用程式",

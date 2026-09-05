@@ -179,4 +179,50 @@ describe('sidebar invoice feature gating', () => {
       ['System Info', 'System Settings']
     )
   })
+
+  test('hides Task Plugins when the administrator disables the module', () => {
+    const groups: NavGroup[] = [
+      {
+        id: 'admin',
+        title: 'Admin',
+        items: [
+          { title: 'Task Plugins', url: '/task-plugins' },
+          { title: 'Users', url: '/users' },
+        ],
+      },
+    ]
+    const config = {
+      admin: { enabled: true, user: true, task_plugins: false },
+    }
+
+    const result = applySidebarNavigationConfig(groups, config, null, true)
+
+    assert.deepEqual(
+      result[0]?.items.map((item) => item.title),
+      ['Users']
+    )
+  })
+
+  test('shows Task Plugins when enabled and orders it by the saved position', () => {
+    const groups: NavGroup[] = [
+      {
+        id: 'admin',
+        title: 'Admin',
+        items: [
+          { title: 'Users', url: '/users' },
+          { title: 'Task Plugins', url: '/task-plugins' },
+        ],
+      },
+    ]
+    const config = {
+      admin: { enabled: true, task_plugins: true, user: true },
+    }
+
+    const result = applySidebarNavigationConfig(groups, config, null, true)
+
+    assert.deepEqual(
+      result[0]?.items.map((item) => item.title),
+      ['Task Plugins', 'Users']
+    )
+  })
 })

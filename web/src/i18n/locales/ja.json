@@ -2730,6 +2730,7 @@
     "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.": "サーバーログファイルを管理します。ログファイルは時間とともに蓄積されるため、定期的なクリーンアップでディスク容量を解放することを推奨します。",
     "Manage sources": "ソースを管理",
     "Manage subscription plans and pricing.": "サブスクリプションプランと価格設定を管理します。",
+    "Manage installed task plugins and the marketplace.": "インストール済みのタスクプラグインとマーケットプレイスを管理します。",
     "Manage Subscriptions": "サブスクリプションの管理",
     "Manage Vendors": "ベンダーの管理",
     "Manage your LinuxDO OAuth app": "LinuxDO OAuth アプリを管理",

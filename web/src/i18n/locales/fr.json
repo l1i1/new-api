@@ -2730,6 +2730,7 @@
     "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.": "Gérer les fichiers journaux du serveur. Les fichiers journaux s'accumulent au fil du temps ; un nettoyage régulier est recommandé.",
     "Manage sources": "Gérer les sources",
     "Manage subscription plans and pricing.": "Gérer les plans d'abonnement et les tarifs.",
+    "Manage installed task plugins and the marketplace.": "Gérez les plugins de tâches installés et la place de marché.",
     "Manage Subscriptions": "Gérer les abonnements",
     "Manage Vendors": "Gérer les fournisseurs",
     "Manage your LinuxDO OAuth app": "Gérer votre application OAuth LinuxDO",

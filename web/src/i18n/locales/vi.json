@@ -2730,6 +2730,7 @@
     "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.": "Quản lý tệp nhật ký máy chủ. Tệp nhật ký tích lũy theo thời gian; nên dọn dẹp định kỳ để giải phóng dung lượng đĩa.",
     "Manage sources": "Quản lý nguồn",
     "Manage subscription plans and pricing.": "Quản lý gói đăng ký và giá cả.",
+    "Manage installed task plugins and the marketplace.": "Quản lý các plugin tác vụ đã cài đặt và chợ plugin.",
     "Manage Subscriptions": "Quản lý đăng ký",
     "Manage Vendors": "Quản lý Nhà cung cấp",
     "Manage your LinuxDO OAuth app": "Quản lý ứng dụng OAuth LinuxDO của bạn",

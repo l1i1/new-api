@@ -2730,6 +2730,7 @@
     "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.": "Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.",
     "Manage sources": "Manage sources",
     "Manage subscription plans and pricing.": "Manage subscription plans and pricing.",
+    "Manage installed task plugins and the marketplace.": "Manage installed task plugins and the marketplace.",
     "Manage Subscriptions": "Manage Subscriptions",
     "Manage Vendors": "Manage Vendors",
     "Manage your LinuxDO OAuth app": "Manage your LinuxDO OAuth app",

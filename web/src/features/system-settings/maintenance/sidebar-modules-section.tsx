@@ -30,6 +30,10 @@ import {
   FormLabel,
 } from '@/components/ui/form'
 import { Switch } from '@/components/ui/switch'
+import {
+  getSidebarModules,
+  SIDEBAR_MODULE_SECTIONS,
+} from '@/lib/sidebar-modules'
 
 import {
   SettingsControlChildren,
@@ -75,112 +79,33 @@ export function SidebarModulesSection({
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
 
-  const sectionMeta: Record<string, { title: string; description: string }> = {
-    chat: {
-      title: t('Chat area'),
-      description: t('Playground experiments and live conversations.'),
-    },
-    console: {
-      title: t('Console area'),
-      description: t('Dashboards, tokens, and usage analytics.'),
-    },
-    personal: {
-      title: t('Personal area'),
-      description: t('Wallet management and personal preferences.'),
-    },
-    admin: {
-      title: t('Admin area'),
-      description: t('Global configuration and administrative tools.'),
-    },
-  }
+  // Labels come from the sidebar module registry (lib/sidebar-modules.ts);
+  // unknown entries saved by an older config fall back to title-cased keys.
+  const sectionMeta = useMemo(
+    () =>
+      Object.fromEntries(
+        SIDEBAR_MODULE_SECTIONS.map((section) => [
+          section.id,
+          { title: t(section.title), description: t(section.description) },
+        ])
+      ),
+    [t]
+  )
 
-  const moduleMeta: Record<
-    string,
-    Record<string, { title: string; description: string }>
-  > = {
-    chat: {
-      playground: {
-        title: t('Playground'),
-        description: t('Experiment with prompts and models in real time.'),
-      },
-      chat: {
-        title: t('Chat'),
-        description: t('Access previous conversations and start new ones.'),
-      },
-    },
-    console: {
-      detail: {
-        title: t('Dashboard'),
-        description: t('Aggregated usage metrics and trend charts.'),
-      },
-      token: {
-        title: t('Token management'),
-        description: t('Create, revoke, and audit API tokens.'),
-      },
-      log: {
-        title: t('Usage logs'),
-        description: t('Detailed request logs for investigations.'),
-      },
-      midjourney: {
-        title: t('Drawing logs'),
-        description: t('History of MjProxy-style image tasks.'),
-      },
-      task: {
-        title: t('Task logs'),
-        description: t('Background job tracker for queued work.'),
-      },
-    },
-    personal: {
-      topup: {
-        title: t('Wallet'),
-        description: t('Top up balance and view billing history.'),
-      },
-      invoice: {
-        title: t('Invoices'),
-        description: t('Allow users to view and apply for invoices.'),
-      },
-      personal: {
-        title: t('Profile'),
-        description: t('Personal settings and profile management.'),
-      },
-    },
-    admin: {
-      channel: {
-        title: t('Channels'),
-        description: t('Configure upstream providers and routing.'),
-      },
-      models: {
-        title: t('Models'),
-        description: t('Manage catalog visibility and pricing.'),
-      },
-      redemption: {
-        title: t('Redeem codes'),
-        description: t('Create and review invite or credit codes.'),
-      },
-      user: {
-        title: t('Users'),
-        description: t('Administer user accounts and roles.'),
-      },
-      setting: {
-        title: t('System settings'),
-        description: t('Advanced platform configuration.'),
-      },
-      subscription: {
-        title: t('Subscription Management'),
-        description: t('Manage subscription plans and pricing.'),
-      },
-      invoice_admin: {
-        title: t('Invoice Review'),
-        description: t('Review and process user invoice applications.'),
-      },
-      system_info: {
-        title: t('System Info'),
-        description: t(
-          'Nodes reporting from this deployment and their latest heartbeat.'
-        ),
-      },
-    },
-  }
+  const moduleMeta = useMemo(() => {
+    const result: Record<
+      string,
+      Record<string, { title: string; description: string }>
+    > = {}
+    for (const module of getSidebarModules()) {
+      result[module.section] ??= {}
+      result[module.section][module.key] = {
+        title: t(module.title),
+        description: t(module.description),
+      }
+    }
+    return result
+  }, [t])
   const formDefaults = useMemo(() => config, [config])
 
   const form = useForm<SidebarFormValues>({

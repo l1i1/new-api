@@ -20,6 +20,10 @@ import { useMemo } from 'react'
 
 import type { NavGroup, NavItem } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
+import {
+  buildDefaultSidebarModules,
+  getSidebarModuleForUrl,
+} from '@/lib/sidebar-modules'
 import { useAuthStore } from '@/stores/auth-store'
 
 type SidebarSectionConfig = {
@@ -51,40 +55,10 @@ export function isInvoiceFeatureEnabled(
 }
 
 /**
- * Default sidebar modules configuration
+ * Default sidebar modules configuration, derived from the registered sidebar
+ * modules (see lib/sidebar-modules.ts).
  */
-const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
-  chat: {
-    enabled: true,
-    playground: true,
-    chat: true,
-  },
-  console: {
-    enabled: true,
-    detail: true,
-    token: true,
-    log: true,
-    midjourney: true,
-    task: true,
-  },
-  personal: {
-    enabled: true,
-    topup: true,
-    personal: true,
-    invoice: true,
-  },
-  admin: {
-    enabled: true,
-    channel: true,
-    models: true,
-    redemption: true,
-    user: true,
-    setting: true,
-    subscription: true,
-    invoice_admin: true,
-    system_info: true,
-  },
-}
+const DEFAULT_SIDEBAR_MODULES = buildDefaultSidebarModules()
 
 const mergeWithDefaultSidebarModules = (
   config: SidebarModulesAdminConfig
@@ -121,34 +95,9 @@ const mergeWithDefaultSidebarModules = (
 }
 
 /**
- * Mapping from URL to configuration keys
+ * URL→module resolution is exact-match against the registered sidebar
+ * modules (see lib/sidebar-modules.ts).
  */
-const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
-  '/playground': { section: 'chat', module: 'playground' },
-  '/dashboard': { section: 'console', module: 'detail' },
-  '/dashboard/overview': { section: 'console', module: 'detail' },
-  '/dashboard/models': { section: 'console', module: 'detail' },
-  '/dashboard/users': { section: 'console', module: 'detail' },
-  '/keys': { section: 'console', module: 'token' },
-  '/usage-logs': { section: 'console', module: 'log' },
-  '/usage-logs/common': { section: 'console', module: 'log' },
-  '/usage-logs/drawing': { section: 'console', module: 'midjourney' },
-  '/usage-logs/task': { section: 'console', module: 'task' },
-  '/wallet': { section: 'personal', module: 'topup' },
-  '/invoice': { section: 'personal', module: 'invoice' },
-  '/invoices': { section: 'admin', module: 'invoice_admin' },
-  '/system-info': { section: 'admin', module: 'system_info' },
-  '/profile': { section: 'personal', module: 'personal' },
-  '/channels': { section: 'admin', module: 'channel' },
-  '/models': { section: 'admin', module: 'models' },
-  '/models/metadata': { section: 'admin', module: 'models' },
-  '/models/deployments': { section: 'admin', module: 'models' },
-  '/users': { section: 'admin', module: 'user' },
-  '/redemption-codes': { section: 'admin', module: 'redemption' },
-  '/subscriptions': { section: 'admin', module: 'subscription' },
-  '/system-settings': { section: 'admin', module: 'setting' },
-  '/system-settings/site': { section: 'admin', module: 'setting' },
-}
 
 /**
  * Parse backend SidebarModulesAdmin configuration
@@ -205,9 +154,10 @@ function isModuleEnabled(
 ): boolean {
   if (!invoiceEnabled && INVOICE_NAVIGATION_URLS.has(url)) return false
 
-  const mapping = URL_TO_CONFIG_MAP[url]
+  const mapping = getSidebarModuleForUrl(url)
   if (!mapping) {
-    // No mapping config, default to visible (e.g. system settings and new features)
+    // URL is not governed by any registered module (e.g. system settings
+    // drill-ins and other unregistered entries), default to visible
     return true
   }
 
@@ -326,7 +276,7 @@ function getNavItemOrder(
 
   const orderIndexes: number[] = []
   for (const url of urls) {
-    const mapping = URL_TO_CONFIG_MAP[url]
+    const mapping = getSidebarModuleForUrl(url)
     if (!mapping) continue
     const section = adminConfig[mapping.section]
     if (!section) continue
