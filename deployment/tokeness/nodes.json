@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
+  "site": "Global (overseas)",
   "registry_image": "ghcr.io/l1i1/new-api",
+  "production_image_policy": "digest-only",
   "nodes": [
     {
       "name": "JP-N2",
