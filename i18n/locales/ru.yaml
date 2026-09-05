@@ -273,6 +273,7 @@ distributor.invalid_playground_request: "Недопустимый запрос �
 distributor.group_access_denied: "Нет доступа к этой группе"
 distributor.get_channel_failed: "Не удалось получить доступный канал для модели {{.Model}} в группе {{.Group}} (дистрибьютор): {{.Error}}"
 distributor.no_available_channel: "Нет доступного канала для модели {{.Model}} в группе {{.Group}} (дистрибьютор)"
+distributor.no_available_channel_task_plugin: "Нет доступного канала для модели {{.Model}} в группе {{.Group}}: модель закреплена за плагином задач \"{{.Plugin}}\", у которого нет включенного канала для ее обслуживания. Чтобы разрешить другому плагину или каналу обслуживать эту модель, отключите или переопределите плагин \"{{.Plugin}}\" в консоли плагинов задач (дистрибьютор)"
 distributor.invalid_midjourney_request: "Недопустимый запрос Midjourney: {{.Error}}"
 distributor.invalid_request_parse_model: "Недопустимый запрос, не удалось разобрать модель"
 

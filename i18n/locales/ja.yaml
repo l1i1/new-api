@@ -273,6 +273,7 @@ distributor.invalid_playground_request: "プレイグラウンドのリクエス
 distributor.group_access_denied: "このグループにアクセスする権限がありません"
 distributor.get_channel_failed: "グループ {{.Group}} のモデル {{.Model}} で利用可能なチャネルの取得に失敗しました（ディストリビューター）：{{.Error}}"
 distributor.no_available_channel: "グループ {{.Group}} のモデル {{.Model}} で利用可能なチャネルがありません（ディストリビューター）"
+distributor.no_available_channel_task_plugin: "グループ {{.Group}} のモデル {{.Model}} で利用可能なチャネルがありません：モデルはタスクプラグイン「{{.Plugin}}」に割り当てられていますが、このプラグインには提供可能な有効チャネルがありません。別のプラグインまたはチャネルでこのモデルを提供するには、タスクプラグインコンソールで「{{.Plugin}}」を無効化または上書きしてください（ディストリビューター）"
 distributor.invalid_midjourney_request: "Midjourney のリクエストが無効です：{{.Error}}"
 distributor.invalid_request_parse_model: "リクエストが無効で、モデルを解析できません"
 

@@ -103,6 +103,13 @@ func ClaudeResponseForClient(resp *dto.ClaudeResponse) *dto.ClaudeResponse {
 		clientUsage.BillingUsage = nil
 		clientResponse.Usage = &clientUsage
 	}
+	if resp.Message != nil && resp.Message.Usage != nil {
+		clientMessage := *resp.Message
+		clientUsage := *resp.Message.Usage
+		clientUsage.BillingUsage = nil
+		clientMessage.Usage = &clientUsage
+		clientResponse.Message = &clientMessage
+	}
 	return &clientResponse
 }
 

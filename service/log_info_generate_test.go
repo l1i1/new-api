@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -27,10 +28,10 @@ func TestAppendStreamStatusRedactsCyberPolicyErrors(t *testing.T) {
 	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, errors.New(secret))
 	info.StreamStatus.RecordError(secret)
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	appendStreamStatus(c, info, other)
 
-	streamStatus, ok := other["stream_status"].(map[string]interface{})
+	streamStatus, ok := other.Snapshot()["stream_status"].(map[string]interface{})
 	require.True(t, ok)
 	require.Equal(t, "length", streamStatus["finish_reason"])
 	require.NotContains(t, streamStatus["end_error"], "sk-live-stream-secret")
@@ -53,7 +54,7 @@ func TestGenerateTextOtherInfoIncludesOllamaPromptCacheObservation(t *testing.T)
 		ChannelMeta:       &relaycommon.ChannelMeta{},
 	}
 	other := GenerateTextOtherInfo(c, info, 1, 1, 1, 10, 1, 1, 1)
-	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
 	_, ok = adminInfo["ollama_prompt_cache"]
 	require.True(t, ok)
@@ -67,10 +68,10 @@ func TestAppendStreamStatusLeavesOrdinaryErrorsUnchanged(t *testing.T) {
 	message := "ordinary upstream error: " + strings.Repeat("x", 8)
 	info.StreamStatus.RecordError(message)
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	appendStreamStatus(nil, info, other)
 
-	streamStatus, ok := other["stream_status"].(map[string]interface{})
+	streamStatus, ok := other.Snapshot()["stream_status"].(map[string]interface{})
 	require.True(t, ok)
 	errors, ok := streamStatus["errors"].([]string)
 	require.True(t, ok)

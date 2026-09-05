@@ -273,6 +273,7 @@ distributor.invalid_playground_request: "Yêu cầu playground không hợp lệ
 distributor.group_access_denied: "Không có quyền truy cập nhóm này"
 distributor.get_channel_failed: "Không thể lấy kênh khả dụng cho mô hình {{.Model}} trong nhóm {{.Group}} (distributor): {{.Error}}"
 distributor.no_available_channel: "Không có kênh khả dụng cho mô hình {{.Model}} trong nhóm {{.Group}} (distributor)"
+distributor.no_available_channel_task_plugin: "Không có kênh khả dụng cho mô hình {{.Model}} trong nhóm {{.Group}}: mô hình đang do plugin tác vụ \"{{.Plugin}}\" quản lý, nhưng plugin này không có kênh đang bật để phục vụ mô hình. Để plugin hoặc kênh khác phục vụ mô hình này, hãy tắt hoặc ghi đè plugin \"{{.Plugin}}\" trong bảng điều khiển plugin tác vụ (distributor)"
 distributor.invalid_midjourney_request: "Yêu cầu Midjourney không hợp lệ: {{.Error}}"
 distributor.invalid_request_parse_model: "Yêu cầu không hợp lệ, không thể phân tích mô hình"
 

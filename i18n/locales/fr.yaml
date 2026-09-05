@@ -273,6 +273,7 @@ distributor.invalid_playground_request: "Requête de playground invalide : {{.Er
 distributor.group_access_denied: "Aucune autorisation pour accéder à ce groupe"
 distributor.get_channel_failed: "Échec de l'obtention du canal disponible pour le modèle {{.Model}} dans le groupe {{.Group}} (distributeur) : {{.Error}}"
 distributor.no_available_channel: "Aucun canal disponible pour le modèle {{.Model}} dans le groupe {{.Group}} (distributeur)"
+distributor.no_available_channel_task_plugin: "Aucun canal disponible pour le modèle {{.Model}} dans le groupe {{.Group}} : le modèle est revendiqué par le plugin de tâche « {{.Plugin}} », qui n'a aucun canal activé pour le servir. Pour permettre à un autre plugin ou canal de servir ce modèle, désactivez ou remplacez le plugin « {{.Plugin}} » dans la console des plugins de tâches (distributeur)"
 distributor.invalid_midjourney_request: "Requête Midjourney invalide : {{.Error}}"
 distributor.invalid_request_parse_model: "Requête invalide, impossible d'analyser le modèle"
 
