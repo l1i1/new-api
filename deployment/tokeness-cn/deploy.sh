@@ -18,6 +18,8 @@ readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 readonly DIRECT_PROBE_URL="${DIRECT_PROBE_URL:-http://127.0.0.1/api/status}"
 readonly DIRECT_PROBE_INSECURE="${DIRECT_PROBE_INSECURE:-0}"
 readonly VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-45}"
+readonly ROLLOUT_VERIFY_ATTEMPTS="${ROLLOUT_VERIFY_ATTEMPTS:-6}"
+readonly ROLLOUT_VERIFY_DELAY_SECONDS="${ROLLOUT_VERIFY_DELAY_SECONDS:-10}"
 
 readonly REMOTE_RUN_DIR='/run/lock'
 readonly REMOTE_LOCK_NAME='tokeness-cn-deploy.lock'
@@ -396,13 +398,23 @@ wait_healthy_instances() {
 # ess_rollout <sha256:digest> - scale out to 2 healthy, then scale back to 1 and
 # converge nginx via the existing verify path. Keeps the current node if alive.
 ess_rollout() {
-  local digest="$1"
+  local digest="$1" attempt
   scale_group 2
   wait_healthy_instances 2
   scale_group 1
   wait_healthy_instances 1
-  verify_node || die "post-rollout verify failed"
-  log "ess rollout to $digest complete"
+  for ((attempt = 1; attempt <= ROLLOUT_VERIFY_ATTEMPTS; attempt++)); do
+    if verify_node; then
+      log "post-rollout verify passed on attempt $attempt"
+      log "ess rollout to $digest complete"
+      return 0
+    fi
+    if (( attempt < ROLLOUT_VERIFY_ATTEMPTS )); then
+      log "post-rollout verify is not ready; waiting ${ROLLOUT_VERIFY_DELAY_SECONDS}s for ml-sync (attempt $attempt/$ROLLOUT_VERIFY_ATTEMPTS)"
+      sleep "$ROLLOUT_VERIFY_DELAY_SECONDS"
+    fi
+  done
+  die "post-rollout verify failed after $ROLLOUT_VERIFY_ATTEMPTS attempts"
 }
 
 usage() {
