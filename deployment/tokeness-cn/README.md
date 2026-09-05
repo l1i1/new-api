@@ -2,20 +2,31 @@
 
 The China site uses one Alibaba Cloud ECI instance behind a Shanghai lightweight nginx reverse proxy and EdgeOne. A Git push builds images only. It never changes production.
 
-## Release Gate
+## Release Gate (tag is version)
+
+The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-tokeness-mainland.1`). Pushing such a tag triggers a CNB `tag_push` build that bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere.
 
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
-2. Wait for the CNB push pipeline to publish `ml-<full-commit-sha>`. This tag is immutable; the build fails rather than overwriting an existing tag.
-3. Create a deployment tag named `cn-prod-<full-commit-sha>` at that exact commit in CNB and choose the `cn-production` environment. Only this tag namespace is accepted; anything else fails before any image is resolved.
-4. An `owner` or `master` must approve the deployment. The approved job resolves the commit image and prints one immutable reference:
+2. Create a release tag `v1.0.0-tokeness-mainland.<N>` at the checked-out commit and push it. The CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, and publishes the immutable `ml-<tag>` image (a re-push of an existing tag fails rather than overwriting).
+3. The optional `cn-production` deploy environment (`.cnb/tag_deploy.yml`) resolves and certifies the digest, printing `docker.cnb.cool/imvhb/new-api-cn@sha256:<digest>`. It no longer requires an approver.
 
-   ```text
-   docker.cnb.cool/imvhb/new-api-cn@sha256:<digest>
+   CNB does not receive the lightweight-server SSH key or Alibaba Cloud credentials. It only certifies the production image; infrastructure changes are an authorized local operation.
+
+4. Deploy the certified digest locally:
+
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1
    ```
 
-5. Use that exact digest reference when recreating the ECI instance in the Alibaba Cloud console. `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
+   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var), and runs a blue-green-style ESS rollout (scale out to two healthy, then back to one) with a final verify.
 
-CNB does not receive the lightweight-server SSH key or Alibaba Cloud credentials. The approval job certifies the production image; infrastructure changes remain an authorized local operation.
+5. Roll back to a previous digest:
+
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
+   ```
+
+`ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
 
 ## Cutover
 

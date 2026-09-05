@@ -5,9 +5,8 @@ environments:
       roles:
         - owner
         - master
-    require:
-      - approver:
-          roles:
-            - owner
-            - master
-          title: Approve Tokeness China production image
+    deploy:
+      - name: 部署 Tokeness 国内生产
+        description: 解析 tag 对应镜像 digest 并滚动替换 ESS 实例
+        env:
+          tag_name: $CNB_BRANCH

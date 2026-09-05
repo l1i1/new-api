@@ -68,7 +68,54 @@ tokeness/main:
             docker push "$IMAGE_NAME:$IMAGE_TAG"
             docker push "$IMAGE_NAME:ml-latest"
 
+# "Tag is version" release line. Pushing a v<semver>-tokeness-mainland.<N> tag
+# builds an immutable ml-<tag> image whose VERSION equals the tag name. The
+# deploy-release step is a local operation (see deployment/tokeness-cn) because
+# CNB does not hold the Alibaba Cloud / SSH credentials.
 $:
+  tag_push:
+    - services:
+        - docker
+      env:
+        IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+      stages:
+        - name: validate release tag and bake version
+          script: |
+            TAG="$CNB_BRANCH"
+            if ! printf '%s' "$TAG" | grep -Eq '^v[0-9A-Za-z._-]+-tokeness-mainland\.[0-9]+$'; then
+              echo "ERROR: mainland release tag must be v<semver>-tokeness-mainland.<N> (got '$TAG')" >&2
+              exit 1
+            fi
+            printf '%s\n' "$TAG" > VERSION
+            echo "Release $TAG (commit ${CNB_COMMIT})"
+        - name: build immutable release image
+          script: |
+            IMAGE_TAG="ml-${CNB_BRANCH}"
+            set +e
+            CHECK_OUTPUT=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" 2>&1)
+            CHECK_STATUS=$?
+            set -e
+            if [ "$CHECK_STATUS" -eq 0 ]; then
+              echo "ERROR: immutable image tag already exists: $IMAGE_NAME:$IMAGE_TAG" >&2
+              exit 1
+            fi
+            if ! printf '%s' "$CHECK_OUTPUT" | grep -Eiq 'manifest unknown|not found'; then
+              echo "ERROR: could not confirm $IMAGE_NAME:$IMAGE_TAG is free (exit $CHECK_STATUS)" >&2
+              exit "$CHECK_STATUS"
+            fi
+            docker build \
+              --build-arg "VITE_SITE_FLAVOR=mainland" \
+              --build-arg "VITE_ICP_BEIAN=蜀ICP备2026014369号-5" \
+              --build-arg "VITE_POLICE_BEIAN=川公网安备51052202010119号" \
+              -t "$IMAGE_NAME:$IMAGE_TAG" \
+              -f Dockerfile.tokeness \
+              .
+        - name: push immutable release image
+          script: |
+            IMAGE_TAG="ml-${CNB_BRANCH}"
+            docker push "$IMAGE_NAME:$IMAGE_TAG"
+            echo "Published $IMAGE_NAME:$IMAGE_TAG (version ${CNB_BRANCH})"
+
   tag_deploy.cn-production:
     - services:
         - docker
@@ -77,23 +124,13 @@ $:
       stages:
         - name: validate approved mainland image
           script: |
-            # Production deployments only accept cn-prod-<full-commit> tags.
+            # Production deployments only accept v...-tokeness-mainland.<N> tags.
             TAG="$CNB_BRANCH"
-            TAG_PREFIX='cn-prod-'
-            if [[ "$TAG" != "$TAG_PREFIX"* ]]; then
-              echo "ERROR: cn-production accepts only cn-prod-<40-hex-commit> tags (got '${TAG:-}')" >&2
+            if ! printf '%s' "$TAG" | grep -Eq '^v[0-9A-Za-z._-]+-tokeness-mainland\.[0-9]+$'; then
+              echo "ERROR: cn-production accepts only v...-tokeness-mainland.<N> tags (got '${TAG:-}')" >&2
               exit 1
             fi
-            COMMIT="${TAG#$TAG_PREFIX}"
-            if ! printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "ERROR: cn-production tag commit must be 40 lowercase hex (got '${COMMIT:-}')" >&2
-              exit 1
-            fi
-            if [ "$COMMIT" != "$CNB_COMMIT" ]; then
-              echo "ERROR: cn-prod-$COMMIT does not match tag commit '${CNB_COMMIT:-}'" >&2
-              exit 1
-            fi
-            IMAGE_TAG="ml-$COMMIT"
+            IMAGE_TAG="ml-$TAG"
             IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" \
               | awk '/^Digest:/ { print $2; exit }')
             if ! printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
@@ -101,3 +138,5 @@ $:
               exit 1
             fi
             bash deployment/tokeness-cn/deploy.sh image-ref "$IMAGE_DIGEST"
+            echo "Certified release digest: $IMAGE_DIGEST"
+            echo "Deploy locally with: bash deployment/tokeness-cn/deploy.sh deploy-release $TAG"

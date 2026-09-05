@@ -285,12 +285,132 @@ image_ref() {
   printf '%s@%s\n' "$CNB_IMAGE_REPOSITORY" "$digest"
 }
 
+# --- Alibaba Cloud ESS helpers -------------------------------------------------
+# These read credentials only from the ALIBABA_CLOUD_ACCESS_KEY_ID / _KEY_SECRET
+# env vars (aliyun CLI standard), never from client code or checks, so the same
+# deploy.sh works locally and inside the CNB tag_deploy pipeline.
+
+readonly ALIYUN_REGION="${ALIYUN_REGION:-cn-shanghai}"
+readonly SCALING_GROUP_ID="${SCALING_GROUP_ID:-asg-uf641n1j5akwa1ozcz6t}"
+readonly SCALING_CONFIG_ID="${SCALING_CONFIG_ID:-asc-uf641n1j5akwa1p0smug}"
+readonly SCALE_OUT_RULE_ARI="${SCALE_OUT_RULE_ARI:-ari:acs:ess:cn-shanghai:1563974331677521:scalingrule/asr-uf65is8x4oiinwm3oidm}"
+
+aliyun_cmd() {
+  # Prefer the local aliyun CLI; CNB resolves it from PATH.
+  if command -v aliyun >/dev/null 2>&1; then
+    aliyun "$@"
+  elif command -v "$HOME/bin/aliyun" >/dev/null 2>&1; then
+    "$HOME/bin/aliyun" "$@"
+  else
+    die "aliyun CLI is not installed"
+  fi
+}
+
+desired_capacity_out() {
+  [[ -n "${SCALING_OUT_DESIRED_CAPACITY:-}" ]] || die "SCALING_OUT_DESIRED_CAPACITY not set"
+}
+
+oss_scaling_config_json() {
+  aliyun_cmd ess DescribeEciScalingConfigurations --ScalingConfigurationId "$SCALING_CONFIG_ID" --region "$ALIYUN_REGION"
+}
+
+# resolve_ml_digest <tag> -> prints sha256:<64 hex> for the ml-<tag> image,
+# using the registry's two-step token auth (no local cnb-token dependency).
+resolve_ml_digest() {
+  local tag="$1" token digest
+  [[ "$tag" =~ ^v[0-9A-Za-z._-]+-tokeness-mainland\.[0-9]+$ ]] || die "invalid mainland release tag: $tag"
+  require_command curl
+  require_command python3
+  token="$(curl -fsSL "https://docker.cnb.cool/service/token?service=cnb-registry&scope=repository:imvhb/new-api-cn:pull" \
+    -u "cnb:${CNB_REGISTRY_TOKEN:?}" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("token",""))')"
+  digest="$(curl -fsSL -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+    -D - -o /dev/null "https://docker.cnb.cool/v2/imvhb/new-api-cn/manifests/ml-$tag" \
+    | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}')"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "could not resolve an immutable digest for ml-$tag"
+  printf '%s\n' "$digest"
+}
+
+# apply_ml_digest <sha256:digest> - sets the scaling configuration image to the
+# new digest while preserving every existing env var. ModifyEciScalingConfiguration
+# is whole-replace semantics, so the full env list must be re-sent.
+apply_ml_digest() {
+  local digest="$1"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "new image digest must be sha256:<64 hex>"
+  require_command jq
+  local cfg
+  cfg="$(oss_scaling_config_json)" || die "failed to read scaling configuration"
+  local ct
+  ct="$(jq -r '.ScalingConfigurations[0].Containers[0]' <<<"$cfg")"
+  local container_name image_pull_policy
+  container_name="$(jq -r '.Name' <<<"$ct")"
+  image_pull_policy="$(jq -r '.ImagePullPolicy // "IfNotPresent"' <<<"$ct")"
+
+  local args=(ess ModifyEciScalingConfiguration
+    "--ScalingConfigurationId" "$SCALING_CONFIG_ID"
+    "--region" "$ALIYUN_REGION"
+    "--Container.1.Name" "$container_name"
+    "--Container.1.Image" "docker.cnb.cool/imvhb/new-api-cn@$digest"
+    "--Container.1.ImagePullPolicy" "$image_pull_policy"
+  )
+  local i=0 key value
+  while IFS= read -r key && IFS= read -r value; do
+    # Skip internal/immutable keys the API rejects on modify.
+    case "$key" in
+      SQL_DSN|BATCH_UPDATE_ENABLED|ERROR_LOG_ENABLED|REDIS_CONN_STRING|TZ|SESSION_SECRET|CRYPTO_SECRET|GLOBAL_API_RATE_LIMIT|GLOBAL_API_RATE_LIMIT_DURATION) ;;
+      *) continue ;;
+    esac
+    i=$((i + 1))
+    args+=("--Container.1.EnvironmentVar.$i.Key" "$key" "--Container.1.EnvironmentVar.$i.Value" "$value")
+  done < <(jq -r '.EnvironmentVars[] | [.Key, .Value] | @tsv' <<<"$ct")
+
+  aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+  log "scaling configuration image set to $digest (env preserved: $i)"
+}
+
+scale_group() {
+  local desired="$1"
+  aliyun_cmd ess ModifyScalingGroup --ScalingGroupId "$SCALING_GROUP_ID" --DesiredCapacity "$desired" --region "$ALIYUN_REGION" >/dev/null \
+    || die "ModifyScalingGroup to desired=$desired failed"
+  log "scaling group desired capacity set to $desired"
+}
+
+wait_healthy_instances() {
+  local want="$1" tries="${2:-40}" i=0 got
+  while [ "$i" -lt "$tries" ]; do
+    got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+      | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length')" \
+      || got="0"
+    if [ "$got" -ge "$want" ]; then
+      log "healthy instances: $got (want $want)"
+      return 0
+    fi
+    sleep 20
+    i=$((i + 1))
+  done
+  die "timed out waiting for $want healthy instance(s) (have $got)"
+}
+
+# ess_rollout <sha256:digest> - scale out to 2 healthy, then scale back to 1 and
+# converge nginx via the existing verify path. Keeps the current node if alive.
+ess_rollout() {
+  local digest="$1"
+  scale_group 2
+  wait_healthy_instances 2
+  scale_group 1
+  wait_healthy_instances 1
+  verify_node || die "post-rollout verify failed"
+  log "ess rollout to $digest complete"
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
   deploy.sh verify
   deploy.sh nginx-update <ECI_PRIVATE_IP>
   deploy.sh image-ref <sha256:DIGEST>
+  deploy.sh deploy-release <tag>
+  deploy.sh rollback <sha256:DIGEST>
 USAGE
 }
 
@@ -308,6 +428,22 @@ main() {
     image-ref)
       [[ $# -eq 2 ]] || die "image-ref requires one image digest"
       image_ref "$2"
+      ;;
+    deploy-release)
+      [[ $# -eq 2 ]] || die "deploy-release requires one version tag"
+      local release_tag="$2"
+      local release_digest
+      release_digest="$(resolve_ml_digest "$release_tag")"
+      apply_ml_digest "$release_digest"
+      ess_rollout "$release_digest"
+      log "release $release_tag -> $release_digest deployed"
+      ;;
+    rollback)
+      [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"
+      local rollback_digest="$2"
+      apply_ml_digest "$rollback_digest"
+      ess_rollout "$rollback_digest"
+      log "rollback to $rollback_digest complete"
       ;;
     -h|--help)
       usage
