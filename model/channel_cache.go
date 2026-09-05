@@ -225,7 +225,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
-		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		normalizedModel := ratio_setting.RoutingMatchModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
 		channels = preferOfficialFitChannels(channels, model, pinOfficial)
