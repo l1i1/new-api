@@ -2,7 +2,7 @@ package model
 
 type AuthzRole struct {
 	Id          uint   `json:"id" gorm:"primaryKey;autoIncrement"`
-	Key         string `json:"key" gorm:"size:64;uniqueIndex;not null"`
+	Key         string `json:"key" gorm:"size:64;unique;not null"`
 	Name        string `json:"name" gorm:"size:100;not null"`
 	Description string `json:"description" gorm:"type:text"`
 	BuiltIn     bool   `json:"built_in"`
