@@ -185,7 +185,7 @@ func TestSetupContextForSelectedChannelUsesCredentialProxyOverride(t *testing.T)
 	require.Empty(t, settings.Proxy)
 }
 
-func TestMarkV4OfficialPinFromDistributorMatchesRelayThresholds(t *testing.T) {
+func TestMarkV4OfficialPinFromDistributorNoSamplingAutoPin(t *testing.T) {
 	newCtx := func(body, path string) *gin.Context {
 		gin.SetMode(gin.TestMode)
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -194,9 +194,12 @@ func TestMarkV4OfficialPinFromDistributorMatchesRelayThresholds(t *testing.T) {
 		return c
 	}
 
-	pinned := newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5}`, "/v1/chat/completions")
-	markV4OfficialPinFromDistributor(pinned)
-	assert.True(t, common.GetContextKeyBool(pinned, constant.ContextKeyV4OfficialPin))
+	// Extreme sampling, thinking toggles, and logprobs no longer auto-pin:
+	// the official pin is controlled solely by the user's Official Fit
+	// route dimension, so non-Route traffic keeps aggregator affinity.
+	extreme := newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5,"thinking":{"type":"disabled"},"logprobs":true}`, "/v1/chat/completions")
+	markV4OfficialPinFromDistributor(extreme)
+	assert.False(t, common.GetContextKeyBool(extreme, constant.ContextKeyV4OfficialPin))
 
 	mild := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
 	markV4OfficialPinFromDistributor(mild)

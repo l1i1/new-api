@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,7 +48,7 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 		// Channel selection happens here, before relay validation; mark the
-		// official-channel pin for unfit-able deepseek-v4 sampling before
+		// official-channel pin for official-fit Route users before
 		// selecting a channel.
 		markV4OfficialPinFromDistributor(c)
 		// The official-fit unknown-model rejection aborts the request; stop
@@ -244,9 +243,10 @@ func Distribute() func(c *gin.Context) {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					// A pinned deepseek-v4 request must reach the official
-					// channel even when affinity cached an aggregator: extreme
-					// sampling diverges on aggregators, so the sticky channel
-					// is unusable for this request.
+					// channel even when affinity cached an aggregator:
+					// Official Fit route users asked for strict-fit traffic,
+					// so the sticky aggregator channel is unusable for this
+					// request.
 					if preferred != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
 						preferred.Type != constant.ChannelTypeDeepSeek {
 						preferred = nil
@@ -506,22 +506,19 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 	return selected, expectedOwned && selected.Plugin != nil
 }
 
-// v4OfficialPinSampling mirrors the relay validation thresholds that mark a
-// deepseek-v4 request for the official-channel pin.
-type v4OfficialPinSampling struct {
-	Model            string          `json:"model"`
-	Temperature      *float64        `json:"temperature,omitempty"`
-	TopP             *float64        `json:"top_p,omitempty"`
-	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
-	THINKING         json.RawMessage `json:"thinking,omitempty"`
-	LogProbs         *bool           `json:"logprobs,omitempty"`
+// v4OfficialPinRequest carries only the fields the official-pin marking
+// needs from the request body.
+type v4OfficialPinRequest struct {
+	Model string `json:"model"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
 // distributor time — channel selection runs in this middleware, before the
-// relay parses the request. Failure to read the body leaves the pin unset,
-// matching the unpinned default.
+// relay parses the request. The pin is controlled solely by the user's
+// official-fit Route dimension: requests from a Route-enabled user pin the
+// whole family to the official channel, everyone else keeps normal
+// aggregator routing regardless of sampling parameters. Failure to read the
+// body leaves the pin unset, matching the unpinned default.
 func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if c == nil || c.Request == nil || c.Request.Body == nil {
 		return
@@ -532,25 +529,26 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if !strings.HasSuffix(c.Request.URL.Path, "/chat/completions") {
 		return
 	}
-	var sampling v4OfficialPinSampling
-	if err := common.UnmarshalBodyReusable(c, &sampling); err != nil {
+	var pinRequest v4OfficialPinRequest
+	if err := common.UnmarshalBodyReusable(c, &pinRequest); err != nil {
 		return
 	}
-	modelName := strings.ToLower(strings.TrimSpace(sampling.Model))
+	modelName := strings.ToLower(strings.TrimSpace(pinRequest.Model))
 	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4-")
 	isKimiK3 := strings.HasPrefix(modelName, "kimi-k3")
 	isGlm53 := strings.HasPrefix(modelName, "glm-5.3")
 	if !isDeepSeekV4 && !isKimiK3 && !isGlm53 {
 		return
 	}
-	// A user with the official-fit Route dimension pins the whole family,
-	// regardless of sampling params, so strict-fit traffic stays on the
-	// official channel and never lands on a tolerant aggregator. The pin
-	// narrows per family: DeepSeek V4 -> type 43, kimi-k3 -> type 25.
 	var profile dto.OfficialFitProfile
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
-		profile, _ = setting.OfficialFitProfileFor(sampling.Model)
+		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
 	}
+	// The official-fit Route dimension is the only pin source: it pins the
+	// whole family regardless of sampling params, so strict-fit traffic
+	// stays on the official channel and never lands on a tolerant
+	// aggregator. The pin narrows per family: DeepSeek V4 -> type 43,
+	// kimi-k3 -> type 25.
 	if profile.Route {
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 	}
@@ -561,42 +559,12 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// from the gateway, so kimi-k3 keeps the platform wording. The glm-5.3
 	// family is enumerable (glm-5.3 / glm-5.3-flash) and uses the Zhipu
 	// 1214 wire shape.
-	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(sampling.Model) {
-		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(sampling.Model))
+	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(pinRequest.Model) {
+		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(pinRequest.Model))
 		return
 	}
-	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(sampling.Model) {
+	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {
 		abortGlmMessage(c, http.StatusBadRequest, "1214", relayhelper.Glm53ModelNotFoundText)
-		return
-	}
-	// The extreme-sampling pin is a DeepSeek V4 family behavior (K08 class).
-	// Explicit thinking toggles and logprobs requests pin too: aggregators
-	// ignore thinking.type (leaking the chain of thought the client disabled)
-	// and drop the logprobs object entirely.
-	if !isDeepSeekV4 {
-		return
-	}
-	pinned := false
-	if sampling.Temperature != nil && *sampling.Temperature > 1.5 {
-		pinned = true
-	}
-	if sampling.TopP != nil && *sampling.TopP < 0.3 {
-		pinned = true
-	}
-	if sampling.FrequencyPenalty != nil && *sampling.FrequencyPenalty > 1.0 {
-		pinned = true
-	}
-	if sampling.PresencePenalty != nil && *sampling.PresencePenalty > 1.0 {
-		pinned = true
-	}
-	if len(sampling.THINKING) > 0 {
-		pinned = true
-	}
-	if sampling.LogProbs != nil && *sampling.LogProbs {
-		pinned = true
-	}
-	if pinned {
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 	}
 }
 

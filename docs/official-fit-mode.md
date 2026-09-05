@@ -37,6 +37,11 @@
   - `route`：整族请求固定路由到官方渠道——DS 按渠道类型 43（官方 api.deepseek.com）、
     K3 按渠道类型 25（Moonshot，渠道 CN_Kimi id 130），复用 `ContextKeyV4OfficialPin`
     机制（distributor 选路前标记，选路时按模型族窄化到对应类型）。
+    **route 是官方 pin 的唯一触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
+    （temperature>1.5 / top_p<0.3 / penalty>1.0 / thinking 字段 / logprobs=true 自动
+    钉到官方渠道）已删除——它会在官方渠道不可用时反复清掉渠道粘性缓存，导致
+    deepseek-v4 流量永远无法粘在聚合渠道上（prompt cache 全碎）。未开启 route 的用户
+    无论带什么采样参数，都保持正常聚合器路由与粘性。
     注意：CN_Kimi 当前为 Moonshot 官方账号最低档限速（org RPM 3）且 priority=0——
     开启 K3 route 前必须先与 Moonshot 谈大额限速，否则买家流量会持续 429。
 

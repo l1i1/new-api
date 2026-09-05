@@ -74,10 +74,11 @@ const (
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
-	// ContextKeyV4OfficialPin marks a deepseek-v4 request whose sampling
-	// parameters are known to diverge on aggregator upstreams, so channel
-	// selection pins it to the official DeepSeek channel. Ordinary fit-able
-	// requests keep normal aggregator routing.
+	// ContextKeyV4OfficialPin marks a deepseek-v4 or kimi-k3 request whose
+	// user Official Fit profile enables the route dimension, so channel
+	// selection pins the whole family to the official channel. Users without
+	// the profile keep normal aggregator routing — sampling parameters alone
+	// (extreme values, thinking toggles, logprobs) never trigger the pin.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
 
 	// ContextKeyRelayInfoPtr stores the active *relaycommon.RelayInfo so

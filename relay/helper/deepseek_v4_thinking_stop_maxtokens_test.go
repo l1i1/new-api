@@ -166,36 +166,28 @@ func TestDeepSeekV4ReasoningEffortSilentMapping(t *testing.T) {
 	})
 }
 
-func TestDeepSeekV4OfficialPinThinkingAndLogprobs(t *testing.T) {
+func TestDeepSeekV4ThinkingAndLogprobsDoNotAutoPin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	tests := []struct {
-		name    string
-		request *dto.GeneralOpenAIRequest
-		pinned  bool
-	}{
-		{"explicit thinking object pins",
-			&dto.GeneralOpenAIRequest{Model: "deepseek-v4-pro", THINKING: []byte(`{"type":"disabled"}`)}, true},
-		{"thinking enabled pins too",
-			&dto.GeneralOpenAIRequest{Model: "deepseek-v4-pro", THINKING: []byte(`{"type":"enabled"}`)}, true},
-		{"logprobs true pins",
-			&dto.GeneralOpenAIRequest{Model: "deepseek-v4-pro", LogProbs: boolPtr(true)}, true},
-		{"logprobs false does not pin",
-			&dto.GeneralOpenAIRequest{Model: "deepseek-v4-pro", LogProbs: boolPtr(false)}, false},
-		{"plain request does not pin",
-			&dto.GeneralOpenAIRequest{Model: "deepseek-v4-pro"}, false},
-		{"thinking on a non-V4 model does not pin",
-			&dto.GeneralOpenAIRequest{Model: "gpt-4o", THINKING: []byte(`{"type":"disabled"}`)}, false},
+	// The official pin is controlled solely by the user's Official Fit route
+	// dimension. Extreme sampling, thinking toggles, and logprobs must never
+	// auto-pin a request that has no Route profile, so channel affinity can
+	// stick on aggregator channels.
+	bodies := []string{
+		`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`,
+		`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`,
+		`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":5}`,
+		`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"temperature":1.7,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5}`,
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	for _, body := range bodies {
+		t.Run(body, func(t *testing.T) {
+			c := newDeepSeekV4FitContext(body)
 			common.SetContextKey(c, coreconstant.ContextKeyV4OfficialPin, false)
 
-			markDeepSeekV4OfficialPin(c, test.request)
+			_, err := GetAndValidateTextRequest(c, constant.RelayModeChatCompletions)
 
-			assert.Equal(t, test.pinned, common.GetContextKeyBool(c, coreconstant.ContextKeyV4OfficialPin))
+			require.NoError(t, err)
+			assert.False(t, common.GetContextKeyBool(c, coreconstant.ContextKeyV4OfficialPin))
 		})
 	}
 }

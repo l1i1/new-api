@@ -58,15 +58,15 @@ func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
 	})
 }
 
-func TestMarkV4OfficialPinFromDistributorThinkingAndLogprobs(t *testing.T) {
+func TestMarkV4OfficialPinFromDistributorRouteOnlySource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	newContext := func(body string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
-		// Validate-only profile: the Route dimension would pin the whole
-		// family and mask the per-request criteria under test.
+		// Validate-only profile: the Route dimension is the only pin source,
+		// so thinking/logprobs/extreme sampling must not pin here.
 		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
 			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
 				"deepseek-v4-": {Validate: true},
@@ -76,26 +76,20 @@ func TestMarkV4OfficialPinFromDistributorThinkingAndLogprobs(t *testing.T) {
 		return c
 	}
 
-	t.Run("explicit thinking object pins", func(t *testing.T) {
+	t.Run("explicit thinking object does not pin", func(t *testing.T) {
 		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
-	})
-
-	t.Run("logprobs true pins", func(t *testing.T) {
-		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":5}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
-	})
-
-	t.Run("logprobs false does not pin", func(t *testing.T) {
-		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":false}`)
 		markV4OfficialPinFromDistributor(c)
 		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	})
 
-	t.Run("plain request does not pin", func(t *testing.T) {
-		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}]}`)
+	t.Run("logprobs true does not pin", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":5}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("extreme sampling does not pin", func(t *testing.T) {
+		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"temperature":2,"top_p":0.1}`)
 		markV4OfficialPinFromDistributor(c)
 		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	})

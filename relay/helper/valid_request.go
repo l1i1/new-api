@@ -377,7 +377,6 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			}
 		}
 		mapDeepSeekV4ReasoningEffort(textRequest)
-		markDeepSeekV4OfficialPin(c, textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
 		// It will be filled by provider-specific adaptors if needed (e.g., SiliconFlow)。Or it is allowed by model vendor(s) (e.g., DeepSeek)
 		if len(textRequest.Messages) == 0 && textRequest.Prefix == nil && textRequest.Suffix == nil {
@@ -825,7 +824,6 @@ func deepSeekV4ThinkingScalarError(raw json.RawMessage) error {
 	}
 }
 
-
 // (docs thinking_mode table: medium and xhigh both map to high) so every
 // upstream — including ollama-backed aggregators with a narrower effort enum —
 // observes official-equivalent behavior. Only the exact lowercase variants are
@@ -837,44 +835,6 @@ func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
 	switch strings.TrimSpace(request.ReasoningEffort) {
 	case "medium", "xhigh":
 		request.ReasoningEffort = "high"
-	}
-}
-
-// markDeepSeekV4OfficialPin flags deepseek-v4 requests whose parameters are
-// known to drive aggregator upstreams into divergent behavior, so they must be
-// served by the official channel: the K08 extreme-sampling class, plus explicit
-// thinking toggles (aggregators may ignore thinking.type and leak the chain of
-// thought the client asked to disable) and logprobs requests (aggregators drop
-// the logprobs object entirely; the official response carries content and
-// reasoning_content paths).
-func markDeepSeekV4OfficialPin(c *gin.Context, request *dto.GeneralOpenAIRequest) {
-	if c == nil || request == nil {
-		return
-	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
-		return
-	}
-	pinned := false
-	if request.Temperature != nil && *request.Temperature > 1.5 {
-		pinned = true
-	}
-	if request.TopP != nil && *request.TopP < 0.3 {
-		pinned = true
-	}
-	if request.FrequencyPenalty != nil && *request.FrequencyPenalty > 1.0 {
-		pinned = true
-	}
-	if request.PresencePenalty != nil && *request.PresencePenalty > 1.0 {
-		pinned = true
-	}
-	if len(request.THINKING) > 0 {
-		pinned = true
-	}
-	if request.LogProbs != nil && *request.LogProbs {
-		pinned = true
-	}
-	if pinned {
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 	}
 }
 

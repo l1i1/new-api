@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func floatPtr(v float64) *float64 { return &v }
+
 // The rejection matrix is calibrated against the live open.bigmodel.cn
 // api/paas/v4 endpoint (2026-08-28). Only these are rejected: disabled
 // thinking, reasoning_effort outside low/high/max, temperature/top_p outside
