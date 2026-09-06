@@ -188,7 +188,7 @@ The application does not retain indefinite compatibility with the legacy tag.
 ## Rollout And Rollback
 
 Publish a reviewed `tokeness/main` image and deploy its immutable digest in the
-existing order: JP-N2, EV-JP, JP-M, then EV-JP2. The forced command must reject
+existing order: EV-JP, JP-M, then EV-JP2 (with US-N0-CC last in the fleet). The forced command must reject
 mutable current and target images, verify the final runtime image and health,
 and restore the previous digest after failures, cancellation, or ambiguous SSH
 results.

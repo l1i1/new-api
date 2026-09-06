@@ -39,7 +39,7 @@ The `Tokeness Production Deploy` workflow is the only automated production rollo
 1. Run `verify` after provisioning or whenever node drift is suspected.
 2. For a release, copy the immutable digest from `Tokeness Publish GHCR`.
 3. Run `deploy`, enter that digest, and set confirmation to `deploy-production`.
-4. The workflow verifies all nodes first, then deploys `JP-N2`, `EV-JP`, `JP-M`, and finally the `EV-JP2` CDN origin.
+4. The workflow verifies all nodes first, then deploys `EV-JP`, `JP-M`, the `EV-JP2` CDN origin, and finally `US-N0-CC`.
 5. Every node must report the selected digest, runtime digest, running state, health, start time, and application version.
 6. After the origin changes, the workflow probes the dashboard root and `/api/status` through the main web origin, then probes `/v1/models` through each public API CDN domain. Every response must expose the expected `X-New-Api-Version` header where applicable.
 

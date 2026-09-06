@@ -32,8 +32,8 @@ command -v timeout >/dev/null 2>&1 || fail "timeout is required"
 jq -e '
   .schema_version == 1 and
   (.registry_image | type == "string") and
-  (.nodes | type == "array" and length == 5) and
-  ([.nodes[].name] | unique | length == 5) and
+  (.nodes | type == "array" and length == 4) and
+  ([.nodes[].name] | unique | length == 4) and
   (.public_endpoints | type == "array" and length > 0) and
   (.web_endpoints | type == "array" and length > 0)
 ' "$NODES_FILE" >/dev/null || fail "invalid nodes.json"
@@ -271,9 +271,9 @@ if [[ "$OPERATION" == "verify" ]]; then
     [[ "${previous_images[$node]}" == "$baseline_image" ]] || fail "fleet image drift detected at $node"
     [[ "${current_versions[$node]}" == "$baseline_version" ]] || fail "fleet version drift detected at $node"
   done
-  origin_version="${current_versions[EV-JP2]}"
+  origin_version="${current_versions[${node_names[0]}]}"
   verify_public_routes "$origin_version"
-  log "verification complete: five nodes and CDN routes are consistent"
+  log "verification complete: four nodes and CDN routes are consistent"
   exit 0
 fi
 

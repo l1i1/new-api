@@ -1,6 +1,6 @@
 # Tokeness Overseas (International) Production Deployment
 
-The overseas site (`tokeness.ai` / `n.tokeness.dev`) runs New API on five nodes
+The overseas site (`tokeness.ai` / `n.tokeness.dev`) runs New API on four nodes
 behind edge CDNs, driven by GitHub Actions. The mainland China site
 (`tokeness.cn`) uses a separate CNB-based pipeline under `deployment/tokeness-cn/`.
 

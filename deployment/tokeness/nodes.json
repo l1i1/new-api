@@ -5,13 +5,6 @@
   "production_image_policy": "digest-only",
   "nodes": [
     {
-      "name": "JP-N2",
-      "host": "156.246.94.70",
-      "port": 12956,
-      "user": "root",
-      "role": "canary"
-    },
-    {
       "name": "EV-JP",
       "host": "103.214.68.250",
       "port": 22,
