@@ -14,9 +14,11 @@ readonly SWAS_HOST="${SWAS_HOST:-8.133.172.195}"
 readonly SWAS_SSH_KEY_PATH="${SWAS_SSH_KEY_PATH:-$WORKSPACE_ROOT/private/access/keys/swas-ml}"
 readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
 # SWAS-2 hosts the panel-tier New API container (also the /v1 last-resort
-# fallback). The deploy pipeline keeps it on the deployed digest: after every
-# ESS rollout/rollback, deploy.sh reruns the bootstrap there, which pulls
-# env + image + registry creds live from the (already updated) scaling config.
+# fallback). The deploy pipeline keeps it on the deployed digest: before every
+# ESS rollout/rollback, deploy.sh reruns the bootstrap there (master-first),
+# which pulls env + image + registry creds live from the (already updated)
+# scaling config. The ESS rollout only starts once the master is verified
+# healthy on the new image.
 readonly SWAS2_HOST="${SWAS2_HOST:-101.133.234.135}"
 readonly SWAS2_SSH_KEY_PATH="${SWAS2_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
@@ -644,13 +646,15 @@ print(json.dumps(snapshot, ensure_ascii=False))
 '
 }
 
-# sync_host_container <expected_version> - after an ESS rollout/rollback
-# converged, rebuild the SWAS-2 host container from the updated scaling
-# configuration (bootstrap pulls env + digest + registry creds live), so the
-# panel-tier / v1-fallback instance always runs the exact deployed image.
-# expected_version pins the /api/status identity when the release tag is known
-# (deploy-release); rollback passes an empty string and relies on the
-# bootstrap's own readiness gate.
+# sync_host_container <expected_version> - rebuild the SWAS-2 host container
+# from the current scaling configuration (bootstrap pulls env + digest +
+# registry creds live). Runs BEFORE the ESS rollout/rollback (master-first):
+# the master takes the new image, runs its DB migrations, and must pass the
+# bootstrap readiness gate + version check before the ECI tier moves. Also
+# used as the recovery path when a rollout fails (the config has already been
+# re-pinned to the previous digest by then). expected_version pins the
+# /api/status identity when the release tag is known (deploy-release); other
+# callers pass an empty string and rely on the bootstrap's own readiness gate.
 sync_host_container() {
   local expected_version="$1" host_version
   [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
@@ -827,11 +831,27 @@ main() {
         fi
         die "release update failed; the previous scaling configuration was restored"
       fi
-      if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
-        die "release rollout failed; rollback was attempted and must be verified before retrying"
-      fi
+      # Master-first: the SWAS-2 host container (sole master, runs migrations)
+      # takes the new image before the ECI tier rolls. Its bootstrap readiness
+      # gate + version check double as the canary; a failure here aborts while
+      # the ECI tier is still serving the previous image untouched.
       if ! sync_host_container "$release_tag"; then
-        die "SWAS-2 host container did not converge to $release_tag; rerun deploy.sh sync-host after fixing"
+        if ! restore_scaling_config "$previous_snapshot"; then
+          error "host sync failed and the scaling configuration could not be restored"
+        fi
+        if ! sync_host_container ""; then
+          error "host container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
+        fi
+        die "release aborted: SWAS-2 host container failed to converge to $release_tag"
+      fi
+      if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
+        # rollback_failed_rollout re-pinned the scaling configuration + ECI to
+        # the previous digest; bring the master back in line so node versions
+        # never drift after an aborted release.
+        if ! sync_host_container ""; then
+          error "host container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+        fi
+        die "release rollout failed; rollback was attempted and must be verified before retrying"
       fi
       log "release $release_tag -> $release_digest deployed"
       ;;
@@ -851,11 +871,23 @@ main() {
         fi
         die "rollback update failed; the previous scaling configuration was restored"
       fi
-      if ! ess_rollout "$rollback_digest" "$rollback_previous" "$rollback_snapshot"; then
-        die "rollback rollout failed; rollback was attempted and must be verified before retrying"
-      fi
+      # Master-first (same rationale as deploy-release).
       if ! sync_host_container ""; then
-        die "SWAS-2 host container did not converge after rollback; rerun deploy.sh sync-host after fixing"
+        if ! restore_scaling_config "$rollback_snapshot"; then
+          error "host sync failed and the scaling configuration could not be restored"
+        fi
+        if ! sync_host_container ""; then
+          error "host container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
+        fi
+        die "rollback aborted: SWAS-2 host container failed to converge to $rollback_digest"
+      fi
+      if ! ess_rollout "$rollback_digest" "$rollback_previous" "$rollback_snapshot"; then
+        # rollback_failed_rollout re-pinned the scaling configuration + ECI to
+        # the pre-rollback digest; keep the master on it too.
+        if ! sync_host_container ""; then
+          error "host container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+        fi
+        die "rollback rollout failed; rollback was attempted and must be verified before retrying"
       fi
       log "rollback to $rollback_digest complete"
       ;;

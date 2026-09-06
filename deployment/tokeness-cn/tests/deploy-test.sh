@@ -40,14 +40,26 @@ trap 'rm -rf -- "$test_root"' EXIT
 
 # Stand-in for private/scripts/bootstrap-newapi-host.sh: the real script pulls
 # env/image/creds from the scaling config and runs docker (unavailable here).
-# The fake only records that the host-sync reached the SWAS-2 host.
+# The fake counts syncs (host-sync-count, logged in host-bootstrap.log) and
+# drops a marker line into aliyun-calls.log so its ordering vs ESS API calls
+# is assertable. TOKENESS_TEST_HOST_FAIL_TIMES makes the first N syncs fail
+# (master-first abort/recovery paths).
 host_bootstrap="$test_root/fake-bootstrap.sh"
 cat > "$host_bootstrap" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 state_dir="${TOKENESS_TEST_STATE_DIR:?}"
 mkdir -p "$state_dir"
-printf 'host-bootstrap stdin=%s bytes\n' "$(wc -c < /dev/stdin)" >> "$state_dir/host-bootstrap.log"
+count_file="$state_dir/host-sync-count"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+printf 'host-bootstrap\n' >> "$state_dir/aliyun-calls.log"
+printf 'host-bootstrap invocation %s\n' "$count" >> "$state_dir/host-bootstrap.log"
+if [[ "$count" -le "${TOKENESS_TEST_HOST_FAIL_TIMES:-0}" ]]; then
+  echo "simulated host bootstrap failure" >&2
+  exit 1
+fi
 FAKE
 chmod +x "$host_bootstrap"
 
@@ -381,11 +393,16 @@ grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never inspected the container log"
 # The deploy pipeline must converge the SWAS-2 host container to the same
 # release: bootstrap runs on the host and the reported version must match.
-assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap stdin="
+assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1"
 [[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 1 ]] \
   || fail "host bootstrap ran more than once"
+# Master-first: the host sync must complete before the ESS group scales out.
+first_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
+first_scaleout="$(grep -n 'ess ModifyScalingGroup .*--DesiredCapacity 2' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
+[[ -n "$first_bootstrap" && -n "$first_scaleout" && "$first_bootstrap" -lt "$first_scaleout" ]] \
+  || fail "master (SWAS-2 host) sync did not run before the ESS scale-out"
 
-# Host version mismatch must fail the release even though ECI converged.
+# Host version mismatch must fail the release BEFORE the ECI tier moves.
 host_mismatch_case="$test_root/host-mismatch"
 mkdir -p "$host_mismatch_case"
 make_conf "$host_mismatch_case/nginx.conf"
@@ -399,6 +416,36 @@ if run_deploy "$host_mismatch_case" \
 fi
 grep -q "SWAS-2 host version" "$host_mismatch_case/state/output.log" 2>/dev/null \
   || fail "mismatch case did not report the host version problem"
+if grep -q "ess ModifyScalingGroup" "$host_mismatch_case/state/aliyun-calls.log"; then
+  fail "ESS rollout started even though the master never matched the release"
+fi
+[[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 2 ]] \
+  || fail "host was not restored after the version mismatch"
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_mismatch_case/state/state.json" > /dev/null \
+  || fail "scaling configuration was not restored after the host version mismatch"
+
+# Master-first abort: a failing host bootstrap aborts the release before the
+# ESS group is touched, restores the previous scaling configuration, and
+# re-bootstraps the host from the restored (previous) digest.
+host_fail_case="$test_root/host-fail"
+mkdir -p "$host_fail_case"
+make_conf "$host_fail_case/nginx.conf"
+mkdir -p "$host_fail_case/state"
+init_ess_state "$host_fail_case/state"
+if run_deploy "$host_fail_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_FAIL_TIMES=1 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "release with a failing master sync unexpectedly succeeded"
+fi
+if grep -q "ess ModifyScalingGroup" "$host_fail_case/state/aliyun-calls.log"; then
+  fail "ESS rollout started even though the master bootstrap failed"
+fi
+assert_contains "$host_fail_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST"
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_fail_case/state/state.json" > /dev/null \
+  || fail "scaling configuration was not restored after the failed master sync"
+[[ "$(wc -l < "$host_fail_case/state/host-bootstrap.log")" -eq 2 ]] \
+  || fail "host was not re-bootstrapped from the restored configuration"
 
 # App never becomes ready: the rollout must fail BEFORE scaling down (the old
 # instance keeps serving), re-pin the previous digest, and delete the failed
@@ -410,6 +457,7 @@ mkdir -p "$app_failure_case/state"
 init_ess_state "$app_failure_case/state"
 if run_deploy "$app_failure_case" \
   APP_READY_TIMEOUT_SECONDS=6 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   TOKENESS_TEST_DIRECT_FAIL=1 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "rollout with a never-ready app unexpectedly succeeded"
@@ -420,6 +468,10 @@ grep -q "eci DeleteContainerGroup" "$app_failure_case/state/aliyun-calls.log" \
 jq -e '.desired == 1 and ([.instances[].InstanceId] | index("eci-old") != null)' \
   "$app_failure_case/state/state.json" > /dev/null \
   || fail "rollback did not converge back to a single old instance"
+# Master-first: the host took the release before the rollout; after the failed
+# rollout the master must be re-synced to the restored previous digest.
+[[ "$(wc -l < "$app_failure_case/state/host-bootstrap.log")" -eq 2 ]] \
+  || fail "master was not re-synced after the failed rollout"
 
 # A FATAL line in the container log must abort the rollout fast (fail-fast
 # instead of waiting out the whole readiness timeout).
@@ -429,11 +481,14 @@ make_conf "$fatal_case/nginx.conf"
 init_ess_state "$fatal_case/state" '[FATAL] 2026/09/06 | [cannot parse postgresql://...: invalid control character in URL]'
 if run_deploy "$fatal_case" \
   APP_READY_TIMEOUT_SECONDS=30 APP_READY_POLL_SECONDS=5 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "rollout with a FATAL container log unexpectedly succeeded"
 fi
 grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
   || fail "FATAL log did not trigger container cleanup"
+[[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 2 ]] \
+  || fail "master was not re-synced after the FATAL-aborted rollout"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.

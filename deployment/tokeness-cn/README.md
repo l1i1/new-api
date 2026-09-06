@@ -18,14 +18,15 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1
    ```
 
-   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the TCP `3000` liveness plus `/health/ready` readiness probes), then runs the gated rollout:
+   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the TCP `3000` liveness plus `/health/ready` readiness probes), then runs **master-first**:
 
+   - rebuild the SWAS-2 host container from the updated scaling configuration (bootstrap pulls env + digest + registry creds live) and gate on its dependency-aware `/health/ready` plus the release version — the master runs the new image's DB migrations and doubles as the canary; a failure here aborts before the ECI tier is touched and restores the previous configuration + host image;
    - scale out to two ESS-healthy instances;
    - **application gate before any scale-down**: wait until the new instance answers `/health/ready` (`APP_READY_TIMEOUT_SECONDS`, default 300 s) and its container log shows no `FATAL`/`panic` line — ESS "Healthy" alone is not trusted (it stayed green through the 2026-09-06 crash-loop);
    - scale back to one: while both instances are healthy `ml-sync` lists both upstream members, and nginx passive checks (`max_fails=2 fail_timeout=5s`) bridge the ~30 s window in which the old member disappears;
    - final verify (EdgeOne public + private chain).
 
-   Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, and the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window).
+   Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the SWAS-2 host container is re-synced from the restored configuration so node versions never drift.
 
    Run the script from **WSL or Linux**; Windows Git Bash is refused (`TOKENESS_ALLOW_WINDOWS=1` overrides at your own risk — a Windows-side CLI/jq can emit CRLF, and a stray CR in a re-sent env value crash-loops the container).
 
@@ -43,7 +44,7 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
    ```
 
-   `rollback` follows the same gated rollout path as `deploy-release`.
+   `rollback` follows the same gated master-first path as `deploy-release` (host container rebuilt and gated before the ESS rollout).
 
 `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
 
