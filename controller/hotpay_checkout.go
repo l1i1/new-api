@@ -138,7 +138,10 @@ func hotPayProviderAccountIDForMethod(method string) (string, error) {
 	if hotPayProviderForMethod(method) != model.PaymentProviderGoPayAlipay {
 		return hotPayProviderAccountID(), nil
 	}
-	accountID := strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID"))
+	accountID := strings.TrimSpace(setting.HotPayAlipayAccountID)
+	if accountID == "" {
+		accountID = strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID"))
+	}
 	if accountID == "" {
 		return "", errors.New("hotpay alipay provider account is not configured")
 	}

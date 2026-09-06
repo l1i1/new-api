@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting"
 )
 
 const (
@@ -128,16 +129,34 @@ type HotPayGatewayCreateOrderResponse struct {
 }
 
 func NewHotPayGatewayClientFromEnv() (*HotPayGatewayClient, error) {
+	baseURL := strings.TrimSpace(setting.HotPayGatewayURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv(hotPayGatewayURLEnv))
+	}
+	apiKey := strings.TrimSpace(setting.HotPayGatewayAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv(hotPayGatewayAPIKeyEnv))
+	}
+	allowedHosts := splitHostList(setting.HotPayGatewayAllowedHost)
+	if len(allowedHosts) == 0 {
+		allowedHosts = splitHostList(os.Getenv(hotPayGatewayAllowedHostsEnv))
+	}
 	return NewHotPayGatewayClient(HotPayGatewayConfig{
-		BaseURL:      strings.TrimSpace(os.Getenv(hotPayGatewayURLEnv)),
-		APIKey:       strings.TrimSpace(os.Getenv(hotPayGatewayAPIKeyEnv)),
-		AllowedHosts: splitHostList(os.Getenv(hotPayGatewayAllowedHostsEnv)),
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		AllowedHosts: allowedHosts,
 		Timeout:      hotPayGatewayTimeoutFromEnv(),
 		AllowHTTP:    strings.EqualFold(strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)), "true") || strings.TrimSpace(os.Getenv(hotPayGatewayAllowHTTPEnv)) == "1",
 	})
 }
 
+// IsHotPayGatewayEnabled reports whether the canonical HotPay gateway is
+// configured, either through the admin billing settings options or the
+// deployment environment. The option value wins once set.
 func IsHotPayGatewayEnabled() bool {
+	if strings.TrimSpace(setting.HotPayGatewayURL) != "" {
+		return true
+	}
 	return strings.TrimSpace(os.Getenv(hotPayGatewayURLEnv)) != ""
 }
 

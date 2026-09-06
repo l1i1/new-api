@@ -179,6 +179,14 @@ const paymentSchema = z.object({
   WaffoPancakeMerchantID: z.string(),
   WaffoPancakePrivateKey: z.string(),
   WaffoPancakeReturnURL: z.string(),
+  HotPayGatewayURL: z.string().refine((value) => {
+    const trimmed = value.trim()
+    if (!trimmed) return true
+    return /^https?:\/\//.test(trimmed)
+  }, 'Provide a valid gateway URL starting with http:// or https://'),
+  HotPayGatewayAPIKey: z.string(),
+  HotPayGatewayAllowedHosts: z.string(),
+  HotPayAlipayAccountID: z.string(),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -462,6 +470,10 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         values.WaffoPancakeReturnURL.trim()
       ),
+      HotPayGatewayURL: removeTrailingSlash(values.HotPayGatewayURL.trim()),
+      HotPayGatewayAPIKey: values.HotPayGatewayAPIKey.trim(),
+      HotPayGatewayAllowedHosts: values.HotPayGatewayAllowedHosts.trim(),
+      HotPayAlipayAccountID: values.HotPayAlipayAccountID.trim(),
     }
 
     const initial = {
@@ -511,6 +523,13 @@ export function PaymentSettingsSection({
       WaffoPancakeReturnURL: removeTrailingSlash(
         initialRef.current.WaffoPancakeReturnURL.trim()
       ),
+      HotPayGatewayURL: removeTrailingSlash(
+        initialRef.current.HotPayGatewayURL.trim()
+      ),
+      HotPayGatewayAPIKey: initialRef.current.HotPayGatewayAPIKey.trim(),
+      HotPayGatewayAllowedHosts:
+        initialRef.current.HotPayGatewayAllowedHosts.trim(),
+      HotPayAlipayAccountID: initialRef.current.HotPayAlipayAccountID.trim(),
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -722,6 +741,36 @@ export function PaymentSettingsSection({
       updates.push({ key: 'WaffoPayMethods', value: sanitized.WaffoPayMethods })
     }
 
+    if (sanitized.HotPayGatewayURL !== initial.HotPayGatewayURL) {
+      updates.push({
+        key: 'HotPayGatewayURL',
+        value: sanitized.HotPayGatewayURL,
+      })
+    }
+
+    if (sanitized.HotPayGatewayAPIKey) {
+      updates.push({
+        key: 'HotPayGatewayAPIKey',
+        value: sanitized.HotPayGatewayAPIKey,
+      })
+    }
+
+    if (
+      sanitized.HotPayGatewayAllowedHosts !== initial.HotPayGatewayAllowedHosts
+    ) {
+      updates.push({
+        key: 'HotPayGatewayAllowedHosts',
+        value: sanitized.HotPayGatewayAllowedHosts,
+      })
+    }
+
+    if (sanitized.HotPayAlipayAccountID !== initial.HotPayAlipayAccountID) {
+      updates.push({
+        key: 'HotPayAlipayAccountID',
+        value: sanitized.HotPayAlipayAccountID,
+      })
+    }
+
     const hasWaffoPancakeChanges =
       sanitized.WaffoPancakeMerchantID !== initial.WaffoPancakeMerchantID ||
       sanitized.WaffoPancakePrivateKey.length > 0 ||
@@ -898,9 +947,10 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[52rem] grid-cols-7'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
+                <TabsTrigger value='hotpay'>HotPay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
                 <TabsTrigger value='waffo-pancake'>Waffo Pancake</TabsTrigger>
@@ -1317,6 +1367,135 @@ export function PaymentSettingsSection({
                         </FormControl>
                         <FormDescription>
                           {t('Leave blank unless rotating the secret')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value='hotpay' className={paymentTabContentClassName}>
+              <div className='space-y-4'>
+                <div>
+                  <h3 className='text-lg font-medium'>{t('HotPay Gateway')}</h3>
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.'
+                    )}
+                  </p>
+                </div>
+
+                <Alert>
+                  <ShieldAlert className='h-4 w-4' />
+                  <AlertTitle>{t('Settlement secret is env-only')}</AlertTitle>
+                  <AlertDescription>
+                    {t(
+                      'The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.'
+                    )}
+                  </AlertDescription>
+                </Alert>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='HotPayGatewayURL'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Gateway URL')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder='https://hotpay.example.com'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='HotPayGatewayAllowedHosts'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Allowed hosts')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder='hotpay.example.com'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='HotPayGatewayAPIKey'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('API key')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='password'
+                            placeholder={t('Enter new key to update')}
+                            autoComplete='new-password'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'X-API-Key sent to the gateway (leave blank unless updating)'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='HotPayAlipayAccountID'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Alipay account ID')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder='2021...'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.'
+                          )}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>

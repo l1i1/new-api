@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/QuantumNous/new-api/setting"
 )
 
 func TestHotPayGatewayClientCreateOrder(t *testing.T) {
@@ -158,5 +160,46 @@ func TestHotPayGatewayClientRequiresProviderSnapshot(t *testing.T) {
 	_, err = client.CreateOrder(context.Background(), "wallet-key", HotPayGatewayCreateOrderRequest{MerchantOrderID: "trade_1"})
 	if err == nil || !strings.Contains(err.Error(), "provider account") {
 		t.Fatalf("error = %v, want missing provider account error", err)
+	}
+}
+
+func TestHotPayGatewayOptionOverridesEnv(t *testing.T) {
+	t.Setenv("HOTPAY_GATEWAY_URL", "https://env-gateway.example.com")
+	t.Setenv("HOTPAY_GATEWAY_ALLOWED_HOSTS", "env-gateway.example.com")
+	t.Setenv("HOTPAY_GATEWAY_API_KEY", "env-key")
+
+	setting.HotPayGatewayURL = "https://option-gateway.example.com"
+	setting.HotPayGatewayAllowedHost = "option-gateway.example.com"
+	setting.HotPayGatewayAPIKey = "option-key"
+	defer func() {
+		setting.HotPayGatewayURL = ""
+		setting.HotPayGatewayAllowedHost = ""
+		setting.HotPayGatewayAPIKey = ""
+	}()
+
+	if !IsHotPayGatewayEnabled() {
+		t.Fatal("gateway should be enabled via option")
+	}
+	client, err := NewHotPayGatewayClientFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := client.baseURL.String(); got != "https://option-gateway.example.com" {
+		t.Fatalf("base URL = %q, want option value to win", got)
+	}
+	if client.apiKey != "option-key" {
+		t.Fatalf("api key = %q, want option value to win", client.apiKey)
+	}
+
+	// Clearing the option falls back to the deployment environment values.
+	setting.HotPayGatewayURL = ""
+	setting.HotPayGatewayAllowedHost = ""
+	setting.HotPayGatewayAPIKey = ""
+	client, err = NewHotPayGatewayClientFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := client.baseURL.String(); got != "https://env-gateway.example.com" {
+		t.Fatalf("base URL = %q, want env fallback", got)
 	}
 }

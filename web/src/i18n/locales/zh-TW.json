@@ -6073,6 +6073,15 @@
     "Key Pool Mode": "金鑰池模式",
     "Test is still running in the background": "測試仍在背景進行中",
     "Delete selected": "刪除所選",
-    "Are you sure you want to delete the selected keys? This action cannot be undone.": "確定刪除所選的金鑰嗎？此操作無法復原。"
+    "Are you sure you want to delete the selected keys? This action cannot be undone.": "確定刪除所選的金鑰嗎？此操作無法復原。",
+    "HotPay Gateway": "HotPay 網關",
+    "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.": "Canonical HotPay 網關連線。設定後，錢包與訂閱結帳將委託 HotPay 處理，不再直連上游支付商。",
+    "Settlement secret is env-only": "結算密鑰僅支援環境變數設定",
+    "The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.": "結算簽名密鑰（HOTPAY_SETTLEMENT_SECRET）與 HotPay 側的配對值屬於部署環境設定，無法在此編輯。",
+    "Gateway URL": "網關地址",
+    "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).": "HotPay 網關的基礎地址。留空則停用 canonical 路徑（環境變數 HOTPAY_GATEWAY_URL 仍作為兜底生效）。",
+    "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.": "網關地址允許指向的精確主機名稱。多個主機用逗號或空格分隔。",
+    "Alipay account ID": "支付寶帳戶 ID",
+    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "gopay_alipay 渠道的 provider 帳戶 ID（即其 gopay_app_id）。支付寶結帳必需，並與結算命令逐字校驗。"
   }
 }

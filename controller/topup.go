@@ -144,6 +144,10 @@ func GetEpayClient() *epay.Client {
 	payAddress := strings.TrimSpace(operation_setting.PayAddress)
 	partnerID := strings.TrimSpace(operation_setting.EpayId)
 	key := strings.TrimSpace(operation_setting.EpayKey)
+	hotPayURL := strings.TrimSpace(setting.HotPayGatewayURL)
+	if hotPayURL == "" {
+		hotPayURL = strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_URL"))
+	}
 	if service.IsHotPayGatewayEnabled() {
 		// During cutover, callbacks are signed by HotPay. Keep this verifier
 		// independent from the retired direct EPay credentials.
@@ -154,7 +158,7 @@ func GetEpayClient() *epay.Client {
 			key = value
 		}
 		if payAddress == "" {
-			payAddress = strings.TrimRight(strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_URL")), "/")
+			payAddress = strings.TrimRight(hotPayURL, "/")
 		}
 	}
 	if payAddress == "" || partnerID == "" || key == "" {

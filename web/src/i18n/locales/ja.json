@@ -6073,6 +6073,15 @@
     "Key Pool Mode": "Key Pool Mode",
     "Test is still running in the background": "Test is still running in the background",
     "Delete selected": "Delete selected",
-    "Are you sure you want to delete the selected keys? This action cannot be undone.": "Are you sure you want to delete the selected keys? This action cannot be undone."
+    "Are you sure you want to delete the selected keys? This action cannot be undone.": "Are you sure you want to delete the selected keys? This action cannot be undone.",
+    "HotPay Gateway": "HotPay Gateway",
+    "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.": "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.",
+    "Settlement secret is env-only": "Settlement secret is env-only",
+    "The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.": "The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.",
+    "Gateway URL": "Gateway URL",
+    "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).": "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).",
+    "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.": "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.",
+    "Alipay account ID": "Alipay account ID",
+    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands."
   }
 }

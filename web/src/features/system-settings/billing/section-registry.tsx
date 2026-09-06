@@ -176,6 +176,10 @@ const BILLING_SECTIONS = [
           CreemWebhookSecret: settings.CreemWebhookSecret,
           CreemTestMode: settings.CreemTestMode,
           CreemProducts: settings.CreemProducts,
+          HotPayGatewayURL: settings.HotPayGatewayURL ?? '',
+          HotPayGatewayAPIKey: settings.HotPayGatewayAPIKey ?? '',
+          HotPayGatewayAllowedHosts: settings.HotPayGatewayAllowedHosts ?? '',
+          HotPayAlipayAccountID: settings.HotPayAlipayAccountID ?? '',
         }}
         waffoDefaultValues={{
           WaffoEnabled: settings.WaffoEnabled ?? false,
