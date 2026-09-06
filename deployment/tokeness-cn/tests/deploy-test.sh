@@ -391,6 +391,10 @@ grep -q "ess ModifyScalingGroup .*--DesiredCapacity 1" "$release_case/state/aliy
   || fail "rollout never scaled back to 1"
 grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never inspected the container log"
+# EIP → shared-bandwidth convergence: after the rollout the surviving (new)
+# instance's auto-created EIP must be bound to the shared bandwidth package.
+grep -q "vpc AddCommonBandwidthPackageIp .*--IpInstanceId eip-eci-new-1" "$release_case/state/aliyun-calls.log" \
+  || fail "rollout never bound the instance EIP to the shared bandwidth package"
 # The deploy pipeline must converge the SWAS-2 host container to the same
 # release: bootstrap runs on the host and the reported version must match.
 assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1"
@@ -515,5 +519,46 @@ if grep -q $'\r' "$crlf_case/state/modify-args.txt"; then
 fi
 assert_contains "$crlf_case/state/modify-args.txt" "--Container.1.Name newapi"
 rm -f "$bin_dir/jq" "$bin_dir/jq-real"
+
+# EIP shared-bandwidth convergence paths.
+eip_case="$test_root/eip-sync"
+mkdir -p "$eip_case/state"
+init_ess_state "$eip_case/state"
+# Already bound: converge_eip_bandwidth must not issue an add call.
+jq '.eip_package_id = "cbwp-uf6cup45a4jmnbnbgth04"' "$eip_case/state/state.json" > "$eip_case/state/state.json.tmp" \
+  && mv "$eip_case/state/state.json.tmp" "$eip_case/state/state.json"
+run_deploy "$eip_case" eip-sync
+if grep -q "vpc AddCommonBandwidthPackageIp" "$eip_case/state/aliyun-calls.log"; then
+  fail "already-bound EIP triggered a redundant package add call"
+fi
+# Unbound: eip-sync must add the current instance's EIP to the package.
+jq '.eip_package_id = ""' "$eip_case/state/state.json" > "$eip_case/state/state.json.tmp" \
+  && mv "$eip_case/state/state.json.tmp" "$eip_case/state/state.json"
+run_deploy "$eip_case" eip-sync
+grep -q "vpc AddCommonBandwidthPackageIp .*--BandwidthPackageId cbwp-uf6cup45a4jmnbnbgth04 .*--IpInstanceId eip-eci-old" \
+  "$eip_case/state/aliyun-calls.log" \
+  || fail "eip-sync did not bind the instance EIP to the shared bandwidth package"
+# Unresolvable EIP object: convergence must fail loudly.
+if run_deploy "$eip_case" TOKENESS_TEST_EIP_ABSENT=1 eip-sync; then
+  fail "eip-sync unexpectedly succeeded without a matching EIP object"
+fi
+# VPC API failure: advisory convergence must WARN inside a release, not abort
+# it (egress keeps serving on the standalone EIP peak until eip-sync reruns).
+vpc_fail_case="$test_root/vpc-fail"
+mkdir -p "$vpc_fail_case"
+make_conf "$vpc_fail_case/nginx.conf"
+mkdir -p "$vpc_fail_case/state"
+init_ess_state "$vpc_fail_case/state"
+if ! run_deploy "$vpc_fail_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  TOKENESS_TEST_VPC_FAIL=1 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "EIP convergence failure must not abort an otherwise converged release"
+fi
+grep -q "could not add EIP .* to shared bandwidth package" "$vpc_fail_case/state/output.log" 2>/dev/null \
+  || fail "release did not report the failed EIP convergence"
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' "$vpc_fail_case/state/state.json" > /dev/null \
+  || fail "EIP convergence failure disturbed the rollout result"
 
 printf 'Tokeness China deployment tests passed\n'

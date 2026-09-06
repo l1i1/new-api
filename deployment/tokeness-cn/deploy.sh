@@ -345,6 +345,66 @@ instance_private_ip() {
     | select(.InstanceId == $id) | .PrivateIpAddress // empty' | tr -d '\r'
 }
 
+# The ECI tier reaches upstream model channels through its auto-created EIP
+# (ESS AutoCreateEip=true). EIPs newly created by a scale replacement do NOT
+# join the shared bandwidth package on their own (2026-09-06: egress was
+# capped at the default 200 Mbps / per-traffic billing until the IP was added
+# by hand), so every rollout converges this binding.
+readonly SHARED_BANDWIDTH_PACKAGE_ID="${SHARED_BANDWIDTH_PACKAGE_ID:-cbwp-uf6cup45a4jmnbnbgth04}"
+
+instance_public_ip() {
+  local id="$1"
+  aliyun_cmd eci DescribeContainerGroups --RegionId "$ALIYUN_REGION" \
+    --ContainerGroupIds "[\"$id\"]" | tr -d '\r' \
+    | jq -r '.ContainerGroups[0].InternetIp // empty'
+}
+
+# ensure_eip_in_bandwidth_package <instance_id> - make the instance's EIP a
+# member of $SHARED_BANDWIDTH_PACKAGE_ID. Idempotent: skips when the EIP is
+# already in the package or the instance has no EIP (private-only fallback).
+ensure_eip_in_bandwidth_package() {
+  local id="$1" eip allocation_id state
+  [[ -n "$SHARED_BANDWIDTH_PACKAGE_ID" ]] || { log "no shared bandwidth package configured; skipping EIP convergence"; return 0; }
+  eip="$(instance_public_ip "$id")" \
+    || { error "could not read the public IP of $id"; return 1; }
+  if [[ -z "$eip" ]]; then
+    log "instance $id has no public EIP; skipping shared-bandwidth convergence"
+    return 0
+  fi
+  allocation_id="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" \
+    | tr -d '\r' | jq -r --arg ip "$eip" '
+      .EipAddresses.EipAddress[]? | select(.IpAddress == $ip) | .AllocationId // empty' | head -n1)" \
+    || { error "could not resolve the EIP allocation id of $eip"; return 1; }
+  if [[ -z "$allocation_id" ]]; then
+    error "no EIP object found for public IP $eip ($id)"
+    return 1
+  fi
+  state="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" --AllocationId "$allocation_id" \
+    | tr -d '\r' | jq -r '.EipAddresses.EipAddress[0].BandwidthPackageId // empty')"
+  if [[ "$state" == "$SHARED_BANDWIDTH_PACKAGE_ID" ]]; then
+    log "EIP $eip already in shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
+    return 0
+  fi
+  if ! aliyun_cmd vpc AddCommonBandwidthPackageIp --RegionId "$ALIYUN_REGION" \
+    --BandwidthPackageId "$SHARED_BANDWIDTH_PACKAGE_ID" --IpInstanceId "$allocation_id" >/dev/null; then
+    error "could not add EIP $eip to shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
+    return 1
+  fi
+  log "EIP $eip ($allocation_id) joined shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
+}
+
+# converge_eip_bandwidth - bind the EIPs of every in-service ECI instance to
+# the shared bandwidth package. Advisory only: a failure warns (egress keeps
+# serving on the standalone EIP peak) but must not abort a converged rollout.
+converge_eip_bandwidth() {
+  local id rc=0
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    ensure_eip_in_bandwidth_package "$id" || rc=1
+  done < <(in_service_instance_ids)
+  return "$rc"
+}
+
 # Digest currently pinned in the scaling configuration (may be empty when the
 # config drifted in the console, as during the 2026-09-06 incident).
 current_config_digest() {
@@ -464,6 +524,8 @@ rollback_failed_rollout() {
   fi
   if wait_verify_converged; then
     log "rollback verified; serving the previous image"
+    # A replacement instance (new auto-created EIP) may be serving here too.
+    converge_eip_bandwidth || warn "EIP shared-bandwidth convergence failed; rerun deploy.sh eip-sync"
   else
     error "post-rollback verify failed; release remains blocked"
     return 1
@@ -750,6 +812,9 @@ ess_rollout() {
   fi
   if wait_verify_converged; then
     log "ess rollout to $digest complete"
+    # EIP → shared-bandwidth convergence is advisory (a binding failure does
+    # not undo the rollout; egress keeps serving on the standalone EIP peak).
+    converge_eip_bandwidth || warn "EIP shared-bandwidth convergence failed; rerun deploy.sh eip-sync"
     return 0
   fi
   # Verification failed after the scale-down: restore the previous image and
@@ -795,6 +860,7 @@ Usage:
   deploy.sh deploy-release <tag>
   deploy.sh rollback <sha256:DIGEST>
   deploy.sh sync-host
+  deploy.sh eip-sync
 USAGE
 }
 
@@ -858,6 +924,10 @@ main() {
     sync-host)
       [[ $# -eq 1 ]] || die "sync-host does not accept arguments"
       sync_host_container ""
+      ;;
+    eip-sync)
+      [[ $# -eq 1 ]] || die "eip-sync does not accept arguments"
+      converge_eip_bandwidth || die "EIP shared-bandwidth convergence failed; check SHARED_BANDWIDTH_PACKAGE_ID and RAM permissions (AliyunEIPFullAccess)"
       ;;
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"

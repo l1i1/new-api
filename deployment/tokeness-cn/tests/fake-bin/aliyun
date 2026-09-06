@@ -345,6 +345,35 @@ case "$cmd" in
   "eci DescribeContainerLog")
     jq -n --arg c "$(jq -r '.logContent // "ready"' "$state")" '{Content: $c}'
     ;;
+  "eci DescribeContainerGroups")
+    # Each instance gets a deterministic derived public IP (last octet of its
+    # private address) so ensure_eip_in_bandwidth_package can find it.
+    jq '{ContainerGroups: [.instances[] | {
+      ContainerGroupId: .InstanceId,
+      Status: "Running",
+      InternetIp: ("203.0.113." + (.PrivateIpAddress | split(".")[3]))
+    }]}' "$state"
+    ;;
+  "vpc DescribeEipAddresses")
+    if [[ "${TOKENESS_TEST_EIP_ABSENT:-0}" == "1" ]]; then
+      printf '%s\n' '{"EipAddresses":{"EipAddress":[]}}'
+    else
+      pkg="$(jq -r '.eip_package_id // ""' "$state" | tr -d '\r')"
+      jq --arg pkg "$pkg" '{EipAddresses: {EipAddress: [.instances[] | {
+        IpAddress: ("203.0.113." + (.PrivateIpAddress | split(".")[3])),
+        AllocationId: ("eip-" + .InstanceId),
+        BandwidthPackageId: $pkg
+      }]}}' "$state"
+    fi
+    ;;
+  "vpc AddCommonBandwidthPackageIp")
+    if [[ "${TOKENESS_TEST_VPC_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    pkg="$(flag_value --BandwidthPackageId "$@" | tr -d '\r')"
+    state_update --arg pkg "$pkg" '.eip_package_id = $pkg'
+    printf '%s\n' '{"RequestId":"fake"}'
+    ;;
   "eci DeleteContainerGroup")
     id="$(flag_value --ContainerGroupId "$@")"
     state_update --arg id "$id" '.instances |= map(select(.InstanceId != $id))'

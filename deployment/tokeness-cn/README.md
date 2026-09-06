@@ -46,6 +46,14 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
 
    `rollback` follows the same gated master-first path as `deploy-release` (host container rebuilt and gated before the ESS rollout).
 
+7. Keep the egress EIP in the shared bandwidth package:
+
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh eip-sync
+   ```
+
+   The scaling configuration uses `AutoCreateEip`, so every ESS-replaced instance gets a brand-new EIP that does not join the shared bandwidth package (`cbwp-2g`, 2 Gbps peak, PayByDominantTraffic) on its own. `deploy-release`/`rollback` run this convergence automatically after the rollout (advisory: a bind failure warns and egress keeps serving on the standalone EIP peak); `eip-sync` re-runs it manually — e.g. after fixing RAM permissions (`AliyunEIPFullAccess`) or console-side drift.
+
 `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
 
 ## Cutover
