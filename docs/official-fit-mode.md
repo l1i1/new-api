@@ -34,16 +34,29 @@
   - `errors`：校验错误消息保持官方原文（不附加网关 request id、以官方 Content-Type 返回）。
   - `shape`：响应形态拟合（DS 官方 7 键 usage、流式 usage 单次拼接、剥离聚合器扩展字段、
     SSE Content-Type 镜像；K3 暂无非官方形状可处理，保持透传）。
-  - `route`：整族请求固定路由到官方渠道——DS 按渠道类型 43（官方 api.deepseek.com）、
-    K3 按渠道类型 25（Moonshot，渠道 CN_Kimi id 130），复用 `ContextKeyV4OfficialPin`
+  - `route`：**选择性官方路由（2026-09-06 起，DS 为 hybrid 分类器）**。Route 开启时按请求特征
+    决定是否 pin 官方渠道（DS 按渠道类型 43、K3 按类型 25），复用 `ContextKeyV4OfficialPin`
     机制（distributor 选路前标记，选路时按模型族窄化到对应类型）。
-    **route 是官方 pin 的唯一触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
+    - DeepSeek V4：仅三类请求 pin 官方——① `logprobs=true`（聚合器无法复刻官方双路
+      logprobs）；② messages 含 `image_url` part（聚合器兼容性未验证；且 2026-09-06 实测
+      官方已接受文本模型传图，旧 400 契约不复存在）；③ 思考输出类请求（缺省 / enabled /
+      adaptive / effort≠none——实测聚合器池会**非确定性**丢失 `reasoning_content`，
+      CN 实测 DS-001/090/091 因此失败）。唯一不 pin 的思考形态是**显式关闭思考**
+      （`thinking.type=disabled` 或无 thinking 对象时 `reasoning_effort=none`）：官方返回
+      `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
+      "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
+    - K3 / GLM：保持整族 pin（K3 官方为唯一已验证通道；GLM 思考不可关同理）。
+    **route 仍是官方 pin 的唯一触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
     （temperature>1.5 / top_p<0.3 / penalty>1.0 / thinking 字段 / logprobs=true 自动
     钉到官方渠道）已删除——它会在官方渠道不可用时反复清掉渠道粘性缓存，导致
     deepseek-v4 流量永远无法粘在聚合渠道上（prompt cache 全碎）。未开启 route 的用户
     无论带什么采样参数，都保持正常聚合器路由与粘性。
     注意：CN_Kimi 当前为 Moonshot 官方账号最低档限速（org RPM 3）且 priority=0——
     开启 K3 route 前必须先与 Moonshot 谈大额限速，否则买家流量会持续 429。
+    成本事实（2026-09-06 CN 实测）：thinking 输出类是买家（ZCode agent 流量）的主体，
+    在聚合器池被证明无法保证 100% 拟合前，这部分必须留官方；进一步压缩官方用量的
+    前提是**逐渠道验证**（每渠道 × audit 200 例多轮重采样稳定通过后白名单化），
+    该机制留作后续演进，需新增渠道级验证/开关设施。
 
 ## 行为映射
 

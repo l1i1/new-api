@@ -94,3 +94,76 @@ func TestMarkV4OfficialPinFromDistributorRouteOnlySource(t *testing.T) {
 		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	})
 }
+
+func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Route-enabled DeepSeek V4 profile: the pin becomes selective and only
+	// features the aggregator mix cannot reproduce land on the official
+	// channel (live evidence 2026-09-06: reasoning_content drops and missing
+	// dual-path logprobs on aggregators; image parts unverified there).
+	newContext := func(body string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"deepseek-v4-": {Validate: true, Errors: true, Shape: true, Route: true},
+				"kimi-k3":      {Validate: true, Errors: true, Shape: true, Route: true},
+			}},
+		})
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
+		return c
+	}
+
+	pinned := func(t *testing.T, body string) {
+		c := newContext(body)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), body)
+	}
+	unpinned := func(t *testing.T, body string) {
+		c := newContext(body)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), body)
+	}
+
+	t.Run("default thinking pins (official reasoning output)", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)
+	})
+	t.Run("explicit enabled thinking pins", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`)
+	})
+	t.Run("adaptive thinking pins", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"}}`)
+	})
+	t.Run("reasoning_effort high pins", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+	})
+	t.Run("malformed thinking classifies as thinking-expected and pins", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"bogus"}}`)
+	})
+	t.Run("logprobs pins regardless of thinking state", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"logprobs":true,"top_logprobs":5}`)
+	})
+	t.Run("image parts pin on a disabled-thinking request", func(t *testing.T) {
+		pinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/x.png"}},{"type":"text","text":"这是什么？"}]}],"thinking":{"type":"disabled"}}`)
+	})
+	t.Run("thinking disabled does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	})
+	t.Run("reasoning_effort none without thinking object does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+	})
+	t.Run("thinking null with effort none does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":null,"reasoning_effort":"none"}`)
+	})
+	t.Run("disabled thinking plus effort none does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"reasoning_effort":"none"}`)
+	})
+
+	t.Run("kimi-k3 keeps whole-family pin", func(t *testing.T) {
+		c := newContext(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+}

@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -524,7 +526,11 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 // v4OfficialPinRequest carries only the fields the official-pin marking
 // needs from the request body.
 type v4OfficialPinRequest struct {
-	Model string `json:"model"`
+	Model           string          `json:"model"`
+	LogProbs        *bool           `json:"logprobs,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	THINKING        json.RawMessage `json:"thinking,omitempty"`
+	Messages        []dto.Message   `json:"messages,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -559,12 +565,16 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
 	}
-	// The official-fit Route dimension is the only pin source: it pins the
-	// whole family regardless of sampling params, so strict-fit traffic
-	// stays on the official channel and never lands on a tolerant
-	// aggregator. The pin narrows per family: DeepSeek V4 -> type 43,
-	// kimi-k3 -> type 25.
-	if profile.Route {
+	// The official-fit Route dimension is the only pin source. The pin is
+	// selective: only requests with features the aggregator pool cannot
+	// reproduce land on the official channel (DeepSeek V4: dual-path
+	// logprobs, image parts on text-only models, thinking output — the
+	// official default). Everything else keeps normal aggregator routing,
+	// which keeps prompt-cache affinity and official-channel spend down.
+	// Disabled thinking genuinely produces no reasoning upstream, so it is
+	// the one non-pinned thinking shape. The pin narrows per family:
+	// DeepSeek V4 -> type 43, kimi-k3 -> type 25.
+	if profile.Route && (!isDeepSeekV4 || deepSeekV4RequestNeedsOfficial(pinRequest)) {
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 	}
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
@@ -581,6 +591,74 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {
 		abortGlmMessage(c, http.StatusBadRequest, "1214", relayhelper.Glm53ModelNotFoundText)
 	}
+}
+
+// deepSeekV4RequestNeedsOfficial reports whether a DeepSeek V4 official-fit
+// request must be served by the official channel to keep byte-level fit.
+// Live evidence (2026-09-06, CN gateway: audit 68 cases + compat 65 cases on
+// the aggregator mix): aggregator pools nondeterministically drop
+// reasoning_content on thinking-output requests (the official default) and
+// never reproduce official dual-path logprobs; image parts have no verified
+// aggregator compatibility. Explicitly disabled thinking is the only class
+// the aggregator mix serves faithfully (official reasoning: null), so it is
+// the one shape that may route to cheaper channels. Malformed thinking values
+// classify as thinking-expected — the relay's official validation 400s them
+// locally before any upstream call, so over-pinning costs nothing.
+func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
+	if req.LogProbs != nil && *req.LogProbs {
+		return true
+	}
+	if messagesContainImagePart(req.Messages) {
+		return true
+	}
+	return !deepSeekV4ThinkingDisabled(req)
+}
+
+// deepSeekV4ThinkingDisabled mirrors the official no-thinking states:
+// thinking.type=disabled, or reasoning_effort=none when the thinking object
+// does not explicitly re-enable it. Effort values other than none map to
+// thinking output (medium/xhigh are silently mapped to high by the relay).
+func deepSeekV4ThinkingDisabled(req v4OfficialPinRequest) bool {
+	thinkingEnabled := false
+	thinkingDisabled := false
+	if raw := bytes.TrimSpace(req.THINKING); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		var fields struct {
+			Type string `json:"type"`
+		}
+		if err := common.Unmarshal(raw, &fields); err == nil {
+			switch strings.ToLower(strings.TrimSpace(fields.Type)) {
+			case "disabled":
+				thinkingDisabled = true
+			case "enabled", "adaptive":
+				thinkingEnabled = true
+			}
+		}
+		// Unparseable thinking shapes stay thinking-expected: the relay
+		// validation rejects them with the official text before routing.
+		if thinkingEnabled {
+			return false
+		}
+	}
+	if thinkingDisabled {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(req.ReasoningEffort), "none")
+}
+
+// messagesContainImagePart reports whether any message carries an image_url
+// content part. Text-only V4 models officially accept them (2026-09-06
+// probes; the previous "This model does not support image" 400 is gone), so
+// the request forwards — to the official channel only, until some aggregator
+// proves it renders the same bytes.
+func messagesContainImagePart(messages []dto.Message) bool {
+	for i := range messages {
+		for _, part := range messages[i].ParseContent() {
+			if strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // getModelFromRequest 从请求中读取模型信息

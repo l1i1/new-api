@@ -719,14 +719,15 @@ func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest) error {
 
 // validateDeepSeekV4Messages mirrors the official per-message contract: the
 // role serde enum accepts exactly system/user/assistant/tool/latest_reminder
-// (developer and friends are deserialization failures), an empty message list
-// is `Empty input messages`, and text-only models reject image content parts
-// (the vision variants accept them and download the URLs upstream).
+// (developer and friends are deserialization failures) and an empty message
+// list is `Empty input messages`. Image content parts are accepted on every
+// V4 model: live-probed 2026-09-06, official renders them 200 even on
+// text-only pro/flash (the pre-2026-09 "This model does not support image"
+// 400 no longer exists), so the parts forward to the upstream untouched.
 func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
 	if len(request.Messages) == 0 {
 		return deepSeekV4ToolChainError(deepSeekV4EmptyMessagesMessage)
 	}
-	visionModel := deepSeekV4VisionModel(request.Model)
 	for i := range request.Messages {
 		role := request.Messages[i].Role
 		switch role {
@@ -735,22 +736,8 @@ func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
 			return deepSeekV4ToolChainError(deepSeekV4RoleDeserMessagePrefix + strconv.Itoa(i) +
 				"].role: unknown variant `" + role + "`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`")
 		}
-		if visionModel {
-			continue
-		}
-		for _, part := range request.Messages[i].ParseContent() {
-			if strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
-				return deepSeekV4ToolChainError(deepSeekV4ImageUnsupportedMessage)
-			}
-		}
 	}
 	return nil
-}
-
-// deepSeekV4VisionModel reports whether the V4 model variant accepts image
-// input (live-probed: the vision-exp variant, not pro/flash).
-func deepSeekV4VisionModel(model string) bool {
-	return strings.Contains(strings.ToLower(model), "vision")
 }
 
 // validateDeepSeekV4Thinking mirrors the official thinking contract
