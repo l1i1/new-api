@@ -113,13 +113,15 @@ declare module '@tanstack/react-router' {
 
 // Route-aware tab title: the homepage keeps the server-injected title (the
 // `<!--head-html-->` CustomHeadHTML region); every other path shows
-// "<Page> - <System name>".
+// "<Page> - <System name>". The server title is captured before any rewrite
+// so navigating back to the homepage restores it.
+const serverInjectedTitle = document.title
 router.subscribe('onResolved', () => {
   const title = resolvePageTitle(
     router.state.location.pathname,
     getCachedSystemName()
   )
-  if (title) document.title = title
+  document.title = title ?? serverInjectedTitle
 })
 
 // Render the app
