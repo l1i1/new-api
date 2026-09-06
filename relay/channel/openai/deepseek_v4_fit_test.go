@@ -504,3 +504,50 @@ func TestStripReasoningContentFallbackOnDuplicateKeys(t *testing.T) {
 	message := choice["message"].(map[string]any)
 	assert.NotContains(t, message, "reasoning_content")
 }
+
+func TestPromoteLegacyReasoningKeyNonStream(t *testing.T) {
+	// ch2 (commandcode) delivers thinking under the legacy `reasoning` key on
+	// tool-less requests; the fit layer must rename it to the official
+	// reasoning_content instead of stripping it (CN audit A03/A05 class,
+	// 2026-09-06 evening).
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning":"因为"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, &dto.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, true, true)
+	require.NoError(t, err)
+	out := string(fitted)
+	assert.Contains(t, out, `"reasoning_content":"因为"`)
+	assert.NotContains(t, out, `"reasoning":"因为"`)
+	assert.Contains(t, out, `"logprobs":null`) // choice-level null logprobs is official (live-captured)
+
+	// Both keys present: official wins, legacy is stripped.
+	bodyBoth := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning_content":"official","reasoning":"legacy"},"finish_reason":"stop"}]}`)
+	fitted, err = fitDeepSeekV4TextResponseBody(bodyBoth, nil, true, true)
+	require.NoError(t, err)
+	out = string(fitted)
+	assert.Contains(t, out, `"reasoning_content":"official"`)
+	assert.NotContains(t, out, `"reasoning":"legacy"`)
+
+	// Empty legacy reasoning is dropped, not promoted.
+	bodyEmpty := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"2","reasoning":""},"finish_reason":"stop"}]}`)
+	fitted, err = fitDeepSeekV4TextResponseBody(bodyEmpty, nil, true, true)
+	require.NoError(t, err)
+	assert.NotContains(t, string(fitted), "reasoning")
+}
+
+func TestPromoteLegacyReasoningKeyStreamEvent(t *testing.T) {
+	chunk := `{"choices":[{"index":0,"delta":{"role":"assistant","reasoning":"正在思考"}}],"usage":null}`
+	patched, err := fitDeepSeekV4StreamEvent(chunk, nil, false, true)
+	require.NoError(t, err)
+	assert.Contains(t, patched, `"reasoning_content":"正在思考"`)
+	assert.NotContains(t, patched, `"reasoning":"正在思考"`)
+
+	// Chunks without the legacy key pass through untouched.
+	plain := `{"choices":[{"index":0,"delta":{"reasoning_content":"ok"}}],"usage":null}`
+	patched, err = fitDeepSeekV4StreamEvent(plain, nil, false, true)
+	require.NoError(t, err)
+	assert.Equal(t, plain, patched)
+
+	// Suppressed reasoning (includeReasoningDetails=false) is not promoted.
+	patched, err = fitDeepSeekV4StreamEvent(chunk, nil, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, chunk, patched)
+}

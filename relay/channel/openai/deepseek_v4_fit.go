@@ -209,7 +209,7 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoni
 		delete(payload, "cost")
 	}
 	if rawChoices, ok := payload["choices"]; ok {
-		choices, err := fitDeepSeekV4Choices(rawChoices, allowToolCalls)
+		choices, err := fitDeepSeekV4Choices(rawChoices, allowToolCalls, includeReasoningDetails)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +235,7 @@ func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.R
 		result = patched
 	}
 	if rawChoices, ok := payload["choices"]; ok {
-		fitted, ok := fitDeepSeekV4ChoicesInPlace(rawChoices, allowToolCalls)
+		fitted, ok := fitDeepSeekV4ChoicesInPlace(rawChoices, allowToolCalls, includeReasoningDetails)
 		if !ok {
 			return nil, false
 		}
@@ -263,7 +263,7 @@ func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.R
 
 // fitDeepSeekV4Choices rewrites a choices array through a map, sorting keys.
 // It is the fallback for inputs the in-place editor declines.
-func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool) (json.RawMessage, error) {
+func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool, promoteReasoning bool) (json.RawMessage, error) {
 	var choices []map[string]json.RawMessage
 	if err := common.Unmarshal(rawChoices, &choices); err != nil {
 		return nil, err
@@ -299,7 +299,7 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool) (json
 // and non-official message keys from a choices array without disturbing any
 // other byte. When the request declared no tools, tool_calls is stripped
 // regardless of content — official never emits it in that case.
-func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage, allowToolCalls bool) (json.RawMessage, bool) {
+func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage, allowToolCalls bool, promoteReasoning bool) (json.RawMessage, bool) {
 	spans, ok := jsonArrayElementSpans(rawChoices)
 	if !ok {
 		return nil, false
@@ -314,7 +314,7 @@ func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage, allowToolCalls bool
 	edits := make([]edit, 0, len(spans))
 	for _, span := range spans {
 		element := rawChoices[span[0]:span[1]]
-		fitted, ok := stripNullToolCallsInChoice(element, allowToolCalls)
+		fitted, ok := stripNullToolCallsInChoice(element, allowToolCalls, promoteReasoning)
 		if !ok {
 			return nil, false
 		}
@@ -339,8 +339,11 @@ func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage, allowToolCalls bool
 // stripNullToolCallsInChoice deletes non-official keys from the choice's
 // message object — aggregator-added keys plus a null/empty tool_calls —
 // preserving every other byte of the choice. With allowToolCalls=false
-// (tool-less request) the tool_calls key goes away entirely.
-func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, bool) {
+// (tool-less request) the tool_calls key goes away entirely. When
+// promoteReasoning is set (reasoning expected), a reasoning value delivered
+// under the legacy non-official `reasoning` key is renamed to the official
+// `reasoning_content` in place instead of being dropped.
+func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool, promoteReasoning bool) ([]byte, bool) {
 	choicePairs, _, err := parseTopLevelPairs(choice)
 	if err != nil {
 		return nil, false
@@ -350,7 +353,15 @@ func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, boo
 		return nil, false
 	}
 	message := choice[messagePair.valueStart:messagePair.valueEnd]
-	messagePairs, _, err := parseTopLevelPairs(message)
+	stripped := message
+	if promoteReasoning {
+		patched, ok := promoteLegacyReasoningKey(message)
+		if !ok {
+			return nil, false
+		}
+		stripped = patched
+	}
+	messagePairs, _, err := parseTopLevelPairs(stripped)
 	if err != nil {
 		return nil, false
 	}
@@ -358,7 +369,7 @@ func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, boo
 	if err != nil {
 		return nil, false
 	}
-	dropToolCalls := found && (!allowToolCalls || isJSONNullOrEmpty(message[toolCallsPair.valueStart:toolCallsPair.valueEnd]))
+	dropToolCalls := found && (!allowToolCalls || isJSONNullOrEmpty(stripped[toolCallsPair.valueStart:toolCallsPair.valueEnd]))
 	var extraKeys []string
 	for _, pair := range messagePairs {
 		if _, official := deepSeekV4OfficialMessageKeys[pair.key]; official {
@@ -373,10 +384,9 @@ func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, boo
 		}
 		extraKeys = append(extraKeys, pair.key)
 	}
-	if len(extraKeys) == 0 && !dropToolCalls {
+	if len(extraKeys) == 0 && !dropToolCalls && bytes.Equal(stripped, message) {
 		return choice, true
 	}
-	stripped := message
 	if len(extraKeys) > 0 {
 		for _, key := range extraKeys {
 			patched, ok := deleteTopLevelJSONKey(stripped, key)
@@ -400,6 +410,40 @@ func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, boo
 	return out, true
 }
 
+// promoteLegacyReasoningKey renames a non-empty legacy `reasoning` member to
+// the official `reasoning_content` in place (key token bytes only) when the
+// official key is absent or empty. Returns the input unchanged when there is
+// nothing to promote; ok=false flags a structure the surgical edit declined.
+func promoteLegacyReasoningKey(message []byte) ([]byte, bool) {
+	if !bytes.Contains(message, []byte(`"reasoning"`)) {
+		return message, true
+	}
+	pairs, _, err := parseTopLevelPairs(message)
+	if err != nil {
+		return nil, false
+	}
+	reasoningPair, hasReasoning, err := findJSONPair(pairs, "reasoning")
+	if err != nil || !hasReasoning {
+		return message, true
+	}
+	contentPair, hasOfficial, err := findJSONPair(pairs, "reasoning_content")
+	if err != nil {
+		return nil, false
+	}
+	if hasOfficial && !isJSONNullOrEmpty(message[contentPair.valueStart:contentPair.valueEnd]) {
+		return message, true
+	}
+	if !isNonEmptyJSONString(message[reasoningPair.valueStart:reasoningPair.valueEnd]) {
+		return message, true
+	}
+	keyLen := len(`"reasoning"`)
+	out := make([]byte, 0, len(message)+len(`"reasoning_content"`)-keyLen)
+	out = append(out, message[:reasoningPair.keyStart]...)
+	out = append(out, `"reasoning_content"`...)
+	out = append(out, message[reasoningPair.keyStart+keyLen:]...)
+	return out, true
+}
+
 // fitDeepSeekV4StreamEvent renders usage in the official shape while
 // preserving only a real upstream-provided system_fingerprint. Editing is
 // surgical: every byte outside the usage value (including key order) reaches
@@ -407,6 +451,15 @@ func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, boo
 func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, includeReasoningDetails bool) (string, error) {
 	if data == "" {
 		return data, nil
+	}
+	if includeReasoningDetails && strings.Contains(data, `"reasoning"`) {
+		// Some aggregators deliver thinking under the legacy non-official
+		// `reasoning` key instead of `reasoning_content`. Promote it in place
+		// (key token rename only) so thinking output survives the fit strip
+		// and reaches fit clients exactly as official would send it.
+		if patched, ok := promoteReasoningKeyInStreamEvent(data); ok {
+			data = string(patched)
+		}
 	}
 	var payload map[string]json.RawMessage
 	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
@@ -449,6 +502,62 @@ func spliceTopLevelUsage(data []byte, value json.RawMessage) ([]byte, bool) {
 		return patched, true
 	}
 	return appendTopLevelJSONValue(data, "usage", value)
+}
+
+// isNonEmptyJSONString reports whether the raw JSON value is a string with
+// non-empty content ("" and whitespace-only count as empty).
+func isNonEmptyJSONString(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 2 && trimmed[0] == '"'
+}
+
+// promoteReasoningKeyInStreamEvent renames a non-empty legacy `reasoning`
+// member to `reasoning_content` inside every choices[].delta of one SSE
+// chunk. Only the key token bytes are rewritten; values, ordering and every
+// other byte survive. ok=false means the chunk defied the surgical edit and
+// the caller keeps the original bytes.
+func promoteReasoningKeyInStreamEvent(data string) ([]byte, bool) {
+	src := []byte(data)
+	pairs, _, err := parseTopLevelPairs(src)
+	if err != nil {
+		return nil, false
+	}
+	choicesPair, found, err := findJSONPair(pairs, "choices")
+	if err != nil || !found {
+		return nil, false
+	}
+	if choicesPair.valueStart < 0 || choicesPair.valueEnd > len(src) || src[choicesPair.valueStart] != '[' {
+		return nil, false
+	}
+	spans, ok := jsonArrayElementSpans(src[choicesPair.valueStart:choicesPair.valueEnd])
+	if !ok {
+		return nil, false
+	}
+	out := src
+	for i := len(spans) - 1; i >= 0; i-- {
+		start, end := choicesPair.valueStart+spans[i][0], choicesPair.valueStart+spans[i][1]
+		element := out[start:end]
+		elPairs, _, err := parseTopLevelPairs(element)
+		if err != nil {
+			return nil, false
+		}
+		deltaPair, hasDelta, err := findJSONPair(elPairs, "delta")
+		if err != nil || !hasDelta {
+			continue
+		}
+		if deltaPair.valueStart < 0 || deltaPair.valueEnd > len(element) || element[deltaPair.valueStart] != '{' {
+			continue
+		}
+		delta := element[deltaPair.valueStart:deltaPair.valueEnd]
+		patched, ok := promoteLegacyReasoningKey(delta)
+		if !ok {
+			return nil, false
+		}
+		if !bytes.Equal(patched, delta) {
+			out = append(out[:start+deltaPair.valueStart], append(append([]byte{}, patched...), out[start+deltaPair.valueEnd:]...)...)
+		}
+	}
+	return out, true
 }
 
 // replaceTopLevelJSONValue replaces the value of an existing top-level key,
