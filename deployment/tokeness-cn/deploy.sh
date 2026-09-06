@@ -313,7 +313,11 @@ desired_capacity_out() {
 }
 
 oss_scaling_config_json() {
-  aliyun_cmd ess DescribeEciScalingConfigurations --ScalingConfigurationId "$SCALING_CONFIG_ID" --region "$ALIYUN_REGION"
+  # tr -d '\r': a Windows-side aliyun CLI/jq can emit CRLF, and a stray CR in a
+  # re-sent env value (e.g. SQL_DSN) makes the container crash-loop at startup
+  # (2026-09-06 production incident). No legit value here contains a carriage
+  # return, so stripping them everywhere fails safe.
+  aliyun_cmd ess DescribeEciScalingConfigurations --ScalingConfigurationId "$SCALING_CONFIG_ID" --region "$ALIYUN_REGION" | tr -d '\r'
 }
 
 # resolve_ml_digest <tag> -> prints sha256:<64 hex> for the ml-<tag> image,
