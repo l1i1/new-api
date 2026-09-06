@@ -47,7 +47,7 @@ const PAGE_TITLE_RULES: ReadonlyArray<{ prefix: string; key: string }> = [
   { prefix: '/chat2link', key: 'Chat' },
   { prefix: '/chat', key: 'Chat' },
   { prefix: '/about', key: 'About' },
-  { prefix: '/pricing', key: 'Pricing' },
+  { prefix: '/pricing', key: 'Model Square' },
   { prefix: '/rankings', key: 'Rankings' },
   { prefix: '/privacy-policy', key: 'Privacy Policy' },
   { prefix: '/user-agreement', key: 'User Agreement' },

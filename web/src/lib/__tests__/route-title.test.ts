@@ -36,6 +36,12 @@ describe('resolvePageTitle', () => {
     )
   })
 
+  test('matches the sidebar nav label for /pricing', () => {
+    expect(resolvePageTitle('/pricing', 'Tokeness')).toBe(
+      'Model Square - Tokeness'
+    )
+  })
+
   test('prefers the longest matching route rule', () => {
     expect(resolvePageTitle('/dashboard/overview', 'Tokeness')).toBe(
       'Overview - Tokeness'
