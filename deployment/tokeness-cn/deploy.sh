@@ -41,13 +41,19 @@ die() { error "$*"; exit 1; }
 # Linux; automated tests set TOKENESS_TEST_SKIP_OS_GUARD=1.
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
+    # Second Windows hazard: MSYS rewrites POSIX-looking arguments ("/api/status")
+    # into Windows paths ("D:/.../api/status") for native executables, which
+    # corrupted the liveness probe path. Disable the conversion in-script so the
+    # explicit override stays survivable.
+    export MSYS_NO_PATHCONV=1
+    export MSYS2_ARG_CONV_EXCL='*'
     if [[ "${TOKENESS_TEST_SKIP_OS_GUARD:-0}" != "1" && "${TOKENESS_ALLOW_WINDOWS:-0}" != "1" ]]; then
-      printf 'ERROR: deploy.sh must run from WSL or Linux, not Windows Git Bash (CRLF risk).\n' >&2
+      printf 'ERROR: deploy.sh must run from WSL or Linux, not Windows Git Bash (CRLF + path-mangling risk).\n' >&2
       printf '       Override with TOKENESS_ALLOW_WINDOWS=1 only if you accept that risk.\n' >&2
       exit 1
     fi
     if [[ "${TOKENESS_ALLOW_WINDOWS:-0}" == "1" ]]; then
-      printf '[%s] %s\n' "$(date --iso-8601=seconds)" "WARN: running on Windows by explicit override; CR is stripped at config reads" >&2
+      printf '[%s] %s\n' "$(date --iso-8601=seconds)" "WARN: running on Windows by explicit override; CR stripped at reads, MSYS path conversion disabled" >&2
     fi
     ;;
 esac

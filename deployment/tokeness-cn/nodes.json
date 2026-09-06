@@ -15,9 +15,9 @@
     {
       "name": "eci-ml",
       "role": "api",
-      "instance_id": "eci-uf60ayfs328j7r71vzjs",
-      "private_ip": "10.0.0.239",
-      "public_ip": "139.196.227.151",
+      "instance_id": "eci-uf6c6ypnnplhl0ror02t",
+      "private_ip": "10.0.0.212",
+      "public_ip": "47.116.77.18",
       "current_image_source": "docker.cnb.cool/imvhb/new-api-cn@sha256:0b704b190f668edf42fcc98774634e9eed3a19f5e439765925dbbbc32de40732 (v1.0.0-rc.33-tokeness-mainland.3)",
       "note": "Alibaba Cloud ECI recreated by the scaling group; its private IP changes on every recreate."
     }
