@@ -24,10 +24,33 @@ readonly ROLLOUT_VERIFY_DELAY_SECONDS="${ROLLOUT_VERIFY_DELAY_SECONDS:-10}"
 readonly REMOTE_RUN_DIR='/run/lock'
 readonly REMOTE_LOCK_NAME='tokeness-cn-deploy.lock'
 
+# Application-level rollout gate: ESS stayed "Healthy" through the 2026-09-06
+# crash-loop, so the rollout waits for the app itself to answer /api/status.
+readonly APP_READY_TIMEOUT_SECONDS="${APP_READY_TIMEOUT_SECONDS:-300}"
+readonly APP_READY_POLL_SECONDS="${APP_READY_POLL_SECONDS:-15}"
+readonly APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-newapi}"
+
 log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; }
 warn() { log "WARN: $*"; }
 error() { log "ERROR: $*" >&2; }
 die() { error "$*"; exit 1; }
+
+# Refuse Windows Git Bash/MSYS: Windows-side aliyun CLI or jq can emit CRLF,
+# and a stray \r inside a re-sent scaling-config env value crash-loops the
+# container (2026-09-06 production incident). Run this script from WSL or
+# Linux; automated tests set TOKENESS_TEST_SKIP_OS_GUARD=1.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if [[ "${TOKENESS_TEST_SKIP_OS_GUARD:-0}" != "1" && "${TOKENESS_ALLOW_WINDOWS:-0}" != "1" ]]; then
+      printf 'ERROR: deploy.sh must run from WSL or Linux, not Windows Git Bash (CRLF risk).\n' >&2
+      printf '       Override with TOKENESS_ALLOW_WINDOWS=1 only if you accept that risk.\n' >&2
+      exit 1
+    fi
+    if [[ "${TOKENESS_ALLOW_WINDOWS:-0}" == "1" ]]; then
+      printf '[%s] %s\n' "$(date --iso-8601=seconds)" "WARN: running on Windows by explicit override; CR is stripped at config reads" >&2
+    fi
+    ;;
+esac
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command is not installed: $1"
@@ -287,6 +310,118 @@ image_ref() {
   printf '%s@%s\n' "$CNB_IMAGE_REPOSITORY" "$digest"
 }
 
+scaling_instances_json() {
+  aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" | tr -d '\r'
+}
+
+in_service_instance_ids() {
+  scaling_instances_json | jq -r '
+    .ScalingInstances.ScalingInstance[]?
+    | select(.LifecycleState == "InService") | .InstanceId' | tr -d '\r' | sort -u
+}
+
+instance_private_ip() {
+  local id="$1"
+  scaling_instances_json | jq -r --arg id "$id" '
+    .ScalingInstances.ScalingInstance[]?
+    | select(.InstanceId == $id) | .PrivateIpAddress // empty' | tr -d '\r'
+}
+
+# Digest currently pinned in the scaling configuration (may be empty when the
+# config drifted in the console, as during the 2026-09-06 incident).
+current_config_digest() {
+  local image
+  image="$(oss_scaling_config_json | jq -r '.ScalingConfigurations[0].Containers[0].Image // empty' | tr -d '\r')"
+  printf '%s\n' "${image##*@}"
+}
+
+app_status_ok() {
+  local ip="$1" body
+  body="$(remote_cmd "$ip" <<'REMOTE_PROBE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/api/status"
+REMOTE_PROBE
+)" || return 1
+  jq -e '.success == true' >/dev/null 2>&1 <<<"$body"
+}
+
+# Print the first fatal startup line in the container log, if any. Rate-limit
+# parse warnings are non-fatal (the app continues with defaults) and must not
+# match; only [FATAL] / Go panics abort the rollout early.
+container_log_fatal_line() {
+  local instance_id="$1"
+  aliyun_cmd eci DescribeContainerLog --RegionId "$ALIYUN_REGION" \
+    --ContainerGroupId "$instance_id" --ContainerName "$APP_CONTAINER_NAME" --Tail 60 \
+    | tr -d '\r' | jq -r '.Content // empty' \
+    | grep -m1 -E '\[FATAL\]|panic:' || true
+}
+
+# wait_app_ready <instance_id> <private_ip> - gate the rollout on the
+# application, never on ESS "Healthy": probe /api/status on the new instance
+# through the lightweight server and fail fast on a fatal startup log line.
+wait_app_ready() {
+  local instance_id="$1" ip="$2" attempt=0 fatal
+  local max_attempts=$(( APP_READY_TIMEOUT_SECONDS / APP_READY_POLL_SECONDS ))
+  [[ "$max_attempts" -ge 1 ]] || die "APP_READY_TIMEOUT_SECONDS must exceed APP_READY_POLL_SECONDS"
+  is_valid_ipv4 "$ip" || die "new instance has an invalid private IP: $ip"
+  while (( attempt < max_attempts )); do
+    fatal="$(container_log_fatal_line "$instance_id")"
+    if [[ -n "$fatal" ]]; then
+      error "container log shows a fatal startup error: $fatal"
+      return 1
+    fi
+    if app_status_ok "$ip"; then
+      log "app answers on $ip:$NGINX_UPSTREAM_PORT (attempt $((attempt + 1))/$max_attempts)"
+      return 0
+    fi
+    attempt=$(( attempt + 1 ))
+    if (( attempt < max_attempts )); then
+      sleep "$APP_READY_POLL_SECONDS"
+    fi
+  done
+  error "app on $ip did not become ready within ${APP_READY_TIMEOUT_SECONDS}s"
+  return 1
+}
+
+wait_verify_converged() {
+  local attempt
+  for ((attempt = 1; attempt <= ROLLOUT_VERIFY_ATTEMPTS; attempt++)); do
+    if verify_node; then
+      log "verify passed on attempt $attempt"
+      return 0
+    fi
+    if (( attempt < ROLLOUT_VERIFY_ATTEMPTS )); then
+      sleep "$ROLLOUT_VERIFY_DELAY_SECONDS"
+    fi
+  done
+  return 1
+}
+
+# rollback_failed_rollout <failed_instance_id> <previous_digest> - recover from
+# a failed rollout without extra downtime: the previous digest is re-pinned so
+# ESS's replacement instance runs the old image, the failed container is
+# deleted, and ESS + ml-sync converge while a healthy instance keeps serving.
+rollback_failed_rollout() {
+  local failed_id="$1" previous_digest="$2"
+  warn "rolling back to previous digest: ${previous_digest:-<unchanged>}"
+  if [[ -n "$previous_digest" ]]; then
+    apply_ml_digest "$previous_digest"
+  fi
+  if [[ -n "$failed_id" ]]; then
+    if ! aliyun_cmd eci DeleteContainerGroup --RegionId "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
+      warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
+    fi
+  fi
+  scale_group 1
+  wait_healthy_instances 1
+  if wait_verify_converged; then
+    log "rollback verified; serving the previous image"
+  else
+    warn "post-rollback verify failed; investigate before retrying"
+  fi
+}
+
 # --- Alibaba Cloud ESS helpers -------------------------------------------------
 # These read credentials only from the ALIBABA_CLOUD_ACCESS_KEY_ID / _KEY_SECRET
 # env vars (aliyun CLI standard), never from client code or checks, so the same
@@ -347,10 +482,18 @@ apply_ml_digest() {
   local cfg
   cfg="$(oss_scaling_config_json)" || die "failed to read scaling configuration"
   local ct
-  ct="$(jq -r '.ScalingConfigurations[0].Containers[0]' <<<"$cfg")"
+  ct="$(jq -c '.ScalingConfigurations[0].Containers[0]' <<<"$cfg")"
   local container_name image_pull_policy
-  container_name="$(jq -r '.Name' <<<"$ct")"
-  image_pull_policy="$(jq -r '.ImagePullPolicy // "IfNotPresent"' <<<"$ct")"
+  # tr -d '\r' at every jq read: a Windows jq build writes CRLF on stdout, and
+  # a stray \r here becomes container/env DATA (the 2026-09-06 incident).
+  container_name="$(jq -r '.Name' <<<"$ct" | tr -d '\r')"
+  image_pull_policy="$(jq -r '.ImagePullPolicy // "IfNotPresent"' <<<"$ct" | tr -d '\r')"
+
+  local current_image
+  current_image="$(jq -r '.Image // empty' <<<"$ct" | tr -d '\r')"
+  if [[ -z "$current_image" ]]; then
+    warn "scaling configuration has no image (console drift?); setting the target now"
+  fi
 
   local args=(ess ModifyEciScalingConfiguration
     "--ScalingConfigurationId" "$SCALING_CONFIG_ID"
@@ -360,7 +503,8 @@ apply_ml_digest() {
     "--Container.1.ImagePullPolicy" "$image_pull_policy"
   )
   local env_count i=0 key value
-  env_count="$(jq '.EnvironmentVars | length' <<<"$ct")"
+  env_count="$(jq '.EnvironmentVars | length' <<<"$ct" | tr -d '\r')"
+  (( env_count > 0 )) || die "scaling configuration has no environment variables; refusing a deploy that would boot without SQL_DSN"
   while IFS=$'\t' read -r key value; do
     # Skip internal/immutable keys the API rejects on modify.
     case "$key" in
@@ -369,11 +513,23 @@ apply_ml_digest() {
     esac
     i=$((i + 1))
     args+=("--Container.1.EnvironmentVar.$i.Key" "$key" "--Container.1.EnvironmentVar.$i.Value" "$value")
-  done < <(jq -r '.EnvironmentVars[] | [.Key, .Value] | @tsv' <<<"$ct")
+  done < <(jq -r '.EnvironmentVars[] | [.Key, .Value] | @tsv' <<<"$ct" | tr -d '\r')
   [[ "$i" -eq "$env_count" ]] || die "could not preserve all existing environment variables (kept $i of $env_count)"
 
+  # Application-level liveness: ESS health checks never caught the 2026-09-06
+  # crash-loop. Re-sent on every modify so the probe survives config updates.
+  args+=(
+    "--Container.1.LivenessProbe.HttpGet.Path" "/api/status"
+    "--Container.1.LivenessProbe.HttpGet.Port" "$NGINX_UPSTREAM_PORT"
+    "--Container.1.LivenessProbe.HttpGet.Scheme" "HTTP"
+    "--Container.1.LivenessProbe.InitialDelaySeconds" "20"
+    "--Container.1.LivenessProbe.PeriodSeconds" "10"
+    "--Container.1.LivenessProbe.TimeoutSeconds" "5"
+    "--Container.1.LivenessProbe.FailureThreshold" "3"
+  )
+
   aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
-  log "scaling configuration image set to $digest (env preserved: $i)"
+  log "scaling configuration image set to $digest (env preserved: $i, liveness probe on /api/status)"
 }
 
 scale_group() {
@@ -399,32 +555,71 @@ wait_healthy_instances() {
   die "timed out waiting for $want healthy instance(s) (have $got)"
 }
 
-# ess_rollout <sha256:digest> - scale out to 2 healthy, then scale back to 1 and
-# converge nginx via the existing verify path. Keeps the current node if alive.
+# ess_rollout <sha256:digest> <previous_digest> - scale out to 2, gate the NEW
+# instance on the application itself (probe + container log), and only then
+# scale back to 1. While both instances are healthy ml-sync lists both upstream
+# members, and nginx passive checks (max_fails=2 fail_timeout=5s) bridge the
+# ~30s window in which the old member disappears after the scale-down. Any
+# failure before convergence rolls back to the previous digest automatically.
 ess_rollout() {
-  local digest="$1" attempt
+  local digest="$1" previous_digest="${2:-}" attempt
+  local before_ids new_id new_ip
+  before_ids="$(in_service_instance_ids)"
   scale_group 2
   wait_healthy_instances 2
+  new_id="$(comm -13 <(printf '%s\n' "$before_ids") <(in_service_instance_ids) | head -n1 || true)"
+  if [[ -z "$new_id" ]]; then
+    rollback_failed_rollout "" "$previous_digest"
+    die "could not identify the instance created by scale-out; aborted before scale-down"
+  fi
+  new_ip="$(instance_private_ip "$new_id")"
+  log "new instance $new_id at $new_ip; gating on application health before scale-down"
+  if ! wait_app_ready "$new_id" "$new_ip"; then
+    rollback_failed_rollout "$new_id" "$previous_digest"
+    die "rollout aborted: new instance $new_id never became healthy"
+  fi
   scale_group 1
   wait_healthy_instances 1
-  for ((attempt = 1; attempt <= ROLLOUT_VERIFY_ATTEMPTS; attempt++)); do
-    if verify_node; then
-      log "post-rollout verify passed on attempt $attempt"
-      log "ess rollout to $digest complete"
-      return 0
-    fi
-    if (( attempt < ROLLOUT_VERIFY_ATTEMPTS )); then
-      log "post-rollout verify is not ready; waiting ${ROLLOUT_VERIFY_DELAY_SECONDS}s for ml-sync (attempt $attempt/$ROLLOUT_VERIFY_ATTEMPTS)"
-      sleep "$ROLLOUT_VERIFY_DELAY_SECONDS"
-    fi
-  done
-  die "post-rollout verify failed after $ROLLOUT_VERIFY_ATTEMPTS attempts"
+  if wait_verify_converged; then
+    log "ess rollout to $digest complete"
+    return 0
+  fi
+  # Verification failed after the scale-down: restore the previous image and
+  # let ESS + ml-sync converge (brief interruption is unavoidable here, which
+  # is exactly why the app gate runs before the scale-down).
+  rollback_failed_rollout "$new_id" "$previous_digest"
+  die "post-rollout verify failed after $ROLLOUT_VERIFY_ATTEMPTS attempts; rolled back to $previous_digest"
+}
+
+# postcheck - post-deployment public verification: version identity, the
+# server-rendered head (exactly one <title>; the <!--head-html--> placeholder
+# must have been replaced — head CONTENT itself is admin-editable via the
+# CustomHeadHTML option and is not asserted), and the authenticated API
+# surface answering 401.
+postcheck() {
+  require_command curl
+  require_command jq
+  local base="${SITE_BASE_URL:-https://tokeness.cn}"
+  local version html title_count code
+  version="$(curl -fsS --max-time 30 "$base/api/status" | jq -r '.data.version // empty')" \
+    || die "postcheck: /api/status is not reachable"
+  [[ -n "$version" ]] || die "postcheck: /api/status did not report a version"
+  log "postcheck: public version $version"
+  html="$(curl -fsSL --max-time 30 "$base/")" || die "postcheck: homepage fetch failed"
+  title_count="$(grep -o '<title' <<<"$html" | wc -l)"
+  [[ "$title_count" -eq 1 ]] || die "postcheck: expected exactly one <title>, found $title_count"
+  grep -Fq '<!--head-html-->' <<<"$html" \
+    && die "postcheck: <!--head-html--> placeholder leaked into the rendered page"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$base/v1/models")"
+  [[ "$code" == "401" ]] || die "postcheck: /v1/models returned $code, expected 401"
+  log "postcheck: OK (head rendered server-side, /v1/models answered 401)"
 }
 
 usage() {
   cat <<'USAGE'
 Usage:
   deploy.sh verify
+  deploy.sh postcheck
   deploy.sh nginx-update <ECI_PRIVATE_IP>
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag>
@@ -439,6 +634,10 @@ main() {
       [[ $# -eq 1 ]] || die "verify does not accept arguments"
       verify_node || exit 1
       ;;
+    postcheck)
+      [[ $# -eq 1 ]] || die "postcheck does not accept arguments"
+      postcheck
+      ;;
     nginx-update)
       [[ $# -eq 2 ]] || die "nginx-update requires one ECI private IP"
       nginx_update "$2"
@@ -450,17 +649,19 @@ main() {
     deploy-release)
       [[ $# -eq 2 ]] || die "deploy-release requires one version tag"
       local release_tag="$2"
-      local release_digest
+      local release_digest previous_digest
       release_digest="$(resolve_ml_digest "$release_tag")"
+      previous_digest="$(current_config_digest)"
       apply_ml_digest "$release_digest"
-      ess_rollout "$release_digest"
+      ess_rollout "$release_digest" "$previous_digest"
       log "release $release_tag -> $release_digest deployed"
       ;;
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"
-      local rollback_digest="$2"
+      local rollback_digest="$2" rollback_previous
+      rollback_previous="$(current_config_digest)"
       apply_ml_digest "$rollback_digest"
-      ess_rollout "$rollback_digest"
+      ess_rollout "$rollback_digest" "$rollback_previous"
       log "rollback to $rollback_digest complete"
       ;;
     -h|--help)

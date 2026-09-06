@@ -18,19 +18,38 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1
    ```
 
-   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var), and runs a blue-green-style ESS rollout (scale out to two healthy, then back to one) with a final verify.
+   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the `/api/status` liveness probe), then runs the gated rollout:
 
-5. Roll back to a previous digest:
+   - scale out to two ESS-healthy instances;
+   - **application gate before any scale-down**: wait until the new instance answers `/api/status` (`APP_READY_TIMEOUT_SECONDS`, default 300 s) and its container log shows no `FATAL`/`panic` line — ESS "Healthy" alone is not trusted (it stayed green through the 2026-09-06 crash-loop);
+   - scale back to one: while both instances are healthy `ml-sync` lists both upstream members, and nginx passive checks (`max_fails=2 fail_timeout=5s`) bridge the ~30 s window in which the old member disappears;
+   - final verify (EdgeOne public + private chain).
+
+   Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, and the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window).
+
+   Run the script from **WSL or Linux**; Windows Git Bash is refused (`TOKENESS_ALLOW_WINDOWS=1` overrides at your own risk — a Windows-side CLI/jq can emit CRLF, and a stray CR in a re-sent env value crash-loops the container).
+
+5. Verify the release from the public internet:
+
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh postcheck
+   ```
+
+   `postcheck` asserts the public `/api/status` version, that the rendered head has exactly one `<title>` and no leaked `<!--head-html-->` placeholder (head content itself is admin-editable), and that `/v1/models` answers 401.
+
+6. Roll back to a previous digest:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
    ```
 
+   `rollback` follows the same gated rollout path as `deploy-release`.
+
 `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
 
 ## Cutover
 
-Keep the old ECI instance running until the new instance is healthy. After the console reports the new private IP:
+`deploy-release` covers cutover automatically through `ml-sync` (both upstream members while two instances are healthy). The manual form remains for exceptional cases — e.g. recovering from console-side drift:
 
 ```bash
 bash deployment/tokeness-cn/deploy.sh nginx-update <ECI_PRIVATE_IP>

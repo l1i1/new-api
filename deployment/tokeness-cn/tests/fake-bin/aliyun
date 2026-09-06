@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Stateful fake for the `aliyun` CLI covering the ESS/ECI calls deploy.sh
+# makes. State lives in $TOKENESS_TEST_STATE_DIR/state.json; every invocation
+# is appended to aliyun-calls.log and ModifyEciScalingConfiguration arguments
+# are additionally recorded verbatim in modify-args.txt so tests can assert
+# which image, env vars, and probes were re-sent.
+
+state_dir="${TOKENESS_TEST_STATE_DIR:?TOKENESS_TEST_STATE_DIR not set}"
+mkdir -p "$state_dir"
+state="$state_dir/state.json"
+if [[ ! -f "$state" ]]; then
+  printf '%s\n' '{"desired":1,"instances":[],"image":"","envs":[]}' > "$state"
+fi
+
+svc="$1"; shift
+action="${1:-}"; shift
+cmd="$svc $action"
+printf '%s\n' "$cmd $*" >> "$state_dir/aliyun-calls.log"
+
+get() { jq -r "$1" "$state"; }
+
+# Print the value following the given flag in "$@".
+flag_value() {
+  local flag="$1" i
+  for ((i = 2; i <= $#; i++)); do
+    if [[ "${!i}" == "$flag" ]]; then
+      local j=$((i + 1))
+      printf '%s\n' "${!j}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+case "$cmd" in
+  "ess ModifyScalingGroup")
+    desired="$(flag_value --DesiredCapacity "$@")"
+    while (( $(jq '.instances | length' "$state") < desired )); do
+      n="$(jq '.instances | length' "$state")"
+      jq --argjson n "$n" '.instances += [{
+        "InstanceId": ("eci-new-" + ($n | tostring)),
+        "PrivateIpAddress": ("10.0.0." + (240 + $n | tostring)),
+        "HealthStatus": "Healthy",
+        "LifecycleState": "InService"
+      }]' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    done
+    while (( $(jq '.instances | length' "$state") > desired )); do
+      # ESS removal policy removes the oldest instance first.
+      jq '.instances = .instances[1:]' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    done
+    jq --argjson d "$desired" '.desired = $d' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    printf '%s\n' '{"RequestId":"fake"}'
+    ;;
+  "ess DescribeScalingInstances")
+    jq '{ScalingInstances: {ScalingInstance: [.instances[] | {
+      InstanceId, PrivateIpAddress,
+      HealthStatus: "Healthy",
+      LifecycleState: "InService"
+    }]}}' "$state"
+    ;;
+  "ess DescribeEciScalingConfigurations")
+    jq '{ScalingConfigurations: [{
+      ScalingConfigurationId: "asc-test",
+      Containers: [{
+        Name: "newapi",
+        Image: .image,
+        ImagePullPolicy: "IfNotPresent",
+        EnvironmentVars: .envs
+      }]
+    }]}' "$state"
+    ;;
+  "ess ModifyEciScalingConfiguration")
+    printf '%s\n' "$*" > "$state_dir/modify-args.txt"
+    image="$(flag_value --Container.1.Image "$@")"
+    jq --arg img "$image" '.image = $img' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    printf '%s\n' '{"RequestId":"fake"}'
+    ;;
+  "eci DescribeContainerLog")
+    content="$(get '.logContent // "ready"')"
+    jq -n --arg c "$content" '{Content: $c}'
+    ;;
+  "eci DeleteContainerGroup")
+    id="$(flag_value --ContainerGroupId "$@")"
+    jq --arg id "$id" '.instances |= map(select(.InstanceId != $id))' "$state" > "$state.tmp" \
+      && mv "$state.tmp" "$state"
+    printf '%s\n' '{"RequestId":"fake"}'
+    ;;
+  *)
+    jq -n --arg c "$cmd $*" '{fake: $c}'
+    ;;
+esac

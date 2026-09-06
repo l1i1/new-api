@@ -211,4 +211,111 @@ for bad_ip in 10.0.0.008 10.0.0.256 10.0.0 10.0.0.0.1 10.0.0.a; do
   fi
 done
 
+# ---- deploy-release / ess_rollout coverage via the fake aliyun CLI ----
+
+TEST_ML_DIGEST="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+PREV_DIGEST="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+export TOKENESS_TEST_ML_DIGEST="$TEST_ML_DIGEST"
+
+init_ess_state() {
+  local dir="$1" log_content="${2:-ready}"
+  jq -n \
+    --arg image "docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST" \
+    --arg logContent "$log_content" \
+    '{
+      desired: 1,
+      instances: [{InstanceId: "eci-old", PrivateIpAddress: "10.0.0.207",
+                   HealthStatus: "Healthy", LifecycleState: "InService"}],
+      image: $image,
+      envs: [{Key: "SQL_DSN", Value: "postgresql://u:p@db:5432/newapi?sslmode=disable"},
+             {Key: "TZ", Value: "Asia/Shanghai"}],
+      logContent: $logContent
+    }' > "$dir/state.json"
+}
+
+# Happy path: the new instance answers /api/status, the rollout scales 2 -> 1,
+# the config is pinned to the target digest, and the liveness probe is re-sent.
+release_case="$test_root/release"
+mkdir -p "$release_case"
+make_conf "$release_case/nginx.conf"
+mkdir -p "$release_case/state"
+init_ess_state "$release_case/state"
+run_deploy "$release_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$TEST_ML_DIGEST"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.HttpGet.Path /api/status"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.HttpGet.Port 3000"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi"
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' "$release_case/state/state.json" > /dev/null \
+  || fail "scaling configuration image was not pinned to the release digest"
+local_image_digest="$(jq -r '.image' "$release_case/state/state.json" | sed 's/.*@//')"
+[[ "$local_image_digest" == "$TEST_ML_DIGEST" ]] || fail "unexpected pinned digest"
+grep -q "ess ModifyScalingGroup .*--DesiredCapacity 2" "$release_case/state/aliyun-calls.log" \
+  || fail "rollout never scaled out to 2"
+grep -q "ess ModifyScalingGroup .*--DesiredCapacity 1" "$release_case/state/aliyun-calls.log" \
+  || fail "rollout never scaled back to 1"
+grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
+  || fail "rollout never inspected the container log"
+
+# App never becomes ready: the rollout must fail BEFORE scaling down (the old
+# instance keeps serving), re-pin the previous digest, and delete the failed
+# container so ESS replaces it.
+app_failure_case="$test_root/app-failure"
+mkdir -p "$app_failure_case"
+make_conf "$app_failure_case/nginx.conf"
+mkdir -p "$app_failure_case/state"
+init_ess_state "$app_failure_case/state"
+if run_deploy "$app_failure_case" \
+  APP_READY_TIMEOUT_SECONDS=6 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_DIRECT_FAIL=1 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "rollout with a never-ready app unexpectedly succeeded"
+fi
+assert_contains "$app_failure_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST"
+grep -q "eci DeleteContainerGroup" "$app_failure_case/state/aliyun-calls.log" \
+  || fail "failed rollout did not delete the broken container"
+jq -e '.desired == 1 and ([.instances[].InstanceId] | index("eci-old") != null)' \
+  "$app_failure_case/state/state.json" > /dev/null \
+  || fail "rollback did not converge back to a single old instance"
+
+# A FATAL line in the container log must abort the rollout fast (fail-fast
+# instead of waiting out the whole readiness timeout).
+fatal_case="$test_root/fatal"
+mkdir -p "$fatal_case/state"
+make_conf "$fatal_case/nginx.conf"
+init_ess_state "$fatal_case/state" '[FATAL] 2026/09/06 | [cannot parse postgresql://...: invalid control character in URL]'
+if run_deploy "$fatal_case" \
+  APP_READY_TIMEOUT_SECONDS=30 APP_READY_POLL_SECONDS=5 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "rollout with a FATAL container log unexpectedly succeeded"
+fi
+grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
+  || fail "FATAL log did not trigger container cleanup"
+
+# CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
+# jq (CRLF on stdout) must never leak \r into re-sent container/env data.
+crlf_case="$test_root/crlf"
+mkdir -p "$crlf_case"
+make_conf "$crlf_case/nginx.conf"
+mkdir -p "$crlf_case/state"
+init_ess_state "$crlf_case/state"
+cat > "$bin_dir/jq" <<'WRAPPER'
+#!/usr/bin/env bash
+# Emulate a Windows jq build: CRLF on stdout.
+exec "$(dirname "$0")/jq-real" "$@" | sed 's/$/\r/'
+WRAPPER
+mv "$bin_dir/jq" "$bin_dir/jq-wrap"
+cp "$(command -v jq)" "$bin_dir/jq-real"
+mv "$bin_dir/jq-wrap" "$bin_dir/jq"
+chmod 0700 "$bin_dir/jq" "$bin_dir/jq-real"
+run_deploy "$crlf_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+if grep -q $'\r' "$crlf_case/state/modify-args.txt"; then
+  fail "CR leaked into re-sent scaling configuration data"
+fi
+assert_contains "$crlf_case/state/modify-args.txt" "--Container.1.Name newapi"
+rm -f "$bin_dir/jq" "$bin_dir/jq-real"
+
 printf 'Tokeness China deployment tests passed\n'

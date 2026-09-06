@@ -2,7 +2,12 @@
 set -Eeuo pipefail
 
 url="${*: -1}"
-if [[ "$url" == "${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}" ]]; then
+if [[ "$url" == *"/service/token"* ]]; then
+  printf '%s\n' '{"token":"fake-registry-token"}'
+elif [[ "$url" == *"/manifests/"* ]]; then
+  # resolve_ml_digest reads the Docker-Content-Digest header via `curl -D -`.
+  printf 'docker-content-digest: %s\r\n' "${TOKENESS_TEST_ML_DIGEST:-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}"
+elif [[ "$url" == "${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}" ]]; then
   [[ "${TOKENESS_TEST_PUBLIC_FAIL:-0}" -eq 0 ]] || exit 22
   printf '%s\n' "${TOKENESS_TEST_PUBLIC_BODY:-{\"success\":true}}"
 else
