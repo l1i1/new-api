@@ -13,6 +13,15 @@ readonly CNB_IMAGE_REPOSITORY="${CNB_IMAGE_REPOSITORY:-docker.cnb.cool/imvhb/new
 readonly SWAS_HOST="${SWAS_HOST:-8.133.172.195}"
 readonly SWAS_SSH_KEY_PATH="${SWAS_SSH_KEY_PATH:-$WORKSPACE_ROOT/private/access/keys/swas-ml}"
 readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
+# SWAS-2 hosts the panel-tier New API container (also the /v1 last-resort
+# fallback). The deploy pipeline keeps it on the deployed digest: after every
+# ESS rollout/rollback, deploy.sh reruns the bootstrap there, which pulls
+# env + image + registry creds live from the (already updated) scaling config.
+readonly SWAS2_HOST="${SWAS2_HOST:-101.133.234.135}"
+readonly SWAS2_SSH_KEY_PATH="${SWAS2_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
+readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
+readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$WORKSPACE_ROOT/private/scripts/bootstrap-newapi-host.sh}"
+readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://172.24.63.126:8300/api/status}"
 readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 # Direct probe defaults to the plaintext upstream for a Host-pinned request.
 # Override DIRECT_PROBE_URL / DIRECT_PROBE_INSECURE when the upstream serves HTTPS.
@@ -69,22 +78,28 @@ is_valid_ipv4() {
   return 0
 }
 
-# Run a Bash script from stdin on the lightweight host. Positional args passed
+# Run a Bash script from stdin on a lightweight host. Positional args passed
 # after `--` become $1..$N on the remote. Starting Bash explicitly keeps the
 # awk/heredoc logic independent of the remote login shell (dash/ash safe).
-remote_cmd() {
-  [[ -r "$SWAS_SSH_KEY_PATH" ]] || die "missing lightweight-server SSH key at $SWAS_SSH_KEY_PATH"
+remote_cmd_on() {
+  local host="$1" key="$2" known="$3"
+  shift 3
+  [[ -r "$key" ]] || die "missing lightweight-server SSH key at $key"
   local ssh_args=(
-    -i "$SWAS_SSH_KEY_PATH"
+    -i "$key"
     -o BatchMode=yes
     -o ConnectTimeout=15
     -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=yes
   )
-  if [[ -n "$SWAS_SSH_KNOWN_HOSTS" ]]; then
-    ssh_args+=( -o "UserKnownHostsFile=$SWAS_SSH_KNOWN_HOSTS" )
+  if [[ -n "$known" ]]; then
+    ssh_args+=( -o "UserKnownHostsFile=$known" )
   fi
-  ssh "${ssh_args[@]}" "root@$SWAS_HOST" -- bash -s -- "$@"
+  ssh "${ssh_args[@]}" "root@$host" -- bash -s -- "$@"
+}
+
+remote_cmd() {
+  remote_cmd_on "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$@"
 }
 
 get_upstream_ip() {
@@ -562,6 +577,9 @@ apply_ml_digest() {
   local digest="$1" snapshot="${2:-}"
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "new image digest must be sha256:<64 hex>"
   [[ -n "$snapshot" ]] || snapshot="$(oss_scaling_config_json)" || return 1
+  # Node identity envs travel with every config write so ESS-recreated
+  # instances always come up with them (see inject_node_identity_envs).
+  snapshot="$(inject_node_identity_envs "$snapshot")" || return 1
   modify_scaling_config target "$digest" "$snapshot" \
     || { error "ModifyEciScalingConfiguration failed or readback drifted"; return 1; }
   log "scaling configuration image set to $digest (full config preserved, liveness=tcp:$NGINX_UPSTREAM_PORT readiness=/health/ready)"
@@ -574,6 +592,83 @@ restore_scaling_config() {
   modify_scaling_config restore "" "$snapshot" \
     || { error "could not restore the complete scaling configuration snapshot"; return 1; }
   log "scaling configuration snapshot restored"
+}
+
+# inject_node_identity_envs <snapshot-json> - upsert NODE_NAME / NODE_TYPE into
+# the app container env of a scaling-configuration snapshot. Without them every
+# instance self-reports as master (new-api defaults NODE_TYPE!=slave), so a
+# scale-out to 2 ECI instances ran every background/system task twice (2026-09-06).
+# The ECI tier is a slave (migrations + system tasks belong to the stable SWAS-2
+# host container, which bootstrap-newapi-host.sh pins to NODE_TYPE=master).
+# Values overridable via ECI_NODE_NAME / ECI_NODE_TYPE.
+inject_node_identity_envs() {
+  local snapshot="$1"
+  require_command python3
+  printf '%s' "$snapshot" | ECI_NODE_NAME="${ECI_NODE_NAME:-new-api-ml000}" \
+    ECI_NODE_TYPE="${ECI_NODE_TYPE:-slave}" python3 -c '
+import json, os, sys
+
+snapshot = json.loads(sys.stdin.read())
+name = os.environ["ECI_NODE_NAME"]
+node_type = os.environ["ECI_NODE_TYPE"]
+if node_type not in ("master", "slave"):
+    sys.exit("ECI_NODE_TYPE must be master or slave")
+
+# The Describe output wraps the configuration in ScalingConfigurations; the
+# serializer also accepts a bare configuration object. Handle both.
+if isinstance(snapshot.get("ScalingConfigurations"), list) and snapshot["ScalingConfigurations"]:
+    config = snapshot["ScalingConfigurations"][0]
+else:
+    config = snapshot
+
+def inject(envs):
+    out, seen = [], set()
+    for entry in envs:
+        key = entry.get("Key")
+        if key == "NODE_NAME":
+            out.append({"Key": "NODE_NAME", "Value": name}); seen.add("NODE_NAME")
+        elif key == "NODE_TYPE":
+            out.append({"Key": "NODE_TYPE", "Value": node_type}); seen.add("NODE_TYPE")
+        else:
+            out.append(entry)
+    if "NODE_NAME" not in seen:
+        out.append({"Key": "NODE_NAME", "Value": name})
+    if "NODE_TYPE" not in seen:
+        out.append({"Key": "NODE_TYPE", "Value": node_type})
+    return out
+
+for container in config.get("Containers") or []:
+    if container.get("Name") == "newapi":
+        container["EnvironmentVars"] = inject(container.get("EnvironmentVars") or [])
+print(json.dumps(snapshot, ensure_ascii=False))
+'
+}
+
+# sync_host_container <expected_version> - after an ESS rollout/rollback
+# converged, rebuild the SWAS-2 host container from the updated scaling
+# configuration (bootstrap pulls env + digest + registry creds live), so the
+# panel-tier / v1-fallback instance always runs the exact deployed image.
+# expected_version pins the /api/status identity when the release tag is known
+# (deploy-release); rollback passes an empty string and relies on the
+# bootstrap's own readiness gate.
+sync_host_container() {
+  local expected_version="$1" host_version
+  [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
+    || die "SWAS-2 host sync impossible: bootstrap script not readable at $HOST_BOOTSTRAP_SCRIPT"
+  log "syncing SWAS-2 host container ($SWAS2_HOST) to the deployed digest"
+  remote_cmd_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
+    < "$HOST_BOOTSTRAP_SCRIPT" \
+    || { error "SWAS-2 host bootstrap failed; rerun $HOST_BOOTSTRAP_SCRIPT against $SWAS2_HOST"; return 1; }
+  host_version="$(remote_cmd_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
+    <<REMOTE_HOST_VER
+curl -fsS --max-time 10 "$HOST_STATUS_URL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["version"])'
+REMOTE_HOST_VER
+  )" || { error "could not read the SWAS-2 host version from $HOST_STATUS_URL"; return 1; }
+  if [[ -n "$expected_version" && "$host_version" != "$expected_version" ]]; then
+    error "SWAS-2 host version ($host_version) does not match the deployed release ($expected_version)"
+    return 1
+  fi
+  log "SWAS-2 host container synced (version $host_version)"
 }
 
 scale_group() {
@@ -695,6 +790,7 @@ Usage:
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag>
   deploy.sh rollback <sha256:DIGEST>
+  deploy.sh sync-host
 USAGE
 }
 
@@ -734,7 +830,14 @@ main() {
       if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
         die "release rollout failed; rollback was attempted and must be verified before retrying"
       fi
+      if ! sync_host_container "$release_tag"; then
+        die "SWAS-2 host container did not converge to $release_tag; rerun deploy.sh sync-host after fixing"
+      fi
       log "release $release_tag -> $release_digest deployed"
+      ;;
+    sync-host)
+      [[ $# -eq 1 ]] || die "sync-host does not accept arguments"
+      sync_host_container ""
       ;;
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"
@@ -750,6 +853,9 @@ main() {
       fi
       if ! ess_rollout "$rollback_digest" "$rollback_previous" "$rollback_snapshot"; then
         die "rollback rollout failed; rollback was attempted and must be verified before retrying"
+      fi
+      if ! sync_host_container ""; then
+        die "SWAS-2 host container did not converge after rollback; rerun deploy.sh sync-host after fixing"
       fi
       log "rollback to $rollback_digest complete"
       ;;

@@ -19,6 +19,9 @@ elif [[ "$url" == *"/manifests/"* ]]; then
 elif [[ "$url" == "${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}" ]]; then
   [[ "${TOKENESS_TEST_PUBLIC_FAIL:-0}" -eq 0 ]] || exit 22
   printf '%s\n' "${TOKENESS_TEST_PUBLIC_BODY:-{\"success\":true}}"
+elif [[ "$url" == *":8300/api/status" ]]; then
+  # SWAS-2 host container version probe (sync_host_container).
+  printf '{"data":{"version":"%s"}}\n' "${TOKENESS_TEST_HOST_VERSION:-}"
 else
   [[ "${TOKENESS_TEST_DIRECT_FAIL:-0}" -eq 0 ]] || exit 22
   printf '%s\n' "${TOKENESS_TEST_DIRECT_BODY:-{\"success\":true}}"

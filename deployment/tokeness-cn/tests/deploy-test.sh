@@ -37,6 +37,20 @@ CONF
 
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
+
+# Stand-in for private/scripts/bootstrap-newapi-host.sh: the real script pulls
+# env/image/creds from the scaling config and runs docker (unavailable here).
+# The fake only records that the host-sync reached the SWAS-2 host.
+host_bootstrap="$test_root/fake-bootstrap.sh"
+cat > "$host_bootstrap" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+state_dir="${TOKENESS_TEST_STATE_DIR:?}"
+mkdir -p "$state_dir"
+printf 'host-bootstrap stdin=%s bytes\n' "$(wc -c < /dev/stdin)" >> "$state_dir/host-bootstrap.log"
+FAKE
+chmod +x "$host_bootstrap"
+
 bin_dir="$test_root/bin"
 mkdir -p "$bin_dir"
 cp "$TEST_DIR"/fake-bin/* "$bin_dir/"
@@ -57,10 +71,11 @@ run_deploy() {
     PATH="$bin_dir:$PATH" \
     NGINX_CONF="$case_dir/nginx.conf" \
     SWAS_SSH_KEY_PATH="$test_root/key" \
+    HOST_BOOTSTRAP_SCRIPT="$host_bootstrap" \
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
     CNB_REGISTRY_TOKEN=dummy-test-token \
     "${env_args[@]}" \
-    bash "$DEPLOY_SCRIPT" "$@"
+    bash "$DEPLOY_SCRIPT" "$@" 2> "$case_dir/state/output.log"
 }
 
 invalid_ip_case="$test_root/invalid-ip"
@@ -336,6 +351,7 @@ mkdir -p "$release_case/state"
 init_ess_state "$release_case/state"
 run_deploy "$release_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$TEST_ML_DIGEST"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.TcpSocket.Port 3000"
@@ -343,6 +359,7 @@ assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessPr
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Port 3000"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.3.Key NODE_NAME"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.7.Key NODE_TYPE"
 assert_contains "$release_case/state/modify-args.txt" "--Cpu 2"
 assert_contains "$release_case/state/modify-args.txt" "--Memory 4"
 assert_contains "$release_case/state/modify-args.txt" "--SecurityGroupId sg-test"
@@ -362,6 +379,26 @@ grep -q "ess ModifyScalingGroup .*--DesiredCapacity 1" "$release_case/state/aliy
   || fail "rollout never scaled back to 1"
 grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never inspected the container log"
+# The deploy pipeline must converge the SWAS-2 host container to the same
+# release: bootstrap runs on the host and the reported version must match.
+assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap stdin="
+[[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 1 ]] \
+  || fail "host bootstrap ran more than once"
+
+# Host version mismatch must fail the release even though ECI converged.
+host_mismatch_case="$test_root/host-mismatch"
+mkdir -p "$host_mismatch_case"
+make_conf "$host_mismatch_case/nginx.conf"
+mkdir -p "$host_mismatch_case/state"
+init_ess_state "$host_mismatch_case/state"
+if run_deploy "$host_mismatch_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v0.0.0-wrong-host \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "host version mismatch unexpectedly passed the release"
+fi
+grep -q "SWAS-2 host version" "$host_mismatch_case/state/output.log" 2>/dev/null \
+  || fail "mismatch case did not report the host version problem"
 
 # App never becomes ready: the rollout must fail BEFORE scaling down (the old
 # instance keeps serving), re-pin the previous digest, and delete the failed
@@ -416,6 +453,7 @@ mv "$bin_dir/jq-wrap" "$bin_dir/jq"
 chmod 0700 "$bin_dir/jq" "$bin_dir/jq-real"
 run_deploy "$crlf_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 if grep -q $'\r' "$crlf_case/state/modify-args.txt"; then
   fail "CR leaked into re-sent scaling configuration data"
