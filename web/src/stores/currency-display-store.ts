@@ -19,9 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
+
 export type DisplayCurrency = 'CNY' | 'USD'
 
 export function getDefaultDisplayCurrency(language?: string): DisplayCurrency {
+  // The mainland edition is CNY-only regardless of the browser locale.
+  if (IS_MAINLAND_SITE) return 'CNY'
+
   const browserLanguage =
     language ??
     (typeof navigator === 'undefined' ? undefined : navigator.language)
@@ -46,8 +51,17 @@ export const useCurrencyDisplayStore = create<CurrencyDisplayState>()(
   persist(
     (set) => ({
       currency: getDefaultDisplayCurrency(),
-      setCurrency: (currency) => set({ currency }),
+      setCurrency: (currency) =>
+        set({ currency: IS_MAINLAND_SITE ? 'CNY' : currency }),
     }),
-    { name: 'currency-display-storage' }
+    {
+      name: 'currency-display-storage',
+      // Mainland is CNY-only: a saved USD preference from before the switcher
+      // was removed must not rehydrate.
+      merge: (persisted, current) =>
+        IS_MAINLAND_SITE
+          ? current
+          : { ...current, ...(persisted as Partial<CurrencyDisplayState>) },
+    }
   )
 )

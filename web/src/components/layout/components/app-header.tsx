@@ -29,6 +29,7 @@ import {
   useNotifications,
 } from '@/hooks/use-notifications'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 
 import { defaultTopNavLinks } from '../config/top-nav.config'
 import type { TopNavLink } from '../types'
@@ -153,7 +154,7 @@ export function AppHeader({
               onCloseToday={notifications.closeToday}
             />
           )}
-          <CurrencyDisplaySwitcher />
+          {!IS_MAINLAND_SITE && <CurrencyDisplaySwitcher />}
           <LanguageSwitcher />
           {showThemeSwitch && <ThemeSwitch />}
           {showProfileDropdown && <ProfileDropdown />}

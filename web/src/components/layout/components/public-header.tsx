@@ -35,6 +35,7 @@ import {
 } from '@/hooks/use-notifications'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -292,7 +293,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 <div className='flex shrink-0 items-center gap-2'>
                   {showLanguageSwitcher && (
                     <>
-                      <CurrencyDisplaySwitcher />
+                      {!IS_MAINLAND_SITE && <CurrencyDisplaySwitcher />}
                       <LanguageSwitcher />
                     </>
                   )}

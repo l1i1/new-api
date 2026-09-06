@@ -39,6 +39,8 @@ import { Link } from '@tanstack/react-router'
 import type { ComponentType, SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
+
 import {
   LegacyGeminiIcon,
   LegacyOpenAIIcon,
@@ -59,7 +61,7 @@ interface Provider {
 // compliant ICP filing number. The flavour is baked at build time via
 // VITE_SITE_FLAVOR (='mainland' | 'overseas' | unset). Overseas/unset keeps
 // the full provider matrix below unchanged.
-const isMainland = import.meta.env.VITE_SITE_FLAVOR === 'mainland'
+const isMainland = IS_MAINLAND_SITE
 
 // Providers shown only on the overseas edition.
 const OVERSEAS_ONLY_PROVIDER_IDS = new Set([

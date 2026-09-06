@@ -20,6 +20,8 @@ import i18n from 'i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
+
 import { convertDetectedLanguage, toDocumentLanguage } from './languages'
 import en from './locales/en.json'
 import fr from './locales/fr.json'
@@ -44,7 +46,8 @@ i18n
   .use(initReactI18next)
   .init({
     resources,
-    fallbackLng: 'en',
+    // The mainland edition defaults to Simplified Chinese.
+    fallbackLng: IS_MAINLAND_SITE ? 'zhCN' : 'en',
     supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
     load: 'currentOnly',
     nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
@@ -53,7 +56,11 @@ i18n
       escapeValue: false, // not needed for react as it escapes by default
     },
     detection: {
-      order: ['localStorage', 'navigator'],
+      // Mainland defaults to Simplified Chinese instead of the browser locale;
+      // an explicit choice previously saved to localStorage still wins.
+      order: IS_MAINLAND_SITE
+        ? ['localStorage']
+        : ['localStorage', 'navigator'],
       caches: ['localStorage'],
       // Browsers report `zh-CN`/`zh-TW`/`zh`; map them onto our `zhCN`/`zhTW`
       // codes (non-Chinese codes pass through for normal supportedLngs matching).
