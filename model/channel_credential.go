@@ -431,7 +431,7 @@ func UpdateChannelCredentialStatuses(db *gorm.DB, input ChannelCredentialStatusU
 	if db == nil || input.ChannelID <= 0 {
 		return 0, ErrChannelCredentialRevisionInput
 	}
-	if input.Status != common.ChannelStatusEnabled && input.Status != common.ChannelStatusManuallyDisabled {
+	if input.Status != common.ChannelStatusEnabled && input.Status != common.ChannelStatusManuallyDisabled && input.Status != common.ChannelStatusAutoDisabled {
 		return 0, ErrChannelCredentialInvalid
 	}
 	if !input.All && len(input.CredentialIDs) == 0 && len(input.Positions) == 0 {
@@ -480,7 +480,7 @@ func UpdateChannelCredentialStatuses(db *gorm.DB, input ChannelCredentialStatusU
 
 		now := common.GetTimestamp()
 		reason := strings.TrimSpace(input.Reason)
-		if input.Status == common.ChannelStatusManuallyDisabled && reason == "" {
+		if input.Status != common.ChannelStatusEnabled && reason == "" {
 			reason = "manual"
 		}
 		for index := range credentials {

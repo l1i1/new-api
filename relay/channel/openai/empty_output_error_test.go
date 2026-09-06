@@ -21,6 +21,12 @@ func TestEmptyOutputErrorsAreFlagged(t *testing.T) {
 	require.True(t, types.IsSkipRetryError(emptyChatCompletionError(true)))
 	require.False(t, types.IsSkipRetryError(emptyChatCompletionError()))
 
+	// image variants behave the same way
+	require.True(t, emptyImageResponseError().IsEmptyOutput())
+	require.True(t, emptyImageResponseError(true).IsEmptyOutput())
+	require.True(t, types.IsSkipRetryError(emptyImageResponseError(true)))
+	require.False(t, types.IsSkipRetryError(emptyImageResponseError()))
+
 	// unrelated errors must not carry the flag
 	require.False(t, types.NewOpenAIError(
 		errors.New("boom"), types.ErrorCode("server_error"), 502,

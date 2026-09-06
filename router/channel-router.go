@@ -85,6 +85,7 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/tag/models", permission: authz.ChannelRead, handler: controller.GetTagModels},
 	{method: http.MethodPost, path: "/copy/:id", permission: authz.ChannelSensitiveWrite, handler: controller.CopyChannel},
 	{method: http.MethodPost, path: "/multi_key/manage", permission: authz.ChannelOperate, handler: controller.ManageMultiKeys},
+	{method: http.MethodPost, path: "/multi_key/scheduled_test", permission: authz.ChannelOperate, handler: controller.ScheduleMultiKeyTest},
 	{method: http.MethodGet, path: "/:id/multi-key", permission: authz.ChannelRead, handler: controller.ListMultiKeyCredentials},
 	{method: http.MethodPost, path: "/:id/multi-key/test", permission: authz.ChannelOperate, handler: controller.TestMultiKeys},
 	{method: http.MethodGet, path: "/:id/multi-key/test/:task_id", permission: authz.ChannelOperate, handler: controller.GetMultiKeyTestTask},

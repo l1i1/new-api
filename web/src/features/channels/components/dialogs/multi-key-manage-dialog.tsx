@@ -27,7 +27,7 @@ import {
   Square,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -38,6 +38,7 @@ import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -157,6 +158,8 @@ export function MultiKeyManageDialog({
   const [testResults, setTestResults] = useState<
     Record<number, MultiKeyTestResult>
   >({})
+  const [testModel, setTestModel] = useState('')
+  const [testFilter, setTestFilter] = useState('')
   const [failedCredentialIds, setFailedCredentialIds] = useState<number[]>([])
   const [failedOnly, setFailedOnly] = useState(false)
   const [keyMetrics, setKeyMetrics] = useState<
@@ -201,6 +204,8 @@ export function MultiKeyManageDialog({
     setTestTaskId(null)
     setTestProgress(null)
     setTestResults({})
+    setTestModel('')
+    setTestFilter('')
     setFailedCredentialIds([])
     setFailedOnly(false)
     setKeyMetrics({})
@@ -427,6 +432,7 @@ export function MultiKeyManageDialog({
         all: !hasSelection,
         include_disabled: hasSelection ? true : all,
         credential_ids: selectedIds,
+        model: testModel || undefined,
         concurrency: 4,
         timeout: 60,
       })
@@ -569,6 +575,53 @@ export function MultiKeyManageDialog({
     await loadKeyStatus(1, FAILED_ONLY_PAGE_SIZE, null)
   }
 
+  // Candidate probe models: the channel's model list plus its configured test
+  // model, de-duplicated in list order.
+  const testModelOptions = useMemo(() => {
+    const models = (currentRow?.models ?? '')
+      .split(',')
+      .map((model) => model.trim())
+      .filter(Boolean)
+    const configured = currentRow?.test_model?.trim()
+    if (configured && !models.includes(configured)) {
+      models.unshift(configured)
+    }
+    return models.map((model) => ({ value: model, label: model }))
+  }, [currentRow?.models, currentRow?.test_model])
+
+  // Keyword filter over persisted last-test metadata plus any live probe
+  // result from the current session, matching status codes and error text.
+  const matchesTestFilter = (key: KeyStatus) => {
+    const keyword = testFilter.trim().toLowerCase()
+    if (!keyword) return true
+    const result = getMultiKeyTestResult(testResults, key)
+    const haystack = [
+      result?.http_status ?? key.last_test_http_status,
+      result?.error_code ?? key.last_test_error_code,
+      result?.error_class ?? key.last_test_error_class,
+      result?.error_message ?? key.last_test_error_message,
+      result?.status ?? key.last_test_status,
+      key.reason,
+    ]
+    return haystack.some(
+      (value) =>
+        value !== undefined &&
+        value !== null &&
+        String(value)
+          .toLowerCase()
+          .includes(keyword)
+    )
+  }
+
+  const handleTestFilterChange = async (value: string) => {
+    setTestFilter(value)
+    // Non-empty filters switch to the expanded fetch so matches from every
+    // page stay visible, mirroring the "failed only" behavior.
+    if (value.trim() !== '' && !failedOnly && keys.length < total) {
+      await loadKeyStatus(1, FAILED_ONLY_PAGE_SIZE, statusFilter)
+    }
+  }
+
   const openProxyEditor = (key: KeyStatus) => {
     setProxyBatch(false)
     setProxyTarget(key)
@@ -690,12 +743,13 @@ export function MultiKeyManageDialog({
   ).length
 
   if (!currentRow) return null
-  const visibleKeys = failedOnly
-    ? keys.filter(
-        (key) =>
-          key.credential_id && failedCredentialIds.includes(key.credential_id)
-      )
-    : keys
+  const visibleKeys = keys.filter(
+    (key) =>
+      (!failedOnly ||
+        (key.credential_id !== undefined &&
+          failedCredentialIds.includes(key.credential_id))) &&
+      matchesTestFilter(key)
+  )
 
   let multiKeyModeLabel = t('Polling')
   if (currentRow.channel_info?.multi_key_mode === 'random') {
@@ -785,7 +839,24 @@ export function MultiKeyManageDialog({
               </SelectContent>
             </Select>
 
+            <Input
+              value={testFilter}
+              onChange={(event) => void handleTestFilterChange(event.target.value)}
+              placeholder={t('Filter by status code or error message')}
+              className='w-64'
+              aria-label={t('Filter by status code or error message')}
+            />
+
             <div className='flex flex-wrap items-center gap-2'>
+              <ComboboxInput
+                options={testModelOptions}
+                value={testModel}
+                onValueChange={setTestModel}
+                placeholder={t('Test model (default)')}
+                allowCustomValue
+                className='w-52'
+              />
+
               <Button
                 variant='outline'
                 size='sm'

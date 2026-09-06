@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -83,7 +84,8 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 		`event: image_generation.partial_image`,
 		`data: {"type":"image_generation.partial_image","b64_json":"partial"}`,
 		``,
-		`data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`,
+		`event: image_generation.completed`,
+		`data: {"type":"image_generation.completed","b64_json":"final","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -102,10 +104,10 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 	require.Equal(t, 1, usage.PromptTokensDetails.TextTokens)
 	require.Contains(t, recorder.Body.String(), `event: image_generation.partial_image`)
 	require.Contains(t, recorder.Body.String(), `data: {"type":"image_generation.partial_image","b64_json":"partial"}`)
-	require.Contains(t, recorder.Body.String(), `data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`)
+	require.Contains(t, recorder.Body.String(), `"input_tokens":3,"output_tokens":4,"total_tokens":7`)
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
-	require.Equal(t, 3.0, info.PriceData.OtherRatios()["n"], "streams without completed events keep the requested count")
+	require.Equal(t, 1.0, info.PriceData.OtherRatios()["n"], "completed events replace the requested count")
 }
 
 func TestOpenaiImageStreamHandlerUsesCompletedEventCount(t *testing.T) {
@@ -334,9 +336,9 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 		},
 		{
 			name:      "empty data keeps requested count",
-			body:      `{"data":[]}`,
+			body:      `{"data":[{"b64_json":"` + longImage + `"}]}`,
 			usePrice:  true,
-			wantCount: 3,
+			wantCount: 1,
 		},
 		{
 			name:      "ratio billing ignores data length",
@@ -359,6 +361,67 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 			require.Equal(t, tt.body, recorder.Body.String())
 		})
 	}
+}
+
+// TestOpenaiImageHandlerEmptyDataFailsRequest guards the billing invariant: an
+// upstream 200 image response without any image must fail the request so the
+// relay refunds the pre-consumed quota instead of billing the model price for
+// zero output.
+func TestOpenaiImageHandlerEmptyDataFailsRequest(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	t.Run("non-streaming handler", func(t *testing.T) {
+		c, recorder, resp, info := newImageTestContext(t, `{"created":1710000000,"data":[]}`, "application/json", false)
+
+		usage, err := OpenaiImageHandler(c, info, resp)
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		require.True(t, err.IsEmptyOutput())
+		require.Contains(t, err.ToOpenAIError().Message, "no images")
+		require.Empty(t, recorder.Body.String(), "empty response must not be forwarded")
+	})
+
+	t.Run("json-as-stream fallback", func(t *testing.T) {
+		c, recorder, resp, info := newImageTestContext(t, `{"created":1710000000,"data":[]}`, "application/json", true)
+
+		usage, err := OpenaiImageStreamHandler(c, info, resp)
+		require.Nil(t, usage)
+		require.NotNil(t, err)
+		require.True(t, err.IsEmptyOutput())
+		require.Empty(t, recorder.Body.String())
+	})
+}
+
+// TestOpenaiImageStreamHandlerNoCompletedImageFailsRequest extends the empty
+// output guard to the native SSE path: a stream that ends cleanly without any
+// completed image event is an upstream failure (committed, so skip-retry).
+func TestOpenaiImageStreamHandlerNoCompletedImageFailsRequest(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"type":"image_generation.partial_image","b64_json":"partial"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, _, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.NotNil(t, usage)
+	require.NotNil(t, err)
+	require.True(t, err.IsEmptyOutput())
+	require.True(t, types.IsSkipRetryError(err), "committed stream must not be retried")
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 }
 
 // TestOpenaiImageHandlersReturnJSONError covers JSON error responses for both
@@ -434,7 +497,11 @@ func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
 
 	usage, err := OpenaiImageStreamHandler(c, info, resp)
-	require.Nil(t, err)
+	// A stream carrying an upstream error event and no completed image must
+	// fail the request so the pre-consumed quota is refunded.
+	require.NotNil(t, err)
+	require.True(t, err.IsEmptyOutput())
+	require.True(t, types.IsSkipRetryError(err))
 	require.NotNil(t, usage)
 	require.NotNil(t, info.StreamStatus)
 	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,25 @@ func updateOpenAIImageCount(info *relaycommon.RelayInfo, count int64) {
 	info.PriceData.AddOtherRatio("n", float64(count))
 }
 
+// emptyImageResponseError marks an upstream 200 image response that carried no
+// images as an upstream failure so the request is retried or refunded instead
+// of being billed for zero output, mirroring emptyChatCompletionError for the
+// chat path. The committed variant keeps skip-retry semantics for streams that
+// already forwarded data to the client.
+func emptyImageResponseError(committed ...bool) *types.NewAPIError {
+	options := make([]types.NewAPIErrorOptions, 0, 2)
+	options = append(options, types.ErrOptionWithEmptyOutput())
+	if len(committed) > 0 && committed[0] {
+		options = append(options, types.ErrOptionWithSkipRetry())
+	}
+	return types.NewOpenAIError(
+		errors.New("upstream returned no images"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+		options...,
+	)
+}
+
 // OpenaiImageHandler handles non-streaming OpenAI image responses
 // (generations/edits), returning the parsed usage for billing.
 func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -54,7 +74,14 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
-	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
+	imageCount := gjson.GetBytes(responseBody, "data.#").Int()
+	if imageCount == 0 {
+		// An upstream 200 without images must fail the request before the
+		// response is forwarded, so the relay refunds the pre-consumed quota
+		// instead of billing a full image price for zero output.
+		return nil, emptyImageResponseError()
+	}
+	updateOpenAIImageCount(info, imageCount)
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -160,6 +187,16 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	})
 	if streamErr != nil {
 		return usage, streamErr
+	}
+	// A stream that finished cleanly without a single completed image is an
+	// upstream failure: the client received no deliverable output, so the
+	// pre-consumed quota is refunded instead of billing the model price. The
+	// stream is already committed, hence skip-retry.
+	if info.StreamStatus != nil &&
+		(info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone ||
+			info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF) &&
+		completedImages == 0 {
+		return usage, emptyImageResponseError(true)
 	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
@@ -281,6 +318,9 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
 	imageCount := gjson.GetBytes(responseBody, "data.#").Int()
+	if imageCount == 0 {
+		return nil, emptyImageResponseError()
+	}
 	updateOpenAIImageCount(info, imageCount)
 
 	helper.SetEventStreamHeaders(c)
