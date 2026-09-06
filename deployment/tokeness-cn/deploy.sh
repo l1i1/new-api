@@ -351,6 +351,9 @@ instance_private_ip() {
 # capped at the default 200 Mbps / per-traffic billing until the IP was added
 # by hand), so every rollout converges this binding.
 readonly SHARED_BANDWIDTH_PACKAGE_ID="${SHARED_BANDWIDTH_PACKAGE_ID:-cbwp-uf6cup45a4jmnbnbgth04}"
+# Grace window for a just-replaced instance whose EIP attach has not shown up
+# in DescribeContainerGroups yet (0 disables the retry).
+readonly EIP_ATTACH_GRACE_SECONDS="${EIP_ATTACH_GRACE_SECONDS:-30}"
 
 instance_public_ip() {
   local id="$1"
@@ -363,25 +366,31 @@ instance_public_ip() {
 # member of $SHARED_BANDWIDTH_PACKAGE_ID. Idempotent: skips when the EIP is
 # already in the package or the instance has no EIP (private-only fallback).
 ensure_eip_in_bandwidth_package() {
-  local id="$1" eip allocation_id state
+  local id="$1" eip eip_json allocation_id package_id
   [[ -n "$SHARED_BANDWIDTH_PACKAGE_ID" ]] || { log "no shared bandwidth package configured; skipping EIP convergence"; return 0; }
   eip="$(instance_public_ip "$id")" \
     || { error "could not read the public IP of $id"; return 1; }
+  if [[ -z "$eip" && "$EIP_ATTACH_GRACE_SECONDS" -gt 0 ]]; then
+    # A just-replaced instance may briefly report no EIP while the attach is
+    # still propagating; retry once before treating it as private-only.
+    log "instance $id has no public EIP yet; retrying in ${EIP_ATTACH_GRACE_SECONDS}s"
+    sleep "$EIP_ATTACH_GRACE_SECONDS"
+    eip="$(instance_public_ip "$id")" || { error "could not read the public IP of $id"; return 1; }
+  fi
   if [[ -z "$eip" ]]; then
-    log "instance $id has no public EIP; skipping shared-bandwidth convergence"
+    warn "instance $id still has no public EIP; skipping shared-bandwidth convergence (rerun deploy.sh eip-sync)"
     return 0
   fi
-  allocation_id="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" \
-    | tr -d '\r' | jq -r --arg ip "$eip" '
-      .EipAddresses.EipAddress[]? | select(.IpAddress == $ip) | .AllocationId // empty' | head -n1)" \
-    || { error "could not resolve the EIP allocation id of $eip"; return 1; }
+  eip_json="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" --EipAddress "$eip" | tr -d '\r')" \
+    || { error "could not query the EIP object of $eip"; return 1; }
+  IFS=$'\t' read -r allocation_id package_id < <(
+    jq -r '(.EipAddresses.EipAddress[0] // {})
+      | [(.AllocationId // ""), (.BandwidthPackageId // "")] | @tsv' <<<"$eip_json")
   if [[ -z "$allocation_id" ]]; then
     error "no EIP object found for public IP $eip ($id)"
     return 1
   fi
-  state="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" --AllocationId "$allocation_id" \
-    | tr -d '\r' | jq -r '.EipAddresses.EipAddress[0].BandwidthPackageId // empty')"
-  if [[ "$state" == "$SHARED_BANDWIDTH_PACKAGE_ID" ]]; then
+  if [[ "$package_id" == "$SHARED_BANDWIDTH_PACKAGE_ID" ]]; then
     log "EIP $eip already in shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
     return 0
   fi
@@ -927,7 +936,7 @@ main() {
       ;;
     eip-sync)
       [[ $# -eq 1 ]] || die "eip-sync does not accept arguments"
-      converge_eip_bandwidth || die "EIP shared-bandwidth convergence failed; check SHARED_BANDWIDTH_PACKAGE_ID and RAM permissions (AliyunEIPFullAccess)"
+      converge_eip_bandwidth || die "EIP shared-bandwidth convergence failed; see the ERROR lines above for the specific cause"
       ;;
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"

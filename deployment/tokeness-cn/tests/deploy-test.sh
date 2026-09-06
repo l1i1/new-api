@@ -542,6 +542,19 @@ grep -q "vpc AddCommonBandwidthPackageIp .*--BandwidthPackageId cbwp-uf6cup45a4j
 if run_deploy "$eip_case" TOKENESS_TEST_EIP_ABSENT=1 eip-sync; then
   fail "eip-sync unexpectedly succeeded without a matching EIP object"
 fi
+# EIP attach still in flight: one retry, then an advisory skip (no add call).
+no_public_ip_case="$test_root/no-public-ip"
+mkdir -p "$no_public_ip_case/state"
+init_ess_state "$no_public_ip_case/state"
+run_deploy "$no_public_ip_case" \
+  EIP_ATTACH_GRACE_SECONDS=1 \
+  TOKENESS_TEST_NO_PUBLIC_IP=1 \
+  eip-sync
+[[ "$(grep -c "eci DescribeContainerGroups" "$no_public_ip_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "no-public-IP path did not retry the container group lookup"
+if grep -q "vpc AddCommonBandwidthPackageIp" "$no_public_ip_case/state/aliyun-calls.log"; then
+  fail "no-public-IP path issued a package add call"
+fi
 # VPC API failure: advisory convergence must WARN inside a release, not abort
 # it (egress keeps serving on the standalone EIP peak until eip-sync reruns).
 vpc_fail_case="$test_root/vpc-fail"
