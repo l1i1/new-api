@@ -14,13 +14,42 @@ func TestHotPayWalletMethodMatrix(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "wechat_pay", method)
 
+	method, err = hotPayWalletMethod(model.PaymentCurrencyCNY, "alipay")
+	require.NoError(t, err)
+	require.Equal(t, "alipay", method)
+
 	method, err = hotPayWalletMethod(model.PaymentCurrencyUSD, "applepay")
 	require.NoError(t, err)
 	require.Equal(t, "apple_pay", method)
 
 	_, err = hotPayWalletMethod(model.PaymentCurrencyCNY, "card")
 	require.Error(t, err)
+	_, err = hotPayWalletMethod(model.PaymentCurrencyUSD, "alipay")
+	require.Error(t, err)
 	_, err = hotPaySubscriptionMethod(model.PaymentCurrencyCNY, "wechat_pay")
+	require.Error(t, err)
+
+	method, err = hotPaySubscriptionMethod(model.PaymentCurrencyCNY, "alipay")
+	require.NoError(t, err)
+	require.Equal(t, "alipay", method)
+}
+
+func TestHotPayProviderSelectionFollowsMethod(t *testing.T) {
+	require.Equal(t, model.PaymentProviderGoPayAlipay, hotPayProviderForMethod("alipay"))
+	require.Equal(t, model.PaymentProviderWaffoPancake, hotPayProviderForMethod("wechat_pay"))
+	require.Equal(t, model.PaymentProviderWaffoPancake, hotPayProviderForMethod("card"))
+
+	t.Setenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID", "2021004153649081")
+	account, err := hotPayProviderAccountIDForMethod("alipay")
+	require.NoError(t, err)
+	require.Equal(t, "2021004153649081", account)
+
+	waffoAccount, err := hotPayProviderAccountIDForMethod("wechat_pay")
+	require.NoError(t, err)
+	require.Equal(t, hotPayProviderAccountID(), waffoAccount)
+
+	t.Setenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID", "")
+	_, err = hotPayProviderAccountIDForMethod("alipay")
 	require.Error(t, err)
 }
 

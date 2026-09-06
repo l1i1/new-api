@@ -74,6 +74,12 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			common.ApiErrorMsg(c, "当前支付方式或套餐币种暂不支持 HotPay 网关")
 			return
 		}
+		paymentProvider := hotPayProviderForMethod(canonicalMethod)
+		providerAccountID, accountErr := hotPayProviderAccountIDForMethod(canonicalMethod)
+		if accountErr != nil {
+			common.ApiErrorMsg(c, "支付网关支付宝账户未配置")
+			return
+		}
 		if strings.TrimSpace(plan.WaffoPancakeProductId) == "" {
 			common.ApiErrorMsg(c, "该套餐未配置 HotPay 商品")
 			return
@@ -96,15 +102,15 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			Money:                    plan.PriceAmount,
 			TradeNo:                  tradeNo,
 			PaymentMethod:            canonicalMethod,
-			PaymentProvider:          model.PaymentProviderWaffoPancake,
-			PaymentProviderAccountID: hotPayProviderAccountID(),
+			PaymentProvider:          paymentProvider,
+			PaymentProviderAccountID: providerAccountID,
 			PaymentEnvironment:       hotPayEnvironment(),
 			PaymentCurrency:          planCurrency,
 			CreateTime:               time.Now().Unix(),
 			Status:                   common.TopUpStatusPending,
 		}
 		if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil {
-			if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
+			if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != paymentProvider || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 				common.ApiErrorMsg(c, "支付请求与已有订单不匹配")
 				return
 			}
@@ -129,8 +135,8 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			ProductID:             strings.TrimSpace(plan.WaffoPancakeProductId),
 			AmountMinor:           amountMinor,
 			Currency:              planCurrency,
-			Provider:              model.PaymentProviderWaffoPancake,
-			ProviderAccountID:     hotPayProviderAccountID(),
+			Provider:              paymentProvider,
+			ProviderAccountID:     providerAccountID,
 			PaymentMethod:         canonicalMethod,
 			CompatibilityProtocol: "epay",
 			Environment:           hotPayEnvironment(),

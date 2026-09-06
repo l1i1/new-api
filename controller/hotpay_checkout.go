@@ -97,20 +97,52 @@ func hotPayWalletMethod(currency, value string) (string, error) {
 		if method == "googlepay" {
 			method = "google_pay"
 		}
+	case "alipay":
 	default:
 		return "", errHotPayUnsupportedLegacyMethod
 	}
-	if strings.EqualFold(currency, model.PaymentCurrencyCNY) && method != "wechat_pay" {
+	if method == "alipay" && !strings.EqualFold(currency, model.PaymentCurrencyCNY) {
+		// gopay_alipay is a CNY-only provider; USD plans must ride Waffo methods.
+		return "", errHotPayUnsupportedLegacyMethod
+	}
+	if strings.EqualFold(currency, model.PaymentCurrencyCNY) && method != "wechat_pay" && method != "alipay" {
 		return "", errHotPayUnsupportedLegacyMethod
 	}
 	return method, nil
 }
 
 func hotPaySubscriptionMethod(currency, value string) (string, error) {
-	if strings.EqualFold(strings.TrimSpace(currency), model.PaymentCurrencyCNY) {
+	method, err := hotPayWalletMethod(currency, value)
+	if err != nil {
+		return "", err
+	}
+	// Waffo Pancake has no CNY subscription products; CNY plans can only be
+	// settled through the CNY-only gopay_alipay provider.
+	if strings.EqualFold(strings.TrimSpace(currency), model.PaymentCurrencyCNY) && method != "alipay" {
 		return "", errHotPayUnsupportedLegacyMethod
 	}
-	return hotPayWalletMethod(currency, value)
+	return method, nil
+}
+
+// hotPayProviderForMethod maps a canonical payment method to the HotPay
+// provider that owns it: alipay is the CNY-only gopay_alipay direct provider,
+// every other method rides Waffo Pancake.
+func hotPayProviderForMethod(method string) string {
+	if strings.EqualFold(strings.TrimSpace(method), "alipay") {
+		return model.PaymentProviderGoPayAlipay
+	}
+	return model.PaymentProviderWaffoPancake
+}
+
+func hotPayProviderAccountIDForMethod(method string) (string, error) {
+	if hotPayProviderForMethod(method) != model.PaymentProviderGoPayAlipay {
+		return hotPayProviderAccountID(), nil
+	}
+	accountID := strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID"))
+	if accountID == "" {
+		return "", errors.New("hotpay alipay provider account is not configured")
+	}
+	return accountID, nil
 }
 
 func hotPayCheckoutResponse(result service.HotPayGatewayCreateOrderResponse) gin.H {

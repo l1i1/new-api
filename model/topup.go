@@ -53,6 +53,7 @@ const (
 	PaymentProviderCreem        = "creem"
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
+	PaymentProviderGoPayAlipay  = "gopay_alipay"
 	PaymentProviderBalance      = "balance"
 )
 

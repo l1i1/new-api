@@ -315,6 +315,12 @@ func RequestEpay(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "当前支付方式暂不支持 HotPay 网关"})
 			return
 		}
+		paymentProvider := hotPayProviderForMethod(canonicalMethod)
+		providerAccountID, accountErr := hotPayProviderAccountIDForMethod(canonicalMethod)
+		if accountErr != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付网关支付宝账户未配置"})
+			return
+		}
 		amountMinor, amountErr := hotPayMinorAmount(payMoney)
 		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
 			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额超出支付网关限额"})
@@ -344,15 +350,15 @@ func RequestEpay(c *gin.Context) {
 			Money:                    payMoney,
 			TradeNo:                  tradeNo,
 			PaymentMethod:            canonicalMethod,
-			PaymentProvider:          model.PaymentProviderWaffoPancake,
-			PaymentProviderAccountID: hotPayProviderAccountID(),
+			PaymentProvider:          paymentProvider,
+			PaymentProviderAccountID: providerAccountID,
 			PaymentEnvironment:       hotPayEnvironment(),
 			PaymentCurrency:          model.PaymentCurrencyCNY,
 			CreateTime:               time.Now().Unix(),
 			Status:                   common.TopUpStatusPending,
 		}
 		if existing := model.GetTopUpByTradeNo(tradeNo); existing != nil {
-			if existing.UserId != id || existing.PaymentProvider != model.PaymentProviderWaffoPancake || existing.PaymentCurrency != model.PaymentCurrencyCNY || existing.Amount != amount || existing.Money != payMoney || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != hotPayProviderAccountID() || existing.PaymentEnvironment != hotPayEnvironment() {
+			if existing.UserId != id || existing.PaymentProvider != paymentProvider || existing.PaymentCurrency != model.PaymentCurrencyCNY || existing.Amount != amount || existing.Money != payMoney || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
 				c.JSON(http.StatusOK, gin.H{"message": "error", "data": "支付请求与已有订单不匹配"})
 				return
 			}
@@ -371,15 +377,18 @@ func RequestEpay(c *gin.Context) {
 			return
 		}
 		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
-			MerchantOrderID:       tradeNo,
-			BusinessType:          "wallet_topup",
-			UserID:                hotPayUserID(id),
-			AmountMinor:           amountMinor,
-			QuotaAmount:           quotaAmount,
-			Currency:              model.PaymentCurrencyCNY,
-			Provider:              model.PaymentProviderWaffoPancake,
-			ProviderAccountID:     hotPayProviderAccountID(),
-			PaymentMethod:         canonicalMethod,
+			MerchantOrderID:   tradeNo,
+			BusinessType:      "wallet_topup",
+			UserID:            hotPayUserID(id),
+			AmountMinor:       amountMinor,
+			QuotaAmount:       quotaAmount,
+			Currency:          model.PaymentCurrencyCNY,
+			Provider:          paymentProvider,
+			ProviderAccountID: providerAccountID,
+			PaymentMethod:     canonicalMethod,
+			// HotPay only emits the EPay-shaped informational notify for orders
+			// marked with the epay compatibility protocol; idempotent replays
+			// compare this field verbatim.
 			CompatibilityProtocol: "epay",
 			Environment:           hotPayEnvironment(),
 			MerchantNotifyURL:     hotPayReturnURL("/api/user/epay/notify"),
