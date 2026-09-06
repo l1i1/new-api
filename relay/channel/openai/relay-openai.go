@@ -239,7 +239,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					streamData := lastStreamData
 					// Official chunks carry an explicit null usage on every
 					// non-terminal event.
-					if patched, fitErr := fitDeepSeekV4StreamEvent(streamData, nil, false, false); fitErr == nil {
+					if patched, fitErr := fitDeepSeekV4StreamEvent(streamData, nil, false, false, includeDeepSeekV4ReasoningUsage); fitErr == nil {
 						streamData = patched
 					} else {
 						common.SysLog("error fitting DeepSeek V4 stream event: " + fitErr.Error())
@@ -442,7 +442,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				streamData = deepSeekV4PendingFinalData
 			}
 			if streamData != "" {
-				patched, fitErr := fitDeepSeekV4StreamEvent(streamData, usage, info.ShouldIncludeUsage, includeDeepSeekV4ReasoningUsage)
+				patched, fitErr := fitDeepSeekV4StreamEvent(streamData, usage, info.ShouldIncludeUsage, includeDeepSeekV4ReasoningUsage, includeDeepSeekV4ReasoningUsage)
 				if fitErr != nil {
 					logger.LogError(c, "error fitting final stream usage; forwarding original event: "+fitErr.Error())
 				} else {

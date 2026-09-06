@@ -30,7 +30,7 @@ func FitDeepSeekV4StreamEventForAdapters(c *gin.Context, info *relaycommon.Relay
 	// were assembled without usage render the official usage:null.
 	includeUsage := info.ShouldIncludeUsage && usage != nil
 	suppress := shouldSuppressReasoningContent(info)
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, includeUsage, !suppress)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, includeUsage, !suppress, !suppress)
 	if err != nil {
 		if c != nil {
 			logger.LogError(c, fmt.Sprintf("deepseek v4 stream fit rewrite failed: %v", err))
@@ -448,11 +448,11 @@ func promoteLegacyReasoningKey(message []byte) ([]byte, bool) {
 // preserving only a real upstream-provided system_fingerprint. Editing is
 // surgical: every byte outside the usage value (including key order) reaches
 // the client exactly as the upstream sent it.
-func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, includeReasoningDetails bool) (string, error) {
+func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, includeReasoningDetails bool, promoteReasoning bool) (string, error) {
 	if data == "" {
 		return data, nil
 	}
-	if includeReasoningDetails && strings.Contains(data, `"reasoning"`) {
+	if promoteReasoning && strings.Contains(data, `"reasoning"`) {
 		// Some aggregators deliver thinking under the legacy non-official
 		// `reasoning` key instead of `reasoning_content`. Promote it in place
 		// (key token rename only) so thinking output survives the fit strip

@@ -225,7 +225,7 @@ func TestFitDeepSeekV4StreamUsageEventInjectsOfficialUsage(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 50},
 	}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -253,7 +253,7 @@ func TestFitDeepSeekV4StreamEventForwardsOfficialChunkByteIdentical(t *testing.T
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 26},
 	}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true, false)
 	require.NoError(t, err)
 	assert.Equal(t, data, patched, "an official-shaped chunk must be forwarded byte-identical")
 }
@@ -262,7 +262,7 @@ func TestFitDeepSeekV4StreamEventInjectsUsageLastOnAggregatorChunk(t *testing.T)
 	// Aggregator chunk without usage: the null lands last, matching official.
 	data := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true, false)
 	require.NoError(t, err)
 
 	want := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}],"usage":null}`
@@ -273,7 +273,7 @@ func TestFitDeepSeekV4StreamUsageEventReplacesClaudeExtensionUsage(t *testing.T)
 	data := `{"choices":[],"created":1787662155,"id":"router-1","model":"deepseek-v4-flash","object":"chat.completion.chunk","usage":{"claude_cache_creation_1_h_tokens":0,"claude_cache_creation_5_m_tokens":0,"completion_tokens":1093,"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":0},"input_tokens":0,"input_tokens_details":null,"output_tokens":0,"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"total_tokens":1102}}`
 	usage := &dto.Usage{PromptTokens: 9, CompletionTokens: 1093, TotalTokens: 1102}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true, false)
 	require.NoError(t, err)
 
 	var payload struct {
@@ -288,7 +288,7 @@ func TestFitDeepSeekV4StreamUsageEventReplacesClaudeExtensionUsage(t *testing.T)
 func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
 	data := `{"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":1}}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, &dto.Usage{PromptTokens: 1}, false, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -299,7 +299,7 @@ func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
 func TestFitDeepSeekV4StreamEventKeepUpstreamBytesWhenUsageRequestedButMissing(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true, false)
 	require.NoError(t, err)
 	assert.Equal(t, data, patched, "usage requested but nothing to render keeps upstream bytes")
 }
@@ -310,7 +310,7 @@ func TestFitDeepSeekV4StreamEventHandlesDuplicateUsageKeyFallback(t *testing.T) 
 	data := `{"id":"router-1","usage":{"prompt_tokens":1},"usage":{"prompt_tokens":2},"choices":[]}`
 	usage := &dto.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}
 
-	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, usage, true, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -323,7 +323,7 @@ func TestFitDeepSeekV4StreamEventHandlesDuplicateUsageKeyFallback(t *testing.T) 
 func TestFitDeepSeekV4StreamEventHandlesWeirdWhitespace(t *testing.T) {
 	data := " {\n \"id\" : \"router-1\" , \"choices\": [ ] } "
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -335,7 +335,7 @@ func TestFitDeepSeekV4StreamEventHandlesWeirdWhitespace(t *testing.T) {
 func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","created":1787662155,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"reasoning_content":"We"}}]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -350,7 +350,7 @@ func TestFitDeepSeekV4StreamEventDoesNotFabricateFingerprint(t *testing.T) {
 func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 	data := `{"id":"router-1","object":"chat.completion.chunk","system_fingerprint":null,"choices":[]}`
 
-	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, true, false)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -535,19 +535,19 @@ func TestPromoteLegacyReasoningKeyNonStream(t *testing.T) {
 
 func TestPromoteLegacyReasoningKeyStreamEvent(t *testing.T) {
 	chunk := `{"choices":[{"index":0,"delta":{"role":"assistant","reasoning":"正在思考"}}],"usage":null}`
-	patched, err := fitDeepSeekV4StreamEvent(chunk, nil, false, true)
+	patched, err := fitDeepSeekV4StreamEvent(chunk, nil, false, true, true)
 	require.NoError(t, err)
 	assert.Contains(t, patched, `"reasoning_content":"正在思考"`)
 	assert.NotContains(t, patched, `"reasoning":"正在思考"`)
 
 	// Chunks without the legacy key pass through untouched.
 	plain := `{"choices":[{"index":0,"delta":{"reasoning_content":"ok"}}],"usage":null}`
-	patched, err = fitDeepSeekV4StreamEvent(plain, nil, false, true)
+	patched, err = fitDeepSeekV4StreamEvent(plain, nil, false, true, true)
 	require.NoError(t, err)
 	assert.Equal(t, plain, patched)
 
 	// Suppressed reasoning (includeReasoningDetails=false) is not promoted.
-	patched, err = fitDeepSeekV4StreamEvent(chunk, nil, false, false)
+	patched, err = fitDeepSeekV4StreamEvent(chunk, nil, false, false, false)
 	require.NoError(t, err)
 	assert.Equal(t, chunk, patched)
 }
