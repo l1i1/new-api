@@ -56,3 +56,6 @@ go.work.sum
 
 # Runtime GeoIP database downloaded on first lookup; never commit the binary.
 GeoLite2-Country.mmdb
+
+# Python bytecode from deployment tooling helpers.
+__pycache__/

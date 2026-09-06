@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -43,6 +45,46 @@ func TestStatus(c *gin.Context) {
 		"http_stats": httpStats,
 	})
 	return
+}
+
+// HealthLive is intentionally dependency-free: it only proves that the
+// process can accept HTTP requests. Container liveness must not flap because
+// a database or cache is temporarily unavailable.
+func HealthLive(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// HealthReady is used by the load balancer and ECI readiness probe. It checks
+// the database and, when configured as a required dependency, Redis without
+// exposing connection details in the response.
+func HealthReady(c *gin.Context) {
+	requestContext := context.Background()
+	if c.Request != nil {
+		requestContext = c.Request.Context()
+	}
+	ctx, cancel := context.WithTimeout(requestContext, 2*time.Second)
+	defer cancel()
+
+	if model.DB == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false})
+		return
+	}
+	sqlDB, err := model.DB.DB()
+	if err != nil || sqlDB == nil || sqlDB.PingContext(ctx) != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false})
+		return
+	}
+	if common.RedisEnabled {
+		if common.RDB == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"success": false})
+			return
+		}
+		if err := common.RDB.Ping(ctx).Err(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"success": false})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func GetStatus(c *gin.Context) {

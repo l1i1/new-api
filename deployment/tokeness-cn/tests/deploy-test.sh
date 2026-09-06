@@ -229,12 +229,105 @@ init_ess_state() {
                    HealthStatus: "Healthy", LifecycleState: "InService"}],
       image: $image,
       envs: [{Key: "SQL_DSN", Value: "postgresql://u:p@db:5432/newapi?sslmode=disable"},
-             {Key: "TZ", Value: "Asia/Shanghai"}],
-      logContent: $logContent
+             {Key: "TZ", Value: "Asia/Shanghai"},
+             {Key: "NODE_NAME", Value: "test-node"}],
+      logContent: $logContent,
+      config: {
+        ScalingConfigurationId: "asc-test",
+        ActiveDeadlineSeconds: 120,
+        AutoCreateEip: true,
+        AutoMatchImageCache: false,
+        ContainerGroupName: "tokeness-cn-test",
+        ContainersUpdateType: "RollingUpdate",
+        CostOptimization: false,
+        Cpu: 2.0,
+        CpuOptionsCore: 2,
+        CpuOptionsThreadsPerCore: 1,
+        DataCacheBucket: "test-bucket",
+        DataCacheBurstingEnabled: false,
+        DataCachePL: "PL1",
+        DataCacheProvisionedIops: 100,
+        Description: "deployment test",
+        DnsPolicy: "ClusterFirst",
+        EgressBandwidth: 100,
+        EipBandwidth: 200,
+        EphemeralStorage: 1,
+        GpuDriverVersion: "535",
+        HostName: "tokeness-test",
+        ImageSnapshotId: "snapshot-test",
+        IngressBandwidth: 200,
+        InstanceFamilyLevel: "EnterpriseLevel",
+        Ipv6AddressCount: 0,
+        LoadBalancerWeight: 0,
+        Memory: 4.0,
+        Override: false,
+        RamRoleName: "ram-role-test",
+        ResourceGroupId: "rg-test",
+        RestartPolicy: "Always",
+        ScalingConfigurationName: "tokeness-test-config",
+        SecurityGroupId: "sg-test",
+        SpotPriceLimit: 0.1,
+        SpotStrategy: "NoSpot",
+        TerminationGracePeriodSeconds: 30,
+        InstanceType: ["ecs.g6.large", "ecs.g6.xlarge"],
+        NtpServer: ["ntp.aliyun.com"],
+        DnsConfig: {
+          NameServer: ["8.8.8.8", "1.1.1.1"],
+          Search: ["svc.cluster.local"],
+          Option: [{Name: "ndots", Value: "2"}]
+        },
+        ImageRegistryCredential: [{Server: "docker.cnb.cool", UserName: "cnb", Password: "test-registry-password"}],
+        AcrRegistryInfo: [{Domain: "registry.cn-shanghai.aliyuncs.com", InstanceId: "acr-test", InstanceName: "test", RegionId: "cn-shanghai"}],
+        HostAliase: [{Hostname: "db.internal", Ip: "10.0.0.10"}],
+        SecurityContextSysctl: [{Name: "net.ipv4.ip_local_port_range", Value: "1024 65535"}],
+        Tag: [{Key: "env", Value: "test"}],
+        Volume: [{Name: "cache", Type: "EmptyDirVolume", EmptyDirVolume: {Medium: "Memory", SizeLimit: "1Gi"}}],
+        InitContainers: [{
+          Name: "init",
+          Image: "docker.cnb.cool/tools/init:1",
+          ImagePullPolicy: "IfNotPresent",
+          Cpu: 0.5,
+          Memory: 0.5,
+          WorkingDir: "/work",
+          Arg: ["--prepare", "literal\\narg"],
+          Command: ["/bin/sh", "-c"],
+          EnvironmentVars: [{Key: "INIT_FLAG", Value: "false"}],
+          VolumeMount: [{Name: "cache", MountPath: "/work", ReadOnly: false}]
+        }],
+        Containers: [{
+          Name: "newapi",
+          Image: $image,
+          ImagePullPolicy: "IfNotPresent",
+          Cpu: 1.5,
+          Gpu: 0,
+          Memory: 3.0,
+          Stdin: false,
+          StdinOnce: false,
+          Tty: false,
+          WorkingDir: "/app",
+          Arg: ["--config", "C:\\\\tokeness\\\\config", "literal\\narg"],
+          Command: ["/bin/sh", "-c", "printf 'ready\\\\n'"],
+          Port: [3000],
+          EnvironmentVars: [
+            {Key: "SQL_DSN", Value: "postgresql://u:p@db:5432/newapi?sslmode=disable"},
+            {Key: "TZ", Value: "Asia/Shanghai"},
+            {Key: "NODE_NAME", Value: "test-node"},
+            {Key: "FALSE_VALUE", Value: "false"},
+            {Key: "BACKSLASH_VALUE", Value: "C:\\\\data\\\\literal\\\\n"},
+            {Key: "TAB_VALUE", Value: "literal\\\\tvalue"}
+          ],
+          VolumeMount: [{Name: "cache", MountPath: "/cache", SubPath: "state", ReadOnly: false}],
+          LivenessProbe: {HttpGet: {Path: "/legacy/live", Port: 3000, Scheme: "HTTP"}, InitialDelaySeconds: 5, PeriodSeconds: 7, TimeoutSeconds: 4, FailureThreshold: 2},
+          ReadinessProbe: {HttpGet: {Path: "/legacy/ready", Port: 3000, Scheme: "HTTP"}, InitialDelaySeconds: 5, PeriodSeconds: 7, TimeoutSeconds: 4, FailureThreshold: 2},
+          SecurityContext: {Capability: {Add: ["NET_ADMIN"]}, ReadOnlyRootFilesystem: false, RunAsUser: 1000},
+          LifecyclePostStartHandler: {Exec: {Command: ["/bin/sh", "-c"]}},
+          LifecyclePreStopHandler: {HttpGet: {Host: "127.0.0.1", Path: "/shutdown", Port: 3000, Scheme: "HTTP"}}
+        }]
+      }
     }' > "$dir/state.json"
 }
 
-# Happy path: the new instance answers /api/status, the rollout scales 2 -> 1,
+# Happy path: the new instance answers /health/ready, the rollout scales 2 -> 1,
 # the config is pinned to the target digest, and the liveness probe is re-sent.
 release_case="$test_root/release"
 mkdir -p "$release_case"
@@ -245,9 +338,20 @@ run_deploy "$release_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$TEST_ML_DIGEST"
-assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.HttpGet.Path /api/status"
-assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.HttpGet.Port 3000"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.TcpSocket.Port 3000"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Path /health/ready"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Port 3000"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.3.Key NODE_NAME"
+assert_contains "$release_case/state/modify-args.txt" "--Cpu 2"
+assert_contains "$release_case/state/modify-args.txt" "--Memory 4"
+assert_contains "$release_case/state/modify-args.txt" "--SecurityGroupId sg-test"
+assert_contains "$release_case/state/modify-args.txt" "--AutoCreateEip true"
+assert_contains "$release_case/state/modify-args.txt" "--EipBandwidth 200"
+# The fake redacts every registry credential value, including the server name.
+assert_contains "$release_case/state/modify-args.txt" "--ImageRegistryCredential.1.Server [REDACTED]"
+assert_not_contains "$release_case/state/modify-args.txt" "test-registry-password"
+assert_not_contains "$release_case/state/modify-args.txt" "postgresql://u:p@db:5432/newapi?sslmode=disable"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' "$release_case/state/state.json" > /dev/null \
   || fail "scaling configuration image was not pinned to the release digest"
 local_image_digest="$(jq -r '.image' "$release_case/state/state.json" | sed 's/.*@//')"

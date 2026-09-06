@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -63,4 +64,46 @@ func TestPaymentWebhooksDoNotConsumeGlobalAPIRateLimit(t *testing.T) {
 	secondAPI := performAPIRouterRequest(engine, http.MethodGet, "/api/status", apiIP)
 	assert.Equal(t, http.StatusOK, firstAPI.Code)
 	assert.Equal(t, http.StatusTooManyRequests, secondAPI.Code)
+}
+
+func TestHealthLiveRouteBypassesGlobalAPIRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousRedisEnabled := common.RedisEnabled
+	previousGlobalEnabled := common.GlobalApiRateLimitEnable
+	previousGlobalLimit := common.GlobalApiRateLimitNum
+	previousGlobalDuration := common.GlobalApiRateLimitDuration
+	previousDB := model.DB
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.GlobalApiRateLimitEnable = previousGlobalEnabled
+		common.GlobalApiRateLimitNum = previousGlobalLimit
+		common.GlobalApiRateLimitDuration = previousGlobalDuration
+		model.DB = previousDB
+	})
+
+	common.RedisEnabled = false
+	common.GlobalApiRateLimitEnable = true
+	common.GlobalApiRateLimitNum = 1
+	common.GlobalApiRateLimitDuration = 60
+	model.DB = nil
+
+	engine := gin.New()
+	require.NoError(t, engine.SetTrustedProxies(nil))
+	SetApiRouter(engine)
+
+	first := performAPIRouterRequest(engine, http.MethodGet, "/health/live", "192.0.2.203:12345")
+	second := performAPIRouterRequest(engine, http.MethodGet, "/health/live", "192.0.2.203:12345")
+
+	require.Equal(t, http.StatusOK, first.Code)
+	require.JSONEq(t, `{"success":true}`, first.Body.String())
+	assert.Equal(t, http.StatusOK, second.Code)
+	require.JSONEq(t, `{"success":true}`, second.Body.String())
+
+	firstReady := performAPIRouterRequest(engine, http.MethodGet, "/health/ready", "192.0.2.204:12345")
+	secondReady := performAPIRouterRequest(engine, http.MethodGet, "/health/ready", "192.0.2.204:12345")
+	assert.Equal(t, http.StatusServiceUnavailable, firstReady.Code)
+	require.JSONEq(t, `{"success":false}`, firstReady.Body.String())
+	assert.Equal(t, http.StatusServiceUnavailable, secondReady.Code)
+	require.JSONEq(t, `{"success":false}`, secondReady.Body.String())
 }

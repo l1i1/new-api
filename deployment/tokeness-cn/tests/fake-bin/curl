@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-url="${*: -1}"
+url=''
+for arg in "$@"; do
+  case "$arg" in
+    http://*|https://*)
+      url="$arg"
+      break
+      ;;
+  esac
+done
+[[ -n "$url" ]] || exit 2
 if [[ "$url" == *"/service/token"* ]]; then
   printf '%s\n' '{"token":"fake-registry-token"}'
 elif [[ "$url" == *"/manifests/"* ]]; then

@@ -18,10 +18,10 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1
    ```
 
-   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the `/api/status` liveness probe), then runs the gated rollout:
+   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the TCP `3000` liveness plus `/health/ready` readiness probes), then runs the gated rollout:
 
    - scale out to two ESS-healthy instances;
-   - **application gate before any scale-down**: wait until the new instance answers `/api/status` (`APP_READY_TIMEOUT_SECONDS`, default 300 s) and its container log shows no `FATAL`/`panic` line — ESS "Healthy" alone is not trusted (it stayed green through the 2026-09-06 crash-loop);
+   - **application gate before any scale-down**: wait until the new instance answers `/health/ready` (`APP_READY_TIMEOUT_SECONDS`, default 300 s) and its container log shows no `FATAL`/`panic` line — ESS "Healthy" alone is not trusted (it stayed green through the 2026-09-06 crash-loop);
    - scale back to one: while both instances are healthy `ml-sync` lists both upstream members, and nginx passive checks (`max_fails=2 fail_timeout=5s`) bridge the ~30 s window in which the old member disappears;
    - final verify (EdgeOne public + private chain).
 

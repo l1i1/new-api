@@ -15,11 +15,23 @@
     {
       "name": "eci-ml",
       "role": "api",
-      "instance_id": "eci-uf66mxxzb8sggwn033mm",
-      "private_ip": "10.0.0.213",
-      "public_ip": "101.133.139.14",
-      "current_image_source": "docker.cnb.cool/imvhb/new-api-cn@sha256:0b704b190f668edf42fcc98774634e9eed3a19f5e439765925dbbbc32de40732 (v1.0.0-rc.33-tokeness-mainland.3)",
-      "note": "Alibaba Cloud ECI recreated by the scaling group; its private IP changes on every recreate."
+      "region": "cn-shanghai",
+      "scaling_group_id": "asg-uf641n1j5akwa1ozcz6t",
+      "scaling_configuration_id": "asc-uf641n1j5akwa1p0smug",
+      "note": "Alibaba Cloud ECI is recreated by ESS; instance ID, private IP, public IP and image digest are runtime state, never hand-maintained here."
+    },
+    {
+      "name": "rds-ml",
+      "role": "database",
+      "region": "cn-shanghai",
+      "instance_id": "pgm-uf6k624063503266",
+      "note": "RDS PostgreSQL private endpoint; access is restricted to the ECI and SWAS private networks."
+    },
+    {
+      "name": "edgeone-cn",
+      "role": "cdn-waf",
+      "site": "tokeness.cn",
+      "note": "Tencent EdgeOne public entry; origin is the SWAS reverse proxy."
     }
   ],
   "public_endpoints": [
@@ -27,5 +39,6 @@
   ],
   "upstream_conf": "/etc/nginx/sites-available/tokeness-ml.conf",
   "upstream_name": "newapi_ml",
-  "port": 3000
+  "port": 3000,
+  "runtime_state": "/var/lib/tokeness-cn/runtime-state.json"
 }

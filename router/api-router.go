@@ -13,6 +13,11 @@ import (
 )
 
 func SetApiRouter(router *gin.Engine) {
+	// Health endpoints stay outside the authenticated /api group so ESS and
+	// nginx can probe them without consuming the interactive API rate limit.
+	router.GET("/health/live", controller.HealthLive)
+	router.GET("/health/ready", controller.HealthReady)
+
 	// The gateway settlement receiver is authenticated by its HMAC contract and
 	// must stay outside the interactive /api rate-limit bucket.
 	router.POST("/internal/v1/payment/settlements", middleware.PaymentWebhookRateLimit("hotpay_settlement"), controller.PaymentGatewaySettlement)

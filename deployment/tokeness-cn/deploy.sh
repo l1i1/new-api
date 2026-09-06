@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly WORKSPACE_ROOT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd)"
+readonly CONFIG_SERIALIZER="$SCRIPT_DIR/config_args.py"
 
 readonly NGINX_CONF="${NGINX_CONF:-/etc/nginx/sites-available/tokeness-ml.conf}"
 readonly NGINX_UPSTREAM_NAME="${NGINX_UPSTREAM_NAME:-newapi_ml}"
@@ -15,7 +16,7 @@ readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
 readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 # Direct probe defaults to the plaintext upstream for a Host-pinned request.
 # Override DIRECT_PROBE_URL / DIRECT_PROBE_INSECURE when the upstream serves HTTPS.
-readonly DIRECT_PROBE_URL="${DIRECT_PROBE_URL:-http://127.0.0.1/api/status}"
+readonly DIRECT_PROBE_URL="${DIRECT_PROBE_URL:-http://127.0.0.1/health/ready}"
 readonly DIRECT_PROBE_INSECURE="${DIRECT_PROBE_INSECURE:-0}"
 readonly VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-45}"
 readonly ROLLOUT_VERIFY_ATTEMPTS="${ROLLOUT_VERIFY_ATTEMPTS:-6}"
@@ -25,7 +26,7 @@ readonly REMOTE_RUN_DIR='/run/lock'
 readonly REMOTE_LOCK_NAME='tokeness-cn-deploy.lock'
 
 # Application-level rollout gate: ESS stayed "Healthy" through the 2026-09-06
-# crash-loop, so the rollout waits for the app itself to answer /api/status.
+# crash-loop, so the rollout waits for the dependency-aware readiness endpoint.
 readonly APP_READY_TIMEOUT_SECONDS="${APP_READY_TIMEOUT_SECONDS:-300}"
 readonly APP_READY_POLL_SECONDS="${APP_READY_POLL_SECONDS:-15}"
 readonly APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-newapi}"
@@ -335,12 +336,18 @@ current_config_digest() {
   printf '%s\n' "${image##*@}"
 }
 
+snapshot_config_digest() {
+  local snapshot="$1" image
+  image="$(jq -r '.ScalingConfigurations[0].Containers[0].Image // empty' <<<"$snapshot" | tr -d '\r')"
+  printf '%s\n' "${image##*@}"
+}
+
 app_status_ok() {
   local ip="$1" body
   body="$(remote_cmd "$ip" <<'REMOTE_PROBE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/api/status"
+curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/health/ready"
 REMOTE_PROBE
 )" || return 1
   jq -e '.success == true' >/dev/null 2>&1 <<<"$body"
@@ -358,13 +365,23 @@ container_log_fatal_line() {
 }
 
 # wait_app_ready <instance_id> <private_ip> - gate the rollout on the
-# application, never on ESS "Healthy": probe /api/status on the new instance
+# application, never on ESS "Healthy": probe /health/ready on the new instance
 # through the lightweight server and fail fast on a fatal startup log line.
 wait_app_ready() {
   local instance_id="$1" ip="$2" attempt=0 fatal
+  if [[ ! "$APP_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ || ! "$APP_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    error "APP_READY_TIMEOUT_SECONDS and APP_READY_POLL_SECONDS must be positive integers"
+    return 1
+  fi
   local max_attempts=$(( APP_READY_TIMEOUT_SECONDS / APP_READY_POLL_SECONDS ))
-  [[ "$max_attempts" -ge 1 ]] || die "APP_READY_TIMEOUT_SECONDS must exceed APP_READY_POLL_SECONDS"
-  is_valid_ipv4 "$ip" || die "new instance has an invalid private IP: $ip"
+  if [[ "$max_attempts" -lt 1 ]]; then
+    error "APP_READY_TIMEOUT_SECONDS must exceed APP_READY_POLL_SECONDS"
+    return 1
+  fi
+  if ! is_valid_ipv4 "$ip"; then
+    error "new instance has an invalid private IP"
+    return 1
+  fi
   while (( attempt < max_attempts )); do
     fatal="$(container_log_fatal_line "$instance_id")"
     if [[ -n "$fatal" ]]; then
@@ -398,27 +415,41 @@ wait_verify_converged() {
   return 1
 }
 
-# rollback_failed_rollout <failed_instance_id> <previous_digest> - recover from
-# a failed rollout without extra downtime: the previous digest is re-pinned so
-# ESS's replacement instance runs the old image, the failed container is
-# deleted, and ESS + ml-sync converge while a healthy instance keeps serving.
+# rollback_failed_rollout <failed_instance_id> <previous_digest> <snapshot> -
+# restore the complete pre-update scaling configuration before removing the
+# failed container. The snapshot path also preserves probes from old images.
 rollback_failed_rollout() {
-  local failed_id="$1" previous_digest="$2"
+  local failed_id="$1" previous_digest="$2" previous_snapshot="${3:-}"
   warn "rolling back to previous digest: ${previous_digest:-<unchanged>}"
-  if [[ -n "$previous_digest" ]]; then
-    apply_ml_digest "$previous_digest"
+  if [[ -n "$previous_snapshot" ]]; then
+    if ! restore_scaling_config "$previous_snapshot"; then
+      error "rollback stopped before deleting the failed container: configuration restore failed"
+      return 1
+    fi
+  elif [[ -n "$previous_digest" ]]; then
+    if ! apply_ml_digest "$previous_digest"; then
+      error "rollback stopped before deleting the failed container: image restore failed"
+      return 1
+    fi
   fi
   if [[ -n "$failed_id" ]]; then
     if ! aliyun_cmd eci DeleteContainerGroup --RegionId "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
       warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
     fi
   fi
-  scale_group 1
-  wait_healthy_instances 1
+  if ! scale_group 1; then
+    error "rollback could not restore desired capacity"
+    return 1
+  fi
+  if ! wait_healthy_instances 1; then
+    error "rollback could not restore a healthy instance"
+    return 1
+  fi
   if wait_verify_converged; then
     log "rollback verified; serving the previous image"
   else
-    warn "post-rollback verify failed; investigate before retrying"
+    error "post-rollback verify failed; release remains blocked"
+    return 1
   fi
 }
 
@@ -472,78 +503,83 @@ resolve_ml_digest() {
   printf '%s\n' "$digest"
 }
 
-# apply_ml_digest <sha256:digest> - sets the scaling configuration image to the
-# new digest while preserving every existing env var. ModifyEciScalingConfiguration
-# is whole-replace semantics, so the full env list must be re-sent.
-apply_ml_digest() {
-  local digest="$1"
-  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "new image digest must be sha256:<64 hex>"
-  require_command jq
-  local cfg
-  cfg="$(oss_scaling_config_json)" || die "failed to read scaling configuration"
-  local ct
-  ct="$(jq -c '.ScalingConfigurations[0].Containers[0]' <<<"$cfg")"
-  local container_name image_pull_policy
-  # tr -d '\r' at every jq read: a Windows jq build writes CRLF on stdout, and
-  # a stray \r here becomes container/env DATA (the 2026-09-06 incident).
-  container_name="$(jq -r '.Name' <<<"$ct" | tr -d '\r')"
-  image_pull_policy="$(jq -r '.ImagePullPolicy // "IfNotPresent"' <<<"$ct" | tr -d '\r')"
-
-  local current_image
-  current_image="$(jq -r '.Image // empty' <<<"$ct" | tr -d '\r')"
-  if [[ -z "$current_image" ]]; then
-    warn "scaling configuration has no image (console drift?); setting the target now"
+# Build a full replacement request from a private JSON snapshot. The helper
+# emits NUL-delimited arguments so tabs, backslashes and escaped newlines in
+# environment/command values never pass through a line-oriented format.
+scaling_config_args() {
+  local mode="$1" digest="${2:-}" snapshot="$3"
+  require_command python3
+  [[ -r "$CONFIG_SERIALIZER" ]] || die "missing scaling configuration serializer: $CONFIG_SERIALIZER"
+  local -a emitted=()
+  if ! printf '%s' "$snapshot" | python3 "$CONFIG_SERIALIZER" \
+    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" --emit \
+    >/dev/null; then
+    return 1
   fi
-
-  local args=(ess ModifyEciScalingConfiguration
-    "--ScalingConfigurationId" "$SCALING_CONFIG_ID"
-    "--region" "$ALIYUN_REGION"
-    "--Container.1.Name" "$container_name"
-    "--Container.1.Image" "docker.cnb.cool/imvhb/new-api-cn@$digest"
-    "--Container.1.ImagePullPolicy" "$image_pull_policy"
+  # The validation pass above keeps this process substitution deterministic;
+  # its output stays inside Bash and is never written to deploy logs.
+  mapfile -d '' -t emitted < <(
+    printf '%s' "$snapshot" | python3 "$CONFIG_SERIALIZER" \
+      --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" --emit
   )
-  local env_count i=0 key value
-  env_count="$(jq '.EnvironmentVars | length' <<<"$ct" | tr -d '\r')"
-  (( env_count > 0 )) || die "scaling configuration has no environment variables; refusing a deploy that would boot without SQL_DSN"
-  while IFS=$'\t' read -r key value; do
-    # Skip internal/immutable keys the API rejects on modify.
-    case "$key" in
-      SQL_DSN|BATCH_UPDATE_ENABLED|ERROR_LOG_ENABLED|REDIS_CONN_STRING|TZ|SESSION_SECRET|CRYPTO_SECRET|GLOBAL_API_RATE_LIMIT|GLOBAL_API_RATE_LIMIT_DURATION) ;;
-      *) continue ;;
-    esac
-    i=$((i + 1))
-    args+=("--Container.1.EnvironmentVar.$i.Key" "$key" "--Container.1.EnvironmentVar.$i.Value" "$value")
-  done < <(jq -r '.EnvironmentVars[] | [.Key, .Value] | @tsv' <<<"$ct" | tr -d '\r')
-  [[ "$i" -eq "$env_count" ]] || die "could not preserve all existing environment variables (kept $i of $env_count)"
-
-  # Application-level liveness: ESS health checks never caught the 2026-09-06
-  # crash-loop. Re-sent on every modify so the probe survives config updates.
-  args+=(
-    "--Container.1.LivenessProbe.HttpGet.Path" "/api/status"
-    "--Container.1.LivenessProbe.HttpGet.Port" "$NGINX_UPSTREAM_PORT"
-    "--Container.1.LivenessProbe.HttpGet.Scheme" "HTTP"
-    "--Container.1.LivenessProbe.InitialDelaySeconds" "20"
-    "--Container.1.LivenessProbe.PeriodSeconds" "10"
-    "--Container.1.LivenessProbe.TimeoutSeconds" "5"
-    "--Container.1.LivenessProbe.FailureThreshold" "3"
+  (( ${#emitted[@]} > 0 )) || return 1
+  SCALING_CONFIG_ARGS=(ess ModifyEciScalingConfiguration
+    --ScalingConfigurationId "$SCALING_CONFIG_ID"
+    --region "$ALIYUN_REGION"
+    "${emitted[@]}"
   )
+}
 
-  # MSYS (Git Bash) rewrites POSIX-looking arguments for native executables:
-  # "/api/status" reached the scaling configuration as "D:/.../api/status".
-  # Exclude exactly that argument from conversion; a blanket MSYS_NO_PATHCONV
-  # would break every other POSIX-path argument passed to child processes.
+verify_scaling_config_readback() {
+  local mode="$1" digest="${2:-}" expected="$3" actual="$4"
+  require_command python3
+  printf '%s\n%s\n' "$expected" "$actual" | python3 "$CONFIG_SERIALIZER" \
+    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" \
+    --expected-id "$SCALING_CONFIG_ID" --verify
+}
+
+modify_scaling_config() {
+  local mode="$1" digest="${2:-}" snapshot="$3" updated
+  scaling_config_args "$mode" "$digest" "$snapshot" || return 1
+  # MSYS rewrites POSIX-looking arguments ("D:/.../health/ready" reached the
+  # scaling configuration, caught by readback 2026-09-06). None of these
+  # arguments ever need POSIX->Windows conversion (ids, numbers, probe paths,
+  # env values), so disable conversion for this aliyun invocation entirely.
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
-    MSYS2_ARG_CONV_EXCL="/api/status" aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+    MSYS2_ARG_CONV_EXCL="*" aliyun_cmd "${SCALING_CONFIG_ARGS[@]}" >/dev/null \
+      || return 1
   else
-    aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+    aliyun_cmd "${SCALING_CONFIG_ARGS[@]}" >/dev/null || return 1
   fi
-  log "scaling configuration image set to $digest (env preserved: $i, liveness probe on /api/status)"
+  updated="$(oss_scaling_config_json)" || return 1
+  verify_scaling_config_readback "$mode" "$digest" "$snapshot" "$updated"
+}
+
+# apply_ml_digest <sha256:digest> [snapshot] - update the image and the
+# application probes. Callers pass the original snapshot so a failed update
+# can restore every supported field, including credentials and commands.
+apply_ml_digest() {
+  local digest="$1" snapshot="${2:-}"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "new image digest must be sha256:<64 hex>"
+  [[ -n "$snapshot" ]] || snapshot="$(oss_scaling_config_json)" || return 1
+  modify_scaling_config target "$digest" "$snapshot" \
+    || { error "ModifyEciScalingConfiguration failed or readback drifted"; return 1; }
+  log "scaling configuration image set to $digest (full config preserved, liveness=tcp:$NGINX_UPSTREAM_PORT readiness=/health/ready)"
+}
+
+# Restore the exact pre-update snapshot. In particular, this does not add
+# readiness probes that an older image/configuration never declared.
+restore_scaling_config() {
+  local snapshot="$1"
+  modify_scaling_config restore "" "$snapshot" \
+    || { error "could not restore the complete scaling configuration snapshot"; return 1; }
+  log "scaling configuration snapshot restored"
 }
 
 scale_group() {
   local desired="$1"
   aliyun_cmd ess ModifyScalingGroup --ScalingGroupId "$SCALING_GROUP_ID" --DesiredCapacity "$desired" --region "$ALIYUN_REGION" >/dev/null \
-    || die "ModifyScalingGroup to desired=$desired failed"
+    || { error "ModifyScalingGroup to desired=$desired failed"; return 1; }
   log "scaling group desired capacity set to $desired"
 }
 
@@ -551,7 +587,7 @@ wait_healthy_instances() {
   local want="$1" tries="${2:-40}" i=0 got
   while [ "$i" -lt "$tries" ]; do
     got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-      | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length')" \
+      | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' | tr -d '\r')" \
       || got="0"
     if [ "$got" -ge "$want" ]; then
       log "healthy instances: $got (want $want)"
@@ -560,34 +596,59 @@ wait_healthy_instances() {
     sleep 20
     i=$((i + 1))
   done
-  die "timed out waiting for $want healthy instance(s) (have $got)"
+  error "timed out waiting for $want healthy instance(s) (have $got)"
+  return 1
 }
 
-# ess_rollout <sha256:digest> <previous_digest> - scale out to 2, gate the NEW
+# ess_rollout <sha256:digest> <previous_digest> <previous_snapshot> - scale out to 2, gate the NEW
 # instance on the application itself (probe + container log), and only then
 # scale back to 1. While both instances are healthy ml-sync lists both upstream
 # members, and nginx passive checks (max_fails=2 fail_timeout=5s) bridge the
 # ~30s window in which the old member disappears after the scale-down. Any
 # failure before convergence rolls back to the previous digest automatically.
 ess_rollout() {
-  local digest="$1" previous_digest="${2:-}" attempt
+  local digest="$1" previous_digest="${2:-}" previous_snapshot="${3:-}" attempt
   local before_ids new_id new_ip
-  before_ids="$(in_service_instance_ids)"
-  scale_group 2
-  wait_healthy_instances 2
+  if ! before_ids="$(in_service_instance_ids)"; then
+    error "could not read the current in-service instance set"
+    return 1
+  fi
+  if ! scale_group 2; then
+    rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || true
+    return 1
+  fi
+  if ! wait_healthy_instances 2; then
+    if ! rollback_failed_rollout "" "$previous_digest" "$previous_snapshot"; then
+      error "rollout gate failed and rollback could not be verified"
+    fi
+    return 1
+  fi
   new_id="$(comm -13 <(printf '%s\n' "$before_ids") <(in_service_instance_ids) | head -n1 || true)"
   if [[ -z "$new_id" ]]; then
-    rollback_failed_rollout "" "$previous_digest"
-    die "could not identify the instance created by scale-out; aborted before scale-down"
+    if ! rollback_failed_rollout "" "$previous_digest" "$previous_snapshot"; then
+      error "could not identify the scaled instance and rollback could not be verified"
+    fi
+    return 1
   fi
-  new_ip="$(instance_private_ip "$new_id")"
+  if ! new_ip="$(instance_private_ip "$new_id")"; then
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "could not resolve the new instance address and rollback could not be verified"
+    fi
+    return 1
+  fi
   log "new instance $new_id at $new_ip; gating on application health before scale-down"
   if ! wait_app_ready "$new_id" "$new_ip"; then
-    rollback_failed_rollout "$new_id" "$previous_digest"
-    die "rollout aborted: new instance $new_id never became healthy"
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "rollout aborted and rollback could not be verified"
+    fi
+    return 1
   fi
-  scale_group 1
-  wait_healthy_instances 1
+  if ! scale_group 1 || ! wait_healthy_instances 1; then
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "scale-down gate failed and rollback could not be verified"
+    fi
+    return 1
+  fi
   if wait_verify_converged; then
     log "ess rollout to $digest complete"
     return 0
@@ -595,8 +656,10 @@ ess_rollout() {
   # Verification failed after the scale-down: restore the previous image and
   # let ESS + ml-sync converge (brief interruption is unavoidable here, which
   # is exactly why the app gate runs before the scale-down).
-  rollback_failed_rollout "$new_id" "$previous_digest"
-  die "post-rollout verify failed after $ROLLOUT_VERIFY_ATTEMPTS attempts; rolled back to $previous_digest"
+  if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+    error "post-rollout verify failed and rollback could not be verified"
+  fi
+  return 1
 }
 
 # postcheck - post-deployment public verification: version identity, the
@@ -657,19 +720,37 @@ main() {
     deploy-release)
       [[ $# -eq 2 ]] || die "deploy-release requires one version tag"
       local release_tag="$2"
-      local release_digest previous_digest
+      local release_digest previous_digest previous_snapshot
       release_digest="$(resolve_ml_digest "$release_tag")"
-      previous_digest="$(current_config_digest)"
-      apply_ml_digest "$release_digest"
-      ess_rollout "$release_digest" "$previous_digest"
+      previous_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+      previous_digest="$(snapshot_config_digest "$previous_snapshot")"
+      [[ "$previous_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a release without rollback target"
+      if ! apply_ml_digest "$release_digest" "$previous_snapshot"; then
+        if ! restore_scaling_config "$previous_snapshot"; then
+          die "release update failed and the complete scaling configuration could not be restored"
+        fi
+        die "release update failed; the previous scaling configuration was restored"
+      fi
+      if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
+        die "release rollout failed; rollback was attempted and must be verified before retrying"
+      fi
       log "release $release_tag -> $release_digest deployed"
       ;;
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"
-      local rollback_digest="$2" rollback_previous
-      rollback_previous="$(current_config_digest)"
-      apply_ml_digest "$rollback_digest"
-      ess_rollout "$rollback_digest" "$rollback_previous"
+      local rollback_digest="$2" rollback_previous rollback_snapshot
+      rollback_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+      rollback_previous="$(snapshot_config_digest "$rollback_snapshot")"
+      [[ "$rollback_previous" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a rollback without rollback target"
+      if ! apply_ml_digest "$rollback_digest" "$rollback_snapshot"; then
+        if ! restore_scaling_config "$rollback_snapshot"; then
+          die "rollback update failed and the complete scaling configuration could not be restored"
+        fi
+        die "rollback update failed; the previous scaling configuration was restored"
+      fi
+      if ! ess_rollout "$rollback_digest" "$rollback_previous" "$rollback_snapshot"; then
+        die "rollback rollout failed; rollback was attempted and must be verified before retrying"
+      fi
       log "rollback to $rollback_digest complete"
       ;;
     -h|--help)

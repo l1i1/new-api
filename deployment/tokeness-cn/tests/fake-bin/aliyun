@@ -1,27 +1,43 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Stateful fake for the `aliyun` CLI covering the ESS/ECI calls deploy.sh
-# makes. State lives in $TOKENESS_TEST_STATE_DIR/state.json; every invocation
-# is appended to aliyun-calls.log and ModifyEciScalingConfiguration arguments
-# are additionally recorded verbatim in modify-args.txt so tests can assert
-# which image, env vars, and probes were re-sent.
+# Stateful fake for the `aliyun` CLI used by deploy-test.sh. The fake parses
+# ModifyEciScalingConfiguration arguments back into the response shape so the
+# deployment's full-config readback check exercises real preservation logic.
+# Environment and registry values are redacted from invocation logs.
 
 state_dir="${TOKENESS_TEST_STATE_DIR:?TOKENESS_TEST_STATE_DIR not set}"
 mkdir -p "$state_dir"
 state="$state_dir/state.json"
 if [[ ! -f "$state" ]]; then
-  printf '%s\n' '{"desired":1,"instances":[],"image":"","envs":[]}' > "$state"
+  printf '%s\n' '{"desired":1,"instances":[],"config":{"ScalingConfigurationId":"asc-test","Containers":[]}}' > "$state"
 fi
 
-svc="$1"; shift
-action="${1:-}"; shift
+svc="${1:-}"
+shift || true
+action="${1:-}"
+shift || true
 cmd="$svc $action"
-printf '%s\n' "$cmd $*" >> "$state_dir/aliyun-calls.log"
 
-get() { jq -r "$1" "$state"; }
+redact_and_log() {
+  local file="$1" previous='' arg safe
+  shift
+  printf '%s' "$cmd" >> "$file"
+  for arg in "$@"; do
+    if [[ "$previous" =~ ^--(Container|InitContainer)\.[0-9]+\.(EnvironmentVar|InitContainerEnvironmentVar)\.[0-9]+\.Value$ ]] \
+      || [[ "$previous" =~ ^--ImageRegistryCredential\.[0-9]+\.(Server|UserName|Password)$ ]]; then
+      safe='[REDACTED]'
+    else
+      safe="$arg"
+    fi
+    printf ' %s' "$safe" >> "$file"
+    previous="$arg"
+  done
+  printf '\n' >> "$file"
+}
 
-# Print the value following the given flag in "$@".
+redact_and_log "$state_dir/aliyun-calls.log" "$@"
+
 flag_value() {
   local flag="$1" i
   for ((i = 2; i <= $#; i++)); do
@@ -34,23 +50,282 @@ flag_value() {
   return 1
 }
 
+state_update() {
+  local tmp="$state.tmp"
+  jq "$@" "$state" > "$tmp" && mv "$tmp" "$state"
+}
+
+describe_config() {
+  python3 - "$state" <<'PY'
+import json
+import os
+import sys
+
+state_path = sys.argv[1]
+with open(state_path, encoding="utf-8") as stream:
+    state = json.load(stream)
+
+state["describe_count"] = state.get("describe_count", 0) + 1
+config = state.get("config")
+if not isinstance(config, dict):
+    config = {
+        "ScalingConfigurationId": "asc-test",
+        "Cpu": 2.0,
+        "Memory": 4.0,
+        "RestartPolicy": "Always",
+        "SecurityGroupId": "sg-test",
+        "AutoCreateEip": True,
+        "EipBandwidth": 200,
+        "ImageRegistryCredential": [{
+            "Server": "docker.cnb.cool",
+            "UserName": "cnb",
+            "Password": "test-registry-password",
+        }],
+        "Containers": [{
+            "Name": "newapi",
+            "Image": state.get("image", ""),
+            "ImagePullPolicy": "IfNotPresent",
+            "EnvironmentVars": state.get("envs", []),
+        }],
+    }
+    state["config"] = config
+
+# Simulate a provider that accepted a replacement but dropped one field on the
+# first readback. The next restore readback is complete again.
+if (
+    os.environ.get("TOKENESS_TEST_READBACK_DRIFT_ONCE", "0") == "1"
+    and state.get("modify_count", 0) > 0
+    and state.get("drift_count", 0) == 0
+):
+    containers = config.get("Containers")
+    if isinstance(containers, list) and containers:
+        envs = containers[0].get("EnvironmentVars")
+        if isinstance(envs, list) and envs:
+            containers[0]["EnvironmentVars"] = envs[:-1]
+    state["drift_count"] = 1
+
+with open(state_path, "w", encoding="utf-8") as stream:
+    json.dump(state, stream, ensure_ascii=False, separators=(",", ":"))
+    stream.write("\n")
+
+print(json.dumps({"ScalingConfigurations": [config]}, ensure_ascii=False, separators=(",", ":")))
+PY
+}
+
+modify_config() {
+  [[ "${TOKENESS_TEST_MODIFY_FAIL:-0}" == "1" ]] && exit 1
+
+  local modify_count
+  modify_count="$(jq -r '.modify_count // 0' "$state" | tr -d '\r')"
+  modify_count=$((modify_count + 1))
+  state_update --argjson n "$modify_count" '.modify_count = $n'
+
+  python3 - "$state" "$@" <<'PY'
+import json
+import sys
+
+state_path = sys.argv[1]
+argv = sys.argv[2:]
+with open(state_path, encoding="utf-8") as stream:
+    state = json.load(stream)
+old = state.get("config")
+if not isinstance(old, dict):
+    old = {}
+config = {"ScalingConfigurationId": old.get("ScalingConfigurationId", "asc-test")}
+
+
+def scalar(flag, value):
+    name = flag.rsplit(".", 1)[-1].lstrip("-")
+    if name.isdigit() and ".Port." in flag:
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    if name in {
+        "AutoCreateEip", "AutoMatchImageCache", "CostOptimization", "DataCacheBurstingEnabled", "Override",
+        "ReadOnly", "ReadOnlyRootFilesystem", "Stdin", "StdinOnce", "Tty",
+    }:
+        return value.lower() == "true"
+    if name in {
+        "ActiveDeadlineSeconds", "CpuOptionsCore", "CpuOptionsThreadsPerCore",
+        "DataCacheProvisionedIops", "EgressBandwidth", "EipBandwidth", "EphemeralStorage", "Gpu",
+        "IngressBandwidth", "Ipv6AddressCount", "LoadBalancerWeight", "Port", "RunAsUser",
+        "TerminationGracePeriodSeconds", "FailureThreshold", "InitialDelaySeconds",
+        "PeriodSeconds", "SuccessThreshold", "TimeoutSeconds",
+    } or name.endswith("Port"):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    if name in {"Cpu", "Memory", "SpotPriceLimit"}:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
+
+
+def ensure_list(parent, key, index):
+    values = parent.setdefault(key, [])
+    while len(values) <= index:
+        values.append({})
+    return values[index]
+
+
+def set_nested(parent, parts, value):
+    """Set key/index paths such as Port.1.Protocol or Command.1."""
+    if not parts:
+        return
+    key = parts[0]
+    if len(parts) == 1:
+        parent[key] = value
+        return
+    next_part = parts[1]
+    if next_part.isdigit():
+        values = parent.setdefault(key, [])
+        index = int(next_part) - 1
+        while len(values) <= index:
+            values.append({} if len(parts) > 2 else None)
+        if len(parts) == 2:
+            values[index] = value
+        else:
+            if not isinstance(values[index], dict):
+                values[index] = {}
+            set_nested(values[index], parts[2:], value)
+        return
+    child = parent.setdefault(key, {})
+    if not isinstance(child, dict):
+        child = {}
+        parent[key] = child
+    set_nested(child, parts[1:], value)
+
+
+def set_flat_lifecycle(container, name, value):
+    for prefix, handler_name, kind in (
+        ("LifecyclePostStartHandlerHttpGet", "LifecyclePostStartHandler", "HttpGet"),
+        ("LifecyclePostStartHandlerTcpSocket", "LifecyclePostStartHandler", "TcpSocket"),
+        ("LifecyclePreStopHandlerHttpGet", "LifecyclePreStopHandler", "HttpGet"),
+        ("LifecyclePreStopHandlerTcpSocket", "LifecyclePreStopHandler", "TcpSocket"),
+    ):
+        if name.startswith(prefix):
+            field = name[len(prefix):]
+            container.setdefault(handler_name, {}).setdefault(kind, {})[field] = value
+            return True
+    return False
+
+
+def put(parts, value):
+    if not parts:
+        return
+    if parts[0] == "Container":
+        container = ensure_list(config, "Containers", int(parts[1]) - 1)
+        rest = parts[2:]
+        if rest and rest[0] == "EnvironmentVar":
+            env = ensure_list(container, "EnvironmentVars", int(rest[1]) - 1)
+            env[rest[2]] = value
+            return
+        if rest and rest[0] == "VolumeMount":
+            mount = ensure_list(container, "VolumeMount", int(rest[1]) - 1)
+            set_nested(mount, rest[2:], value)
+            return
+        if rest and rest[0] in {"LifecyclePostStartHandlerExec", "LifecyclePreStopHandlerExec"}:
+            handler_name = (
+                "LifecyclePostStartHandler"
+                if rest[0].startswith("LifecyclePostStart")
+                else "LifecyclePreStopHandler"
+            )
+            command = container.setdefault(handler_name, {}).setdefault("Exec", {}).setdefault("Command", [])
+            index = int(rest[1]) - 1
+            while len(command) <= index:
+                command.append("")
+            command[index] = value
+            return
+        if rest and set_flat_lifecycle(container, rest[0], value):
+            return
+        set_nested(container, rest, value)
+        return
+    if parts[0] == "InitContainer":
+        container = ensure_list(config, "InitContainers", int(parts[1]) - 1)
+        rest = parts[2:]
+        if rest and rest[0] == "InitContainerEnvironmentVar":
+            env = ensure_list(container, "EnvironmentVars", int(rest[1]) - 1)
+            env[rest[2]] = value
+            return
+        if rest and rest[0] == "VolumeMount":
+            mount = ensure_list(container, "VolumeMount", int(rest[1]) - 1)
+            set_nested(mount, rest[2:], value)
+            return
+        set_nested(container, rest, value)
+        return
+    if parts[0] == "ImageRegistryCredential":
+        item = ensure_list(config, "ImageRegistryCredential", int(parts[1]) - 1)
+        item[parts[2]] = value
+        return
+    if parts[0] in {"AcrRegistryInfo", "HostAliase", "SecurityContextSysctl", "Tag", "Volume"}:
+        item = ensure_list(config, parts[0], int(parts[1]) - 1)
+        set_nested(item, parts[2:], value)
+        return
+    if parts[0] == "DnsConfigNameServer":
+        config.setdefault("DnsConfig", {}).setdefault("NameServer", []).append(value)
+        return
+    if parts[0] == "DnsConfigSearch":
+        config.setdefault("DnsConfig", {}).setdefault("Search", []).append(value)
+        return
+    if parts[0] == "DnsConfigOption":
+        option = ensure_list(config.setdefault("DnsConfig", {}), "Option", int(parts[1]) - 1)
+        option[parts[2]] = value
+        return
+    if parts[0] in {"InstanceType", "NtpServer"}:
+        config.setdefault(parts[0], []).append(value)
+        return
+    set_nested(config, parts, value)
+
+
+index = 0
+while index < len(argv):
+    flag = argv[index]
+    index += 1
+    if not flag.startswith("--"):
+        continue
+    if flag in {"--ScalingConfigurationId", "--region"}:
+        if index < len(argv):
+            index += 1
+        continue
+    if index >= len(argv):
+        break
+    raw_value = argv[index]
+    index += 1
+    put(flag[2:].split("."), scalar(flag, raw_value))
+
+state["config"] = config
+containers = config.get("Containers")
+if isinstance(containers, list) and containers:
+    state["image"] = containers[0].get("Image", "")
+    state["envs"] = containers[0].get("EnvironmentVars", [])
+with open(state_path, "w", encoding="utf-8") as stream:
+    json.dump(state, stream, ensure_ascii=False, separators=(",", ":"))
+    stream.write("\n")
+PY
+  printf '%s\n' '{"RequestId":"fake"}'
+}
+
 case "$cmd" in
   "ess ModifyScalingGroup")
-    desired="$(flag_value --DesiredCapacity "$@")"
-    while (( $(jq '.instances | length' "$state") < desired )); do
-      n="$(jq '.instances | length' "$state")"
-      jq --argjson n "$n" '.instances += [{
+    desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
+    while (( $(jq '.instances | length' "$state" | tr -d '\r') < desired )); do
+      n="$(jq '.instances | length' "$state" | tr -d '\r')"
+      state_update --argjson n "$n" '.instances += [{
         "InstanceId": ("eci-new-" + ($n | tostring)),
         "PrivateIpAddress": ("10.0.0." + (240 + $n | tostring)),
         "HealthStatus": "Healthy",
         "LifecycleState": "InService"
-      }]' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+      }]'
     done
-    while (( $(jq '.instances | length' "$state") > desired )); do
+    while (( $(jq '.instances | length' "$state" | tr -d '\r') > desired )); do
       # ESS removal policy removes the oldest instance first.
-      jq '.instances = .instances[1:]' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+      state_update '.instances = .instances[1:]'
     done
-    jq --argjson d "$desired" '.desired = $d' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    state_update --argjson d "$desired" '.desired = $d'
     printf '%s\n' '{"RequestId":"fake"}'
     ;;
   "ess DescribeScalingInstances")
@@ -61,33 +336,21 @@ case "$cmd" in
     }]}}' "$state"
     ;;
   "ess DescribeEciScalingConfigurations")
-    jq '{ScalingConfigurations: [{
-      ScalingConfigurationId: "asc-test",
-      Containers: [{
-        Name: "newapi",
-        Image: .image,
-        ImagePullPolicy: "IfNotPresent",
-        EnvironmentVars: .envs
-      }]
-    }]}' "$state"
+    describe_config
     ;;
   "ess ModifyEciScalingConfiguration")
-    printf '%s\n' "$*" > "$state_dir/modify-args.txt"
-    image="$(flag_value --Container.1.Image "$@")"
-    jq --arg img "$image" '.image = $img' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
-    printf '%s\n' '{"RequestId":"fake"}'
+    redact_and_log "$state_dir/modify-args.txt" "$@"
+    modify_config "$@"
     ;;
   "eci DescribeContainerLog")
-    content="$(get '.logContent // "ready"')"
-    jq -n --arg c "$content" '{Content: $c}'
+    jq -n --arg c "$(jq -r '.logContent // "ready"' "$state")" '{Content: $c}'
     ;;
   "eci DeleteContainerGroup")
     id="$(flag_value --ContainerGroupId "$@")"
-    jq --arg id "$id" '.instances |= map(select(.InstanceId != $id))' "$state" > "$state.tmp" \
-      && mv "$state.tmp" "$state"
+    state_update --arg id "$id" '.instances |= map(select(.InstanceId != $id))'
     printf '%s\n' '{"RequestId":"fake"}'
     ;;
   *)
-    jq -n --arg c "$cmd $*" '{fake: $c}'
+    printf '%s\n' '{"RequestId":"fake"}'
     ;;
 esac
