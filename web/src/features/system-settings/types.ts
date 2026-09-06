@@ -348,6 +348,8 @@ export type BillingSettings = {
   HotPayGatewayAPIKey: string
   HotPayGatewayAllowedHosts: string
   HotPayAlipayAccountID: string
+  HotPaySettlementSecret: string
+  HotPaySettlementMaxAgeSeconds: number
   'checkin_setting.enabled': boolean
   'checkin_setting.min_quota': number
   'checkin_setting.max_quota': number

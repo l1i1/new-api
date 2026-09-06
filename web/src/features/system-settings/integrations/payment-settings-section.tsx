@@ -187,6 +187,8 @@ const paymentSchema = z.object({
   HotPayGatewayAPIKey: z.string(),
   HotPayGatewayAllowedHosts: z.string(),
   HotPayAlipayAccountID: z.string(),
+  HotPaySettlementSecret: z.string(),
+  HotPaySettlementMaxAgeSeconds: z.coerce.number().min(0).max(86400),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -474,6 +476,8 @@ export function PaymentSettingsSection({
       HotPayGatewayAPIKey: values.HotPayGatewayAPIKey.trim(),
       HotPayGatewayAllowedHosts: values.HotPayGatewayAllowedHosts.trim(),
       HotPayAlipayAccountID: values.HotPayAlipayAccountID.trim(),
+      HotPaySettlementSecret: values.HotPaySettlementSecret.trim(),
+      HotPaySettlementMaxAgeSeconds: values.HotPaySettlementMaxAgeSeconds,
     }
 
     const initial = {
@@ -530,6 +534,9 @@ export function PaymentSettingsSection({
       HotPayGatewayAllowedHosts:
         initialRef.current.HotPayGatewayAllowedHosts.trim(),
       HotPayAlipayAccountID: initialRef.current.HotPayAlipayAccountID.trim(),
+      HotPaySettlementSecret: initialRef.current.HotPaySettlementSecret.trim(),
+      HotPaySettlementMaxAgeSeconds:
+        initialRef.current.HotPaySettlementMaxAgeSeconds,
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -768,6 +775,23 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'HotPayAlipayAccountID',
         value: sanitized.HotPayAlipayAccountID,
+      })
+    }
+
+    if (sanitized.HotPaySettlementSecret) {
+      updates.push({
+        key: 'HotPaySettlementSecret',
+        value: sanitized.HotPaySettlementSecret,
+      })
+    }
+
+    if (
+      sanitized.HotPaySettlementMaxAgeSeconds !==
+      initial.HotPaySettlementMaxAgeSeconds
+    ) {
+      updates.push({
+        key: 'HotPaySettlementMaxAgeSeconds',
+        value: String(sanitized.HotPaySettlementMaxAgeSeconds),
       })
     }
 
@@ -1389,10 +1413,12 @@ export function PaymentSettingsSection({
 
                 <Alert>
                   <ShieldAlert className='h-4 w-4' />
-                  <AlertTitle>{t('Settlement secret is env-only')}</AlertTitle>
+                  <AlertTitle>
+                    {t('Keep the HotPay-side pair in sync')}
+                  </AlertTitle>
                   <AlertDescription>
                     {t(
-                      'The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.'
+                      'HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.'
                     )}
                   </AlertDescription>
                 </Alert>
@@ -1495,6 +1521,62 @@ export function PaymentSettingsSection({
                         <FormDescription>
                           {t(
                             'Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='HotPaySettlementSecret'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Settlement secret')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='password'
+                            placeholder={t('Enter new key to update')}
+                            autoComplete='new-password'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'HMAC secret that signs HotPay settlement commands (leave blank unless updating)'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='HotPaySettlementMaxAgeSeconds'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Settlement replay window (seconds)')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            step='1'
+                            min={0}
+                            max={86400}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'How long a settlement command stays valid. 0 keeps the default 5 minutes.'
                           )}
                         </FormDescription>
                         <FormMessage />

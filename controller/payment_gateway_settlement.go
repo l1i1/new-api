@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -47,7 +48,10 @@ func PaymentGatewaySettlement(c *gin.Context) {
 		writeSettlementError(c, http.StatusUnauthorized, "command_mismatch", "Settlement command is invalid")
 		return
 	}
-	secret := strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_SECRET"))
+	secret := strings.TrimSpace(setting.HotPaySettlementSecret)
+	if secret == "" {
+		secret = strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_SECRET"))
+	}
 	if secret == "" || !model.VerifyPaymentGatewaySettlementSignature(command, secret, command.Signature) {
 		writeSettlementError(c, http.StatusUnauthorized, "signature_invalid", "Settlement signature is invalid")
 		return
@@ -96,7 +100,12 @@ func paymentGatewaySettlementTimestampValid(issuedAt, now time.Time) bool {
 		return false
 	}
 	maxAge := defaultPaymentGatewaySettlementMaxAge
-	if raw := strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_MAX_AGE_SECONDS")); raw != "" {
+	if setting.HotPaySettlementMaxAgeSec > 0 {
+		maxAge = time.Duration(setting.HotPaySettlementMaxAgeSec) * time.Second
+		if maxAge > maximumPaymentGatewaySettlementMaxAge {
+			maxAge = maximumPaymentGatewaySettlementMaxAge
+		}
+	} else if raw := strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_MAX_AGE_SECONDS")); raw != "" {
 		if seconds, err := time.ParseDuration(raw + "s"); err == nil && seconds > 0 && seconds <= maximumPaymentGatewaySettlementMaxAge {
 			maxAge = seconds
 		}

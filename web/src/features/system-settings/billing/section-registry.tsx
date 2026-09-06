@@ -180,6 +180,9 @@ const BILLING_SECTIONS = [
           HotPayGatewayAPIKey: settings.HotPayGatewayAPIKey ?? '',
           HotPayGatewayAllowedHosts: settings.HotPayGatewayAllowedHosts ?? '',
           HotPayAlipayAccountID: settings.HotPayAlipayAccountID ?? '',
+          HotPaySettlementSecret: settings.HotPaySettlementSecret ?? '',
+          HotPaySettlementMaxAgeSeconds:
+            settings.HotPaySettlementMaxAgeSeconds ?? 0,
         }}
         waffoDefaultValues={{
           WaffoEnabled: settings.WaffoEnabled ?? false,

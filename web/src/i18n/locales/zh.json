@@ -6076,12 +6076,16 @@
     "Are you sure you want to delete the selected keys? This action cannot be undone.": "确定删除所选的密钥吗？此操作无法撤销。",
     "HotPay Gateway": "HotPay 网关",
     "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.": "Canonical HotPay 网关连接。配置后，钱包与订阅结账将委托 HotPay 处理，不再直连上游支付商。",
-    "Settlement secret is env-only": "结算密钥仅支持环境变量配置",
-    "The settlement signing secret (HOTPAY_SETTLEMENT_SECRET) and the matching HotPay-side pair are deployment environment settings and cannot be edited here.": "结算签名密钥（HOTPAY_SETTLEMENT_SECRET）与 HotPay 侧的配对值属于部署环境配置，无法在此编辑。",
     "Gateway URL": "网关地址",
     "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).": "HotPay 网关的基础地址。留空则停用 canonical 路径（环境变量 HOTPAY_GATEWAY_URL 仍作为兜底生效）。",
     "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.": "网关地址允许指向的精确主机名。多个主机用逗号或空格分隔。",
     "Alipay account ID": "支付宝账户 ID",
-    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "gopay_alipay 渠道的 provider 账户 ID（即其 gopay_app_id）。支付宝结账必需，并与结算命令逐字校验。"
+    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "gopay_alipay 渠道的 provider 账户 ID（即其 gopay_app_id）。支付宝结账必需，并与结算命令逐字校验。",
+    "Keep the HotPay-side pair in sync": "保持 HotPay 侧配对值一致",
+    "HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.": "HotPay 使用其自身环境文件（hotpay.env）中配置的地址与密钥签署结算命令。两侧必须保持一致，不一致将拒绝所有结算命令。",
+    "Settlement secret": "结算密钥",
+    "HMAC secret that signs HotPay settlement commands (leave blank unless updating)": "签署 HotPay 结算命令的 HMAC 密钥（仅在轮换时填写）",
+    "Settlement replay window (seconds)": "结算重放窗口（秒）",
+    "How long a settlement command stays valid. 0 keeps the default 5 minutes.": "结算命令的有效时长。0 保持默认 5 分钟。"
   }
 }
