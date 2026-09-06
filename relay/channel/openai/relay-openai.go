@@ -726,7 +726,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info) {
 		// Apply the V4 client contract after both passthrough and ForceFormat
 		// paths so generic usage extensions cannot escape either route.
-		fitted, fitErr := fitDeepSeekV4TextResponseBody(responseBody, &simpleResponse.Usage, !suppressReasoningContent)
+		fitted, fitErr := fitDeepSeekV4TextResponseBody(responseBody, &simpleResponse.Usage, !suppressReasoningContent, deepSeekV4RequestAllowsToolCalls(info))
 		if fitErr != nil {
 			return nil, types.NewOpenAIError(fitErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}

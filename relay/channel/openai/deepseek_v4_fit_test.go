@@ -118,7 +118,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorExtensions(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 28},
 	}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -147,7 +147,7 @@ func TestFitDeepSeekV4TextResponseBodyPreservesOfficialBody(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 30},
 	}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true, true)
 	require.NoError(t, err)
 
 	want := `{"id":"d80a","object":"chat.completion","created":1787661619,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"message":{"role":"assistant","content":"2","reasoning_content":"think"}}],"usage":{"prompt_tokens":8,"completion_tokens":32,"total_tokens":40,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":30},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8},"system_fingerprint":"a26a7955944dc5c60445bff77fac9c8e"}`
@@ -165,7 +165,7 @@ func TestFitDeepSeekV4TextResponseBodyReplacesUsageInPlace(t *testing.T) {
 		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 28},
 	}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true, true)
 	require.NoError(t, err)
 
 	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","system_fingerprint":null,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":28},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`
@@ -176,7 +176,7 @@ func TestFitDeepSeekV4TextResponseBodyKeepsToolCalls(t *testing.T) {
 	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}],"usage":{"prompt_tokens":371,"completion_tokens":63,"total_tokens":434},"cost":"0"}`)
 	usage := &dto.Usage{PromptTokens: 371, CompletionTokens: 63, TotalTokens: 434}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -193,7 +193,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorMessageKeys(t *testing.T) 
 	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}],"reasoning":"inner","refusal":null}}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342}}`)
 	usage := &dto.Usage{PromptTokens: 289, CompletionTokens: 53, TotalTokens: 342}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, true)
 	require.NoError(t, err)
 
 	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":289}}`
@@ -206,7 +206,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorMessageKeysViaFallback(t *
 	body := []byte(`{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2","reasoning":"inner","reasoning":"inner2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39}}`)
 	usage := &dto.Usage{PromptTokens: 8, CompletionTokens: 31, TotalTokens: 39}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true, true)
 	require.NoError(t, err)
 
 	var payload map[string]any
@@ -366,7 +366,7 @@ func TestFitDeepSeekV4StreamEventPreservesNullFingerprint(t *testing.T) {
 func TestFitDeepSeekV4TextResponseBodySoleCostPair(t *testing.T) {
 	// Degenerate single-pair bodies exercise the delete path's brace handling.
 	body := []byte(`{"cost":"0"}`)
-	fitted, err := fitDeepSeekV4TextResponseBody(body, nil, true)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, nil, true, true)
 	require.NoError(t, err)
 	assert.Equal(t, `{}`, string(fitted))
 }
@@ -375,11 +375,34 @@ func TestFitDeepSeekV4TextResponseBodyMultipleNullToolCalls(t *testing.T) {
 	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":null},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant","tool_calls":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	usage := &dto.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}
 
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false)
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, true)
 	require.NoError(t, err)
 
 	want := `{"choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1}}`
 	assert.Equal(t, want, string(fitted))
+}
+
+func TestFitDeepSeekV4TextResponseBodyToolCallsFollowRequestTools(t *testing.T) {
+	// Aggregators emit an empty tool_calls array (or a populated one) on
+	// tool-less requests where official omits the key entirely: the CN
+	// A03/A05 disabled-thinking audit diffs, 2026-09-06.
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"2","tool_calls":[]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	usage := &dto.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, false)
+	require.NoError(t, err)
+	assert.NotContains(t, string(fitted), `"tool_calls"`)
+
+	// Populated tool_calls survive only when the request declared tools.
+	bodyPopulated := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	fitted, err = fitDeepSeekV4TextResponseBody(bodyPopulated, usage, false, true)
+	require.NoError(t, err)
+	assert.Contains(t, string(fitted), `"id":"c1"`)
+
+	// And are stripped when the request declared none.
+	fitted, err = fitDeepSeekV4TextResponseBody(bodyPopulated, usage, false, false)
+	require.NoError(t, err)
+	assert.Contains(t, string(fitted), `"message":{"role":"assistant"}`)
 }
 
 func rawKeyOrder(s string) []string {

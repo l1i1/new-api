@@ -40,6 +40,24 @@ func FitDeepSeekV4StreamEventForAdapters(c *gin.Context, info *relaycommon.Relay
 	return patched
 }
 
+// deepSeekV4RequestAllowsToolCalls reports whether the request declared tools.
+// Official responses only carry message.tool_calls when they do, so the fit
+// rewriter strips the key outright for tool-less requests.
+func deepSeekV4RequestAllowsToolCalls(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	request, ok := info.Request.(*dto.GeneralOpenAIRequest)
+	return ok && len(request.Tools) > 0
+}
+
+// isJSONNullOrEmpty reports whether the raw JSON value is null or an empty
+// array (aggregators emit `tool_calls: []` where official omits the key).
+func isJSONNullOrEmpty(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("[]"))
+}
+
 // FitDeepSeekV4TextResponseBodyForAdapters exposes the V4 response-shape fit
 // to channel adapters that assemble their own client body (ollama aggregates
 // upstream chunks into an OpenAI response whose generic Usage marshal leaks
@@ -50,7 +68,7 @@ func FitDeepSeekV4TextResponseBodyForAdapters(c *gin.Context, info *relaycommon.
 	if !deepSeekV4FitEnabled(info) || info == nil || info.RelayFormat != types.RelayFormatOpenAI {
 		return body
 	}
-	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, !shouldSuppressReasoningContent(info))
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, !shouldSuppressReasoningContent(info), deepSeekV4RequestAllowsToolCalls(info))
 	if err != nil {
 		if c != nil {
 			logger.LogError(c, fmt.Sprintf("deepseek v4 fit rewrite failed: %v", err))
@@ -178,12 +196,12 @@ var deepSeekV4OfficialMessageKeys = map[string]struct{}{
 // replaced with a fabricated identity. Editing is surgical: key order and
 // formatting outside the touched values are forwarded exactly as the upstream
 // sent them.
-func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoningDetails bool) ([]byte, error) {
+func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoningDetails bool, allowToolCalls bool) ([]byte, error) {
 	var payload map[string]json.RawMessage
 	if err := common.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	if patched, ok := fitDeepSeekV4TextResponseBodyInPlace(body, payload, usage, includeReasoningDetails); ok {
+	if patched, ok := fitDeepSeekV4TextResponseBodyInPlace(body, payload, usage, includeReasoningDetails, allowToolCalls); ok {
 		return patched, nil
 	}
 	// Fallback rewrite for inputs the surgical editor declines.
@@ -191,7 +209,7 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoni
 		delete(payload, "cost")
 	}
 	if rawChoices, ok := payload["choices"]; ok {
-		choices, err := fitDeepSeekV4Choices(rawChoices)
+		choices, err := fitDeepSeekV4Choices(rawChoices, allowToolCalls)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +225,7 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoni
 	return common.Marshal(payload)
 }
 
-func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.RawMessage, usage *dto.Usage, includeReasoningDetails bool) ([]byte, bool) {
+func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.RawMessage, usage *dto.Usage, includeReasoningDetails bool, allowToolCalls bool) ([]byte, bool) {
 	result := body
 	if _, ok := payload["cost"]; ok {
 		patched, ok := deleteTopLevelJSONKey(result, "cost")
@@ -217,7 +235,7 @@ func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.R
 		result = patched
 	}
 	if rawChoices, ok := payload["choices"]; ok {
-		fitted, ok := fitDeepSeekV4ChoicesInPlace(rawChoices)
+		fitted, ok := fitDeepSeekV4ChoicesInPlace(rawChoices, allowToolCalls)
 		if !ok {
 			return nil, false
 		}
@@ -245,7 +263,7 @@ func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.R
 
 // fitDeepSeekV4Choices rewrites a choices array through a map, sorting keys.
 // It is the fallback for inputs the in-place editor declines.
-func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
+func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool) (json.RawMessage, error) {
 	var choices []map[string]json.RawMessage
 	if err := common.Unmarshal(rawChoices, &choices); err != nil {
 		return nil, err
@@ -264,7 +282,7 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
 				delete(message, key)
 			}
 		}
-		if isJSONNull(message["tool_calls"]) {
+		if raw, ok := message["tool_calls"]; ok && (!allowToolCalls || isJSONNullOrEmpty(raw)) {
 			delete(message, "tool_calls")
 		}
 		encodedMessage, err := common.Marshal(message)
@@ -277,10 +295,11 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage) (json.RawMessage, error) {
 	return common.Marshal(choices)
 }
 
-// fitDeepSeekV4ChoicesInPlace removes null message.tool_calls entries and
-// non-official message keys from a choices array without disturbing any other
-// byte.
-func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, bool) {
+// fitDeepSeekV4ChoicesInPlace removes null/empty message.tool_calls entries
+// and non-official message keys from a choices array without disturbing any
+// other byte. When the request declared no tools, tool_calls is stripped
+// regardless of content — official never emits it in that case.
+func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage, allowToolCalls bool) (json.RawMessage, bool) {
 	spans, ok := jsonArrayElementSpans(rawChoices)
 	if !ok {
 		return nil, false
@@ -295,7 +314,7 @@ func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, b
 	edits := make([]edit, 0, len(spans))
 	for _, span := range spans {
 		element := rawChoices[span[0]:span[1]]
-		fitted, ok := stripNullToolCallsInChoice(element)
+		fitted, ok := stripNullToolCallsInChoice(element, allowToolCalls)
 		if !ok {
 			return nil, false
 		}
@@ -318,9 +337,10 @@ func fitDeepSeekV4ChoicesInPlace(rawChoices json.RawMessage) (json.RawMessage, b
 }
 
 // stripNullToolCallsInChoice deletes non-official keys from the choice's
-// message object — aggregator-added keys plus a null tool_calls — preserving
-// every other byte of the choice.
-func stripNullToolCallsInChoice(choice []byte) ([]byte, bool) {
+// message object — aggregator-added keys plus a null/empty tool_calls —
+// preserving every other byte of the choice. With allowToolCalls=false
+// (tool-less request) the tool_calls key goes away entirely.
+func stripNullToolCallsInChoice(choice []byte, allowToolCalls bool) ([]byte, bool) {
 	choicePairs, _, err := parseTopLevelPairs(choice)
 	if err != nil {
 		return nil, false
@@ -338,7 +358,7 @@ func stripNullToolCallsInChoice(choice []byte) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	dropToolCalls := found && isJSONNull(message[toolCallsPair.valueStart:toolCallsPair.valueEnd])
+	dropToolCalls := found && (!allowToolCalls || isJSONNullOrEmpty(message[toolCallsPair.valueStart:toolCallsPair.valueEnd]))
 	var extraKeys []string
 	for _, pair := range messagePairs {
 		if _, official := deepSeekV4OfficialMessageKeys[pair.key]; official {
