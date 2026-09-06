@@ -784,6 +784,10 @@ func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel,
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
+	// A zero-output stream failure means the selected upstream is broken; drop
+	// the affinity binding so the client's retry re-selects a healthy channel
+	// instead of being pinned back to the same one until the TTL expires.
+	service.EvictChannelAffinityOnEmptyOutput(c, err)
 	errorMessage := err.Error()
 	if service.GetOpsCyberPolicy(c) != nil {
 		errorMessage = service.CyberPolicyMessageForLog(errorMessage)

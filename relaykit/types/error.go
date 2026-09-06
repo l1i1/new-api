@@ -94,6 +94,7 @@ type NewAPIError struct {
 	RelayError     any
 	skipRetry      bool
 	recordErrorLog *bool
+	emptyOutput    bool
 	errorType      ErrorType
 	errorCode      ErrorCode
 	StatusCode     int
@@ -407,6 +408,22 @@ func ErrOptionWithNoRecordErrorLog() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.recordErrorLog = kitutil.GetPointer(false)
 	}
+}
+
+// ErrOptionWithEmptyOutput marks the error as a zero-output stream/body
+// failure: the upstream accepted the request but closed it without producing
+// any deliverable content or usage. Callers use IsEmptyOutput to react (e.g.
+// evict channel affinity) without string-matching the message.
+func ErrOptionWithEmptyOutput() NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.emptyOutput = true
+	}
+}
+
+// IsEmptyOutput reports whether the error was produced by a stream/body that
+// ended without any deliverable output. See ErrOptionWithEmptyOutput.
+func (e *NewAPIError) IsEmptyOutput() bool {
+	return e != nil && e.emptyOutput
 }
 
 func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {

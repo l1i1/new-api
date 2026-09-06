@@ -675,6 +675,19 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	return false
 }
 
+// EvictChannelAffinityOnEmptyOutput drops the current affinity binding when the
+// pinned upstream failed with a zero-output stream/body ("empty final
+// content"). The client (e.g. Codex CLI) retries the same conversation with the
+// same affinity key; without eviction it is pinned back to the same broken
+// channel until the TTL expires. The next successful request re-binds the key
+// to whichever channel actually served it.
+func EvictChannelAffinityOnEmptyOutput(c *gin.Context, err *types.NewAPIError) bool {
+	if c == nil || err == nil || !err.IsEmptyOutput() {
+		return false
+	}
+	return ClearCurrentChannelAffinityCache(c)
+}
+
 func ShouldKeepChannelAffinityOnChannelDisabled() bool {
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil {

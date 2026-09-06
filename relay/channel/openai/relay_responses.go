@@ -273,7 +273,7 @@ func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usag
 // forwarded so protocol clients can retry instead of treating the truncated
 // stream as a completed empty response.
 func emptyResponsesStreamError(c *gin.Context, committed bool) *types.NewAPIError {
-	ops := []types.NewAPIErrorOptions{}
+	ops := []types.NewAPIErrorOptions{types.ErrOptionWithEmptyOutput()}
 	if committed {
 		ops = append(ops, types.ErrOptionWithSkipRetry())
 	}

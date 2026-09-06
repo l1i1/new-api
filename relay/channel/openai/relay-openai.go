@@ -772,7 +772,8 @@ func hasReasoningOnlyFinishedOutput(choices []dto.OpenAITextResponseChoice) bool
 }
 
 func emptyChatCompletionError(committed ...bool) *types.NewAPIError {
-	options := make([]types.NewAPIErrorOptions, 0, 1)
+	options := make([]types.NewAPIErrorOptions, 0, 2)
+	options = append(options, types.ErrOptionWithEmptyOutput())
 	if len(committed) > 0 && committed[0] {
 		options = append(options, types.ErrOptionWithSkipRetry())
 	}
