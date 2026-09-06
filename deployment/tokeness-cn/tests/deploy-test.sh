@@ -58,6 +58,7 @@ run_deploy() {
     NGINX_CONF="$case_dir/nginx.conf" \
     SWAS_SSH_KEY_PATH="$test_root/key" \
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
+    CNB_REGISTRY_TOKEN=dummy-test-token \
     "${env_args[@]}" \
     bash "$DEPLOY_SCRIPT" "$@"
 }

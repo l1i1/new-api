@@ -41,19 +41,13 @@ die() { error "$*"; exit 1; }
 # Linux; automated tests set TOKENESS_TEST_SKIP_OS_GUARD=1.
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    # Second Windows hazard: MSYS rewrites POSIX-looking arguments ("/api/status")
-    # into Windows paths ("D:/.../api/status") for native executables, which
-    # corrupted the liveness probe path. Disable the conversion in-script so the
-    # explicit override stays survivable.
-    export MSYS_NO_PATHCONV=1
-    export MSYS2_ARG_CONV_EXCL='*'
     if [[ "${TOKENESS_TEST_SKIP_OS_GUARD:-0}" != "1" && "${TOKENESS_ALLOW_WINDOWS:-0}" != "1" ]]; then
       printf 'ERROR: deploy.sh must run from WSL or Linux, not Windows Git Bash (CRLF + path-mangling risk).\n' >&2
       printf '       Override with TOKENESS_ALLOW_WINDOWS=1 only if you accept that risk.\n' >&2
       exit 1
     fi
     if [[ "${TOKENESS_ALLOW_WINDOWS:-0}" == "1" ]]; then
-      printf '[%s] %s\n' "$(date --iso-8601=seconds)" "WARN: running on Windows by explicit override; CR stripped at reads, MSYS path conversion disabled" >&2
+      printf '[%s] %s\n' "$(date --iso-8601=seconds)" "WARN: running on Windows by explicit override; CR stripped at reads and probe paths" >&2
     fi
     ;;
 esac
@@ -534,7 +528,15 @@ apply_ml_digest() {
     "--Container.1.LivenessProbe.FailureThreshold" "3"
   )
 
-  aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+  # MSYS (Git Bash) rewrites POSIX-looking arguments for native executables:
+  # "/api/status" reached the scaling configuration as "D:/.../api/status".
+  # Exclude exactly that argument from conversion; a blanket MSYS_NO_PATHCONV
+  # would break every other POSIX-path argument passed to child processes.
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+    MSYS2_ARG_CONV_EXCL="/api/status" aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+  else
+    aliyun_cmd "${args[@]}" >/dev/null || die "ModifyEciScalingConfiguration failed"
+  fi
   log "scaling configuration image set to $digest (env preserved: $i, liveness probe on /api/status)"
 }
 
