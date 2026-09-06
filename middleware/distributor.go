@@ -244,14 +244,20 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					// A pinned deepseek-v4 request must reach the official
-					// channel even when affinity cached an aggregator:
-					// Official Fit route users asked for strict-fit traffic,
-					// so the sticky aggregator channel is unusable for this
-					// request.
-					if preferred != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
-						preferred.Type != constant.ChannelTypeDeepSeek {
-						preferred = nil
+					// Official-fit route traffic applies the pin/affinity
+					// exclusion in BOTH directions: a pinned request must
+					// reach the official channel even when affinity cached an
+					// aggregator, and an unpinned (disabled-thinking)
+					// deepseek-v4 request must not follow affinity cached on
+					// the official channel by a previous pinned request.
+					if preferred != nil {
+						pinActive := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+						fitFamily := common.GetContextKeyBool(c, constant.ContextKeyV4FitRouteFamily)
+						if pinActive && preferred.Type != constant.ChannelTypeDeepSeek {
+							preferred = nil
+						} else if !pinActive && fitFamily && preferred.Type == constant.ChannelTypeDeepSeek {
+							preferred = nil
+						}
 					}
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && !service.GroupAccessPolicyBlocksChannel(c, preferred.Id) {
 						if usingGroup == "auto" {
@@ -574,8 +580,18 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// Disabled thinking genuinely produces no reasoning upstream, so it is
 	// the one non-pinned thinking shape. The pin narrows per family:
 	// DeepSeek V4 -> type 43, kimi-k3 -> type 25.
-	if profile.Route && (!isDeepSeekV4 || deepSeekV4RequestNeedsOfficial(pinRequest)) {
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	if profile.Route {
+		if isDeepSeekV4 {
+			// Mark the family for the affinity exclusion below even when this
+			// request is not pinned: a disabled-thinking request must not
+			// ride affinity cached on the official channel by a pinned one.
+			common.SetContextKey(c, constant.ContextKeyV4FitRouteFamily, true)
+			if deepSeekV4RequestNeedsOfficial(pinRequest) {
+				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+			}
+		} else {
+			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		}
 	}
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's

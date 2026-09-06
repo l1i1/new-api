@@ -81,6 +81,14 @@ const (
 	// (extreme values, thinking toggles, logprobs) never trigger the pin.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
 
+	// ContextKeyV4FitRouteFamily marks a deepseek-v4 request whose user has
+	// the official-fit Route dimension enabled. It is set regardless of the
+	// per-request pin outcome so the channel-affinity lookup can apply both
+	// directions of the pin/affinity exclusion: a pinned request must not
+	// follow cached aggregator affinity, and an unpinned (disabled-thinking)
+	// request must not follow affinity cached on the official channel.
+	ContextKeyV4FitRouteFamily ContextKey = "v4_fit_route_family"
+
 	// ContextKeyRelayInfoPtr stores the active *relaycommon.RelayInfo so
 	// shared response writers (e.g. IOCopyBytesGracefully) can rewrite the
 	// client-facing model name after per-format handlers resolved the

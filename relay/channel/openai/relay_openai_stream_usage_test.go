@@ -1088,6 +1088,13 @@ func TestDeepSeekThinkingLogprobsRequireBothOutputStreams(t *testing.T) {
 	assert.False(t, requiresDeepSeekV4ReasoningLogprobs(info))
 	info.OriginModelName = "deepseek-v4-flash-none"
 	info.Request = &dto.GeneralOpenAIRequest{LogProbs: boolPtr(true)}
+
+	// The official upstream is exempt from the dual-path gate: it legitimately
+	// returns content-path-only logprobs (e.g. max_tokens exhausted during
+	// thinking), and rejecting it would 502 the contract-defining channel.
+	assert.False(t, isOfficialDeepSeekV4Upstream(nil))
+	assert.False(t, isOfficialDeepSeekV4Upstream(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI}}))
+	assert.True(t, isOfficialDeepSeekV4Upstream(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeDeepSeek}}))
 	assert.False(t, requiresDeepSeekV4ReasoningLogprobs(info))
 }
 

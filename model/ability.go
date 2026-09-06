@@ -383,15 +383,15 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 
 // preferOfficialFitAbilities narrows official-fit candidates to the official
 // upstream channel type when the request is marked for the official pin,
-// mirroring the memory-cache path. Without an official channel the candidate
-// set is unchanged.
+// mirroring the memory-cache path. The pin is HARD: when no official candidate
+// remains (including the retry path, where the failed official channel is
+// excluded), the candidate set is emptied so the request fails honestly.
+// An aggregator fallback would silently violate byte-level fit — the
+// aggregator pool nondeterministically drops reasoning_content and never
+// reproduces official dual-path logprobs.
 func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
 	officialType := officialFitChannelType(model)
-	// A single candidate cannot be narrowed: if it is official the filter would
-	// keep it, and if it is not there is no official candidate to prefer.
-	// Skipping the type query keeps the pinned single-channel hot path
-	// query-free.
-	if len(abilities) <= 1 || !pinOfficial || officialType == 0 {
+	if !pinOfficial || officialType == 0 || len(abilities) == 0 {
 		return abilities
 	}
 	channelIDs := make([]int, 0, len(abilities))
@@ -412,7 +412,7 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 		}
 	}
 	if len(officialIDs) == 0 {
-		return abilities
+		return nil
 	}
 	official := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {

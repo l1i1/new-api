@@ -167,9 +167,11 @@ func officialFitChannelType(model string) int {
 // preferOfficialFitChannels narrows official-fit candidates to the official
 // upstream channel type when the request is marked for the official pin. For
 // deepseek-v4-* the mark is set for the extreme-sampling class or by the
-// user's Route profile; kimi-k3 only via the Route profile. Without an
-// official channel the candidate set is unchanged. Caller must hold
-// channelSyncLock (read lock).
+// user's Route profile; kimi-k3 only via the Route profile. The pin is HARD:
+// when no official candidate remains (including retries where the failed
+// official channel is excluded), the set is emptied so the request fails
+// honestly instead of silently degrading to a fit-violating aggregator.
+// Caller must hold channelSyncLock (read lock).
 func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) []int {
 	officialType := officialFitChannelType(model)
 	if len(channels) == 0 || !pinOfficial || officialType == 0 {
@@ -182,7 +184,7 @@ func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) [
 		}
 	}
 	if len(official) == 0 {
-		return channels
+		return nil
 	}
 	return official
 }

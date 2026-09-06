@@ -568,7 +568,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
-	if requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
+	// The dual-path logprobs gate exists to catch aggregators that drop the
+	// reasoning_content path. The official upstream is exempt: it decides
+	// per-response whether a reasoning path exists (e.g. max_tokens exhausted
+	// during thinking yields content-path-only), and dropping the official
+	// response here would 502 the one channel that defines the contract.
+	if !isOfficialDeepSeekV4Upstream(info) &&
+		requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
 		return nil, missingReasoningLogprobsError()
 	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) &&
@@ -838,6 +844,13 @@ func hasBothChatLogprobs(choices []dto.OpenAITextResponseChoice) bool {
 		}
 	}
 	return hasContent && hasReasoning
+}
+
+// isOfficialDeepSeekV4Upstream reports whether the response came from the
+// official DeepSeek channel (type 43). Official passthrough defines the fit
+// contract, so response-level fit gates must not reject it.
+func isOfficialDeepSeekV4Upstream(info *relaycommon.RelayInfo) bool {
+	return info != nil && info.ChannelType == constant.ChannelTypeDeepSeek
 }
 
 func missingReasoningLogprobsError() *types.NewAPIError {
