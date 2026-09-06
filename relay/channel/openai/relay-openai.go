@@ -130,6 +130,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
+	// Hold the SSE stream until the reasoning gate can decide whether the
+	// upstream honors the thinking contract (reasoning delta before content).
+	// Nothing reaches the client while undecided, so a gate abort leaves the
+	// writer uncommitted and the retry chain picks another channel.
+	resp.Body = newDeepSeekV4ReasoningGateBody(info, resp.Body)
+
 	defer service.CloseResponseBodyGracefully(resp)
 
 	model := info.UpstreamModelName
@@ -577,6 +583,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
 		return nil, missingReasoningLogprobsError()
 	}
+	// Same family of gate for the reasoning output itself: a non-official
+	// channel serving a thinking-expected fit request without any
+	// reasoning_content gets rejected so the retry chain can find a channel
+	// that reproduces official bytes.
+	if requiresDeepSeekV4ReasoningOutput(info) && !responseHasReasoningOutput(simpleResponse.Choices) {
+		return nil, missingReasoningOutputError()
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) &&
 		!(!shouldSuppressReasoningContent(info) && hasReasoningOnlyFinishedOutput(simpleResponse.Choices)) {
 		return nil, emptyChatCompletionError()
@@ -850,7 +863,7 @@ func hasBothChatLogprobs(choices []dto.OpenAITextResponseChoice) bool {
 // official DeepSeek channel (type 43). Official passthrough defines the fit
 // contract, so response-level fit gates must not reject it.
 func isOfficialDeepSeekV4Upstream(info *relaycommon.RelayInfo) bool {
-	return info != nil && info.ChannelType == constant.ChannelTypeDeepSeek
+	return info != nil && info.ChannelMeta != nil && info.ChannelType == constant.ChannelTypeDeepSeek
 }
 
 func missingReasoningLogprobsError() *types.NewAPIError {
