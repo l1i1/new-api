@@ -31,6 +31,13 @@
       "port": 22,
       "user": "root",
       "role": "cdn-origin"
+    },
+    {
+      "name": "US-N0-CC",
+      "host": "23.95.248.94",
+      "port": 22,
+      "user": "root",
+      "role": "replica"
     }
   ],
   "public_endpoints": [
