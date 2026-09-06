@@ -34,6 +34,7 @@ import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
 import { handleServerError } from '@/lib/handle-server-error'
+import { getCachedSystemName, resolvePageTitle } from '@/lib/route-title'
 import { initializeThemeCustomizationDom } from '@/lib/theme-customization-storage'
 
 import { DirectionProvider } from './context/direction-provider'
@@ -109,6 +110,17 @@ declare module '@tanstack/react-router' {
     router: typeof router
   }
 }
+
+// Route-aware tab title: the homepage keeps the server-injected title (the
+// `<!--head-html-->` CustomHeadHTML region); every other path shows
+// "<Page> - <System name>".
+router.subscribe('onResolved', () => {
+  const title = resolvePageTitle(
+    router.state.location.pathname,
+    getCachedSystemName()
+  )
+  if (title) document.title = title
+})
 
 // Render the app
 const rootElement = document.querySelector<HTMLElement>('#root')
