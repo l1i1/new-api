@@ -11,18 +11,18 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
 3. Trigger the `cn-production` deploy environment (`.cnb/tag_deploy.yml`) from the CNB UI (deploy button; owner/master only). The pipeline then runs the full gated release without any local machine:
 
    - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
-   - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from encrypted CNB env vars into a `chmod 600` tmpfs path at run time);
+   - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
-   Required encrypted CNB repo env vars (repo settings → environment variables; values never live in the repo):
+   Credentials live in the **imvhb/tokeness-secrets key repo** (CNB's native secret store — it has no repo-settings secrets; key repos are Web-edit-only, watermark-audited, and cannot be cloned). The pipeline imports `tokeness-cn-deploy.yml` from it, and the file's `allow_slugs`/`allow_events`/`allow_branches` headers restrict the import to exactly this pipeline on `tokeness/main`; the import fails closed when those rules or the file do not match. Values it provides:
 
-   | Secret | Content | Least-privilege guidance |
+   | Key | Content | Least-privilege guidance |
    | --- | --- | --- |
-   | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only `ess:Describe*`/`ess:Modify*`, `eci:Describe*`/`eci:DeleteContainerGroup`, `vpc:Describe*`/`vpc:AddCommonBandwidthPackageIp` on `cn-shanghai` — never the main-account AK |
+   | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only the ESS/ECI/VPC Describe/Modify actions `deploy.sh` actually calls on `cn-shanghai` — never the main-account AK |
    | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key | Key is limited to the two lightweight hosts |
-   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of `ssh-keyscan -H 8.133.172.195 101.133.234.135` output | Pins both SWAS hosts (`StrictHostKeyChecking=yes`) |
+   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for both SWAS hosts | Pins both hosts (`StrictHostKeyChecking=yes`) |
 
-   All four are mandatory: the stage fails closed (`:?` expansions) when any is missing, so an accidental tag-deploy without credentials aborts before touching anything.
+   All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
 
    Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the SWAS-2 host container is re-synced from the restored configuration so node versions never drift.
 

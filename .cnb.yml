@@ -123,14 +123,13 @@ $:
   tag_deploy.cn-production:
     - services:
         - docker
+      # Deploy credentials come from the imvhb/tokeness-secrets key repo (the
+      # CNB-native secret store; CNB has no repo-settings secrets). The file
+      # declares allow_slugs/allow_events so ONLY this pipeline can import it;
+      # a missing file or scope mismatch fails the import closed.
+      imports: https://cnb.cool/imvhb/tokeness-secrets/-/blob/main/tokeness-cn-deploy.yml
       env:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
-        # Encrypted env vars configured in the CNB repo settings (never commit
-        # their values). The pipeline fails closed when any of them is missing.
-        ALIBABA_CLOUD_ACCESS_KEY_ID: ${ALIBABA_CLOUD_ACCESS_KEY_ID}
-        ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${ALIBABA_CLOUD_ACCESS_KEY_SECRET}
-        CNB_SWAS_SSH_KEY_B64: ${CNB_SWAS_SSH_KEY_B64}
-        CNB_SWAS_KNOWN_HOSTS_B64: ${CNB_SWAS_KNOWN_HOSTS_B64}
       stages:
         - name: validate approved mainland image
           script: |
@@ -166,10 +165,10 @@ $:
             fi
             # Fail closed on missing secrets: without any one of these the
             # release cannot run gated, so refuse instead of half-deploying.
-            : "${ALIBABA_CLOUD_ACCESS_KEY_ID:?missing CNB secret ALIBABA_CLOUD_ACCESS_KEY_ID (repo settings -> env vars)}"
-            : "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:?missing CNB secret ALIBABA_CLOUD_ACCESS_KEY_SECRET}"
-            : "${CNB_SWAS_SSH_KEY_B64:?missing CNB secret CNB_SWAS_SSH_KEY_B64 (base64 of the swas-ml private key)}"
-            : "${CNB_SWAS_KNOWN_HOSTS_B64:?missing CNB secret CNB_SWAS_KNOWN_HOSTS_B64 (base64 of ssh-keyscan output for both SWAS hosts)}"
+            : "${ALIBABA_CLOUD_ACCESS_KEY_ID:?missing import ALIBABA_CLOUD_ACCESS_KEY_ID (imvhb/tokeness-secrets/tokeness-cn-deploy.yml)}"
+            : "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:?missing import ALIBABA_CLOUD_ACCESS_KEY_SECRET (imvhb/tokeness-secrets/tokeness-cn-deploy.yml)}"
+            : "${CNB_SWAS_SSH_KEY_B64:?missing import CNB_SWAS_SSH_KEY_B64 (imvhb/tokeness-secrets/tokeness-cn-deploy.yml)}"
+            : "${CNB_SWAS_KNOWN_HOSTS_B64:?missing import CNB_SWAS_KNOWN_HOSTS_B64 (imvhb/tokeness-secrets/tokeness-cn-deploy.yml)}"
             # The release gate refuses Windows-style line endings; normalize
             # defensively in case a secret was ever edited on Windows.
             KEY_FILE=/tmp/cn-ssh/swas-ml
