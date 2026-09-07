@@ -8,29 +8,32 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
 
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
 2. Create a release tag `v1.0.0-tokeness-mainland.<N>` at the checked-out commit and push it. The CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, and publishes the immutable `ml-<tag>` image (a re-push of an existing tag fails rather than overwriting).
-3. The optional `cn-production` deploy environment (`.cnb/tag_deploy.yml`) resolves and certifies the digest, printing `docker.cnb.cool/imvhb/new-api-cn@sha256:<digest>`. It no longer requires an approver.
+3. Trigger the `cn-production` deploy environment (`.cnb/tag_deploy.yml`) from the CNB UI (deploy button; owner/master only). The pipeline then runs the full gated release without any local machine:
 
-   CNB does not receive the lightweight-server SSH key or Alibaba Cloud credentials. It only certifies the production image; infrastructure changes are an authorized local operation.
+   - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
+   - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from encrypted CNB env vars into a `chmod 600` tmpfs path at run time);
+   - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
-4. Deploy the certified digest locally:
+   Required encrypted CNB repo env vars (repo settings → environment variables; values never live in the repo):
 
-   ```bash
-   bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1
-   ```
+   | Secret | Content | Least-privilege guidance |
+   | --- | --- | --- |
+   | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only `ess:Describe*`/`ess:Modify*`, `eci:Describe*`/`eci:DeleteContainerGroup`, `vpc:Describe*`/`vpc:AddCommonBandwidthPackageIp` on `cn-shanghai` — never the main-account AK |
+   | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key | Key is limited to the two lightweight hosts |
+   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of `ssh-keyscan -H 8.133.172.195 101.133.234.135` output | Pins both SWAS hosts (`StrictHostKeyChecking=yes`) |
 
-   `deploy-release` resolves the digest from the registry, sets the ESS scaling configuration to it (preserving every existing env var and re-sending the TCP `3000` liveness plus `/health/ready` readiness probes), then runs **master-first**:
-
-   - rebuild the SWAS-2 host container from the updated scaling configuration (bootstrap pulls env + digest + registry creds live) and gate on its dependency-aware `/health/ready` plus the release version — the master runs the new image's DB migrations and doubles as the canary; a failure here aborts before the ECI tier is touched and restores the previous configuration + host image;
-   - scale out to two ESS-healthy instances;
-   - **application gate before any scale-down**: wait until the new instance answers `/health/ready` (`APP_READY_TIMEOUT_SECONDS`, default 300 s) and its container log shows no `FATAL`/`panic` line — ESS "Healthy" alone is not trusted (it stayed green through the 2026-09-06 crash-loop);
-   - scale back to one: while both instances are healthy `ml-sync` lists both upstream members, and nginx passive checks (`max_fails=2 fail_timeout=5s`) bridge the ~30 s window in which the old member disappears;
-   - final verify (EdgeOne public + private chain).
+   All four are mandatory: the stage fails closed (`:?` expansions) when any is missing, so an accidental tag-deploy without credentials aborts before touching anything.
 
    Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the SWAS-2 host container is re-synced from the restored configuration so node versions never drift.
 
-   Run the script from **WSL or Linux**; Windows Git Bash is refused (`TOKENESS_ALLOW_WINDOWS=1` overrides at your own risk — a Windows-side CLI/jq can emit CRLF, and a stray CR in a re-sent env value crash-loops the container).
+   The local path remains available as a break-glass fallback (WSL or Linux only; Windows Git Bash is refused):
 
-5. Verify the release from the public internet:
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1            # resolves the digest itself
+   bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1 sha256:... # pins a pre-certified digest
+   ```
+
+4. Verify the release from the public internet (the cn-production pipeline already runs this stage; this is the manual form):
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh postcheck
@@ -38,7 +41,7 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
 
    `postcheck` asserts the public `/api/status` version, that the rendered head has exactly one `<title>` and no leaked `<!--head-html-->` placeholder (head content itself is admin-editable), and that `/v1/models` answers 401.
 
-6. Roll back to a previous digest:
+5. Roll back to a previous digest:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
@@ -46,7 +49,7 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
 
    `rollback` follows the same gated master-first path as `deploy-release` (host container rebuilt and gated before the ESS rollout).
 
-7. Keep the egress EIP in the shared bandwidth package:
+6. Keep the egress EIP in the shared bandwidth package:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh eip-sync

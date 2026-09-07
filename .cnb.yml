@@ -70,8 +70,12 @@ tokeness/main:
 
 # "Tag is version" release line. Pushing a v<semver>-tokeness-mainland.<N> tag
 # builds an immutable ml-<tag> image whose VERSION equals the tag name. The
-# deploy-release step is a local operation (see deployment/tokeness-cn) because
-# CNB does not hold the Alibaba Cloud / SSH credentials.
+# separately approved cn-production tag-deploy event (deploy button, owner/
+# master only) then certifies the digest and rolls the release out to
+# production with deployment/tokeness-cn/deploy.sh deploy-release. The Alibaba
+# Cloud RAM credentials and the SWAS SSH key/known-hosts arrive as encrypted
+# CNB repo env vars (see deployment/tokeness-cn/README.md for the list); the
+# stage fails closed when any of them is missing.
 $:
   tag_push:
     - services:
@@ -121,6 +125,12 @@ $:
         - docker
       env:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+        # Encrypted env vars configured in the CNB repo settings (never commit
+        # their values). The pipeline fails closed when any of them is missing.
+        ALIBABA_CLOUD_ACCESS_KEY_ID: ${ALIBABA_CLOUD_ACCESS_KEY_ID}
+        ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${ALIBABA_CLOUD_ACCESS_KEY_SECRET}
+        CNB_SWAS_SSH_KEY_B64: ${CNB_SWAS_SSH_KEY_B64}
+        CNB_SWAS_KNOWN_HOSTS_B64: ${CNB_SWAS_KNOWN_HOSTS_B64}
       stages:
         - name: validate approved mainland image
           script: |
@@ -138,5 +148,52 @@ $:
               exit 1
             fi
             bash deployment/tokeness-cn/deploy.sh image-ref "$IMAGE_DIGEST"
-            echo "Certified release digest: $IMAGE_DIGEST"
-            echo "Deploy locally with: bash deployment/tokeness-cn/deploy.sh deploy-release $TAG"
+            echo "Certified release digest: $IMAGE_DIGEST ($TAG)"
+            # The deploy stage re-resolves the same digest; keep the certified
+            # value visible in the log so both can be compared by a reviewer.
+            echo "$IMAGE_DIGEST" > /tmp/certified-digest
+        - name: release to production
+          script: |
+            set -Eeuo pipefail
+            TAG="$CNB_BRANCH"
+            IMAGE_TAG="ml-$TAG"
+            IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE_NAME:$IMAGE_TAG" \
+              | awk '/^Digest:/ { print $2; exit }')
+            CERTIFIED=$(cat /tmp/certified-digest 2>/dev/null || true)
+            if [ -n "$CERTIFIED" ] && [ "$IMAGE_DIGEST" != "$CERTIFIED" ]; then
+              echo "ERROR: digest changed between stages ($CERTIFIED -> $IMAGE_DIGEST)" >&2
+              exit 1
+            fi
+            # Fail closed on missing secrets: without any one of these the
+            # release cannot run gated, so refuse instead of half-deploying.
+            : "${ALIBABA_CLOUD_ACCESS_KEY_ID:?missing CNB secret ALIBABA_CLOUD_ACCESS_KEY_ID (repo settings -> env vars)}"
+            : "${ALIBABA_CLOUD_ACCESS_KEY_SECRET:?missing CNB secret ALIBABA_CLOUD_ACCESS_KEY_SECRET}"
+            : "${CNB_SWAS_SSH_KEY_B64:?missing CNB secret CNB_SWAS_SSH_KEY_B64 (base64 of the swas-ml private key)}"
+            : "${CNB_SWAS_KNOWN_HOSTS_B64:?missing CNB secret CNB_SWAS_KNOWN_HOSTS_B64 (base64 of ssh-keyscan output for both SWAS hosts)}"
+            # The release gate refuses Windows-style line endings; normalize
+            # defensively in case a secret was ever edited on Windows.
+            KEY_FILE=/tmp/cn-ssh/swas-ml
+            HOSTS_FILE=/tmp/cn-ssh/known_hosts
+            install -d -m 700 /tmp/cn-ssh
+            printf '%s' "$CNB_SWAS_SSH_KEY_B64" | base64 -d | tr -d '\r' > "$KEY_FILE"
+            printf '%s' "$CNB_SWAS_KNOWN_HOSTS_B64" | base64 -d | tr -d '\r' > "$HOSTS_FILE"
+            chmod 600 "$KEY_FILE"
+            # Pinned aliyun CLI from Alibaba's own CDN; the gated script only
+            # uses Describe/Modify ESS/ECI/VPC APIs, stable across 3.x.
+            ALIYUN_BIN=/tmp/cn-bin
+            install -d -m 755 "$ALIYUN_BIN"
+            if ! command -v aliyun >/dev/null 2>&1; then
+              curl -fsSL --connect-timeout 20 --retry 3 \
+                -o /tmp/aliyun-cli.tgz https://aliyuncli.alicdn.com/aliyun-cli-linux-latest.tgz
+              tar -xzf /tmp/aliyun-cli.tgz -C "$ALIYUN_BIN" aliyun
+            fi
+            export PATH="$ALIYUN_BIN:$PATH"
+            aliyun version
+            export SWAS_SSH_KEY_PATH="$KEY_FILE"
+            export SWAS_SSH_KNOWN_HOSTS="$HOSTS_FILE"
+            export SWAS2_SSH_KNOWN_HOSTS="$HOSTS_FILE"
+            bash deployment/tokeness-cn/deploy.sh deploy-release "$TAG" "$IMAGE_DIGEST"
+        - name: postcheck
+          script: |
+            set -Eeuo pipefail
+            bash deployment/tokeness-cn/deploy.sh postcheck

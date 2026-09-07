@@ -866,7 +866,7 @@ Usage:
   deploy.sh postcheck
   deploy.sh nginx-update <ECI_PRIVATE_IP>
   deploy.sh image-ref <sha256:DIGEST>
-  deploy.sh deploy-release <tag>
+  deploy.sh deploy-release <tag> [sha256:DIGEST]
   deploy.sh rollback <sha256:DIGEST>
   deploy.sh sync-host
   deploy.sh eip-sync
@@ -893,10 +893,17 @@ main() {
       image_ref "$2"
       ;;
     deploy-release)
-      [[ $# -eq 2 ]] || die "deploy-release requires one version tag"
+      [[ $# -eq 2 || $# -eq 3 ]] || die "deploy-release requires a version tag and optionally a certified digest"
       local release_tag="$2"
       local release_digest previous_digest previous_snapshot
-      release_digest="$(resolve_ml_digest "$release_tag")"
+      if [[ $# -eq 3 ]]; then
+        # CI (cn-production tag-deploy) already certified this digest against
+        # the tag via the registry; skip the token-authenticated lookup.
+        release_digest="$3"
+        [[ "$release_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "certified digest must be sha256:<64 lowercase hex>"
+      else
+        release_digest="$(resolve_ml_digest "$release_tag")"
+      fi
       previous_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
       previous_digest="$(snapshot_config_digest "$previous_snapshot")"
       [[ "$previous_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a release without rollback target"

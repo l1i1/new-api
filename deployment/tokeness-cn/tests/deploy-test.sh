@@ -406,6 +406,24 @@ first_scaleout="$(grep -n 'ess ModifyScalingGroup .*--DesiredCapacity 2' "$relea
 [[ -n "$first_bootstrap" && -n "$first_scaleout" && "$first_bootstrap" -lt "$first_scaleout" ]] \
   || fail "master (SWAS-2 host) sync did not run before the ESS scale-out"
 
+# CI-certified digest: passing the digest explicitly must pin exactly that
+# digest even though the registry would resolve a different one for the tag.
+CERTIFIED_DIGEST="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+certified_case="$test_root/release-certified-digest"
+mkdir -p "$certified_case"
+make_conf "$certified_case/nginx.conf"
+mkdir -p "$certified_case/state"
+init_ess_state "$certified_case/state"
+run_deploy "$certified_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$CERTIFIED_DIGEST"
+[[ "$(jq -r '.image' "$certified_case/state/state.json" | sed 's/.*@//')" == "$CERTIFIED_DIGEST" ]] \
+  || fail "certified digest was not used; the release fell back to the registry lookup"
+jq -e '.image != "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' \
+  "$certified_case/state/state.json" > /dev/null \
+  || fail "certified-digest case unexpectedly pinned the registry-resolved digest"
+
 # Host version mismatch must fail the release BEFORE the ECI tier moves.
 host_mismatch_case="$test_root/host-mismatch"
 mkdir -p "$host_mismatch_case"
