@@ -79,39 +79,10 @@ func GetTopUpInfo(c *gin.Context) {
 		}
 	}
 
-	// HotPay registered methods ride the same pay_methods list as
-	// waffo_pancake entries: each registry entry becomes a "hotpay:<method>"
-	// type the buyer can select, and only these types route to the HotPay
-	// gateway. Legacy PayMethods entries keep using the legacy EPay client.
-	if service.IsHotPayGatewayEnabled() {
-		for _, hotPayMethod := range setting.GetHotPayPayMethods() {
-			name := strings.TrimSpace(hotPayMethod.Name)
-			entryType := strings.ToLower(strings.TrimSpace(hotPayMethod.Type))
-			if name == "" || hotPayMethodFromType(entryType) == "" {
-				continue
-			}
-			alreadyListed := false
-			for _, listed := range payMethods {
-				if listed["type"] == entryType {
-					alreadyListed = true
-					break
-				}
-			}
-			if alreadyListed {
-				continue
-			}
-			entry := map[string]string{
-				"name":  name,
-				"icon":  strings.TrimSpace(hotPayMethod.Icon),
-				"type":  entryType,
-				"color": "#0EA5E9",
-			}
-			if minTopUp := strings.TrimSpace(hotPayMethod.MinTopUp); minTopUp != "" {
-				entry["min_topup"] = minTopUp
-			}
-			payMethods = append(payMethods, entry)
-		}
-	}
+	// HotPay tab registers only channel ids ("hotpay:<method>"). The General
+	// PayMethods list is the single source of buyer-visible display, so any
+	// "hotpay:<method>" row lives entirely in PayMethods and is filtered below
+	// against the registered whitelist.
 
 	// 如果启用了 Waffo 支付，添加到支付方法列表
 	enableWaffo := isWaffoTopUpEnabled()
@@ -134,6 +105,8 @@ func GetTopUpInfo(c *gin.Context) {
 			payMethods = append(payMethods, waffoMethod)
 		}
 	}
+
+	payMethods = filterRegisteredHotPayMethods(payMethods)
 
 	data := gin.H{
 		"enable_online_topup":              service.IsHotPayGatewayEnabled() || isEpayTopUpEnabled(),
@@ -163,6 +136,26 @@ func GetTopUpInfo(c *gin.Context) {
 		"topup_link":              common.TopUpLink,
 	}
 	common.ApiSuccess(c, data)
+}
+
+// filterRegisteredHotPayMethods keeps a "hotpay:<method>" payMethods entry only
+// when the HotPay gateway is active and the channel is registered in the HotPay
+// whitelist. Non-HotPay entries pass through unchanged. The HotPay tab owns the
+// whitelist (channel ids only); the General PayMethods list is the single source
+// of buyer-visible display.
+func filterRegisteredHotPayMethods(payMethods []map[string]string) []map[string]string {
+	hotPayEnabled := service.IsHotPayGatewayEnabled()
+	filtered := make([]map[string]string, 0, len(payMethods))
+	for _, method := range payMethods {
+		if hotPayMethodFromType(method["type"]) == "" {
+			filtered = append(filtered, method)
+			continue
+		}
+		if hotPayEnabled && isRegisteredHotPayMethodType(method["type"]) {
+			filtered = append(filtered, method)
+		}
+	}
+	return filtered
 }
 
 type EpayRequest struct {

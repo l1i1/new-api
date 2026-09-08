@@ -62,6 +62,7 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
 import { AmountDiscountVisualEditor } from './amount-discount-visual-editor'
 import { AmountOptionsVisualEditor } from './amount-options-visual-editor'
 import { CreemProductsVisualEditor } from './creem-products-visual-editor'
+import { HotPayMethodsVisualEditor } from './hotpay-methods-visual-editor'
 import { PaymentMethodsVisualEditor } from './payment-methods-visual-editor'
 import {
   formatJsonForEditor,
@@ -186,7 +187,6 @@ const paymentSchema = z.object({
   }, 'Provide a valid gateway URL starting with http:// or https://'),
   HotPayGatewayAPIKey: z.string(),
   HotPayGatewayAllowedHosts: z.string(),
-  HotPayAlipayAccountID: z.string(),
   HotPaySettlementSecret: z.string(),
   HotPaySettlementMaxAgeSeconds: z.coerce.number().min(0).max(86400),
   HotPayPayMethods: z.string(),
@@ -480,7 +480,6 @@ export function PaymentSettingsSection({
       HotPayGatewayURL: removeTrailingSlash(values.HotPayGatewayURL.trim()),
       HotPayGatewayAPIKey: values.HotPayGatewayAPIKey.trim(),
       HotPayGatewayAllowedHosts: values.HotPayGatewayAllowedHosts.trim(),
-      HotPayAlipayAccountID: values.HotPayAlipayAccountID.trim(),
       HotPaySettlementSecret: values.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds: values.HotPaySettlementMaxAgeSeconds,
       HotPayPayMethods: values.HotPayPayMethods.trim(),
@@ -539,7 +538,6 @@ export function PaymentSettingsSection({
       HotPayGatewayAPIKey: initialRef.current.HotPayGatewayAPIKey.trim(),
       HotPayGatewayAllowedHosts:
         initialRef.current.HotPayGatewayAllowedHosts.trim(),
-      HotPayAlipayAccountID: initialRef.current.HotPayAlipayAccountID.trim(),
       HotPaySettlementSecret: initialRef.current.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds:
         initialRef.current.HotPaySettlementMaxAgeSeconds,
@@ -775,13 +773,6 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'HotPayGatewayAllowedHosts',
         value: sanitized.HotPayGatewayAllowedHosts,
-      })
-    }
-
-    if (sanitized.HotPayAlipayAccountID !== initial.HotPayAlipayAccountID) {
-      updates.push({
-        key: 'HotPayAlipayAccountID',
-        value: sanitized.HotPayAlipayAccountID,
       })
     }
 
@@ -1166,7 +1157,7 @@ export function PaymentSettingsSection({
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Configured as PayMethods JSON. Use stripe for Stripe; use waffo_pancake for unrestricted Waffo Pancake checkout, or waffo_pancake:wechat, waffo_pancake:googlepay, waffo_pancake:applepay, and waffo_pancake:card for a fixed method. Other values are sent to Epay as the type parameter.'
+                          'Configured as PayMethods JSON. Use stripe for Stripe; use waffo_pancake for unrestricted Waffo Pancake checkout, or waffo_pancake:wechat, waffo_pancake:googlepay, waffo_pancake:applepay, and waffo_pancake:card for a fixed method. Use hotpay:<method> (registered in the HotPay tab) to route through the HotPay gateway and set its display here. Other values are sent to Epay as the type parameter.'
                         )}
                       </FormDescription>
                       <FormMessage />
@@ -1519,31 +1510,6 @@ export function PaymentSettingsSection({
                       </FormItem>
                     )}
                   />
-
-                  <FormField
-                    control={form.control}
-                    name='HotPayAlipayAccountID'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Alipay account ID')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder='2021...'
-                            {...field}
-                            onChange={(event) =>
-                              field.onChange(event.target.value)
-                            }
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                 </div>
 
                 <FormField
@@ -1577,7 +1543,7 @@ export function PaymentSettingsSection({
                       </div>
                       <FormControl>
                         {hotPayMethodsVisualMode ? (
-                          <PaymentMethodsVisualEditor
+                          <HotPayMethodsVisualEditor
                             value={field.value}
                             onChange={field.onChange}
                           />
@@ -1590,7 +1556,7 @@ export function PaymentSettingsSection({
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.'
+                          'Register the HotPay channel ids buyers may use. Each id is only a hotpay:<method> label; to appear in the buyer payment list and set its name/icon/min-top-up, reference the id in the General PayMethods list. Only registered ids route through the HotPay gateway.'
                         )}
                       </FormDescription>
                       <FormMessage />

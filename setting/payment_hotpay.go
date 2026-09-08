@@ -7,7 +7,6 @@ var (
 	HotPayGatewayURL          string
 	HotPayGatewayAPIKey       string
 	HotPayGatewayAllowedHost  string
-	HotPayAlipayAccountID     string
 	HotPaySettlementSecret    string
 	HotPaySettlementMaxAgeSec int
 )
@@ -16,7 +15,6 @@ const (
 	HotPayGatewayURLOptionKey          = "HotPayGatewayURL"
 	HotPayGatewayAPIKeyOptionKey       = "HotPayGatewayAPIKey"
 	HotPayGatewayAllowedHostOption     = "HotPayGatewayAllowedHosts"
-	HotPayAlipayAccountIDOptionKey     = "HotPayAlipayAccountID"
 	HotPaySettlementSecretOptionKey    = "HotPaySettlementSecret"
 	HotPaySettlementMaxAgeSecOptionKey = "HotPaySettlementMaxAgeSeconds"
 )

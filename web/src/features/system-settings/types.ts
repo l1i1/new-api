@@ -349,7 +349,6 @@ export type BillingSettings = {
   HotPayGatewayURL: string
   HotPayGatewayAPIKey: string
   HotPayGatewayAllowedHosts: string
-  HotPayAlipayAccountID: string
   HotPaySettlementSecret: string
   HotPaySettlementMaxAgeSeconds: number
   HotPayPayMethods: string

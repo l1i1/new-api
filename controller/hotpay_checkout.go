@@ -40,8 +40,8 @@ func isRegisteredHotPayMethodType(paymentType string) bool {
 	if method == "" {
 		return false
 	}
-	for _, entry := range setting.GetHotPayPayMethods() {
-		if strings.EqualFold(strings.TrimSpace(entry.Type), strings.TrimSpace(paymentType)) {
+	for _, registered := range setting.GetHotPayPayMethods() {
+		if strings.EqualFold(strings.TrimSpace(registered), strings.TrimSpace(paymentType)) {
 			return true
 		}
 	}
@@ -166,11 +166,10 @@ func hotPayProviderAccountIDForMethod(method string) string {
 	if hotPayProviderForMethod(method) != model.PaymentProviderGoPayAlipay {
 		return hotPayProviderAccountID()
 	}
-	accountID := strings.TrimSpace(setting.HotPayAlipayAccountID)
-	if accountID == "" {
-		accountID = strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID"))
-	}
-	return accountID
+	// Alipay is routed entirely by HotPay: no account pin is forwarded. HotPay
+	// picks the gopay_alipay channel by its own routing priority and the routed
+	// account is backfilled onto the local order from the order response.
+	return ""
 }
 
 func hotPayCheckoutResponse(result service.HotPayGatewayCreateOrderResponse) gin.H {

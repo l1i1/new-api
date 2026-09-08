@@ -146,7 +146,6 @@ func InitOptionMap() {
 	common.OptionMap[setting.HotPayGatewayURLOptionKey] = setting.HotPayGatewayURL
 	common.OptionMap[setting.HotPayGatewayAPIKeyOptionKey] = ""
 	common.OptionMap[setting.HotPayGatewayAllowedHostOption] = setting.HotPayGatewayAllowedHost
-	common.OptionMap[setting.HotPayAlipayAccountIDOptionKey] = setting.HotPayAlipayAccountID
 	common.OptionMap[setting.HotPaySettlementSecretOptionKey] = ""
 	common.OptionMap[setting.HotPaySettlementMaxAgeSecOptionKey] = strconv.Itoa(setting.HotPaySettlementMaxAgeSec)
 	common.OptionMap["HotPayPayMethods"] = setting.HotPayPayMethods2JsonString()
@@ -577,8 +576,6 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.HotPayGatewayAPIKey = value
 	case setting.HotPayGatewayAllowedHostOption:
 		setting.HotPayGatewayAllowedHost = value
-	case setting.HotPayAlipayAccountIDOptionKey:
-		setting.HotPayAlipayAccountID = value
 	case setting.HotPaySettlementSecretOptionKey:
 		setting.HotPaySettlementSecret = value
 	case setting.HotPaySettlementMaxAgeSecOptionKey:
