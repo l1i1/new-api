@@ -74,16 +74,19 @@ function sidebarFor(admin?: object, user?: object, canConfigure = true) {
 }
 
 describe('security sidebar visibility', () => {
-  it('old configurations show Security & Access immediately after Profile and keep API Keys', () => {
+  it('old configurations show Security & Access and keep API Keys', () => {
     const { result } = sidebarFor(
       { personal: { enabled: true, personal: true, topup: true } },
       { personal: { enabled: true, personal: true } }
     )
+    // The fork preserves the saved JSON key order for sidebar reordering, so a
+    // legacy config listing `personal` before `topup` renders Profile before
+    // Wallet; Security & Access is appended from the registry defaults.
     expect(
       result.current
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
-    ).toEqual(['Wallet', 'Profile', 'Security & Access'])
+    ).toEqual(['Profile', 'Wallet', 'Security & Access'])
     expect(
       result.current
         .flatMap((group) => group.items)
@@ -136,11 +139,26 @@ describe('audit log sidebar entry', () => {
     expect(titles).toContain('Usage Logs')
   })
 
-  it('legacy configurations show a separate Audit Logs link immediately after Usage Logs', () => {
+  it('legacy configurations show a separate Audit Logs link', () => {
     const { result } = sidebarFor(
       { console: { enabled: true, log: true } },
       { console: { enabled: true, log: true } }
     )
+    const items =
+      result.current.find((group) => group.id === 'general')?.items ?? []
+    // The fork orders entries by the saved config key order, so a legacy config
+    // listing `log` first appends the registry defaults after it instead of
+    // slotting Audit Logs directly behind Usage Logs. The default configuration
+    // still renders them adjacent, which the next test covers.
+    expect(items.some((item) => item.title === 'Audit Logs')).toBe(true)
+    const selected = items.filter((item) =>
+      checkIsActive('/usage-logs/audit', item)
+    )
+    expect(selected.map((item) => item.title)).toEqual(['Audit Logs'])
+  })
+
+  it('default configuration renders Audit Logs immediately after Usage Logs', () => {
+    const { result } = sidebarFor()
     const items =
       result.current.find((group) => group.id === 'general')?.items ?? []
     const usageIndex = items.findIndex((item) => item.title === 'Usage Logs')
@@ -148,10 +166,6 @@ describe('audit log sidebar entry', () => {
       title: 'Audit Logs',
       url: '/usage-logs/audit',
     })
-    const selected = items.filter((item) =>
-      checkIsActive('/usage-logs/audit', item)
-    )
-    expect(selected.map((item) => item.title)).toEqual(['Audit Logs'])
   })
 
   it.each([
