@@ -2185,7 +2185,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Các Dự Án Liên Quan",
     "footer.defaultCopyright": "Bản quyền được bảo lưu.",
-    "footer.newapi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Đối với các kênh được thêm sau ngày 10 tháng 5 năm 2025, không cần loại bỏ \".\" khỏi tên mô hình trong quá trình triển khai",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Đối với các triển khai riêng tư, định dạng: https://fastgpt.run/api/openapi",
     "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "Đối với kênh nhiều khóa, nhập mỗi khóa trên một dòng. Đặt URL proxy tùy chọn trên dòng không trống tiếp theo của khóa đó. Các dòng không trống khác được coi là khóa.",
@@ -5327,7 +5327,6 @@
     "Used reset credits cannot be restored.": "Các lượt đặt lại đã dùng không thể khôi phục.",
     "Used to authenticate with io.net deployment API": "Dùng để xác thực với API triển khai io.net",
     "Used to authenticate with the worker. Leave blank to keep the existing secret.": "Dùng để xác thực với worker. Để trống để giữ nguyên secret hiện có.",
-    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Other values are sent to Epay as the type parameter.",
     "Used:": "Đã dùng:",
     "User": "Người dùng",
     "User {{id}}": "Người dùng {{id}}",
@@ -6121,6 +6120,7 @@
     "Add channel": "Add channel",
     "Quick add:": "Quick add:",
     "Remove {{channel}}": "Remove {{channel}}",
-    "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list."
+    "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.",
+    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter."
   }
 }

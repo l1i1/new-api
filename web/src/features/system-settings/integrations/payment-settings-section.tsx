@@ -227,6 +227,21 @@ function parseWaffoPayMethods(value: string): PayMethod[] {
   }
 }
 
+// Registered "hotpay:<method>" channel ids from the HotPayPayMethods option,
+// used to surface the referenceable HotPay types in the General methods dialog.
+function parseHotPayTypes(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is string =>
+        typeof item === 'string' && item.toLowerCase().startsWith('hotpay:')
+    )
+  } catch {
+    return []
+  }
+}
+
 export function PaymentSettingsSection({
   defaultValues,
   waffoDefaultValues,
@@ -875,6 +890,10 @@ export function PaymentSettingsSection({
   }
 
   const currentFormValues = form.watch()
+  const registeredHotPayTypes = React.useMemo(
+    () => parseHotPayTypes(currentFormValues.HotPayPayMethods),
+    [currentFormValues.HotPayPayMethods]
+  )
   const waffoValues: WaffoSettingsValues = {
     WaffoEnabled: currentFormValues.WaffoEnabled,
     WaffoApiKey: currentFormValues.WaffoApiKey,
@@ -1137,6 +1156,7 @@ export function PaymentSettingsSection({
                           <PaymentMethodsVisualEditor
                             value={field.value}
                             onChange={field.onChange}
+                            hotPayTypes={registeredHotPayTypes}
                           />
                         ) : (
                           <JsonCodeEditor

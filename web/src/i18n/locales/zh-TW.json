@@ -2185,7 +2185,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相關項目",
     "footer.defaultCopyright": "版權所有。",
-    "footer.newapi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
+    "footer.new\u0061pi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "對於 2025 年 5 月 10 日之後新增的渠道，在部署時無需從模型名稱中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "對於私有部署，格式為：https://fastgpt.run/api/openapi",
     "For multi-key channels, enter one key per line. Put an optional proxy URL on the next non-empty line for that key. Other non-empty lines are treated as keys.": "多金鑰渠道每行輸入一個金鑰。可在金鑰下一個非空行輸入選用的代理 URL。其他非空行會視為金鑰。",
@@ -5327,7 +5327,6 @@
     "Used reset credits cannot be restored.": "已使用的重置次數無法恢復。",
     "Used to authenticate with io.net deployment API": "用於 io.net 部署 API 鑒權",
     "Used to authenticate with the worker. Leave blank to keep the existing secret.": "用於與 Worker 進行身份驗證。留空以保留現有金鑰。",
-    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Other values are sent to Epay as the type parameter.": "用於決定支付流程。waffo_pancake 會開啟不限制方式的 Pancake 結帳頁；附加 :wechat、:googlepay、:applepay 或 :card 可固定支付方式。其他值會作為 Epay 的 type 參數提交。",
     "Used:": "已使用：",
     "User": "用戶",
     "User {{id}}": "用戶 {{id}}",
@@ -6121,6 +6120,7 @@
     "Add channel": "新增通道",
     "Quick add:": "快速新增：",
     "Remove {{channel}}": "移除 {{channel}}",
-    "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "尚未註冊 HotPay 通道。請在上方新增 hotpay:<method> 類型的 id；只有已註冊的 id 才能在一般支付方式列表中被引用。"
+    "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "尚未註冊 HotPay 通道。請在上方新增 hotpay:<method> 類型的 id；只有已註冊的 id 才能在一般支付方式列表中被引用。",
+    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "用於決定支付流程。waffo_pancake 用於無限制的 Pancake 結算，或追加 :wechat、:googlepay、:applepay、:card 固定方式。使用 hotpay:<method> 類型（在 HotPay 分頁註冊）走 HotPay 閘道。其他值作為 type 參數提交給 Epay。"
   }
 }

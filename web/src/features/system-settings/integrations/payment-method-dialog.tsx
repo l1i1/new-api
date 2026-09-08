@@ -64,6 +64,9 @@ type PaymentMethodDialogProps = {
   onOpenChange: (open: boolean) => void
   onSave: (data: PaymentMethodData) => void
   editData?: PaymentMethodData | null
+  // Registered "hotpay:<method>" channel ids exposed as selectable type options
+  // so the operator can reference an already-registered HotPay method here.
+  hotPayTypes?: string[]
 }
 
 const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
@@ -74,7 +77,22 @@ const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
   'waffo_pancake:googlepay': 'SiGooglepay',
   'waffo_pancake:applepay': 'SiApplepay',
   'waffo_pancake:card': 'LuCreditCard',
+  'hotpay:alipay': 'SiAlipay',
+  'hotpay:wechat_pay': 'SiWechat',
+  'hotpay:card': 'LuCreditCard',
+  'hotpay:apple_pay': 'SiApplepay',
+  'hotpay:google_pay': 'SiGooglepay',
   wxpay: 'SiWechat',
+}
+
+// Default display name + icon for a known HotPay method; unknown methods fall
+// back to the raw type so the operator can still reference the registered id.
+const HOTPAY_METHOD_META: Record<string, { name: string; icon: string }> = {
+  alipay: { name: '支付宝', icon: 'SiAlipay' },
+  wechat_pay: { name: '微信', icon: 'SiWechat' },
+  card: { name: 'HotPay Card', icon: 'LuCreditCard' },
+  apple_pay: { name: 'HotPay Apple Pay', icon: 'SiApplepay' },
+  google_pay: { name: 'HotPay Google Pay', icon: 'SiGooglepay' },
 }
 
 const getDefaultIconName = (type: string) => PAYMENT_TYPE_ICON_NAMES[type] ?? ''
@@ -84,6 +102,7 @@ export function PaymentMethodDialog({
   onOpenChange,
   onSave,
   editData,
+  hotPayTypes,
 }: PaymentMethodDialogProps) {
   const { t } = useTranslation()
   const isEditMode = !!editData
@@ -138,8 +157,23 @@ export function PaymentMethodDialog({
       value: 'waffo_pancake:card',
     },
   ]
+  // Registered HotPay channel ids become referenceable type options; unknown
+  // methods still surface by their raw id so nothing registered is hidden.
+  const hotPayOptions = (hotPayTypes ?? []).map((type) => {
+    const method = type.replace(/^hotpay:/i, '')
+    const meta = HOTPAY_METHOD_META[method]
+    const name = meta?.name ?? type
+    const iconName = meta?.icon ?? getDefaultIconName(type)
+    return {
+      iconName,
+      label: `${name} (${type})`,
+      name,
+      value: type,
+    }
+  })
+  const allTypeOptions = [...paymentTypeOptions, ...hotPayOptions]
   const getPaymentTypeOption = (value: string) =>
-    paymentTypeOptions.find((option) => option.value === value)
+    allTypeOptions.find((option) => option.value === value)
 
   const form = useForm<PaymentMethodDialogFormValues>({
     resolver: zodResolver(paymentMethodDialogSchema),
@@ -242,7 +276,7 @@ export function PaymentMethodDialog({
                 <FormLabel>{t('Payment type key')}</FormLabel>
                 <FormControl>
                   <Combobox
-                    options={paymentTypeOptions}
+                    options={allTypeOptions}
                     value={field.value}
                     onValueChange={(value) => {
                       if (value === null) return
@@ -277,7 +311,7 @@ export function PaymentMethodDialog({
                 </FormControl>
                 <FormDescription className='leading-relaxed'>
                   {t(
-                    'Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Other values are sent to Epay as the type parameter.'
+                    'Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.'
                   )}
                 </FormDescription>
                 <FormMessage />

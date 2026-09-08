@@ -41,6 +41,9 @@ import {
 type PaymentMethodsVisualEditorProps = {
   value: string
   onChange: (value: string) => void
+  // Registered "hotpay:<method>" ids offered as referenceable type options in
+  // the add/edit dialog.
+  hotPayTypes?: string[]
 }
 
 const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
@@ -70,6 +73,7 @@ function getEffectiveIconName(method: PaymentMethodData) {
 export function PaymentMethodsVisualEditor({
   value,
   onChange,
+  hotPayTypes,
 }: PaymentMethodsVisualEditorProps) {
   const { t } = useTranslation()
   const paymentTemplates = [
@@ -525,6 +529,7 @@ export function PaymentMethodsVisualEditor({
         onOpenChange={setDialogOpen}
         onSave={handleSave}
         editData={editData}
+        hotPayTypes={hotPayTypes}
       />
     </div>
   )
