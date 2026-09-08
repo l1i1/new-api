@@ -120,6 +120,13 @@ const SIDEBAR_MODULE_REGISTRY: SidebarModuleDefinition[] = [
   },
   {
     section: 'console',
+    key: 'audit',
+    urls: ['/usage-logs/audit'],
+    title: 'Audit Logs',
+    description: 'Review account and administrative audit events.',
+  },
+  {
+    section: 'console',
     key: 'midjourney',
     urls: ['/usage-logs/drawing'],
     title: 'Drawing logs',
@@ -146,6 +153,13 @@ const SIDEBAR_MODULE_REGISTRY: SidebarModuleDefinition[] = [
     urls: ['/profile'],
     title: 'Profile',
     description: 'Personal settings and profile management.',
+  },
+  {
+    section: 'personal',
+    key: 'security',
+    urls: ['/security'],
+    title: 'Security & Access',
+    description: 'Manage your security settings and account access.',
   },
   {
     section: 'personal',

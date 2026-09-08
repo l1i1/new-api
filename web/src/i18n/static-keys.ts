@@ -39,6 +39,9 @@ export const STATIC_I18N_KEYS = [
   // Sidebar navigation
   'Invoices',
   'Invoice Review',
+  'Audit Logs',
+  'Security & Access',
+  'Review account and administrative audit events.',
 
   // Sidebar views (drill-in workspaces)
   'System Settings',

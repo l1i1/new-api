@@ -6121,6 +6121,9 @@
     "Quick add:": "Quick add:",
     "Remove {{channel}}": "Remove {{channel}}",
     "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.",
-    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter."
+    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.",
+    "Audit Logs": "Журналы аудита",
+    "Security & Access": "Безопасность и доступ",
+    "Review account and administrative audit events.": "Просмотр событий аудита аккаунта и административных действий."
   }
 }

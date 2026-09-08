@@ -6121,6 +6121,9 @@
     "Quick add:": "快捷添加：",
     "Remove {{channel}}": "移除 {{channel}}",
     "No HotPay channels registered. Add a hotpay:<method> id above; only registered ids can be referenced in the General payment methods list.": "尚未注册 HotPay 通道。请在上方添加 hotpay:<method> 类型的 id；只有已注册的 id 才能在常规支付方式列表中被引用。",
-    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "用于决定支付流程。waffo_pancake 用于无限制的 Pancake 结算，或追加 :wechat、:googlepay、:applepay、:card 固定方式。使用 hotpay:<method> 类型（在 HotPay 页签注册）走 HotPay 网关。其他值作为 type 参数提交给 Epay。"
+    "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "用于决定支付流程。waffo_pancake 用于无限制的 Pancake 结算，或追加 :wechat、:googlepay、:applepay、:card 固定方式。使用 hotpay:<method> 类型（在 HotPay 页签注册）走 HotPay 网关。其他值作为 type 参数提交给 Epay。",
+    "Audit Logs": "审计日志",
+    "Security & Access": "安全与访问",
+    "Review account and administrative audit events.": "查看账户与管理的审计事件。"
   }
 }

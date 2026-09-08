@@ -50,6 +50,7 @@ describe('sidebar module configuration ordering', () => {
       'enabled',
       'personal',
       'topup',
+      'security',
       'invoice',
     ])
   })
