@@ -1,0 +1,13 @@
+# CNB pipeline build env for Tokeness CN pipelines.
+# cnbcool/default-build-env (Debian trixie) ships git/jq/curl but NOT python3;
+# deployment/tokeness-cn/deploy.sh needs it for resolve_ml_digest, the scaling
+# config serializer (config_args.py) and the SWAS host version check, so the
+# push-validation tests and the cn-production release would fail silently
+# without it. Cached by CNB via content hash; rebuilt only when this file
+# changes.
+FROM cnbcool/default-build-env:latest
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*

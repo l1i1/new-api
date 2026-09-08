@@ -14,12 +14,17 @@ tokeness/main:
   push:
     - services:
         - docker
+      # deploy.sh (tests + production release) needs python3, which the CNB
+      # default build env does not ship; see deployment/tokeness-cn/ci/Dockerfile.cnb.
+      docker:
+        build: deployment/tokeness-cn/ci/Dockerfile.cnb
       env:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
         CNB_SITE_FLAVOR: mainland
       stages:
         - name: validate mainland deployment tooling
           script: |
+            python3 --version
             bash -n deployment/tokeness-cn/deploy.sh
             for helper in deployment/tokeness-cn/tests/fake-bin/*; do
               bash -n "$helper"
@@ -123,6 +128,10 @@ $:
   tag_deploy.cn-production:
     - services:
         - docker
+      # deploy-release + postcheck call python3 (serializer, digest resolution,
+      # host version check); the default build env has none.
+      docker:
+        build: deployment/tokeness-cn/ci/Dockerfile.cnb
       # Deploy credentials come from the imvhb/tokeness-secrets key repo (the
       # CNB-native secret store; CNB has no repo-settings secrets). The file
       # declares allow_slugs/allow_events so ONLY this pipeline can import it;

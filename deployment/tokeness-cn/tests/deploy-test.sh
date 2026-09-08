@@ -10,6 +10,12 @@ fail() {
   exit 1
 }
 
+# deploy-release cases go through resolve_ml_digest + config_args.py; without
+# python3 they would die with the error captured into the per-case output.log
+# and the harness would exit silently. Check up front instead.
+command -v python3 >/dev/null 2>&1 \
+  || fail "python3 is required (CNB default-build-env lacks it; pipelines must use deployment/tokeness-cn/ci/Dockerfile.cnb)"
+
 assert_contains() {
   local file="$1" text="$2"
   grep -Fq -- "$text" "$file" || fail "expected $file to contain: $text"
