@@ -774,6 +774,24 @@ func GetChannelPollingLock(channelId int) *sync.Mutex {
 	return actual.(*sync.Mutex)
 }
 
+// SetChannelOtherInfoKey records a background-runner marker (for example the
+// multi-key scheduled test sweep's last run time) in the channel's other_info.
+// The polling lock serializes with handlerMultiKeyUpdate's locked
+// read-modify-write so concurrent status updates are not clobbered.
+func SetChannelOtherInfoKey(channelId int, key string, value any) error {
+	lock := GetChannelPollingLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+	channel, err := GetChannelById(channelId, true)
+	if err != nil {
+		return err
+	}
+	other := channel.GetOtherInfo()
+	other[key] = value
+	channel.SetOtherInfo(other)
+	return channel.saveStatusState()
+}
+
 // CleanupChannelPollingLocks removes locks for channels that no longer exist
 // This is optional and can be called periodically to prevent memory leaks
 func CleanupChannelPollingLocks() {
@@ -1182,6 +1200,9 @@ func (channel *Channel) ValidateSettings() error {
 		return fmt.Errorf("invalid channel proxy: %w", err)
 	}
 	if err := channelParams.ValidateHTTPTransport(); err != nil {
+		return err
+	}
+	if err := channelParams.ValidateMultiKeyTest(); err != nil {
 		return err
 	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}

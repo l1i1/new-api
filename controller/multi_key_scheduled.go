@@ -9,14 +9,25 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
 
-// multiKeyScheduledTestMaxKeys bounds one scheduled run so a huge pool cannot
-// monopolize the runner; the next scheduled cycle continues the sweep.
+// multiKeyScheduledTestMaxKeys bounds one channel's sweep so a huge pool
+// cannot monopolize the runner; the next scheduled cycle continues it.
 const multiKeyScheduledTestMaxKeys = 500
+
+// multiKeyScheduledTestProbeTimeout bounds one credential probe; scheduled
+// sweeps should finish well within the smallest configured interval.
+const multiKeyScheduledTestProbeTimeout = 45 * time.Second
+
+// multiKeyScheduledTestConcurrency matches the manual credential-test default
+// so a scheduled sweep never hits upstream harder than an admin-driven one.
+const multiKeyScheduledTestConcurrency = 4
+
+// multiKeyLastRunOtherKey is the other_info marker recording each channel's
+// last scheduled sweep time.
+const multiKeyLastRunOtherKey = "multi_key_test_last_run"
 
 // multiKeyScheduledTestSummary is the persisted result of one scheduled run.
 type multiKeyScheduledTestSummary struct {
@@ -29,21 +40,32 @@ type multiKeyScheduledTestSummary struct {
 	Errors         []string `json:"errors,omitempty"`
 }
 
+// multiKeyScheduledTestHandler is a low-frequency scheduler pass: Enabled()
+// folds in "is any multi-key channel enrolled" so an idle system schedules no
+// rows, and Interval() is the scan cadence, not the per-channel cadence.
 type multiKeyScheduledTestHandler struct{}
 
 func (multiKeyScheduledTestHandler) Type() string { return model.SystemTaskTypeMultiKeyScheduledTest }
 
 func (multiKeyScheduledTestHandler) Enabled() bool {
-	return operation_setting.GetMonitorSetting().MultiKeyTestEnabled
+	channels, err := model.GetAllChannels(0, 0, true, false)
+	if err != nil {
+		return false
+	}
+	for _, channel := range channels {
+		if channel.Status == common.ChannelStatusManuallyDisabled || !channel.ChannelInfo.IsMultiKey {
+			continue
+		}
+		if channel.GetSetting().NormalizedMultiKeyTest() != nil {
+			return true
+		}
+	}
+	return false
 }
 
-func (multiKeyScheduledTestHandler) Interval() time.Duration {
-	minutes := operation_setting.GetMonitorSetting().MultiKeyTestMinutes
-	if minutes <= 0 {
-		minutes = operation_setting.DefaultMultiKeyTestMinutes
-	}
-	return time.Duration(minutes * float64(time.Minute))
-}
+// Interval is the scan cadence: due channels are found on every pass, each
+// judged by its own configured interval against other_info's last-run marker.
+func (multiKeyScheduledTestHandler) Interval() time.Duration { return 5 * time.Minute }
 
 func (multiKeyScheduledTestHandler) NewPayload() any { return nil }
 
@@ -56,48 +78,59 @@ func (multiKeyScheduledTestHandler) Run(ctx context.Context, task *model.SystemT
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
-// runMultiKeyScheduledTestTask probes the credentials of multi-key channels and
-// applies the outcome: failed keys are auto-disabled, recovered keys are
-// re-enabled. Re-enabling skips manual_disabled keys unless the operator opted
-// in through the setting.
-func runMultiKeyScheduledTestTask(ctx context.Context, report func(processed, total int)) (multiKeyScheduledTestSummary, error) {
-	setting := operation_setting.GetMonitorSetting()
-	summary := multiKeyScheduledTestSummary{}
+// multiKeyTestDueChannels selects enrolled multi-key channels whose own
+// interval has elapsed since their last sweep marker.
+func multiKeyTestDueChannels(now time.Time) ([]*model.Channel, error) {
 	channels, err := model.GetAllChannels(0, 0, true, false)
 	if err != nil {
-		return summary, err
+		return nil, err
 	}
-	allowlist := make(map[int]bool)
-	for _, id := range setting.GetMultiKeyTestChannelIDs() {
-		allowlist[id] = true
-	}
-	targets := make([]*model.Channel, 0, len(channels))
+	due := make([]*model.Channel, 0)
 	for _, channel := range channels {
-		if !channel.ChannelInfo.IsMultiKey {
+		if channel.Status == common.ChannelStatusManuallyDisabled || !channel.ChannelInfo.IsMultiKey {
 			continue
 		}
-		if channel.Status == common.ChannelStatusManuallyDisabled {
+		mk := channel.GetSetting().NormalizedMultiKeyTest()
+		if mk == nil {
 			continue
 		}
-		if allowlist != nil && !allowlist[channel.Id] {
+		lastRun := int64(0)
+		if v, ok := channel.GetOtherInfo()[multiKeyLastRunOtherKey].(float64); ok {
+			lastRun = int64(v)
+		}
+		if now.Unix()-lastRun < int64(mk.IntervalMinutes)*60 {
 			continue
 		}
-		targets = append(targets, channel)
+		due = append(due, channel)
+	}
+	return due, nil
+}
+
+// runMultiKeyScheduledTestTask sweeps every due multi-key channel and applies
+// the outcome: failed keys are auto-disabled, recovered keys are re-enabled.
+// Re-enabling skips manual_disabled keys unless the channel opted in.
+func runMultiKeyScheduledTestTask(ctx context.Context, report func(processed, total int)) (multiKeyScheduledTestSummary, error) {
+	summary := multiKeyScheduledTestSummary{}
+	targets, err := multiKeyTestDueChannels(time.Now())
+	if err != nil {
+		return summary, err
 	}
 	if len(targets) == 0 {
 		return summary, nil
 	}
 
-	reenableManual := setting.MultiKeyTestReenableManual
-	probeModel := setting.MultiKeyTestModel
 	for _, channel := range targets {
 		if ctx.Err() != nil {
 			return summary, ctx.Err()
 		}
-		channelSummary, err := testMultiKeyChannelCredentials(ctx, channel, probeModel, reenableManual)
+		mk := channel.GetSetting().NormalizedMultiKeyTest()
+		channelSummary, err := testMultiKeyChannelCredentials(ctx, channel, mk.Model, mk.ReenableManual)
 		if err != nil {
 			summary.Errors = append(summary.Errors, fmt.Sprintf("channel %d: %s", channel.Id, err.Error()))
 			continue
+		}
+		if recordErr := model.SetChannelOtherInfoKey(channel.Id, multiKeyLastRunOtherKey, time.Now().Unix()); recordErr != nil {
+			common.SysError(fmt.Sprintf("failed to record multi-key test last-run: channel_id=%d error=%v", channel.Id, recordErr))
 		}
 		summary.ChannelsTested++
 		summary.KeysTested += channelSummary.KeysTested
@@ -124,7 +157,7 @@ type multiKeyChannelTestOutcome struct {
 // testMultiKeyChannelCredentials probes the active credentials of one
 // multi-key channel and applies enable/disable decisions in one pass. Disabled
 // keys are probed too so recovered keys can rejoin the rotation; manual
-// disabled keys only rejoin when the operator opted in.
+// disabled keys only rejoin when the channel opted in.
 func testMultiKeyChannelCredentials(ctx context.Context, channel *model.Channel, probeModel string, reenableManual bool) (multiKeyChannelTestOutcome, error) {
 	outcome := multiKeyChannelTestOutcome{}
 	credentials, err := model.ListChannelCredentials(model.DB, channel.Id)
@@ -181,14 +214,6 @@ func testMultiKeyChannelCredentials(ctx context.Context, channel *model.Channel,
 	outcome.KeysReenabled = len(reenabledIDs)
 	return outcome, nil
 }
-
-// multiKeyScheduledTestProbeTimeout bounds one credential probe; scheduled
-// sweeps should finish well within the scheduler interval.
-const multiKeyScheduledTestProbeTimeout = 45 * time.Second
-
-// multiKeyScheduledTestConcurrency matches the manual credential-test default
-// so a scheduled sweep never hits upstream harder than an admin-driven one.
-const multiKeyScheduledTestConcurrency = 4
 
 // multiKeyScheduledTestStatusChanges classifies probe results into disable and
 // re-enable credential ID lists. A failed key is auto-disabled immediately; a
@@ -259,12 +284,23 @@ func applyMultiKeyScheduledStatusChanges(channelID int, disabledIDs, reenabledID
 	return apply(reenabledIDs, common.ChannelStatusEnabled, "")
 }
 
-// ScheduleMultiKeyTest enqueues a manual multi-key scheduled sweep. It shares
-// the scheduled task type so the per-type dedup also blocks a concurrent
-// scheduled run.
+// ScheduleMultiKeyTest enqueues a manual sweep that probes every enrolled
+// channel regardless of its due time. It shares the scheduled task type so the
+// per-type dedup also blocks a concurrent scheduled run.
 func ScheduleMultiKeyTest(c *gin.Context) {
-	if !operation_setting.GetMonitorSetting().MultiKeyTestEnabled {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "multi-key scheduled testing is not enabled"})
+	channels, err := model.GetAllChannels(0, 0, true, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	enrolled := 0
+	for _, channel := range channels {
+		if channel.ChannelInfo.IsMultiKey && channel.GetSetting().NormalizedMultiKeyTest() != nil {
+			enrolled++
+		}
+	}
+	if enrolled == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "no multi-key channel has scheduled testing enabled"})
 		return
 	}
 	task, created, err := service.EnqueueSystemTask(model.SystemTaskTypeMultiKeyScheduledTest, multiKeyScheduledTestHandler{}.NewPayload())

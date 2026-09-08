@@ -6103,6 +6103,21 @@
     "HotPay payment methods": "HotPay payment methods",
     "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.",
     "HotPay Alipay": "HotPay Alipay",
-    "HotPay WeChat Pay": "HotPay WeChat Pay"
+    "HotPay WeChat Pay": "HotPay WeChat Pay",
+    "Invoice handling fee ({{rate}}%)": "Phí xử lý hóa đơn ({{rate}}%)",
+    "Insufficient balance to cover the invoice handling fee of {{fee}}": "Số dư không đủ để trả phí xử lý hóa đơn {{fee}}",
+    "Handling Fee": "Phí xử lý",
+    "Invoice handling fee rate (%)": "Tỷ lệ phí xử lý hóa đơn (%)",
+    "A percentage of the invoice amount charged to the user from their balance when they apply. It is refunded if the application is cancelled or rejected.": "Một tỷ lệ phần trăm của số tiền hóa đơn được trừ từ số dư người dùng khi họ nộp đơn. Số tiền này được hoàn lại nếu đơn bị hủy hoặc bị từ chối.",
+    "Invoice Kind": "Loại hóa đơn",
+    "Ordinary Invoice": "Hóa đơn thường",
+    "VAT Special Invoice": "Hóa đơn giá trị gia tăng đặc biệt",
+    "Address is required for a VAT special invoice": "Địa chỉ là bắt buộc đối với hóa đơn VAT đặc biệt",
+    "Phone is required for a VAT special invoice": "Số điện thoại là bắt buộc đối với hóa đơn VAT đặc biệt",
+    "Bank name is required for a VAT special invoice": "Tên ngân hàng là bắt buộc đối với hóa đơn VAT đặc biệt",
+    "Bank account is required for a VAT special invoice": "Số tài khoản là bắt buộc đối với hóa đơn VAT đặc biệt",
+    "Multi-key Scheduled Testing": "Multi-key Scheduled Testing",
+    "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover": "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover",
+    "How frequently the system probes keys of this channel": "How frequently the system probes keys of this channel"
   }
 }

@@ -6103,6 +6103,21 @@
     "HotPay payment methods": "HotPay payment methods",
     "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.",
     "HotPay Alipay": "HotPay Alipay",
-    "HotPay WeChat Pay": "HotPay WeChat Pay"
+    "HotPay WeChat Pay": "HotPay WeChat Pay",
+    "Invoice handling fee ({{rate}}%)": "Frais de traitement de facture ({{rate}}%)",
+    "Insufficient balance to cover the invoice handling fee of {{fee}}": "Solde insuffisant pour couvrir les frais de traitement de facture de {{fee}}",
+    "Handling Fee": "Frais de traitement",
+    "Invoice handling fee rate (%)": "Taux de frais de traitement de facture (%)",
+    "A percentage of the invoice amount charged to the user from their balance when they apply. It is refunded if the application is cancelled or rejected.": "Un pourcentage du montant de la facture prélevé sur le solde de l'utilisateur lors de la demande. Il est remboursé si la demande est annulée ou rejetée.",
+    "Invoice Kind": "Type de facture",
+    "Ordinary Invoice": "Facture ordinaire",
+    "VAT Special Invoice": "Facture spéciale TVA",
+    "Address is required for a VAT special invoice": "L'adresse est requise pour une facture spéciale TVA",
+    "Phone is required for a VAT special invoice": "Le téléphone est requis pour une facture spéciale TVA",
+    "Bank name is required for a VAT special invoice": "Le nom de la banque est requis pour une facture spéciale TVA",
+    "Bank account is required for a VAT special invoice": "Le numéro de compte est requis pour une facture spéciale TVA",
+    "Multi-key Scheduled Testing": "Multi-key Scheduled Testing",
+    "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover": "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover",
+    "How frequently the system probes keys of this channel": "How frequently the system probes keys of this channel"
   }
 }

@@ -6103,6 +6103,21 @@
     "HotPay payment methods": "HotPay payment methods",
     "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.",
     "HotPay Alipay": "HotPay Alipay",
-    "HotPay WeChat Pay": "HotPay WeChat Pay"
+    "HotPay WeChat Pay": "HotPay WeChat Pay",
+    "Invoice handling fee ({{rate}}%)": "請求手数料（{{rate}}%）",
+    "Insufficient balance to cover the invoice handling fee of {{fee}}": "請求手数料 {{fee}} を支払うための残高が不足しています",
+    "Handling Fee": "手数料",
+    "Invoice handling fee rate (%)": "請求手数料率（%）",
+    "A percentage of the invoice amount charged to the user from their balance when they apply. It is refunded if the application is cancelled or rejected.": "申請時に請求金額の一定割合をユーザーの残高から徴収する手数料です。申請がキャンセルまたは却下された場合は返金されます。",
+    "Invoice Kind": "請求書の種類",
+    "Ordinary Invoice": "普通請求書",
+    "VAT Special Invoice": "付加価値税専用請求書",
+    "Address is required for a VAT special invoice": "付加価値税専用請求書には住所が必要です",
+    "Phone is required for a VAT special invoice": "付加価値税専用請求書には電話番号が必要です",
+    "Bank name is required for a VAT special invoice": "付加価値税専用請求書には銀行名が必要です",
+    "Bank account is required for a VAT special invoice": "付加価値税専用請求書には口座番号が必要です",
+    "Multi-key Scheduled Testing": "Multi-key Scheduled Testing",
+    "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover": "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover",
+    "How frequently the system probes keys of this channel": "How frequently the system probes keys of this channel"
   }
 }

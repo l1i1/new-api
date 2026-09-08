@@ -6103,6 +6103,21 @@
     "HotPay payment methods": "HotPay 支付方式",
     "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "註冊由 HotPay 提供的支付方式。每個條目會以 hotpay:<method> 形式出現在用戶支付清單；未註冊的方式不會進入 HotPay 網關。",
     "HotPay Alipay": "HotPay 支付寶",
-    "HotPay WeChat Pay": "HotPay 微信支付"
+    "HotPay WeChat Pay": "HotPay 微信支付",
+    "Invoice handling fee ({{rate}}%)": "發票手續費（{{rate}}%）",
+    "Insufficient balance to cover the invoice handling fee of {{fee}}": "餘額不足，無法支付發票手續費 {{fee}}",
+    "Handling Fee": "手續費",
+    "Invoice handling fee rate (%)": "發票手續費率（%）",
+    "A percentage of the invoice amount charged to the user from their balance when they apply. It is refunded if the application is cancelled or rejected.": "申請發票時按發票金額向使用者餘額收取的百分比。若申請被取消或駁回則退還。",
+    "Invoice Kind": "發票種類",
+    "Ordinary Invoice": "普通發票",
+    "VAT Special Invoice": "增值稅專用發票",
+    "Address is required for a VAT special invoice": "增值稅專用發票需填寫地址（住所）",
+    "Phone is required for a VAT special invoice": "增值稅專用發票需填寫電話",
+    "Bank name is required for a VAT special invoice": "增值稅專用發票需填寫開戶行名稱",
+    "Bank account is required for a VAT special invoice": "增值稅專用發票需填寫銀行帳號",
+    "Multi-key Scheduled Testing": "多Key渠道定時測試",
+    "Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover": "定期探測該渠道的每個密鑰，自動停用失敗的密鑰並恢復可用的密鑰",
+    "How frequently the system probes keys of this channel": "系統探測該渠道密鑰的頻率"
   }
 }

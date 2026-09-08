@@ -141,6 +141,7 @@ import {
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../../constants'
+import { safeNumberFieldProps } from '@/features/system-settings/utils/numeric-field'
 import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
 import { useChannelMutateForm } from '../../hooks/use-channel-mutate-form'
 import {
@@ -257,6 +258,7 @@ const ADVANCED_SETTINGS_SECTION_IDS = {
   extraSettings: 'channel-section-advanced-extra-settings',
   fieldPassthrough: 'channel-section-advanced-field-passthrough',
   upstreamModelDetection: 'channel-section-advanced-upstream-model-detection',
+  multiKeyScheduledTest: 'channel-section-advanced-multi-key-scheduled-test',
 } as const
 const ADVANCED_SETTINGS_CHILD_SECTION_IDS: string[] = Object.values(
   ADVANCED_SETTINGS_SECTION_IDS
@@ -288,6 +290,10 @@ const SENSITIVE_FORM_FIELDS = [
   'ollama_cache_estimation_enabled',
   'system_prompt',
   'system_prompt_override',
+  'multi_key_test_enabled',
+  'multi_key_test_interval_minutes',
+  'multi_key_test_model',
+  'multi_key_test_reenable_manual',
   'allow_service_tier',
   'disable_store',
   'allow_safety_identifier',
@@ -338,6 +344,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.system_prompt?.trim() ||
     values.force_format ||
     values.thinking_to_content ||
+    values.multi_key_test_enabled ||
     values.pass_through_body_enabled ||
     values.ollama_cache_estimation_enabled ||
     values.system_prompt_override ||
@@ -736,6 +743,7 @@ export function ChannelMutateDrawer({
   const currentStatusCodeMapping = form.watch('status_code_mapping')
   const currentParamOverride = form.watch('param_override')
   const currentHeaderOverride = form.watch('header_override')
+  const multiKeyTestEnabled = form.watch('multi_key_test_enabled')
   const currentForceFormat = form.watch('force_format')
   const currentThinkingToContent = form.watch('thinking_to_content')
   const currentPassThroughBodyEnabled = form.watch('pass_through_body_enabled')
@@ -1098,6 +1106,13 @@ export function ChannelMutateDrawer({
       id: ADVANCED_SETTINGS_SECTION_IDS.upstreamModelDetection,
       title: t('Upstream Model Detection Settings'),
       configured: upstreamModelDetectionConfigured,
+    })
+  }
+  if (isMultiKeyChannel) {
+    advancedNavChildren.push({
+      id: ADVANCED_SETTINGS_SECTION_IDS.multiKeyScheduledTest,
+      title: t('Multi-key Scheduled Testing'),
+      configured: extraSettingsConfigured,
     })
   }
   const editorNavItems: ChannelEditorNavItem[] = [
@@ -4455,6 +4470,152 @@ placeholder={t(
                             />
                           </fieldset>
                         </div>
+
+                        {isMultiKeyChannel && (
+                          <div
+                            id={
+                              ADVANCED_SETTINGS_SECTION_IDS.multiKeyScheduledTest
+                            }
+                            className={sideDrawerSectionClassName(
+                              configuredAdvancedSectionClassName(
+                                'scroll-mt-4',
+                                extraSettingsConfigured
+                              )
+                            )}
+                          >
+                            <CardHeading
+                              title={t('Multi-key Scheduled Testing')}
+                              icon={<KeyRound className='h-4 w-4' />}
+                              iconTone='chart-3'
+                            />
+                            {sensitiveLocked && (
+                              <Alert className='border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-50'>
+                                <AlertDescription>
+                                  {t('No permission to perform this action')}
+                                </AlertDescription>
+                              </Alert>
+                            )}
+                            <fieldset
+                              disabled={sensitiveLocked}
+                              className='space-y-4 disabled:opacity-60'
+                            >
+                              <div className='divide-border space-y-0 divide-y border-y'>
+                                <FormField
+                                  control={form.control}
+                                  name='multi_key_test_enabled'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('Scheduled key tests')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Periodically probe every key of this channel, disable keys that fail and re-enable keys that recover'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+
+                                {multiKeyTestEnabled && (
+                                  <>
+                                    <FormField
+                                      control={form.control}
+                                      name='multi_key_test_interval_minutes'
+                                      render={({ field }) => (
+                                        <FormItem className='px-4 py-3'>
+                                          <FormLabel>
+                                            {t('Test interval (minutes)')}
+                                          </FormLabel>
+                                          <FormControl>
+                                            <Input
+                                              type='number'
+                                              min={1}
+                                              step={1}
+                                              {...safeNumberFieldProps(field)}
+                                            />
+                                          </FormControl>
+                                          <FormDescription>
+                                            {t(
+                                              'How frequently the system probes keys of this channel'
+                                            )}
+                                          </FormDescription>
+                                          <FormMessage />
+                                        </FormItem>
+                                      )}
+                                    />
+
+                                    <FormField
+                                      control={form.control}
+                                      name='multi_key_test_model'
+                                      render={({ field }) => (
+                                        <FormItem className='px-4 py-3'>
+                                          <FormLabel>
+                                            {t('Test Model')}
+                                          </FormLabel>
+                                          <FormControl>
+                                            <Input
+                                              placeholder={t(
+                                                'Use each channel test model'
+                                              )}
+                                              value={field.value ?? ''}
+                                              onChange={(event) =>
+                                                field.onChange(
+                                                  event.target.value
+                                                )
+                                              }
+                                            />
+                                          </FormControl>
+                                          <FormDescription>
+                                            {t(
+                                              'Model used for scheduled key probes. Leave empty to use each channel test model'
+                                            )}
+                                          </FormDescription>
+                                          <FormMessage />
+                                        </FormItem>
+                                      )}
+                                    />
+
+                                    <FormField
+                                      control={form.control}
+                                      name='multi_key_test_reenable_manual'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel>
+                                              {t(
+                                                'Re-enable manually disabled keys'
+                                              )}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t(
+                                                'Also bring manually disabled keys back online after a successful probe'
+                                              )}
+                                            </FormDescription>
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value}
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            </fieldset>
+                          </div>
+                        )}
 
                         {FIELD_PASSTHROUGH_TYPES.has(currentType) && (
                           <div

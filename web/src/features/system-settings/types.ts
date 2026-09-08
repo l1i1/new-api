@@ -146,6 +146,8 @@ export type AuthSettings = {
   'oidc.token_endpoint': string
   'oidc.user_info_endpoint': string
   TelegramOAuthEnabled: boolean
+  'telegram.client_id': string
+  'telegram.client_secret': string
   TelegramBotToken: string
   TelegramBotName: string
   LinuxDOOAuthEnabled: boolean
@@ -243,11 +245,6 @@ export type ModelSettings = {
     | 'scheduled_all'
     | 'auto_ban_only'
     | 'passive_recovery'
-  'monitor_setting.multi_key_test_enabled': boolean
-  'monitor_setting.multi_key_test_minutes': number
-  'monitor_setting.multi_key_test_channels': string
-  'monitor_setting.multi_key_test_model': string
-  'monitor_setting.multi_key_test_reenable_manual': boolean
   'channel_affinity_setting.enabled': boolean
   'channel_affinity_setting.switch_on_success': boolean
   'channel_affinity_setting.keep_on_channel_disabled': boolean
@@ -362,6 +359,7 @@ export type BillingSettings = {
   InvoiceEnabled: boolean
   InvoiceNotice: string
   InvoiceMinAmount: number
+  InvoiceFeeRate: number
   InvoiceAllowedPaymentMethods: string[]
 }
 
@@ -450,6 +448,12 @@ export type DifferencesMap = Record<
   Partial<Record<RatioType, RatioDifference>>
 >
 
+export type PricingSyncValues = Partial<Record<RatioType, number | string>>
+export type PricingSyncModels = Record<
+  string,
+  { current: PricingSyncValues; upstreams: Record<string, PricingSyncValues> }
+>
+
 export type UpstreamChannelsResponse = {
   success: boolean
   message: string
@@ -479,6 +483,7 @@ export type UpstreamRatiosResponse = {
   message: string
   data: {
     differences: DifferencesMap
+    prices: PricingSyncModels
     test_results: TestResult[]
   }
 }

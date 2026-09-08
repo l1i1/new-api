@@ -29,6 +29,55 @@ type ChannelSettings struct {
 	// When enabled and upstream omits cached_tokens, the gateway estimates
 	// cache hits from message-prefix matching and applies cache-ratio billing.
 	OllamaCacheEstimationEnabled bool `json:"ollama_cache_estimation_enabled,omitempty"`
+	// MultiKeyTest is the per-channel scheduled credential-test configuration
+	// for multi-key channels. Empty (zero value) means the channel is not
+	// enrolled: the scheduled sweep skips it entirely.
+	MultiKeyTest *MultiKeyTestSetting `json:"multi_key_test,omitempty"`
+}
+
+// MultiKeyTestSetting is one multi-key channel's scheduled credential-test
+// configuration. It replaces the former global monitor_setting knobs so each
+// channel can opt in with its own cadence, probe model, and recovery policy.
+type MultiKeyTestSetting struct {
+	// Enabled turns on scheduled probing for this channel.
+	Enabled bool `json:"enabled"`
+	// IntervalMinutes is the cadence; <=0 falls back to the default (60).
+	IntervalMinutes int `json:"interval_minutes,omitempty"`
+	// Model overrides the probe model; empty uses the channel test model.
+	Model string `json:"model,omitempty"`
+	// ReenableManual re-enables manually disabled keys after a successful
+	// probe; off keeps manual decisions sticky.
+	ReenableManual bool `json:"reenable_manual,omitempty"`
+}
+
+// NormalizedMultiKeyTest returns the setting with defaults applied, or nil
+// when the channel is not enrolled in scheduled testing.
+func (s ChannelSettings) NormalizedMultiKeyTest() *MultiKeyTestSetting {
+	if s.MultiKeyTest == nil || !s.MultiKeyTest.Enabled {
+		return nil
+	}
+	out := *s.MultiKeyTest
+	if out.IntervalMinutes <= 0 {
+		out.IntervalMinutes = 60
+	}
+	out.Model = strings.TrimSpace(out.Model)
+	return &out
+}
+
+// ValidateMultiKeyTest rejects nonsensical per-channel test configurations at
+// save time.
+func (s ChannelSettings) ValidateMultiKeyTest() error {
+	if s.MultiKeyTest == nil {
+		return nil
+	}
+	mk := s.MultiKeyTest
+	if !mk.Enabled {
+		return nil
+	}
+	if mk.IntervalMinutes < 0 || mk.IntervalMinutes > 60*24*30 {
+		return fmt.Errorf("multi_key_test.interval_minutes must be between 1 and %d", 60*24*30)
+	}
+	return nil
 }
 
 const (

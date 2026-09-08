@@ -98,14 +98,6 @@ const createRoutingReliabilitySchema = (
               t('Channel test concurrency must be between 1 and 32')
             ),
           channel_test_mode: z.enum(channelTestModes),
-          multi_key_test_enabled: z.boolean(),
-          multi_key_test_minutes: z.coerce
-            .number()
-            .int()
-            .min(1, t('Interval must be at least 1 minute')),
-          multi_key_test_channels: z.string(),
-          multi_key_test_model: z.string(),
-          multi_key_test_reenable_manual: z.boolean(),
         }),
     })
     .superRefine((values, ctx) => {
@@ -155,11 +147,6 @@ type RoutingReliabilitySectionProps = {
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_concurrency': number
     'monitor_setting.channel_test_mode': ChannelTestMode
-    'monitor_setting.multi_key_test_enabled': boolean
-    'monitor_setting.multi_key_test_minutes': number
-    'monitor_setting.multi_key_test_channels': string
-    'monitor_setting.multi_key_test_model': string
-    'monitor_setting.multi_key_test_reenable_manual': boolean
   }
 }
 
@@ -179,11 +166,6 @@ type NormalizedRoutingReliabilityValues = {
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number
   'monitor_setting.channel_test_mode': ChannelTestMode
-  'monitor_setting.multi_key_test_enabled': boolean
-  'monitor_setting.multi_key_test_minutes': number
-  'monitor_setting.multi_key_test_channels': string
-  'monitor_setting.multi_key_test_model': string
-  'monitor_setting.multi_key_test_reenable_manual': boolean
 }
 
 function normalizeChannelTestMode(value?: string): ChannelTestMode {
@@ -215,13 +197,6 @@ const buildFormDefaults = (
     channel_test_mode: normalizeChannelTestMode(
       defaults['monitor_setting.channel_test_mode']
     ),
-    multi_key_test_enabled: defaults['monitor_setting.multi_key_test_enabled'],
-    multi_key_test_minutes: defaults['monitor_setting.multi_key_test_minutes'],
-    multi_key_test_channels:
-      defaults['monitor_setting.multi_key_test_channels'] ?? '',
-    multi_key_test_model: defaults['monitor_setting.multi_key_test_model'] ?? '',
-    multi_key_test_reenable_manual:
-      defaults['monitor_setting.multi_key_test_reenable_manual'],
   },
 })
 
@@ -250,18 +225,6 @@ const normalizeDefaults = (
   'monitor_setting.channel_test_mode': normalizeChannelTestMode(
     defaults['monitor_setting.channel_test_mode']
   ),
-  'monitor_setting.multi_key_test_enabled':
-    defaults['monitor_setting.multi_key_test_enabled'],
-  'monitor_setting.multi_key_test_minutes':
-    defaults['monitor_setting.multi_key_test_minutes'],
-  'monitor_setting.multi_key_test_channels': (
-    defaults['monitor_setting.multi_key_test_channels'] ?? ''
-  ).trim(),
-  'monitor_setting.multi_key_test_model': (
-    defaults['monitor_setting.multi_key_test_model'] ?? ''
-  ).trim(),
-  'monitor_setting.multi_key_test_reenable_manual':
-    defaults['monitor_setting.multi_key_test_reenable_manual'],
 })
 
 const normalizeFormValues = (
@@ -287,19 +250,6 @@ const normalizeFormValues = (
   'monitor_setting.channel_test_concurrency':
     values.monitor_setting.channel_test_concurrency,
   'monitor_setting.channel_test_mode': values.monitor_setting.channel_test_mode,
-  'monitor_setting.multi_key_test_enabled':
-    values.monitor_setting.multi_key_test_enabled,
-  'monitor_setting.multi_key_test_minutes':
-    values.monitor_setting.multi_key_test_minutes,
-  'monitor_setting.multi_key_test_channels': values.monitor_setting.multi_key_test_channels
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(','),
-  'monitor_setting.multi_key_test_model':
-    values.monitor_setting.multi_key_test_model.trim(),
-  'monitor_setting.multi_key_test_reenable_manual':
-    values.monitor_setting.multi_key_test_reenable_manual,
 })
 
 export function RoutingReliabilitySection({
@@ -593,136 +543,6 @@ export function RoutingReliabilitySection({
                       <FormDescription>
                         {t(
                           'Bring channels back online after successful checks'
-                        )}
-                      </FormDescription>
-                    </SettingsSwitchContent>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </SettingsSwitchItem>
-                )}
-              />
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className='flex min-w-0 flex-col gap-4'>
-            <div className='flex flex-col gap-1'>
-              <h4 className='text-sm font-medium'>
-                {t('Multi-key scheduled testing')}
-              </h4>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Periodically probes every key of multi-key channels, disables keys that fail the probe and re-enables keys that recover.'
-                )}
-              </p>
-            </div>
-            <div className='grid min-w-0 gap-6 lg:grid-cols-3'>
-              <FormField
-                control={form.control}
-                name='monitor_setting.multi_key_test_enabled'
-                render={({ field }) => (
-                  <SettingsSwitchItem>
-                    <SettingsSwitchContent>
-                      <FormLabel>{t('Scheduled key tests')}</FormLabel>
-                      <FormDescription>
-                        {t('Automatically probe multi-key channel keys')}
-                      </FormDescription>
-                    </SettingsSwitchContent>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </SettingsSwitchItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.multi_key_test_minutes'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Test interval (minutes)')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        min={1}
-                        step={1}
-                        {...safeNumberFieldProps(field)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t(
-                        'How frequently the system probes multi-key channel keys'
-                      )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.multi_key_test_model'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Test Model')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder={t('Use each channel test model')}
-                        value={field.value}
-                        onChange={(event) => field.onChange(event.target.value)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t(
-                        'Model used for scheduled key probes. Leave empty to use each channel test model.'
-                      )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.multi_key_test_channels'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Channel allowlist')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder={t('e.g. 12, 34, 56')}
-                        value={field.value}
-                        onChange={(event) => field.onChange(event.target.value)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t(
-                        'Comma-separated channel IDs to test. Leave empty to test all multi-key channels.'
-                      )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.multi_key_test_reenable_manual'
-                render={({ field }) => (
-                  <SettingsSwitchItem>
-                    <SettingsSwitchContent>
-                      <FormLabel>{t('Re-enable manually disabled keys')}</FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Also bring manually disabled keys back online after a successful probe'
                         )}
                       </FormDescription>
                     </SettingsSwitchContent>

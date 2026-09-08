@@ -89,16 +89,6 @@ const MODELS_SECTIONS = [
             settings['monitor_setting.channel_test_concurrency'],
           'monitor_setting.channel_test_mode':
             settings['monitor_setting.channel_test_mode'],
-          'monitor_setting.multi_key_test_enabled':
-            settings['monitor_setting.multi_key_test_enabled'],
-          'monitor_setting.multi_key_test_minutes':
-            settings['monitor_setting.multi_key_test_minutes'],
-          'monitor_setting.multi_key_test_channels':
-            settings['monitor_setting.multi_key_test_channels'],
-          'monitor_setting.multi_key_test_model':
-            settings['monitor_setting.multi_key_test_model'],
-          'monitor_setting.multi_key_test_reenable_manual':
-            settings['monitor_setting.multi_key_test_reenable_manual'],
         }}
       />
     ),

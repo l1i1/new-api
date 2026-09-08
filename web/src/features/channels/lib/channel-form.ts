@@ -248,6 +248,11 @@ export const channelFormSchema = z
     ollama_cache_estimation_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    // Multi-key scheduled test (stored in setting JSON as multi_key_test)
+    multi_key_test_enabled: z.boolean().optional(),
+    multi_key_test_interval_minutes: z.number().int().optional(),
+    multi_key_test_model: z.string().optional(),
+    multi_key_test_reenable_manual: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -417,6 +422,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   ollama_cache_estimation_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  multi_key_test_enabled: false,
+  multi_key_test_interval_minutes: 60,
+  multi_key_test_model: '',
+  multi_key_test_reenable_manual: false,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -459,6 +468,10 @@ export function transformChannelToFormDefaults(
     ollama_cache_estimation_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    multi_key_test_enabled: false,
+    multi_key_test_interval_minutes: 60,
+    multi_key_test_model: '',
+    multi_key_test_reenable_manual: false,
   }
 
   if (channel.setting) {
@@ -480,6 +493,12 @@ export function transformChannelToFormDefaults(
           parsed.ollama_cache_estimation_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        multi_key_test_enabled: parsed.multi_key_test?.enabled === true,
+        multi_key_test_interval_minutes:
+          parsed.multi_key_test?.interval_minutes || 60,
+        multi_key_test_model: parsed.multi_key_test?.model || '',
+        multi_key_test_reenable_manual:
+          parsed.multi_key_test?.reenable_manual === true,
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -603,6 +622,19 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.ollama_cache_estimation_enabled || false,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+  }
+
+  if (formData.multi_key_test_enabled) {
+    settingObj.multi_key_test = {
+      enabled: true,
+      interval_minutes:
+        formData.multi_key_test_interval_minutes &&
+        formData.multi_key_test_interval_minutes > 0
+          ? formData.multi_key_test_interval_minutes
+          : 60,
+      model: formData.multi_key_test_model?.trim() || '',
+      reenable_manual: formData.multi_key_test_reenable_manual || false,
+    }
   }
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)
