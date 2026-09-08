@@ -46,7 +46,7 @@ func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	require.Empty(t, headers)
 }
 
-func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testing.T) {
+func TestProcessHeaderOverride_ChannelTestUsesClientHeaderWhenPresent(t *testing.T) {
 	t.Parallel()
 
 	recorder := httptest.NewRecorder()
@@ -65,8 +65,33 @@ func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testin
 
 	headers, err := processHeaderOverride(info, ctx)
 	require.NoError(t, err)
-	_, ok := headers["x-upstream-trace"]
-	require.False(t, ok)
+	require.Equal(t, "trace-123", headers["x-upstream-trace"])
+}
+
+func TestProcessHeaderOverride_ChannelTestFallsBackForClientHeader(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			HeadersOverride: map[string]any{
+				"X-Upstream-Session": "{client_header:x-conversation-id}",
+				"User-Agent":         "{client_header:user-agent}",
+			},
+		},
+	}
+
+	headers, err := processHeaderOverride(info, ctx)
+	require.NoError(t, err)
+	// A session-like placeholder falls back to a non-empty probe value so a
+	// channel test can exercise an upstream that gates access on a session id.
+	require.NotEmpty(t, headers["x-upstream-session"])
+	require.NotEqual(t, "", headers["x-upstream-session"])
+	require.Equal(t, "new-api-channel-test/1.0", headers["user-agent"])
 }
 
 func TestProcessHeaderOverride_NonTestKeepsClientHeaderPlaceholder(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -150,7 +151,7 @@ func shouldSkipPassthroughHeader(name string) bool {
 	return false
 }
 
-func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey string) (string, bool, error) {
+func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey string, isChannelTest bool) (string, bool, error) {
 	trimmed := strings.TrimSpace(template)
 	if strings.HasPrefix(trimmed, clientHeaderPlaceholderPrefix) {
 		afterPrefix := trimmed[len(clientHeaderPlaceholderPrefix):]
@@ -163,15 +164,30 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 		if name == "" {
 			return "", false, fmt.Errorf("client_header placeholder name is empty: %q", template)
 		}
-		if c == nil || c.Request == nil {
-			return "", false, fmt.Errorf("missing request context for client_header placeholder")
+		if !isChannelTest {
+			if c == nil || c.Request == nil {
+				return "", false, fmt.Errorf("missing request context for client_header placeholder")
+			}
+			clientHeaderValue := c.Request.Header.Get(name)
+			if strings.TrimSpace(clientHeaderValue) == "" {
+				return "", false, nil
+			}
+			// Do not interpolate {api_key} inside client-supplied content.
+			return clientHeaderValue, true, nil
 		}
-		clientHeaderValue := c.Request.Header.Get(name)
-		if strings.TrimSpace(clientHeaderValue) == "" {
-			return "", false, nil
+		// Channel tests synthesize the upstream request and carry no real client
+		// headers, so a {client_header:<name>} placeholder cannot be resolved
+		// from the client. Prefer a real client value when present, otherwise
+		// fall back to a non-empty probe value. This lets headers that gate
+		// access on a session id or an agent User-Agent (e.g. OpenCode Go's
+		// X-Opencode-Session) be exercised by the connectivity probe instead of
+		// being silently dropped.
+		if c != nil && c.Request != nil {
+			if clientHeaderValue := c.Request.Header.Get(name); strings.TrimSpace(clientHeaderValue) != "" {
+				return clientHeaderValue, true, nil
+			}
 		}
-		// Do not interpolate {api_key} inside client-supplied content.
-		return clientHeaderValue, true, nil
+		return channelTestHeaderFallback(name), true, nil
 	}
 
 	if strings.Contains(template, "{api_key}") {
@@ -181,6 +197,27 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 		return "", false, nil
 	}
 	return template, true, nil
+}
+
+// channelTestHeaderFallback returns a non-empty probe value for a
+// {client_header:<name>} placeholder during an IsChannelTest request. Channel
+// tests synthesize the upstream request and carry no real client headers, so a
+// placeholder cannot be resolved from the client. A stable value still lets the
+// header be exercised against an upstream that gates access on it (e.g. OpenCode
+// Go's X-Opencode-Session session-affinity header), and avoids confusing "empty
+// header" failures in the probe result.
+func channelTestHeaderFallback(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "user-agent" || strings.Contains(lower, "user-agent") {
+		return "new-api-channel-test/1.0"
+	}
+	if strings.Contains(lower, "session") ||
+		strings.Contains(lower, "conversation") ||
+		strings.Contains(lower, "context") ||
+		strings.Contains(lower, "connection") {
+		return uuid.New().String()
+	}
+	return "new-api-channel-test"
 }
 
 // processHeaderOverride applies channel header overrides, with placeholder substitution.
@@ -276,11 +313,8 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 		if !ok {
 			return nil, types.NewError(nil, types.ErrorCodeChannelHeaderOverrideInvalid)
 		}
-		if info.IsChannelTest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
-			continue
-		}
 
-		value, include, err := applyHeaderOverridePlaceholders(str, c, info.ApiKey)
+		value, include, err := applyHeaderOverridePlaceholders(str, c, info.ApiKey, info.IsChannelTest)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeChannelHeaderOverrideInvalid)
 		}
