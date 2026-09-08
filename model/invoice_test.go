@@ -84,7 +84,7 @@ func TestInvoicePaymentMethodAllowlistFiltersAndRejectsLockedOrders(t *testing.T
 	assert.Equal(t, 130, eligible[0].Id)
 
 	inv := &Invoice{Title: "Acme", TaxId: "T", Email: "b@acme.example", Reason: "r"}
-	err = CreateInvoiceApplicationWithPaymentMethods(616, inv, []*TopUp{{Id: 130}, {Id: 131}}, decimal.Zero, []string{"alipay"})
+	err = CreateInvoiceApplicationWithPaymentMethods(616, inv, []*TopUp{{Id: 130}, {Id: 131}}, decimal.Zero, []string{"alipay"}, decimal.Zero)
 	require.ErrorIs(t, err, ErrInvoicePaymentMethodNotAllowed)
 	assert.Zero(t, inv.Id)
 

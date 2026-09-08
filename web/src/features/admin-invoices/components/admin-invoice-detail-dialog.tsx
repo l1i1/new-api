@@ -125,6 +125,14 @@ function InvoiceInfoGrid({ detail }: { detail: InvoiceDetail }) {
       value: `${formatNumber(detail.total_amount)} ${detail.currency}`,
     },
     {
+      labelKey: 'Handling Fee',
+      value: detail.fee_rate > 0 ? `${formatNumber(detail.fee_amount)} ${detail.currency} (${Math.round(detail.fee_rate * 100)}%)` : '-',
+    },
+    {
+      labelKey: 'Invoice Kind',
+      value: t(detail.invoice_kind === 'special' ? 'VAT Special Invoice' : 'Ordinary Invoice'),
+    },
+    {
       labelKey: 'Invoice Type',
       value: t(detail.invoice_type === 'individual' ? 'Individual' : 'Company'),
     },

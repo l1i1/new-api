@@ -105,7 +105,7 @@ func SearchVendors(keyword string, offset, limit int, association ...string) ([]
 	db := DB.Model(&Vendor{})
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		db = db.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?", like, like)
+		db = db.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?", like, like, like)
 	}
 	if len(association) > 0 {
 		references := DB.Model(&Model{}).Select("1").Where("models.vendor_id = vendors.id")

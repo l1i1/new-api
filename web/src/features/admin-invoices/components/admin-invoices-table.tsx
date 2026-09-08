@@ -84,10 +84,28 @@ export function AdminInvoicesTable({ refreshTrigger, onViewDetail }: AdminInvoic
       cell: ({ row }) => <span className='block max-w-[220px] truncate font-medium'>{row.original.title || '-'}</span>,
     },
     {
+      id: 'invoice_kind',
+      header: t('Invoice Kind'),
+      meta: { mobileHidden: true },
+      cell: ({ row }) =>
+        t(row.original.invoice_kind === 'special' ? 'VAT Special Invoice' : 'Ordinary Invoice'),
+    },
+    {
       id: 'total_amount',
       header: t('Amount'),
       meta: { mobileHidden: true },
       cell: ({ row }) => <span className='font-semibold tabular-nums'>{formatNumber(row.original.total_amount)} {row.original.currency}</span>,
+    },
+    {
+      id: 'fee',
+      header: t('Handling Fee'),
+      meta: { mobileHidden: true },
+      cell: ({ row }) => row.original.fee_rate > 0 ? (
+        <span className='tabular-nums'>
+          {formatNumber(row.original.fee_amount)} {row.original.currency}
+          <span className='text-muted-foreground text-xs'> ({Math.round(row.original.fee_rate * 100)}%)</span>
+        </span>
+      ) : <span className='text-muted-foreground'>-</span>,
     },
     {
       accessorKey: 'status',

@@ -16,9 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { EmailBindDialog } from '@/features/security/components/dialogs/email-bind-dialog'
 import { useAuthStore } from '@/stores/auth-store'
-
-import { EmailBindDialog } from './dialogs/email-bind-dialog'
 
 export function EmailBindingGate() {
   const user = useAuthStore((state) => state.auth.user)

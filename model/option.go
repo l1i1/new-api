@@ -99,6 +99,7 @@ func InitOptionMap() {
 	common.OptionMap["InvoiceEnabled"] = "false"
 	common.OptionMap["InvoiceNotice"] = ""
 	common.OptionMap["InvoiceMinAmount"] = "0"
+	common.OptionMap["InvoiceFeeRate"] = "0.06"
 	common.OptionMap[InvoiceAllowedPaymentMethodsOption] = "[]"
 	common.OptionMap[setting.ComplianceGeoIPEnabledOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPEnabledEnv, setting.ComplianceGeoIPEnabledDefault)
 	common.OptionMap[setting.ComplianceGeoIPCountryCodesOptionKey] = common.GetEnvOrDefaultString(setting.ComplianceGeoIPCountryCodesEnv, setting.ComplianceGeoIPCountryCodesDefault)
@@ -251,6 +252,13 @@ func validateOptionValue(key string, value string) error {
 	if key == InvoiceAllowedPaymentMethodsOption {
 		_, err := NormalizeInvoiceAllowedPaymentMethods(value)
 		return err
+	}
+	if key == "InvoiceFeeRate" {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || !ValidInvoiceFeeRate(parsed) {
+			return errors.New("invoice fee rate must be a finite rate between 0 and 1")
+		}
+		return nil
 	}
 	if key == operation_setting.ChannelTestConcurrencyOptionKey {
 		return operation_setting.ValidateChannelTestConcurrency(value)

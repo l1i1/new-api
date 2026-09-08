@@ -53,6 +53,7 @@ const schema = z.object({
   enabled: z.boolean(),
   notice: z.string(),
   minAmount: z.coerce.number().min(0),
+  feeRate: z.coerce.number().min(0).max(100),
   allowedPaymentMethods: z.array(z.string()),
 })
 
@@ -65,6 +66,7 @@ export function InvoiceSettingsSection({
     enabled: boolean
     notice: string
     minAmount: number
+    feeRate: number
     allowedPaymentMethods: string[]
     paymentMethodConfig: string
   }
@@ -78,6 +80,7 @@ export function InvoiceSettingsSection({
       enabled: defaultValues.enabled,
       notice: defaultValues.notice,
       minAmount: defaultValues.minAmount,
+      feeRate: defaultValues.feeRate,
       allowedPaymentMethods: normalizePaymentMethodValues(
         defaultValues.allowedPaymentMethods
       ),
@@ -114,6 +117,15 @@ export function InvoiceSettingsSection({
       updates.push({
         key: 'InvoiceMinAmount',
         value: String(values.minAmount),
+      })
+    }
+
+    if (values.feeRate !== defaultValues.feeRate) {
+      // The option is stored as a fraction (0.06 for 6%) while the admin edits
+      // a percentage; convert once and keep the stored value free of float noise.
+      updates.push({
+        key: 'InvoiceFeeRate',
+        value: (values.feeRate / 100).toFixed(6),
       })
     }
 
@@ -197,6 +209,32 @@ export function InvoiceSettingsSection({
                 <FormDescription>
                   {t(
                     'The total paid amount of selected orders must reach this value before invoicing'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='feeRate'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Invoice handling fee rate (%)')}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={0}
+                    max={100}
+                    step='0.01'
+                    placeholder={t('6')}
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'A percentage of the invoice amount charged to the user from their balance when they apply. It is refunded if the application is cancelled or rejected.'
                   )}
                 </FormDescription>
                 <FormMessage />

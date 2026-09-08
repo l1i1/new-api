@@ -125,8 +125,18 @@ export function InvoiceDetailDialog({
               variant={getInvoiceStatusConfig(detail.status).variant}
               copyable={false}
             />
-            <div className='text-sm font-semibold'>
-              {formatInvoiceAmount(detail.total_amount, detail.currency)}
+            <div className='flex flex-col items-end gap-1'>
+              <div className='text-sm font-semibold'>
+                {formatInvoiceAmount(detail.total_amount, detail.currency)}
+              </div>
+              {detail.fee_rate > 0 && (
+                <div className='text-muted-foreground text-xs'>
+                  {t('Invoice handling fee ({{rate}}%)', {
+                    rate: Math.round(detail.fee_rate * 100),
+                  })}
+                  : {formatInvoiceAmount(detail.fee_amount, detail.currency)}
+                </div>
+              )}
             </div>
           </div>
 
@@ -135,6 +145,14 @@ export function InvoiceDetailDialog({
               label={t('Invoice Type')}
               value={t(
                 detail.invoice_type === 'individual' ? 'Individual' : 'Company'
+              )}
+            />
+            <DetailField
+              label={t('Invoice Kind')}
+              value={t(
+                detail.invoice_kind === 'special'
+                  ? 'VAT Special Invoice'
+                  : 'Ordinary Invoice'
               )}
             />
             <DetailField label={t('Invoice Title')} value={detail.title} />

@@ -24,13 +24,6 @@ import { Window } from 'happy-dom'
 import type { AuthUser } from '@/stores/auth-store'
 
 const domWindow = new Window({ url: 'https://tokeness.test/' })
-type TurnstileWindow = Window & {
-  turnstile?: {
-    render: (element: HTMLElement, options: Record<string, unknown>) => void
-  }
-}
-const turnstileWindow = domWindow as unknown as TurnstileWindow
-
 domWindow.document.write(
   '<!doctype html><html><head></head><body></body></html>'
 )
@@ -102,6 +95,10 @@ await i18n.use(initReactI18next).init({
         'Verification Code': 'Verification Code',
         'Enter code': 'Enter code',
         Send: 'Send',
+        Continue: 'Continue',
+        Verify: 'Verify',
+        Password: 'Password',
+        'Confirm email': 'Confirm email',
         Cancel: 'Cancel',
         'Email bound successfully!': 'Email bound successfully!',
         'Failed to bind email': 'Failed to bind email',
@@ -119,6 +116,25 @@ const missingEmailUser: AuthUser = {
   id: 1,
   username: 'oauth-user',
   role: 1,
+}
+
+function setAuthenticatedMissingEmailUser(): void {
+  useAuthStore.getState().auth.setBundle({
+    access_token: 'test-access-token',
+    token_type: 'Bearer',
+    access_expires_at: Math.floor(Date.now() / 1000) + 600,
+    user: missingEmailUser,
+    session: {
+      sid: 'test-session',
+      current: true,
+      login_method: 'password',
+      ip: '127.0.0.1',
+      user_agent: 'test',
+      created_at: 1,
+      last_active_at: 1,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    },
+  })
 }
 
 async function renderGate(status: Record<string, unknown> = {}) {
@@ -160,6 +176,23 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   )?.set
   setter?.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+async function flushAsync(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+async function waitForRequest(
+  requests: Array<{ url?: string }>,
+  url: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (requests.some((request) => request.url === url)) return
+    await flushAsync()
+  }
+  assert.fail(
+    `Timed out waiting for ${url}: ${JSON.stringify(requests)} body=${document.body.textContent}`
+  )
 }
 
 afterEach(() => {
@@ -208,100 +241,235 @@ describe('required email binding', () => {
     rendered.container.remove()
   })
 
-  test('sends the verified Turnstile token with the email verification request', async () => {
+  test('requires identity verification before starting the email binding flow', async () => {
     const originalAdapter = api.defaults.adapter
-    const originalTurnstile = turnstileWindow.turnstile
-    let turnstileOptions: Record<string, unknown> | undefined
-    let verificationRequestUrl = ''
+    const requests: Array<{ url?: string; data?: unknown }> = []
 
     try {
-      turnstileWindow.turnstile = {
-        render: (_element: HTMLElement, options: Record<string, unknown>) => {
-          turnstileOptions = options
-        },
-      }
       api.defaults.adapter = async (config) => {
-        verificationRequestUrl = config.url || ''
+        requests.push({ url: config.url, data: config.data })
+        if (config.url === '/api/verify/methods') {
+          return {
+            data: {
+              success: true,
+              data: {
+                scope: 'account.binding.bind',
+                methods: [{ method: 'password', available: true }],
+                oauth_providers: [],
+                password_encryption_enabled: false,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        if (config.url === '/api/verify') {
+          return {
+            data: {
+              success: true,
+              data: {
+                scope: 'account.binding.bind',
+                method: 'password',
+                proof_token: 'email-proof',
+                expires_at: Math.floor(Date.now() / 1000) + 60,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        if (config.url === '/api/oauth/email/bind/start') {
+          return {
+            data: {
+              success: true,
+              data: {
+                flow_token: 'email-flow',
+                email: 'bound@example.com',
+                old_email_required: false,
+                expires_at: Math.floor(Date.now() / 1000) + 600,
+                resend_at: Math.floor(Date.now() / 1000) + 60,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
         return {
-          data: { success: true },
+          data: { success: true, data: {} },
           status: 200,
           statusText: 'OK',
           headers: {},
           config,
         }
       }
-      useAuthStore.getState().auth.setUser(missingEmailUser)
-      useAuthStore.getState().auth.setBootstrapState('complete')
-      const rendered = await renderGate({
-        turnstile_check: true,
-        turnstile_site_key: 'test-site-key',
-      })
-      const emailInput = document.querySelector<HTMLInputElement>('#email')
+      setAuthenticatedMissingEmailUser()
+      const rendered = await renderGate()
+      const emailInput = document.querySelector<HTMLInputElement>(
+        'input[name="email"]'
+      )
       assert.ok(emailInput)
 
       await act(async () => {
         setInputValue(emailInput, 'bound@example.com')
       })
 
-      const sendButton = findButton('Send')
-      assert.ok(sendButton)
-      assert.equal(sendButton.disabled, true)
-      assert.ok(turnstileOptions)
-      const onVerify = turnstileOptions.callback
-      assert.equal(typeof onVerify, 'function')
-
       await act(async () => {
-        ;(onVerify as (token: string) => void)('turnstile-token')
+        findButton('Continue')?.click()
+        await flushAsync()
       })
 
-      assert.equal(sendButton.disabled, false)
       await act(async () => {
-        sendButton.click()
-        await Promise.resolve()
-        await Promise.resolve()
+        const passwordInput = document.querySelector<HTMLInputElement>(
+          'input[type="password"]'
+        )
+        assert.ok(passwordInput)
+        setInputValue(passwordInput, 'account-password')
       })
+      const verifyButton = findButton('Verify')
+      assert.ok(verifyButton)
+      await act(async () => {
+        verifyButton.click()
+        await flushAsync()
+      })
+      await waitForRequest(requests, '/api/oauth/email/bind/start')
 
       assert.equal(
-        verificationRequestUrl,
-        '/api/verification?email=bound%40example.com&turnstile=turnstile-token'
+        requests.some((request) => request.url === '/api/verify'),
+        true
+      )
+      assert.equal(
+        requests.some(
+          (request) => request.url === '/api/oauth/email/bind/start'
+        ),
+        true,
+        JSON.stringify(requests)
+      )
+      assert.equal(
+        document.querySelector<HTMLInputElement>('input[name="email"]')
+          ?.disabled,
+        true
       )
       await act(async () => rendered.root.unmount())
       rendered.container.remove()
     } finally {
       api.defaults.adapter = originalAdapter
-      turnstileWindow.turnstile = originalTurnstile
     }
   })
 
   test('updates the authenticated user after successful binding', async () => {
     const originalAdapter = api.defaults.adapter
+    const requests: Array<{ url?: string }> = []
     try {
-      api.defaults.adapter = async (config) => ({
-        data: { success: true },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config,
-      })
-      useAuthStore.getState().auth.setUser(missingEmailUser)
-      useAuthStore.getState().auth.setBootstrapState('complete')
+      api.defaults.adapter = async (config) => {
+        requests.push({ url: config.url })
+        if (config.url === '/api/verify/methods') {
+          return {
+            data: {
+              success: true,
+              data: {
+                scope: 'account.binding.bind',
+                methods: [{ method: 'password', available: true }],
+                oauth_providers: [],
+                password_encryption_enabled: false,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        if (config.url === '/api/verify') {
+          return {
+            data: {
+              success: true,
+              data: {
+                scope: 'account.binding.bind',
+                method: 'password',
+                proof_token: 'email-proof',
+                expires_at: Math.floor(Date.now() / 1000) + 60,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        if (config.url === '/api/oauth/email/bind/start') {
+          return {
+            data: {
+              success: true,
+              data: {
+                flow_token: 'email-flow',
+                email: 'bound@example.com',
+                old_email_required: false,
+                expires_at: Math.floor(Date.now() / 1000) + 600,
+                resend_at: Math.floor(Date.now() / 1000) + 60,
+              },
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          }
+        }
+        return {
+          data: { success: true, data: {} },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        }
+      }
+      setAuthenticatedMissingEmailUser()
       const rendered = await renderGate()
-      const emailInput = document.querySelector<HTMLInputElement>('#email')
-      const codeInput = document.querySelector<HTMLInputElement>('#code')
+      const emailInput = document.querySelector<HTMLInputElement>(
+        'input[name="email"]'
+      )
       assert.ok(emailInput)
-      assert.ok(codeInput)
 
       await act(async () => {
         setInputValue(emailInput, 'bound@example.com')
-        setInputValue(codeInput, '123456')
+      })
+      await act(async () => {
+        findButton('Continue')?.click()
+        await flushAsync()
       })
 
-      const bindButton = findButton('Bind Email')
-      assert.ok(bindButton)
+      const passwordInput = document.querySelector<HTMLInputElement>(
+        'input[type="password"]'
+      )
+      assert.ok(passwordInput)
       await act(async () => {
-        bindButton.click()
-        await Promise.resolve()
-        await Promise.resolve()
+        setInputValue(passwordInput, 'account-password')
+      })
+      const verifyButton = findButton('Verify')
+      assert.ok(verifyButton)
+      await act(async () => {
+        verifyButton.click()
+        await flushAsync()
+      })
+      await waitForRequest(requests, '/api/oauth/email/bind/start')
+
+      const codeInput = document.querySelector<HTMLInputElement>(
+        'input[name="newCode"]'
+      )
+      assert.ok(codeInput)
+      await act(async () => setInputValue(codeInput, '123456'))
+      const bindButton = findButton('Bind Email')
+      assert.equal(bindButton, null)
+      const confirmButton = findButton('Confirm email')
+      assert.ok(confirmButton)
+      await act(async () => {
+        confirmButton.click()
+        await flushAsync()
       })
 
       assert.equal(

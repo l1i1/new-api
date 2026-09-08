@@ -28,6 +28,13 @@ func metadataTransaction(change func(*gorm.DB) error) error {
 }
 
 func lockMetadataMutation(tx *gorm.DB) error {
+	// Some lightweight callers (and pre-migration databases) do not have the
+	// options table yet. Metadata writes remain serialized by metadataMutationMu
+	// in that case; once options exists, the durable row lock coordinates across
+	// processes as intended.
+	if !tx.Migrator().HasTable(&Option{}) {
+		return nil
+	}
 	anchor := Option{Key: "metadata_sync_lock", Value: ""}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&anchor).Error; err != nil {
 		return err

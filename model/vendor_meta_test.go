@@ -39,7 +39,7 @@ func TestVendorDisplayNameMigrationPreservesLegacyRows(t *testing.T) {
 func TestVendorUpdateOnlyUpdatesExistingVendor(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Vendor{}))
+	require.NoError(t, db.AutoMigrate(&Option{}, &Vendor{}))
 
 	previousDB := DB
 	DB = db
@@ -62,7 +62,7 @@ func TestVendorUpdateOnlyUpdatesExistingVendor(t *testing.T) {
 	assert.Equal(t, vendor.DisplayName, persisted.DisplayName)
 	assert.Equal(t, vendor.Description, persisted.Description)
 	assert.Equal(t, vendor.Icon, persisted.Icon)
-	assert.Zero(t, persisted.Status)
+	assert.Equal(t, 1, persisted.Status)
 	assert.Equal(t, createdTime, persisted.CreatedTime)
 
 	missing := &Vendor{Id: vendor.Id + 100, Name: "Missing", Status: 1}

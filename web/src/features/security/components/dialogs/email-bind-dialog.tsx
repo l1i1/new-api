@@ -65,7 +65,8 @@ interface EmailBindDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   currentEmail?: string
-  onSuccess: () => void
+  onSuccess: (email: string) => void
+  required?: boolean
 }
 
 export function EmailBindDialog(props: EmailBindDialogProps) {
@@ -165,7 +166,7 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
     if (!result) return
     toast.success(t('Email bound successfully!'))
     handleOpenChange(false)
-    props.onSuccess()
+    props.onSuccess(flow.email)
   }
   const resendCodes = async () => {
     if (!flow || resend.isActive || expired) return
@@ -187,29 +188,35 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
     deadline.reset()
   }
 
+  let description = t('Bind an email address to your account.')
+  if (props.required) {
+    description = t('An email address is required to continue.')
+  } else if (props.currentEmail) {
+    description = t('Current email: {{email}}. Enter a new email to change.', {
+      email: props.currentEmail,
+    })
+  }
+
   return (
     <>
       <Dialog
         open={props.open && !security.showVerification}
-        onOpenChange={handleOpenChange}
+        onOpenChange={props.required ? () => undefined : handleOpenChange}
         title={t('Bind Email')}
-        description={
-          props.currentEmail
-            ? t('Current email: {{email}}. Enter a new email to change.', {
-                email: props.currentEmail,
-              })
-            : t('Bind an email address to your account.')
-        }
+        description={description}
         contentClassName='sm:max-w-md'
+        showCloseButton={!props.required}
         footer={
           <>
-            <Button
-              type='button'
-              variant='outline'
-              onClick={() => handleOpenChange(false)}
-            >
-              {t('Cancel')}
-            </Button>
+            {!props.required && (
+              <Button
+                type='button'
+                variant='outline'
+                onClick={() => handleOpenChange(false)}
+              >
+                {t('Cancel')}
+              </Button>
+            )}
             {expired ? (
               <Button type='button' onClick={restart}>
                 {t('Start again')}

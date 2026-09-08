@@ -1426,6 +1426,56 @@ func decreaseUserQuota(id int, quota int) (err error) {
 	return err
 }
 
+// debitUserQuotaTx atomically debits quota inside an existing transaction,
+// guarding against overdraw so a wallet can never go negative. It is the
+// invoice-fee counterpart to creditTopUpQuota: it accepts a caller-owned *gorm.DB
+// instead of the package DB so the charge is committed or rolled back atomically
+// with its parent business transaction. A non-positive amount is a no-op, and an
+// insufficient balance returns ErrInvoiceInsufficientBalance.
+func debitUserQuotaTx(tx *gorm.DB, userID int, quota int) error {
+	if quota <= 0 {
+		return nil
+	}
+	result := tx.Model(&User{}).
+		Where("id = ? AND quota >= ?", userID, quota).
+		Update("quota", gorm.Expr("quota - ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	return ErrInvoiceInsufficientBalance
+}
+
+// creditUserQuotaTx atomically credits quota inside an existing transaction,
+// enforcing the wallet ceiling. It is the refund counterpart to debitUserQuotaTx
+// and must be committed or rolled back with its parent business transaction. A
+// non-positive amount is a no-op. A credit that would exceed MaxWalletQuota
+// returns ErrWalletQuotaLimitExceeded.
+func creditUserQuotaTx(tx *gorm.DB, userID int, quota int) error {
+	if quota <= 0 {
+		return nil
+	}
+	result := tx.Model(&User{}).
+		Where("id = ? AND quota <= ?", userID, common.MaxWalletQuota-quota).
+		Update("quota", gorm.Expr("quota + ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	var count int64
+	if err := tx.Model(&User{}).Where("id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return ErrWalletQuotaLimitExceeded
+}
+
 // DecreaseUserQuotaWithUsage atomically applies the wallet deduction and the
 // usage statistics of one request in a single UPDATE on the users row. Both
 // statements hit the same row, so merging them halves the hot-row lock

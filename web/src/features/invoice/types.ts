@@ -24,6 +24,8 @@ export type InvoiceOrderType = 'topup'
 
 export type InvoiceType = 'individual' | 'organization'
 
+export type InvoiceKind = 'general' | 'special'
+
 export type InvoiceStatus =
   | 'pending'
   | 'approved'
@@ -54,6 +56,7 @@ export interface InvoiceOptions {
   enabled: boolean
   notice: string
   min_amount: number
+  fee_rate: number
   allowed_payment_methods: string[]
   orders: InvoiceableOrder[]
 }
@@ -63,6 +66,7 @@ export interface Invoice {
   id: number
   user_id: number
   invoice_type: InvoiceType
+  invoice_kind: InvoiceKind
   title: string
   tax_id: string
   phone: string
@@ -75,6 +79,9 @@ export interface Invoice {
   status: InvoiceStatus
   admin_note: string
   total_amount: number
+  fee_rate: number
+  fee_amount: number
+  fee_quota: number
   currency: string
   create_time: number
   update_time: number
@@ -119,6 +126,7 @@ export interface InvoiceProfile {
 export interface InvoiceCreateRequest {
   orders: InvoiceOrderRef[]
   invoice_type: InvoiceType
+  invoice_kind?: InvoiceKind
   title: string
   tax_id: string
   phone: string

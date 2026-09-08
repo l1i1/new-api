@@ -57,10 +57,12 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { getUptimeStatus } from '../../api'
 import {
   useApiInfo,
   useDashboardContentVisibility,
 } from '../../hooks/use-status-data'
+import type { UptimeGroupResult } from '../../types'
 import { AnnouncementsPanel } from './announcements-panel'
 import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
@@ -495,6 +497,17 @@ export function OverviewDashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const uptimeQuery = useQuery({
+    queryKey: ['dashboard', 'overview', 'uptime-status'],
+    queryFn: async (): Promise<UptimeGroupResult[]> => {
+      const result = await getUptimeStatus()
+      return result?.data ?? []
+    },
+    enabled: showUptimePanel,
+    staleTime: 60 * 1000,
+    retry: false,
+  })
+
   const preferredKey = useMemo(
     () => getPreferredKey(apiKeysQuery.data ?? []),
     [apiKeysQuery.data]
@@ -612,7 +625,9 @@ export function OverviewDashboard() {
     manualSetupGuideExpanded ?? (setupStatusReady && !setupComplete)
   const showLeftContentPanels =
     isAdmin || showApiInfoPanel || showAnnouncementsPanel || showFAQPanel
-  const showContentPanels = showLeftContentPanels || showUptimePanel
+  const uptimeGroups = uptimeQuery.data ?? []
+  const showUptimeData = showUptimePanel && uptimeGroups.length > 0
+  const showContentPanels = showLeftContentPanels || showUptimeData
 
   const handleSetupGuideToggle = () => {
     const nextExpanded = !setupGuideExpanded
@@ -790,7 +805,7 @@ export function OverviewDashboard() {
               className={cn(
                 'grid grid-cols-1 gap-4',
                 showLeftContentPanels &&
-                  showUptimePanel &&
+                  showUptimeData &&
                   'xl:grid-cols-[minmax(0,1fr)_22rem]'
               )}
             >
@@ -826,9 +841,13 @@ export function OverviewDashboard() {
                   )}
                 </div>
               )}
-              {showUptimePanel && (
+              {showUptimeData && (
                 <CardStaggerItem>
-                  <UptimePanel />
+                  <UptimePanel
+                    groups={uptimeGroups}
+                    refreshing={uptimeQuery.isRefetching}
+                    onRefresh={() => void uptimeQuery.refetch()}
+                  />
                 </CardStaggerItem>
               )}
             </CardStaggerContainer>

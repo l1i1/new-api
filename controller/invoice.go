@@ -55,6 +55,7 @@ type InvoiceOrderRef struct {
 type InvoiceCreateRequest struct {
 	Orders      []InvoiceOrderRef `json:"orders"`
 	InvoiceType string            `json:"invoice_type"`
+	InvoiceKind string            `json:"invoice_kind"`
 	Title       string            `json:"title"`
 	TaxId       string            `json:"tax_id"`
 	Phone       string            `json:"phone"`
@@ -100,6 +101,7 @@ type InvoiceOptionsResponse struct {
 	Enabled               bool                 `json:"enabled"`
 	Notice                string               `json:"notice"`
 	MinAmount             float64              `json:"min_amount"`
+	FeeRate               float64              `json:"fee_rate"`
 	AllowedPaymentMethods []string             `json:"allowed_payment_methods"`
 	Orders                []InvoiceOptionOrder `json:"orders"`
 }
@@ -129,6 +131,18 @@ func invoiceMinAmount() decimal.Decimal {
 		return decimal.Zero
 	}
 	return model.InvoiceMinAmountFromFloat(value)
+}
+
+// invoiceFeeRate returns the configured invoice fee rate as a decimal fraction
+// (0.06 for 6%). Invalid values (NaN, +Inf, -Inf, negative, >1) fail closed to
+// zero, which disables the fee rather than blocking applications.
+func invoiceFeeRate() decimal.Decimal {
+	raw := optionValue(model.InvoiceFeeRateOption)
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !model.ValidInvoiceFeeRate(value) {
+		return decimal.Zero
+	}
+	return decimal.NewFromFloat(value)
 }
 
 func invoiceAllowedPaymentMethods() ([]string, error) {
@@ -171,6 +185,12 @@ func mapInvoiceError(c *gin.Context, err error) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceMixedCurrency)
 	case errors.Is(err, model.ErrInvoiceBelowMinimum):
 		common.ApiErrorI18n(c, i18n.MsgInvoiceBelowMinimum)
+	case errors.Is(err, model.ErrInvoiceInsufficientBalance):
+		common.ApiErrorI18n(c, i18n.MsgInvoiceInsufficientBalance)
+	case errors.Is(err, model.ErrInvoiceSpecialRequiresOrg):
+		common.ApiErrorI18n(c, i18n.MsgInvoiceSpecialRequiresOrg)
+	case errors.Is(err, model.ErrInvoiceSpecialRequiresFullInfo):
+		common.ApiErrorI18n(c, i18n.MsgInvoiceSpecialRequiresFullInfo)
 	case errors.Is(err, model.ErrInvoiceNotFound):
 		common.ApiErrorI18n(c, i18n.MsgInvoiceNotFound)
 	case errors.Is(err, model.ErrInvoiceNotOwner):
@@ -217,6 +237,7 @@ func GetInvoiceOptions(c *gin.Context) {
 		Enabled:               invoiceEnabled(),
 		Notice:                invoiceNotice(),
 		MinAmount:             invoiceMinAmount().InexactFloat64(),
+		FeeRate:               invoiceFeeRate().InexactFloat64(),
 		AllowedPaymentMethods: allowedPaymentMethods,
 		Orders:                orders,
 	})
@@ -319,6 +340,7 @@ func CreateInvoice(c *gin.Context) {
 	}
 	req.InvoiceType = strings.ToLower(strings.TrimSpace(req.InvoiceType))
 	req.InvoiceType = model.NormalizeInvoiceType(req.InvoiceType)
+	req.InvoiceKind = model.NormalizeInvoiceKind(req.InvoiceKind)
 	req.Title = strings.TrimSpace(req.Title)
 	req.TaxId = strings.TrimSpace(req.TaxId)
 	req.Email = strings.TrimSpace(req.Email)
@@ -335,6 +357,20 @@ func CreateInvoice(c *gin.Context) {
 	if !model.IsValidInvoiceType(req.InvoiceType) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceTypeRequired)
 		return
+	}
+	if !model.IsValidInvoiceKind(req.InvoiceKind) {
+		common.ApiErrorI18n(c, i18n.MsgInvoiceKindInvalid)
+		return
+	}
+	if req.InvoiceKind == model.InvoiceKindSpecial {
+		if req.InvoiceType != model.InvoiceTypeOrganization {
+			common.ApiErrorI18n(c, i18n.MsgInvoiceSpecialRequiresOrg)
+			return
+		}
+		if req.Address == "" || req.Phone == "" || req.BankName == "" || req.BankAccount == "" {
+			common.ApiErrorI18n(c, i18n.MsgInvoiceSpecialRequiresFullInfo)
+			return
+		}
 	}
 	if req.Title == "" || req.TaxId == "" {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceTitleTaxRequired)
@@ -421,6 +457,7 @@ func CreateInvoice(c *gin.Context) {
 
 	inv := &model.Invoice{
 		InvoiceType: req.InvoiceType,
+		InvoiceKind: req.InvoiceKind,
 		Title:       req.Title,
 		TaxId:       req.TaxId,
 		Phone:       req.Phone,
@@ -431,7 +468,7 @@ func CreateInvoice(c *gin.Context) {
 		Reason:      req.Reason,
 		Remark:      req.Remark,
 	}
-	if err := model.CreateInvoiceApplicationWithPaymentMethods(userId, inv, orders, minAmount, allowedPaymentMethods); err != nil {
+	if err := model.CreateInvoiceApplicationWithPaymentMethods(userId, inv, orders, minAmount, allowedPaymentMethods, invoiceFeeRate()); err != nil {
 		mapInvoiceError(c, err)
 		return
 	}

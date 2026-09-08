@@ -48,11 +48,13 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { getSelf } from '@/lib/api'
 import { isLikelyHtml } from '@/lib/content-format'
 import { formatPaymentAmount } from '@/lib/currency'
 import { formatNumber, formatTimestampToDate } from '@/lib/format'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { useAuthStore } from '@/stores/auth-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   createInvoice,
@@ -61,6 +63,8 @@ import {
   saveInvoiceProfile,
 } from '../api'
 import {
+  calculateInvoiceFee,
+  calculateInvoiceFeeQuota,
   canSubmitInvoice,
   hasMixedCurrency,
   isBelowMinimum,
@@ -69,6 +73,7 @@ import {
 } from '../lib/apply'
 import type {
   InvoiceableOrder,
+  InvoiceKind,
   InvoiceOptions,
   InvoiceProfile,
   InvoiceType,
@@ -78,6 +83,7 @@ interface InvoiceApplyPanelProps {
   onSubmitted: () => void
 }
 interface InvoiceApplyFormValues {
+  invoice_kind: InvoiceKind
   invoice_type: InvoiceType
   reason: string
   remark: string
@@ -91,6 +97,7 @@ interface InvoiceApplyFormValues {
 }
 
 const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
+  invoice_kind: 'general',
   invoice_type: 'organization',
   reason: '',
   remark: '',
@@ -106,6 +113,7 @@ const INVOICE_APPLY_DEFAULT_VALUES: InvoiceApplyFormValues = {
 function getInvoiceApplyFormSchema(t: TFunction) {
   return z
     .object({
+      invoice_kind: z.enum(['general', 'special']),
       invoice_type: z.enum(['individual', 'organization']),
       reason: z.string().trim(),
       remark: z.string().trim(),
@@ -124,6 +132,44 @@ function getInvoiceApplyFormSchema(t: TFunction) {
           path: ['reason'],
           message: t('Individual invoice reason is required'),
         })
+      }
+      if (values.invoice_kind === 'special') {
+        // A VAT special invoice requires the full enterprise billing material.
+        const requiredFields: Array<{
+          path: (keyof InvoiceApplyFormValues)[]
+          value: string
+          message: string
+        }> = [
+          {
+            path: ['address'],
+            value: values.address,
+            message: t('Address is required for a VAT special invoice'),
+          },
+          {
+            path: ['phone'],
+            value: values.phone,
+            message: t('Phone is required for a VAT special invoice'),
+          },
+          {
+            path: ['bank_name'],
+            value: values.bank_name,
+            message: t('Bank name is required for a VAT special invoice'),
+          },
+          {
+            path: ['bank_account'],
+            value: values.bank_account,
+            message: t('Bank account is required for a VAT special invoice'),
+          },
+        ]
+        for (const field of requiredFields) {
+          if (field.value.trim() === '') {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: field.path,
+              message: field.message,
+            })
+          }
+        }
       }
     })
 }
@@ -146,10 +192,27 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const [options, setOptions] = useState<InvoiceOptions | null>(null)
   const [profile, setProfile] = useState<InvoiceProfile | null>(null)
   const [loading, setLoading] = useState(true)
+  const [userQuota, setUserQuota] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     new Set<number>()
   )
   const [submitting, setSubmitting] = useState(false)
+  const quotaPerUnit = useSystemConfigStore(
+    (state) => state.config.currency.quotaPerUnit
+  )
+
+  useEffect(() => {
+    getSelf()
+      .then((response) => {
+        if (response.success && response.data) {
+          setUserQuota((response.data as { quota?: number }).quota ?? 0)
+        }
+      })
+      .catch(() => {
+        // A transient quota fetch failure only disables the balance gate; the
+        // server re-checks the balance authoritatively on submit.
+      })
+  }, [])
 
   const fetchOptions = useCallback(async () => {
     try {
@@ -235,11 +298,22 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const minAmount = options?.min_amount ?? 0
   const belowMinAmount = isBelowMinimum(selectedTotal, minAmount)
   const accountEmailUnavailable = !authEmail
+  const feeRate = options?.fee_rate ?? 0
+  const hasFee = feeRate > 0 && selectedOrders.length > 0 && !mixedCurrency
+  const feeAmount = calculateInvoiceFee(selectedTotal, feeRate)
+  const feeQuota = calculateInvoiceFeeQuota(
+    selectedTotal,
+    feeRate,
+    quotaPerUnit
+  )
+  const insufficientBalance =
+    hasFee && userQuota !== null && userQuota < feeQuota
   const submitDisabled = !canSubmitInvoice({
     selectedCount: selectedOrders.length,
     mixedCurrency,
     belowMinimum: belowMinAmount,
     accountEmailUnavailable,
+    insufficientBalance,
     submitting,
   })
 
@@ -254,6 +328,7 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
           order_id: order.order_id,
         })),
         invoice_type: values.invoice_type,
+        invoice_kind: values.invoice_kind,
         title: values.title,
         tax_id: values.tax_id,
         phone: values.phone,
@@ -365,6 +440,19 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
         </span>
       </div>
 
+      {hasFee && (
+        <div className='flex flex-wrap items-center justify-between gap-2'>
+          <span className='text-muted-foreground text-sm'>
+            {t('Invoice handling fee ({{rate}}%)', {
+              rate: Math.round(feeRate * 100),
+            })}
+          </span>
+          <span className='text-sm font-semibold'>
+            {formatInvoiceAmount(feeAmount, selectedCurrency)}
+          </span>
+        </div>
+      )}
+
       {mixedCurrency && (
         <Alert variant='destructive'>
           <AlertDescription>
@@ -382,6 +470,19 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
               'The selected amount is below the minimum invoice amount of {{amount}}',
               {
                 amount: formatInvoiceAmount(minAmount, selectedCurrency),
+              }
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!mixedCurrency && insufficientBalance && (
+        <Alert variant='destructive'>
+          <AlertDescription>
+            {t(
+              'Insufficient balance to cover the invoice handling fee of {{fee}}',
+              {
+                fee: formatInvoiceAmount(feeAmount, selectedCurrency),
               }
             )}
           </AlertDescription>
@@ -519,6 +620,8 @@ export function InvoiceApplyForm({
     },
   })
   const invoiceType = form.watch('invoice_type')
+  const invoiceKind = form.watch('invoice_kind')
+  const isSpecial = invoiceKind === 'special'
 
   useEffect(() => {
     if (!initialProfile && !accountEmail) return
@@ -583,6 +686,58 @@ export function InvoiceApplyForm({
       >
         <FormField
           control={form.control}
+          name='invoice_kind'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invoice Kind')}</FormLabel>
+              <FormControl>
+                <RadioGroup
+                  value={field.value}
+                  onValueChange={(value) => {
+                    const kind = value as InvoiceKind
+                    field.onChange(kind)
+                    if (kind === 'special') {
+                      form.setValue('invoice_type', 'organization')
+                      form.clearErrors('reason')
+                    }
+                  }}
+                  className='flex flex-wrap gap-4'
+                >
+                  <div className='flex items-center gap-2'>
+                    <RadioGroupItem
+                      id='invoice-kind-general'
+                      value='general'
+                      disabled={submitting || savingProfile}
+                    />
+                    <FormLabel
+                      htmlFor='invoice-kind-general'
+                      className='font-normal'
+                    >
+                      {t('Ordinary Invoice')}
+                    </FormLabel>
+                  </div>
+                  <div className='flex items-center gap-2'>
+                    <RadioGroupItem
+                      id='invoice-kind-special'
+                      value='special'
+                      disabled={submitting || savingProfile}
+                    />
+                    <FormLabel
+                      htmlFor='invoice-kind-special'
+                      className='font-normal'
+                    >
+                      {t('VAT Special Invoice')}
+                    </FormLabel>
+                  </div>
+                </RadioGroup>
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
           name='invoice_type'
           render={({ field }) => (
             <FormItem>
@@ -613,7 +768,7 @@ export function InvoiceApplyForm({
                     <RadioGroupItem
                       id='invoice-type-individual'
                       value='individual'
-                      disabled={submitting || savingProfile}
+                      disabled={submitting || savingProfile || isSpecial}
                     />
                     <FormLabel
                       htmlFor='invoice-type-individual'

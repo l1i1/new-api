@@ -33,6 +33,7 @@ const InvoiceOrderTypeTopUp = "topup"
 
 const (
 	InvoiceAllowedPaymentMethodsOption = "InvoiceAllowedPaymentMethods"
+	InvoiceFeeRateOption               = "InvoiceFeeRate"
 	maxInvoiceAllowedPaymentMethods    = 32
 	maxInvoicePaymentMethodBytes       = 50
 )
@@ -42,6 +43,16 @@ const (
 	InvoiceTypeOrganization = "organization"
 
 	legacyInvoiceTypeCompany = "company"
+)
+
+// InvoiceKind distinguishes the requested invoice category. A VAT special
+// invoice (special) is only available to organizations and requires the full
+// billing material (address, phone, bank name, bank account); the general
+// invoice (general) keeps the existing rules. Empty values are treated as
+// general so historical rows and clients that omit the field stay compatible.
+const (
+	InvoiceKindGeneral = "general"
+	InvoiceKindSpecial = "special"
 )
 
 // Invoice eligibility and transition errors. Controllers map these to
@@ -62,11 +73,14 @@ var (
 	ErrInvoiceOrderClaimed            = errors.New("order is already attached to an invoice application")
 	ErrInvoiceMixedCurrency           = errors.New("all selected orders must use the same currency")
 	ErrInvoiceBelowMinimum            = errors.New("invoice amount is below the minimum")
+	ErrInvoiceInsufficientBalance     = errors.New("insufficient balance to pay the invoice fee")
 	ErrInvoiceNotFound                = errors.New("invoice application not found")
 	ErrInvoiceNotOwner                = errors.New("not the invoice owner")
 	ErrInvoiceOnlyPendingCancel       = errors.New("only pending invoice applications can be cancelled")
 	ErrInvoiceInvalidTransition       = errors.New("invalid invoice transition")
 	ErrInvoiceNotIssuing              = errors.New("invoice is not in the issuing status")
+	ErrInvoiceSpecialRequiresOrg      = errors.New("VAT special invoices require an organization")
+	ErrInvoiceSpecialRequiresFullInfo = errors.New("VAT special invoices require address, phone, bank name and bank account")
 )
 
 // NormalizeInvoiceAllowedPaymentMethods validates and canonicalizes the JSON
@@ -123,6 +137,7 @@ type Invoice struct {
 	Id          int     `json:"id"`
 	UserId      int     `json:"user_id" gorm:"index"`
 	InvoiceType string  `json:"invoice_type" gorm:"type:varchar(16)"`
+	InvoiceKind string  `json:"invoice_kind" gorm:"type:varchar(16)"`
 	Title       string  `json:"title" gorm:"type:varchar(255)"`
 	TaxId       string  `json:"tax_id" gorm:"type:varchar(64)"`
 	Phone       string  `json:"phone" gorm:"type:varchar(32)"`
@@ -135,9 +150,16 @@ type Invoice struct {
 	Status      string  `json:"status" gorm:"type:varchar(16);index"`
 	AdminNote   string  `json:"admin_note" gorm:"type:varchar(512)"`
 	TotalAmount float64 `json:"total_amount"`
-	Currency    string  `json:"currency" gorm:"type:varchar(8)"`
-	CreateTime  int64   `json:"create_time"`
-	UpdateTime  int64   `json:"update_time"`
+	// FeeRate is the configured rate snapshot (0.06 for 6%) applied to the
+	// invoice total. FeeAmount is that rate applied to TotalAmount in the
+	// invoice currency (display only). FeeQuota is the actual balance quota
+	// that was debited at creation and credited back on reject/cancel.
+	FeeRate    float64 `json:"fee_rate"`
+	FeeAmount  float64 `json:"fee_amount"`
+	FeeQuota   int     `json:"fee_quota"`
+	Currency   string  `json:"currency" gorm:"type:varchar(8)"`
+	CreateTime int64   `json:"create_time"`
+	UpdateTime int64   `json:"update_time"`
 }
 
 // InvoiceProfile stores the user's reusable billing information separately
@@ -190,8 +212,11 @@ type InvoiceOrderClaim struct {
 type InvoiceListItem struct {
 	Id          int     `json:"id"`
 	InvoiceType string  `json:"invoice_type"`
+	InvoiceKind string  `json:"invoice_kind"`
 	Status      string  `json:"status"`
 	TotalAmount float64 `json:"total_amount"`
+	FeeRate     float64 `json:"fee_rate"`
+	FeeAmount   float64 `json:"fee_amount"`
 	Currency    string  `json:"currency"`
 	CreateTime  int64   `json:"create_time"`
 	UpdateTime  int64   `json:"update_time"`
@@ -203,9 +228,12 @@ type AdminInvoiceListItem struct {
 	Id          int     `json:"id"`
 	UserId      int     `json:"user_id"`
 	InvoiceType string  `json:"invoice_type"`
+	InvoiceKind string  `json:"invoice_kind"`
 	Title       string  `json:"title"`
 	Status      string  `json:"status"`
 	TotalAmount float64 `json:"total_amount"`
+	FeeRate     float64 `json:"fee_rate"`
+	FeeAmount   float64 `json:"fee_amount"`
 	Currency    string  `json:"currency"`
 	CreateTime  int64   `json:"create_time"`
 	UpdateTime  int64   `json:"update_time"`
@@ -244,6 +272,15 @@ func InvoiceMinAmountFromFloat(value float64) Money {
 	return decimal.NewFromFloat(value)
 }
 
+// ValidInvoiceFeeRate reports whether a fee rate is a finite rate in [0, 1]
+// (0% to 100%). NaN, +Inf, -Inf, negatives and rates above 100% are invalid.
+func ValidInvoiceFeeRate(value float64) bool {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+		return false
+	}
+	return true
+}
+
 func isDuplicateKeyError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "duplicate") || strings.Contains(msg, "unique")
@@ -251,6 +288,33 @@ func isDuplicateKeyError(err error) bool {
 
 func validInvoiceType(invoiceType string) bool {
 	return invoiceType == InvoiceTypeIndividual || invoiceType == InvoiceTypeOrganization
+}
+
+// validInvoiceKind reports whether an invoice kind is supported. Only the two
+// canonical values are allowed; empty is normalized to general before this
+// check.
+func validInvoiceKind(invoiceKind string) bool {
+	return invoiceKind == InvoiceKindGeneral || invoiceKind == InvoiceKindSpecial
+}
+
+// NormalizeInvoiceKind trims, lowercases, and defaults an empty kind to
+// general so API clients that omit the field and historical rows stay
+// compatible.
+func NormalizeInvoiceKind(invoiceKind string) string {
+	normalized := strings.ToLower(strings.TrimSpace(invoiceKind))
+	if normalized == "" {
+		return InvoiceKindGeneral
+	}
+	return normalized
+}
+
+// invoiceKindOrGeneral returns the persisted kind, defaulting empty (historical
+// rows) and unrecognized values to general.
+func invoiceKindOrGeneral(invoiceKind string) string {
+	if validInvoiceKind(invoiceKind) {
+		return invoiceKind
+	}
+	return InvoiceKindGeneral
 }
 
 // NormalizeInvoiceType converts the pre-organization company value to the
@@ -266,6 +330,12 @@ func NormalizeInvoiceType(invoiceType string) string {
 // the legacy company value accepted for API compatibility.
 func IsValidInvoiceType(invoiceType string) bool {
 	return validInvoiceType(NormalizeInvoiceType(invoiceType))
+}
+
+// IsValidInvoiceKind reports whether an invoice kind is supported, defaulting an
+// empty value to the general kind.
+func IsValidInvoiceKind(invoiceKind string) bool {
+	return validInvoiceKind(NormalizeInvoiceKind(invoiceKind))
 }
 
 // MigrateInvoiceTypeCompanyToOrganization updates persisted invoice data from
@@ -343,17 +413,26 @@ func GetInvoiceableTopUpsWithPaymentMethods(userId int, allowed []string) ([]*To
 // are row-locked (in sorted id order) so concurrent applications cannot
 // double-attach the same paid order; the unique claim index is the final
 // backstop. minAmount is re-checked inside the transaction using decimal
-// arithmetic.
+// arithmetic. This convenience form applies no fee (feeRate is zero) and is
+// intended for tests and callers that do not charge an invoice fee.
 func CreateInvoiceApplication(userId int, inv *Invoice, itemOrders []*TopUp, minAmount Money) error {
-	return CreateInvoiceApplicationWithPaymentMethods(userId, inv, itemOrders, minAmount, nil)
+	return CreateInvoiceApplicationWithPaymentMethods(userId, inv, itemOrders, minAmount, nil, decimal.Zero)
 }
 
 // CreateInvoiceApplicationWithPaymentMethods performs the invoice transaction
-// with an optional payment-method allowlist. The allowlist is checked after
-// locking and reloading every selected order, so a forged request cannot bypass
-// the administrator's setting.
-func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOrders []*TopUp, minAmount Money, allowed []string) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+// with an optional payment-method allowlist and a fee rate. The allowlist is
+// checked after locking and reloading every selected order, so a forged request
+// cannot bypass the administrator's setting. A positive feeRate charges a
+// handling fee (in quota) that is debited from the user's balance inside the
+// same transaction; an insufficient balance aborts the application. The fee is
+// refunded by RejectInvoice and CancelInvoice.
+
+func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOrders []*TopUp, minAmount Money, allowed []string, feeRates ...decimal.Decimal) error {
+	feeRate := decimal.Zero
+	if len(feeRates) > 0 {
+		feeRate = feeRates[0]
+	}
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		if inv == nil {
 			return ErrInvoiceInvalid
 		}
@@ -363,6 +442,21 @@ func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOr
 		}
 		if !validInvoiceType(inv.InvoiceType) {
 			return ErrInvoiceTypeInvalid
+		}
+		inv.InvoiceKind = NormalizeInvoiceKind(inv.InvoiceKind)
+		if !validInvoiceKind(inv.InvoiceKind) {
+			return ErrInvoiceTypeInvalid
+		}
+		if inv.InvoiceKind == InvoiceKindSpecial {
+			if inv.InvoiceType != InvoiceTypeOrganization {
+				return ErrInvoiceSpecialRequiresOrg
+			}
+			if strings.TrimSpace(inv.Address) == "" ||
+				strings.TrimSpace(inv.Phone) == "" ||
+				strings.TrimSpace(inv.BankName) == "" ||
+				strings.TrimSpace(inv.BankAccount) == "" {
+				return ErrInvoiceSpecialRequiresFullInfo
+			}
 		}
 		if inv.InvoiceType == InvoiceTypeIndividual && strings.TrimSpace(inv.Reason) == "" {
 			return ErrInvoiceReasonRequired
@@ -418,6 +512,20 @@ func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOr
 			return ErrInvoiceBelowMinimum
 		}
 
+		// Charge an invoice handling fee. feeAmount is the rate applied to the
+		// total in the invoice currency (display only); feeQuota is the balance
+		// quota actually debited, converted through the canonical QuotaPerUnit.
+		if feeRate.IsPositive() {
+			inv.FeeAmount = total.Mul(feeRate).Round(2).InexactFloat64()
+			feeQuotaValue := total.Mul(decimal.NewFromFloat(common.QuotaPerUnit)).Mul(feeRate)
+			var clamp *common.QuotaClamp
+			inv.FeeQuota, clamp = common.QuotaFromDecimalChecked(feeQuotaValue)
+			if clamp != nil {
+				return clamp
+			}
+			inv.FeeRate = feeRate.InexactFloat64()
+		}
+
 		now := common.GetTimestamp()
 		inv.UserId = userId
 		inv.TotalAmount = total.InexactFloat64()
@@ -458,8 +566,21 @@ func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOr
 				return err
 			}
 		}
+
+		if inv.FeeQuota > 0 {
+			if err := debitUserQuotaTx(tx, userId, inv.FeeQuota); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if inv.FeeQuota > 0 {
+		invalidateUserQuotaCacheAfterMutation(userId)
+	}
+	return nil
 }
 
 func GetInvoiceById(id int) *Invoice {
@@ -469,6 +590,7 @@ func GetInvoiceById(id int) *Invoice {
 		return nil
 	}
 	inv.InvoiceType = invoiceTypeOrOrganization(inv.InvoiceType)
+	inv.InvoiceKind = invoiceKindOrGeneral(inv.InvoiceKind)
 	return &inv
 }
 
@@ -563,7 +685,7 @@ func GetUserInvoices(userId int, pageInfo *common.PageInfo) ([]*InvoiceListItem,
 		return nil, 0, err
 	}
 	err := DB.Model(&Invoice{}).
-		Select("id, invoice_type, status, total_amount, currency, create_time, update_time").
+		Select("id, invoice_type, invoice_kind, status, total_amount, fee_rate, fee_amount, currency, create_time, update_time").
 		Where("user_id = ?", userId).
 		Order("id desc").
 		Limit(pageInfo.GetPageSize()).
@@ -574,6 +696,7 @@ func GetUserInvoices(userId int, pageInfo *common.PageInfo) ([]*InvoiceListItem,
 	}
 	for _, item := range items {
 		item.InvoiceType = invoiceTypeOrOrganization(item.InvoiceType)
+		item.InvoiceKind = invoiceKindOrGeneral(item.InvoiceKind)
 	}
 	return items, total, nil
 }
@@ -595,7 +718,7 @@ func GetAllInvoices(pageInfo *common.PageInfo, keyword string, status string) ([
 		return nil, 0, err
 	}
 	var items []*AdminInvoiceListItem
-	err := query.Select("id, user_id, invoice_type, title, status, total_amount, currency, create_time, update_time").
+	err := query.Select("id, user_id, invoice_type, invoice_kind, title, status, total_amount, fee_rate, fee_amount, currency, create_time, update_time").
 		Order("id desc").
 		Limit(pageInfo.GetPageSize()).
 		Offset(pageInfo.GetStartIdx()).
@@ -605,6 +728,7 @@ func GetAllInvoices(pageInfo *common.PageInfo, keyword string, status string) ([
 	}
 	for _, item := range items {
 		item.InvoiceType = invoiceTypeOrOrganization(item.InvoiceType)
+		item.InvoiceKind = invoiceKindOrGeneral(item.InvoiceKind)
 	}
 	return items, total, nil
 }
@@ -709,6 +833,8 @@ func CompleteIssueInvoice(invoiceId int, note string, deliver func(*Invoice) err
 
 func RejectInvoice(invoiceId int, note string) (bool, error) {
 	changed := false
+	refundedUserId := 0
+	refundedQuota := 0
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var inv Invoice
 		if err := lockForUpdate(tx).Where("id = ?", invoiceId).First(&inv).Error; err != nil {
@@ -731,10 +857,23 @@ func RejectInvoice(invoiceId int, note string) (bool, error) {
 		if err := releaseInvoiceClaims(tx, invoiceId); err != nil {
 			return err
 		}
+		if inv.FeeQuota > 0 {
+			if err := creditUserQuotaTx(tx, inv.UserId, inv.FeeQuota); err != nil {
+				return err
+			}
+			refundedUserId = inv.UserId
+			refundedQuota = inv.FeeQuota
+		}
 		changed = true
 		return nil
 	})
-	return changed, err
+	if err != nil {
+		return changed, err
+	}
+	if changed && refundedQuota > 0 {
+		invalidateUserQuotaCacheAfterMutation(refundedUserId)
+	}
+	return changed, nil
 }
 
 // CancelInvoice lets the owner cancel their own pending application and frees
@@ -742,6 +881,7 @@ func RejectInvoice(invoiceId int, note string) (bool, error) {
 // idempotent repeat of an already-cancelled application.
 func CancelInvoice(invoiceId int, userId int) (bool, error) {
 	changed := false
+	refundedQuota := 0
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var inv Invoice
 		if err := lockForUpdate(tx).Where("id = ?", invoiceId).First(&inv).Error; err != nil {
@@ -764,8 +904,20 @@ func CancelInvoice(invoiceId int, userId int) (bool, error) {
 		if err := releaseInvoiceClaims(tx, invoiceId); err != nil {
 			return err
 		}
+		if inv.FeeQuota > 0 {
+			if err := creditUserQuotaTx(tx, inv.UserId, inv.FeeQuota); err != nil {
+				return err
+			}
+			refundedQuota = inv.FeeQuota
+		}
 		changed = true
 		return nil
 	})
-	return changed, err
+	if err != nil {
+		return changed, err
+	}
+	if changed && refundedQuota > 0 {
+		invalidateUserQuotaCacheAfterMutation(userId)
+	}
+	return changed, nil
 }

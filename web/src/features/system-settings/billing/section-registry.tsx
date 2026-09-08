@@ -241,6 +241,7 @@ const BILLING_SECTIONS = [
           enabled: settings.InvoiceEnabled,
           notice: settings.InvoiceNotice,
           minAmount: settings.InvoiceMinAmount,
+          feeRate: Number((settings.InvoiceFeeRate * 100).toFixed(4)),
           allowedPaymentMethods: settings.InvoiceAllowedPaymentMethods,
           paymentMethodConfig: settings.PayMethods,
         }}

@@ -436,9 +436,20 @@ func (releasedAuditLog) TableName() string { return "logs" }
 func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 	t.Helper()
 	if kind == "sqlite" {
-		path := t.TempDir() + "/audit.db"
+		path := fmt.Sprintf("file:audit_test_%d?mode=memory&cache=shared", time.Now().UnixNano())
 		db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 		require.NoError(t, err)
+		t.Cleanup(func() {
+			for _, candidate := range []*gorm.DB{db, model.DB, model.LOG_DB} {
+				if candidate == nil {
+					continue
+				}
+				connection, err := candidate.DB()
+				if err == nil {
+					_ = connection.Close()
+				}
+			}
+		})
 		return db, path
 	}
 	require.NotEmpty(t, dsn)

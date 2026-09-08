@@ -393,3 +393,38 @@ optional contact dialog without changing the payment flow.
 - Existing installations retain their current wallet UI until configured.
 - Focused frontend tests, typecheck, lint, production build, Go tests, and
   `git diff --check` pass.
+
+## Upstream rc35 Synchronization
+
+### Goal
+
+Merge upstream `v1.0.0-rc.35` into `tokeness/main` while retaining all local
+Tokeness worktree changes and custom behavior.
+
+### Scope
+
+The target tag is based on upstream `rc.34`. Because this fork currently follows
+upstream `rc.33`, the merge includes the `rc.33..rc.35` history: account-security
+and audit changes, model/vendor/pricing management, Wan 3.0 and Kimi K3 support,
+plugin-routing changes, relay/performance fixes, and pricing UI updates.
+
+### Merge Invariants
+
+- Preserve the current Tokeness payment, invoice-fee, multi-key, DeepSeek,
+  deployment, and other local behavior unless a conflict requires an explicit
+  compatibility decision.
+- Capture the dirty worktree in a reversible checkpoint before merging; do not
+  reset, clean, or overwrite user files.
+- Resolve conflicts by keeping the narrowest combined behavior and remove all
+  conflict markers before verification.
+- Do not push or deploy as part of this synchronization.
+
+### Acceptance Criteria
+
+- Every pre-merge tracked and untracked user change is recoverable and present
+  after conflict resolution.
+- `tokeness/main` contains upstream `v1.0.0-rc.35` as an ancestor.
+- `git diff --check` passes and no conflict markers remain.
+- Focused Go tests for changed packages, `go test ./...`, `go vet ./...`, relaykit
+  standalone build/tests, frontend typecheck/tests/build, and deployment/config
+  validation pass where applicable.

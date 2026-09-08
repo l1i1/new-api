@@ -126,6 +126,7 @@ const defaultBillingSettings: BillingSettings = {
   InvoiceEnabled: false,
   InvoiceNotice: '',
   InvoiceMinAmount: 0,
+  InvoiceFeeRate: 0.06,
   InvoiceAllowedPaymentMethods: [],
 }
 

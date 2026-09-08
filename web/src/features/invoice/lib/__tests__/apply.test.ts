@@ -21,6 +21,8 @@ import { describe, test } from 'node:test'
 
 import type { InvoiceableOrder } from '../../types'
 import {
+  calculateInvoiceFee,
+  calculateInvoiceFeeQuota,
   canSubmitInvoice,
   hasMixedCurrency,
   isBelowMinimum,
@@ -111,12 +113,29 @@ describe('isBelowMinimum', () => {
   })
 })
 
+describe('calculateInvoiceFee', () => {
+  test('applies the rate and rounds to 2 decimal places', () => {
+    assert.equal(calculateInvoiceFee(100, 0.06), 6)
+    assert.equal(calculateInvoiceFee(50, 0.06), 3)
+    assert.equal(calculateInvoiceFee(99.99, 0.06), 6)
+    assert.equal(calculateInvoiceFee(100, 0), 0)
+  })
+})
+
+describe('calculateInvoiceFeeQuota', () => {
+  test('mirrors the backend quota conversion', () => {
+    assert.equal(calculateInvoiceFeeQuota(100, 0.06, 500000), 3000000)
+    assert.equal(calculateInvoiceFeeQuota(50, 0.06, 500000), 1500000)
+  })
+})
+
 describe('canSubmitInvoice', () => {
   const base = {
     selectedCount: 1,
     mixedCurrency: false,
     belowMinimum: false,
     accountEmailUnavailable: false,
+    insufficientBalance: false,
     submitting: false,
   }
 
@@ -139,6 +158,13 @@ describe('canSubmitInvoice', () => {
   test('blocks when the account email is unavailable', () => {
     assert.equal(
       canSubmitInvoice({ ...base, accountEmailUnavailable: true }),
+      false
+    )
+  })
+
+  test('blocks when the balance is insufficient for the fee', () => {
+    assert.equal(
+      canSubmitInvoice({ ...base, insufficientBalance: true }),
       false
     )
   })

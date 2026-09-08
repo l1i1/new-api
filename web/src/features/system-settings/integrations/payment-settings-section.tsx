@@ -1585,7 +1585,6 @@ export function PaymentSettingsSection({
                           <JsonCodeEditor
                             value={field.value}
                             onChange={field.onChange}
-                            minHeight='240px'
                           />
                         )}
                       </FormControl>

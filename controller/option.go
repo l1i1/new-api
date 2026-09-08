@@ -299,6 +299,21 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case model.InvoiceFeeRateOption:
+		value, convErr := strconv.ParseFloat(option.Value.(string), 64)
+		// NaN, +Inf, -Inf, negative and >100% rates are rejected; the read path
+		// fails closed to zero for any value that slips through.
+		if convErr != nil || !model.ValidInvoiceFeeRate(value) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidInput)
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case model.InvoiceAllowedPaymentMethodsOption:
 		allowed, normalizeErr := model.NormalizeInvoiceAllowedPaymentMethods(option.Value.(string))
 		if normalizeErr != nil {

@@ -27,6 +27,8 @@ const serverErrorMessageKeys = {
   TELEGRAM_LEGACY_AUTH_REMOVED:
     'Telegram login has changed. Reload the page and start Telegram OAuth again.',
   AUTH_INTERNAL_ERROR: 'Please try again later.',
+  EMAIL_ALREADY_TAKEN: 'Email address is already in use',
+  'user.email_already_taken': 'Email address is already in use',
   SECURITY_VERIFICATION_FAILED: 'Verification failed. Please try again.',
   SECURITY_VERIFICATION_FLOW_REQUIRED:
     'This verification method requires its dedicated verification flow.',

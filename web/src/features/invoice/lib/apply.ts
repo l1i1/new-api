@@ -64,20 +64,44 @@ export function isBelowMinimum(
 }
 
 /**
+ * The invoice handling fee in the invoice currency: rate applied to the total,
+ * rounded to 2 decimal places.
+ */
+export function calculateInvoiceFee(total: number, feeRate: number): number {
+  return Math.round(total * feeRate * 100) / 100
+}
+
+/**
+ * The handling fee expressed as balance quota, mirroring the backend
+ * conversion (total * quotaPerUnit * rate). This drives the client-side
+ * insufficient-balance gate; the server recomputes and enforces it exactly.
+ */
+export function calculateInvoiceFeeQuota(
+  total: number,
+  feeRate: number,
+  quotaPerUnit: number
+): number {
+  return Math.round(total * quotaPerUnit * feeRate)
+}
+
+/**
  * Whether the user is allowed to submit: at least one order, no mixed
- * currency, not below the minimum, and an account email is available.
+ * currency, not below the minimum, an account email is available, and the
+ * balance is enough to cover the handling fee.
  */
 export function canSubmitInvoice({
   selectedCount,
   mixedCurrency,
   belowMinimum,
   accountEmailUnavailable,
+  insufficientBalance,
   submitting,
 }: {
   selectedCount: number
   mixedCurrency: boolean
   belowMinimum: boolean
   accountEmailUnavailable: boolean
+  insufficientBalance: boolean
   submitting: boolean
 }): boolean {
   if (submitting) return false
@@ -85,6 +109,7 @@ export function canSubmitInvoice({
   if (mixedCurrency) return false
   if (belowMinimum) return false
   if (accountEmailUnavailable) return false
+  if (insufficientBalance) return false
   return true
 }
 
