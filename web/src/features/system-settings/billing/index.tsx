@@ -119,6 +119,7 @@ const defaultBillingSettings: BillingSettings = {
   HotPayAlipayAccountID: '',
   HotPaySettlementSecret: '',
   HotPaySettlementMaxAgeSeconds: 0,
+  HotPayPayMethods: '[]',
   'checkin_setting.enabled': false,
   'checkin_setting.min_quota': 1000,
   'checkin_setting.max_quota': 10000,

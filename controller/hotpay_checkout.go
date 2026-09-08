@@ -25,6 +25,29 @@ var (
 	errHotPayAmountOutsideLimits     = errors.New("payment amount is outside the configured limits")
 )
 
+// hotPayMethodFromType parses a "hotpay:<method>" payment entry type into the
+// canonical HotPay method. Returns "" for non-HotPay types.
+func hotPayMethodFromType(paymentType string) string {
+	return setting.HotPayMethodFromType(paymentType)
+}
+
+// isRegisteredHotPayMethodType reports whether the payment entry type matches
+// a method registered in the HotPayPayMethods option. Every HotPay checkout
+// must come from a registered entry so the admin-facing registry stays the
+// single source of truth for what buyers can see.
+func isRegisteredHotPayMethodType(paymentType string) bool {
+	method := hotPayMethodFromType(paymentType)
+	if method == "" {
+		return false
+	}
+	for _, entry := range setting.GetHotPayPayMethods() {
+		if strings.EqualFold(strings.TrimSpace(entry.Type), strings.TrimSpace(paymentType)) {
+			return true
+		}
+	}
+	return false
+}
+
 func hotPayGatewayClient() (*service.HotPayGatewayClient, error) {
 	return service.NewHotPayGatewayClientFromEnv()
 }
@@ -134,18 +157,20 @@ func hotPayProviderForMethod(method string) string {
 	return model.PaymentProviderWaffoPancake
 }
 
-func hotPayProviderAccountIDForMethod(method string) (string, error) {
+// hotPayProviderAccountIDForMethod returns the optional provider account pin
+// for a canonical method. An empty result lets HotPay pick the channel of the
+// requested provider by its own routing priority; the routed account is
+// recorded on the local order via the order binding and verified verbatim
+// against settlement commands.
+func hotPayProviderAccountIDForMethod(method string) string {
 	if hotPayProviderForMethod(method) != model.PaymentProviderGoPayAlipay {
-		return hotPayProviderAccountID(), nil
+		return hotPayProviderAccountID()
 	}
 	accountID := strings.TrimSpace(setting.HotPayAlipayAccountID)
 	if accountID == "" {
 		accountID = strings.TrimSpace(os.Getenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID"))
 	}
-	if accountID == "" {
-		return "", errors.New("hotpay alipay provider account is not configured")
-	}
-	return accountID, nil
+	return accountID
 }
 
 func hotPayCheckoutResponse(result service.HotPayGatewayCreateOrderResponse) gin.H {

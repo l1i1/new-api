@@ -6088,17 +6088,21 @@
     "Delete selected": "刪除所選",
     "Are you sure you want to delete the selected keys? This action cannot be undone.": "確定刪除所選的金鑰嗎？此操作無法復原。",
     "HotPay Gateway": "HotPay 網關",
-    "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.": "Canonical HotPay 網關連線。設定後，錢包與訂閱結帳將委託 HotPay 處理，不再直連上游支付商。",
     "Gateway URL": "網關地址",
     "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).": "HotPay 網關的基礎地址。留空則停用 canonical 路徑（環境變數 HOTPAY_GATEWAY_URL 仍作為兜底生效）。",
     "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.": "網關地址允許指向的精確主機名稱。多個主機用逗號或空格分隔。",
     "Alipay account ID": "支付寶帳戶 ID",
-    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "gopay_alipay 渠道的 provider 帳戶 ID（即其 gopay_app_id）。支付寶結帳必需，並與結算命令逐字校驗。",
     "Keep the HotPay-side pair in sync": "保持 HotPay 側配對值一致",
     "HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.": "HotPay 使用其自身環境檔案（hotpay.env）中設定的位址與金鑰簽署結算命令。兩側必須保持一致，不一致將拒絕所有結算命令。",
     "Settlement secret": "結算金鑰",
     "HMAC secret that signs HotPay settlement commands (leave blank unless updating)": "簽署 HotPay 結算命令的 HMAC 金鑰（僅在輪換時填寫）",
     "Settlement replay window (seconds)": "結算重放視窗（秒）",
-    "How long a settlement command stays valid. 0 keeps the default 5 minutes.": "結算命令的有效時長。0 保持預設 5 分鐘。"
+    "How long a settlement command stays valid. 0 keeps the default 5 minutes.": "結算命令的有效時長。0 保持預設 5 分鐘。",
+    "Optional pin for the gopay_alipay channel (its gopay_app_id). Leave empty to let HotPay route the channel; the routed account is recorded on the order and verified against settlement commands.": "gopay_alipay 渠道的可選帳戶固定值（即其 gopay_app_id）。留空時由 HotPay 依渠道優先級路由；實際路由的帳戶會記錄到訂單，並參與結算命令校驗。",
+    "Canonical HotPay gateway connection. Registered HotPay payment methods appear in the buyer payment list and route through the HotPay gateway; all other payment methods keep using their own providers.": "HotPay 網關規範連接。註冊的 HotPay 支付方式會出現在用戶支付清單並經由 HotPay 網關；其餘支付方式仍使用各自的通道。",
+    "HotPay payment methods": "HotPay 支付方式",
+    "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "註冊由 HotPay 提供的支付方式。每個條目會以 hotpay:<method> 形式出現在用戶支付清單；未註冊的方式不會進入 HotPay 網關。",
+    "HotPay Alipay": "HotPay 支付寶",
+    "HotPay WeChat Pay": "HotPay 微信支付"
   }
 }

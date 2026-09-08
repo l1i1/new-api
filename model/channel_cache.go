@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	apidto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -77,7 +78,7 @@ func InitChannelCache() {
 		}
 		groups := strings.Split(channel.Group, ",")
 		for _, group := range groups {
-			models := strings.Split(channel.Models, ",")
+			models := channel.GetModels()
 			for _, model := range models {
 				if _, ok := newGroup2model2channels[group][model]; !ok {
 					newGroup2model2channels[group][model] = make([]int, 0)
@@ -142,7 +143,11 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPathOrFilters interface{}) (*Channel, error) {
+	if filters, ok := requestPathOrFilters.([]apidto.ChannelFilter); ok {
+		return getChannelWithFilters(group, model, retry, filters)
+	}
+	requestPath, _ := requestPathOrFilters.(string)
 	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false)
 }
 

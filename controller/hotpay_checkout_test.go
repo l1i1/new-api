@@ -40,17 +40,13 @@ func TestHotPayProviderSelectionFollowsMethod(t *testing.T) {
 	require.Equal(t, model.PaymentProviderWaffoPancake, hotPayProviderForMethod("card"))
 
 	t.Setenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID", "2021004153649081")
-	account, err := hotPayProviderAccountIDForMethod("alipay")
-	require.NoError(t, err)
-	require.Equal(t, "2021004153649081", account)
+	require.Equal(t, "2021004153649081", hotPayProviderAccountIDForMethod("alipay"))
+	require.Equal(t, hotPayProviderAccountID(), hotPayProviderAccountIDForMethod("wechat_pay"))
 
-	waffoAccount, err := hotPayProviderAccountIDForMethod("wechat_pay")
-	require.NoError(t, err)
-	require.Equal(t, hotPayProviderAccountID(), waffoAccount)
-
+	// Unset means no pin: HotPay routes the channel by its own priority and
+	// the routed account is backfilled onto the order at bind time.
 	t.Setenv("HOTPAY_GATEWAY_ALIPAY_ACCOUNT_ID", "")
-	_, err = hotPayProviderAccountIDForMethod("alipay")
-	require.Error(t, err)
+	require.Equal(t, "", hotPayProviderAccountIDForMethod("alipay"))
 }
 
 func TestHotPayMerchantOrderIDIsStablePerIdempotencyKey(t *testing.T) {

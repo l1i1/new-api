@@ -99,16 +99,18 @@ type PaymentGatewayWalletOrderSnapshot struct {
 }
 
 // BindPaymentGatewayOrderID records the canonical HotPay order ID on the
-// local pending order. The binding is write-once: retries may return the same
-// ID, but a different ID is a terminal mismatch and must not be exposed as a
-// payable local order.
-func BindPaymentGatewayOrderID(businessType, merchantOrderID, gatewayOrderID string) error {
+// local pending order, and backfills the provider account the gateway routed
+// the order to when the local row was created without an account pin. The
+// binding is write-once: retries may return the same ID, but a different ID
+// is a terminal mismatch and must not be exposed as a payable local order.
+func BindPaymentGatewayOrderID(businessType, merchantOrderID, gatewayOrderID, providerAccountID string) error {
 	if DB == nil {
 		return ErrPaymentGatewaySettlementRetryable
 	}
 	businessType = strings.TrimSpace(businessType)
 	merchantOrderID = strings.TrimSpace(merchantOrderID)
 	gatewayOrderID = strings.TrimSpace(gatewayOrderID)
+	providerAccountID = strings.TrimSpace(providerAccountID)
 	if merchantOrderID == "" || gatewayOrderID == "" {
 		return ErrPaymentGatewaySettlementInvalid
 	}
@@ -125,8 +127,19 @@ func BindPaymentGatewayOrderID(businessType, merchantOrderID, gatewayOrderID str
 			if topUp.PaymentGatewayOrderID != "" && topUp.PaymentGatewayOrderID != gatewayOrderID {
 				return ErrPaymentGatewaySettlementMismatch
 			}
+			if topUp.PaymentProviderAccountID != "" && providerAccountID != "" && topUp.PaymentProviderAccountID != providerAccountID {
+				return ErrPaymentGatewaySettlementMismatch
+			}
+			changed := false
 			if topUp.PaymentGatewayOrderID == "" {
 				topUp.PaymentGatewayOrderID = gatewayOrderID
+				changed = true
+			}
+			if providerAccountID != "" && topUp.PaymentProviderAccountID == "" {
+				topUp.PaymentProviderAccountID = providerAccountID
+				changed = true
+			}
+			if changed {
 				return tx.Save(&topUp).Error
 			}
 			return nil
@@ -141,8 +154,19 @@ func BindPaymentGatewayOrderID(businessType, merchantOrderID, gatewayOrderID str
 			if order.PaymentGatewayOrderID != "" && order.PaymentGatewayOrderID != gatewayOrderID {
 				return ErrPaymentGatewaySettlementMismatch
 			}
+			if order.PaymentProviderAccountID != "" && providerAccountID != "" && order.PaymentProviderAccountID != providerAccountID {
+				return ErrPaymentGatewaySettlementMismatch
+			}
+			changed := false
 			if order.PaymentGatewayOrderID == "" {
 				order.PaymentGatewayOrderID = gatewayOrderID
+				changed = true
+			}
+			if providerAccountID != "" && order.PaymentProviderAccountID == "" {
+				order.PaymentProviderAccountID = providerAccountID
+				changed = true
+			}
+			if changed {
 				return tx.Save(&order).Error
 			}
 			return nil

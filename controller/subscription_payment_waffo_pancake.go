@@ -185,7 +185,7 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(createErr))
 			return
 		}
-		if bindErr := model.BindPaymentGatewayOrderID(model.PaymentGatewayBusinessSubscription, tradeNo, result.Order.ID); bindErr != nil {
+		if bindErr := model.BindPaymentGatewayOrderID(model.PaymentGatewayBusinessSubscription, tradeNo, result.Order.ID, result.Order.ProviderAccountID); bindErr != nil {
 			logger.LogError(c.Request.Context(), fmt.Sprintf("HotPay 订阅订单绑定 canonical order 失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, bindErr.Error()))
 			common.ApiErrorMsg(c, "支付订单状态保存失败")
 			return

@@ -6088,17 +6088,21 @@
     "Delete selected": "Delete selected",
     "Are you sure you want to delete the selected keys? This action cannot be undone.": "Are you sure you want to delete the selected keys? This action cannot be undone.",
     "HotPay Gateway": "HotPay Gateway",
-    "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.": "Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.",
     "Gateway URL": "Gateway URL",
     "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).": "Base address of the HotPay gateway. Leave empty to disable the canonical path (env HOTPAY_GATEWAY_URL still applies as a fallback).",
     "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.": "Exact host names the gateway URL is allowed to point at. Separate multiple hosts with commas or spaces.",
     "Alipay account ID": "Alipay account ID",
-    "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.": "Provider account ID of the gopay_alipay channel (its gopay_app_id). Required for alipay checkout and verified against settlement commands.",
     "Keep the HotPay-side pair in sync": "Keep the HotPay-side pair in sync",
     "HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.": "HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.",
     "Settlement secret": "Settlement secret",
     "HMAC secret that signs HotPay settlement commands (leave blank unless updating)": "HMAC secret that signs HotPay settlement commands (leave blank unless updating)",
     "Settlement replay window (seconds)": "Settlement replay window (seconds)",
-    "How long a settlement command stays valid. 0 keeps the default 5 minutes.": "How long a settlement command stays valid. 0 keeps the default 5 minutes."
+    "How long a settlement command stays valid. 0 keeps the default 5 minutes.": "How long a settlement command stays valid. 0 keeps the default 5 minutes.",
+    "Optional pin for the gopay_alipay channel (its gopay_app_id). Leave empty to let HotPay route the channel; the routed account is recorded on the order and verified against settlement commands.": "Optional pin for the gopay_alipay channel (its gopay_app_id). Leave empty to let HotPay route the channel; the routed account is recorded on the order and verified against settlement commands.",
+    "Canonical HotPay gateway connection. Registered HotPay payment methods appear in the buyer payment list and route through the HotPay gateway; all other payment methods keep using their own providers.": "Canonical HotPay gateway connection. Registered HotPay payment methods appear in the buyer payment list and route through the HotPay gateway; all other payment methods keep using their own providers.",
+    "HotPay payment methods": "HotPay payment methods",
+    "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.": "Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.",
+    "HotPay Alipay": "HotPay Alipay",
+    "HotPay WeChat Pay": "HotPay WeChat Pay"
   }
 }

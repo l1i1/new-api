@@ -220,9 +220,8 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	}
 	request.ProviderAccountID = strings.TrimSpace(request.ProviderAccountID)
 	request.Environment = strings.ToLower(strings.TrimSpace(request.Environment))
-	if request.ProviderAccountID == "" {
-		return HotPayGatewayCreateOrderResponse{}, errors.New("provider account ID is required")
-	}
+	// An empty provider account lets HotPay route to a channel of the requested
+	// provider by its own priority; a non-empty value pins the channel.
 	if request.Environment != "test" && request.Environment != "prod" {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("payment environment must be test or prod")
 	}
@@ -274,7 +273,11 @@ func (c *HotPayGatewayClient) CreateOrder(ctx context.Context, idempotencyKey st
 	if strings.TrimSpace(request.Provider) != "" && (strings.TrimSpace(result.Order.Provider) == "" || !strings.EqualFold(result.Order.Provider, request.Provider)) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider does not match request")
 	}
-	if strings.TrimSpace(result.Order.ProviderAccountID) == "" || result.Order.ProviderAccountID != request.ProviderAccountID {
+	// The routed account is required on the response either way: an unpinned
+	// request needs it to record the gateway order identity locally, and a
+	// pinned request must see its own account echoed back verbatim.
+	responseAccount := strings.TrimSpace(result.Order.ProviderAccountID)
+	if responseAccount == "" || (request.ProviderAccountID != "" && responseAccount != request.ProviderAccountID) {
 		return HotPayGatewayCreateOrderResponse{}, errors.New("hotpay response provider account does not match request")
 	}
 	if !strings.EqualFold(strings.TrimSpace(result.Order.Environment), request.Environment) {

@@ -44,6 +44,7 @@ import {
   useCreemPayment,
   useWaffoPayment,
   useWaffoPancakePayment,
+  useHotPayPayment,
 } from './hooks'
 import {
   getDefaultPaymentType,
@@ -103,6 +104,8 @@ export function Wallet(props: WalletProps) {
   const { processing: waffoProcessing, processWaffoPayment } = useWaffoPayment()
   const { processing: pancakeProcessing, processWaffoPancakePayment } =
     useWaffoPancakePayment()
+  const { processing: hotPayProcessing, processHotPayPayment } =
+    useHotPayPayment()
 
   // Fetch and refresh user data
   const fetchUser = useCallback(async () => {
@@ -255,6 +258,8 @@ export function Wallet(props: WalletProps) {
             displayCurrency,
             selectedPaymentMethod.type
           ),
+        hotpay: (amount) =>
+          processHotPayPayment(amount, selectedPaymentMethod.type),
       }
     )
 
@@ -416,7 +421,9 @@ export function Wallet(props: WalletProps) {
         paymentMethod={selectedPaymentMethod}
         waffoPancakeDisplayCurrency={displayCurrency}
         calculating={calculating}
-        processing={processing || waffoProcessing || pancakeProcessing}
+        processing={
+          processing || waffoProcessing || pancakeProcessing || hotPayProcessing
+        }
         discountRate={getDiscountRate()}
       />
 

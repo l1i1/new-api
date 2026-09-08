@@ -25,7 +25,7 @@ import { PAYMENT_TYPES } from '../constants'
 import { getWaffoPancakePaymentMethod } from '../lib'
 import type { WaffoPancakePaymentRequest } from '../types'
 
-function getCheckoutUrl(data: unknown): string | null {
+export function getCheckoutUrl(data: unknown): string | null {
   if (!data || typeof data !== 'object') {
     return null
   }
@@ -41,7 +41,7 @@ function getCheckoutUrl(data: unknown): string | null {
  * Reject non-navigable schemes (e.g. javascript:, data:) and relative URLs.
  * Only http/https are allowed for backend-provided redirect targets.
  */
-function isSafeHttpCheckoutUrl(value: string): boolean {
+export function isSafeHttpCheckoutUrl(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed) {
     return false

@@ -23,7 +23,11 @@ import { SiAlipay, SiWechat, SiStripe } from 'react-icons/si'
 
 import { ReactIconByName } from '@/components/react-icon-by-name'
 
-import { PAYMENT_TYPES, PAYMENT_ICON_COLORS } from '../constants'
+import {
+  PAYMENT_TYPES,
+  PAYMENT_ICON_COLORS,
+  getHotPayMethodFromType,
+} from '../constants'
 
 // ============================================================================
 // UI Helper Functions
@@ -95,6 +99,24 @@ export function getPaymentIcon(
 
   if (!paymentType) {
     return <CreditCard className={className} />
+  }
+
+  // HotPay registry entries fall back to method-based icons when the admin
+  // did not configure an explicit icon value.
+  if (getHotPayMethodFromType(paymentType)) {
+    const hotPayColor = PAYMENT_ICON_COLORS[PAYMENT_TYPES.HOTPAY_PREFIX]
+    switch (getHotPayMethodFromType(paymentType)) {
+      case 'alipay':
+        return (
+          <SiAlipay className={className} style={{ color: hotPayColor }} />
+        )
+      case 'wechat_pay':
+        return (
+          <SiWechat className={className} style={{ color: hotPayColor }} />
+        )
+      default:
+        return <CreditCard className={className} />
+    }
   }
 
   switch (paymentType) {

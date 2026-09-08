@@ -51,6 +51,11 @@ const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
   'waffo_pancake:googlepay': 'SiGooglepay',
   'waffo_pancake:applepay': 'SiApplepay',
   'waffo_pancake:card': 'LuCreditCard',
+  'hotpay:alipay': 'SiAlipay',
+  'hotpay:wechat_pay': 'SiWechat',
+  'hotpay:card': 'LuCreditCard',
+  'hotpay:apple_pay': 'SiApplepay',
+  'hotpay:google_pay': 'SiGooglepay',
   wxpay: 'SiWechat',
 }
 
@@ -131,6 +136,22 @@ export function PaymentMethodsVisualEditor({
         icon: getDefaultIconName('waffo_pancake:card'),
         name: 'Waffo Pancake Card',
         type: 'waffo_pancake:card',
+      },
+    },
+    {
+      name: t('HotPay Alipay'),
+      template: {
+        icon: getDefaultIconName('hotpay:alipay'),
+        name: '支付宝',
+        type: 'hotpay:alipay',
+      },
+    },
+    {
+      name: t('HotPay WeChat Pay'),
+      template: {
+        icon: getDefaultIconName('hotpay:wechat_pay'),
+        name: '微信',
+        type: 'hotpay:wechat_pay',
       },
     },
     {

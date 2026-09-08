@@ -44,6 +44,7 @@ import {
   paySubscriptionCreem,
   paySubscriptionEpay,
   paySubscriptionWaffoPancake,
+  paySubscriptionHotPay,
   paySubscriptionBalance,
 } from '../../api'
 import { formatDuration, formatResetPeriod } from '../../lib'
@@ -188,6 +189,35 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const isSafari =
     typeof navigator !== 'undefined' &&
     /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+
+  const handlePayHotPay = async () => {
+    if (!selectedEpayMethod || !selectedEpayMethod.startsWith('hotpay:')) {
+      toast.error(t('Please select a payment method'))
+      return
+    }
+    setPaying(true)
+    try {
+      const res = await paySubscriptionHotPay({
+        plan_id: plan.id,
+        payment_method: selectedEpayMethod,
+      })
+      if (res.message === 'success' && res.data?.checkout_url) {
+        toast.success(t('Redirecting to payment page...'))
+        window.location.href = res.data.checkout_url
+        props.onOpenChange(false)
+      } else {
+        toast.error(
+          res.message && res.message !== 'success'
+            ? res.message
+            : t('Payment request failed')
+        )
+      }
+    } catch {
+      toast.error(t('Payment request failed'))
+    } finally {
+      setPaying(false)
+    }
+  }
 
   const handlePayEpay = async () => {
     if (!selectedEpayMethod) {
@@ -438,7 +468,11 @@ export function SubscriptionPurchaseDialog(props: Props) {
                     </SelectContent>
                   </Select>
                   <Button
-                    onClick={handlePayEpay}
+                    onClick={
+                      selectedEpayMethod.startsWith('hotpay:')
+                        ? handlePayHotPay
+                        : handlePayEpay
+                    }
                     disabled={paying || !selectedEpayMethod || limitReached}
                   >
                     {t('Pay')}

@@ -36,6 +36,7 @@ export const PAYMENT_TYPES = {
   CREEM: 'creem',
   WAFFO: 'waffo',
   WAFFO_PANCAKE: 'waffo_pancake',
+  HOTPAY_PREFIX: 'hotpay:',
 } as const
 
 /**
@@ -53,7 +54,20 @@ export const PAYMENT_ICON_COLORS = {
   [PAYMENT_TYPES.CREEM]: '#6366F1',
   [PAYMENT_TYPES.WAFFO]: '#2563EB',
   [PAYMENT_TYPES.WAFFO_PANCAKE]: '#F97316',
+  [PAYMENT_TYPES.HOTPAY_PREFIX]: '#0EA5E9',
 } as const
+
+/**
+ * Canonical HotPay method represented by a "hotpay:<method>" payment type,
+ * or null for non-HotPay types.
+ */
+export function getHotPayMethodFromType(paymentType: string): string | null {
+  if (!paymentType.startsWith(PAYMENT_TYPES.HOTPAY_PREFIX)) {
+    return null
+  }
+  const method = paymentType.slice(PAYMENT_TYPES.HOTPAY_PREFIX.length).trim()
+  return method || null
+}
 
 /**
  * Default discount rate (no discount)

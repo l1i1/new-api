@@ -534,12 +534,38 @@ func TestBindPaymentGatewayOrderIDIsWriteOnce(t *testing.T) {
 	setupPaymentGatewaySettlementTest(t, &User{}, &TopUp{}, &PaymentGatewaySettlement{})
 	topUp := &TopUp{UserId: 9106, TradeNo: "gateway-bind-order", PaymentProvider: PaymentProviderWaffoPancake, Status: common.TopUpStatusPending}
 	require.NoError(t, DB.Create(topUp).Error)
-	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-1"))
-	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-1"))
-	require.ErrorIs(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-2"), ErrPaymentGatewaySettlementMismatch)
+	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-1", "store_1"))
+	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-1", "store_1"))
+	require.ErrorIs(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-2", "store_1"), ErrPaymentGatewaySettlementMismatch)
+	require.ErrorIs(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-1", "store_2"), ErrPaymentGatewaySettlementMismatch)
 	var stored TopUp
 	require.NoError(t, DB.Where("trade_no = ?", topUp.TradeNo).First(&stored).Error)
 	require.Equal(t, "canonical-order-1", stored.PaymentGatewayOrderID)
+	require.Equal(t, "store_1", stored.PaymentProviderAccountID)
+}
+
+func TestBindPaymentGatewayOrderIDBackfillsRoutedAccount(t *testing.T) {
+	setupPaymentGatewaySettlementTest(t, &User{}, &TopUp{}, &SubscriptionOrder{}, &PaymentGatewaySettlement{})
+	// Unpinned checkout rows start without an account; the routed account from
+	// the gateway order identity fills it once, and later binds must agree.
+	topUp := &TopUp{UserId: 9107, TradeNo: "gateway-bind-account", PaymentProvider: PaymentProviderGoPayAlipay, Status: common.TopUpStatusPending}
+	require.NoError(t, DB.Create(topUp).Error)
+	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessWallet, topUp.TradeNo, "canonical-order-3", "2021004153649081"))
+	var stored TopUp
+	require.NoError(t, DB.Where("trade_no = ?", topUp.TradeNo).First(&stored).Error)
+	require.Equal(t, "2021004153649081", stored.PaymentProviderAccountID)
+
+	order := &SubscriptionOrder{UserId: 9107, TradeNo: "gateway-bind-account-sub", PaymentProvider: PaymentProviderGoPayAlipay, Status: common.TopUpStatusPending}
+	require.NoError(t, DB.Create(order).Error)
+	// A bind without an echo only records the order identity; the first
+	// non-empty account backfills, and any later different account is terminal.
+	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessSubscription, order.TradeNo, "canonical-order-4", ""))
+	require.NoError(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessSubscription, order.TradeNo, "canonical-order-4", "2021004153649081"))
+	require.ErrorIs(t, BindPaymentGatewayOrderID(PaymentGatewayBusinessSubscription, order.TradeNo, "canonical-order-4", "other"), ErrPaymentGatewaySettlementMismatch)
+	var storedOrder SubscriptionOrder
+	require.NoError(t, DB.Where("trade_no = ?", order.TradeNo).First(&storedOrder).Error)
+	require.Equal(t, "canonical-order-4", storedOrder.PaymentGatewayOrderID)
+	require.Equal(t, "2021004153649081", storedOrder.PaymentProviderAccountID)
 }
 
 func itoa(value int) string {

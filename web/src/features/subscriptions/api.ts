@@ -155,6 +155,16 @@ export async function paySubscriptionWaffoPancake(
   return res.data
 }
 
+export async function paySubscriptionHotPay(
+  data: SubscriptionPayRequest & { payment_method: string }
+): Promise<SubscriptionPayResponse & { url?: string }> {
+  const res = await api.post('/api/subscription/hotpay/pay', data)
+  return {
+    ...res.data,
+    url: res.data.url || (res as unknown as { url?: string }).url,
+  }
+}
+
 export async function paySubscriptionBalance(
   data: SubscriptionPayRequest
 ): Promise<SubscriptionPayResponse> {

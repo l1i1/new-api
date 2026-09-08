@@ -152,12 +152,44 @@ func TestHotPayGatewayClientRejectsMismatchedProviderSnapshot(t *testing.T) {
 	}
 }
 
-func TestHotPayGatewayClientRequiresProviderSnapshot(t *testing.T) {
-	client, err := NewHotPayGatewayClient(HotPayGatewayConfig{BaseURL: "https://pay.example.com", AllowedHosts: []string{"pay.example.com"}})
+func TestHotPayGatewayClientAllowsUnpinnedAccountRouting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"order":{"id":"ord_1","merchant_order_id":"trade_1","user_id":"7","amount_minor":1000,"currency":"CNY","provider":"waffo_pancake","provider_account_id":"store_9","payment_method":"wechat_pay","provider_payment_methods":["wechat"],"environment":"test","status":"pending"},"attempt":{"id":"attempt_1","provider_session_id":"sess_1","checkout_url":"https://checkout.example/1","status":"created"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHotPayGatewayClient(HotPayGatewayConfig{BaseURL: server.URL, AllowedHosts: []string{"127.0.0.1"}, AllowHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.CreateOrder(context.Background(), "wallet-key", HotPayGatewayCreateOrderRequest{MerchantOrderID: "trade_1"})
+	result, err := client.CreateOrder(context.Background(), "wallet-key", HotPayGatewayCreateOrderRequest{
+		MerchantOrderID: "trade_1", UserID: "7", AmountMinor: 1000, Currency: "CNY", Provider: "waffo_pancake",
+		PaymentMethod: "wechat_pay", Environment: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Order.ProviderAccountID != "store_9" {
+		t.Fatalf("routed account = %q, want store_9", result.Order.ProviderAccountID)
+	}
+}
+
+func TestHotPayGatewayClientRequiresResponseProviderAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"order":{"id":"ord_1","merchant_order_id":"trade_1","user_id":"7","amount_minor":1000,"currency":"CNY","provider":"waffo_pancake","payment_method":"wechat_pay","provider_payment_methods":["wechat"],"environment":"test","status":"pending"},"attempt":{"id":"attempt_1","provider_session_id":"sess_1","checkout_url":"https://checkout.example/1","status":"created"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHotPayGatewayClient(HotPayGatewayConfig{BaseURL: server.URL, AllowedHosts: []string{"127.0.0.1"}, AllowHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateOrder(context.Background(), "wallet-key", HotPayGatewayCreateOrderRequest{
+		MerchantOrderID: "trade_1", UserID: "7", AmountMinor: 1000, Currency: "CNY", Provider: "waffo_pancake",
+		PaymentMethod: "wechat_pay", Environment: "test",
+	})
 	if err == nil || !strings.Contains(err.Error(), "provider account") {
 		t.Fatalf("error = %v, want missing provider account error", err)
 	}

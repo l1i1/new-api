@@ -27,7 +27,7 @@ func TestVendorDisplayNameMigrationPreservesLegacyRows(t *testing.T) {
 	require.NoError(t, db.Table("vendors").AutoMigrate(&legacyVendor{}))
 	require.NoError(t, db.Table("vendors").Create(&legacyVendor{Id: 1, Name: "Alibaba"}).Error)
 
-	require.NoError(t, db.AutoMigrate(&Vendor{}))
+	require.NoError(t, db.AutoMigrate(&Option{}, &Vendor{}))
 
 	var vendor Vendor
 	require.NoError(t, db.First(&vendor, 1).Error)

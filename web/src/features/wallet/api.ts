@@ -183,6 +183,18 @@ export async function requestWaffoPancakePayment(
 }
 
 /**
+ * Request a HotPay gateway checkout for a registered "hotpay:<method>" entry.
+ */
+export async function requestHotPayPayment(
+  request: { amount: number; payment_method: string }
+): Promise<WaffoPancakePaymentResponse> {
+  const res = await api.post('/api/user/hotpay/pay', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+/**
  * Get affiliate code
  */
 export async function getAffiliateCode(): Promise<AffiliateCodeResponse> {

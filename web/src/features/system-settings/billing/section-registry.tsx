@@ -183,6 +183,7 @@ const BILLING_SECTIONS = [
           HotPaySettlementSecret: settings.HotPaySettlementSecret ?? '',
           HotPaySettlementMaxAgeSeconds:
             settings.HotPaySettlementMaxAgeSeconds ?? 0,
+          HotPayPayMethods: settings.HotPayPayMethods ?? '[]',
         }}
         waffoDefaultValues={{
           WaffoEnabled: settings.WaffoEnabled ?? false,

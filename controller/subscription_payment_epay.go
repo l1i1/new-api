@@ -47,6 +47,12 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		return
 	}
 	if !operation_setting.ContainsPayMethod(req.PaymentMethod) {
+		// HotPay entries must go through the canonical HotPay subscription
+		// endpoint; a stale client must not hit the legacy EPay form.
+		if hotPayMethodFromType(req.PaymentMethod) != "" {
+			common.ApiErrorMsg(c, "该支付方式需通过 HotPay 网关支付")
+			return
+		}
 		common.ApiErrorMsg(c, "支付方式不存在")
 		return
 	}
@@ -62,109 +68,6 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			common.ApiErrorMsg(c, "已达到该套餐购买上限")
 			return
 		}
-	}
-
-	if service.IsHotPayGatewayEnabled() {
-		planCurrency := strings.ToUpper(strings.TrimSpace(plan.Currency))
-		if planCurrency == "" {
-			planCurrency = model.PaymentCurrencyUSD
-		}
-		canonicalMethod, methodErr := hotPaySubscriptionMethod(planCurrency, req.PaymentMethod)
-		if methodErr != nil {
-			common.ApiErrorMsg(c, "当前支付方式或套餐币种暂不支持 HotPay 网关")
-			return
-		}
-		paymentProvider := hotPayProviderForMethod(canonicalMethod)
-		providerAccountID, accountErr := hotPayProviderAccountIDForMethod(canonicalMethod)
-		if accountErr != nil {
-			common.ApiErrorMsg(c, "支付网关支付宝账户未配置")
-			return
-		}
-		if strings.TrimSpace(plan.WaffoPancakeProductId) == "" {
-			common.ApiErrorMsg(c, "该套餐未配置 HotPay 商品")
-			return
-		}
-		amountMinor, amountErr := hotPayMinorAmount(plan.PriceAmount)
-		if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
-			common.ApiErrorMsg(c, "套餐金额超出支付网关限额")
-			return
-		}
-		tradeNo := fmt.Sprintf("SUBUSR%dNO%s", userId, common.GetRandomString(6)+strconv.FormatInt(time.Now().Unix(), 10))
-		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-		if idempotencyKey != "" {
-			tradeNo = hotPayMerchantOrderID("subscription", userId, idempotencyKey)
-		} else {
-			idempotencyKey = hotPayIdempotencyKey(c, "subscription", tradeNo)
-		}
-		order := &model.SubscriptionOrder{
-			UserId:                   userId,
-			PlanId:                   plan.Id,
-			Money:                    plan.PriceAmount,
-			TradeNo:                  tradeNo,
-			PaymentMethod:            canonicalMethod,
-			PaymentProvider:          paymentProvider,
-			PaymentProviderAccountID: providerAccountID,
-			PaymentEnvironment:       hotPayEnvironment(),
-			PaymentCurrency:          planCurrency,
-			CreateTime:               time.Now().Unix(),
-			Status:                   common.TopUpStatusPending,
-		}
-		if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil {
-			if existing.UserId != userId || existing.PlanId != plan.Id || existing.Money != plan.PriceAmount || existing.PaymentProvider != paymentProvider || existing.PaymentCurrency != planCurrency || existing.PaymentMethod != canonicalMethod || existing.PaymentProviderAccountID != providerAccountID || existing.PaymentEnvironment != hotPayEnvironment() {
-				common.ApiErrorMsg(c, "支付请求与已有订单不匹配")
-				return
-			}
-			order = existing
-		} else if err := order.Insert(); err != nil {
-			if existing := model.GetSubscriptionOrderByTradeNo(tradeNo); existing != nil && existing.UserId == userId {
-				order = existing
-			} else {
-				common.ApiErrorMsg(c, "创建订单失败")
-				return
-			}
-		}
-		client, clientErr := hotPayGatewayClient()
-		if clientErr != nil {
-			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(clientErr))
-			return
-		}
-		result, createErr := client.CreateOrder(c.Request.Context(), idempotencyKey, service.HotPayGatewayCreateOrderRequest{
-			MerchantOrderID:       tradeNo,
-			BusinessType:          "subscription",
-			UserID:                hotPayUserID(userId),
-			ProductID:             strings.TrimSpace(plan.WaffoPancakeProductId),
-			AmountMinor:           amountMinor,
-			Currency:              planCurrency,
-			Provider:              paymentProvider,
-			ProviderAccountID:     providerAccountID,
-			PaymentMethod:         canonicalMethod,
-			CompatibilityProtocol: "epay",
-			Environment:           hotPayEnvironment(),
-			MerchantNotifyURL:     hotPayReturnURL("/api/subscription/epay/notify"),
-			ReturnURL:             hotPayReturnURL("/api/subscription/epay/return"),
-			PriceSnapshot: hotPayPriceSnapshot(map[string]any{
-				"plan_id":      plan.Id,
-				"plan_title":   plan.Title,
-				"price_amount": hotPayStringAmount(plan.PriceAmount),
-				"currency":     planCurrency,
-			}),
-			ExpiresAt:   hotPayExpiresAt(45 * 60),
-			Description: "Subscription: " + plan.Title,
-		})
-		if createErr != nil {
-			if hotPayGatewayErrorIsPermanent(createErr) {
-				order.Status = common.TopUpStatusFailed
-				_ = order.Update()
-			}
-			common.ApiErrorMsg(c, hotPayGatewayErrorMessage(createErr))
-			return
-		}
-		if bindErr := model.BindPaymentGatewayOrderID(model.PaymentGatewayBusinessSubscription, tradeNo, result.Order.ID); bindErr != nil {
-			common.ApiErrorMsg(c, "支付订单状态保存失败")
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "success", "data": hotPayCheckoutResponse(result), "url": result.Attempt.CheckoutURL})
-		return
 	}
 
 	callBackAddress := service.GetCallbackAddress()
@@ -246,13 +149,8 @@ func SubscriptionEpayNotify(c *gin.Context) {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}
-	client := GetEpayClient()
-	if client == nil {
-		_, _ = c.Writer.Write([]byte("fail"))
-		return
-	}
-	verifyInfo, err := client.Verify(params)
-	if err != nil || !verifyInfo.VerifyStatus {
+	verifyInfo, verified := verifyEpayNotification(params)
+	if !verified {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}

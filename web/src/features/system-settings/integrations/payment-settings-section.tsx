@@ -189,6 +189,7 @@ const paymentSchema = z.object({
   HotPayAlipayAccountID: z.string(),
   HotPaySettlementSecret: z.string(),
   HotPaySettlementMaxAgeSeconds: z.coerce.number().min(0).max(86400),
+  HotPayPayMethods: z.string(),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -257,6 +258,8 @@ export function PaymentSettingsSection({
   const [amountDiscountVisualMode, setAmountDiscountVisualMode] =
     React.useState(true)
   const [creemProductsVisualMode, setCreemProductsVisualMode] =
+    React.useState(true)
+  const [hotPayMethodsVisualMode, setHotPayMethodsVisualMode] =
     React.useState(true)
   const [showComplianceDialog, setShowComplianceDialog] = React.useState(false)
   const [waffoPayMethods, setWaffoPayMethods] = React.useState<PayMethod[]>(
@@ -369,6 +372,7 @@ export function PaymentSettingsSection({
       AmountOptions: formatJsonForEditor(initialFormValues.AmountOptions),
       AmountDiscount: formatJsonForEditor(initialFormValues.AmountDiscount),
       CreemProducts: formatJsonForEditor(initialFormValues.CreemProducts),
+      HotPayPayMethods: formatJsonForEditor(initialFormValues.HotPayPayMethods),
     },
   })
 
@@ -426,6 +430,7 @@ export function PaymentSettingsSection({
       AmountOptions: formatJsonForEditor(parsedDefaults.AmountOptions),
       AmountDiscount: formatJsonForEditor(parsedDefaults.AmountDiscount),
       CreemProducts: formatJsonForEditor(parsedDefaults.CreemProducts),
+      HotPayPayMethods: formatJsonForEditor(parsedDefaults.HotPayPayMethods),
     })
   }, [defaultsSignature, form])
 
@@ -478,6 +483,7 @@ export function PaymentSettingsSection({
       HotPayAlipayAccountID: values.HotPayAlipayAccountID.trim(),
       HotPaySettlementSecret: values.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds: values.HotPaySettlementMaxAgeSeconds,
+      HotPayPayMethods: values.HotPayPayMethods.trim(),
     }
 
     const initial = {
@@ -537,6 +543,7 @@ export function PaymentSettingsSection({
       HotPaySettlementSecret: initialRef.current.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds:
         initialRef.current.HotPaySettlementMaxAgeSeconds,
+      HotPayPayMethods: initialRef.current.HotPayPayMethods.trim(),
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -792,6 +799,16 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'HotPaySettlementMaxAgeSeconds',
         value: String(sanitized.HotPaySettlementMaxAgeSeconds),
+      })
+    }
+
+    if (
+      normalizeJsonForComparison(sanitized.HotPayPayMethods) !==
+      normalizeJsonForComparison(initial.HotPayPayMethods)
+    ) {
+      updates.push({
+        key: 'HotPayPayMethods',
+        value: sanitized.HotPayPayMethods,
       })
     }
 
@@ -1406,7 +1423,7 @@ export function PaymentSettingsSection({
                   <h3 className='text-lg font-medium'>{t('HotPay Gateway')}</h3>
                   <p className='text-muted-foreground text-sm'>
                     {t(
-                      'Canonical HotPay gateway connection. When configured, wallet and subscription checkout is delegated to HotPay instead of the direct providers.'
+                      'Canonical HotPay gateway connection. Registered HotPay payment methods appear in the buyer payment list and route through the HotPay gateway; all other payment methods keep using their own providers.'
                     )}
                   </p>
                 </div>
@@ -1528,6 +1545,59 @@ export function PaymentSettingsSection({
                     )}
                   />
                 </div>
+
+                <FormField
+                  control={form.control}
+                  name='HotPayPayMethods'
+                  render={({ field }) => (
+                    <FormItem>
+                      <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                        <FormLabel>{t('HotPay payment methods')}</FormLabel>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() =>
+                            setHotPayMethodsVisualMode(!hotPayMethodsVisualMode)
+                          }
+                          className='w-full sm:w-auto'
+                        >
+                          {hotPayMethodsVisualMode ? (
+                            <>
+                              <Code2 className='mr-2 h-3 w-3' />
+                              {t('JSON Editor')}
+                            </>
+                          ) : (
+                            <>
+                              <Eye className='mr-2 h-3 w-3' />
+                              {t('Visual Editor')}
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <FormControl>
+                        {hotPayMethodsVisualMode ? (
+                          <PaymentMethodsVisualEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                          />
+                        ) : (
+                          <JsonCodeEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                            minHeight='240px'
+                          />
+                        )}
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Register the payment methods served by HotPay. Each entry becomes a hotpay:<method> item in the buyer payment list; unregistered methods never reach the HotPay gateway.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
 
                 <div className='grid gap-6 md:grid-cols-2'>
                   <FormField

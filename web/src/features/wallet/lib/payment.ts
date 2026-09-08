@@ -21,6 +21,7 @@ import {
   DEFAULT_PRESET_MULTIPLIERS,
   DEFAULT_PAYMENT_TYPE,
   DEFAULT_MIN_TOPUP,
+  getHotPayMethodFromType,
 } from '../constants'
 import type {
   PaymentMethod,
@@ -144,6 +145,15 @@ export function getWaffoPancakeProviderCurrency(
 }
 
 /**
+ * Check if payment method is a HotPay gateway entry ("hotpay:<method>").
+ * Canonical HotPay checkouts redirect through a hosted checkout URL like
+ * Waffo Pancake, so they must be excluded from the generic EPay form flow.
+ */
+export function isHotPayPayment(paymentType: string): boolean {
+  return getHotPayMethodFromType(paymentType) !== null
+}
+
+/**
  * Check whether payment uses the generic EPay form flow.
  */
 export function isStandardEpayPayment(paymentType: string): boolean {
@@ -151,7 +161,8 @@ export function isStandardEpayPayment(paymentType: string): boolean {
     paymentType !== PAYMENT_TYPES.STRIPE &&
     paymentType !== PAYMENT_TYPES.CREEM &&
     paymentType !== PAYMENT_TYPES.WAFFO &&
-    !isWaffoPancakePayment(paymentType)
+    !isWaffoPancakePayment(paymentType) &&
+    !isHotPayPayment(paymentType)
   )
 }
 
@@ -159,6 +170,7 @@ export interface PaymentProcessors {
   regular: (topupAmount: number, paymentType: string) => Promise<boolean>
   waffo: (topupAmount: number, payMethodIndex: number) => Promise<boolean>
   waffoPancake: (topupAmount: number) => Promise<boolean>
+  hotpay?: (topupAmount: number, paymentType: string) => Promise<boolean>
 }
 
 export async function dispatchSelectedPayment(
@@ -176,6 +188,10 @@ export async function dispatchSelectedPayment(
 
   if (isWaffoPancakePayment(paymentMethod.type)) {
     return processors.waffoPancake(topupAmount)
+  }
+
+  if (isHotPayPayment(paymentMethod.type) && processors.hotpay) {
+    return processors.hotpay(topupAmount, paymentMethod.type)
   }
 
   return processors.regular(topupAmount, paymentMethod.type)

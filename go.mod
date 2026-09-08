@@ -75,6 +75,7 @@ require (
 	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/gorilla/context v1.1.1 // indirect
@@ -115,7 +116,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/expr-lang/expr v1.17.8
-	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.21.2
@@ -176,6 +177,8 @@ require (
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.32.0
 	github.com/QuantumNous/new-api/relaykit v0.0.0
+	github.com/coreos/go-oidc/v3 v3.8.0
+	golang.org/x/oauth2 v0.24.0
 )
 
 replace github.com/QuantumNous/new-api/relaykit => ./relaykit

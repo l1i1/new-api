@@ -148,6 +148,7 @@ func InitOptionMap() {
 	common.OptionMap[setting.HotPayAlipayAccountIDOptionKey] = setting.HotPayAlipayAccountID
 	common.OptionMap[setting.HotPaySettlementSecretOptionKey] = ""
 	common.OptionMap[setting.HotPaySettlementMaxAgeSecOptionKey] = strconv.Itoa(setting.HotPaySettlementMaxAgeSec)
+	common.OptionMap["HotPayPayMethods"] = setting.HotPayPayMethods2JsonString()
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
@@ -578,6 +579,8 @@ func updateOptionMap(key string, value string) (err error) {
 			seconds = 0
 		}
 		setting.HotPaySettlementMaxAgeSec = seconds
+	case "HotPayPayMethods":
+		// HotPayPayMethods is read directly from OptionMap via setting.GetHotPayPayMethods().
 	case "TopupGroupRatio":
 		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "GitHubClientId":

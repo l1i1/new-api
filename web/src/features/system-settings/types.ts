@@ -355,6 +355,7 @@ export type BillingSettings = {
   HotPayAlipayAccountID: string
   HotPaySettlementSecret: string
   HotPaySettlementMaxAgeSeconds: number
+  HotPayPayMethods: string
   'checkin_setting.enabled': boolean
   'checkin_setting.min_quota': number
   'checkin_setting.max_quota': number
