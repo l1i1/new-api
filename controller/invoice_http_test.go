@@ -536,20 +536,9 @@ func TestIdempotentRepeatDoesNotDuplicateAudit(t *testing.T) {
 	ApproveInvoice(c)
 	require.Equal(t, model.InvoiceStatusApproved, model.GetInvoiceById(inv.Id).Status)
 
-	var logs []model.Log
-	require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeManage).Find(&logs).Error)
-	approveCount := 0
-	for _, log := range logs {
-		var other struct {
-			Op struct {
-				Action string `json:"action"`
-			} `json:"op"`
-		}
-		if err := common.UnmarshalJsonStr(log.Other, &other); err == nil && other.Op.Action == "invoice.approve" {
-			approveCount++
-		}
-	}
-	assert.Equal(t, 1, approveCount, "idempotent repeat must not duplicate the audit entry")
+	var logs []model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ?", "invoice.approve").Find(&logs).Error)
+	assert.Len(t, logs, 1, "idempotent repeat must not duplicate the audit entry")
 }
 
 func TestIdempotentCancelDoesNotDuplicateAudit(t *testing.T) {
@@ -571,18 +560,7 @@ func TestIdempotentCancelDoesNotDuplicateAudit(t *testing.T) {
 	// A repeat cancel is idempotent and records no second audit entry.
 	CancelInvoice(cancelCtx())
 
-	var logs []model.Log
-	require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeManage).Find(&logs).Error)
-	cancelCount := 0
-	for _, log := range logs {
-		var other struct {
-			Op struct {
-				Action string `json:"action"`
-			} `json:"op"`
-		}
-		if err := common.UnmarshalJsonStr(log.Other, &other); err == nil && other.Op.Action == "invoice.cancel" {
-			cancelCount++
-		}
-	}
-	assert.Equal(t, 1, cancelCount, "idempotent cancel must not duplicate the audit entry")
+	var logs []model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ?", "invoice.cancel").Find(&logs).Error)
+	assert.Len(t, logs, 1, "idempotent cancel must not duplicate the audit entry")
 }

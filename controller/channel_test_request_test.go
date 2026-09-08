@@ -96,7 +96,7 @@ func TestChannelTestOpenAIChatCompatibility(t *testing.T) {
 				"model":      tt.upstream,
 				"messages":   []dto.Message{{Role: "user", Content: "hi"}},
 				"stream":     tt.stream,
-				tt.wantLimit: 16,
+				tt.wantLimit: testChatMaxTokens,
 			}
 			if tt.stream {
 				want["stream_options"] = map[string]any{"include_usage": true}

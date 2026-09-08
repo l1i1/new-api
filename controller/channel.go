@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -421,20 +422,24 @@ func GetChannel(c *gin.Context) {
 // 此函数依赖 SecureVerificationRequired 中间件，确保用户已通过安全验证
 func GetChannelKey(c *gin.Context) {
 	channelId, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		common.ApiError(c, fmt.Errorf("渠道ID格式错误: %v", err))
+	if err != nil || channelId <= 0 {
+		common.ApiErrorMsg(c, "渠道ID格式错误")
 		return
 	}
 
 	// 获取渠道信息（包含密钥）
 	channel, err := model.GetChannelById(channelId, true)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiErrorI18n(c, i18n.MsgChannelNotExists)
+		return
+	}
 	if err != nil {
-		common.ApiError(c, fmt.Errorf("获取渠道信息失败: %v", err))
+		writeSecurityOperationError(c, err)
 		return
 	}
 
 	if channel == nil {
-		common.ApiError(c, fmt.Errorf("渠道不存在"))
+		common.ApiErrorI18n(c, i18n.MsgChannelNotExists)
 		return
 	}
 

@@ -64,6 +64,7 @@ func setupInvoiceControllerTest(t *testing.T) {
 		&model.InvoiceItem{},
 		&model.InvoiceOrderClaim{},
 		&model.Log{},
+		&model.AuditLog{},
 	))
 	// A single connection keeps the in-memory database consistent across
 	// goroutines and serializes concurrent transactions, mirroring the model

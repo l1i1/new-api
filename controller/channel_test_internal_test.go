@@ -223,7 +223,7 @@ func TestDeleteChannelBatchReportsAndAuditsActualDeletedCount(t *testing.T) {
 
 func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}))
 	channel := &model.Channel{Name: "quota channel", Key: "test-key", UsedQuota: 9876}
 	require.NoError(t, db.Create(channel).Error)
 
@@ -251,7 +251,7 @@ func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
 	require.NoError(t, db.First(&refreshed, channel.Id).Error)
 	assert.Zero(t, refreshed.UsedQuota)
 
-	var auditLog model.Log
+	var auditLog model.AuditLog
 	require.NoError(t, db.Order("id desc").First(&auditLog).Error)
 	var auditData struct {
 		Operation struct {
@@ -259,14 +259,16 @@ func TestResetChannelUsedQuotaUpdatesCounterAndWritesAudit(t *testing.T) {
 			Params map[string]any `json:"params"`
 		} `json:"op"`
 	}
-	require.NoError(t, common.UnmarshalJsonStr(auditLog.Other, &auditData))
+	encodedAudit, err := common.Marshal(auditLog.Other)
+	require.NoError(t, err)
+	require.NoError(t, common.Unmarshal(encodedAudit, &auditData))
 	assert.Equal(t, "channel.used_quota_reset", auditData.Operation.Action)
 	assert.Equal(t, float64(9876), auditData.Operation.Params["previous_used_quota"])
 }
 
 func TestBatchResetChannelUsedQuotaResetsSelectedChannels(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}))
 	first := &model.Channel{Name: "first quota channel", Key: "first-key", UsedQuota: 100}
 	second := &model.Channel{Name: "second quota channel", Key: "second-key", UsedQuota: 200}
 	require.NoError(t, db.Create(first).Error)

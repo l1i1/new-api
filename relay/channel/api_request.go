@@ -186,8 +186,12 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 			if clientHeaderValue := c.Request.Header.Get(name); strings.TrimSpace(clientHeaderValue) != "" {
 				return clientHeaderValue, true, nil
 			}
+			return channelTestHeaderFallback(name), true, nil
 		}
-		return channelTestHeaderFallback(name), true, nil
+		// Callers without a request context (the upstream model-list fetch only
+		// reuses this resolver to apply static overrides) have nothing to probe
+		// with, so leave the header unset instead of sending a fabricated value.
+		return "", false, nil
 	}
 
 	if strings.Contains(template, "{api_key}") {
