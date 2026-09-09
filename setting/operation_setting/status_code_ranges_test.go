@@ -80,8 +80,50 @@ func TestShouldRetryByStatusCode_DefaultMatchesLegacyBehavior(t *testing.T) {
 	require.True(t, ShouldRetryByStatusCode(599))
 }
 
-func TestIsAlwaysSkipRetryStatusCode(t *testing.T) {
-	require.True(t, IsAlwaysSkipRetryStatusCode(504))
-	require.True(t, IsAlwaysSkipRetryStatusCode(524))
-	require.False(t, IsAlwaysSkipRetryStatusCode(500))
+func TestNeverRetryStatusCodes(t *testing.T) {
+	require.True(t, IsNeverRetryStatusCode(504))
+	require.True(t, IsNeverRetryStatusCode(524))
+	require.False(t, IsNeverRetryStatusCode(500))
+}
+
+func TestForceRetryStatusCodes(t *testing.T) {
+	require.True(t, IsForceRetryStatusCode(400))
+	require.False(t, IsForceRetryStatusCode(500))
+
+	// Never-retry wins over force-retry when the same code appears in both.
+	origForce := ForceRetryStatusCodeRanges
+	origNever := NeverRetryStatusCodeRanges
+	t.Cleanup(func() {
+		ForceRetryStatusCodeRanges = origForce
+		NeverRetryStatusCodeRanges = origNever
+	})
+	ForceRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+	NeverRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+	require.False(t, IsForceRetryStatusCode(400))
+	require.False(t, ShouldRetryByStatusCode(400))
+}
+
+func TestForceRetryStatusCodesConfigurable(t *testing.T) {
+	orig := ForceRetryStatusCodeRanges
+	t.Cleanup(func() { ForceRetryStatusCodeRanges = orig })
+
+	require.NoError(t, ForceRetryStatusCodesFromString("400,422"))
+	require.True(t, IsForceRetryStatusCode(400))
+	require.True(t, IsForceRetryStatusCode(422))
+	require.False(t, IsForceRetryStatusCode(404))
+	require.Equal(t, "400,422", ForceRetryStatusCodesToString())
+
+	// Clearing the option removes the forced-retry rule entirely.
+	require.NoError(t, ForceRetryStatusCodesFromString(""))
+	require.False(t, IsForceRetryStatusCode(400))
+}
+
+func TestNeverRetryStatusCodesConfigurable(t *testing.T) {
+	orig := NeverRetryStatusCodeRanges
+	t.Cleanup(func() { NeverRetryStatusCodeRanges = orig })
+
+	require.NoError(t, NeverRetryStatusCodesFromString("504,524,500"))
+	require.True(t, IsNeverRetryStatusCode(500))
+	require.False(t, ShouldRetryByStatusCode(500))
+	require.Equal(t, "500,504,524", NeverRetryStatusCodesToString())
 }

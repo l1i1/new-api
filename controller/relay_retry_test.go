@@ -13,6 +13,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -63,6 +64,49 @@ func TestShouldRetryUpstreamBadRequest(t *testing.T) {
 		http.StatusBadRequest,
 	)
 	require.False(t, shouldRetry(c, localErr, 1))
+}
+
+func TestUpstreamBadRequestRetryFollowsForceRetryStatusCodes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origForce := operation_setting.ForceRetryStatusCodeRanges
+	t.Cleanup(func() { operation_setting.ForceRetryStatusCodeRanges = origForce })
+
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream rejected this channel request"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+
+	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString("400"))
+	forceCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(forceCtx, upstreamErr, 1))
+
+	// Clearing the option makes an upstream 400 follow AutomaticRetryStatusCodes,
+	// which excludes 400, so the request is no longer retried.
+	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString(""))
+	clearedCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(clearedCtx, upstreamErr, 1))
+}
+
+func TestNeverRetryStatusCodesOverrideAutomaticRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origNever := operation_setting.NeverRetryStatusCodeRanges
+	t.Cleanup(func() { operation_setting.NeverRetryStatusCodeRanges = origNever })
+
+	serverErr := types.NewOpenAIError(
+		errors.New("upstream gateway failure"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusInternalServerError,
+	)
+
+	serverErrCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(serverErrCtx, serverErr, 1))
+
+	// A 500 listed in the never-retry option stops retrying even though the
+	// default automatic ranges include it.
+	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString("500"))
+	neverCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(neverCtx, serverErr, 1))
 }
 
 func TestShouldNotRetryAfterResponseWriterCommit(t *testing.T) {

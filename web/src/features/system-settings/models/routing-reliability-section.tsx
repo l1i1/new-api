@@ -83,6 +83,8 @@ const createRoutingReliabilitySchema = (
       AutomaticDisableKeywords: z.string(),
       AutomaticDisableStatusCodes: z.string(),
       AutomaticRetryStatusCodes: z.string(),
+      ForceRetryStatusCodes: z.string(),
+      NeverRetryStatusCodes: z.string(),
         monitor_setting: z.object({
           auto_test_channel_enabled: z.boolean(),
           auto_test_channel_minutes: z.coerce
@@ -126,6 +128,32 @@ const createRoutingReliabilitySchema = (
           }),
         })
       }
+
+      const forceRetryParsed = parseHttpStatusCodeRules(
+        values.ForceRetryStatusCodes
+      )
+      if (!forceRetryParsed.ok) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['ForceRetryStatusCodes'],
+          message: t('Invalid status code rules: {{tokens}}', {
+            tokens: forceRetryParsed.invalidTokens.join(', '),
+          }),
+        })
+      }
+
+      const neverRetryParsed = parseHttpStatusCodeRules(
+        values.NeverRetryStatusCodes
+      )
+      if (!neverRetryParsed.ok) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['NeverRetryStatusCodes'],
+          message: t('Invalid status code rules: {{tokens}}', {
+            tokens: neverRetryParsed.invalidTokens.join(', '),
+          }),
+        })
+      }
     })
 
 type RoutingReliabilitySchema = ReturnType<
@@ -143,6 +171,8 @@ type RoutingReliabilitySectionProps = {
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
     AutomaticRetryStatusCodes: string
+    ForceRetryStatusCodes: string
+    NeverRetryStatusCodes: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_concurrency': number
@@ -162,6 +192,8 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
+  ForceRetryStatusCodes: string
+  NeverRetryStatusCodes: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number
@@ -187,6 +219,8 @@ const buildFormDefaults = (
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
+  ForceRetryStatusCodes: defaults.ForceRetryStatusCodes ?? '',
+  NeverRetryStatusCodes: defaults.NeverRetryStatusCodes ?? '',
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -216,6 +250,12 @@ const normalizeDefaults = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
+  ForceRetryStatusCodes: parseHttpStatusCodeRules(
+    defaults.ForceRetryStatusCodes ?? ''
+  ).normalized,
+  NeverRetryStatusCodes: parseHttpStatusCodeRules(
+    defaults.NeverRetryStatusCodes ?? ''
+  ).normalized,
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -242,6 +282,12 @@ const normalizeFormValues = (
   ).normalized,
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticRetryStatusCodes
+  ).normalized,
+  ForceRetryStatusCodes: parseHttpStatusCodeRules(
+    values.ForceRetryStatusCodes
+  ).normalized,
+  NeverRetryStatusCodes: parseHttpStatusCodeRules(
+    values.NeverRetryStatusCodes
   ).normalized,
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
@@ -280,6 +326,8 @@ export function RoutingReliabilitySection({
 
   const autoDisableStatusCodes = form.watch('AutomaticDisableStatusCodes')
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
+  const forceRetryStatusCodes = form.watch('ForceRetryStatusCodes')
+  const neverRetryStatusCodes = form.watch('NeverRetryStatusCodes')
   const channelTestMode = form.watch('monitor_setting.channel_test_mode')
   let channelTestModeDescription: string
   switch (channelTestMode) {
@@ -305,6 +353,14 @@ export function RoutingReliabilitySection({
   const autoRetryParsed = useMemo(
     () => parseHttpStatusCodeRules(autoRetryStatusCodes),
     [autoRetryStatusCodes]
+  )
+  const forceRetryParsed = useMemo(
+    () => parseHttpStatusCodeRules(forceRetryStatusCodes),
+    [forceRetryStatusCodes]
+  )
+  const neverRetryParsed = useMemo(
+    () => parseHttpStatusCodeRules(neverRetryStatusCodes),
+    [neverRetryStatusCodes]
   )
 
   const onSubmit = async (values: RoutingReliabilityFormValues) => {
@@ -387,6 +443,66 @@ export function RoutingReliabilitySection({
                         autoRetryParsed.normalized !== field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {autoRetryParsed.normalized}
+                          </span>
+                        )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ForceRetryStatusCodes'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Force-retry status codes')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 400')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.'
+                      )}{' '}
+                      {forceRetryParsed.ok &&
+                        forceRetryParsed.normalized &&
+                        forceRetryParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {forceRetryParsed.normalized}
+                          </span>
+                        )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='NeverRetryStatusCodes'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Never-retry status codes')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 504, 524')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.'
+                      )}{' '}
+                      {neverRetryParsed.ok &&
+                        neverRetryParsed.normalized &&
+                        neverRetryParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {neverRetryParsed.normalized}
                           </span>
                         )}
                     </FormDescription>

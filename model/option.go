@@ -209,6 +209,8 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
+	common.OptionMap["ForceRetryStatusCodes"] = operation_setting.ForceRetryStatusCodesToString()
+	common.OptionMap["NeverRetryStatusCodes"] = operation_setting.NeverRetryStatusCodesToString()
 	common.OptionMap[operation_setting.ErrorMessageFilterEnabledOptionKey] = strconv.FormatBool(operation_setting.IsErrorMessageFilterEnabled())
 	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
@@ -682,6 +684,10 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.AutomaticDisableStatusCodesFromString(value)
 	case "AutomaticRetryStatusCodes":
 		err = operation_setting.AutomaticRetryStatusCodesFromString(value)
+	case "ForceRetryStatusCodes":
+		err = operation_setting.ForceRetryStatusCodesFromString(value)
+	case "NeverRetryStatusCodes":
+		err = operation_setting.NeverRetryStatusCodesFromString(value)
 	case operation_setting.ErrorMessageFilterEnabledOptionKey:
 		operation_setting.SetErrorMessageFilterEnabled(value == "true")
 	case operation_setting.ErrorMessageFilterPatternOptionKey:

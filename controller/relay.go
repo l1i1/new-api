@@ -744,7 +744,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
-	if code == http.StatusBadRequest && openaiErr.GetErrorType() != types.ErrorTypeNewAPIError {
+	// Force-retry codes (default 400) express "the upstream rejected this
+	// channel's request, try another channel". They never apply to local
+	// validation errors, which describe the request rather than the channel.
+	if openaiErr.GetErrorType() != types.ErrorTypeNewAPIError &&
+		operation_setting.IsForceRetryStatusCode(code) {
 		return true
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
@@ -1324,28 +1328,15 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if taskErr.LocalError {
 		return false
 	}
-	if taskErr.StatusCode == http.StatusBadRequest {
+	if operation_setting.IsForceRetryStatusCode(taskErr.StatusCode) {
 		return true
 	}
-	if taskErr.StatusCode == http.StatusTooManyRequests {
-		return true
-	}
-	if taskErr.StatusCode == 307 {
-		return true
-	}
-	if taskErr.StatusCode/100 == 5 {
-		// 超时不重试
-		if operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) {
-			return false
-		}
-		return true
-	}
-	if taskErr.StatusCode == 408 {
-		// azure处理超时不重试
+	code := taskErr.StatusCode
+	if code >= 200 && code < 300 {
 		return false
 	}
-	if taskErr.StatusCode/100 == 2 {
-		return false
+	if code < 100 || code > 599 {
+		return true
 	}
-	return true
+	return operation_setting.ShouldRetryByStatusCode(code)
 }

@@ -28,9 +28,19 @@ var AutomaticRetryStatusCodeRanges = []StatusCodeRange{
 	{Start: 525, End: 599},
 }
 
-var alwaysSkipRetryStatusCodes = map[int]struct{}{
-	504: {},
-	524: {},
+// ForceRetryStatusCodeRanges holds status codes that are always retried, even
+// when they are absent from AutomaticRetryStatusCodeRanges. The default {400}
+// preserves the legacy rule that an upstream 400 means "this channel cannot
+// serve the request", so the retry loop excludes the channel and tries another.
+// Callers decide whether the rule applies to local (platform) errors too.
+var ForceRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+
+// NeverRetryStatusCodeRanges holds status codes that are never retried, even
+// when they match AutomaticRetryStatusCodeRanges or ForceRetryStatusCodeRanges.
+// The default {504,524} preserves the legacy "timeout is not retryable" rule.
+var NeverRetryStatusCodeRanges = []StatusCodeRange{
+	{Start: 504, End: 504},
+	{Start: 524, End: 524},
 }
 
 var alwaysSkipRetryCodes = map[types.ErrorCode]struct{}{
@@ -67,9 +77,45 @@ func AutomaticRetryStatusCodesFromString(s string) error {
 	return nil
 }
 
-func IsAlwaysSkipRetryStatusCode(code int) bool {
-	_, exists := alwaysSkipRetryStatusCodes[code]
-	return exists
+func ForceRetryStatusCodesToString() string {
+	return statusCodeRangesToString(ForceRetryStatusCodeRanges)
+}
+
+func ForceRetryStatusCodesFromString(s string) error {
+	ranges, err := ParseHTTPStatusCodeRanges(s)
+	if err != nil {
+		return err
+	}
+	ForceRetryStatusCodeRanges = ranges
+	return nil
+}
+
+func NeverRetryStatusCodesToString() string {
+	return statusCodeRangesToString(NeverRetryStatusCodeRanges)
+}
+
+func NeverRetryStatusCodesFromString(s string) error {
+	ranges, err := ParseHTTPStatusCodeRanges(s)
+	if err != nil {
+		return err
+	}
+	NeverRetryStatusCodeRanges = ranges
+	return nil
+}
+
+func IsNeverRetryStatusCode(code int) bool {
+	return shouldMatchStatusCodeRanges(NeverRetryStatusCodeRanges, code)
+}
+
+// IsForceRetryStatusCode reports whether the code is configured to always
+// retry. Never-retry wins, so an overlap resolves to no retry. Callers decide
+// whether the rule applies to local (platform) errors; local validation errors
+// must stay non-retryable even for a force-retry code such as 400.
+func IsForceRetryStatusCode(code int) bool {
+	if IsNeverRetryStatusCode(code) {
+		return false
+	}
+	return shouldMatchStatusCodeRanges(ForceRetryStatusCodeRanges, code)
 }
 
 func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
@@ -77,8 +123,11 @@ func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
 	return exists
 }
 
+// ShouldRetryByStatusCode applies the automatic retry ranges. Force-retry and
+// never-retry codes are separate rules; callers that want the full decision use
+// IsForceRetryStatusCode in addition to this function.
 func ShouldRetryByStatusCode(code int) bool {
-	if IsAlwaysSkipRetryStatusCode(code) {
+	if IsNeverRetryStatusCode(code) {
 		return false
 	}
 	return shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)
