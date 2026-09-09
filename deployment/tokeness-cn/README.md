@@ -7,12 +7,16 @@ The China site uses one Alibaba Cloud ECI instance behind a Shanghai lightweight
 The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-tokeness-mainland.1`). Pushing such a tag triggers a CNB `tag_push` build that bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere.
 
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
-2. Create a release tag `v1.0.0-tokeness-mainland.<N>` at the checked-out commit and push it. The CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, and publishes the immutable `ml-<tag>` image (a re-push of an existing tag fails rather than overwriting).
-3. Trigger the `cn-production` deploy environment (`.cnb/tag_deploy.yml`) from the CNB UI (deploy button; owner/master only). The pipeline then runs the full gated release without any local machine:
+2. Create a release tag `v1.0.0-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
+3. The chained deploy runs the same gated release as the manual button:
 
    - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
    - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
+
+   The deploy pipeline is triggered with `cnb:trigger` rather than `cnb:apply` on purpose: `cnb:apply` runs the applied pipeline in the **tag** context, where `CNB_BRANCH` is the tag name, and the key repo authorizes imports by `allow_branches` matched against `CNB_BRANCH` — so the import was refused during Prepare and no stage ever ran. `cnb:trigger` pins the run to `tokeness/main` (keeping the credential boundary unchanged) and carries the version in `RELEASE_TAG`, with `sha` set to the tagged commit so the deploy tooling matches the image.
+
+   The manual `cn-production` deploy button (`.cnb/tag_deploy.yml`, owner/master only) still exists as an approval-gated alternative and runs the identical stages; it is also subject to the same tag-context import rule, so use the tag push or a direct `api_trigger` on `tokeness/main`.
 
    Credentials live in the **imvhb/tokeness-secrets key repo** (CNB's native secret store — it has no repo-settings secrets; key repos are Web-edit-only, watermark-audited, and cannot be cloned). The pipeline imports `cnb-tokeness-secrets.yml` from it, and the file's `allow_slugs`/`allow_events`/`allow_branches` headers restrict the import to exactly this pipeline on `tokeness/main`; the import fails closed when those rules or the file do not match. Values it provides:
 
@@ -58,6 +62,19 @@ The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v
    The scaling configuration uses `AutoCreateEip`, so every ESS-replaced instance gets a brand-new EIP that does not join the shared bandwidth package (`cbwp-2g`, 2 Gbps peak, PayByDominantTraffic) on its own. `deploy-release`/`rollback` run this convergence automatically after the rollout (advisory: a bind failure warns and egress keeps serving on the standalone EIP peak); `eip-sync` re-runs it manually — e.g. after fixing RAM permissions (`AliyunEIPFullAccess`) or console-side drift.
 
 `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
+
+## Troubleshooting the pipeline
+
+The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokeness-mainland.16`/`.17`). Four defects kept every earlier CI release from ever reaching production; all four are now fixed and covered by the deploy test suite:
+
+| Symptom | Root cause | Fix |
+| --- | --- | --- |
+| Chained/button build fails in `Prepare` with no log | `cnb:apply` runs the pipeline in the tag context, where `CNB_BRANCH` is the tag name, so the key repo's `allow_branches: tokeness/main` refuses the import | trigger with `cnb:trigger` on `tokeness/main`, pass the version via `RELEASE_TAG`, pin `sha` to the tagged commit |
+| `curl: (22) ... error: 404` in the release stage | the pinned aliyun CLI asset `aliyun-cli-linux-latest.tgz` no longer exists | use `aliyun-cli-linux-latest-amd64.tgz` |
+| `SWAS-2 host sync impossible: bootstrap script not readable at //private/scripts/...` | the host bootstrap lived under gitignored `private/`, absent from the CI checkout | moved to `deployment/tokeness-cn/bootstrap-newapi-host.sh` (no secrets; reads env/image/creds from the scaling config) and made it the default, `HOST_BOOTSTRAP_SCRIPT` still overrides |
+| `ERROR: region can't be empty` → `WARN: EIP shared-bandwidth convergence failed` | aliyun CLI 3.x silently ignores camelCase `--RegionId` on eci/vpc/ess | pass lowercase `--region` (regression-checked in `tests/deploy-test.sh`) |
+
+The fourth one is the subtle one: EIP convergence is advisory, so the release reported success while the new EIP stayed outside the bandwidth package (egress capped at the standalone 200 Mbps peak). If egress looks throttled after a release, run `deploy.sh eip-sync` and confirm `BandwidthPackageId` on the instance EIP.
 
 ## Cutover
 
