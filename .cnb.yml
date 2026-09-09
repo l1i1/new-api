@@ -149,6 +149,11 @@ $:
       imports: https://cnb.cool/imvhb/tokeness-secrets/-/blob/main/cnb-tokeness-secrets.yml
       env:
         IMAGE_NAME: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+        # ECI replacement + ml-sync convergence can exceed the 6x10s default
+        # window (seen on mainland.12); widen it so an unattended run does not
+        # roll back on a timing race.
+        ROLLOUT_VERIFY_ATTEMPTS: "12"
+        ROLLOUT_VERIFY_DELAY_SECONDS: "15"
       stages:
         - name: validate credentials and approved image
           script: |
