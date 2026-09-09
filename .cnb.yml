@@ -125,13 +125,25 @@ $:
             IMAGE_TAG="ml-${CNB_BRANCH}"
             docker push "$IMAGE_NAME:$IMAGE_TAG"
             echo "Published $IMAGE_NAME:$IMAGE_TAG (version ${CNB_BRANCH})"
-        # Unattended release: chain into the gated deploy pipeline. sync=true
-        # makes a failed release fail this build instead of leaving a green tag.
+        # Unattended release: chain into the gated deploy pipeline. cnb:trigger
+        # is used instead of cnb:apply because the deploy pipeline must run in
+        # the tokeness/main context: the key repo authorizes imports by
+        # allow_branches, which is matched against CNB_BRANCH, and for a
+        # tag_push that value is the tag name (a tag-context import is refused
+        # in Prepare before any stage runs). Triggering on the branch keeps the
+        # credential boundary as-is; RELEASE_TAG carries the version and sha
+        # pins the deploy tooling to the tagged commit. sync=true makes a failed
+        # release fail this build instead of leaving a green tag behind.
         - name: deploy to production
-          type: cnb:apply
+          type: cnb:trigger
           options:
+            slug: imvhb/new-api-cn
+            branch: tokeness/main
+            sha: ${CNB_COMMIT}
             event: api_trigger
             sync: true
+            env:
+              RELEASE_TAG: ${CNB_BRANCH}
             title: CN production deploy ${CNB_BRANCH}
 
   # Unattended China production release (api_trigger). Chained from the tag_push
@@ -214,7 +226,7 @@ $:
             install -d -m 755 "$ALIYUN_BIN"
             if ! command -v aliyun >/dev/null 2>&1; then
               curl -fsSL --connect-timeout 20 --retry 3 \
-                -o /tmp/aliyun-cli.tgz https://aliyuncli.alicdn.com/aliyun-cli-linux-latest.tgz
+                -o /tmp/aliyun-cli.tgz https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz
               tar -xzf /tmp/aliyun-cli.tgz -C "$ALIYUN_BIN" aliyun
             fi
             export PATH="$ALIYUN_BIN:$PATH"
@@ -295,7 +307,7 @@ $:
             install -d -m 755 "$ALIYUN_BIN"
             if ! command -v aliyun >/dev/null 2>&1; then
               curl -fsSL --connect-timeout 20 --retry 3 \
-                -o /tmp/aliyun-cli.tgz https://aliyuncli.alicdn.com/aliyun-cli-linux-latest.tgz
+                -o /tmp/aliyun-cli.tgz https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz
               tar -xzf /tmp/aliyun-cli.tgz -C "$ALIYUN_BIN" aliyun
             fi
             export PATH="$ALIYUN_BIN:$PATH"
