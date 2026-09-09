@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
 )
@@ -77,6 +78,8 @@ func writeSecurityOperationError(c *gin.Context, err error) {
 		code, message = "SECURITY_ACTION_FORBIDDEN", service.ErrVerificationForbidden.Error()
 	case errors.Is(err, service.ErrVerificationFailed), errors.As(err, &protocolError):
 		code, message = "SECURITY_VERIFICATION_FAILED", service.ErrVerificationFailed.Error()
+	case errors.Is(err, passkeysvc.ErrUserVerificationUnsupported):
+		code, message = "PASSKEY_USER_VERIFICATION_UNSUPPORTED", passkeysvc.ErrUserVerificationUnsupported.Error()
 	case errors.Is(err, service.ErrVerificationLocked):
 		code, message = "SECURITY_VERIFICATION_LOCKED", service.ErrVerificationLocked.Error()
 	case errors.Is(err, service.ErrVerificationUnavailable):

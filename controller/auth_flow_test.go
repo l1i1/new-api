@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	passkeysvc "github.com/QuantumNous/new-api/service/passkey"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
@@ -63,7 +64,7 @@ func beginSecurityLoginPasskey(t *testing.T, parentToken string) (string, string
 	}
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 	require.True(t, result.Success, response.Body.String())
-	require.Equal(t, "required", result.Data.Options.PublicKey.UserVerification)
+	require.Equal(t, string(passkeysvc.ExpectedUserVerification()), result.Data.Options.PublicKey.UserVerification)
 	return result.Data.FlowToken, result.Data.Options.PublicKey.Challenge
 }
 
@@ -180,7 +181,7 @@ func TestSecurityLoginPasskeyDoesNotRequireAdditionalTwoFA(t *testing.T) {
 						} `json:"data"`
 					}
 					require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
-					require.Equal(t, "required", result.Data.Options.PublicKey.UserVerification)
+					require.Equal(t, string(passkeysvc.ExpectedUserVerification()), result.Data.Options.PublicKey.UserVerification)
 					flowToken, challenge = result.Data.FlowToken, result.Data.Options.PublicKey.Challenge
 				} else {
 					pending, err := service.StartLoginVerification(user, "oauth:github")
@@ -209,8 +210,9 @@ func TestSecurityLoginPasskeyDoesNotRequireAdditionalTwoFA(t *testing.T) {
 				router.ServeHTTP(response, httptest.NewRequest("POST", path, strings.NewReader(string(body))))
 				var result securityEnrollmentResponse
 				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
-				require.Equal(t, verified, result.Success, response.Body.String())
-				if verified {
+				satisfied := passkeysvc.UserVerificationSatisfied(passkeysvc.ExpectedUserVerification(), verified)
+				require.Equal(t, satisfied, result.Success, response.Body.String())
+				if satisfied {
 					var bundle service.AuthBundle
 					require.NoError(t, common.Unmarshal(result.Data, &bundle))
 					assert.NotEmpty(t, bundle.AccessToken)
@@ -469,7 +471,7 @@ func TestSecurityLoginPasskeyCanManageTwoFAWithScopedProofs(t *testing.T) {
 			}
 			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &started))
 			require.True(t, started.Success, response.Body.String())
-			assert.Equal(t, "required", started.Data.Options.PublicKey.UserVerification)
+			assert.Equal(t, string(passkeysvc.ExpectedUserVerification()), started.Data.Options.PublicKey.UserVerification)
 			finish, err := common.Marshal(passkeyFinishRequest{FlowToken: started.Data.FlowToken, Credential: securityPasskeyResponse(t, key, started.Data.Options.PublicKey.Challenge, false, 0)})
 			require.NoError(t, err)
 			response = securityEnrollmentRequest("POST", "/api/user/passkey/verify/finish", string(finish), "", identity, PasskeyVerifyFinish)
@@ -508,44 +510,53 @@ func TestSecurityLoginPasskeyCanManageTwoFAWithScopedProofs(t *testing.T) {
 	}
 }
 
-func TestSecurityLoginRegisteredPasskeyRequiresUserVerification(t *testing.T) {
-	for _, verified := range []bool{false, true} {
-		t.Run(fmt.Sprintf("verified=%t", verified), func(t *testing.T) {
-			user, identity := setupSecurityEnrollmentTest(t)
-			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-			require.NoError(t, err)
-			proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: service.VerificationScopePasskeyRegister}, service.VerificationMethodPassword)
-			response := securityEnrollmentRequest("POST", "/api/user/passkey/register/begin", "", proof, identity, PasskeyRegisterBegin)
-			var result struct {
-				Success bool `json:"success"`
-				Data    struct {
-					FlowToken string `json:"flow_token"`
-					Options   struct {
-						PublicKey struct {
-							Challenge              string `json:"challenge"`
-							AuthenticatorSelection struct {
-								UserVerification string `json:"userVerification"`
-							} `json:"authenticatorSelection"`
-						} `json:"publicKey"`
-					} `json:"options"`
-				} `json:"data"`
-			}
-			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
-			require.True(t, result.Success, response.Body.String())
-			assert.Equal(t, "required", result.Data.Options.PublicKey.AuthenticatorSelection.UserVerification)
-			body, err := common.Marshal(passkeyFinishRequest{FlowToken: result.Data.FlowToken, Credential: securityPasskeyResponse(t, key, result.Data.Options.PublicKey.Challenge, true, 0, verified)})
-			require.NoError(t, err)
-			response = securityEnrollmentRequest("POST", "/api/user/passkey/register/finish", string(body), "", identity, PasskeyRegisterFinish)
-			var finished securityEnrollmentResponse
-			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &finished))
-			assert.Equal(t, verified, finished.Success, response.Body.String())
-			_, err = model.GetPasskeyByUserID(user.Id)
-			if verified {
+func TestSecurityLoginRegisteredPasskeyHonorsConfiguredUserVerification(t *testing.T) {
+	for _, requirement := range []string{"preferred", "required"} {
+		for _, verified := range []bool{false, true} {
+			t.Run(fmt.Sprintf("requirement=%s/verified=%t", requirement, verified), func(t *testing.T) {
+				user, identity := setupSecurityEnrollmentTest(t)
+				system_setting.GetPasskeySettings().UserVerification = requirement
+				key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 				require.NoError(t, err)
-			} else {
-				assert.ErrorIs(t, err, model.ErrPasskeyNotFound)
-			}
-		})
+				proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: service.VerificationScopePasskeyRegister}, service.VerificationMethodPassword)
+				response := securityEnrollmentRequest("POST", "/api/user/passkey/register/begin", "", proof, identity, PasskeyRegisterBegin)
+				var result struct {
+					Success bool `json:"success"`
+					Data    struct {
+						FlowToken string `json:"flow_token"`
+						Options   struct {
+							PublicKey struct {
+								Challenge              string `json:"challenge"`
+								AuthenticatorSelection struct {
+									UserVerification string `json:"userVerification"`
+								} `json:"authenticatorSelection"`
+							} `json:"publicKey"`
+						} `json:"options"`
+					} `json:"data"`
+				}
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+				require.True(t, result.Success, response.Body.String())
+				assert.Equal(t, requirement, result.Data.Options.PublicKey.AuthenticatorSelection.UserVerification)
+				body, err := common.Marshal(passkeyFinishRequest{FlowToken: result.Data.FlowToken, Credential: securityPasskeyResponse(t, key, result.Data.Options.PublicKey.Challenge, true, 0, verified)})
+				require.NoError(t, err)
+				response = securityEnrollmentRequest("POST", "/api/user/passkey/register/finish", string(body), "", identity, PasskeyRegisterFinish)
+				var finished securityEnrollmentResponse
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &finished))
+				// An authenticator that never asserts UV must be usable under
+				// "preferred" and must still be rejected under "required".
+				satisfied := passkeysvc.UserVerificationSatisfied(passkeysvc.ExpectedUserVerification(), verified)
+				assert.Equal(t, satisfied, finished.Success, response.Body.String())
+				if !satisfied && requirement == "required" {
+					assert.Equal(t, "PASSKEY_USER_VERIFICATION_UNSUPPORTED", finished.Code, response.Body.String())
+				}
+				_, err = model.GetPasskeyByUserID(user.Id)
+				if satisfied {
+					require.NoError(t, err)
+				} else {
+					assert.ErrorIs(t, err, model.ErrPasskeyNotFound)
+				}
+			})
+		}
 	}
 }
 

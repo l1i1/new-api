@@ -40,6 +40,8 @@ const serverErrorMessageKeys = {
   TWOFA_ALREADY_ENABLED: 'Two-factor authentication is already enabled.',
   TWOFA_NOT_ENABLED: 'Two-factor authentication is not enabled.',
   PASSKEY_NOT_FOUND: 'No Passkey is registered.',
+  PASSKEY_USER_VERIFICATION_UNSUPPORTED:
+    'This Passkey did not verify you. Use a Passkey that supports user verification (for example a device-bound Windows Hello key), or ask an administrator to allow Passkeys without user verification.',
   AUTH_FLOW_INVALID: 'Verification flow expired',
   SECURITY_PROOF_REQUIRED: 'Additional verification required',
   SECURITY_PROOF_EXPIRED:

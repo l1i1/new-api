@@ -62,7 +62,7 @@ func LoginPasskeyBegin(c *gin.Context) {
 		return
 	}
 	user := &model.User{Id: verification.State.UserID}
-	options, sessionData, err := wa.BeginLogin(passkeysvc.NewWebAuthnUser(user, credential), webauthnlib.WithUserVerification(protocol.VerificationRequired))
+	options, sessionData, err := wa.BeginLogin(passkeysvc.NewWebAuthnUser(user, credential), webauthnlib.WithUserVerification(passkeysvc.ExpectedUserVerification()))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -104,8 +104,12 @@ func LoginPasskeyFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	if security.LoginFlowID != verification.Flow.Id || sessionData.UserVerification != protocol.VerificationRequired {
+	if security.LoginFlowID != verification.Flow.Id {
 		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+		return
+	}
+	if !passkeysvc.UserVerificationSatisfied(sessionData.UserVerification, parsed.Response.AuthenticatorData.Flags.HasUserVerified()) {
+		writeSecurityOperationError(c, passkeysvc.ErrUserVerificationUnsupported)
 		return
 	}
 	credential, err := model.GetPasskeyByUserID(identity.UserID)

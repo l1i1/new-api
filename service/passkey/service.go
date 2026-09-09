@@ -16,6 +16,38 @@ import (
 	webauthn "github.com/go-webauthn/webauthn/webauthn"
 )
 
+// ErrUserVerificationUnsupported reports that the ceremony required user
+// verification but the authenticator did not assert it. It is deliberately
+// distinct from the generic verification failure so the client can tell the user
+// what to change instead of asking them to retry forever.
+var ErrUserVerificationUnsupported = errors.New("The authenticator did not verify the user. Use a passkey that supports user verification, or ask an administrator to set Passkey user verification to preferred.")
+
+// ExpectedUserVerification resolves the configured user verification requirement.
+// It is the single source of truth for both the ceremony request and the
+// server-side check, so an administrator who selects "preferred" is not silently
+// overridden by a hardcoded "required" that rejects authenticators (synced
+// passkey managers in particular) which never assert the UV flag.
+func ExpectedUserVerification() protocol.UserVerificationRequirement {
+	settings := system_setting.GetPasskeySettings()
+	if settings == nil {
+		return protocol.VerificationPreferred
+	}
+	switch requirement := protocol.UserVerificationRequirement(settings.UserVerification); requirement {
+	case protocol.VerificationRequired, protocol.VerificationDiscouraged:
+		return requirement
+	default:
+		return protocol.VerificationPreferred
+	}
+}
+
+// UserVerificationSatisfied reports whether an authenticator response meets the
+// requirement declared when the ceremony started. The WebAuthn library already
+// enforces this while validating the response; this helper exists only so the
+// handlers can return an actionable error before that generic failure surfaces.
+func UserVerificationSatisfied(requirement protocol.UserVerificationRequirement, userVerified bool) bool {
+	return requirement != protocol.VerificationRequired || userVerified
+}
+
 // BuildWebAuthn constructs a WebAuthn instance using the current passkey settings and request context.
 func BuildWebAuthn(r *http.Request) (*webauthn.WebAuthn, error) {
 	settings := system_setting.GetPasskeySettings()
@@ -41,10 +73,7 @@ func BuildWebAuthn(r *http.Request) (*webauthn.WebAuthn, error) {
 	selection := protocol.AuthenticatorSelection{
 		ResidentKey:        protocol.ResidentKeyRequirementRequired,
 		RequireResidentKey: protocol.ResidentKeyRequired(),
-		UserVerification:   protocol.UserVerificationRequirement(settings.UserVerification),
-	}
-	if selection.UserVerification == "" {
-		selection.UserVerification = protocol.VerificationPreferred
+		UserVerification:   ExpectedUserVerification(),
 	}
 	if attachment := strings.TrimSpace(settings.AttachmentPreference); attachment != "" {
 		selection.AuthenticatorAttachment = protocol.AuthenticatorAttachment(attachment)

@@ -77,9 +77,10 @@ func PasskeyRegisterBegin(c *gin.Context) {
 	}
 
 	waUser := passkeysvc.NewWebAuthnUser(user, credential)
-	selection := wa.Config.AuthenticatorSelection
-	selection.UserVerification = protocol.VerificationRequired
-	options := []webauthnlib.RegistrationOption{webauthnlib.WithAuthenticatorSelection(selection)}
+	// The user verification requirement is owned by BuildWebAuthn, which reads the
+	// passkey.user_verification setting. Overriding it here made that setting dead
+	// code and rejected authenticators that do not assert UV.
+	var options []webauthnlib.RegistrationOption
 	if credential != nil {
 		descriptor := credential.ToWebAuthnCredential().Descriptor()
 		options = append(options, webauthnlib.WithExclusions([]protocol.CredentialDescriptor{descriptor}))
@@ -171,12 +172,12 @@ func PasskeyRegisterFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	if sessionData.UserVerification != protocol.VerificationRequired {
-		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
-		return
-	}
 	if err := service.ValidateFlowAuthorization(identity, service.VerificationOperation{Scope: service.VerificationScopePasskeyRegister}, security.Authorization); err != nil {
 		writeSecurityOperationError(c, err)
+		return
+	}
+	if !passkeysvc.UserVerificationSatisfied(sessionData.UserVerification, parsedCredential.Response.AttestationObject.AuthData.Flags.HasUserVerified()) {
+		writeSecurityOperationError(c, passkeysvc.ErrUserVerificationUnsupported)
 		return
 	}
 
@@ -295,7 +296,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 		return
 	}
 
-	assertion, sessionData, err := wa.BeginDiscoverableLogin(webauthnlib.WithUserVerification(protocol.VerificationRequired))
+	assertion, sessionData, err := wa.BeginDiscoverableLogin(webauthnlib.WithUserVerification(passkeysvc.ExpectedUserVerification()))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -357,8 +358,8 @@ func PasskeyLoginFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	if sessionData.UserVerification != protocol.VerificationRequired {
-		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+	if !passkeysvc.UserVerificationSatisfied(sessionData.UserVerification, parsedCredential.Response.AuthenticatorData.Flags.HasUserVerified()) {
+		writeSecurityOperationError(c, passkeysvc.ErrUserVerificationUnsupported)
 		return
 	}
 
@@ -523,7 +524,7 @@ func PasskeyVerifyBegin(c *gin.Context) {
 	}
 
 	waUser := passkeysvc.NewWebAuthnUser(user, credential)
-	assertion, sessionData, err := wa.BeginLogin(waUser, webauthnlib.WithUserVerification(protocol.VerificationRequired))
+	assertion, sessionData, err := wa.BeginLogin(waUser, webauthnlib.WithUserVerification(passkeysvc.ExpectedUserVerification()))
 	if err != nil {
 		writeSecurityOperationError(c, err)
 		return
@@ -605,8 +606,8 @@ func PasskeyVerifyFinish(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	if sessionData.UserVerification != protocol.VerificationRequired {
-		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+	if !passkeysvc.UserVerificationSatisfied(sessionData.UserVerification, parsedCredential.Response.AuthenticatorData.Flags.HasUserVerified()) {
+		writeSecurityOperationError(c, passkeysvc.ErrUserVerificationUnsupported)
 		return
 	}
 
