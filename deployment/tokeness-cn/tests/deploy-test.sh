@@ -598,4 +598,16 @@ grep -q "could not add EIP .* to shared bandwidth package" "$vpc_fail_case/state
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' "$vpc_fail_case/state/state.json" > /dev/null \
   || fail "EIP convergence failure disturbed the rollout result"
 
+# The default host bootstrap must resolve inside the repository: the CNB
+# release pipeline has no private/ checkout, so a private/ default makes
+# master-first sync fail before the ESS rollout starts.
+default_bootstrap="$(cd "$TEST_DIR/.." && pwd)/bootstrap-newapi-host.sh"
+[[ -r "$default_bootstrap" ]] \
+  || fail "default host bootstrap script is missing at $default_bootstrap"
+bash -n "$default_bootstrap" \
+  || fail "default host bootstrap script has a syntax error"
+if grep -q 'private/scripts/bootstrap-newapi-host.sh' "$DEPLOY_SCRIPT"; then
+  fail "deploy.sh still defaults to the private/ bootstrap path"
+fi
+
 printf 'Tokeness China deployment tests passed\n'

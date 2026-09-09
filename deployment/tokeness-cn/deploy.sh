@@ -22,7 +22,11 @@ readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
 readonly SWAS2_HOST="${SWAS2_HOST:-101.133.234.135}"
 readonly SWAS2_SSH_KEY_PATH="${SWAS2_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
-readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$WORKSPACE_ROOT/private/scripts/bootstrap-newapi-host.sh}"
+# The host bootstrap lives in the repository (not private/) so the CNB release
+# pipeline can run master-first sync without a local checkout; it carries no
+# secrets and reads env/image/registry creds from the scaling config at runtime.
+# HOST_BOOTSTRAP_SCRIPT still overrides it for local experiments.
+readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-newapi-host.sh}"
 readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://172.24.63.126:8300/api/status}"
 readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 # Direct probe defaults to the plaintext upstream for a Host-pinned request.
