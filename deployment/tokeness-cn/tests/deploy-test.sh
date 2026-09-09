@@ -28,6 +28,13 @@ assert_not_contains() {
   fi
 }
 
+# aliyun CLI 3.x silently ignores the camelCase --RegionId on eci/vpc/ess and
+# then dies with "region can't be empty", which broke EIP->bandwidth-package
+# convergence without failing the rollout. Only the lowercase flag works.
+if grep -nE 'aliyun_cmd [a-z]+ [A-Za-z]+ --RegionId' "$DEPLOY_SCRIPT" >/dev/null; then
+  fail "deploy.sh passes --RegionId to aliyun (CLI 3.x needs lowercase --region)"
+fi
+
 make_conf() {
   local path="$1"
   cat > "$path" <<'CONF'

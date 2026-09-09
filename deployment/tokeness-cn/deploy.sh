@@ -361,7 +361,7 @@ readonly EIP_ATTACH_GRACE_SECONDS="${EIP_ATTACH_GRACE_SECONDS:-30}"
 
 instance_public_ip() {
   local id="$1"
-  aliyun_cmd eci DescribeContainerGroups --RegionId "$ALIYUN_REGION" \
+  aliyun_cmd eci DescribeContainerGroups --region "$ALIYUN_REGION" \
     --ContainerGroupIds "[\"$id\"]" | tr -d '\r' \
     | jq -r '.ContainerGroups[0].InternetIp // empty'
 }
@@ -385,7 +385,7 @@ ensure_eip_in_bandwidth_package() {
     warn "instance $id still has no public EIP; skipping shared-bandwidth convergence (rerun deploy.sh eip-sync)"
     return 0
   fi
-  eip_json="$(aliyun_cmd vpc DescribeEipAddresses --RegionId "$ALIYUN_REGION" --EipAddress "$eip" | tr -d '\r')" \
+  eip_json="$(aliyun_cmd vpc DescribeEipAddresses --region "$ALIYUN_REGION" --EipAddress "$eip" | tr -d '\r')" \
     || { error "could not query the EIP object of $eip"; return 1; }
   IFS=$'\t' read -r allocation_id package_id < <(
     jq -r '(.EipAddresses.EipAddress[0] // {})
@@ -398,7 +398,7 @@ ensure_eip_in_bandwidth_package() {
     log "EIP $eip already in shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
     return 0
   fi
-  if ! aliyun_cmd vpc AddCommonBandwidthPackageIp --RegionId "$ALIYUN_REGION" \
+  if ! aliyun_cmd vpc AddCommonBandwidthPackageIp --region "$ALIYUN_REGION" \
     --BandwidthPackageId "$SHARED_BANDWIDTH_PACKAGE_ID" --IpInstanceId "$allocation_id" >/dev/null; then
     error "could not add EIP $eip to shared bandwidth package $SHARED_BANDWIDTH_PACKAGE_ID"
     return 1
@@ -448,7 +448,7 @@ REMOTE_PROBE
 # match; only [FATAL] / Go panics abort the rollout early.
 container_log_fatal_line() {
   local instance_id="$1"
-  aliyun_cmd eci DescribeContainerLog --RegionId "$ALIYUN_REGION" \
+  aliyun_cmd eci DescribeContainerLog --region "$ALIYUN_REGION" \
     --ContainerGroupId "$instance_id" --ContainerName "$APP_CONTAINER_NAME" --Tail 60 \
     | tr -d '\r' | jq -r '.Content // empty' \
     | grep -m1 -E '\[FATAL\]|panic:' || true
@@ -523,7 +523,7 @@ rollback_failed_rollout() {
     fi
   fi
   if [[ -n "$failed_id" ]]; then
-    if ! aliyun_cmd eci DeleteContainerGroup --RegionId "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
+    if ! aliyun_cmd eci DeleteContainerGroup --region "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
       warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
     fi
   fi
