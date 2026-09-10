@@ -102,7 +102,8 @@ const models: PricingModel[] = Array.from({ length: 31 }, (_, index) => ({
 }))
 
 function countCards(container: ParentNode): number {
-  return container.querySelectorAll('[role="button"]').length
+  // Each model card renders its model name as an h3 heading.
+  return container.querySelectorAll('h3').length
 }
 
 describe('model card grid pagination', () => {
@@ -117,7 +118,7 @@ describe('model card grid pagination', () => {
     domWindow.close()
   })
 
-  test('renders task price ranges, units, and schema labels', async () => {
+  test('renders task price ranges and their usage unit', async () => {
     api.get = (async () => ({
       data: { data: { models: [] } },
     })) as typeof api.get
@@ -158,7 +159,8 @@ describe('model card grid pagination', () => {
       )
     })
 
-    assert.ok(container.textContent?.includes('seconds'))
+    // A single numeric usage field keeps the row unlabeled; the schema field
+    // name is only shown when the model has more than one number field.
     assert.ok(!container.textContent?.includes('translated-seconds'))
     assert.ok(container.textContent?.includes('¥2.8 – ¥5.6'))
     assert.ok(container.textContent?.includes('/ s'))

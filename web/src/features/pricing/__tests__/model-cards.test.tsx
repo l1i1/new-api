@@ -212,7 +212,12 @@ describe('model cards', () => {
         <ModelCard
           model={pricingModel()}
           onClick={vi.fn()}
-          perf={{ avg_latency_ms: 1200, avg_tps: 42, success_rate }}
+          perf={{
+            avg_ttft_ms: 1200,
+            avg_latency_ms: 1900,
+            avg_tps: 42,
+            success_rate,
+          }}
         />
       )
       const metrics = screen.getByLabelText(
@@ -220,6 +225,7 @@ describe('model cards', () => {
       )
       expect(within(metrics).getByText(expected)).toBeVisible()
       expect(within(metrics).getByText('Status')).toBeVisible()
+      expect(within(metrics).getByText('TTFT short')).toBeVisible()
       expect(within(metrics).getByText('1.20s')).toBeVisible()
       expect(within(metrics).getByText('42.0t/s')).toBeVisible()
     }
