@@ -3868,11 +3868,17 @@ export function ChannelMutateDrawer({
                                 <FormItem>
                                   <FormLabel>{t('Test Model')}</FormLabel>
                                   <FormControl>
-                                    <Input
+                                    <Combobox
+                                      options={modelOptions}
+                                      value={field.value ?? ''}
+                                      onValueChange={(value) =>
+                                        field.onChange(value ?? '')
+                                      }
                                       placeholder={t(
                                         FIELD_PLACEHOLDERS.TEST_MODEL
                                       )}
-                                      {...field}
+                                      emptyText={t('No results found')}
+                                      allowCustomValue
                                     />
                                   </FormControl>
                                   <FormDescription>
@@ -4658,16 +4664,19 @@ export function ChannelMutateDrawer({
                                             {t('Test Model')}
                                           </FormLabel>
                                           <FormControl>
-                                            <Input
+                                            <Combobox
+                                              options={modelOptions}
+                                              value={field.value ?? ''}
+                                              onValueChange={(value) =>
+                                                field.onChange(value ?? '')
+                                              }
                                               placeholder={t(
                                                 'Use each channel test model'
                                               )}
-                                              value={field.value ?? ''}
-                                              onChange={(event) =>
-                                                field.onChange(
-                                                  event.target.value
-                                                )
-                                              }
+                                              emptyText={t(
+                                                'No results found'
+                                              )}
+                                              allowCustomValue
                                             />
                                           </FormControl>
                                           <FormDescription>
