@@ -25,14 +25,24 @@ never one at a time.
 
 Generic OpenAI-compatible async video plugin (`POST /v1/videos`,
 `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content`) for the `zzone.cc.cd`
-aggregator channel (`Video_ZZ1`, channel 136).
+aggregator channels (`Video_ZZ1` 136 on zzone, `Video_XT1` 150 on xuetianai).
 
 It exists because task-plugin model ownership is declared statically per plugin
-and billing only accepts `u("seconds")` for a model that a plugin declares. The
-aggregator's own model IDs cannot be added to the built-in `sora` plugin without
-either forking that plugin or changing its namespace.
+and billing only accepts `u("<fact>")` for a model that a plugin declares. The
+aggregator's own model IDs cannot be added to a built-in plugin without either
+forking that plugin or changing its namespace.
 
-Declared models: `seedance2.5`, `kling-video-v3`, `wan3-720p`, `hailuo-h3`.
+Declared models and their official billing dimension:
+
+| Model | Upstream | Official billing |
+|---|---|---|
+| `seedance2.5` | zzone | **per token** (Ark formula) |
+| `kling-video-v3` | zzone | per second, by resolution |
+| `wan3-720p` | zzone | per second (flat) |
+| `hailuo-h3` | zzone | per second, by resolution |
+| `grok-1.5-video` | xuetianai | per second (flat) |
+| `grok-imagine-video` | xuetianai | per second (flat) |
+| `grok-imagine-video-1.5` | xuetianai | per second (flat) |
 
 `hailuo-h3` is not the aggregator's spelling. The aggregator calls the model
 `minimax-h3`, but plugin model names are matched case-folded across all plugins
@@ -42,9 +52,17 @@ built-in `hailuo` plugin's `MiniMax-H3` and the whole plugin is rejected at load
 `minimax-h3` through its `model_mapping`, which is also what the upstream request
 carries (`ModelMappedHelper` sets `UpstreamModelName` to the mapping target).
 
-Billing facts: `seconds` only. Duration comes from the request body
-(`seconds` or `duration`, default 5s) and is replaced by the measured value when
-the upstream reports one on completion.
+Billing facts:
+
+- `seconds` — request duration (`seconds` or `duration`, default 5s). Replaced by
+  the measured value when the upstream reports one on completion.
+- `tokens` — Seedance only, from the official Ark formula
+  `duration × width × height × 24 / 1024`, estimated at submit and overlaid by
+  the upstream's measured `usage.completion_tokens` on completion.
+- `video_input` — Seedance only, `none` / `video`, selects the token rate.
+- `resolution` — `480p`/`512p`/`720p`/`768p`/`1080p`/`2k`/`4k`, normalized from
+  `metadata.resolution`, `size`, `resolution`, or a `WxH` pixel size. Only the
+  models whose official price varies by tier read it.
 
 ### Deploy
 
@@ -69,8 +87,8 @@ source is rejected.
 ### Known caveat
 
 `seedance2.5` is tagged `openai` (chat) rather than `videos` in the upstream
-aggregator's own pricing metadata, while the other three are tagged `videos`.
-If the aggregator only serves it over chat completions, calls through
-`/v1/videos` fail loudly at submit. Confirming this needs one real call; if it
-does fail, either drop it from `meta.models` (and stop routing it) or bill it by
-tokens, which is what ByteDance publishes for Seedance 2.5 officially.
+aggregator's own pricing metadata, while the other zzone models are tagged
+`videos`. If the aggregator only serves it over chat completions, calls through
+`/v1/videos` fail loudly at submit. Confirming this needs one real call through
+the platform; the direct-upstream probe only proved the request shape is accepted
+for `grok-imagine-video`.

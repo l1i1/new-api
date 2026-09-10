@@ -34,6 +34,86 @@ function requestedSeconds(body) {
   return value;
 }
 
+const TOKEN_FPS = 24;
+const TOKEN_DIVISOR = 1024;
+
+// 16:9 max-pixel dimensions per tier, matching the official Ark price examples
+// (854x480 → 48038 tokens for 5s, 1280x720 → 108000 for 5s, 1920x1080 → 243000).
+function tierPixels(tier) {
+  if (tier === "480p") return [854, 480];
+  if (tier === "512p") return [912, 512];
+  if (tier === "768p") return [1366, 768];
+  if (tier === "1080p") return [1920, 1080];
+  if (tier === "2k") return [2560, 1440];
+  if (tier === "4k") return [3840, 2160];
+  return [1280, 720];
+}
+
+function estimateTokens(seconds, tier) {
+  const dims = tierPixels(tier);
+  return (seconds * dims[0] * dims[1] * TOKEN_FPS) / TOKEN_DIVISOR;
+}
+
+// Normalizes the many spellings upstreams accept ("480P", "1280x720", "2K",
+// "768") to the declared resolution enum. Returns "" when unrecognized so the
+// caller can fall back rather than assert a tier the client never asked for.
+function normalizeResolution(raw) {
+  const value = trimmed(raw).toLowerCase().replace(/\*/g, "x");
+  if (!value) return "";
+  if (/^\d+x\d+$/.test(value)) {
+    return tierForHeight(Number(value.split("x")[1]));
+  }
+  if (value === "4k" || value === "2k") return value;
+  const match = value.match(/^(\d+)p?$/);
+  return match ? tierForHeight(Number(match[1])) : "";
+}
+
+function tierForHeight(height) {
+  if (!Number.isFinite(height)) return "";
+  if (height >= 2160) return "4k";
+  if (height >= 1440) return "2k";
+  if (height >= 1080) return "1080p";
+  if (height >= 768) return "768p";
+  if (height >= 720) return "720p";
+  if (height >= 512) return "512p";
+  if (height >= 480) return "480p";
+  return "";
+}
+
+// Default tier used only to size a Seedance token estimate when the request
+// names no resolution; 720p is Seedance 2.5's highest listed tier, so the
+// submit-time reservation overestimates rather than underestimates.
+const DEFAULT_RESOLUTION = "720p";
+
+// A request carries reference video input when any of the shapes the OpenAI
+// video format uses for it is present, or when the caller tags it explicitly.
+function hasVideoInput(req, headers) {
+  const header = trimmed((headers || {})["x-input-video"]);
+  if (header) return true;
+  for (const key of ["video", "video_url", "input_video", "reference_video"]) {
+    if (trimmed(req[key])) return true;
+  }
+  for (const key of ["videos", "video_urls", "reference_videos", "video_list"]) {
+    if (Array.isArray(req[key]) && req[key].length > 0) return true;
+  }
+  const metadata = req.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    if (trimmed(metadata.video) || trimmed(metadata.video_url)) return true;
+    if (Array.isArray(metadata.content)) {
+      return metadata.content.some((item) => item && (item.type === "video_url" || item.video_url));
+    }
+  }
+  return false;
+}
+
+function requestedResolution(req) {
+  const metadata = req.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata) && trimmed(metadata.resolution)) {
+    return metadata.resolution;
+  }
+  return req.resolution || req.size;
+}
+
 export const meta = {
   apiVersion: 1,
   key: "openai-video-agg",
@@ -42,7 +122,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.1",
+  version: "1.0.2",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names, except hailuo-h3: the
   // aggregator calls it minimax-h3, but model names are matched case-folded
@@ -69,18 +149,56 @@ export const meta = {
   ],
   fetchMode: "per_task",
   usageSchema: {
-    // Requested video duration in seconds.
+    // Requested video duration in seconds. Billing dimension for every model
+    // whose official price is per output second.
     seconds: {
       type: "number",
       unit: "second",
       description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    // Seedance 2.5 is billed by tokens, not seconds. Official Ark formula:
+    // tokens = duration × width × height × 24 / 1024.
+    tokens: {
+      type: "number",
+      unit: "token",
+      description: { en: "Billing token unit price", zh: "计费 Token 单价" },
+    },
+    // Reference-video input selects Seedance's lower token rate.
+    video_input: {
+      enum: ["none", "video"],
+      enumLabels: {
+        none: { en: "No reference video", zh: "无参考视频" },
+        video: { en: "With reference video", zh: "有参考视频" },
+      },
+      description: { en: "Reference video input", zh: "参考视频输入" },
+    },
+    // Output resolution. Kling and Hailuo publish a distinct per-second price
+    // per resolution tier; models with a flat rate never read this fact.
+    resolution: {
+      enum: ["480p", "512p", "720p", "768p", "1080p", "2k", "4k"],
+      enumLabels: {
+        "480p": { en: "480p", zh: "480p" },
+        "512p": { en: "512p", zh: "512p" },
+        "720p": { en: "720p", zh: "720p" },
+        "768p": { en: "768p", zh: "768p" },
+        "1080p": { en: "1080p", zh: "1080p" },
+        "2k": { en: "2k", zh: "2k" },
+        "4k": { en: "4k", zh: "4k" },
+      },
+      description: { en: "Output video resolution", zh: "输出视频分辨率" },
+    },
   },
   usageExamples: [
-    { label: "seedance2.5 5s", facts: { seconds: 5 } },
-    { label: "kling-video-v3 5s", facts: { seconds: 5 } },
-    { label: "wan3-720p 5s", facts: { seconds: 5 } },
-    { label: "hailuo-h3 10s", facts: { seconds: 10 } },  ],
+    { label: "seedance2.5 720p 5s", facts: { seconds: 5, tokens: 108000, video_input: "none", resolution: "720p" } },
+    { label: "seedance2.5 480p 5s", facts: { seconds: 5, tokens: 48037.5, video_input: "none", resolution: "480p" } },
+    { label: "seedance2.5 720p 5s +参考视频", facts: { seconds: 5, tokens: 108000, video_input: "video", resolution: "720p" } },
+    { label: "kling-video-v3 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "kling-video-v3 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
+    { label: "wan3-720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "hailuo-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
+    { label: "hailuo-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
+    { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+  ],
   protocols: ["openai_video"],
 };
 
@@ -162,20 +280,53 @@ export function parseTaskResult(ctx, body) {
   return result;
 }
 
+// Billing facts per model. Seedance 2.5 is billed by tokens (official Ark
+// formula); every other declared model is billed per output second, several of
+// them by resolution tier. Facts the model's expression does not reference are
+// harmless — the engine only prices the variables the expression actually uses.
 export function extractUsage(ctx) {
-  const seconds = requestedSeconds(ctx.requestBody || {});
-  return { seconds: seconds === undefined ? DEFAULT_SECONDS : seconds };
+  const req = ctx.requestBody || {};
+  const body = ctx.body || ctx.requestBody || {};
+  const seconds = requestedSeconds(body);
+  const facts = {};
+  // An omitted duration keeps the upstream default so a per-second expression
+  // always has a multiplier instead of evaluating an absent usage key.
+  facts.seconds = seconds === undefined ? DEFAULT_SECONDS : seconds;
+
+  const resolution = normalizeResolution(requestedResolution(body));
+  if (resolution) facts.resolution = resolution;
+
+  // Seedance 2.5 estimate. The estimated tier is only a reservation sizing; the
+  // completion hook overlays the measured token count.
+  const model = trimmed(ctx.upstreamModel || ctx.model).toLowerCase();
+  if (model === "seedance2.5") {
+    facts.tokens = estimateTokens(facts.seconds, resolution || DEFAULT_RESOLUTION);
+    facts.video_input = hasVideoInput(body, ctx.requestHeaders) ? "video" : "none";
+  }
+  return facts;
 }
 
-// Measured duration replaces the submitted estimate when the upstream reports
-// it; an omitted value keeps the estimate recorded at submit time.
+// Measured values replace the submitted estimates when the upstream reports
+// them; an omitted value keeps the estimate recorded at submit time.
 export function extractUsageOnComplete(task, result, body) {
   const source = body || {};
+  const facts = {};
+
   const measured = Number(
     source.seconds === undefined ? (source.duration === undefined ? source.video_duration : source.duration) : source.seconds
   );
-  if (!Number.isFinite(measured) || measured <= 0) return {};
-  return { seconds: Math.min(measured, MAX_SECONDS) };
+  if (Number.isFinite(measured) && measured > 0) facts.seconds = Math.min(measured, MAX_SECONDS);
+
+  const resolution = normalizeResolution(source.resolution || source.size);
+  if (resolution) facts.resolution = resolution;
+
+  // Seedance reports a real billable token count once the task succeeds.
+  const usage = source.usage || {};
+  let tokens = Number(usage.completion_tokens);
+  if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);
+  if (Number.isFinite(tokens) && tokens > 0) facts.tokens = tokens;
+
+  return facts;
 }
 
 export function listArtifacts(task) {

@@ -140,37 +140,171 @@
       "expected": { "status": "UNKNOWN", "reason": "unrecognized status: weird" }
     },
     {
+      "name": "usage reports seconds only for a plain model",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "6" },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 6 }
+    },
+    {
       "name": "usage falls back to the default duration",
       "hook": "extractUsage",
-      "args": [{ "requestBody": { "prompt": "a cat" }, "action": "text_to_video" }],
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat" },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
       "expected": { "seconds": 5 }
     },
     {
       "name": "usage accepts the duration alias",
       "hook": "extractUsage",
-      "args": [{ "requestBody": { "prompt": "a cat", "duration": 10 }, "action": "text_to_video" }],
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "duration": 10 },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
       "expected": { "seconds": 10 }
     },
     {
       "name": "usage accepts numeric strings",
       "hook": "extractUsage",
-      "args": [{ "requestBody": { "prompt": "a cat", "seconds": "6" }, "action": "text_to_video" }],
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "6" },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
       "expected": { "seconds": 6 }
     },
     {
       "name": "usage rejects an out-of-range duration",
       "hook": "extractUsage",
-      "args": [{ "requestBody": { "prompt": "a cat", "seconds": 0 }, "action": "text_to_video" }],
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": 0 },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
       "expectedError": "seconds must be between 1 and 3600"
     },
     {
-      "name": "completion usage overlays the measured duration",
-      "hook": "extractUsageOnComplete",
-      "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, { "seconds": "8" }],
-      "expected": { "seconds": 8 }
+      "name": "usage normalizes a pixel size to a resolution tier",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": 5, "size": "1920x1080" },
+          "model": "kling-video-v3",
+          "upstreamModel": "kling-video-v3",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 5, "resolution": "1080p" }
     },
     {
-      "name": "completion usage omits an unreported duration",
+      "name": "usage reads metadata resolution for kling",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": 5, "metadata": { "resolution": "720p" } },
+          "model": "kling-video-v3",
+          "upstreamModel": "kling-video-v3",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 5, "resolution": "720p" }
+    },
+    {
+      "name": "usage derives seedance tokens from the ark formula",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "5", "size": "1280x720" },
+          "model": "seedance2.5",
+          "upstreamModel": "seedance2.5",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 5, "resolution": "720p", "tokens": 108000, "video_input": "none" }
+    },
+    {
+      "name": "usage derives seedance 480p tokens",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "5", "metadata": { "resolution": "480P" } },
+          "model": "seedance2.5",
+          "upstreamModel": "seedance2.5",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 5, "resolution": "480p", "tokens": 48037.5, "video_input": "none" }
+    },
+    {
+      "name": "usage marks a reference video input",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "5", "video": "https://v.example/a.mp4" },
+          "model": "seedance2.5",
+          "upstreamModel": "seedance2.5",
+          "action": "video_to_video"
+        }
+      ],
+      "expected": { "seconds": 5, "tokens": 108000, "video_input": "video" }
+    },
+    {
+      "name": "usage reads the reference-video header",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "5" },
+          "model": "seedance2.5",
+          "upstreamModel": "seedance2.5",
+          "action": "video_to_video",
+          "requestHeaders": { "x-input-video": "https://v.example/a.mp4" }
+        }
+      ],
+      "expected": { "seconds": 5, "tokens": 108000, "video_input": "video" }
+    },
+    {
+      "name": "completion overlays the measured duration and tier",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS" },
+        { "status": "SUCCESS" },
+        { "seconds": "8", "resolution": "1080p" }
+      ],
+      "expected": { "seconds": 8, "resolution": "1080p" }
+    },
+    {
+      "name": "completion overlays the measured seedance tokens",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS" },
+        { "status": "SUCCESS" },
+        { "usage": { "completion_tokens": 216000 } }
+      ],
+      "expected": { "tokens": 216000 }
+    },
+    {
+      "name": "completion omits unreported values",
       "hook": "extractUsageOnComplete",
       "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, {}],
       "expected": {}
