@@ -1,0 +1,302 @@
+{
+  "cases": [
+    {
+      "name": "submit json forwards body and pins upstream model",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "kling-video-v3", "prompt": "a cat", "seconds": "5" },
+          "model": "kling-video-v3",
+          "upstreamModel": "kling-video-v3",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "kling-video-v3", "prompt": "a cat", "seconds": "5" }
+      }
+    },
+    {
+      "name": "submit rejects missing prompt",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "kling-video-v3" },
+          "model": "kling-video-v3",
+          "upstreamModel": "kling-video-v3",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expectedError": "field prompt is required"
+    },
+    {
+      "name": "submit rejects remix",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "kling-video-v3", "prompt": "a cat" },
+          "model": "kling-video-v3",
+          "upstreamModel": "kling-video-v3",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "remix",
+          "files": []
+        }
+      ],
+      "expectedError": "remix is not supported"
+    },
+    {
+      "name": "submit multipart forwards fields and file parts",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "5" },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "image_to_video",
+          "files": [{ "ref": "f1", "field": "input_reference", "filename": "a.png" }]
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret" },
+        "bodyType": "multipart",
+        "parts": [
+          { "name": "model", "value": "wan3-720p" },
+          { "name": "prompt", "value": "a cat" },
+          { "name": "seconds", "value": "5" },
+          { "name": "input_reference", "fileRef": "f1", "filename": "a.png" }
+        ]
+      }
+    },
+    {
+      "name": "parseSubmitResponse reads id",
+      "hook": "parseSubmitResponse",
+      "args": [
+        { "apiKey": "secret" },
+        { "statusCode": 200, "headers": {}, "body": { "id": "task_1", "status": "queued" } }
+      ],
+      "expected": { "taskId": "task_1", "taskData": { "id": "task_1", "status": "queued" } }
+    },
+    {
+      "name": "parseSubmitResponse falls back to task_id",
+      "hook": "parseSubmitResponse",
+      "args": [{ "apiKey": "secret" }, { "statusCode": 200, "headers": {}, "body": { "task_id": "task_2" } }],
+      "expected": { "taskId": "task_2", "taskData": { "task_id": "task_2" } }
+    },
+    {
+      "name": "query request targets the task path",
+      "hook": "buildQueryRequest",
+      "args": [{ "taskId": "task_1", "baseUrl": "https://up.example", "apiKey": "secret" }],
+      "expected": {
+        "url": "https://up.example/v1/videos/task_1",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer secret" }
+      }
+    },
+    {
+      "name": "query request encodes the task id",
+      "hook": "buildQueryRequest",
+      "args": [{ "taskId": "a/b", "baseUrl": "https://up.example", "apiKey": "secret" }],
+      "expected": {
+        "url": "https://up.example/v1/videos/a%2Fb",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer secret" }
+      }
+    },
+    {
+      "name": "task result maps completed",
+      "hook": "parseTaskResult",
+      "args": [{ "taskId": "t" }, { "status": "completed", "progress": 100 }],
+      "expected": { "status": "SUCCESS" }
+    },
+    {
+      "name": "task result maps in_progress with progress",
+      "hook": "parseTaskResult",
+      "args": [{ "taskId": "t" }, { "status": "in_progress", "progress": 35 }],
+      "expected": { "status": "IN_PROGRESS", "progress": "35%" }
+    },
+    {
+      "name": "task result maps failure with upstream reason",
+      "hook": "parseTaskResult",
+      "args": [{ "taskId": "t" }, { "status": "failed", "error": { "code": "content_moderated", "message": "rejected" } }],
+      "expected": { "status": "FAILURE", "reason": "rejected" }
+    },
+    {
+      "name": "task result keeps unrecognized status unknown",
+      "hook": "parseTaskResult",
+      "args": [{ "taskId": "t" }, { "status": "weird" }],
+      "expected": { "status": "UNKNOWN", "reason": "unrecognized status: weird" }
+    },
+    {
+      "name": "usage falls back to the default duration",
+      "hook": "extractUsage",
+      "args": [{ "requestBody": { "prompt": "a cat" }, "action": "text_to_video" }],
+      "expected": { "seconds": 5 }
+    },
+    {
+      "name": "usage accepts the duration alias",
+      "hook": "extractUsage",
+      "args": [{ "requestBody": { "prompt": "a cat", "duration": 10 }, "action": "text_to_video" }],
+      "expected": { "seconds": 10 }
+    },
+    {
+      "name": "usage accepts numeric strings",
+      "hook": "extractUsage",
+      "args": [{ "requestBody": { "prompt": "a cat", "seconds": "6" }, "action": "text_to_video" }],
+      "expected": { "seconds": 6 }
+    },
+    {
+      "name": "usage rejects an out-of-range duration",
+      "hook": "extractUsage",
+      "args": [{ "requestBody": { "prompt": "a cat", "seconds": 0 }, "action": "text_to_video" }],
+      "expectedError": "seconds must be between 1 and 3600"
+    },
+    {
+      "name": "completion usage overlays the measured duration",
+      "hook": "extractUsageOnComplete",
+      "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, { "seconds": "8" }],
+      "expected": { "seconds": 8 }
+    },
+    {
+      "name": "completion usage omits an unreported duration",
+      "hook": "extractUsageOnComplete",
+      "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, {}],
+      "expected": {}
+    },
+    {
+      "name": "artifacts expose the video only when successful",
+      "hook": "listArtifacts",
+      "args": [{ "taskId": "t", "status": "SUCCESS", "action": "text_to_video", "data": {}, "producerVersion": "1.0.0" }],
+      "expected": [{ "key": "video", "type": "video" }]
+    },
+    {
+      "name": "artifacts stay empty while running",
+      "hook": "listArtifacts",
+      "args": [{ "taskId": "t", "status": "IN_PROGRESS", "action": "text_to_video", "data": {}, "producerVersion": "1.0.0" }],
+      "expected": []
+    },
+    {
+      "name": "content request proxies the upstream bytes",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "video",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "upstreamTaskId": "task_1",
+          "clientRequest": { "method": "GET", "headers": {} }
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos/task_1/content",
+        "method": "GET",
+        "headers": { "Authorization": "Bearer secret" }
+      }
+    },
+    {
+      "name": "video decode accepts a json submit",
+      "hook": "protocols",
+      "path": ["openai_video", "decodeRequest"],
+      "args": [
+        {
+          "protocol": "openai_video",
+          "operation": "create",
+          "model": "wan3-720p",
+          "body": { "kind": "json", "value": { "prompt": "hi", "seconds": "5" } }
+        }
+      ],
+      "expected": {
+        "kind": "submit",
+        "model": "wan3-720p",
+        "action": "text_to_video",
+        "requestBody": { "model": "wan3-720p", "prompt": "hi", "seconds": "5" }
+      }
+    },
+    {
+      "name": "video decode detects an image input",
+      "hook": "protocols",
+      "path": ["openai_video", "decodeRequest"],
+      "args": [
+        {
+          "protocol": "openai_video",
+          "operation": "create",
+          "model": "wan3-720p",
+          "body": { "kind": "json", "value": { "prompt": "hi", "image": "https://img.example/a.png" } }
+        }
+      ],
+      "expected": {
+        "kind": "submit",
+        "model": "wan3-720p",
+        "action": "image_to_video",
+        "requestBody": { "model": "wan3-720p", "prompt": "hi", "image": "https://img.example/a.png" }
+      }
+    },
+    {
+      "name": "video decode rejects an out-of-range duration",
+      "hook": "protocols",
+      "path": ["openai_video", "decodeRequest"],
+      "args": [
+        {
+          "protocol": "openai_video",
+          "operation": "create",
+          "model": "wan3-720p",
+          "body": { "kind": "json", "value": { "prompt": "hi", "seconds": 4000 } }
+        }
+      ],
+      "expectedError": "seconds must be between 1 and 3600"
+    },
+    {
+      "name": "video render returns the openai video shape",
+      "hook": "protocols",
+      "path": ["openai_video", "render"],
+      "args": [
+        {},
+        {
+          "task_id": "task_1",
+          "status": "IN_PROGRESS",
+          "progress": "35%",
+          "created_at": 100,
+          "properties": { "origin_model_name": "kling-video-v3" }
+        }
+      ],
+      "expected": {
+        "id": "task_1",
+        "object": "video",
+        "model": "kling-video-v3",
+        "status": "in_progress",
+        "progress": 35,
+        "created_at": 100
+      }
+    },
+    {
+      "name": "video render reports failures",
+      "hook": "protocols",
+      "path": ["openai_video", "render"],
+      "args": [
+        {},
+        { "task_id": "task_1", "status": "FAILURE", "fail_reason": "rejected", "properties": {} }
+      ],
+      "expected": {
+        "id": "task_1",
+        "object": "video",
+        "model": "",
+        "status": "failed",
+        "progress": 0,
+        "created_at": 0,
+        "error": { "code": "video_generation_failed", "message": "rejected" }
+      }
+    }
+  ]
+}
