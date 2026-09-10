@@ -358,6 +358,33 @@ const TIME_TIER_CONDITION =
   /^(?:hour|minute|weekday|month|day)\("[^"]+"\)\s*(?:==|<=|>=|<|>)\s*[\d.eE+-]+$/u
 
 /**
+ * Peak/off-peak conditions can be boolean combinations of several time
+ * comparisons with parenthesized operands, e.g.
+ * `weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && ...) || ...)`.
+ * Splitting only on `&&`/`||` would leave the parentheses attached to the
+ * operands, so unwrap them per operand and require balanced parentheses
+ * overall. Every operand must be a plain time-function comparison.
+ */
+function isTimeConditionExpr(condition: string): boolean {
+  let depth = 0
+  for (const character of condition) {
+    if (character === '(') depth += 1
+    else if (character === ')') {
+      depth -= 1
+      if (depth < 0) return false
+    }
+  }
+  if (depth !== 0) return false
+  const operands = condition
+    .split(/\s*(?:&&|\|\|)\s*/u)
+    .map((part) => part.replace(/^\(+/u, '').replace(/\)+$/u, '').trim())
+  return (
+    operands.length > 0 &&
+    operands.every((operand) => TIME_TIER_CONDITION.test(operand))
+  )
+}
+
+/**
  * The linear-chain check above only accepts request-variable conditions, so a
  * peak/off-peak chain such as
  * `weekday("Asia/Shanghai") <= 5 ? tier("peak", ...) : tier("off", ...)` would
@@ -377,13 +404,7 @@ function parseTimeConditionalTiers(exprStr: string): ParsedTier[] {
   const colon = findTaskTopLevelCharacter(body, ':', question + 1)
   if (colon < 0) return []
   const condition = body.slice(0, question).trim()
-  if (
-    !condition
-      .split(/\s*(?:&&|\|\|)\s*/u)
-      .every((part) => TIME_TIER_CONDITION.test(part.trim()))
-  ) {
-    return []
-  }
+  if (!isTimeConditionExpr(condition)) return []
   const matched = parseTiersFromExpr(body.slice(question + 1, colon).trim())
   const otherwise = parseTiersFromExpr(body.slice(colon + 1).trim())
   return matched.length === 1 && otherwise.length === 1

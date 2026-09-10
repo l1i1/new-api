@@ -91,4 +91,46 @@ describe('dynamic pricing group display', () => {
 
     assert.equal(summary?.tier?.label, 'pro_peak')
   })
+
+  const deepseekExpr =
+    'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? tier("flash_peak", p * 0.30 + c * 1.20 + cr * 0.006) : tier("flash_offpeak", p * 0.15 + c * 0.60 + cr * 0.003)'
+
+  test('parses a parenthesized compound time condition instead of falling back to the raw expression', () => {
+    const model = {
+      billing_mode: 'tiered_expr',
+      billing_expr: deepseekExpr,
+    } as PricingModel
+
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      usdExchangeRate: 7,
+      displayCurrency: 'CNY',
+      now: new Date('2026-09-11T02:00:00Z'),
+    })
+
+    assert.equal(summary?.isSpecialExpression, false)
+    assert.deepEqual(
+      summary?.tiers.map((tier) => tier.label),
+      ['flash_peak', 'flash_offpeak']
+    )
+    assert.equal(summary?.tier?.label, 'flash_peak')
+    assert.equal(summary?.primaryEntries[0]?.value, 0.3)
+  })
+
+  test('evaluates the off-peak branch of a parenthesized compound time condition', () => {
+    const model = {
+      billing_mode: 'tiered_expr',
+      billing_expr: deepseekExpr,
+    } as PricingModel
+
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      usdExchangeRate: 7,
+      displayCurrency: 'CNY',
+      now: new Date('2026-09-11T04:00:00Z'),
+    })
+
+    assert.equal(summary?.tier?.label, 'flash_offpeak')
+    assert.equal(summary?.primaryEntries[0]?.value, 0.15)
+  })
 })

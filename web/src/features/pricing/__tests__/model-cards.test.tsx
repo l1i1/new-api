@@ -412,6 +412,24 @@ describe('model cards', () => {
     expect(screen.getByText(expression)).toBeVisible()
   })
 
+  it('shows normal prices for a parenthesized compound time condition', () => {
+    const expression =
+      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? tier("flash_peak", p * 0.30 + c * 1.20 + cr * 0.006) : tier("flash_offpeak", p * 0.15 + c * 0.60 + cr * 0.003)'
+    render(
+      <ModelCard
+        model={pricingModel({
+          billing_mode: 'tiered_expr',
+          billing_expr: expression,
+        })}
+        onClick={vi.fn()}
+      />
+    )
+    expect(screen.queryByText('Special billing expression')).toBeNull()
+    expect(screen.queryByText(expression)).toBeNull()
+    expect(screen.getByText('Input')).toBeVisible()
+    expect(screen.getByText('Output')).toBeVisible()
+  })
+
   it('keeps browsing and neutral health placeholders available after the metrics request fails', async () => {
     const request = vi
       .spyOn(api, 'get')
