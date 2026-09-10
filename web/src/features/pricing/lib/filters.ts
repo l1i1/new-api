@@ -43,7 +43,7 @@ export function filterBySearch(
   return models.filter(
     (m) =>
       m.model_name?.toLowerCase().includes(lowerQuery) ||
-      m.description?.toLowerCase().includes(lowerQuery) ||
+      m.localized_description?.toLowerCase().includes(lowerQuery) ||
       m.localized_tags?.toLowerCase().includes(lowerQuery) ||
       m.vendor_localized_name?.toLowerCase().includes(lowerQuery)
   )

@@ -130,6 +130,7 @@ describe('model cards', () => {
           enable_groups: groups,
           supported_endpoint_types: endpoints,
           tags: tags.join(','),
+          localized_tags: tags.join(','),
         })}
         onClick={vi.fn()}
       />
@@ -159,6 +160,31 @@ describe('model cards', () => {
         'Token-based'
       )
     ).toBeVisible()
+  })
+
+  it('renders localized description, tags and vendor without tnt markup', () => {
+    const { container } = render(
+      <ModelCard
+        model={pricingModel({
+          vendor_name: '阿里巴巴',
+          vendor_localized_name: 'Alibaba',
+          description:
+            '<tnt l="zh">轻量任务模型</tnt><tnt l="en">Lightweight model</tnt>',
+          localized_description: 'Lightweight model',
+          tags: '<tnt l="zh">免费</tnt><tnt l="en">Free</tnt>',
+          localized_tags: 'Free',
+        })}
+        onClick={vi.fn()}
+      />
+    )
+
+    expect(container.textContent).toContain('Alibaba')
+    expect(container.textContent).toContain('Lightweight model')
+    expect(screen.getByRole('group', { name: 'Tags' })).toHaveTextContent(
+      'Free'
+    )
+    expect(container.textContent).not.toContain('<tnt')
+    expect(container.textContent).not.toContain('免费')
   })
 
   it('omits metadata fields when the model has no groups, endpoints or tags', () => {

@@ -56,6 +56,25 @@ func TestQuerySummaryAllAggregatesAverageTtftAcrossBuckets(t *testing.T) {
 	require.Equal(t, float64(80), result.Models[0].SuccessRate)
 }
 
+func TestRecentSuccessSeriesAlignsPointsToHoursAndSkipsEmptyHours(t *testing.T) {
+	hourTs := time.Now().Unix() / 3600 * 3600
+	buckets := map[int64]counters{
+		// Two sub-hour buckets inside the same hour must merge into one point.
+		hourTs - 5*3600:        {requestCount: 1, successCount: 1},
+		hourTs - 5*3600 + 1800: {requestCount: 1, successCount: 0},
+		hourTs:                 {requestCount: 2, successCount: 2},
+		hourTs - 3*3600 + 2400: {requestCount: 0, successCount: 0},
+	}
+
+	points := recentSuccessSeries(buckets)
+	require.Len(t, points, 2)
+	require.Equal(t, hourTs-5*3600, points[0].Ts)
+	require.Equal(t, float64(50), points[0].SuccessRate)
+	require.Equal(t, hourTs, points[1].Ts)
+	require.Equal(t, float64(100), points[1].SuccessRate)
+	require.Nil(t, recentSuccessSeries(nil))
+}
+
 func clearHotBuckets() {
 	hotBuckets.Range(func(key, _ any) bool {
 		hotBuckets.Delete(key)

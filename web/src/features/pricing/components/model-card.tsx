@@ -68,7 +68,10 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const displayCurrency = props.displayCurrency ?? 'CNY'
   const isTokenBased = isTokenBasedModel(props.model)
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
-  const tags = parseTags(props.model.tags)
+  const tags = parseTags(props.model.localized_tags)
+  const description = (props.model.localized_description || '').trim()
+  const vendorName =
+    props.model.vendor_localized_name || props.model.vendor_name
   const groups = props.model.enable_groups || []
   const endpoints = props.model.supported_endpoint_types || []
   const modelIconKey = props.model.icon || props.model.vendor_icon
@@ -241,12 +244,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           >
             {props.model.model_name}
           </h3>
-          {props.model.vendor_name && (
+          {vendorName && (
             <p
               className='text-muted-foreground mt-1 truncate text-xs'
-              title={props.model.vendor_name}
+              title={vendorName}
             >
-              {props.model.vendor_name}
+              {vendorName}
             </p>
           )}
         </div>
@@ -260,7 +263,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       <CardContent className='flex flex-1 flex-col gap-3'>
         <div className='flex min-w-0 flex-col gap-1.5'>
           <p className='text-muted-foreground line-clamp-2 text-[13px] leading-5 break-words'>
-            {props.model.description || t('No description available.')}
+            {description || t('No description available.')}
           </p>
           {tags.length > 0 && (
             <div

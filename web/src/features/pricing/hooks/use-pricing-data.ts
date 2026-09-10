@@ -72,6 +72,10 @@ export function usePricingData(enabled = true) {
         vendor_icon: vendor?.icon,
         vendor_description: vendor?.description,
         localized_tags: resolveTntContent(model.tags || '', language),
+        localized_description: resolveTntContent(
+          model.description || '',
+          language
+        ),
         group_ratio: data.group_ratio,
       }
     })

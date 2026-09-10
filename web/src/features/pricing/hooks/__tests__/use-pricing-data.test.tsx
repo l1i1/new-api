@@ -110,12 +110,15 @@ describe('usePricingData vendor localization', () => {
       const { models } = usePricingData()
       const name = models[0]?.vendor_localized_name
       const tags = models[0]?.localized_tags
+      const description = models[0]?.localized_description
       useEffect(() => {
-        if (name && tags) observedValues.push(`${name}|${tags}`)
-      }, [name, tags])
+        if (name && tags && description) {
+          observedValues.push(`${name}|${tags}|${description}`)
+        }
+      }, [name, tags, description])
       return (
         <span>
-          {name}|{tags}
+          {name}|{tags}|{description}
         </span>
       )
     }
@@ -142,6 +145,8 @@ describe('usePricingData vendor localization', () => {
           completion_ratio: 1,
           enable_groups: ['default'],
           tags: '<tnt l="zh">免费</tnt><tnt l="en">Free</tnt>',
+          description:
+            '<tnt l="zh">轻量任务模型</tnt><tnt l="en">Lightweight model</tnt>',
         },
       ],
       vendors: [
@@ -166,15 +171,18 @@ describe('usePricingData vendor localization', () => {
         </QueryClientProvider>
       )
     })
-    await waitForText('Alibaba|Free')
-    assert.equal(container.textContent, 'Alibaba|Free')
+    await waitForText('Alibaba|Free|Lightweight model')
+    assert.equal(container.textContent, 'Alibaba|Free|Lightweight model')
 
     await act(async () => {
       await i18n.changeLanguage('zh')
     })
-    await waitForText('阿里巴巴|免费')
-    assert.equal(container.textContent, '阿里巴巴|免费')
-    assert.deepEqual(observedValues, ['Alibaba|Free', '阿里巴巴|免费'])
+    await waitForText('阿里巴巴|免费|轻量任务模型')
+    assert.equal(container.textContent, '阿里巴巴|免费|轻量任务模型')
+    assert.deepEqual(observedValues, [
+      'Alibaba|Free|Lightweight model',
+      '阿里巴巴|免费|轻量任务模型',
+    ])
 
     await act(async () => root.unmount())
     queryClient.clear()
