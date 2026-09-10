@@ -105,8 +105,6 @@ export function Wallet(props: WalletProps) {
   const { processing: waffoProcessing, processWaffoPayment } = useWaffoPayment()
   const { processing: pancakeProcessing, processWaffoPancakePayment } =
     useWaffoPancakePayment()
-  const { processing: hotPayProcessing, processHotPayPayment, qrCode, clearQrCode } =
-    useHotPayPayment()
 
   // Fetch and refresh user data
   const fetchUser = useCallback(async () => {
@@ -123,6 +121,16 @@ export function Wallet(props: WalletProps) {
       setUserLoading(false)
     }
   }, [])
+
+  // Called once the HotPay QR flow observes a settled order; refreshes the
+  // displayed balance and reward ledger the same way a hosted payment does.
+  const handleHotPayPaid = useCallback(async () => {
+    await fetchUser()
+    await inviteTopUpRewardsQuery.refetch()
+  }, [fetchUser, inviteTopUpRewardsQuery])
+
+  const { processing: hotPayProcessing, processHotPayPayment, qrCode, clearQrCode, paid } =
+    useHotPayPayment(handleHotPayPaid)
 
   useEffect(() => {
     fetchUser()
@@ -448,6 +456,8 @@ export function Wallet(props: WalletProps) {
         }}
         value={qrCode?.value ?? ''}
         amount={qrCode?.amount ?? 0}
+        paid={paid && qrCode !== null}
+        expiresAt={qrCode?.expiresAt}
       />
     </>
   )
