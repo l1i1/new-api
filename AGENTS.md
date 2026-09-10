@@ -154,6 +154,26 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - In React components, use `useTranslation()` and call `t('English key')` for user-facing text.
 - Follow `web/AGENTS.md` for detailed frontend conventions, including TypeScript, component structure, styling, accessibility, testing, and build checks.
 
+### Upstream Sync (rcNN merges)
+
+Syncing an upstream `rcNN` into `tokeness/main` resolves at file granularity: a merge can adopt one side's whole file and silently drop the other side's work, even when that work is still an ancestor of HEAD. rc35 lost five fork changes at once this way. A sync is not finished until the checks below pass.
+
+**After every upstream sync, before treating the merge as done:**
+
+1. **Compare the merge's parents against its result.** For merge `M` with fork parent `P1` and upstream parent `P2`, list every path where the result matches upstream while the fork side differed, and the reverse. Treat each hit as a suspected dropped fork change until verified by hand. A per-file comparison over `git ls-tree -r -z` is enough; reading every diff is not required.
+2. **Scan fork-only commits for surviving content.** For each commit reachable only from the fork side (`git log upstream..fork`), check whether the lines it added still exist in the merged tree. A low survival rate flags a dropped change.
+3. **Hunt orphaned producers.** A helper, comment, i18n key, or module with no remaining consumer almost always means a merge dropped its consumer. Grep for exported symbols with zero call sites and locale keys with zero `t()` usages.
+
+**Merge two-sided conflicts as a union, not a choice.** When both sides changed the same file, keep both behaviours unless one is provably superseded. `web/src/features/usage-logs/lib/format.ts` (fork's `getEffectiveBillingRatio` plus upstream's quota-operation delegation) and the locale files are the known cases.
+
+**Keep fan-out contracts in sync.** A merge can leave the frontend on the upstream contract while the backend keeps the fork contract: the rc35 model card read `recent_success_series` while the backend still emitted `recent_success_rates`, so every health bar rendered gray. When a change alters a field name, response shape, or enum crossing backend and frontend, grep both sides, confirm they still agree, and ship both in the same release — shipping one side alone is worse than shipping neither.
+
+**Locale files after any merge:** every locale must keep an identical key set with zero duplicate keys. When adding keys, prove the file round-trips byte-for-byte before writing, so the diff contains only additions rather than reformatting.
+
+**Trust the tree, not the history.** "This was fixed before" does not mean it is present now, because an upstream merge can revert a fork fix that is still an ancestor of HEAD. Verify against current file content. Before attributing a commit to the fork or to upstream, check its author and `git merge-base --is-ancestor` instead of assuming.
+
+**Test-runner blind spot:** `bun run test` stops after the vitest phase when vitest fails, so the `node:test` files under `web/src` never run. After changes to shared libraries, enumerate and run them explicitly. Some upstream-authored tests (pricing, usage-logs, models) fail against the fork implementation as a stable baseline; re-check any failure against that baseline so a real new regression is never buried among them.
+
 ### Project Governance
 
 **Protected project information:** The following project-related information is strictly protected and MUST NOT be modified, deleted, replaced, or removed under any circumstances:
