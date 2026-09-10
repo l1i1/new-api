@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,9 +39,7 @@ func TestGetWaffoPancakeCNYAmount(t *testing.T) {
 	originalPrice := operation_setting.Price
 	originalQuotaDisplayType := operation_setting.GetGeneralSetting().QuotaDisplayType
 	originalDiscounts := make(map[int]float64, len(operation_setting.GetPaymentSetting().AmountDiscount))
-	for k, v := range operation_setting.GetPaymentSetting().AmountDiscount {
-		originalDiscounts[k] = v
-	}
+	maps.Copy(originalDiscounts, operation_setting.GetPaymentSetting().AmountDiscount)
 	originalTopupGroupRatio := common.TopupGroupRatio2JSONString()
 
 	t.Cleanup(func() {

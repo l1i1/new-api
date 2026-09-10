@@ -263,7 +263,7 @@ func DisableUserWithAuthVersion(userId int, reason string) (bool, error) {
 		}
 		result := tx.Model(&User{}).
 			Where("id = ? AND status <> ? AND auth_version = ?", userId, common.UserStatusDisabled, user.AuthVersion).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status":       common.UserStatusDisabled,
 				"auth_version": next,
 			})
@@ -311,7 +311,7 @@ func InitializeUserAuthVersions() error {
 	return DB.Model(&User{}).Where("auth_version IS NULL OR auth_version < ?", 1).Update("auth_version", 1).Error
 }
 
-func updateUserCacheFieldAtVersion(userId int, field string, value interface{}, authVersion int64) error {
+func updateUserCacheFieldAtVersion(userId int, field string, value any, authVersion int64) error {
 	if !common.RedisAvailable() {
 		return nil
 	}

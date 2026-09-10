@@ -1,6 +1,6 @@
+import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 
 const root = process.cwd()
 const testFilePattern = /\.(test|spec)\.(ts|tsx)$/
@@ -24,7 +24,7 @@ const vitestFiles = []
 const nodeTestFiles = []
 for (const file of collectFiles(path.join(root, 'src'))) {
   const source = readFileSync(file, 'utf8')
-  const relativeFile = path.relative(root, file)
+  const relativeFile = `./${path.relative(root, file).split(path.sep).join('/')}`
   if (/from\s+['"]vitest['"]/.test(source)) {
     vitestFiles.push(relativeFile)
   } else if (/from\s+['"]node:test['"]/.test(source)) {
@@ -37,9 +37,15 @@ function run(args) {
     cwd: root,
     stdio: 'inherit',
   })
-  if (result.error) throw result.error
-  if (result.status !== 0) process.exit(result.status ?? 1)
+  if (result.error) console.error(result.error)
+  return result.status ?? 1
 }
 
-if (vitestFiles.length > 0) run(['x', 'vitest', 'run', ...vitestFiles])
-if (nodeTestFiles.length > 0) run(['test', ...nodeTestFiles])
+let exitCode = 0
+if (vitestFiles.length > 0) {
+  exitCode = run(['x', 'vitest', 'run', ...vitestFiles]) || exitCode
+}
+if (nodeTestFiles.length > 0) {
+  exitCode = run(['test', ...nodeTestFiles]) || exitCode
+}
+process.exitCode = exitCode

@@ -36,6 +36,56 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	require.Contains(t, parsed, "model_price")
 }
 
+func TestTaskPluginLogVisibilityIsRoleSeparated(t *testing.T) {
+	other := common.MapToJsonStr(map[string]any{
+		"model_price": 1.25,
+		"admin_info": map[string]any{
+			"task_plugin": map[string]any{
+				"key":     "document-parser",
+				"name":    "Document Parser",
+				"version": "1.2.3",
+			},
+		},
+		"root_info": map[string]any{
+			"upstream_task_id": "upstream-private",
+			"task_plugin": map[string]any{
+				"generation": 42,
+			},
+		},
+	})
+
+	t.Run("user", func(t *testing.T) {
+		logs := []*Log{{Other: other}}
+		formatUserLogs(logs, 0)
+
+		parsed, err := common.StrToMap(logs[0].Other)
+		require.NoError(t, err)
+		assert.NotContains(t, parsed, "admin_info")
+		assert.NotContains(t, parsed, "root_info")
+		assert.Equal(t, 1.25, parsed["model_price"])
+	})
+
+	t.Run("admin", func(t *testing.T) {
+		logs := []*Log{{Other: other}}
+		FormatAdminLogs(logs)
+
+		parsed, err := common.StrToMap(logs[0].Other)
+		require.NoError(t, err)
+		assert.Contains(t, parsed, "admin_info")
+		assert.NotContains(t, parsed, "root_info")
+	})
+
+	t.Run("root", func(t *testing.T) {
+		logs := []*Log{{Other: other}}
+		FormatRootLogs(logs)
+
+		parsed, err := common.StrToMap(logs[0].Other)
+		require.NoError(t, err)
+		assert.Contains(t, parsed, "admin_info")
+		assert.Contains(t, parsed, "root_info")
+	})
+}
+
 func TestFormatUserLogsSanitizesStreamErrors(t *testing.T) {
 	other := common.MapToJsonStr(map[string]interface{}{
 		"stream_status": map[string]interface{}{

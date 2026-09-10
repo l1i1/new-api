@@ -1,10 +1,10 @@
 package dto
 
 type Notify struct {
-	Type    string        `json:"type"`
-	Title   string        `json:"title"`
-	Content string        `json:"content"`
-	Values  []interface{} `json:"values"`
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	Values  []any  `json:"values"`
 	// TemplateData is an optional map used to render {{.field}} placeholders in
 	// Title/Content. When set, it takes precedence over the legacy Values list.
 	TemplateData map[string]any `json:"template_data,omitempty"`
@@ -18,7 +18,7 @@ const (
 	NotifyTypeChannelTest   = "channel_test"
 )
 
-func NewNotify(t string, title string, content string, values []interface{}) Notify {
+func NewNotify(t string, title string, content string, values []any) Notify {
 	return Notify{
 		Type:    t,
 		Title:   title,

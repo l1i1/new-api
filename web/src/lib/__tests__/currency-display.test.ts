@@ -90,4 +90,29 @@ describe('user currency display preference', () => {
     assert.equal(formatPaymentAmount(2, 'USD'), '¥14')
     assert.equal(formatPaymentAmount(2, 'EUR'), 'EUR 2')
   })
+
+  test('keeps local preference ahead of server-only custom and token modes', () => {
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...originalCurrencyConfig,
+        quotaDisplayType: 'CUSTOM',
+        customCurrencySymbol: '🐱',
+        customCurrencyExchangeRate: 1,
+      },
+    })
+
+    useCurrencyDisplayStore.getState().setCurrency('USD')
+    assert.equal(formatCurrencyFromUSD(1), '$1')
+
+    useCurrencyDisplayStore.getState().setCurrency('CNY')
+    assert.equal(formatCurrencyFromUSD(1), '¥1')
+
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...originalCurrencyConfig,
+        quotaDisplayType: 'TOKENS',
+      },
+    })
+    assert.equal(formatCurrencyFromUSD(1), '¥1')
+  })
 })

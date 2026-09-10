@@ -428,3 +428,30 @@ plugin-routing changes, relay/performance fixes, and pricing UI updates.
 - Focused Go tests for changed packages, `go test ./...`, `go vet ./...`, relaykit
   standalone build/tests, frontend typecheck/tests/build, and deployment/config
   validation pass where applicable.
+
+## Upstream rc36 Synchronization
+
+### Goal
+
+Merge upstream `v1.0.0-rc.36` into the Tokeness candidate while preserving
+Tokeness payment, billing, routing, localization, pricing, and deployment
+behavior and incorporating rc36's model, quota, plugin, redemption, and UI
+changes.
+
+### Acceptance Criteria
+
+- The merge result has rc36 as an ancestor and no unresolved paths or conflict
+  markers.
+- Overlapping files contain the union of upstream behavior and Tokeness-owned
+  behavior; no whole-file side selection is used to resolve semantic conflicts.
+- Frontend locale JSON files have identical key sets and valid JSON.
+- Root Go and standalone `relaykit` builds/tests, frontend typecheck/build, and
+  `git diff --check` pass, with pre-existing baseline failures recorded.
+- Parent/result blob comparison, fork-only commit survival, and orphan-consumer
+  scans are run before the candidate is considered reviewable.
+
+### Constraints
+
+- Work is performed on an isolated candidate branch; no deploy or push is part
+  of this synchronization.
+- Existing dirty changes in the main checkout remain untouched.
