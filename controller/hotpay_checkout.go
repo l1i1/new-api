@@ -139,22 +139,48 @@ func hotPaySubscriptionMethod(currency, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Waffo Pancake has no CNY subscription products; CNY plans can only be
-	// settled through the CNY-only gopay_alipay provider.
-	if strings.EqualFold(strings.TrimSpace(currency), model.PaymentCurrencyCNY) && method != "alipay" {
+	// Waffo Pancake has no CNY subscription products, so a CNY plan may only
+	// ride a provider whose subscription matrix covers CNY (gopay_alipay or the
+	// native WeChat provider).
+	if strings.EqualFold(strings.TrimSpace(currency), model.PaymentCurrencyCNY) &&
+		hotPayProviderForMethod(method, currency) == model.PaymentProviderWaffoPancake {
 		return "", errHotPayUnsupportedLegacyMethod
 	}
 	return method, nil
 }
 
 // hotPayProviderForMethod maps a canonical payment method to the HotPay
-// provider that owns it: alipay is the CNY-only gopay_alipay direct provider,
-// every other method rides Waffo Pancake.
-func hotPayProviderForMethod(method string) string {
-	if strings.EqualFold(strings.TrimSpace(method), "alipay") {
-		return model.PaymentProviderGoPayAlipay
+// provider that owns it, using the operator-configurable routing map. The map
+// is the single source of provider selection; an unmapped method falls back to
+// the default for that method.
+func hotPayProviderForMethod(method, currency string) string {
+	provider := setting.GetHotPayMethodProviders()[strings.ToLower(strings.TrimSpace(method))]
+	// An unmapped method falls back to the multi-currency provider so a new or
+	// unlisted method can never resolve to an empty provider.
+	if provider == "" {
+		return model.PaymentProviderWaffoPancake
 	}
-	return model.PaymentProviderWaffoPancake
+	// The native WeChat provider is CNY-only, so a non-CNY request falls back
+	// to Waffo Pancake, the only multi-currency WeChat channel.
+	if provider == model.PaymentProviderWechatV3 && !strings.EqualFold(strings.TrimSpace(currency), model.PaymentCurrencyCNY) {
+		return model.PaymentProviderWaffoPancake
+	}
+	return provider
+}
+
+// hotPayGatewayMethodFor converts a buyer-facing canonical method into the
+// method name the resolved provider expects. The native WeChat provider
+// registers its own method names (wechat_v3_native) and this merchant only has
+// the native QR product authorized, so a WeChat request resolves to it.
+func hotPayGatewayMethodFor(provider, method string) string {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if provider == model.PaymentProviderWechatV3 {
+		switch method {
+		case "wechat_pay", "wechat", "wxpay":
+			return "wechat_v3_native"
+		}
+	}
+	return method
 }
 
 // hotPayProviderAccountIDForMethod returns the optional provider account pin
@@ -162,14 +188,15 @@ func hotPayProviderForMethod(method string) string {
 // requested provider by its own routing priority; the routed account is
 // recorded on the local order via the order binding and verified verbatim
 // against settlement commands.
-func hotPayProviderAccountIDForMethod(method string) string {
-	if hotPayProviderForMethod(method) != model.PaymentProviderGoPayAlipay {
-		return hotPayProviderAccountID()
+func hotPayProviderAccountIDForMethod(method, currency string) string {
+	if hotPayProviderForMethod(method, currency) != model.PaymentProviderWaffoPancake {
+		// Alipay and the native WeChat provider are routed entirely by HotPay:
+		// no account pin is forwarded. HotPay picks the channel by its own
+		// routing priority and the routed account is backfilled onto the local
+		// order from the order response.
+		return ""
 	}
-	// Alipay is routed entirely by HotPay: no account pin is forwarded. HotPay
-	// picks the gopay_alipay channel by its own routing priority and the routed
-	// account is backfilled onto the local order from the order response.
-	return ""
+	return hotPayProviderAccountID()
 }
 
 func hotPayCheckoutResponse(result service.HotPayGatewayCreateOrderResponse) gin.H {

@@ -6130,6 +6130,11 @@
     "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.",
     "Audit Logs": "監査ログ",
     "Security & Access": "セキュリティとアクセス",
-    "Review account and administrative audit events.": "アカウントおよび管理の監査イベントを確認します。"
+    "Review account and administrative audit events.": "アカウントおよび管理の監査イベントを確認します。",
+    "Scan to pay": "スキャンして支払う",
+    "Scan this QR code with WeChat to complete the payment. The order expires in 45 minutes.": "WeChat でこの QR コードをスキャンして支払いを完了してください。注文は 45 分で期限切れになります。",
+    "Top-up amount: {{amount}}": "チャージ金額：{{amount}}",
+    "HotPay method routing": "HotPay 支払い方法ルーティング",
+    "Maps a buyer-facing HotPay method to the gateway provider that serves it, e.g. {\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}. Supported providers: gopay_alipay (Alipay, CNY), wechat_v3 (native WeChat Pay, CNY), waffo_pancake (multi-currency hosted checkout). An unlisted method uses the built-in default.": "購入者が選ぶ HotPay 支払い方法を、実際に処理するゲートウェイチャネルに割り当てます。例：{\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}。対応チャネル：gopay_alipay（Alipay、CNY のみ）、wechat_v3（ネイティブ WeChat Pay、CNY のみ）、waffo_pancake（多通貨ホスト型チェックアウト）。未指定の方法は組み込みの既定値を使用します。"
   }
 }

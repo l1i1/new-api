@@ -119,6 +119,7 @@ const defaultBillingSettings: BillingSettings = {
   HotPaySettlementSecret: '',
   HotPaySettlementMaxAgeSeconds: 0,
   HotPayPayMethods: '[]',
+  HotPayMethodProviders: '{}',
   'checkin_setting.enabled': false,
   'checkin_setting.min_quota': 1000,
   'checkin_setting.max_quota': 10000,

@@ -55,11 +55,12 @@ func GetTopUpInfo(c *gin.Context) {
 		}
 	}
 
-	// After cutover the provider credentials live in HotPay. Keep the payment
-	// option visible when only the gateway client is configured; otherwise the
-	// New API UI silently hides the canonical checkout during credential drain.
-	// The local credential check remains necessary for the legacy direct path.
-	enableWaffoPancake := service.IsHotPayGatewayEnabled() || isWaffoPancakeTopUpEnabled()
+	// The standalone Waffo Pancake option belongs to the legacy direct
+	// integration and is offered only while its own credentials are configured.
+	// The canonical HotPay path exposes only registered "hotpay:<method>"
+	// entries; showing this option merely because the gateway is enabled would
+	// offer buyers a channel the gateway may not serve at all.
+	enableWaffoPancake := isWaffoPancakeTopUpEnabled()
 	if enableWaffoPancake {
 		hasWaffoPancake := false
 		for _, method := range payMethods {
@@ -565,10 +566,10 @@ func acknowledgeHotPayEpayNotification(c *gin.Context, tradeNo, tradeStatus stri
 }
 
 // isHotPayGatewayProvider reports whether the payment provider value belongs
-// to the HotPay gateway (waffo_pancake or gopay_alipay).
+// to the HotPay gateway (waffo_pancake, gopay_alipay, or wechat_v3).
 func isHotPayGatewayProvider(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case model.PaymentProviderWaffoPancake, model.PaymentProviderGoPayAlipay:
+	case model.PaymentProviderWaffoPancake, model.PaymentProviderGoPayAlipay, model.PaymentProviderWechatV3:
 		return true
 	}
 	return false

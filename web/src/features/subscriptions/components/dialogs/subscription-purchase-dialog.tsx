@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { Crown, CalendarClock, Package } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
@@ -38,6 +39,8 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
+
+import { isSafeHttpCheckoutUrl } from '@/features/wallet/hooks/use-waffo-pancake-payment'
 
 import {
   paySubscriptionStripe,
@@ -76,12 +79,16 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const { currency } = useSystemConfig()
   const [paying, setPaying] = useState(false)
   const [selectedEpayMethod, setSelectedEpayMethod] = useState('')
+  const [qrCode, setQrCode] = useState<string | null>(null)
 
   useEffect(() => {
     if (props.open && props.epayMethods && props.epayMethods.length > 0) {
       setSelectedEpayMethod(props.epayMethods[0].type)
     } else if (!props.open) {
       setSelectedEpayMethod('')
+      // Drop any QR from the previous attempt so reopening never shows a stale
+      // payment code for an amount the buyer is no longer looking at.
+      setQrCode(null)
     }
   }, [props.open, props.epayMethods])
 
@@ -202,6 +209,12 @@ export function SubscriptionPurchaseDialog(props: Props) {
         payment_method: selectedEpayMethod,
       })
       if (res.message === 'success' && res.data?.checkout_url) {
+        // Native WeChat returns a scannable weixin:// code, not a navigable
+        // page; render it as a QR instead of redirecting the browser.
+        if (!isSafeHttpCheckoutUrl(res.data.checkout_url)) {
+          setQrCode(res.data.checkout_url)
+          return
+        }
         toast.success(t('Redirecting to payment page...'))
         window.location.href = res.data.checkout_url
         props.onOpenChange(false)
@@ -485,6 +498,18 @@ export function SubscriptionPurchaseDialog(props: Props) {
                     )}
                   </AlertDescription>
                 </Alert>
+                {qrCode && (
+                  <div className='space-y-3'>
+                    <div className='flex justify-center rounded-lg bg-white p-4'>
+                      <QRCodeSVG value={qrCode} size={220} />
+                    </div>
+                    <p className='text-muted-foreground text-center text-sm'>
+                      {t(
+                        'Scan this QR code with WeChat to complete the payment. The order expires in 45 minutes.'
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>

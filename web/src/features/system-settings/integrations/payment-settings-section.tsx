@@ -190,6 +190,7 @@ const paymentSchema = z.object({
   HotPaySettlementSecret: z.string(),
   HotPaySettlementMaxAgeSeconds: z.coerce.number().min(0).max(86400),
   HotPayPayMethods: z.string(),
+  HotPayMethodProviders: z.string(),
 })
 
 type PaymentFormValues = z.infer<typeof paymentSchema>
@@ -388,6 +389,9 @@ export function PaymentSettingsSection({
       AmountDiscount: formatJsonForEditor(initialFormValues.AmountDiscount),
       CreemProducts: formatJsonForEditor(initialFormValues.CreemProducts),
       HotPayPayMethods: formatJsonForEditor(initialFormValues.HotPayPayMethods),
+      HotPayMethodProviders: formatJsonForEditor(
+        initialFormValues.HotPayMethodProviders
+      ),
     },
   })
 
@@ -446,6 +450,9 @@ export function PaymentSettingsSection({
       AmountDiscount: formatJsonForEditor(parsedDefaults.AmountDiscount),
       CreemProducts: formatJsonForEditor(parsedDefaults.CreemProducts),
       HotPayPayMethods: formatJsonForEditor(parsedDefaults.HotPayPayMethods),
+      HotPayMethodProviders: formatJsonForEditor(
+        parsedDefaults.HotPayMethodProviders
+      ),
     })
   }, [defaultsSignature, form])
 
@@ -498,6 +505,7 @@ export function PaymentSettingsSection({
       HotPaySettlementSecret: values.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds: values.HotPaySettlementMaxAgeSeconds,
       HotPayPayMethods: values.HotPayPayMethods.trim(),
+      HotPayMethodProviders: values.HotPayMethodProviders.trim(),
     }
 
     const initial = {
@@ -557,6 +565,8 @@ export function PaymentSettingsSection({
       HotPaySettlementMaxAgeSeconds:
         initialRef.current.HotPaySettlementMaxAgeSeconds,
       HotPayPayMethods: initialRef.current.HotPayPayMethods.trim(),
+      HotPayMethodProviders:
+        initialRef.current.HotPayMethodProviders.trim(),
     }
 
     const updates: Array<{ key: string; value: string | number | boolean }> = []
@@ -815,6 +825,16 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'HotPayPayMethods',
         value: sanitized.HotPayPayMethods,
+      })
+    }
+
+    if (
+      normalizeJsonForComparison(sanitized.HotPayMethodProviders) !==
+      normalizeJsonForComparison(initial.HotPayMethodProviders)
+    ) {
+      updates.push({
+        key: 'HotPayMethodProviders',
+        value: sanitized.HotPayMethodProviders,
       })
     }
 
@@ -1577,6 +1597,28 @@ export function PaymentSettingsSection({
                       <FormDescription>
                         {t(
                           'Register the HotPay channel ids buyers may use. Each id is only a hotpay:<method> label; to appear in the buyer payment list and set its name/icon/min-top-up, reference the id in the General PayMethods list. Only registered ids route through the HotPay gateway.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='HotPayMethodProviders'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('HotPay method routing')}</FormLabel>
+                      <FormControl>
+                        <JsonCodeEditor
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Maps a buyer-facing HotPay method to the gateway provider that serves it, e.g. {"alipay":"gopay_alipay","wechat_pay":"wechat_v3"}. Supported providers: gopay_alipay (Alipay, CNY), wechat_v3 (native WeChat Pay, CNY), waffo_pancake (multi-currency hosted checkout). An unlisted method uses the built-in default.'
                         )}
                       </FormDescription>
                       <FormMessage />

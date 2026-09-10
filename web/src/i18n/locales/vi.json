@@ -6130,6 +6130,11 @@
     "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.",
     "Audit Logs": "Nhật ký kiểm toán",
     "Security & Access": "Bảo mật và truy cập",
-    "Review account and administrative audit events.": "Xem các sự kiện kiểm toán của tài khoản và quản trị."
+    "Review account and administrative audit events.": "Xem các sự kiện kiểm toán của tài khoản và quản trị.",
+    "Scan to pay": "Quét mã để thanh toán",
+    "Scan this QR code with WeChat to complete the payment. The order expires in 45 minutes.": "Quét mã QR này bằng WeChat để hoàn tất thanh toán. Đơn hàng hết hạn sau 45 phút.",
+    "Top-up amount: {{amount}}": "Số tiền nạp: {{amount}}",
+    "HotPay method routing": "Định tuyến phương thức HotPay",
+    "Maps a buyer-facing HotPay method to the gateway provider that serves it, e.g. {\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}. Supported providers: gopay_alipay (Alipay, CNY), wechat_v3 (native WeChat Pay, CNY), waffo_pancake (multi-currency hosted checkout). An unlisted method uses the built-in default.": "Ánh xạ phương thức HotPay mà người mua thấy tới kênh cổng thanh toán thực sự xử lý, ví dụ {\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}. Kênh được hỗ trợ: gopay_alipay (Alipay, chỉ CNY), wechat_v3 (WeChat Pay gốc, chỉ CNY), waffo_pancake (thanh toán lưu trữ đa tiền tệ). Phương thức không có trong danh sách sẽ dùng giá trị mặc định."
   }
 }

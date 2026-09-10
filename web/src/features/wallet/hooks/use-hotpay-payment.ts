@@ -28,14 +28,29 @@ import {
 } from './use-waffo-pancake-payment'
 
 /**
- * Hook for the HotPay gateway hosted-checkout flow.
+ * The payload a provider returns when it hands back a code to be rendered as a
+ * QR code (e.g. WeChat Pay native returns weixin://wxpay/bizpayurl?...). It is
+ * not navigable, so the UI shows it as a scannable QR instead of redirecting.
+ */
+export type HotPayQrCodePayload = {
+  value: string
+  amount: number
+}
+
+/**
+ * Hook for the HotPay gateway checkout flow.
  *
- * Same-tab redirect (window.location.href) rather than window.open: the
- * user-gesture context is lost across the await, so popups get blocked.
+ * Two checkout shapes are supported:
+ * - A hosted http(s) checkout URL: redirect the same tab (window.open loses the
+ *   user-gesture context across the await, so popups get blocked).
+ * - A scannable code that is not a URL (WeChat native): surface it to the
+ *   caller so the UI renders a QR code the buyer scans in their wallet app.
+ *
  * The payment type must be a registered "hotpay:<method>" entry.
  */
 export function useHotPayPayment() {
   const [processing, setProcessing] = useState(false)
+  const [qrCode, setQrCode] = useState<HotPayQrCodePayload | null>(null)
 
   const processHotPayPayment = useCallback(
     async (topupAmount: number, paymentType: string) => {
@@ -56,12 +71,13 @@ export function useHotPayPayment() {
           const checkoutUrl = getCheckoutUrl(response.data)
 
           if (checkoutUrl) {
-            if (!isSafeHttpCheckoutUrl(checkoutUrl)) {
-              toast.error(i18next.t('Invalid payment redirect URL'))
-              return false
+            if (isSafeHttpCheckoutUrl(checkoutUrl)) {
+              toast.success(i18next.t('Redirecting to payment page...'))
+              window.location.href = checkoutUrl
+              return true
             }
-            toast.success(i18next.t('Redirecting to payment page...'))
-            window.location.href = checkoutUrl
+            // Non-URL payloads are scannable codes (weixin://…), not redirects.
+            setQrCode({ value: checkoutUrl, amount: Math.floor(topupAmount) })
             return true
           }
         }
@@ -84,5 +100,7 @@ export function useHotPayPayment() {
     []
   )
 
-  return { processing, processHotPayPayment }
+  const clearQrCode = useCallback(() => setQrCode(null), [])
+
+  return { processing, processHotPayPayment, qrCode, clearQrCode }
 }

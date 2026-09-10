@@ -62,6 +62,12 @@ export const PAYMENT_METHOD_NAMES: Record<string, string> = {
   stripe: 'Stripe',
   alipay: 'Alipay',
   wxpay: 'WeChat Pay',
+  wechat_pay: 'WeChat Pay',
+  // The native WeChat provider settles under its own concrete method labels.
+  wechat_v3_native: 'WeChat Pay',
+  wechat_v3_jsapi: 'WeChat Pay',
+  wechat_v3_h5: 'WeChat Pay',
+  wechat_v3_app: 'WeChat Pay',
   waffo: 'Waffo',
 }
 

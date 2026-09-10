@@ -6130,6 +6130,11 @@
     "Used to decide the payment flow. Use waffo_pancake for an unrestricted Pancake checkout, or append :wechat, :googlepay, :applepay, or :card to fix the method. Use a hotpay:<method> type (registered in the HotPay tab) to route through the HotPay gateway. Other values are sent to Epay as the type parameter.": "用于决定支付流程。waffo_pancake 用于无限制的 Pancake 结算，或追加 :wechat、:googlepay、:applepay、:card 固定方式。使用 hotpay:<method> 类型（在 HotPay 页签注册）走 HotPay 网关。其他值作为 type 参数提交给 Epay。",
     "Audit Logs": "审计日志",
     "Security & Access": "安全与访问",
-    "Review account and administrative audit events.": "查看账户与管理的审计事件。"
+    "Review account and administrative audit events.": "查看账户与管理的审计事件。",
+    "Scan to pay": "扫码支付",
+    "Scan this QR code with WeChat to complete the payment. The order expires in 45 minutes.": "请使用微信扫描此二维码完成支付，订单将在 45 分钟后过期。",
+    "Top-up amount: {{amount}}": "充值金额：{{amount}}",
+    "HotPay method routing": "HotPay 支付方式路由",
+    "Maps a buyer-facing HotPay method to the gateway provider that serves it, e.g. {\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}. Supported providers: gopay_alipay (Alipay, CNY), wechat_v3 (native WeChat Pay, CNY), waffo_pancake (multi-currency hosted checkout). An unlisted method uses the built-in default.": "把买家可见的 HotPay 支付方式映射到实际承接的网关通道，例如 {\"alipay\":\"gopay_alipay\",\"wechat_pay\":\"wechat_v3\"}。支持的通道：gopay_alipay（支付宝，仅 CNY）、wechat_v3（微信原生支付，仅 CNY）、waffo_pancake（多币种托管收银台）。未列出的方式使用内置默认值。"
   }
 }

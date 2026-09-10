@@ -327,6 +327,11 @@ func normalizeGatewayPaymentMethod(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "wechat", "wechat_pay", "wxpay":
 		return "wechat_pay"
+	// The native WeChat provider reports its own concrete method names; they
+	// all belong to the buyer-facing wechat_pay family, so response snapshots
+	// compare by family rather than by the provider's channel-specific label.
+	case "wechat_v3_native", "wechat_v3_jsapi", "wechat_v3_h5", "wechat_v3_app":
+		return "wechat_pay"
 	case "applepay", "apple_pay":
 		return "apple_pay"
 	case "googlepay", "google_pay":

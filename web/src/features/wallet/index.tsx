@@ -30,6 +30,7 @@ import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
+import { HotPayQrCodeDialog } from './components/dialogs/hotpay-qr-code-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
@@ -104,7 +105,7 @@ export function Wallet(props: WalletProps) {
   const { processing: waffoProcessing, processWaffoPayment } = useWaffoPayment()
   const { processing: pancakeProcessing, processWaffoPancakePayment } =
     useWaffoPancakePayment()
-  const { processing: hotPayProcessing, processHotPayPayment } =
+  const { processing: hotPayProcessing, processHotPayPayment, qrCode, clearQrCode } =
     useHotPayPayment()
 
   // Fetch and refresh user data
@@ -438,6 +439,15 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleCreemConfirm}
         product={selectedCreemProduct}
         processing={creemProcessing}
+      />
+
+      <HotPayQrCodeDialog
+        open={qrCode !== null}
+        onOpenChange={(open) => {
+          if (!open) clearQrCode()
+        }}
+        value={qrCode?.value ?? ''}
+        amount={qrCode?.amount ?? 0}
       />
     </>
   )

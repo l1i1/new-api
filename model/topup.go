@@ -54,6 +54,7 @@ const (
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
 	PaymentProviderGoPayAlipay  = "gopay_alipay"
+	PaymentProviderWechatV3     = "wechat_v3"
 	PaymentProviderBalance      = "balance"
 )
 

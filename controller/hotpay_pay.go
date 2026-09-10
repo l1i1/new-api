@@ -60,8 +60,9 @@ func RequestHotPayPay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "当前支付方式暂不支持 HotPay 网关"})
 		return
 	}
-	paymentProvider := hotPayProviderForMethod(canonicalMethod)
-	providerAccountID := hotPayProviderAccountIDForMethod(canonicalMethod)
+	paymentProvider := hotPayProviderForMethod(canonicalMethod, model.PaymentCurrencyCNY)
+	gatewayMethod := hotPayGatewayMethodFor(paymentProvider, canonicalMethod)
+	providerAccountID := hotPayProviderAccountIDForMethod(canonicalMethod, model.PaymentCurrencyCNY)
 	amountMinor, amountErr := hotPayMinorAmount(payMoney)
 	if amountErr != nil || validateHotPayAmountMinor(amountMinor) != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额超出支付网关限额"})
@@ -126,7 +127,7 @@ func RequestHotPayPay(c *gin.Context) {
 		Currency:          model.PaymentCurrencyCNY,
 		Provider:          paymentProvider,
 		ProviderAccountID: providerAccountID,
-		PaymentMethod:     canonicalMethod,
+		PaymentMethod:     gatewayMethod,
 		// HotPay only emits the EPay-shaped informational notify for orders
 		// marked with the epay compatibility protocol; idempotent replays
 		// compare this field verbatim.
@@ -217,8 +218,9 @@ func SubscriptionRequestHotPayPay(c *gin.Context) {
 		common.ApiErrorMsg(c, "当前支付方式或套餐币种暂不支持 HotPay 网关")
 		return
 	}
-	paymentProvider := hotPayProviderForMethod(canonicalMethod)
-	providerAccountID := hotPayProviderAccountIDForMethod(canonicalMethod)
+	paymentProvider := hotPayProviderForMethod(canonicalMethod, planCurrency)
+	gatewayMethod := hotPayGatewayMethodFor(paymentProvider, canonicalMethod)
+	providerAccountID := hotPayProviderAccountIDForMethod(canonicalMethod, planCurrency)
 	if strings.TrimSpace(plan.WaffoPancakeProductId) == "" {
 		common.ApiErrorMsg(c, "该套餐未配置 HotPay 商品")
 		return
@@ -276,7 +278,7 @@ func SubscriptionRequestHotPayPay(c *gin.Context) {
 		Currency:              planCurrency,
 		Provider:              paymentProvider,
 		ProviderAccountID:     providerAccountID,
-		PaymentMethod:         canonicalMethod,
+		PaymentMethod:         gatewayMethod,
 		CompatibilityProtocol: "epay",
 		Environment:           hotPayEnvironment(),
 		MerchantNotifyURL:     hotPayReturnURL("/api/subscription/epay/notify"),

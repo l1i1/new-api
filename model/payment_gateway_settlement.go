@@ -270,6 +270,12 @@ func normalizeGatewayPaymentMethod(method string) string {
 	switch strings.ToLower(strings.TrimSpace(method)) {
 	case "wechat", "wechat_pay", "wxpay":
 		return "wechat_pay"
+	// The native WeChat provider reports its own concrete method names
+	// (wechat_v3_native/jsapi/h5/app). They all belong to the buyer-facing
+	// wechat_pay method family, so settlement invariants compare by family
+	// rather than by the provider's channel-specific label.
+	case "wechat_v3_native", "wechat_v3_jsapi", "wechat_v3_h5", "wechat_v3_app":
+		return "wechat_pay"
 	case "applepay", "apple_pay":
 		return "apple_pay"
 	case "googlepay", "google_pay":
@@ -756,7 +762,7 @@ func applyGatewaySubscriptionSettlementTx(tx *gorm.DB, command *PaymentGatewaySe
 	if order.PaymentEnvironment != command.Environment && (order.PaymentEnvironment != "" || command.Environment != "") {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
-	if normalizeGatewayPaymentMethod(order.PaymentMethod) != command.PaymentMethod {
+	if normalizeGatewayPaymentMethod(order.PaymentMethod) != normalizeGatewayPaymentMethod(command.PaymentMethod) {
 		return "", ErrPaymentGatewaySettlementMismatch
 	}
 	if err := validateGatewayMoney(order.Money, command.AmountMinor); err != nil {
@@ -805,7 +811,8 @@ func validateGatewayMoney(expected float64, actualMinor int64) error {
 
 func validGatewayPaymentMethod(method string) bool {
 	switch strings.ToLower(strings.TrimSpace(method)) {
-	case "card", "apple_pay", "google_pay", "wechat_pay", "alipay", "wxpay":
+	case "card", "apple_pay", "google_pay", "wechat_pay", "alipay", "wxpay",
+		"wechat_v3_native", "wechat_v3_jsapi", "wechat_v3_h5", "wechat_v3_app":
 		return true
 	default:
 		return false
