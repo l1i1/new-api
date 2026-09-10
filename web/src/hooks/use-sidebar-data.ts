@@ -18,12 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
-  BarChart3,
   Box,
   ClipboardList,
   CreditCard,
   FileText,
-  GitBranch,
   Image,
   Key,
   LayoutDashboard,
@@ -38,7 +36,6 @@ import {
   Ticket,
   User,
   Users,
-  UsersRound,
   Wallet,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -78,26 +75,9 @@ export function useSidebarData(): SidebarData {
             icon: Activity,
           },
           {
-            title: t('Model Analytics'),
+            title: t('Dashboard'),
             url: '/dashboard/models',
             icon: LayoutDashboard,
-          },
-          {
-            title: t('Flow'),
-            url: '/dashboard/flow',
-            icon: GitBranch,
-          },
-          {
-            title: t('User Analytics'),
-            url: '/dashboard/users',
-            icon: UsersRound,
-            requiredRole: ROLE.ADMIN,
-          },
-          {
-            title: t('Business Analysis'),
-            url: '/dashboard/business',
-            icon: BarChart3,
-            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('API Keys'),

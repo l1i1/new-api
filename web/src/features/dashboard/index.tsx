@@ -345,23 +345,7 @@ export function Dashboard() {
   const sectionActions = modelActions ?? flowActions
 
   if (activeSection === 'overview') {
-    return (
-      <OverviewDashboard
-        sectionTabs={
-          visibleSections.length > 1 ? (
-            <Tabs value={activeSection} onValueChange={handleSectionChange}>
-              <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
-                {visibleSections.map((section) => (
-                  <TabsTrigger key={section} value={section}>
-                    {t(SECTION_META[section].titleKey)}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          ) : undefined
-        }
-      />
-    )
+    return <OverviewDashboard />
   }
 
   return (

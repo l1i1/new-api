@@ -458,12 +458,7 @@ function CompactQuickAction(props: { action: QuickAction }) {
   )
 }
 
-export function OverviewDashboard({
-  sectionTabs,
-}: {
-  /** Optional section switcher rendered above the hero content. */
-  sectionTabs?: React.ReactNode
-}) {
+export function OverviewDashboard() {
   const { t } = useTranslation()
   const setupGuideId = useId()
   const setupGuideToggleRef = useRef<HTMLButtonElement>(null)
@@ -663,7 +658,6 @@ export function OverviewDashboard({
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
         <div className='flex flex-col gap-4'>
-          {sectionTabs && <div>{sectionTabs}</div>}
           <div id={setupGuideId} hidden={!setupGuideExpanded}>
             {setupGuideExpanded && (
               <CardStaggerContainer className='grid items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]'>
