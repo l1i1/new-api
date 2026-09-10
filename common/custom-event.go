@@ -53,7 +53,7 @@ type CustomEvent struct {
 	Event string
 	Id    string
 	Retry uint
-	Data  interface{}
+	Data  any
 }
 
 func encode(writer io.Writer, event CustomEvent) error {
@@ -61,7 +61,7 @@ func encode(writer io.Writer, event CustomEvent) error {
 	return writeData(w, event.Data)
 }
 
-func writeData(w stringWriter, data interface{}) error {
+func writeData(w stringWriter, data any) error {
 	value := fmt.Sprint(data)
 	if _, err := dataReplacer.WriteString(w, value); err != nil {
 		return err

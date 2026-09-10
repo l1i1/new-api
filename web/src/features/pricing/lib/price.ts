@@ -149,7 +149,7 @@ export function formatPricingCurrencyFromUSD(
   amountUSD: number,
   displayCurrency: PricingCurrency,
   usdExchangeRate: number,
-  options: { digitsLarge: number; digitsSmall: number }
+  options: { digitsLarge: number; digitsSmall: number; showSymbol?: boolean }
 ): string {
   if (!Number.isFinite(amountUSD)) return '-'
 
@@ -167,7 +167,8 @@ export function formatPricingCurrencyFromUSD(
     maximumFractionDigits: digits,
   }).format(adjustedValue)
 
-  return `${displayCurrency === 'CNY' ? '¥' : '$'}${formatted}`
+  const symbol = displayCurrency === 'CNY' ? '¥' : '$'
+  return `${options.showSymbol === false ? '' : symbol}${formatted}`
 }
 
 /**
@@ -181,7 +182,8 @@ export function formatPrice(
   priceRate = 1,
   usdExchangeRate = 1,
   selectedGroup?: string,
-  displayCurrency: PricingCurrency = 'CNY'
+  displayCurrency: PricingCurrency = 'CNY',
+  showCurrencySymbol = true
 ): string {
   if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
@@ -201,6 +203,7 @@ export function formatPrice(
   return formatPricingCurrencyFromUSD(price, displayCurrency, usdExchangeRate, {
     digitsLarge: 4,
     digitsSmall: 6,
+    showSymbol: showCurrencySymbol,
   })
 }
 
@@ -360,7 +363,8 @@ export function formatRequestPrice(
   priceRate = 1,
   usdExchangeRate = 1,
   selectedGroup?: string,
-  displayCurrency: PricingCurrency = 'CNY'
+  displayCurrency: PricingCurrency = 'CNY',
+  showCurrencySymbol = true
 ): string {
   if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
@@ -381,7 +385,7 @@ export function formatRequestPrice(
     priceInUSD,
     displayCurrency,
     usdExchangeRate,
-    { digitsLarge: 4, digitsSmall: 4 }
+    { digitsLarge: 4, digitsSmall: 4, showSymbol: showCurrencySymbol }
   )
 }
 

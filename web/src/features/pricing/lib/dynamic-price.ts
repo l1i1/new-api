@@ -47,6 +47,7 @@ import { evalExprLocally } from './tier-expr'
 
 export type DynamicPriceOptions = {
   tokenUnit: TokenUnit
+  showCurrencySymbol?: boolean
   showRechargePrice?: boolean
   priceRate?: number
   usdExchangeRate?: number
@@ -71,6 +72,7 @@ export type DynamicPriceEntry = {
   unit: BillingUsageUnit | 'request'
   /** Undiscounted price shown struck through when a group ratio applies. */
   original?: string
+  description?: string | Record<string, string>
   variable?: BillingVar
 }
 
@@ -204,9 +206,17 @@ export function formatDynamicUnitPrice(
     usdExchangeRate
   )
 
+  if (!options.displayCurrency) {
+    return formatBillingCurrencyFromUSD(displayPrice, {
+      showSymbol: options.showCurrencySymbol ?? true,
+      digitsLarge: 4,
+      digitsSmall: 6,
+      abbreviate: false,
+    })
+  }
   return formatPricingCurrencyFromUSD(
     displayPrice,
-    options.displayCurrency ?? 'CNY',
+    options.displayCurrency,
     usdExchangeRate,
     { digitsLarge: 4, digitsSmall: 6 }
   )
@@ -229,6 +239,7 @@ export function formatTaskUsageUnitPrice(
 
   if (!options.displayCurrency) {
     return formatBillingCurrencyFromUSD(displayPrice, {
+      showSymbol: options.showCurrencySymbol ?? true,
       digitsLarge: 4,
       digitsSmall: 6,
       abbreviate: false,
@@ -250,7 +261,7 @@ export function getDynamicPricingTiers(
     model.billing_expr || ''
   )
   if (isTaskUsagePricingModel(model)) {
-    return parseTaskTiersFromExpr(billingExpr, model.billing_usage_schema)
+    return parseTaskTiersFromExpr(billingExpr, model.billing_usage_schema, true)
   }
   return parseTiersFromExpr(billingExpr)
 }
@@ -295,13 +306,11 @@ export function getDynamicPriceEntries(
   if (isTaskPricingTier(tier)) {
     const schema = options.usageSchema
     if (!schema) return []
-    const taskTiers = options.usageSchema
-      ? getTaskNumberFields(options.usageSchema)
-      : []
+    const taskTiers = getTaskNumberFields(schema)
     const entries: DynamicPriceEntry[] = taskTiers.flatMap(
       ([field, definition]) => {
         const value = Number(tier.unitPrices[field] || 0)
-        if (!Number.isFinite(value) || value <= 0 || !definition.unit) return []
+        if (!Number.isFinite(value) || value < 0 || !definition.unit) return []
         return [
           {
             key: field,
@@ -319,6 +328,7 @@ export function getDynamicPriceEntries(
                     groupRatioMultiplier: 1,
                   }),
             unit: definition.unit,
+            description: definition.description,
           },
         ]
       }
@@ -327,8 +337,8 @@ export function getDynamicPriceEntries(
       entries.push({
         key: 'constant',
         field: 'constant',
-        label: 'Base charge',
-        shortLabel: 'Base',
+        label: 'Additional charge',
+        shortLabel: 'Additional charge',
         labelKind: 'i18n' as const,
         value: tier.constant,
         formatted: formatTaskUsageUnitPrice(tier.constant, options),
@@ -348,7 +358,7 @@ export function getDynamicPriceEntries(
   return BILLING_PRICING_VARS.flatMap((variable) => {
     if (!variable.field) return []
     const value = Number((tier as ParsedTier)[variable.field])
-    if (!Number.isFinite(value) || value <= 0) return []
+    if (!Number.isFinite(value) || value < 0) return []
 
     return [
       {
@@ -389,7 +399,7 @@ export function getDynamicPricingSummary(
   )
   const isTaskUsage = isTaskUsagePricingModel(model)
   const tiers: DynamicPricingTier[] = isTaskUsage
-    ? parseTaskTiersFromExpr(billingExpr, model.billing_usage_schema)
+    ? parseTaskTiersFromExpr(billingExpr, model.billing_usage_schema, true)
     : parseTiersFromExpr(billingExpr)
   const tier = isTaskUsage
     ? (tiers.at(-1) ?? null)
@@ -406,7 +416,7 @@ export function getDynamicPricingSummary(
           if (entry.field === 'constant') return candidate.constant
           return candidate.unitPrices[entry.field] ?? 0
         })
-        .filter((value) => Number.isFinite(value) && value > 0)
+        .filter((value) => Number.isFinite(value) && value >= 0)
       const minimum = Math.min(...values)
       const maximum = Math.max(...values)
       if (values.length > 1 && minimum !== maximum) {

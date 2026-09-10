@@ -672,7 +672,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			if patched, ok := replaceTopLevelJSONValue(responseBody, "usage", encodedUsage); ok {
 				responseBody = patched
 			} else {
-				var bodyMap map[string]interface{}
+				var bodyMap map[string]any
 				if err = common.Unmarshal(responseBody, &bodyMap); err != nil {
 					return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 				}
@@ -688,13 +688,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		} else if simpleResponse.Usage.BillingUsage != nil {
 			// Upstream extensions are preserved in the normal path, but the
 			// internal billing extension must never cross the client boundary.
-			var bodyMap map[string]interface{}
+			var bodyMap map[string]any
 			if err = common.Unmarshal(responseBody, &bodyMap); err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
 			if rawUsage, ok := bodyMap["usage"]; ok {
-				var usageMap map[string]interface{}
-				if usageMap, ok = rawUsage.(map[string]interface{}); ok {
+				var usageMap map[string]any
+				if usageMap, ok = rawUsage.(map[string]any); ok {
 					delete(usageMap, "billing_usage")
 					bodyMap["usage"] = usageMap
 				}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -87,19 +86,8 @@ type Properties struct {
 	OriginModelName   string `json:"origin_model_name,omitempty"`
 }
 
-func (m *Properties) Scan(val interface{}) error {
-	var bytesValue []byte
-	switch typed := val.(type) {
-	case nil:
-		*m = Properties{}
-		return nil
-	case []byte:
-		bytesValue = typed
-	case string:
-		bytesValue = []byte(typed)
-	default:
-		return fmt.Errorf("unsupported task properties value %T", val)
-	}
+func (m *Properties) Scan(val any) error {
+	bytesValue := jsonScanBytes(val)
 	if len(bytesValue) == 0 {
 		*m = Properties{}
 		return nil
@@ -111,6 +99,7 @@ func (m Properties) Value() (driver.Value, error) {
 	if m == (Properties{}) {
 		return nil, nil
 	}
+	// Return string so PostgreSQL simple protocol does not encode JSON as bytea.
 	data, err := common.Marshal(m)
 	if err != nil {
 		return nil, err
@@ -206,21 +195,9 @@ func GenerateTaskID() string {
 	return "task_" + key
 }
 
-func (p *TaskPrivateData) Scan(val interface{}) error {
-	var bytesValue []byte
-	switch typed := val.(type) {
-	case nil:
-		*p = TaskPrivateData{}
-		return nil
-	case []byte:
-		bytesValue = typed
-	case string:
-		bytesValue = []byte(typed)
-	default:
-		return fmt.Errorf("unsupported task private data value %T", val)
-	}
+func (p *TaskPrivateData) Scan(val any) error {
+	bytesValue := jsonScanBytes(val)
 	if len(bytesValue) == 0 {
-		*p = TaskPrivateData{}
 		return nil
 	}
 	return common.Unmarshal(bytesValue, p)

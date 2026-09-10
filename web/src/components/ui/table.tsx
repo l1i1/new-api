@@ -24,9 +24,27 @@ import { cn } from '@/lib/utils'
 
 function Table({
   className,
+  withContainer = true,
   containerClassName,
   ...props
-}: React.ComponentProps<'table'> & { containerClassName?: string }) {
+}: React.ComponentProps<'table'> & {
+  containerClassName?: string
+  withContainer?: boolean
+}) {
+  const table = (
+    <table
+      data-slot='table'
+      className={cn(
+        'w-full caption-bottom text-sm tabular-nums [font-family:var(--font-body)] [&_td]:text-sm [&_td_*]:text-sm [&_th]:text-sm [&_th_*]:text-sm [&_:is(th,td)_*]:[font-family:inherit] [&_:is(th,td)_*]:[font-size:inherit] [&_:is(th,td)_*]:[font-weight:inherit]',
+        '[&_[data-table-text=secondary]]:text-xs [&_[data-table-text=secondary]]:font-normal',
+        className
+      )}
+      {...props}
+    />
+  )
+
+  if (!withContainer) return table
+
   return (
     <div
       data-slot='table-container'
@@ -35,14 +53,7 @@ function Table({
         containerClassName
       )}
     >
-      <table
-        data-slot='table'
-        className={cn(
-          'w-full caption-bottom text-sm tabular-nums [&_td]:text-sm [&_td_*]:text-sm [&_th]:text-sm [&_th_*]:text-sm',
-          className
-        )}
-        {...props}
-      />
+      {table}
     </div>
   )
 }

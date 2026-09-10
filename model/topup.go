@@ -110,12 +110,12 @@ func ValidateTopUpQuotaCapacity(userID int, creditedQuota int) error {
 
 // creditTopUpQuota keeps the ceiling predicate and increment in one statement
 // so concurrent payment callbacks cannot overflow the persisted quota.
-func creditTopUpQuota(tx *gorm.DB, userID int, creditedQuota int, updates map[string]interface{}) error {
+func creditTopUpQuota(tx *gorm.DB, userID int, creditedQuota int, updates map[string]any) error {
 	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
 	if err != nil {
 		return err
 	}
-	updateFields := make(map[string]interface{}, len(updates)+1)
+	updateFields := make(map[string]any, len(updates)+1)
 	for key, value := range updates {
 		updateFields[key] = value
 	}
@@ -411,7 +411,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return err
 		}
 
-		if err := creditTopUpQuota(tx, topUp.UserId, quota, map[string]interface{}{"stripe_customer": customerId}); err != nil {
+		if err := creditTopUpQuota(tx, topUp.UserId, quota, map[string]any{"stripe_customer": customerId}); err != nil {
 			return err
 		}
 
@@ -645,7 +645,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		}
 
 		// 构建更新字段，优先使用邮箱，如果邮箱为空则使用用户名
-		updateFields := map[string]interface{}{
+		updateFields := map[string]any{
 			"quota": gorm.Expr("quota + ?", quota),
 		}
 

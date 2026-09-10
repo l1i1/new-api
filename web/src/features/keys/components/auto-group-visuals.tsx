@@ -19,8 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { GroupBadge } from '@/components/group-badge'
-import { Badge } from '@/components/ui/badge'
+import { GroupBadge, GroupMultiplierBadge } from '@/components/group-badge'
 import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { cn } from '@/lib/utils'
 
@@ -31,6 +30,7 @@ export const AUTO_GROUP_FRAME_CLASS_NAME =
 
 type AutoGroupFlowBorderProps = {
   shouldReduceMotion: boolean
+  appearance?: 'default' | 'subtle'
 }
 
 export function AutoGroupFlowBorder(props: AutoGroupFlowBorderProps) {
@@ -40,7 +40,10 @@ export function AutoGroupFlowBorder(props: AutoGroupFlowBorderProps) {
     <span
       aria-hidden='true'
       data-auto-group-flow-border='true'
-      className='auto-group-flow-border pointer-events-none absolute -inset-px'
+      className={cn(
+        'auto-group-flow-border pointer-events-none absolute -inset-px',
+        props.appearance === 'subtle' && 'auto-group-flow-border-subtle'
+      )}
     />
   )
 }
@@ -49,6 +52,7 @@ type AutoGroupFrameProps = {
   children: ReactNode
   className?: string
   effect: 'badge' | 'ratio'
+  appearance?: 'default' | 'subtle'
   shouldReduceMotion: boolean
 }
 
@@ -63,26 +67,13 @@ export function AutoGroupFrame(props: AutoGroupFrameProps) {
         props.className
       )}
     >
-      <AutoGroupFlowBorder shouldReduceMotion={props.shouldReduceMotion} />
+      <AutoGroupFlowBorder
+        appearance={props.appearance}
+        shouldReduceMotion={props.shouldReduceMotion}
+      />
       {props.children}
     </span>
   )
-}
-
-function getRatioBadgeClassName(ratio: GroupRatio, isAuto: boolean): string {
-  if (isAuto || typeof ratio !== 'number') {
-    return 'border-primary/30 bg-primary/10 text-primary'
-  }
-  if (ratio > 5) {
-    return 'border-destructive/30 bg-destructive/10 text-destructive'
-  }
-  if (ratio > 3) {
-    return 'border-warning/30 bg-warning/10 text-warning'
-  }
-  if (ratio > 1) {
-    return 'border-info/30 bg-info/10 text-info'
-  }
-  return 'border-success/30 bg-success/10 text-success'
 }
 
 type GroupRatioBadgeProps = {
@@ -101,18 +92,18 @@ export function GroupRatioBadge(props: GroupRatioBadgeProps) {
   const label =
     typeof props.ratio === 'number'
       ? formatGroupDiscount(props.ratio, i18n.resolvedLanguage || i18n.language)
-      : `${t('Auto')} ${t('Ratio')}`
+      : t('Auto')
   if (!label) return null
   const badge = (
-    <Badge
-      variant='outline'
+    <GroupMultiplierBadge
+      ratio={typeof props.ratio === 'number' ? props.ratio : undefined}
+      label={label}
       className={cn(
         'max-w-full truncate text-[10px] sm:text-xs',
-        getRatioBadgeClassName(props.ratio, props.isAuto === true)
+        props.isAuto &&
+          'overflow-visible rounded-md border-primary/30 bg-primary/10 text-primary'
       )}
-    >
-      {label}
-    </Badge>
+    />
   )
 
   if (!props.isAuto) {
@@ -122,6 +113,7 @@ export function GroupRatioBadge(props: GroupRatioBadgeProps) {
   return (
     <AutoGroupFrame
       effect='ratio'
+      appearance='subtle'
       shouldReduceMotion={props.shouldReduceMotion ?? false}
       className='max-w-24 sm:max-w-none'
     >
@@ -130,7 +122,7 @@ export function GroupRatioBadge(props: GroupRatioBadgeProps) {
   )
 }
 
-export function AutoGroupBadge(props: AutoGroupFlowBorderProps) {
+export function AutoGroupBadge(props: { shouldReduceMotion: boolean }) {
   return (
     <AutoGroupFrame
       effect='badge'

@@ -208,7 +208,7 @@ func batchUpdate(ctx context.Context) bool {
 
 func applyTokenQuotaBatch(ctx context.Context, id int, quota int) error {
 	result := DB.WithContext(ctx).Model(&Token{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
+		map[string]any{
 			"remain_quota":  gorm.Expr("remain_quota + ?", quota),
 			"used_quota":    gorm.Expr("used_quota - ?", quota),
 			"accessed_time": common.GetTimestamp(),
@@ -228,7 +228,7 @@ func applyUserAccountingBatch(ctx context.Context, id int, update userBatchUpdat
 		return nil
 	}
 	result := DB.WithContext(ctx).Model(&User{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
+		map[string]any{
 			"quota":         gorm.Expr("quota + ?", update.quota),
 			"used_quota":    gorm.Expr("used_quota + ?", update.usedQuota),
 			"request_count": gorm.Expr("request_count + ?", update.requestCount),
