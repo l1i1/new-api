@@ -58,7 +58,7 @@ export const SIDEBAR_MODULE_SECTIONS: {
   },
   {
     id: 'console',
-    title: 'Console area',
+    title: 'General',
     description: 'Dashboards, tokens, and usage analytics.',
   },
   {
@@ -99,7 +99,9 @@ const SIDEBAR_MODULE_REGISTRY: SidebarModuleDefinition[] = [
       '/dashboard',
       '/dashboard/overview',
       '/dashboard/models',
+      '/dashboard/flow',
       '/dashboard/users',
+      '/dashboard/business',
     ],
     title: 'Dashboard',
     description: 'Aggregated usage metrics and trend charts.',

@@ -45,7 +45,7 @@ const TASK_LOG_SECTIONS = ['drawing', 'task'] as const
 
 const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   common: {
-    titleKey: 'Common Logs',
+    titleKey: 'Request Logs',
   },
   drawing: {
     titleKey: 'Drawing Logs',

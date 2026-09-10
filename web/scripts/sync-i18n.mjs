@@ -56,6 +56,8 @@ const BRAND_AND_LITERAL_KEYS = new Set([
   'Gemini',
   'Gemini Image 4K',
   'GitHub',
+  'HotPay Alipay',
+  'HotPay WeChat Pay',
   'Jimeng',
   'JustSong',
   'LingYiWanWu',

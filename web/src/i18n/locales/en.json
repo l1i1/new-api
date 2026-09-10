@@ -5679,7 +5679,7 @@
     "home.legacy.steps.03": "Drop the Key into your code — OpenAI-compatible protocol, no SDK changes needed.",
     "home.legacy.steps.title": "Integration Steps",
     "home.legacy.supplier": "30+ Providers Connected — OpenAI / Claude / Gemini / DeepSeek / Qwen and more",
-    "home.legacy.supplierMainland": "多个国产模型供应商已接入 — DeepSeek / Qwen / Moonshot / Zhipu 等",
+    "home.legacy.supplierMainland": "Multiple domestic model providers are integrated — DeepSeek / Qwen / Moonshot / Zhipu, etc.",
     "home.legacy.system.copy": "Requests come in — Key permissions and quotas are checked first, then routing rules select a model and return the result. The entire process is logged: who called, how much was spent, which model was used — all traceable.",
     "home.legacy.system.label": "System Layer",
     "home.legacy.system.title": "Every Request, Fully Traced",
@@ -6741,6 +6741,12 @@
     "Version differences": "Version differences",
     "View pricing for {{model}}": "View pricing for {{model}}",
     "Visible only to users with access to the model’s groups.": "Visible only to users with access to the model’s groups.",
-    "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000.": "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000."
+    "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000.": "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000.",
+    "Scan this QR code with WeChat to complete the payment.": "Scan this QR code with WeChat to complete the payment.",
+    "Order expires at {{time}}": "Order expires at {{time}}",
+    "Payment successful": "Payment successful",
+    "The payment has been received and your balance has been updated.": "The payment has been received and your balance has been updated.",
+    "Your balance will update automatically once the payment completes.": "Your balance will update automatically once the payment completes.",
+    "Request Logs": "Request Logs"
   }
 }

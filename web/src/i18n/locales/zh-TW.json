@@ -2859,7 +2859,7 @@
     "Model": "模型",
     "Model {{model}}": "模型 {{model}}",
     "Model Access": "模型存取",
-    "Model Analytics": "模型數據分析",
+    "Model Analytics": "模型分析",
     "Model Analytics Defaults": "模型分析預設設定",
     "Model Analytics Filters": "模型分析篩選",
     "model billing support": "模型收費支援",
@@ -6741,6 +6741,12 @@
     "Version differences": "版本差異",
     "View pricing for {{model}}": "查看 {{model}} 的定價",
     "Visible only to users with access to the model’s groups.": "僅向有權存取模型所屬群組的使用者顯示。",
-    "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000.": "視覺化價格以 {{currency}} 按宣告的單位計價；Token 價格按每百萬 Token 計價。原始表達式一律使用美元，Token 項除以 1000000。"
+    "Visual prices use {{currency}} per declared unit; token prices are per 1M tokens. Raw expressions always use USD, with token terms divided by 1000000.": "視覺化價格以 {{currency}} 按宣告的單位計價；Token 價格按每百萬 Token 計價。原始表達式一律使用美元，Token 項除以 1000000。",
+    "Scan this QR code with WeChat to complete the payment.": "使用微信掃描此 QR Code 完成付款。",
+    "Order expires at {{time}}": "訂單將於 {{time}} 到期",
+    "Payment successful": "支付成功",
+    "The payment has been received and your balance has been updated.": "已收到付款，餘額已更新。",
+    "Your balance will update automatically once the payment completes.": "付款完成後餘額將自動更新。",
+    "Request Logs": "請求日誌"
   }
 }
