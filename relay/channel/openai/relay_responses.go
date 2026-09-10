@@ -100,6 +100,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
+		// Reseller channels emit a content-free `keepalive` data event. Forwarding
+		// it would commit the response before any real output, which blocks the
+		// relay from retrying another channel if the upstream then fails without
+		// ever producing content.
+		if streamResponse.Type == "keepalive" {
+			return
+		}
 		if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
 			usage = dto.MergeUsage(usage, usageFromResponsesResponse(streamResponse.Response))
 		}
@@ -126,7 +133,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				return
 			}
 		}
-		if streamResponse.Type == "response.failed" || streamResponse.Type == "response.error" {
+		// Reseller channels also report a failure as a bare SSE error event
+		// (type "error") rather than the protocol's response.failed/response.error.
+		if streamResponse.Type == "error" || streamResponse.Type == "response.failed" || streamResponse.Type == "response.error" {
 			sawTerminalEvent = true
 			var oaiError *types.OpenAIError
 			if streamResponse.Response != nil {
@@ -144,11 +153,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			// was already committed and cannot be retried within this request.
 			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable, types.ErrOptionWithUpstreamFailure())
 		}
-		if streamErr != nil && !responseDataSent && !c.Writer.Written() {
-			// A failure received as the first SSE event has not committed the
-			// response yet. Expose it as a retryable HTTP failure so clients do
-			// not mistake a terminal SSE error for a successful 200 response.
-			c.Status(streamErr.StatusCode)
+		// A failure received before any event was forwarded has not committed
+		// the response. Returning the error without writing lets the relay retry
+		// another channel; forwarding the failure event would commit a 200 and
+		// block that retry.
+		if streamErr != nil && !responseDataSent {
+			sr.Stop(streamErr)
+			return
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		if streamErr != nil {

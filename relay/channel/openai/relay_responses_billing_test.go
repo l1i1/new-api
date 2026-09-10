@@ -209,10 +209,12 @@ func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-	require.Contains(t, w.Body.String(), "response.failed")
-	require.NotContains(t, w.Body.String(), "server_is_overloaded")
-	require.Contains(t, w.Body.String(), `"code":"server_error"`)
+	require.True(t, apiErr.ShouldEvictChannelAffinity())
+	// The failure arrived before anything was forwarded, so the handler must not
+	// commit a response: the relay retries another channel and only the final
+	// error is written to the client.
+	require.False(t, c.Writer.Written())
+	require.Empty(t, w.Body.String())
 }
 
 func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) {
@@ -241,10 +243,46 @@ func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) 
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, "Please retry.", apiErr.Error())
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-	require.Contains(t, w.Body.String(), "response.error")
-	require.NotContains(t, w.Body.String(), "slow_down")
-	require.Contains(t, w.Body.String(), `"code":"server_error"`)
+	require.False(t, c.Writer.Written())
+}
+
+// A reseller channel may emit content-free keepalive data events before an
+// error. Forwarding them would commit the response before any output and block
+// the relay from retrying another channel, so they must be filtered out.
+func TestOaiResponsesStreamHandlerFiltersUpstreamKeepaliveEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"data: {\"type\":\"keepalive\",\"sequence_number\":0}\n\n",
+			"data: {\"type\":\"error\",\"error\":{\"message\":\"Service temporarily unavailable\",\"type\":\"api_error\"},\"status_code\":503}\n\n",
+			"data: [DONE]\n\n",
+		}, ""))),
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	require.True(t, apiErr.ShouldEvictChannelAffinity())
+	// keepalive must not have been forwarded, so the writer stays uncommitted and
+	// the relay can still swap channels.
+	require.False(t, c.Writer.Written())
+	require.NotContains(t, w.Body.String(), "keepalive")
 }
 
 func TestOaiResponsesStreamHandlerKeepsCommittedStatusForMidStreamFailure(t *testing.T) {
