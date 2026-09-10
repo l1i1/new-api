@@ -83,6 +83,7 @@ const MODELS_SECTIONS = [
           AutomaticRetryStatusCodes: settings.AutomaticRetryStatusCodes,
           ForceRetryStatusCodes: settings.ForceRetryStatusCodes,
           NeverRetryStatusCodes: settings.NeverRetryStatusCodes,
+          AutomaticRetryKeywords: settings.AutomaticRetryKeywords,
           'monitor_setting.auto_test_channel_enabled':
             settings['monitor_setting.auto_test_channel_enabled'],
           'monitor_setting.auto_test_channel_minutes':

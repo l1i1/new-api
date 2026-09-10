@@ -82,3 +82,36 @@ func TestShouldRetryTaskRelayFollowsConfiguredStatusCodes(t *testing.T) {
 	assert.False(t, shouldRetryTaskRelay(c, 1, gatewayErr, 1))
 	assert.True(t, shouldRetryTaskRelay(c, 1, &taskdto.TaskError{StatusCode: http.StatusTooManyRequests}, 1))
 }
+
+func TestShouldRetryTaskRelayFollowsConfiguredKeywords(t *testing.T) {
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	origNever := operation_setting.NeverRetryStatusCodeRanges
+	t.Cleanup(func() {
+		operation_setting.AutomaticRetryKeywords = origKeywords
+		operation_setting.NeverRetryStatusCodeRanges = origNever
+	})
+
+	// 408 is outside the automatic ranges, so the task path keeps it local until
+	// an operator keyword marks the message as "try another channel".
+	taskErr := &taskdto.TaskError{
+		StatusCode: http.StatusRequestTimeout,
+		Message:    "upstream: model not found",
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	assert.False(t, shouldRetryTaskRelay(c, 1, taskErr, 1))
+
+	operation_setting.AutomaticRetryKeywordsFromString("model not found")
+	assert.True(t, shouldRetryTaskRelay(c, 1, taskErr, 1))
+
+	// The never-retry list still outranks a matching keyword.
+	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString("408"))
+	assert.False(t, shouldRetryTaskRelay(c, 1, taskErr, 1))
+
+	// Local validation errors are never retried, keyword or not.
+	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString(""))
+	assert.False(t, shouldRetryTaskRelay(c, 1, &taskdto.TaskError{
+		StatusCode: http.StatusRequestTimeout,
+		Message:    "upstream: model not found",
+		LocalError: true,
+	}, 1))
+}

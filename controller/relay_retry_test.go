@@ -36,6 +36,22 @@ func TestShouldRetryUnsupportedChannelEndpoint(t *testing.T) {
 	), 1))
 }
 
+// TestShouldRetryOllamaResponsesEndpointUnsupported pins the production report
+// "status_code=400, ollama channel: /v1/responses endpoint not supported": an
+// endpoint-capability failure must fail over to another channel, not surface.
+func TestShouldRetryOllamaResponsesEndpointUnsupported(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	err := types.NewErrorWithStatusCode(
+		errors.New("ollama channel: /v1/responses endpoint not supported"),
+		types.ErrorCodeChannelUnsupportedEndpoint,
+		http.StatusBadRequest,
+	)
+
+	require.True(t, types.IsChannelError(err))
+	require.True(t, shouldRetry(c, err, 1))
+}
+
 func TestShouldRetryUnsupportedChannelFeature(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -108,6 +124,103 @@ func TestNeverRetryStatusCodesOverrideAutomaticRetry(t *testing.T) {
 	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString("500"))
 	neverCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	require.False(t, shouldRetry(neverCtx, serverErr, 1))
+}
+
+func TestShouldRetryUpstreamErrorMatchingKeyword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = origKeywords })
+
+	// 408 is absent from the automatic retry ranges, so without a keyword the
+	// error stays non-retryable.
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream: model not found"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusRequestTimeout,
+	)
+	beforeCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(beforeCtx, upstreamErr, 1))
+
+	operation_setting.AutomaticRetryKeywordsFromString("model not found")
+	keywordCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(keywordCtx, upstreamErr, 1))
+
+	// A different message must not match.
+	otherErr := types.NewOpenAIError(
+		errors.New("upstream: quota exhausted"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusRequestTimeout,
+	)
+	otherCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(otherCtx, otherErr, 1))
+}
+
+func TestRetryKeywordIsBoundedByHardGates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	origNever := operation_setting.NeverRetryStatusCodeRanges
+	t.Cleanup(func() {
+		operation_setting.AutomaticRetryKeywords = origKeywords
+		operation_setting.NeverRetryStatusCodeRanges = origNever
+	})
+
+	operation_setting.AutomaticRetryKeywordsFromString("model not found")
+
+	// The never-retry status list still outranks a matching keyword.
+	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString("408"))
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream: model not found"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusRequestTimeout,
+	)
+	neverCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(neverCtx, upstreamErr, 1), "the never-retry list outranks a matching keyword")
+
+	// Exhausted retry budget and a committed response still stop the loop.
+	require.NoError(t, operation_setting.NeverRetryStatusCodesFromString(""))
+	noBudgetCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(noBudgetCtx, upstreamErr, 0), "an exhausted retry budget outranks a matching keyword")
+
+	recorder := httptest.NewRecorder()
+	committedCtx, _ := gin.CreateTestContext(recorder)
+	_, err := committedCtx.Writer.Write([]byte("partial stream"))
+	require.NoError(t, err)
+	require.False(t, shouldRetry(committedCtx, upstreamErr, 1), "a committed response outranks a matching keyword")
+
+	// The hardcoded always-skip error code (malformed upstream body) is never
+	// retried even when the body text matches a keyword.
+	badBodyErr := types.NewOpenAIError(
+		errors.New("upstream: model not found in malformed body"),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadGateway,
+	)
+	badBodyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(badBodyCtx, badBodyErr, 1), "an always-skip error code outranks a matching keyword")
+}
+
+// TestRetryKeywordOverridesConversionSkipRetry covers adaptors that report a
+// channel capability gap as a plain conversion error. newConvertRequestFailedError
+// wraps those with skip-retry, so without the keyword override the request would
+// surface instead of failing over to a channel that supports the endpoint.
+func TestRetryKeywordOverridesConversionSkipRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = origKeywords })
+
+	conversionErr := types.NewErrorWithStatusCode(
+		errors.New("codex channel: endpoint not supported"),
+		types.ErrorCodeConvertRequestFailed,
+		http.StatusBadRequest,
+		types.ErrOptionWithSkipRetry(),
+	)
+	require.True(t, types.IsSkipRetryError(conversionErr))
+
+	beforeCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(beforeCtx, conversionErr, 1))
+
+	operation_setting.AutomaticRetryKeywordsFromString("endpoint not supported")
+	afterCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(afterCtx, conversionErr, 1))
 }
 
 func TestShouldNotRetryAfterResponseWriterCommit(t *testing.T) {

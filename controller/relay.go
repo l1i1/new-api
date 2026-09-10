@@ -732,9 +732,6 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
-	if types.IsSkipRetryError(openaiErr) {
-		return false
-	}
 	if retryTimes <= 0 {
 		return false
 	}
@@ -745,6 +742,20 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
+		return false
+	}
+	// Operator-configured error text forces another channel. This is the explicit,
+	// empty-by-default override, so it beats the generic skip-retry marker: several
+	// adaptors report a channel capability gap as a plain conversion error
+	// ("... endpoint not supported") which the framework would otherwise surface.
+	// The hard gates still win -- committed response, retry budget, affinity,
+	// channel pin, never-retry status codes and always-skip error codes.
+	if !operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) &&
+		!operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) &&
+		operation_setting.MatchesAutomaticRetryKeywords(openaiErr.Error()) {
+		return true
+	}
+	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
 	code := openaiErr.StatusCode
@@ -1349,6 +1360,10 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	if code < 100 || code > 599 {
+		return true
+	}
+	if !operation_setting.IsNeverRetryStatusCode(code) &&
+		operation_setting.MatchesAutomaticRetryKeywords(taskErr.Message) {
 		return true
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)

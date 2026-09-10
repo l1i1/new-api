@@ -85,6 +85,7 @@ const createRoutingReliabilitySchema = (
       AutomaticRetryStatusCodes: z.string(),
       ForceRetryStatusCodes: z.string(),
       NeverRetryStatusCodes: z.string(),
+      AutomaticRetryKeywords: z.string(),
         monitor_setting: z.object({
           auto_test_channel_enabled: z.boolean(),
           auto_test_channel_minutes: z.coerce
@@ -173,6 +174,7 @@ type RoutingReliabilitySectionProps = {
     AutomaticRetryStatusCodes: string
     ForceRetryStatusCodes: string
     NeverRetryStatusCodes: string
+    AutomaticRetryKeywords: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_concurrency': number
@@ -194,6 +196,7 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticRetryStatusCodes: string
   ForceRetryStatusCodes: string
   NeverRetryStatusCodes: string
+  AutomaticRetryKeywords: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number
@@ -221,6 +224,9 @@ const buildFormDefaults = (
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
   ForceRetryStatusCodes: defaults.ForceRetryStatusCodes ?? '',
   NeverRetryStatusCodes: defaults.NeverRetryStatusCodes ?? '',
+  AutomaticRetryKeywords: normalizeLineEndings(
+    defaults.AutomaticRetryKeywords ?? ''
+  ),
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -256,6 +262,9 @@ const normalizeDefaults = (
   NeverRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.NeverRetryStatusCodes ?? ''
   ).normalized,
+  AutomaticRetryKeywords: normalizeLineEndings(
+    defaults.AutomaticRetryKeywords ?? ''
+  ),
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -289,6 +298,7 @@ const normalizeFormValues = (
   NeverRetryStatusCodes: parseHttpStatusCodeRules(
     values.NeverRetryStatusCodes
   ).normalized,
+  AutomaticRetryKeywords: normalizeLineEndings(values.AutomaticRetryKeywords),
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -505,6 +515,30 @@ export function RoutingReliabilitySection({
                             {t('Normalized:')} {neverRetryParsed.normalized}
                           </span>
                         )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='AutomaticRetryKeywords'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Auto-retry error keywords')}</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        rows={6}
+                        placeholder={t('one keyword per line')}
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'If an upstream error message contains any of these keywords (case insensitive), retry another channel even when the status code alone would not retry. Local request errors and the never-retry status codes are never retried.'
+                      )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
