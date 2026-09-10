@@ -147,6 +147,15 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		// A truncated stream can still have produced billable upstream output
+		// before the transport ended. Settle that observed usage so the provider
+		// charge stays auditable; the outer relay defer is idempotent and will
+		// not refund a settled billing session. Only non-zero usage is settled --
+		// a zero-output truncation has nothing to bill.
+		if streamUsage, ok := usage.(*dto.Usage); ok && streamUsage != nil &&
+			streamUsage.TotalTokens > 0 && newAPIError.ShouldEvictChannelAffinity() {
+			service.PostTextConsumeQuota(c, info, streamUsage, []string{"incomplete upstream stream"})
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		sendMappedStreamError(c, info, newAPIError)

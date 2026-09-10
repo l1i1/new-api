@@ -74,6 +74,12 @@ const (
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
+	// ContextKeyRelayFailed marks a request whose relay ended in an error even
+	// though the client already received a committed (200) response, e.g. an
+	// in-band upstream failure after the stream started. Post-relay success
+	// checks must consult it because the written status code stays 200.
+	ContextKeyRelayFailed ContextKey = "relay_failed"
+
 	// ContextKeyV4OfficialPin marks a deepseek-v4 or kimi-k3 request whose
 	// user Official Fit profile enables the route dimension, so channel
 	// selection pins the whole family to the official channel. Users without

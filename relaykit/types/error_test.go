@@ -27,3 +27,20 @@ func TestSkipRetryOptionPreservesUnsupportedEndpointRetryability(t *testing.T) {
 		require.False(t, IsSkipRetryError(err))
 	}
 }
+
+func TestUpstreamFailureMarkerDrivesAffinityEviction(t *testing.T) {
+	// Empty-output failures keep evicting the binding (pre-existing behavior).
+	emptyErr := NewOpenAIError(errors.New("empty"), ErrorCode("server_error"), 502, ErrOptionWithEmptyOutput())
+	require.True(t, emptyErr.ShouldEvictChannelAffinity())
+
+	// An explicit in-band upstream failure must also evict, even though the
+	// committed stream makes the error non-retryable within this request.
+	inBandErr := NewOpenAIError(errors.New("Upstream request failed"), ErrorCode("upstream_error"), 503, ErrOptionWithUpstreamFailure())
+	require.True(t, inBandErr.IsUpstreamFailure())
+	require.True(t, inBandErr.ShouldEvictChannelAffinity())
+
+	// Unmarked errors and nil receivers must not trigger eviction.
+	plainErr := NewOpenAIError(errors.New("upstream returned 500"), ErrorCode("server_error"), 500)
+	require.False(t, plainErr.ShouldEvictChannelAffinity())
+	require.False(t, (*NewAPIError)(nil).ShouldEvictChannelAffinity())
+}

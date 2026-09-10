@@ -139,7 +139,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				oaiError = &types.OpenAIError{Type: "server_error", Message: "responses stream failed"}
 			}
 			service.NormalizeServerOverloadError(oaiError)
-			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable)
+			// The upstream reported the failure in-band, so the pinned channel
+			// must be dropped from the affinity binding even when the stream
+			// was already committed and cannot be retried within this request.
+			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable, types.ErrOptionWithUpstreamFailure())
 		}
 		if streamErr != nil && !responseDataSent && !c.Writer.Written() {
 			// A failure received as the first SSE event has not committed the
@@ -236,14 +239,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	// 流以 EOF 结束，但从未发送终端事件（response.completed/done/failed/
-	// incomplete/cancelled），且没有任何可交付输出（文本、工具调用、图片或
-	// usage）。这说明上游在产出结果前就关闭了流：把它标记为失败，而不是
-	// 静默记一笔 0-token 成功（此前 record 为"上游没有返回计费信息"）。
-	// 已提交响应时补发合成 response.failed 事件，让客户端（如 Codex CLI）
-	// 走重试；未提交时直接返回错误，由 relay 按普通上游错误处理/重试。
-	if !sawTerminalEvent && responseTextBuilder.Len() == 0 && !hasToolCall &&
-		imageCounter.Count() == 0 && usage.TotalTokens == 0 {
-		return usage, emptyResponsesStreamError(c, c.Writer.Written())
+	// incomplete/cancelled）。Responses 协议有显式终端事件，缺少它就说明上游
+	// 在完成前关闭了流——即使已经产出了部分内容（客户端文案即
+	// "stream closed before response.completed"），也必须标记为失败，而不是静默
+	// 记一笔成功。已提交响应时补发合成 response.failed 事件，让客户端（如 Codex
+	// CLI）走重试；未提交时直接返回错误，由 relay 按普通上游错误处理/重试。
+	if !sawTerminalEvent {
+		return usage, incompleteResponsesStreamError(c, c.Writer.Written(), responseTextBuilder.Len() > 0 || hasToolCall || imageCounter.Count() > 0)
 	}
 
 	return usage, nil
@@ -266,24 +268,39 @@ func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usag
 	return usage
 }
 
-// emptyResponsesStreamError marks a Responses stream that ended without a
-// terminal event and without any deliverable output as an upstream failure,
-// mirroring emptyChatCompletionError for the chat-completions path. When the
-// response has already been committed, a synthetic response.failed event is
-// forwarded so protocol clients can retry instead of treating the truncated
-// stream as a completed empty response.
-func emptyResponsesStreamError(c *gin.Context, committed bool) *types.NewAPIError {
-	ops := []types.NewAPIErrorOptions{types.ErrOptionWithEmptyOutput()}
+// incompleteResponsesStreamError marks a Responses stream that ended without a
+// terminal event as an upstream failure, so the channel is evicted from the
+// affinity binding instead of being re-bound as healthy. hadOutput separates a
+// stream that delivered nothing (mirroring emptyChatCompletionError on the chat
+// path) from one truncated after partial output; both are failures, and the
+// message reports which case occurred.
+//
+// Only the zero-output case injects a synthetic response.failed event, because
+// there the client has nothing to act on. When partial output was already
+// delivered, the content stays committed and the client's own protocol check
+// ("stream closed before response.completed") drives the retry, so the stream
+// is left untouched.
+func incompleteResponsesStreamError(c *gin.Context, committed bool, hadOutput bool) *types.NewAPIError {
+	options := make([]types.NewAPIErrorOptions, 0, 3)
+	message := "upstream returned empty final content"
+	if hadOutput {
+		// Partial output proves the upstream had already started producing, so
+		// this is not an "empty" response: flag it as an upstream failure.
+		options = append(options, types.ErrOptionWithUpstreamFailure())
+		message = "upstream stream ended before response.completed"
+	} else {
+		options = append(options, types.ErrOptionWithEmptyOutput())
+	}
 	if committed {
-		ops = append(ops, types.ErrOptionWithSkipRetry())
+		options = append(options, types.ErrOptionWithSkipRetry())
 	}
 	apiErr := types.NewOpenAIError(
-		errors.New("upstream returned empty final content"),
+		errors.New(message),
 		types.ErrorCode("server_error"),
 		http.StatusBadGateway,
-		ops...,
+		options...,
 	)
-	if !committed {
+	if !committed || hadOutput {
 		return apiErr
 	}
 	synthetic := dto.ResponsesStreamResponse{

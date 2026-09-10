@@ -537,7 +537,7 @@ func TestOaiResponsesStreamHandlerAllowsCompletedEventWithoutOutput(t *testing.T
 	require.NotContains(t, w.Body.String(), "response.failed")
 }
 
-func TestOaiResponsesStreamHandlerAllowsTextDeltaWithoutTerminalEvent(t *testing.T) {
+func TestOaiResponsesStreamHandlerRejectsTextDeltaWithoutTerminalEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldTimeout := constant.StreamingTimeout
 	constant.StreamingTimeout = 30
@@ -551,8 +551,10 @@ func TestOaiResponsesStreamHandlerAllowsTextDeltaWithoutTerminalEvent(t *testing
 		DisablePing:     true,
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mytest-model"},
 	}
-	// A partial stream with text but no terminal event is a genuine truncation;
-	// whatever was delivered stays committed, so no synthetic event is injected.
+	// A partial stream with text but no terminal event is a genuine truncation
+	// (client: "stream closed before response.completed"). The delivered content
+	// stays committed and the client's own protocol check drives the retry, so
+	// no synthetic event is injected -- but it must not be recorded as success.
 	stream := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
 
 	resp := &http.Response{
@@ -563,7 +565,9 @@ func TestOaiResponsesStreamHandlerAllowsTextDeltaWithoutTerminalEvent(t *testing
 
 	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
 
-	require.Nil(t, apiErr)
+	require.NotNil(t, apiErr)
+	require.True(t, apiErr.ShouldEvictChannelAffinity())
+	require.True(t, apiErr.IsUpstreamFailure())
 	require.NotNil(t, usage)
 	require.Greater(t, usage.TotalTokens, 0)
 	require.NotContains(t, w.Body.String(), "response.failed")

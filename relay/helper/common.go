@@ -32,6 +32,45 @@ func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
 	return ok && profile.Shape
 }
 
+// pingProbe is the SSE comment frame written by PingData. Clients ignore it, so
+// it does not count as delivered response content.
+const pingProbe = ": PING\n\n"
+
+// ginKeyKeepAliveBytes tracks how many bytes of the committed response are pure
+// keep-alive output, so a retry decision can tell a ping-only commit apart from
+// one that already delivered real data.
+const ginKeyKeepAliveBytes = "helper_keepalive_written_bytes"
+
+// ResponseCommitState describes what has already been committed to the client,
+// which decides whether swapping channels for a retry is safe.
+type ResponseCommitState int
+
+const (
+	// ResponseNotCommitted: neither headers nor body were committed.
+	ResponseNotCommitted ResponseCommitState = iota
+	// ResponseKeepAliveOnly: only keep-alive pings (or just the status/headers)
+	// were committed. The client has no response content to act on, so another
+	// channel can still serve this request.
+	ResponseKeepAliveOnly
+	// ResponsePayloadWritten: real response data reached the client. Retrying
+	// would concatenate a second response onto a partial stream, so it must not
+	// happen.
+	ResponsePayloadWritten
+)
+
+// ResponseCommitStateOf classifies the current response commit state. It relies
+// on the writer's byte count matching the tracked keep-alive byte count, which
+// is exact because keep-alive output is only ever written by PingData.
+func ResponseCommitStateOf(c *gin.Context) ResponseCommitState {
+	if c == nil || c.Writer == nil || !c.Writer.Written() {
+		return ResponseNotCommitted
+	}
+	if c.Writer.Size() == c.GetInt(ginKeyKeepAliveBytes) {
+		return ResponseKeepAliveOnly
+	}
+	return ResponsePayloadWritten
+}
+
 func FlushWriter(c *gin.Context) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -242,9 +281,12 @@ func PingData(c *gin.Context) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	if _, err := c.Writer.Write([]byte(": PING\n\n")); err != nil {
+	if _, err := c.Writer.Write([]byte(pingProbe)); err != nil {
 		return fmt.Errorf("write ping data failed: %w", err)
 	}
+	// Track keep-alive bytes so a retry decision can tell a ping-only commit
+	// apart from one that already delivered real response content.
+	c.Set(ginKeyKeepAliveBytes, c.GetInt(ginKeyKeepAliveBytes)+len(pingProbe))
 	return FlushWriter(c)
 }
 

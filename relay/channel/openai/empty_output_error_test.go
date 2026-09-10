@@ -15,7 +15,14 @@ func TestEmptyOutputErrorsAreFlagged(t *testing.T) {
 	require.True(t, emptyChatCompletionError(true).IsEmptyOutput())
 	// committed=false never touches the writer, so a nil-safe test context is enough
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.True(t, emptyResponsesStreamError(ctx, false).IsEmptyOutput())
+	require.True(t, incompleteResponsesStreamError(ctx, false, false).IsEmptyOutput())
+
+	// A stream truncated after partial output is an upstream failure, not an
+	// empty response, and must still evict the pinned channel.
+	truncated := incompleteResponsesStreamError(ctx, false, true)
+	require.True(t, truncated.IsUpstreamFailure())
+	require.False(t, truncated.IsEmptyOutput())
+	require.True(t, truncated.ShouldEvictChannelAffinity())
 
 	// committed variants must keep their skip-retry semantics
 	require.True(t, types.IsSkipRetryError(emptyChatCompletionError(true)))

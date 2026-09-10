@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -123,6 +124,41 @@ func TestShouldNotRetryAfterResponseWriterCommit(t *testing.T) {
 	)
 	require.True(t, c.Writer.Written())
 	require.False(t, shouldRetry(c, upstreamErr, 1))
+}
+
+func TestShouldRetryKeepAliveOnlyCommitAllowsChannelSwap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.NoError(t, helper.PingData(c))
+
+	// Mirrors the empty-output failure raised after the keep-alive ping already
+	// committed the writer: it marks itself non-retryable, but nothing the client
+	// can act on was delivered, so another channel may still serve the request.
+	emptyErr := types.NewOpenAIError(
+		errors.New("upstream returned empty final content"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+		types.ErrOptionWithSkipRetry(),
+	)
+	require.True(t, types.IsSkipRetryError(emptyErr))
+
+	require.True(t, shouldRetry(c, emptyErr, 1), "a keep-alive-only commit must still allow a channel swap")
+	require.False(t, types.IsSkipRetryError(emptyErr), "the skip-retry marker must be cleared for a keep-alive-only commit")
+}
+
+func TestShouldNotRetryWhenPayloadFollowsKeepAlive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.NoError(t, helper.PingData(c))
+	_, err := c.Writer.Write([]byte("data: {\"choices\":[]}\n\n"))
+	require.NoError(t, err)
+
+	upstreamErr := types.NewOpenAIError(
+		errors.New("upstream stream terminated"),
+		types.ErrorCode("server_error"),
+		http.StatusBadGateway,
+	)
+	require.False(t, shouldRetry(c, upstreamErr, 1), "real delivered data must block a channel swap")
 }
 
 func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {

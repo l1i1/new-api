@@ -105,6 +105,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			// The written status code stays 200 once a stream is committed, so
+			// post-relay success checks (channel affinity re-binding) cannot
+			// rely on it. Record the failure explicitly.
+			common.SetContextKey(c, constant.ContextKeyRelayFailed, true)
 			errorMessage := newAPIError.Error()
 			if service.GetOpsCyberPolicy(c) != nil {
 				errorMessage = service.CyberPolicyMessageForLog(errorMessage)
@@ -710,11 +714,20 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
-	// Once bytes have reached the client, another channel cannot safely reuse
-	// the same writer. Retrying would concatenate a second response onto a
-	// partially committed SSE stream.
-	if c != nil && c.Writer != nil && c.Writer.Written() {
+	// Once real response data has reached the client, another channel cannot
+	// safely reuse the same writer: retrying would concatenate a second response
+	// onto a partially committed SSE stream. A commit carrying only the
+	// keep-alive ping (or just headers) has delivered nothing the client can act
+	// on, so swapping channels is still safe -- that is what lets a slow
+	// empty-output upstream be retried instead of failing the request outright.
+	switch helper.ResponseCommitStateOf(c) {
+	case helper.ResponsePayloadWritten:
 		return false
+	case helper.ResponseKeepAliveOnly:
+		// A handler may have marked the error non-retryable because the writer
+		// was already committed; only keep-alive bytes went out, so that reason
+		// does not apply and a retry can still deliver a real answer.
+		openaiErr.ClearSkipRetry()
 	}
 	if types.IsChannelError(openaiErr) {
 		return true
@@ -788,10 +801,10 @@ func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel,
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
-	// A zero-output stream failure means the selected upstream is broken; drop
-	// the affinity binding so the client's retry re-selects a healthy channel
+	// An upstream failure means the selected channel is broken; drop the
+	// affinity binding so the client's retry re-selects a healthy channel
 	// instead of being pinned back to the same one until the TTL expires.
-	service.EvictChannelAffinityOnEmptyOutput(c, err)
+	service.EvictChannelAffinityOnUpstreamFailure(c, err)
 	errorMessage := err.Error()
 	if service.GetOpsCyberPolicy(c) != nil {
 		errorMessage = service.CyberPolicyMessageForLog(errorMessage)

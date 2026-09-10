@@ -260,3 +260,15 @@ func withDebugEnabled(t *testing.T, enabled bool) {
 		common.DebugEnabled = oldDebug
 	})
 }
+
+func TestNormalizeOpenAIStreamErrorMarksUpstreamFailure(t *testing.T) {
+	// Providers that send an error object with HTTP 200 before closing the
+	// stream must be flagged so channel affinity drops the broken binding.
+	err := NormalizeOpenAIStreamError([]byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`), http.StatusOK)
+	require.NotNil(t, err)
+	require.True(t, err.IsUpstreamFailure())
+	require.True(t, err.ShouldEvictChannelAffinity())
+
+	// A non-error SSE payload is not an upstream failure.
+	require.Nil(t, NormalizeOpenAIStreamError([]byte(`{"choices":[]}`), http.StatusOK))
+}

@@ -198,11 +198,15 @@ func NormalizeOpenAIStreamError(data []byte, upstreamStatus int) *types.NewAPIEr
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
 		statusCode = http.StatusBadGateway
 	}
+	// An in-band error event proves the upstream failed to serve the request
+	// even though the transport status may be 200; mark it so channel affinity
+	// drops the broken binding. See ErrOptionWithUpstreamFailure.
 	if openAIError != nil {
-		return NormalizeDFlashLogprobCapabilityError(types.WithOpenAIError(*openAIError, statusCode))
+		return NormalizeDFlashLogprobCapabilityError(types.WithOpenAIError(*openAIError, statusCode, types.ErrOptionWithUpstreamFailure()))
 	}
 	return NormalizeDFlashLogprobCapabilityError(types.NewOpenAIError(
 		errors.New(message), types.ErrorCodeBadResponseStatusCode, statusCode,
+		types.ErrOptionWithUpstreamFailure(),
 	))
 }
 

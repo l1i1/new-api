@@ -95,6 +95,7 @@ type NewAPIError struct {
 	skipRetry      bool
 	recordErrorLog *bool
 	emptyOutput    bool
+	upstreamFailed bool
 	errorType      ErrorType
 	errorCode      ErrorCode
 	StatusCode     int
@@ -393,6 +394,16 @@ func IsSkipRetryError(err *NewAPIError) bool {
 	return err.skipRetry
 }
 
+// ClearSkipRetry removes a previously-set skip-retry marker. Callers use it when
+// the condition that justified skipping retries (response data already committed
+// to the client) does not actually hold, e.g. only keep-alive bytes were written.
+func (e *NewAPIError) ClearSkipRetry() {
+	if e == nil {
+		return
+	}
+	e.skipRetry = false
+}
+
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		// Channel capability failures are retryable at the channel-selection
@@ -424,6 +435,32 @@ func ErrOptionWithEmptyOutput() NewAPIErrorOptions {
 // ended without any deliverable output. See ErrOptionWithEmptyOutput.
 func (e *NewAPIError) IsEmptyOutput() bool {
 	return e != nil && e.emptyOutput
+}
+
+// ErrOptionWithUpstreamFailure marks an error as an explicit upstream failure
+// reported in-band, such as a `response.failed` event or a stream carrying an
+// error object. Unlike ErrOptionWithEmptyOutput the client may already hold a
+// committed stream, so the failure cannot be retried on another channel within
+// the same request -- but it still proves the pinned upstream is broken.
+func ErrOptionWithUpstreamFailure() NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.upstreamFailed = true
+	}
+}
+
+// IsUpstreamFailure reports whether the upstream explicitly failed the request
+// in-band. See ErrOptionWithUpstreamFailure.
+func (e *NewAPIError) IsUpstreamFailure() bool {
+	return e != nil && e.upstreamFailed
+}
+
+// ShouldEvictChannelAffinity reports whether the error proves the pinned
+// upstream could not serve the request, so the affinity binding must be
+// dropped. Both zero-output streams and explicit in-band upstream failures
+// qualify; the client retries with the same affinity key and would otherwise
+// be pinned back to the same broken channel until the TTL expires.
+func (e *NewAPIError) ShouldEvictChannelAffinity() bool {
+	return e.IsEmptyOutput() || e.IsUpstreamFailure()
 }
 
 func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {

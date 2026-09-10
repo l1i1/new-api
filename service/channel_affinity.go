@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -675,14 +676,15 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	return false
 }
 
-// EvictChannelAffinityOnEmptyOutput drops the current affinity binding when the
-// pinned upstream failed with a zero-output stream/body ("empty final
-// content"). The client (e.g. Codex CLI) retries the same conversation with the
-// same affinity key; without eviction it is pinned back to the same broken
-// channel until the TTL expires. The next successful request re-binds the key
-// to whichever channel actually served it.
-func EvictChannelAffinityOnEmptyOutput(c *gin.Context, err *types.NewAPIError) bool {
-	if c == nil || err == nil || !err.IsEmptyOutput() {
+// EvictChannelAffinityOnUpstreamFailure drops the current affinity binding when
+// the pinned upstream failed to serve the request: a zero-output stream/body
+// ("empty final content") or an explicit in-band failure such as a
+// `response.failed` event. The client (e.g. Codex CLI) retries the same
+// conversation with the same affinity key; without eviction it is pinned back
+// to the same broken channel until the TTL expires. The next successful request
+// re-binds the key to whichever channel actually served it.
+func EvictChannelAffinityOnUpstreamFailure(c *gin.Context, err *types.NewAPIError) bool {
+	if c == nil || err == nil || !err.ShouldEvictChannelAffinity() {
 		return false
 	}
 	return ClearCurrentChannelAffinityCache(c)
@@ -739,6 +741,13 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	}
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil || !setting.Enabled {
+		return
+	}
+	// A committed stream keeps the HTTP status at 200 even when the relay
+	// failed in-band, so the caller cannot tell success from a truncated
+	// stream. Re-binding here would pin the conversation back to the broken
+	// channel, so refuse to record a failed relay as a healthy channel.
+	if c != nil && common.GetContextKeyBool(c, constant.ContextKeyRelayFailed) {
 		return
 	}
 	if setting.SwitchOnSuccess && c != nil {
