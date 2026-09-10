@@ -36,7 +36,7 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
-import { formatPrice, formatRequestPrice } from '../lib/price'
+import { formatPriceParts, formatRequestPriceParts } from '../lib/price'
 import { getTaskNumberFields } from '../lib/task-expr'
 import type {
   PricingCurrency,
@@ -136,6 +136,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                   <span className='text-muted-foreground text-xs'>{label}</span>
                 )}
                 <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
+                  {entry.original && !entry.formattedRange && (
+                    <span className='text-muted-foreground/60 text-xs font-normal line-through'>
+                      {entry.original}
+                    </span>
+                  )}
                   <span>{entry.formattedRange ?? entry.formatted}</span>
                   <span className='text-muted-foreground text-xs font-normal whitespace-nowrap'>
                     {' '}
@@ -182,41 +187,53 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         ? [{ type: 'cache' as const, label: t('Cached') }]
         : []),
     ]
-    priceSummary = prices.map((price) => (
-      <div key={price.type} className='flex min-w-0 flex-col gap-1'>
-        <span className='text-muted-foreground text-xs'>{price.label}</span>
-        <span className='font-mono text-sm font-semibold tabular-nums'>
-          {formatPrice(
-            props.model,
-            price.type,
-            tokenUnit,
-            showRechargePrice,
-            priceRate,
-            usdExchangeRate,
-            props.selectedGroup,
-            displayCurrency
-          )}
-          <span className='text-muted-foreground text-xs font-normal'>
-            {' '}
-            / {tokenUnitLabel}
+    priceSummary = prices.map((price) => {
+      const parts = formatPriceParts(
+        props.model,
+        price.type,
+        tokenUnit,
+        showRechargePrice,
+        priceRate,
+        usdExchangeRate,
+        props.selectedGroup,
+        displayCurrency
+      )
+      return (
+        <div key={price.type} className='flex min-w-0 flex-col gap-1'>
+          <span className='text-muted-foreground text-xs'>{price.label}</span>
+          <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
+            {parts.original && (
+              <span className='text-muted-foreground/60 text-xs font-normal line-through'>
+                {parts.original}
+              </span>
+            )}
+            {parts.price}
+            <span className='text-muted-foreground text-xs font-normal'>
+              / {tokenUnitLabel}
+            </span>
           </span>
-        </span>
-      </div>
-    ))
+        </div>
+      )
+    })
   } else {
+    const requestParts = formatRequestPriceParts(
+      props.model,
+      showRechargePrice,
+      priceRate,
+      usdExchangeRate,
+      props.selectedGroup,
+      displayCurrency
+    )
     priceSummary = (
       <div className='col-span-full flex min-w-0 flex-col gap-1'>
-        <span className='font-mono text-sm font-semibold tabular-nums'>
-          {formatRequestPrice(
-            props.model,
-            showRechargePrice,
-            priceRate,
-            usdExchangeRate,
-            props.selectedGroup,
-            displayCurrency
+        <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
+          {requestParts.original && (
+            <span className='text-muted-foreground/60 text-xs font-normal line-through'>
+              {requestParts.original}
+            </span>
           )}
+          {requestParts.price}
           <span className='text-muted-foreground text-xs font-normal'>
-            {' '}
             / {t('request')}
           </span>
         </span>

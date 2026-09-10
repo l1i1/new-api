@@ -256,6 +256,37 @@ describe('model cards', () => {
     )
   })
 
+  it('strikes through the undiscounted price when a group ratio applies', () => {
+    const { container, rerender } = render(
+      <ModelCard
+        model={pricingModel()}
+        onClick={vi.fn()}
+        selectedGroup='premium'
+      />
+    )
+    expect(container.querySelectorAll('.line-through')).toHaveLength(2)
+
+    rerender(
+      <ModelCard
+        model={pricingModel()}
+        onClick={vi.fn()}
+        selectedGroup='default'
+      />
+    )
+    expect(container.querySelector('.line-through')).toBeNull()
+  })
+
+  it('strikes through the undiscounted per-request price when a group ratio applies', () => {
+    const { container } = render(
+      <ModelCard
+        model={pricingModel({ quota_type: 1, model_price: 0.4 })}
+        onClick={vi.fn()}
+        selectedGroup='premium'
+      />
+    )
+    expect(container.querySelectorAll('.line-through')).toHaveLength(1)
+  })
+
   it('shows a per-request price with the selected group and recharge multiplier without a token unit', () => {
     render(
       <ModelCard
