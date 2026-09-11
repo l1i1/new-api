@@ -46,8 +46,9 @@
       重试风暴。该 gate 已删除：想要官方顺序保证的用户应开启 `route` pin 官方渠道；未开启者
       接受聚合器的 content-only 应答。空输出仍判失败。
   - `route`：**选择性官方路由（2026-09-06 起，DS 为 hybrid 分类器）**。Route 开启时按请求特征
-    决定是否 pin 官方渠道（DS 按渠道类型 43、K3 按类型 25），复用 `ContextKeyV4OfficialPin`
-    机制（distributor 选路前标记，选路时按模型族窄化到对应类型）。
+    决定是否 pin 官方渠道（DS 按渠道类型 43、K3 按类型 25；候选集中同时包含渠道级
+    `official_fit_models` 白名单命中的渠道，见下文），复用 `ContextKeyV4OfficialPin`
+    机制（distributor 选路前标记，选路时按模型族窄化到对应类型/白名单）。
     - DeepSeek V4：仅三类请求 pin 官方——① `logprobs=true`（聚合器无法复刻官方双路
       logprobs）；② messages 含 `image_url` part（聚合器兼容性未验证；且 2026-09-06 实测
       官方已接受文本模型传图，旧 400 契约不复存在）；③ 思考输出类请求（缺省 / enabled /
@@ -67,7 +68,34 @@
     成本事实（2026-09-06 CN 实测）：thinking 输出类是买家（ZCode agent 流量）的主体，
     在聚合器池被证明无法保证 100% 拟合前，这部分必须留官方；进一步压缩官方用量的
     前提是**逐渠道验证**（每渠道 × audit 200 例多轮重采样稳定通过后白名单化），
-    该机制留作后续演进，需新增渠道级验证/开关设施。
+    该机制由下文的渠道级 `official_fit_models` 提供。
+
+    **渠道级官方行为白名单（2026-09-11 新增）**：`channel.settings.official_fit_models`
+    是渠道级的"官方行为"模型白名单（逗号分隔的模型 id 列表，大小写不敏感，落库前
+    归一化去重，上限 64 条）。声明后，该渠道对**所列模型**即被视为官方行为上游，
+    与"模型族的官方渠道类型"（DS=43 / K3=25 / GLM=26）**取并集**参与 pin 候选筛选：
+    - 用途：转售商把 `deepseek-v4.1-flash` 映射到官方 `deepseek-flash`（如 ch12/ch17
+      `type=1`），实测结构/工具状态机与官方一致，但渠道类型不是 43，旧逻辑永远不会
+      把它当作 pin 目标。白名单让实测通过的转售渠道无需改渠道类型即可承接 pin 流量。
+    - **按模型生效，不整族提升**：未声明的同族模型（如混合渠道只声明了
+      `deepseek-v4.1-flash`，却同时提供 `deepseek-v4-flash`）在该渠道上**不算**官方，
+      避免把一个第三方的 v4-flash 连带当成官方。
+    - **不越过族边界**：`OfficialFitChannelType(m)==0` 的模型（如 `gpt-4o`）即使被写进
+      白名单也不会被视为官方；渠道保存时即拒绝（`ValidateSettings` → "is not an
+      official-fit model family"）。
+    - **空列表 = 旧行为**：未配置的渠道完全不变。
+    - 保存时校验：条目数 ≤ 64、不允许空条目（`dto.ChannelOtherSettings.
+      ValidateOfficialFitModels`），并在 `model.ValidateSettings` 校验家族归属。
+
+    **pin 与亲和的不对称（2026-09-11，随白名单一起修正）**：`officialPinAllowsAffinity`
+    的两个方向回答不同问题——
+    - pin 请求：缓存渠道必须是"本模型的官方行为渠道"（官方类型 **或** 白名单声明），
+      否则清掉粘性、改选官方渠道；
+    - 未 pin 请求：只排除"模型族的官方**渠道类型**"，防止先前 pin 流量残留的官方粘性
+      劫持整个亲和 key。**声明了白名单的聚合器渠道（type≠官方类型）对未 pin 请求是
+      普通候选，保留其亲和**——否则会对已验证转售渠道的 prompt cache 造成无谓打断。
+    判定所需的渠道级白名单查询走缓存索引（`model.ChannelIsOfficialFitForModel`），
+    内存缓存关闭时回退 DB 读取。
     - **亲和与 pin 的互斥按「本次请求是否 pin」判定（2026-09-11 修复）**：官方渠道的粘性
       绑定只可能由 pin 请求写入，因此规则是纯粹的请求级判定——pin 请求必须落在官方渠道
       （排除聚合器粘性），未 pin 请求**必须排除官方渠道粘性**。此前该排除额外要求用户当前
@@ -87,6 +115,9 @@
 | `relay/channel/openai/relay-openai.go` `requiresDeepSeekV4ReasoningLogprobs` | 加入 profile.Validate 判定 |
 | `controller/relay.go` 错误原文 + octet-stream | `IsDeepSeekV4ValidationMessage`（仅 DS）→ `IsStrictFitValidationMessage`（DS+K3），并加 `profile.Errors` 门控 |
 | `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时整族 pin（选路前生效）；DS 与 K3 均可（按模型族类型窄化） |
+| `model/channel_cache.go` `preferOfficialFitChannels` / `OfficialFitChannelType` | 候选窄化从"仅官方渠道类型"扩展为"官方类型 ∪ `channel.settings.official_fit_models` 白名单"（按模型，不整族）；新增 `ChannelIsOfficialFitForModel` 缓存索引查询 |
+| `model/ability.go` `preferOfficialFitAbilities` | 无内存缓存（DB）路径同步支持白名单（`SELECT id, type, settings`） |
+| `middleware/distributor.go` `officialPinAllowsAffinity` | 改为 (pinActive, officialType, preferredType, preferredIsOfficialBehavior)，pin 用白名单并集、未 pin 只排除官方渠道类型 |
 
 ## 管理入口
 
@@ -106,10 +137,18 @@
 - K3 官方渠道（type 25）已达最低限速档（org RPM 3）；大用量场景启用 K3 `route` 前需
   先与 Moonshot 协商限速，或将 CN_Kimi 仅作为基准/校验渠道。
 - 无配置用户（绝大多数）行为与启用前完全一致，仅当 profile 命中才改变。
+- **渠道白名单是人工信任标记，不做运行时校验**：`official_fit_models` 只表示"该渠道
+  在这些模型上已通过离线验证"，网关不会为每次请求重新确认上游真的拟合。白名单必须
+  以审计/一致性套件的实测结果为依据（见 `docs/mainland-v4x-channel-report-*.md`），
+  并在上游行为变化后重新验证。写错白名单会让 pin 流量落到非官方行为的渠道。
 
 ## 验收
 
 1. `go build ./...` + `go vet` + `go test ./relay/... ./controller/... ./middleware/... ./model/...`；relaykit `go test ./...`。
 2. web `bun run typecheck`。
 3. 单测覆盖：匹配器（精确/前缀/`*`/最严匹配/空配置）、DS 校验门控、K3 全规则、fit 开关两态、
-   logprobs 硬校验门控、错误原文门控、管理员接口审计。
+   logprobs 硬校验门控、错误原文门控、管理员接口审计、**渠道白名单**
+   （`relaykit/dto`: 归一化/去重/上限/空条目/JSON round-trip；`model`:
+   `IsOfficialFitChannelForModel` 按模型生效、缓存索引查询、pin 候选窄化压过高优先级
+   非官方渠道、无候选时硬失败；`middleware`: 亲和判定 pin/未 pin 不对称——未 pin 的
+   白名单聚合器保留亲和；web: `official-fit-models.test.ts` 表单 round-trip）。

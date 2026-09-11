@@ -6750,6 +6750,9 @@
     "Payment successful": "支付成功",
     "The payment has been received and your balance has been updated.": "已收到付款，餘額已更新。",
     "Your balance will update automatically once the payment completes.": "付款完成後餘額將自動更新。",
-    "Request Logs": "請求日誌"
+    "Request Logs": "請求日誌",
+    "Official-fit model allowlist": "官方擬合模型白名單",
+    "Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.": "以逗號分隔的模型 ID，表示本渠道在這些模型上已驗證與官方行為等價。官方擬合路由可將這些模型固定到本渠道，即使該渠道不是官方類型。",
+    "e.g., deepseek-v4.1-flash, deepseek-v4-flash": "例如：deepseek-v4.1-flash, deepseek-v4-flash"
   }
 }

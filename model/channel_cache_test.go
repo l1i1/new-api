@@ -1,11 +1,17 @@
 package model
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestGetRandomSatisfiedChannelPreservesCachedPrioritySelection(t *testing.T) {
@@ -341,4 +347,231 @@ func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekWithMultipleOfficial(t 
 		require.NoError(t, err)
 		require.Contains(t, []int{1, 5}, selected.Id, "pinned V4 requests must never select the aggregator when officials exist")
 	}
+}
+
+// A channel that declares deepseek-v4.1-flash in official_fit_models is
+// official-behaving for that model even though its type is a plain aggregator.
+// A pinned request must select it and must NOT fall back to a same-family
+// aggregator that did not declare the model.
+func TestGetRandomSatisfiedChannelPinnedHonorsOfficialFitModelsAllowlist(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	oldOfficialModels := channel2officialFitModels
+	// The candidate slice is priority-descending, as InitChannelCache leaves it
+	// before building the selection metadata: 8 (priority 31) then 7 (priority 0).
+	group2model2channels = map[string]map[string][]int{
+		"default": {"deepseek-v4.1-flash": {8, 7}},
+	}
+	channelsIDM = map[int]*Channel{
+		// 8 is the third-party channel (serves the same-named model) and holds
+		// the higher priority — this reproduces the production failure where
+		// OpenRouter priority 31 outranked every official-baseline channel.
+		// 7 is the reseller that maps v4.1 onto the official deepseek-flash and
+		// declares that in official_fit_models.
+		7: {Id: 7, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(0), Weight: uintPtr(1)},
+		8: {Id: 8, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(31), Weight: uintPtr(1)},
+	}
+	channel2officialFitModels = map[int]map[string]struct{}{
+		7: {"deepseek-v4.1-flash": {}},
+	}
+	group2model2channelSelection = map[string]map[string]*channelSelectionMetadata{
+		"default": {
+			"deepseek-v4.1-flash": buildChannelSelectionMetadata(group2model2channels["default"]["deepseek-v4.1-flash"], channelsIDM),
+		},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channel2officialFitModels = oldOfficialModels
+		channelSyncLock.Unlock()
+	})
+
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true)
+		require.NoError(t, err)
+		require.Equal(t, 7, selected.Id,
+			"pinned requests must reach the channel that declared the model, even though 8 has far higher priority")
+	}
+
+	// Unpinned requests are untouched by the allowlist: selection still starts
+	// at the highest priority tier, which is 8 here.
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, false)
+		require.NoError(t, err)
+		require.Equal(t, 8, selected.Id, "the allowlist must not drag normal traffic onto the verified channel")
+	}
+}
+
+// A pinned request with no official-behaving candidate must fail honestly
+// rather than silently degrade to an aggregator (the pin is hard).
+func TestGetRandomSatisfiedChannelPinnedFailsWhenAllowlistHasNoCandidate(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldGroup2Model2Channels := group2model2channels
+	oldChannelsIDM := channelsIDM
+	oldSelection := group2model2channelSelection
+	oldOfficialModels := channel2officialFitModels
+	group2model2channels = map[string]map[string][]int{
+		"default": {"deepseek-v4.1-flash": {8}},
+	}
+	channelsIDM = map[int]*Channel{
+		8: {Id: 8, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
+	}
+	channel2officialFitModels = nil
+	group2model2channelSelection = nil
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		group2model2channels = oldGroup2Model2Channels
+		channelsIDM = oldChannelsIDM
+		group2model2channelSelection = oldSelection
+		channel2officialFitModels = oldOfficialModels
+		channelSyncLock.Unlock()
+	})
+
+	selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true)
+	require.NoError(t, err)
+	require.Nil(t, selected, "a pinned request without an official candidate must not fall back to an aggregator")
+}
+
+// ChannelIsOfficialFitForModel reads the cache index built at sync time, so a
+// declaring channel (aggregator type) is official for the declared model only,
+// and the family's official type stays official without any declaration.
+func TestChannelIsOfficialFitForModelUsesCacheIndex(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldChannelsIDM := channelsIDM
+	oldOfficialModels := channel2officialFitModels
+	channelsIDM = map[int]*Channel{
+		7: {Id: 7, Type: constant.ChannelTypeOpenAI},
+		5: {Id: 5, Type: constant.ChannelTypeDeepSeek},
+	}
+	channel2officialFitModels = map[int]map[string]struct{}{
+		7: {"deepseek-v4.1-flash": {}},
+	}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		channelsIDM = oldChannelsIDM
+		channel2officialFitModels = oldOfficialModels
+		channelSyncLock.Unlock()
+	})
+
+	require.True(t, ChannelIsOfficialFitForModel(7, "deepseek-v4.1-flash"))
+	require.True(t, ChannelIsOfficialFitForModel(7, "DEEPSEEK-V4.1-FLASH"))
+	require.False(t, ChannelIsOfficialFitForModel(7, "deepseek-v4-flash"),
+		"a channel is official only for the model it declared")
+	require.True(t, ChannelIsOfficialFitForModel(5, "deepseek-v4.1-flash"),
+		"the family's official channel type needs no declaration")
+	require.False(t, ChannelIsOfficialFitForModel(5, "gpt-4o"),
+		"models outside the family are never official")
+}
+
+// The incremental cache update must keep the official-fit allowlist indexes in
+// step. Before that was wired in, editing a channel's allowlist left the
+// reverse index serving the stale model set, so a pinned request could still
+// reach a channel whose declaration had been removed (or miss a new one).
+func TestCacheUpdateChannelSyncsOfficialFitModels(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldChannelsIDM := channelsIDM
+	oldOfficialModels := channel2officialFitModels
+	channelsIDM = map[int]*Channel{}
+	channel2officialFitModels = map[int]map[string]struct{}{}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		channelsIDM = oldChannelsIDM
+		channel2officialFitModels = oldOfficialModels
+		channelSyncLock.Unlock()
+	})
+
+	channel := &Channel{Id: 701, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "ch-701"}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{"deepseek-v4.1-flash"}})
+	CacheUpdateChannel(channel)
+
+	assert.True(t, ChannelIsOfficialFitForModel(701, "deepseek-v4.1-flash"))
+	assert.False(t, ChannelIsOfficialFitForModel(701, "deepseek-v4-flash"))
+
+	// Widening the allowlist replaces the old entry rather than accumulating it.
+	channel.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{"deepseek-v4.1-flash", "deepseek-v4-flash"}})
+	CacheUpdateChannel(channel)
+	assert.True(t, ChannelIsOfficialFitForModel(701, "deepseek-v4.1-flash"))
+	assert.True(t, ChannelIsOfficialFitForModel(701, "deepseek-v4-flash"))
+
+	// Clearing it removes the channel from the index.
+	channel.SetOtherSettings(dto.ChannelOtherSettings{})
+	CacheUpdateChannel(channel)
+	assert.False(t, ChannelIsOfficialFitForModel(701, "deepseek-v4.1-flash"))
+	assert.False(t, ChannelIsOfficialFitForModel(701, "deepseek-v4-flash"))
+	channelSyncLock.RLock()
+	require.NotContains(t, channel2officialFitModels, 701)
+	channelSyncLock.RUnlock()
+}
+
+// The cache index must read settings without Channel.GetOtherSettings, whose
+// malformed-JSON self-heal rewrites the row. A rebuild runs for every channel,
+// so this path must leave a corrupt row untouched (save-time validation owns it).
+func TestOfficialFitModelsForCacheDoesNotMutateChannel(t *testing.T) {
+	channel := &Channel{Id: 702, Type: constant.ChannelTypeOpenAI, OtherSettings: "{not-json"}
+	require.Nil(t, officialFitModelsForCache(channel))
+	assert.Equal(t, "{not-json", channel.OtherSettings,
+		"the cache read must not self-heal (and thereby write) a corrupt settings row")
+
+	channel.OtherSettings = ""
+	require.Nil(t, officialFitModelsForCache(channel))
+
+	channel.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{" DeepSeek-V4.1-Flash "}})
+	require.Equal(t, []string{"deepseek-v4.1-flash"}, officialFitModelsForCache(channel))
+}
+
+// The DB fallback (memory cache disabled) must still classify by the allowlist.
+// It reads only the classifying columns, so the channel key is never loaded.
+func TestChannelIsOfficialFitForModelDBFallback(t *testing.T) {
+	previousDB := DB
+	previousMemoryCache := common.MemoryCacheEnabled
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	DB = db
+	require.NoError(t, db.AutoMigrate(&Channel{}))
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		DB = previousDB
+		common.MemoryCacheEnabled = previousMemoryCache
+		if sqlDB, e := db.DB(); e == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	declared := &Channel{Id: 801, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "declared", Key: "unused"}
+	declared.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{"deepseek-v4.1-flash"}})
+	require.NoError(t, DB.Create(declared).Error)
+
+	official := &Channel{Id: 802, Type: constant.ChannelTypeDeepSeek, Status: common.ChannelStatusEnabled, Name: "official", Key: "unused"}
+	require.NoError(t, DB.Create(official).Error)
+
+	plain := &Channel{Id: 803, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "plain", Key: "unused"}
+	require.NoError(t, DB.Create(plain).Error)
+
+	assert.True(t, ChannelIsOfficialFitForModel(801, "deepseek-v4.1-flash"), "allowlist declares it")
+	assert.False(t, ChannelIsOfficialFitForModel(801, "deepseek-v4-flash"), "only the declared model")
+	assert.True(t, ChannelIsOfficialFitForModel(802, "deepseek-v4.1-flash"), "official channel type")
+	assert.False(t, ChannelIsOfficialFitForModel(803, "deepseek-v4.1-flash"), "plain aggregator")
+	assert.False(t, ChannelIsOfficialFitForModel(801, "gpt-4o"), "outside the family")
+	assert.False(t, ChannelIsOfficialFitForModel(999, "deepseek-v4.1-flash"), "missing channel")
 }

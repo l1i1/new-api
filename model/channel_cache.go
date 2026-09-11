@@ -23,6 +23,50 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
 
+// channel2officialFitModels caches each channel's normalized official-behavior
+// model allowlist (dto.ChannelOtherSettings.OfficialFitModels) so official-fit
+// pin selection avoids re-parsing channel settings JSON per candidate.
+// Refreshed with the channel cache.
+var channel2officialFitModels map[int]map[string]struct{}
+
+// officialFitModelsForCache returns the channel's declared official-behavior
+// allowlist for the cache index. It deliberately avoids Channel.GetOtherSettings,
+// whose malformed-JSON self-heal writes "{}" back to the database: this runs for
+// every channel on every rebuild, so one corrupt row must not cause a write per
+// sync. Unparseable settings contribute no allowlist; save-time ValidateSettings
+// already rejects them.
+func officialFitModelsForCache(channel *Channel) []string {
+	if channel == nil || channel.OtherSettings == "" {
+		return nil
+	}
+	var settings dto.ChannelOtherSettings
+	if err := common.UnmarshalJsonStr(channel.OtherSettings, &settings); err != nil {
+		return nil
+	}
+	return settings.NormalizeOfficialFitModels()
+}
+
+// setOfficialFitModelsIn records channel's normalized official-fit allowlist
+// into the index, replacing any previous entry. It takes the target map
+// explicitly so the full cache rebuild can populate its private snapshot before
+// publishing it, while the incremental update mutates the live map under the
+// write lock.
+func setOfficialFitModelsIn(channel2 map[int]map[string]struct{}, channel *Channel) {
+	if channel == nil {
+		return
+	}
+	delete(channel2, channel.Id)
+	models := officialFitModelsForCache(channel)
+	if len(models) == 0 {
+		return
+	}
+	set := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		set[m] = struct{}{}
+	}
+	channel2[channel.Id] = set
+}
+
 type channelSelectionCandidate struct {
 	channelID       int
 	effectiveWeight int
@@ -51,6 +95,7 @@ func InitChannelCache() {
 	}
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
+	newChannel2officialFitModels := make(map[int]map[string]struct{})
 	var channels []*Channel
 	DB.Find(&channels)
 	for _, channel := range channels {
@@ -61,6 +106,7 @@ func InitChannelCache() {
 				newChannel2advancedCustomConfig[channel.Id] = config
 			}
 		}
+		setOfficialFitModelsIn(newChannel2officialFitModels, channel)
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
@@ -124,6 +170,7 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
+	channel2officialFitModels = newChannel2officialFitModels
 	group2model2channelSelection = newGroup2model2channelSelection
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
@@ -172,22 +219,91 @@ func OfficialFitChannelType(model string) int {
 	return 0
 }
 
-// preferOfficialFitChannels narrows official-fit candidates to the official
-// upstream channel type when the request is marked for the official pin. For
-// deepseek-v4* the mark is set for the extreme-sampling class or by the
-// user's Route profile; kimi-k3 only via the Route profile. The pin is HARD:
-// when no official candidate remains (including retries where the failed
-// official channel is excluded), the set is emptied so the request fails
-// honestly instead of silently degrading to a fit-violating aggregator.
+// IsOfficialFitChannelForModel reports whether this channel may serve model as
+// an official-behaving upstream. A channel qualifies when it declares the model
+// in its official_fit_models allowlist (per-model verified official behavior),
+// or when it is the channel type that is official for the model's family
+// (deepseek-v4* -> DeepSeek, kimi-k3 -> Moonshot, glm-5.3 -> Zhipu).
+//
+// The allowlist is additive: it lets a reseller that maps e.g.
+// deepseek-v4.1-flash onto the official deepseek-flash serve pinned requests
+// without being switched to the official channel type, while its unmarked
+// models keep normal aggregator routing (a mixed channel is official for the
+// verified models only). Models outside an official-fit family never qualify,
+// so the marker cannot turn an unrelated model into an official one. This
+// reads the channel's own settings, so it works on DB-loaded channels too.
+func (channel *Channel) IsOfficialFitChannelForModel(model string) bool {
+	if channel == nil {
+		return false
+	}
+	officialType := OfficialFitChannelType(model)
+	if officialType == 0 {
+		return false
+	}
+	target := strings.ToLower(strings.TrimSpace(model))
+	for _, declared := range officialFitModelsForCache(channel) {
+		if declared == target {
+			return true
+		}
+	}
+	return channel.Type == officialType
+}
+
+// officialFitChannelMatchesLocked is the cache-backed form of
+// Channel.IsOfficialFitChannelForModel for the selection hot path. Caller must
+// hold channelSyncLock (read lock).
+func officialFitChannelMatchesLocked(channelID int, model string) bool {
+	officialType := OfficialFitChannelType(model)
+	if officialType == 0 {
+		return false
+	}
+	if set := channel2officialFitModels[channelID]; len(set) > 0 {
+		if _, declared := set[strings.ToLower(strings.TrimSpace(model))]; declared {
+			return true
+		}
+	}
+	channel, ok := channelsIDM[channelID]
+	return ok && channel.Type == officialType
+}
+
+// ChannelIsOfficialFitForModel reports whether the channel may serve model as
+// an official-behaving upstream. It reads the channel cache's allowlist index
+// and falls back to a targeted DB read when the memory cache is disabled, so
+// callers outside the selection lock (e.g. the affinity check) get the same
+// answer as candidate filtering without re-parsing channel settings JSON per
+// request. The DB fallback selects only the classifying columns — never the
+// channel key or credentials, which this check has no use for.
+func ChannelIsOfficialFitForModel(channelID int, model string) bool {
+	if OfficialFitChannelType(model) == 0 {
+		return false
+	}
+	if !common.MemoryCacheEnabled {
+		channel := &Channel{Id: channelID}
+		if err := DB.Select("id, type, settings").First(channel, "id = ?", channelID).Error; err != nil {
+			return false
+		}
+		return channel.IsOfficialFitChannelForModel(model)
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	return officialFitChannelMatchesLocked(channelID, model)
+}
+
+// preferOfficialFitChannels narrows official-fit candidates to the channels
+// that are official-behaving for the model when the request is marked for the
+// official pin. The candidate is kept when it declares the model in its
+// official_fit_models allowlist or carries the family's official channel type.
+// The pin is HARD: when no official candidate remains (including retries where
+// the failed official channel is excluded), the set is emptied so the request
+// fails honestly instead of silently degrading to a fit-violating aggregator.
 // Caller must hold channelSyncLock (read lock).
 func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) []int {
-	officialType := OfficialFitChannelType(model)
-	if len(channels) == 0 || !pinOfficial || officialType == 0 {
+	if len(channels) == 0 || !pinOfficial || OfficialFitChannelType(model) == 0 {
 		return channels
 	}
 	official := make([]int, 0, len(channels))
 	for _, channelID := range channels {
-		if channel, ok := channelsIDM[channelID]; ok && channel.Type == officialType {
+		if officialFitChannelMatchesLocked(channelID, model) {
 			official = append(official, channelID)
 		}
 	}
@@ -197,16 +313,18 @@ func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) [
 	return official
 }
 
-// officialFitPreferenceApplied reports whether the previous narrowing kept
-// only a strict subset of the cached candidates, meaning the prebuilt selection
-// metadata no longer describes the candidate set and must not be used.
+// officialFitPreferenceApplied reports whether the official pin is active for
+// this family. When it is, the candidate slice the caller holds may be a
+// strict subset of the one the prebuilt selection metadata was built from
+// (non-official channels were dropped), so that metadata must not be used.
+// Every entry in the already-narrowed slice is official-behaving, which is
+// exactly the condition checked here.
 func officialFitPreferenceApplied(channels []int, model string, pinOfficial bool) bool {
-	officialType := OfficialFitChannelType(model)
-	if !pinOfficial || officialType == 0 {
+	if !pinOfficial || OfficialFitChannelType(model) == 0 {
 		return false
 	}
 	for _, channelID := range channels {
-		if channel, ok := channelsIDM[channelID]; ok && channel.Type != officialType {
+		if !officialFitChannelMatchesLocked(channelID, model) {
 			return false
 		}
 	}
@@ -522,6 +640,10 @@ func CacheUpdateChannel(channel *Channel) {
 			channel2advancedCustomConfig[channel.Id] = config
 		}
 	}
+	if channel2officialFitModels == nil {
+		channel2officialFitModels = make(map[int]map[string]struct{})
+	}
+	setOfficialFitModelsIn(channel2officialFitModels, channel)
 	group2model2channelSelection = nil
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
 	// Lock ordering: do NOT hold channelSyncLock while calling

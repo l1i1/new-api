@@ -256,8 +256,15 @@ func Distribute() func(c *gin.Context) {
 					// disabled-thinking ones) after Route was switched off.
 					if preferred != nil {
 						officialType := model.OfficialFitChannelType(modelRequest.Model)
-						if !officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, preferred.Type) {
-							preferred = nil
+						if officialType != 0 {
+							pinned := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+							preferredIsOfficialBehavior := false
+							if pinned {
+								preferredIsOfficialBehavior = model.ChannelIsOfficialFitForModel(preferred.Id, modelRequest.Model)
+							}
+							if !officialPinAllowsAffinity(pinned, officialType, preferred.Type, preferredIsOfficialBehavior) {
+								preferred = nil
+							}
 						}
 					}
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && !service.GroupAccessPolicyBlocksChannel(c, preferred.Id) {
@@ -606,20 +613,29 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	}
 }
 
-// officialPinAllowsAffinity reports whether an affinity-cached channel of
-// preferredType may be reused for a request, given the channel type that is
-// official for the model's family (officialType; zero when the model is not an
-// official-fit family) and whether THIS request is pinned to the official
-// channel. When pinned the official channel is mandatory, so an aggregator
-// binding is dropped; when unpinned the official channel is forbidden, so a
-// binding left behind by earlier pinned traffic is dropped instead of dragging
-// this request (and every later one on the same affinity key) onto it.
-func officialPinAllowsAffinity(pinActive bool, officialType int, preferredType int) bool {
+// officialPinAllowsAffinity reports whether an affinity-cached channel may be
+// reused for a request. officialType is the channel type that is official for
+// the model's family (zero when the family has no official upstream), so
+// affinity is unrestricted for other families.
+//
+// The two directions are deliberately asymmetric because they answer different
+// questions:
+//   - Pinned: the request demands official bytes, so the cached channel must be
+//     official-behaving for this model — either the family's official type or a
+//     channel that declared the model in official_fit_models
+//     (preferredIsOfficialBehavior).
+//   - Unpinned: the request is normal aggregator traffic. Only the family's
+//     official type is excluded, so a binding left behind by earlier pinned
+//     traffic cannot hijack the affinity key onto the expensive official
+//     channel. A channel that merely declares official behavior for a model
+//     while being an aggregator (preferredType != officialType) is an ordinary
+//     candidate and keeps its affinity.
+func officialPinAllowsAffinity(pinActive bool, officialType int, preferredType int, preferredIsOfficialBehavior bool) bool {
 	if officialType == 0 {
 		return true
 	}
 	if pinActive {
-		return preferredType == officialType
+		return preferredIsOfficialBehavior
 	}
 	return preferredType != officialType
 }

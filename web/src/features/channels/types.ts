@@ -105,6 +105,9 @@ export interface ChannelOtherSettings {
   allow_speed?: boolean
   claude_beta_query?: boolean
   disable_task_polling_sleep?: boolean
+  // Platform model ids this channel serves with verified official-equivalent
+  // behavior; official-fit routing may pin them here regardless of channel type.
+  official_fit_models?: string[]
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean
   upstream_model_update_ignored_models?: string[]

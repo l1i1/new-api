@@ -6750,6 +6750,9 @@
     "Payment successful": "支払いが完了しました",
     "The payment has been received and your balance has been updated.": "支払いを受け付け、残高を更新しました。",
     "Your balance will update automatically once the payment completes.": "支払い完了後、残高は自動的に更新されます。",
-    "Request Logs": "リクエストログ"
+    "Request Logs": "リクエストログ",
+    "Official-fit model allowlist": "公式準拠モデルの許可リスト",
+    "Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.": "このチャネルが公式と同等の動作を検証済みで提供するモデル ID のカンマ区切りリスト。公式準拠ルーティングは、チャネルが公式タイプでなくてもこれらのモデルをこのチャネルに固定できます。",
+    "e.g., deepseek-v4.1-flash, deepseek-v4-flash": "例: deepseek-v4.1-flash, deepseek-v4-flash"
   }
 }

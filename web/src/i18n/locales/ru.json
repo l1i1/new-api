@@ -6750,6 +6750,9 @@
     "Payment successful": "Оплата прошла успешно",
     "The payment has been received and your balance has been updated.": "Платёж получен, баланс обновлён.",
     "Your balance will update automatically once the payment completes.": "Баланс обновится автоматически после завершения оплаты.",
-    "Request Logs": "Журналы запросов"
+    "Request Logs": "Журналы запросов",
+    "Official-fit model allowlist": "Белый список моделей официального соответствия",
+    "Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.": "Идентификаторы моделей через запятую, которые этот канал обслуживает с проверенным поведением, эквивалентным официальному. Официальная маршрутизация может закрепить эти модели за этим каналом, даже если канал не является официальным типом.",
+    "e.g., deepseek-v4.1-flash, deepseek-v4-flash": "напр.: deepseek-v4.1-flash, deepseek-v4-flash"
   }
 }

@@ -313,6 +313,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'official_fit_models',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -363,6 +364,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.http2_connection_shards != null &&
       values.http2_connection_shards > 1) ||
     values.claude_beta_query ||
+    values.official_fit_models?.trim() ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -736,6 +738,7 @@ export function ChannelMutateDrawer({
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
+  const currentOfficialFitModels = form.watch('official_fit_models')
   const currentProxy = form.watch('proxy')
   const currentHttpProtocol = form.watch('http_protocol')
   const currentHttp2ConnectionShards = form.watch('http2_connection_shards')
@@ -1029,6 +1032,7 @@ export function ChannelMutateDrawer({
     currentPassThroughBodyEnabled ||
     currentOllamaCacheEstimationEnabled ||
     currentDisableTaskPollingSleep ||
+    currentOfficialFitModels?.trim() ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride ||
@@ -4386,6 +4390,32 @@ export function ChannelMutateDrawer({
                                 )}
                               />
                             </div>
+
+                            <FormField
+                              control={form.control}
+                              name='official_fit_models'
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {t('Official-fit model allowlist')}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input
+                                      placeholder={t(
+                                        'e.g., deepseek-v4.1-flash, deepseek-v4-flash'
+                                      )}
+                                      {...field}
+                                    />
+                                  </FormControl>
+                                  <FormDescription>
+                                    {t(
+                                      'Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.'
+                                    )}
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
 
                             <FormField
                               control={form.control}

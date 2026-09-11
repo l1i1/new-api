@@ -381,34 +381,32 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	return &channel, err
 }
 
-// preferOfficialFitAbilities narrows official-fit candidates to the official
-// upstream channel type when the request is marked for the official pin,
-// mirroring the memory-cache path. The pin is HARD: when no official candidate
+// preferOfficialFitAbilities narrows official-fit candidates to the channels
+// that are official-behaving for the model when the request is marked for the
+// official pin, mirroring the memory-cache path. A channel qualifies when it
+// declares the model in its official_fit_models allowlist or carries the
+// family's official channel type. The pin is HARD: when no official candidate
 // remains (including the retry path, where the failed official channel is
 // excluded), the candidate set is emptied so the request fails honestly.
 // An aggregator fallback would silently violate byte-level fit — the
 // aggregator pool nondeterministically drops reasoning_content and never
 // reproduces official dual-path logprobs.
 func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
-	officialType := OfficialFitChannelType(model)
-	if !pinOfficial || officialType == 0 || len(abilities) == 0 {
+	if !pinOfficial || OfficialFitChannelType(model) == 0 || len(abilities) == 0 {
 		return abilities
 	}
 	channelIDs := make([]int, 0, len(abilities))
 	for _, ability := range abilities {
 		channelIDs = append(channelIDs, ability.ChannelId)
 	}
-	var officialChannels []struct {
-		Id   int
-		Type int
-	}
-	if err := DB.Model(&Channel{}).Select("id, type").Where("id IN ?", channelIDs).Find(&officialChannels).Error; err != nil {
+	var officialChannels []Channel
+	if err := DB.Model(&Channel{}).Select("id, type, settings").Where("id IN ?", channelIDs).Find(&officialChannels).Error; err != nil {
 		return abilities
 	}
 	officialIDs := make(map[int]struct{}, len(officialChannels))
-	for _, channel := range officialChannels {
-		if channel.Type == officialType {
-			officialIDs[channel.Id] = struct{}{}
+	for i := range officialChannels {
+		if officialChannels[i].IsOfficialFitChannelForModel(model) {
+			officialIDs[officialChannels[i].Id] = struct{}{}
 		}
 	}
 	if len(officialIDs) == 0 {

@@ -272,9 +272,10 @@ func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
 	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 
 	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
-	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, constant.ChannelTypeOpenAI),
+	pinned := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+	assert.False(t, officialPinAllowsAffinity(pinned, officialType, constant.ChannelTypeOpenAI, false),
 		"aggregator affinity must be bypassed for pinned requests")
-	assert.True(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType),
+	assert.True(t, officialPinAllowsAffinity(pinned, officialType, constant.ChannelTypeDeepSeek, true),
 		"official affinity stays usable for pinned requests")
 }
 
@@ -285,42 +286,87 @@ func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
 // official channel forever — including disabled-thinking requests, and even
 // after the user's Route dimension was switched off.
 func TestOfficialPinAllowsAffinityDropsStaleOfficialBindingWhenUnpinned(t *testing.T) {
-	deepseekOfficial := model.OfficialFitChannelType("deepseek-v4-flash")
-	require.NotZero(t, deepseekOfficial)
+	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
+	require.NotZero(t, officialType)
 
-	// Unpinned: aggregators are fine, the official channel is excluded.
-	assert.True(t, officialPinAllowsAffinity(false, deepseekOfficial, constant.ChannelTypeOpenAI))
-	assert.False(t, officialPinAllowsAffinity(false, deepseekOfficial, deepseekOfficial))
+	// Unpinned: aggregators are fine, the official type is excluded.
+	assert.True(t, officialPinAllowsAffinity(false, officialType, constant.ChannelTypeOpenAI, false))
+	assert.False(t, officialPinAllowsAffinity(false, officialType, officialType, false))
 
-	// Pinned: mirror image.
-	assert.False(t, officialPinAllowsAffinity(true, deepseekOfficial, constant.ChannelTypeOpenAI))
-	assert.True(t, officialPinAllowsAffinity(true, deepseekOfficial, deepseekOfficial))
+	// Pinned: the cached channel must be official-behaving (type OR allowlist).
+	assert.False(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, false))
+	assert.True(t, officialPinAllowsAffinity(true, officialType, officialType, true))
+	assert.True(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, true),
+		"a channel that declared the model is a valid pin target")
 
 	// Families without an official channel are never restricted.
-	assert.True(t, officialPinAllowsAffinity(false, 0, constant.ChannelTypeOpenAI))
-	assert.True(t, officialPinAllowsAffinity(true, 0, constant.ChannelTypeOpenAI))
+	assert.True(t, officialPinAllowsAffinity(false, 0, constant.ChannelTypeOpenAI, false))
+	assert.True(t, officialPinAllowsAffinity(true, 0, constant.ChannelTypeOpenAI, false))
 }
 
-// The exclusion keys off the model's own official family type, not a hardcoded
-// DeepSeek type. The previous check compared against ChannelTypeDeepSeek for
-// every family, which wrongly dropped the official Moonshot/Zhipu affinity for
-// pinned kimi-k3 / glm-5.3 requests.
+// The unpinned exclusion targets the official channel *type* only. A channel
+// that declares a model in official_fit_models but carries an aggregator type
+// is normal traffic for unpinned requests and must keep its affinity, or every
+// unpinned request to a verified reseller would have its prompt cache broken.
+func TestOfficialPinAllowsAffinityKeepsAllowlistAggregatorForUnpinned(t *testing.T) {
+	officialType := model.OfficialFitChannelType("deepseek-v4.1-flash")
+	require.NotZero(t, officialType)
+
+	// Aggregator type (not the official one) that declared official behavior.
+	assert.True(t, officialPinAllowsAffinity(false, officialType, constant.ChannelTypeOpenAI, true),
+		"an allowlist aggregator keeps affinity for unpinned requests")
+	// Pinned requests may use it too.
+	assert.True(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, true))
+	// But an aggregator that did NOT declare is still rejected when pinned.
+	assert.False(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, false))
+}
+
+// The decision is family-generic: it keys off the model's own official family,
+// not a hardcoded DeepSeek type. Classification stays the model package's job
+// (OfficialFitChannelType); the affinity helper only consumes the result.
 func TestOfficialPinAllowsAffinityIsFamilyGeneric(t *testing.T) {
-	kimiOfficial := model.OfficialFitChannelType("kimi-k3")
-	glmOfficial := model.OfficialFitChannelType("glm-5.3")
-	require.Equal(t, constant.ChannelTypeMoonshot, kimiOfficial)
-	require.Equal(t, constant.ChannelTypeZhipu_v4, glmOfficial)
+	require.Equal(t, constant.ChannelTypeMoonshot, model.OfficialFitChannelType("kimi-k3"))
+	require.Equal(t, constant.ChannelTypeZhipu_v4, model.OfficialFitChannelType("glm-5.3"))
+	require.Equal(t, constant.ChannelTypeDeepSeek, model.OfficialFitChannelType("deepseek-v4.1-flash"))
 
-	// Pinned k3 keeps its official (Moonshot) binding and drops aggregators.
-	assert.True(t, officialPinAllowsAffinity(true, kimiOfficial, constant.ChannelTypeMoonshot))
-	assert.False(t, officialPinAllowsAffinity(true, kimiOfficial, constant.ChannelTypeOpenAI))
+	// Pinned kimi-k3 keeps its official (Moonshot) binding, drops aggregators.
+	assert.True(t, officialPinAllowsAffinity(true, constant.ChannelTypeMoonshot, constant.ChannelTypeMoonshot, true))
+	assert.False(t, officialPinAllowsAffinity(true, constant.ChannelTypeMoonshot, constant.ChannelTypeOpenAI, false))
 
-	// Pinned glm keeps Zhipu, drops a DeepSeek binding and vice versa.
-	assert.True(t, officialPinAllowsAffinity(true, glmOfficial, constant.ChannelTypeZhipu_v4))
-	assert.False(t, officialPinAllowsAffinity(true, glmOfficial, constant.ChannelTypeDeepSeek))
-	// A DeepSeek binding is not the official family for glm, so a pinned glm
-	// request must drop it (family-specific, not a single hardcoded type).
-	assert.False(t, officialPinAllowsAffinity(true, glmOfficial, model.OfficialFitChannelType("deepseek-v4-flash")))
+	// A DeepSeek-type channel is not official for glm-5.3, so a pinned glm
+	// request must drop it even though the channel type is itself an official
+	// type for a different family.
+	glmOfficialType := model.OfficialFitChannelType("glm-5.3")
+	deepSeekType := model.OfficialFitChannelType("deepseek-v4-flash")
+	assert.False(t, officialPinAllowsAffinity(true, glmOfficialType, deepSeekType, false))
+	assert.True(t, officialPinAllowsAffinity(true, glmOfficialType, constant.ChannelTypeZhipu_v4, true))
+}
+
+// A channel that declares a model in official_fit_models is official-behaving
+// for that model even though its channel type is a plain aggregator (type 1).
+// This is what lets a reseller that maps deepseek-v4.1-flash onto the official
+// deepseek-flash serve pinned v4.1 traffic. Its unlisted models stay
+// non-official, so a mixed channel is never wholesale promoted.
+func TestOfficialFitChannelAllowlistIsPerModel(t *testing.T) {
+	mixed := &model.Channel{Type: constant.ChannelTypeOpenAI}
+	mixed.SetOtherSettings(dto.ChannelOtherSettings{
+		OfficialFitModels: []string{" DeepSeek-V4.1-Flash ", "deepseek-v4.1-flash"},
+	})
+
+	assert.True(t, mixed.IsOfficialFitChannelForModel("deepseek-v4.1-flash"))
+	assert.True(t, mixed.IsOfficialFitChannelForModel("DEEPSEEK-V4.1-FLASH"))
+	// A model the channel did not declare is not official on it, even though it
+	// belongs to the same family.
+	assert.False(t, mixed.IsOfficialFitChannelForModel("deepseek-v4-flash"))
+
+	// The official channel type qualifies without any allowlist entry.
+	official := &model.Channel{Type: constant.ChannelTypeDeepSeek}
+	assert.True(t, official.IsOfficialFitChannelForModel("deepseek-v4.1-flash"))
+
+	// The marker cannot promote a model outside an official-fit family.
+	outsider := &model.Channel{Type: constant.ChannelTypeOpenAI}
+	outsider.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{"gpt-4o"}})
+	assert.False(t, outsider.IsOfficialFitChannelForModel("gpt-4o"))
 }
 
 // The exclusion is driven by the current request's pin, not by whether the
@@ -337,6 +383,6 @@ func TestUnpinnedRequestDropsOfficialAffinityWithoutRouteProfile(t *testing.T) {
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 
 	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
-	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType),
+	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType, false),
 		"a stale official binding must be dropped for an unpinned request")
 }

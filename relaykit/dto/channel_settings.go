@@ -144,6 +144,16 @@ type ChannelOtherSettings struct {
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+	// OfficialFitModels is the channel-level allowlist of platform model ids
+	// whose upstream behavior on THIS channel was verified byte-level identical
+	// to the official endpoint (multi-round audit/compat suite). Official-fit
+	// routing treats a declaring channel as an official-behaving upstream for
+	// those models, so a reseller that maps e.g. deepseek-v4.1-flash onto the
+	// official deepseek-flash can serve pinned requests without being the
+	// official channel type. Entries are platform-facing model ids (the id the
+	// client sends), matched case-insensitively. Empty keeps the pre-existing
+	// behavior: only the family's official channel type qualifies.
+	OfficialFitModels []string `json:"official_fit_models,omitempty"`
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {
@@ -165,6 +175,56 @@ func (s *ChannelOtherSettings) ValidateToolLossPolicy() error {
 	default:
 		return fmt.Errorf("invalid tool_loss_policy: %s", s.ToolLossPolicy)
 	}
+}
+
+// MaxOfficialFitModels caps a channel's official-behavior allowlist. The list
+// rides in the channel settings JSON that every cache rebuild parses, so a
+// malformed payload must not be able to bloat it.
+const MaxOfficialFitModels = 64
+
+// NormalizeOfficialFitModels returns the allowlist trimmed, lowercased and
+// de-duplicated in first-seen order. Empty entries are dropped. Callers that
+// match model ids must use this form so casing and stray whitespace in stored
+// config cannot silently disable a verified channel.
+func (s *ChannelOtherSettings) NormalizeOfficialFitModels() []string {
+	if s == nil || len(s.OfficialFitModels) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(s.OfficialFitModels))
+	out := make([]string, 0, len(s.OfficialFitModels))
+	for _, raw := range s.OfficialFitModels {
+		m := strings.ToLower(strings.TrimSpace(raw))
+		if m == "" {
+			continue
+		}
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ValidateOfficialFitModels rejects structurally unusable allowlists at save
+// time. Model-family membership is validated by the model package, which owns
+// the official-fit family classification.
+func (s *ChannelOtherSettings) ValidateOfficialFitModels() error {
+	if s == nil || len(s.OfficialFitModels) == 0 {
+		return nil
+	}
+	if len(s.OfficialFitModels) > MaxOfficialFitModels {
+		return fmt.Errorf("official_fit_models: at most %d entries allowed", MaxOfficialFitModels)
+	}
+	for _, raw := range s.OfficialFitModels {
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("official_fit_models: empty model id")
+		}
+	}
+	return nil
 }
 
 const (

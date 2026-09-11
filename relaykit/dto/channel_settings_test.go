@@ -654,3 +654,55 @@ func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool_loss_policy")
 }
+
+func TestNormalizeOfficialFitModels(t *testing.T) {
+	require.Nil(t, (*ChannelOtherSettings)(nil).NormalizeOfficialFitModels())
+	require.Nil(t, (&ChannelOtherSettings{}).NormalizeOfficialFitModels())
+
+	got := (&ChannelOtherSettings{OfficialFitModels: []string{
+		" DeepSeek-V4.1-Flash ",
+		"deepseek-v4.1-flash",
+		"",
+		"deepseek-v4-flash",
+	}}).NormalizeOfficialFitModels()
+	require.Equal(t, []string{"deepseek-v4.1-flash", "deepseek-v4-flash"}, got)
+
+	// All-empty input collapses to nil rather than an empty slice, so callers
+	// can treat "no allowlist" uniformly.
+	require.Nil(t, (&ChannelOtherSettings{OfficialFitModels: []string{"  ", ""}}).NormalizeOfficialFitModels())
+}
+
+func TestValidateOfficialFitModels(t *testing.T) {
+	require.NoError(t, (*ChannelOtherSettings)(nil).ValidateOfficialFitModels())
+	require.NoError(t, (&ChannelOtherSettings{}).ValidateOfficialFitModels())
+	require.NoError(t, (&ChannelOtherSettings{OfficialFitModels: []string{"deepseek-v4.1-flash"}}).ValidateOfficialFitModels())
+
+	err := (&ChannelOtherSettings{OfficialFitModels: []string{"deepseek-v4.1-flash", "  "}}).ValidateOfficialFitModels()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty model id")
+
+	tooMany := make([]string, MaxOfficialFitModels+1)
+	for i := range tooMany {
+		tooMany[i] = "deepseek-v4-flash"
+	}
+	err = (&ChannelOtherSettings{OfficialFitModels: tooMany}).ValidateOfficialFitModels()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most")
+}
+
+// The allowlist must survive a marshal/unmarshal round-trip under the settings
+// JSON key so channel save/reload preserves it.
+func TestOfficialFitModelsJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"official_fit_models":["deepseek-v4.1-flash"]}`)
+	var parsed ChannelOtherSettings
+	require.NoError(t, json.Unmarshal(raw, &parsed))
+	require.Equal(t, []string{"deepseek-v4.1-flash"}, parsed.OfficialFitModels)
+
+	out, err := json.Marshal(parsed)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"official_fit_models":["deepseek-v4.1-flash"]`)
+
+	empty, err := json.Marshal(ChannelOtherSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(empty), "official_fit_models")
+}

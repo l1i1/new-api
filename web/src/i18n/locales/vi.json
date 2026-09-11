@@ -6750,6 +6750,9 @@
     "Payment successful": "Thanh toán thành công",
     "The payment has been received and your balance has been updated.": "Đã nhận thanh toán và cập nhật số dư của bạn.",
     "Your balance will update automatically once the payment completes.": "Số dư sẽ được cập nhật tự động sau khi thanh toán hoàn tất.",
-    "Request Logs": "Nhật ký yêu cầu"
+    "Request Logs": "Nhật ký yêu cầu",
+    "Official-fit model allowlist": "Danh sách model tương thích chính thức",
+    "Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.": "Danh sách ID model phân tách bằng dấu phẩy mà kênh này phục vụ với hành vi đã xác minh tương đương chính thức. Định tuyến tương thích chính thức có thể ghim các model này vào kênh này ngay cả khi kênh không thuộc loại chính thức.",
+    "e.g., deepseek-v4.1-flash, deepseek-v4-flash": "ví dụ: deepseek-v4.1-flash, deepseek-v4-flash"
   }
 }
