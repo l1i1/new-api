@@ -395,6 +395,44 @@ describe('model cards', () => {
     expect(screen.getByText(/480p · 5s ≈/)).toBeVisible()
   })
 
+  it('hides unpriced plugin fields and another model example on a video card', () => {
+    render(
+      <ModelCard
+        model={pricingModel({
+          model_name: 'kling-video-v3',
+          billing_mode: 'tiered_expr',
+          billing_expr:
+            'u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.114286) : tier("720p", u("seconds") * 0.085714)',
+          billing_usage_schema: {
+            seconds: { type: 'number', unit: 'second' },
+            tokens: { type: 'number', unit: 'token' },
+            resolution: { enum: ['720p', '1080p'] },
+          },
+          billing_usage_examples: [
+            {
+              label: 'seedance2.5 720p 5s',
+              facts: { seconds: 5, tokens: 0, resolution: '720p' },
+            },
+            {
+              label: 'kling-video-v3 720p 5s',
+              facts: { seconds: 5, tokens: 0, resolution: '720p' },
+            },
+          ],
+        })}
+        onClick={vi.fn()}
+        usdExchangeRate={7}
+      />
+    )
+    expect(screen.getByText('¥0.6 – ¥0.8').parentElement).toHaveTextContent(
+      /\/\s*s/
+    )
+    // The plugin-wide token field is unpriced here, so no token row and no ¥0.
+    expect(screen.queryByText('tokens')).not.toBeInTheDocument()
+    expect(screen.queryByText('¥0')).not.toBeInTheDocument()
+    expect(screen.getByText(/kling-video-v3 720p 5s ≈/)).toBeVisible()
+    expect(screen.queryByText(/seedance2\.5 720p 5s ≈/)).not.toBeInTheDocument()
+  })
+
   it('keeps an unrecognized expression visible with the special billing message', () => {
     const expression =
       'u("seconds") > 30 ? tier("long", u("seconds") * 0.3) : tier("short", u("seconds") * 0.4)'

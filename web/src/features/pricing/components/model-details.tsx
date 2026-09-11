@@ -94,6 +94,7 @@ import {
   hasSimpleTaskPricing,
   taskPriceLabel,
   taskPricingConditions,
+  usageExamplesForModel,
 } from '../lib/task-price-display'
 import { localizePricingVendorName } from '../lib/vendor-localization'
 import type {
@@ -1094,7 +1095,10 @@ function GroupPricingSection(props: {
     const usageExampleRows = evaluateTaskUsageExamples(
       props.model.billing_expr,
       props.model.billing_usage_schema,
-      props.model.billing_usage_examples
+      usageExamplesForModel(
+        props.model.model_name,
+        props.model.billing_usage_examples
+      )
     )
     const priceFields = getDynamicPriceFields(dynamicTiers, {
       tokenUnit: props.tokenUnit,

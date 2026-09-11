@@ -22,6 +22,7 @@ import {
 } from '@/lib/localized-text'
 
 import type {
+  BillingUsageExample,
   BillingUsageFieldSchema,
   BillingUsageSchema,
   PricingModel,
@@ -31,6 +32,26 @@ import {
   type TaskTierCondition,
 } from './billing-expr'
 import { getTaskPricingDisplayTiers } from './task-matrix-display'
+
+/**
+ * `usageExamples` are declared per task plugin, so every model the plugin owns
+ * receives the whole list. Example labels name their model ("seedance2.5 720p
+ * 5s"), so keep only the ones that mention this model; when none do (generic
+ * plugins such as "std · 1s"), fall back to the full list rather than hiding
+ * every example.
+ */
+export function usageExamplesForModel(
+  modelName: string | undefined,
+  examples: BillingUsageExample[] | null | undefined
+): BillingUsageExample[] {
+  if (!examples?.length) return []
+  const needle = (modelName || '').trim().toLowerCase()
+  if (!needle) return examples
+  const owned = examples.filter((example) =>
+    example.label.toLowerCase().includes(needle)
+  )
+  return owned.length > 0 ? owned : examples
+}
 
 export function taskPriceLabel(
   description: LocalizedTextValue | undefined,

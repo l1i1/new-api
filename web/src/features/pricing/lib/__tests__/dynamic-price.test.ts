@@ -19,12 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import type { PricingModel } from '../../types'
+import type { BillingUsageExample, PricingModel } from '../../types'
 import type { ParsedTier } from '../billing-expr'
 import {
+  getCardExamplePrice,
   getDynamicPriceEntries,
   getDynamicPricingSummary,
 } from '../dynamic-price'
+import { usageExamplesForModel } from '../task-price-display'
 
 const tier: ParsedTier = {
   label: 'base',
@@ -132,5 +134,142 @@ describe('dynamic pricing group display', () => {
 
     assert.equal(summary?.tier?.label, 'flash_offpeak')
     assert.equal(summary?.primaryEntries[0]?.value, 0.15)
+  })
+})
+
+describe('task usage price display', () => {
+  const videoSchema = {
+    seconds: { type: 'number', unit: 'second' },
+    tokens: { type: 'number', unit: 'token' },
+  } as const
+
+  test('skips declared fields the expression never charges instead of showing ¥0', () => {
+    const entries = getDynamicPriceEntries(
+      {
+        label: 'text_only',
+        conditions: [],
+        constant: 0,
+        unitPrices: { tokens: 10 },
+      },
+      {
+        tokenUnit: 'M',
+        usdExchangeRate: 7,
+        displayCurrency: 'CNY',
+        usageSchema: videoSchema,
+      }
+    )
+
+    assert.deepEqual(
+      entries.map((entry) => entry.field),
+      ['tokens']
+    )
+  })
+
+  test('keeps an explicit zero price because that is a real free tier', () => {
+    const entries = getDynamicPriceEntries(
+      {
+        label: 'free',
+        conditions: [],
+        constant: 0,
+        unitPrices: { tokens: 0 },
+      },
+      {
+        tokenUnit: 'M',
+        usdExchangeRate: 7,
+        displayCurrency: 'CNY',
+        usageSchema: videoSchema,
+      }
+    )
+
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0].formatted, '¥0')
+  })
+
+  test('excludes unpriced fields from the tier range', () => {
+    const model = {
+      billing_mode: 'tiered_expr',
+      billing_expr:
+        'u("mode") == "pro" ? tier("pro", u("seconds") * 0.8) : tier("std", u("seconds") * 0.4)',
+      billing_usage_schema: {
+        seconds: { type: 'number', unit: 'second' },
+        tokens: { type: 'number', unit: 'token' },
+        mode: { enum: ['std', 'pro'] },
+      },
+    } as unknown as PricingModel
+
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      usdExchangeRate: 1,
+      displayCurrency: 'USD',
+    })
+
+    assert.deepEqual(
+      summary?.primaryEntries.map((entry) => entry.field),
+      ['seconds']
+    )
+    assert.equal(summary?.primaryEntries[0]?.formattedRange, '$0.4 – $0.8')
+  })
+
+  test('rounds vendor coefficient noise to readable per-unit prices', () => {
+    const entries = getDynamicPriceEntries(
+      {
+        label: 'base',
+        conditions: [],
+        constant: 0,
+        unitPrices: { seconds: 0.085714, tokens: 0.00042 },
+      },
+      {
+        tokenUnit: 'M',
+        usdExchangeRate: 7,
+        displayCurrency: 'CNY',
+        usageSchema: videoSchema,
+      }
+    )
+
+    assert.equal(entries.find((e) => e.field === 'seconds')?.formatted, '¥0.6')
+    assert.equal(
+      entries.find((e) => e.field === 'tokens')?.formatted,
+      '¥0.00294'
+    )
+  })
+
+  test('keeps only the examples owned by the model and falls back for generic labels', () => {
+    const examples: BillingUsageExample[] = [
+      { label: 'seedance2.5 720p 5s', facts: { tokens: 108000 } },
+      { label: 'kling-video-v3 720p 5s', facts: { seconds: 5 } },
+      { label: 'std · 1s', facts: { seconds: 1 } },
+    ]
+
+    assert.deepEqual(
+      usageExamplesForModel('kling-video-v3', examples).map((e) => e.label),
+      ['kling-video-v3 720p 5s']
+    )
+    assert.deepEqual(
+      usageExamplesForModel('unrelated-model', examples).map((e) => e.label),
+      examples.map((e) => e.label)
+    )
+    assert.deepEqual(usageExamplesForModel(undefined, examples), examples)
+    assert.deepEqual(usageExamplesForModel('any', undefined), [])
+  })
+
+  test('picks an example that belongs to the model', () => {
+    const model = {
+      model_name: 'wan3-720p',
+      billing_mode: 'tiered_expr',
+      billing_expr: 'tier("base", u("seconds") * 0.085714)',
+      billing_usage_schema: { seconds: { type: 'number', unit: 'second' } },
+      billing_usage_examples: [
+        { label: 'seedance2.5 720p 5s', facts: { seconds: 5 } },
+        { label: 'wan3-720p 5s', facts: { seconds: 5 } },
+      ],
+    } as unknown as PricingModel
+
+    const example = getCardExamplePrice(model, {
+      tokenUnit: 'M',
+      usdExchangeRate: 1,
+      displayCurrency: 'USD',
+    })
+
+    assert.equal(example?.label, 'wan3-720p 5s')
   })
 })

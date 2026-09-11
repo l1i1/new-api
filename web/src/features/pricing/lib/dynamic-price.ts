@@ -38,6 +38,7 @@ import {
 } from './billing-expr'
 import { getDisplayGroupRatio } from './model-helpers'
 import { formatPricingCurrencyFromUSD } from './price'
+import { usageExamplesForModel } from './task-price-display'
 import {
   evaluateTaskVisualConfig,
   getTaskNumberFields,
@@ -222,16 +223,48 @@ export function formatDynamicUnitPrice(
   )
 }
 
-export function formatTaskUsageUnitPrice(
+/**
+ * Task unit prices are real per-second / per-credit amounts, so a sub-unit
+ * price computed from rounded vendor coefficients exposed floating-point noise
+ * (0.085714 * 7 = 0.599998). Keep four decimals for amounts of at least one
+ * (unchanged from before), and four significant digits below one so 0.599998
+ * reads as 0.6 while 0.00042 stays visible.
+ */
+function taskPriceFractionDigits(displayPrice: number): number {
+  const magnitude = Math.abs(displayPrice)
+  if (!Number.isFinite(magnitude) || magnitude >= 1 || magnitude === 0) return 4
+  return Math.min(6, Math.max(2, 3 - Math.floor(Math.log10(magnitude))))
+}
+
+/** The amount the user actually sees, before choosing a decimal precision. */
+function taskDisplayAmount(
   valuePerUnit: number,
   options: DynamicPriceOptions
+): number {
+  const priceUSD = valuePerUnit * (options.groupRatioMultiplier ?? 1)
+  const displayPrice = applyRechargeRate(
+    priceUSD,
+    options.showRechargePrice ?? false,
+    options.priceRate ?? 1,
+    options.usdExchangeRate ?? 1
+  )
+  if (!options.displayCurrency) return displayPrice
+  return options.displayCurrency === 'CNY'
+    ? displayPrice * (options.usdExchangeRate ?? 1)
+    : displayPrice
+}
+
+/** Shared by single prices and both range endpoints so one range reads evenly. */
+function formatTaskUsagePrice(
+  valuePerUnit: number,
+  options: DynamicPriceOptions,
+  digits: number
 ): string {
   const groupRatio = options.groupRatioMultiplier ?? 1
   const priceRate = options.priceRate ?? 1
   const usdExchangeRate = options.usdExchangeRate ?? 1
-  const priceUSD = valuePerUnit * groupRatio
   const displayPrice = applyRechargeRate(
-    priceUSD,
+    valuePerUnit * groupRatio,
     options.showRechargePrice ?? false,
     priceRate,
     usdExchangeRate
@@ -240,8 +273,8 @@ export function formatTaskUsageUnitPrice(
   if (!options.displayCurrency) {
     return formatBillingCurrencyFromUSD(displayPrice, {
       showSymbol: options.showCurrencySymbol ?? true,
-      digitsLarge: 4,
-      digitsSmall: 6,
+      digitsLarge: digits,
+      digitsSmall: digits,
       abbreviate: false,
     })
   }
@@ -249,7 +282,18 @@ export function formatTaskUsageUnitPrice(
     displayPrice,
     options.displayCurrency,
     usdExchangeRate,
-    { digitsLarge: 4, digitsSmall: 6 }
+    { digitsLarge: digits, digitsSmall: digits }
+  )
+}
+
+export function formatTaskUsageUnitPrice(
+  valuePerUnit: number,
+  options: DynamicPriceOptions
+): string {
+  return formatTaskUsagePrice(
+    valuePerUnit,
+    options,
+    taskPriceFractionDigits(taskDisplayAmount(valuePerUnit, options))
   )
 }
 
@@ -309,7 +353,11 @@ export function getDynamicPriceEntries(
     const taskTiers = getTaskNumberFields(schema)
     const entries: DynamicPriceEntry[] = taskTiers.flatMap(
       ([field, definition]) => {
-        const value = Number(tier.unitPrices[field] || 0)
+        // The schema is plugin-wide, so most models never price every declared
+        // field. An absent key means the expression does not charge it and must
+        // not surface as a real ¥0 row; an explicit 0 stays (u("x") * 0 is free).
+        if (!Object.hasOwn(tier.unitPrices, field)) return []
+        const value = Number(tier.unitPrices[field])
         if (!Number.isFinite(value) || value < 0 || !definition.unit) return []
         return [
           {
@@ -414,13 +462,23 @@ export function getDynamicPricingSummary(
         .filter(isTaskPricingTier)
         .map((candidate) => {
           if (entry.field === 'constant') return candidate.constant
-          return candidate.unitPrices[entry.field] ?? 0
+          // Only tiers that actually price this field participate; a missing
+          // key is "not charged", not a 0 that would widen the range.
+          return Object.hasOwn(candidate.unitPrices, entry.field)
+            ? candidate.unitPrices[entry.field]
+            : Number.NaN
         })
         .filter((value) => Number.isFinite(value) && value >= 0)
       const minimum = Math.min(...values)
       const maximum = Math.max(...values)
       if (values.length > 1 && minimum !== maximum) {
-        entry.formattedRange = `${formatTaskUsageUnitPrice(minimum, options)} – ${formatTaskUsageUnitPrice(maximum, options)}`
+        // Both endpoints share one precision so the range reads evenly
+        // (¥0.0857 – ¥0.1143 rather than ¥0.085714 – ¥0.1143).
+        const digits = Math.min(
+          taskPriceFractionDigits(taskDisplayAmount(minimum, options)),
+          taskPriceFractionDigits(taskDisplayAmount(maximum, options))
+        )
+        entry.formattedRange = `${formatTaskUsagePrice(minimum, options, digits)} – ${formatTaskUsagePrice(maximum, options, digits)}`
       }
     }
   }
@@ -450,7 +508,10 @@ export function getCardExamplePrice(
 ): CardExamplePrice | null {
   if (!isTaskUsagePricingModel(model)) return null
   const schema = model.billing_usage_schema
-  const firstExample = model.billing_usage_examples?.[0]
+  const firstExample = usageExamplesForModel(
+    model.model_name,
+    model.billing_usage_examples
+  )[0]
   if (!schema || !firstExample) return null
 
   const { billingExpr } = splitBillingExprAndRequestRules(
