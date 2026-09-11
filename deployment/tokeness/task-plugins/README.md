@@ -43,8 +43,8 @@ Declared models and their official billing dimension:
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
-| `wan3.0-image` | rolldek | **unsold** 2026-09-12 — dropped from the group, see the group-cleanup section |
-| `wan3.0-image-prime` | rolldek | **unsold** 2026-09-12 — dropped from the group, see the group-cleanup section |
+| `wan3.0-image` | rolldek | **not an official ID** — rolldek packaging for its 图生 (i2v) lane; unsold 2026-09-12 |
+| `wan3.0-image-prime` | rolldek | **not an official ID** — rolldek packaging for its 图生 (i2v) lane; unsold 2026-09-12 |
 | `grok-1.5-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai, zzone* | per second (flat) |
@@ -261,6 +261,9 @@ and is reachable by the stored keys:
 - **rolldek (channel 151)**: `wan3.0-image`, `wan3.0-image-prime` added —
   i2v-only variants that reject reference videos and bill output seconds
   only. They ride the same resolution-suffix rewrite (`WAN3_RESOLUTION_BASES`).
+  *Correction (2026-09-12): these names are rolldek packaging, not official
+  IDs — Bailian's wan3 line has only `wan3.0-video`/-prime, with image and
+  audio accepted as inputs of that same model. See the group-cleanup section.*
 - **rolldek images (channel 152 `Image_RD1`, type 1 OpenAI)**:
   `gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
   `gemini-3.1-flash-image-preview` over the standard `/v1/images/generations`
@@ -333,6 +336,16 @@ user's request:
   reads as an image model, not because they were broken. Their tiered
   expressions stay dormant in `billing_setting.billing_expr` and the plugin
   keeps declaring the names; re-listing is a single channel PUT.
+  **Official-ID check (2026-09-12, prompted by the user): the names are NOT
+  official.** Alibaba Bailian's wan3 video line allows exactly two `model`
+  values — `wan3.0-video` and `wan3.0-video-prime` (wan3-video-generation API
+  reference, verbatim) — and neither `wan3.0-image` nor `wan3.0-image-prime`
+  appears anywhere in the Bailian model list; image/audio are inputs of
+  `wan3.0-video` itself. `wan3.0-image-*` is rolldek's own storefront lane
+  ("通义万相 3.0 图生 · 图片+音频参考 · 按仅生成视频的秒数计费") — same pattern as
+  zzone's `wan3-720p` packaging. If the lane is ever re-listed it must be
+  understood as a reseller-specific SKU under a non-official name (or folded
+  into the `wan3.0-video` discussion), not as an official model.
 - **Channel 152 `Image_RD1`**: group moved `Video-Test` → `GenPic`, so its four
   image models (`gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
   `gemini-3.1-flash-image-preview`) stay on sale under the image group. Three
