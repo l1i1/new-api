@@ -565,6 +565,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	err = common.Unmarshal(responseBody, &simpleResponse)
 	if err != nil {
+		// A non-JSON body (an HTML/text error page, or SSE frames the upstream
+		// sent despite the non-stream request) parses as a generic syntax error
+		// like "invalid character 'd' looking for beginning of value". Log a
+		// masked preview so the offending channel/body is diagnosable: the
+		// error is retried on another channel, so its caused-by evidence is
+		// otherwise lost.
+		logger.LogError(c, fmt.Sprintf("upstream response body is not JSON (channel #%d): %v, body: %s",
+			info.ChannelId, err, common.LocalLogPreview(common.MaskSensitiveInfo(string(responseBody)))))
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 

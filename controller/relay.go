@@ -749,9 +749,8 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	// adaptors report a channel capability gap as a plain conversion error
 	// ("... endpoint not supported") which the framework would otherwise surface.
 	// The hard gates still win -- committed response, retry budget, affinity,
-	// channel pin, never-retry status codes and always-skip error codes.
-	if !operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) &&
-		!operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) &&
+	// channel pin and never-retry status codes.
+	if !operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) &&
 		operation_setting.MatchesAutomaticRetryKeywords(openaiErr.Error()) {
 		return true
 	}
@@ -764,9 +763,6 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	}
 	if code < 100 || code > 599 {
 		return true
-	}
-	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
-		return false
 	}
 	// Force-retry codes (default 400) express "the upstream rejected this
 	// channel's request, try another channel". They never apply to local

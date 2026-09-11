@@ -187,15 +187,18 @@ func TestRetryKeywordIsBoundedByHardGates(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, shouldRetry(committedCtx, upstreamErr, 1), "a committed response outranks a matching keyword")
 
-	// The hardcoded always-skip error code (malformed upstream body) is never
-	// retried even when the body text matches a keyword.
+	// A malformed upstream response body is an upstream (channel) failure, not a
+	// local one: it must fail over to another channel rather than surface. The
+	// request-side counterpart (convert_request_failed) carries its own explicit
+	// skip-retry marker, so removing the error-code list does not make local
+	// conversion failures retryable.
 	badBodyErr := types.NewOpenAIError(
-		errors.New("upstream: model not found in malformed body"),
+		errors.New("invalid character 'd' looking for beginning of value"),
 		types.ErrorCodeBadResponseBody,
-		http.StatusBadGateway,
+		http.StatusInternalServerError,
 	)
 	badBodyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.False(t, shouldRetry(badBodyCtx, badBodyErr, 1), "an always-skip error code outranks a matching keyword")
+	require.True(t, shouldRetry(badBodyCtx, badBodyErr, 1), "a malformed upstream body must retry another channel")
 }
 
 // TestRetryKeywordOverridesConversionSkipRetry covers adaptors that report a
