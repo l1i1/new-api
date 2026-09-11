@@ -224,3 +224,46 @@ func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.
 	require.Equal(t, "sess-123", upstreamReq.Header.Get("Session_id"))
 	require.Empty(t, upstreamReq.Header.Get("X-Codex-Beta-Features"))
 }
+
+// A channel that gates on a session header may fall back to the client's
+// Authorization header. During a channel probe the synthesized request carries
+// the seeded channel key, so the copy_header rule must resolve and the session
+// header must reach the upstream request.
+func TestProcessHeaderOverride_ChannelTestCopiesSeededAuthorizationToSessionHeader(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Request.Header.Set("Authorization", "Bearer sk-probe-key")
+
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		RequestHeaders: map[string]string{
+			"Authorization": "Bearer sk-probe-key",
+		},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ParamOverride: map[string]any{
+				"operations": []any{
+					map[string]any{
+						"mode":        "copy_header",
+						"keep_origin": true,
+						"from":        "Authorization",
+						"to":          "X-Opencode-Session",
+					},
+				},
+			},
+			HeadersOverride: map[string]any{"*": true},
+		},
+	}
+
+	_, err := relaycommon.ApplyParamOverrideWithRelayInfo([]byte(`{"model":"deepseek-v4-flash"}`), info)
+	require.NoError(t, err)
+
+	headers, err := processHeaderOverride(info, ctx)
+	require.NoError(t, err)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://opencode.ai/zen/go/v1/chat/completions", nil)
+	applyHeaderOverrideToRequest(upstreamReq, headers)
+	require.Equal(t, "Bearer sk-probe-key", upstreamReq.Header.Get("X-Opencode-Session"))
+}

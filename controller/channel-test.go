@@ -81,6 +81,28 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
+// seedProbeAuthorizationHeader copies the credential selected for this probe
+// onto the synthesized client request. A real relay request always carries
+// Authorization, but the probe builds its request with httptest and sets only
+// Content-Type, so channel override rules that fall back to the client's
+// Authorization header (e.g. OpenCode Go's X-Opencode-Session) are silently
+// skipped and the probe fails while real traffic succeeds. Seeding the header
+// from the selected channel key makes the probe resolve those rules the same
+// way production does.
+func seedProbeAuthorizationHeader(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if strings.TrimSpace(c.Request.Header.Get("Authorization")) != "" {
+		return
+	}
+	key := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+	if key == "" {
+		return
+	}
+	c.Request.Header.Set("Authorization", "Bearer "+key)
+}
+
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
 	return testChannelWithOptions(ctx, channel, testUserID, testModel, endpointType, isStream, nil, false, true)
 }
@@ -207,6 +229,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 			newAPIError: newAPIError,
 		}
 	}
+	seedProbeAuthorizationHeader(c)
 
 	// Determine relay format based on endpoint type or request path
 	var relayFormat types.RelayFormat
