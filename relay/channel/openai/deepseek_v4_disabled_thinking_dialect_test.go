@@ -2,13 +2,17 @@ package openai
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +126,42 @@ func TestDisabledThinkingDialectSurvivesMarshal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), `"thinking":{"type":"disabled"}`,
 		"the native dialect must be on the wire, not only in memory")
+}
+
+// The widening from ChannelType==1 to ApiType==APITypeOpenAI exists for
+// channels whose type is unmapped and therefore falls back to the generic
+// OpenAI adaptor — channel 27 (DEF_streamlake, type 8 custom) serves
+// deepseek-v4-flash that way. This drives the real ConvertOpenAIRequest to pin
+// that path, not just the helper.
+func TestDisabledThinkingDialectReachesBodyForUnmappedChannelType(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	// A custom (type 8) channel resolves to API type OpenAI via the
+	// ChannelType2APIType fallback, so this is the adaptor the gateway uses.
+	apiType, mapped := common.ChannelType2APIType(constant.ChannelTypeCustom)
+	require.False(t, mapped, "an unmapped channel type must take the fallback branch")
+	require.Equal(t, constant.APITypeOpenAI, apiType)
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeCustom,
+			ApiType:           apiType,
+			UpstreamModelName: "DeepSeek-V4-Flash-0731",
+		},
+		OriginModelName: "deepseek-v4-flash",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
+		RelayFormat:     types.RelayFormatOpenAI,
+	}
+	info.SetReasoningEffort("none")
+	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "none"}
+
+	converted, err := (&Adaptor{}).ConvertOpenAIRequest(c, info, request)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(converted)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"thinking":{"type":"disabled"}`,
+		"a custom-type reseller that falls back to the OpenAI adaptor must also get the dialect")
 }
