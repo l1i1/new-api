@@ -81,6 +81,69 @@
       }
     },
     {
+      "name": "submit rewrites wan3.0-video to the resolution-suffixed upstream name",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "wan3.0-video", "prompt": "a cat", "seconds": "5", "resolution": "1080P" },
+          "model": "wan3.0-video",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "wan3.0-video-1080p", "prompt": "a cat", "seconds": "5", "resolution": "1080P" }
+      }
+    },
+    {
+      "name": "submit defaults wan3.0-video-prime to the 720p suffix",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "wan3.0-video-prime", "prompt": "a cat", "seconds": "5" },
+          "model": "wan3.0-video-prime",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "wan3.0-video-prime-720p", "prompt": "a cat", "seconds": "5" }
+      }
+    },
+    {
+      "name": "submit maps an unsupported wan3 tier to the default resolution",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "wan3.0-video", "prompt": "a cat", "seconds": "5", "size": "2560x1440" },
+          "model": "wan3.0-video",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "wan3.0-video-720p", "prompt": "a cat", "seconds": "5", "size": "2560x1440" }
+      }
+    },
+    {
       "name": "parseSubmitResponse reads id",
       "hook": "parseSubmitResponse",
       "args": [

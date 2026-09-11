@@ -160,6 +160,29 @@ function requestedResolution(req) {
   return req.resolution || req.size;
 }
 
+// rolldek.com bakes the output resolution into the model name and its gateway
+// forces any size/resolution request field to match the suffix, so the tier
+// cannot stay a plain request parameter. Platform requests address one
+// unsuffixed model and pick the tier through the resolution parameter; the
+// submit request rewrites the model to the resolution-suffixed upstream name.
+// Every other declared model is forwarded verbatim.
+const WAN3_RESOLUTION_BASES = {
+  "wan3.0-video": "wan3.0-video",
+  "wan3.0-video-prime": "wan3.0-video-prime",
+};
+
+// Tier used when the request omits resolution or names one the upstream does
+// not sell; 720p matches the platform's existing wan3 product.
+const WAN3_DEFAULT_RESOLUTION = "720p";
+
+function wan3UpstreamModel(name, body) {
+  const base = WAN3_RESOLUTION_BASES[trimmed(name).toLowerCase()];
+  if (!base) return name;
+  const tier = normalizeResolution(requestedResolution(body));
+  if (tier === "480p" || tier === "720p" || tier === "1080p") return base + "-" + tier;
+  return base + "-" + WAN3_DEFAULT_RESOLUTION;
+}
+
 export const meta = {
   apiVersion: 1,
   key: "openai-video-agg",
@@ -168,7 +191,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.4",
+  version: "1.0.5",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -177,9 +200,11 @@ export const meta = {
   // on this instance (it drives no channel) so minimax-h3 can be declared here
   // and forwarded upstream verbatim.
   //
-  // Two different upstreams are served under this one plugin key:
+  // Three different upstreams are served under this one plugin key:
   //   zzone.cc.cd    seedance2.5, kling-video-v3, wan3-720p, minimax-h3
   //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
+  //   rolldek.com    wan3.0-video, wan3.0-video-prime (resolution-suffixed
+  //                  upstream names are rewritten at submit, see below)
   // One plugin key may serve several channels; each channel pins the key through
   // its task_plugin_key setting, which is what the identity filter matches on.
   //
@@ -190,6 +215,8 @@ export const meta = {
     "kling-video-v3",
     "wan3-720p",
     "minimax-h3",
+    "wan3.0-video",
+    "wan3.0-video-prime",
     "grok-1.5-video",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
@@ -242,6 +269,9 @@ export const meta = {
     { label: "kling-video-v3 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "kling-video-v3 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
     { label: "wan3-720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "wan3.0-video 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "wan3.0-video 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
+    { label: "wan3.0-video-prime 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "minimax-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
     { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
@@ -255,7 +285,7 @@ export function buildSubmitRequest(ctx) {
   if (ctx.action === "remix") throw new Error("remix is not supported by this upstream");
 
   const headers = { Authorization: "Bearer " + ctx.apiKey };
-  const model = ctx.upstreamModel || ctx.model;
+  const model = wan3UpstreamModel(ctx.upstreamModel || ctx.model, req);
 
   if ((ctx.files || []).length) {
     const values = Object.assign({}, req, { model: model });

@@ -40,6 +40,8 @@ Declared models and their official billing dimension:
 | `kling-video-v3` | zzone | per second, by resolution |
 | `wan3-720p` | zzone | per second (flat) |
 | `minimax-h3` | zzone | per second, by resolution |
+| `wan3.0-video` | rolldek | per second, by resolution |
+| `wan3.0-video-prime` | rolldek | per second, by resolution |
 | `grok-1.5-video` | xuetianai | per second (flat) |
 | `grok-imagine-video` | xuetianai | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai | per second (flat) |
@@ -51,6 +53,24 @@ so the built-in plugin is disabled on this instance through the
 `TaskPluginDisabledFactoryKeys` option. The built-in `hailuo` plugin drives no
 channel here, so nothing regresses; re-enabling it would re-collide and the upload
 would be rejected while `minimax-h3` is declared.
+
+`wan3.0-video` / `wan3.0-video-prime` are platform-side model names; the tier is
+a request parameter, not the model name. rolldek bakes the output resolution into
+its model name (`wan3.0-video-480p/720p/1080p`) and its gateway forces any
+`size`/`resolution` request field to match the suffix, so the plugin rewrites the
+submit body's model to the resolution-suffixed upstream name at submit time
+(`buildSubmitRequest`): 480p/720p/1080p map to the matching suffix, anything
+unrecognized or omitted falls back to 720p. The rewrite is invisible to
+`decodeRequest` — the host rejects a decoder whose returned model differs from
+the pinned model (`relay/channel/task/jsplugin/adaptor.go`), so the pinned model
+must stay the platform name and only the outgoing HTTP body may change. Task
+`properties.upstream_model_name` records the platform name, not the rewritten
+one; the upstream's raw task response (`tasks.data`) is the place to confirm
+what was actually sent. Declaring these names collides with the built-in
+`alibaba` plugin (Bailian direct adaptor), which declares the identical names —
+that plugin is disabled on this instance the same way (it drove 0 channels;
+`POST /api/plugin/task/alibaba/status {"enabled":false}` returned
+`disabled_channels:0`).
 
 Billing facts:
 
@@ -161,6 +181,43 @@ rename routed end-to-end; the request fails only because zzone is unpaid. The
 generic `temporarily_unavailable` text is the exhausted-retry summary for a
 single available channel, not a routing failure — read the `channelId=136`
 `logs`/container line for the real upstream error.
+
+### Add rolldek.com upstream (2026-09-11, plugin 1.0.5)
+
+Channel 151 `Video_RD1` (type 61, `task_plugin_key=openai-video-agg`, group
+`Video-Test`, base URL `https://rolldek.com`), key stored in
+`private/access/rolldek.local.env`. rolldek is itself a new-api instance
+(USD display with a 1:1 CNY top-up rate); its `wan` group returns Bailian
+official links. Platform models `wan3.0-video` / `wan3.0-video-prime` take the
+tier through `resolution` and bill per second at the official Bailian CNY price
+divided by 7 (`480p 0.042857 / 0.064286`, `720p 0.085714 / 0.128571`,
+`1080p 0.171429 / 0.257143` for standard / prime), defaulting to the 720p tier
+when the parameter is missing.
+
+Sequence: disable the unused built-in `alibaba` plugin (name collision, see
+above) → upload 1.0.5 and activate (`current_generation` 14 → 16) →
+`POST /api/channel/` with `{"mode":"single","channel":{…}}` (the handler
+requires the `mode` field and the channel wrapped; type 61 channels also need
+the `task_plugin.bind` permission) → `PATCH /api/option/model_pricing` with two
+changes at `expected_version = empty_version`.
+
+Live verification, one real call through `tokeness.ai`
+(`wan3.0-video`, `seconds:"2"`, `resolution:"480p"`):
+
+- submit 200, pre-consumed **42857** quota = 2s × 0.042857 × 500000 (the 480p
+  branch of the expression);
+- upstream received **`wan3.0-video-480p`** — confirmed from the persisted
+  `tasks.data`, whose raw response carries `"model":"wan3.0-video-480p"` and a
+  Bailian OSS `metadata.url`;
+- task completed in ~100 s; `GET /v1/videos/{id}/content` returned a 2.7 MB
+  `video/mp4`; the settled `logs` row kept the 42857 estimate (rolldek reports
+  no measured duration), matching the upstream's own 2s billing.
+
+Known caveat: rolldek bills `wan3.0-video-*` by output seconds **plus
+reference-video seconds**, while the plugin's `seconds` fact counts output
+only — requests with reference videos undercharge the platform. Also note
+480p is nearly break-even (rolldek sells it at 9折 of the official price this
+platform charges); margin concentrates in 720p/1080p.
 
 ### Known caveat
 
