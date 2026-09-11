@@ -38,13 +38,13 @@ Declared models and their official billing dimension:
 |---|---|---|
 | `seedance2.5` | zzone | **per token** (Ark formula) |
 | `kling-video-v3` | zzone | per second, by resolution |
-| `wan3-720p` | zzone | per second (flat) |
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
 | `grok-1.5-video` | xuetianai | per second (flat) |
 | `grok-imagine-video` | xuetianai | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai | per second (flat) |
+| `wan3-720p` | zzone | **delisted** 2026-09-11, merged into `wan3.0-video` (see below) |
 
 `minimax-h3` is zzone's own spelling, used directly. Declaring it collides with
 the built-in `hailuo` plugin's `MiniMax-H3` because plugin model names are matched
@@ -218,6 +218,19 @@ reference-video seconds**, while the plugin's `seconds` fact counts output
 only — requests with reference videos undercharge the platform. Also note
 480p is nearly break-even (rolldek sells it at 9折 of the official price this
 platform charges); margin concentrates in 720p/1080p.
+
+### Merge wan3-720p into wan3.0-video (2026-09-11)
+
+`wan3-720p` was zzone's own marketplace name (resolution baked into the
+model); `wan3.0-video` + a `resolution` parameter is the official Bailian
+spelling and the parameterized superset at identical 720p pricing. A direct
+probe of zzone's `/v1/videos` with `wan3.0-video` returned
+`model_not_found`, so zzone cannot serve the merged SKU and rolldek (channel
+151) is its only source. Changes: channel 136 `models` reduced to
+`seedance2.5,kling-video-v3,minimax-h3`; the `wan3-720p` pricing row reset.
+The plugin keeps declaring `wan3-720p` (1.0.5) as a reserved name — with no
+channel it routes nowhere and stays invisible in the catalog; re-listing a
+zzone 720p path later only needs the model re-added to channel 136.
 
 ### Known caveat
 
