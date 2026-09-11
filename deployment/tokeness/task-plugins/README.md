@@ -39,18 +39,18 @@ Declared models and their official billing dimension:
 | `seedance2.5` | zzone | **per token** (Ark formula) |
 | `kling-video-v3` | zzone | per second, by resolution |
 | `wan3-720p` | zzone | per second (flat) |
-| `hailuo-h3` | zzone | per second, by resolution |
+| `minimax-h3` | zzone | per second, by resolution |
 | `grok-1.5-video` | xuetianai | per second (flat) |
 | `grok-imagine-video` | xuetianai | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai | per second (flat) |
 
-`hailuo-h3` is not the aggregator's spelling. The aggregator calls the model
-`minimax-h3`, but plugin model names are matched case-folded across all plugins
-(`pkg/jsplugin/model_fold.go` lowercases only), so `minimax-h3` collides with the
-built-in `hailuo` plugin's `MiniMax-H3` and the whole plugin is rejected at load.
-`hailuo-h3` is the market alias for the same model; channel 136 maps it back to
-`minimax-h3` through its `model_mapping`, which is also what the upstream request
-carries (`ModelMappedHelper` sets `UpstreamModelName` to the mapping target).
+`minimax-h3` is zzone's own spelling, used directly. Declaring it collides with
+the built-in `hailuo` plugin's `MiniMax-H3` because plugin model names are matched
+ASCII-case-folded across all plugins (`pkg/jsplugin/model_fold.go` lowercases only),
+so the built-in plugin is disabled on this instance through the
+`TaskPluginDisabledFactoryKeys` option. The built-in `hailuo` plugin drives no
+channel here, so nothing regresses; re-enabling it would re-collide and the upload
+would be rejected while `minimax-h3` is declared.
 
 Billing facts:
 
@@ -96,6 +96,20 @@ conflicts in `plugin_errors`.
 Bump `meta.version` on every source change: reusing a key/version with different
 source is rejected.
 
+Declaring `minimax-h3` requires the built-in `hailuo` plugin to be disabled
+first, because the two model names collide case-insensitively and the upload is
+rejected while both are registered:
+
+```
+POST /api/plugin/task/hailuo/status   {"enabled": false}
+```
+
+The built-in plugin drives no channel on this instance, so disabling it is
+routable-safe. Its `TaskPluginDisabledFactoryKeys` entry also silences the
+factory layer, so the name is genuinely freed (an override row alone would not
+be enough). Re-enabling `hailuo` while `minimax-h3` is declared fails the same
+way — disable `openai-video-agg` first.
+
 ### Live verification (2026-09-11)
 
 Three real calls through `tokeness.ai` on channel 150 (`grok-imagine-video`,
@@ -116,6 +130,37 @@ Omitting `seconds` reserves the 5s default while xuetianai's own default is 4s,
 so the reservation over-reserves and is refunded at settlement (`seconds` must
 stay present: a per-second expression errors on a missing usage key rather than
 treating it as zero).
+
+### Rename to minimax-h3 (2026-09-11, plugin 1.0.4)
+
+The alias `hailuo-h3` was dropped and the upstream's own `minimax-h3` declared.
+Sequence, all on the intl instance:
+
+1. lint + fixture (`42/42`) against 1.0.4;
+2. `POST /api/plugin/task/hailuo/status {"enabled":false}` — frees the folded name;
+3. upload 1.0.4 and activate `{"version":"1.0.4"}` (`current_generation` 12 → 14);
+4. `PUT /api/channel/` for channel 136: `models` `…,hailuo-h3` → `…,minimax-h3`
+   and `model_mapping` `{"hailuo-h3":"minimax-h3"}` → `""`, so no mapping is
+   needed and the upstream receives `minimax-h3` verbatim;
+5. `PATCH /api/option/model_pricing` — copy the tiered expression onto
+   `minimax-h3` (its schema gate passes only because the new plugin declares the
+   name) and `reset` the stale `hailuo-h3` entry.
+
+**Channel update trap:** `PUT /api/channel/` rejects a `status` field, so the
+usual read-modify-write flow omits it. `Channel.UpdateAbilities` then rebuilds
+every ability row from the submitted struct, whose `Status` is the zero value —
+which silently disables the whole channel's abilities even though the channel
+row still shows status 1. `POST /api/channel/:id/status` with the real status
+repairs it (or `POST /api/channel/fix`). Check abilities after any channel PUT.
+
+**Verification:** `GET /api/channel/search?model=minimax-h3` → channel 136 only;
+`GET /api/pricing` shows `minimax-h3` with the moved expression and no
+`hailuo-h3` row. A live `/v1/videos` call with `minimax-h3` reached channel 136
+and the upstream answered `余额不足，当前余额 ¥0.40，需要 ¥1.80` — proof the
+rename routed end-to-end; the request fails only because zzone is unpaid. The
+generic `temporarily_unavailable` text is the exhausted-retry summary for a
+single available channel, not a routing failure — read the `channelId=136`
+`logs`/container line for the real upstream error.
 
 ### Known caveat
 

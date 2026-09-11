@@ -168,16 +168,17 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.3",
+  version: "1.0.4",
   author: { name: "Tokeness" },
-  // Model IDs are the upstream aggregator's own names, except hailuo-h3: the
-  // aggregator calls it minimax-h3, but model names are matched case-folded
-  // across plugins, so that spelling is already owned by the built-in hailuo
-  // plugin's MiniMax-H3. hailuo-h3 is the market alias for the same model; the
-  // channel maps it back to minimax-h3 for the upstream request.
+  // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
+  // spelling: declaring it collides with the built-in hailuo plugin's
+  // MiniMax-H3, because model names are matched ASCII-case-folded across every
+  // plugin and the two fold to the same string. The built-in plugin is disabled
+  // on this instance (it drives no channel) so minimax-h3 can be declared here
+  // and forwarded upstream verbatim.
   //
   // Two different upstreams are served under this one plugin key:
-  //   zzone.cc.cd    seedance2.5, kling-video-v3, wan3-720p, hailuo-h3
+  //   zzone.cc.cd    seedance2.5, kling-video-v3, wan3-720p, minimax-h3
   //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
   // One plugin key may serve several channels; each channel pins the key through
   // its task_plugin_key setting, which is what the identity filter matches on.
@@ -188,7 +189,7 @@ export const meta = {
     "seedance2.5",
     "kling-video-v3",
     "wan3-720p",
-    "hailuo-h3",
+    "minimax-h3",
     "grok-1.5-video",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
@@ -241,8 +242,8 @@ export const meta = {
     { label: "kling-video-v3 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "kling-video-v3 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
     { label: "wan3-720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
-    { label: "hailuo-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
-    { label: "hailuo-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
+    { label: "minimax-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
+    { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
   ],
   protocols: ["openai_video"],
