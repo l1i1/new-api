@@ -123,6 +123,48 @@
       }
     },
     {
+      "name": "submit rewrites wan3.0-image to the resolution-suffixed upstream name",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "wan3.0-image", "prompt": "a cat", "seconds": "5", "resolution": "1080p" },
+          "model": "wan3.0-image",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "image_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "wan3.0-image-1080p", "prompt": "a cat", "seconds": "5", "resolution": "1080p" }
+      }
+    },
+    {
+      "name": "submit forwards a channel-mapped model verbatim",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "grok-imagine-video-1.5", "prompt": "a cat", "seconds": "5" },
+          "model": "grok-imagine-video-1.5",
+          "upstreamModel": "grok-imagine-video-1.5-preview",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "grok-imagine-video-1.5-preview", "prompt": "a cat", "seconds": "5" }
+      }
+    },
+    {
       "name": "submit maps an unsupported wan3 tier to the default resolution",
       "hook": "buildSubmitRequest",
       "args": [

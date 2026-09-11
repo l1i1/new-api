@@ -38,13 +38,23 @@ Declared models and their official billing dimension:
 |---|---|---|
 | `seedance2.5` | zzone | **per token** (Ark formula) |
 | `kling-video-v3` | zzone | per second, by resolution |
+| `kling-video-v3-omni` | zzone | per second, by resolution |
+| `kling-video-v3-turbo` | zzone | per second, by resolution |
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
-| `grok-1.5-video` | xuetianai | per second (flat) |
-| `grok-imagine-video` | xuetianai | per second (flat) |
-| `grok-imagine-video-1.5` | xuetianai | per second (flat) |
+| `wan3.0-image` | rolldek | per second, by resolution (output seconds only) |
+| `wan3.0-image-prime` | rolldek | per second, by resolution (output seconds only) |
+| `grok-1.5-video` | xuetianai, zzone* | per second (flat) |
+| `grok-imagine-video` | xuetianai, zzone* | per second (flat) |
+| `grok-imagine-video-1.5` | xuetianai, zzone* | per second (flat) |
 | `wan3-720p` | zzone | **delisted** 2026-09-11, merged into `wan3.0-video` (see below) |
+
+\* zzone serves the grok names through channel 136's `model_mapping`
+(`grok-imagine-video-1.5` / `grok-1.5-video` → zzone's
+`grok-imagine-video-1.5-preview`); channel 136 also runs at priority 10 over
+xuetianai's 0, so the cheaper zzone source (¥0.06/s vs $0.05/s) is preferred
+and xuetianai remains the fallback.
 
 `minimax-h3` is zzone's own spelling, used directly. Declaring it collides with
 the built-in `hailuo` plugin's `MiniMax-H3` because plugin model names are matched
@@ -231,6 +241,52 @@ probe of zzone's `/v1/videos` with `wan3.0-video` returned
 The plugin keeps declaring `wan3-720p` (1.0.5) as a reserved name — with no
 channel it routes nowhere and stays invisible in the catalog; re-listing a
 zzone 720p path later only needs the model re-added to channel 136.
+
+### Full-catalog sweep (2026-09-11 evening, plugin 1.0.6)
+
+Extended the catalog with every upstream model that has an official identity
+and is reachable by the stored keys:
+
+- **zzone (channel 136)**: `kling-video-v3-omni`, `kling-video-v3-turbo`
+  added (Kling omni official Bailian price ¥0.9/1.2/3.0 per second ÷ 7;
+  turbo priced on the same table — no separate official turbo price exists).
+  At launch both are blocked by zzone's own upstream
+  (`Insufficient credits` wrapped in `fail_to_fetch_task`) — configuration is
+  live and bills nothing until zzone tops up its kling supplier.
+  `grok-imagine-video` / `grok-imagine-video-1.5` / `grok-1.5-video` added as
+  a second, much cheaper source through `model_mapping` (zzone only sells the
+  `-1.5-preview` spelling). A live probe disproved zzone's
+  `supported_endpoint_types: openai` metadata — the model is served on
+  `/v1/videos` like seedance2.5.
+- **rolldek (channel 151)**: `wan3.0-image`, `wan3.0-image-prime` added —
+  i2v-only variants that reject reference videos and bill output seconds
+  only. They ride the same resolution-suffix rewrite (`WAN3_RESOLUTION_BASES`).
+- **rolldek images (channel 152 `Image_RD1`, type 1 OpenAI)**:
+  `gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
+  `gemini-3.1-flash-image-preview` over the standard `/v1/images/generations`
+  shape (verified: b64 image returned). Billing is per call through the
+  classic `ModelPrice` option (this fork's `billing_setting` supports only
+  `ratio` / `tiered_expr`): `gpt-image-2` keeps its existing $0.10,
+  `gpt-image-2.5` $0.03, `gemini-3-pro-image-preview` $0.14,
+  `gemini-3.1-flash-image-preview` $0.12 — 2× upstream cost, no official
+  per-image anchor researched yet (provisional).
+
+Deliberately not integrated: zzone's `minimax-h3-2k/-4k`,
+`video-ds-2.0/-fast`, `as-sd2.0-fast`, `drama-video-v2/-fast` (zzone-internal
+packaging, no official model ID behind them); rolldek's documented
+`kling-3.0-omni` / `sora-2` / `veo-3.1` / `sd-2.x` / `gemini-omni-flash`
+(names not visible to the stored key's group); rolldek's `gpt-image-2-high`
+/ `2.5-flare` / `2.5-sunburst` variants (non-official names, already sold
+from another channel); xuetianai's image and seedance models (its key is
+grok-group scoped, and its grok-imagine-image upstream answered 502).
+
+Live verification this round: `grok-imagine-video` completed (settled
+100000 = 4s × $0.05), `grok-imagine-video-1.5` completed via the zzone
+mapping (settled 160000, upstream response carries
+`grok-imagine-video-1.5-preview`), `wan3.0-image` 480p completed (settled
+107143, upstream `wan3.0-image-480p`, 3 MB mp4), `gpt-image-2.5` returned a
+1.9 MB b64 image (billed 15000 via channel 152), `kling-video-v3-omni`
+routed to channel 136 and surfaced zzone's upstream credit error.
 
 ### Known caveat
 

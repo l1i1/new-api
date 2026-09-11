@@ -169,6 +169,8 @@ function requestedResolution(req) {
 const WAN3_RESOLUTION_BASES = {
   "wan3.0-video": "wan3.0-video",
   "wan3.0-video-prime": "wan3.0-video-prime",
+  "wan3.0-image": "wan3.0-image",
+  "wan3.0-image-prime": "wan3.0-image-prime",
 };
 
 // Tier used when the request omits resolution or names one the upstream does
@@ -191,7 +193,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.5",
+  version: "1.0.6",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -201,22 +203,32 @@ export const meta = {
   // and forwarded upstream verbatim.
   //
   // Three different upstreams are served under this one plugin key:
-  //   zzone.cc.cd    seedance2.5, kling-video-v3, wan3-720p, minimax-h3
+  //   zzone.cc.cd    seedance2.5, kling-video-v3(-omni/-turbo), minimax-h3,
+  //                  grok-imagine-video(-1.5 via channel model_mapping to
+  //                  zzone's -1.5-preview name), wan3-720p (delisted, reserved)
   //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
-  //   rolldek.com    wan3.0-video, wan3.0-video-prime (resolution-suffixed
-  //                  upstream names are rewritten at submit, see below)
+  //   rolldek.com    wan3.0-video(-prime), wan3.0-image(-prime) — the wan3
+  //                  families take the tier through the resolution parameter and
+  //                  are rewritten to resolution-suffixed upstream names (see
+  //                  WAN3_RESOLUTION_BASES below)
   // One plugin key may serve several channels; each channel pins the key through
   // its task_plugin_key setting, which is what the identity filter matches on.
   //
   // Note: seedance2.5 is tagged "openai" (chat) rather than "videos" upstream;
   // if the aggregator rejects it on /v1/videos this surfaces as a submit error.
+  // The same metadata quirk applies to zzone's grok-imagine-video, which a live
+  // probe showed IS served on /v1/videos.
   models: [
     "seedance2.5",
     "kling-video-v3",
+    "kling-video-v3-omni",
+    "kling-video-v3-turbo",
     "wan3-720p",
     "minimax-h3",
     "wan3.0-video",
     "wan3.0-video-prime",
+    "wan3.0-image",
+    "wan3.0-image-prime",
     "grok-1.5-video",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
@@ -272,6 +284,9 @@ export const meta = {
     { label: "wan3.0-video 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "wan3.0-video 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
     { label: "wan3.0-video-prime 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "wan3.0-image 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "kling-video-v3-omni 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "kling-video-v3-turbo 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "minimax-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
     { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
