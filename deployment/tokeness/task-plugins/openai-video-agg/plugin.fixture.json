@@ -165,6 +165,48 @@
       }
     },
     {
+      "name": "submit maps minimax-h3 2k onto the suffixed upstream SKU",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5", "resolution": "2k" },
+          "model": "minimax-h3",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "minimax-h3-2k", "prompt": "a cat", "seconds": "5", "resolution": "2k" }
+      }
+    },
+    {
+      "name": "submit keeps the minimax base name for the 768p default",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5" },
+          "model": "minimax-h3",
+          "upstreamModel": "",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
+        "body": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5" }
+      }
+    },
+    {
       "name": "submit maps an unsupported wan3 tier to the default resolution",
       "hook": "buildSubmitRequest",
       "args": [

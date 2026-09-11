@@ -185,6 +185,20 @@ function wan3UpstreamModel(name, body) {
   return base + "-" + WAN3_DEFAULT_RESOLUTION;
 }
 
+// zzone splits MiniMax H3 into per-resolution SKUs — the base name is 768p and
+// `-2k` / `-4k` are separate upstream products billed per request — while the
+// official model is one `minimax-h3` addressed through the resolution
+// parameter (official tiers are 768P and 2K; 4K exists only as zzone's
+// extension). The submit request maps the 2k/4k tiers onto the suffixed
+// upstream names and forwards the 768p default under the base name.
+const MINIMAX_RESOLUTION_SUFFIXES = { "2k": "-2k", "4k": "-4k" };
+
+function minimaxUpstreamModel(name, body) {
+  if (trimmed(name).toLowerCase() !== "minimax-h3") return name;
+  const suffix = MINIMAX_RESOLUTION_SUFFIXES[normalizeResolution(requestedResolution(body))];
+  return suffix ? name + suffix : name;
+}
+
 export const meta = {
   apiVersion: 1,
   key: "openai-video-agg",
@@ -193,7 +207,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.6",
+  version: "1.0.7",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -205,7 +219,8 @@ export const meta = {
   // Three different upstreams are served under this one plugin key:
   //   zzone.cc.cd    seedance2.5, kling-video-v3(-omni/-turbo), minimax-h3,
   //                  grok-imagine-video(-1.5 via channel model_mapping to
-  //                  zzone's -1.5-preview name), wan3-720p (delisted, reserved)
+  //                  zzone's -1.5-preview name), seedance2.0(fast) via mapping
+  //                  to zzone's video-ds-2.0(-fast) / as-sd2.0-fast SKUs
   //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
   //   rolldek.com    wan3.0-video(-prime), wan3.0-image(-prime) — the wan3
   //                  families take the tier through the resolution parameter and
@@ -220,6 +235,8 @@ export const meta = {
   // probe showed IS served on /v1/videos.
   models: [
     "seedance2.5",
+    "seedance2.0",
+    "seedance2.0fast",
     "kling-video-v3",
     "kling-video-v3-omni",
     "kling-video-v3-turbo",
@@ -229,6 +246,8 @@ export const meta = {
     "wan3.0-video-prime",
     "wan3.0-image",
     "wan3.0-image-prime",
+    "jimeng-drama-video-v2",
+    "jimeng-drama-video-v2-fast",
     "grok-1.5-video",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
@@ -282,11 +301,11 @@ export const meta = {
     { label: "kling-video-v3 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
     { label: "wan3-720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "wan3.0-video 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
-    { label: "wan3.0-video 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
-    { label: "wan3.0-video-prime 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "wan3.0-image 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "kling-video-v3-omni 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
-    { label: "kling-video-v3-turbo 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
+    { label: "seedance2.0 task", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "jimeng-drama-video-v2 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "minimax-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
     { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
@@ -300,7 +319,7 @@ export function buildSubmitRequest(ctx) {
   if (ctx.action === "remix") throw new Error("remix is not supported by this upstream");
 
   const headers = { Authorization: "Bearer " + ctx.apiKey };
-  const model = wan3UpstreamModel(ctx.upstreamModel || ctx.model, req);
+  const model = minimaxUpstreamModel(wan3UpstreamModel(ctx.upstreamModel || ctx.model, req), req);
 
   if ((ctx.files || []).length) {
     const values = Object.assign({}, req, { model: model });

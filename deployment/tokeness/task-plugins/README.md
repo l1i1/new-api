@@ -288,6 +288,39 @@ mapping (settled 160000, upstream response carries
 1.9 MB b64 image (billed 15000 via channel 152), `kling-video-v3-omni`
 routed to channel 136 and surfaced zzone's upstream credit error.
 
+### zzone long-tail SKUs under official names (2026-09-12, plugin 1.0.7)
+
+zzone's remaining video SKUs are its own packaging of identifiable products;
+they are exposed under the official product names with the upstream naming
+absorbed by mapping/rewrite:
+
+- `minimax-h3-2k` / `-4k` fold into the official parameterized `minimax-h3`:
+  `buildSubmitRequest` maps resolution 2k/4k onto zzone's suffixed SKUs
+  (`MINIMAX_RESOLUTION_SUFFIXES`); 768p keeps the base name. Official MiniMax
+  H3 tiers are 768P $0.08/s and 2K $0.13/s only — **there is no official 4K**;
+  the 4k branch (billed $0.21/s) serves zzone's extension SKU and is
+  documented as non-official. zzone's actual pre-charges, probed through its
+  insufficient-balance errors: 2k ¥2.00 / 5s, 4k ¥3.50 / 5s (≈$0.057 and
+  $0.10 per second upstream cost).
+- `seedance2.0` / `seedance2.0fast` (official Volcengine spellings) map to
+  zzone's `video-ds-2.0` / `-fast` (Jimeng-hosted Seedance 2.0 lines,
+  per-request ¥4.9 / ¥3.9 listed); `seconds` is a required upstream
+  parameter. A third zzone SKU, `as-sd2.0-fast`, is wired as a backup lane on
+  channel 153 for `seedance2.0fast`.
+- `jimeng-drama-video-v2` / `-fast` are Jimeng's "933" Drama Video products
+  (5/10/15 s, per-second ¥0.3 / ¥0.24, face-reference support), forwarded
+  verbatim.
+
+Status at launch: every one of these SKUs is **blocked on zzone's side** —
+`video-ds-2.0(-fast)` and `as-sd2.0-fast` answer `模型 …
+不可用、未上架或未对当前用户开放`, `jimeng-drama-video-v2` has no upstream
+channel behind it (`model_not_found` from zzone's own distributor, same as
+`seedance2.5`), and the ch136 key's account balance reads ¥0.40 (a
+top-up made on 2026-09-11 has not landed on this account — `minimax-h3`
+pre-charges fail with `余额不足 … 需要 ¥2.00`). All routing, mapping,
+rewrite and pricing are live; the SKUs start working the moment zzone opens
+them and funds the account, with no further changes.
+
 ### Known caveat
 
 `seedance2.5` is tagged `openai` (chat) rather than `videos` in the upstream
