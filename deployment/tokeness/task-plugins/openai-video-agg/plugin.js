@@ -22,6 +22,52 @@ function trimmed(value) {
   return String(value === undefined || value === null ? "" : value).trim();
 }
 
+function firstNumber(values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return undefined;
+}
+
+function firstText(values) {
+  for (const value of values) {
+    const text = trimmed(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function nestedObject(source, key) {
+  const value = source[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+// Hosts hand the client payload back as a plain object, but a context built from
+// the decoded request body carries the {kind, value} envelope instead. Reading
+// seconds off that envelope silently yields the default duration, so unwrap it.
+function unwrapBody(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (value.kind === "json" && value.value && typeof value.value === "object" && !Array.isArray(value.value)) {
+    return value.value;
+  }
+  if (value.kind === "multipart" || value.kind === "form") {
+    const request = {};
+    const fields = value.fields || {};
+    for (const name of Object.keys(fields)) {
+      if ((fields[name] || []).length) request[name] = fields[name][0];
+    }
+    return request;
+  }
+  return value;
+}
+
+function requestObject(ctx) {
+  if (!ctx || typeof ctx !== "object") return {};
+  return unwrapBody(ctx.requestBody) || unwrapBody(ctx.body) || {};
+}
+
 // Returns undefined when the request omits a duration; rejects out-of-range or
 // non-numeric values instead of silently clamping, so a bad request fails at
 // submit time rather than after the upstream already started billing.
@@ -122,7 +168,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.2",
+  version: "1.0.3",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names, except hailuo-h3: the
   // aggregator calls it minimax-h3, but model names are matched case-folded
@@ -203,7 +249,7 @@ export const meta = {
 };
 
 export function buildSubmitRequest(ctx) {
-  const req = ctx.requestBody || {};
+  const req = requestObject(ctx);
   if (!trimmed(req.prompt)) throw new Error("field prompt is required");
   if (ctx.action === "remix") throw new Error("remix is not supported by this upstream");
 
@@ -285,8 +331,7 @@ export function parseTaskResult(ctx, body) {
 // them by resolution tier. Facts the model's expression does not reference are
 // harmless — the engine only prices the variables the expression actually uses.
 export function extractUsage(ctx) {
-  const req = ctx.requestBody || {};
-  const body = ctx.body || ctx.requestBody || {};
+  const body = requestObject(ctx);
   const seconds = requestedSeconds(body);
   const facts = {};
   // An omitted duration keeps the upstream default so a per-second expression
@@ -306,26 +351,54 @@ export function extractUsage(ctx) {
   return facts;
 }
 
-// Measured values replace the submitted estimates when the upstream reports
-// them; an omitted value keeps the estimate recorded at submit time.
-export function extractUsageOnComplete(task, result, body) {
-  const source = body || {};
+// Measured values reported by one upstream payload. The completion body nests
+// the real duration under video ({"video": {"duration": 1}}), flat keys alone
+// would leave the submit estimate in place and overcharge longer requests.
+function measuredFacts(source) {
+  const video = nestedObject(source, "video");
   const facts = {};
 
-  const measured = Number(
-    source.seconds === undefined ? (source.duration === undefined ? source.video_duration : source.duration) : source.seconds
-  );
-  if (Number.isFinite(measured) && measured > 0) facts.seconds = Math.min(measured, MAX_SECONDS);
+  const seconds = firstNumber([
+    source.seconds,
+    source.duration,
+    source.video_duration,
+    video.seconds,
+    video.duration,
+  ]);
+  if (seconds !== undefined) facts.seconds = Math.min(seconds, MAX_SECONDS);
 
-  const resolution = normalizeResolution(source.resolution || source.size);
+  const resolution = normalizeResolution(
+    firstText([source.resolution, source.size, source.video_resolution, video.resolution, video.size])
+  );
   if (resolution) facts.resolution = resolution;
 
+  const usage = nestedObject(source, "usage");
+  const videoUsage = nestedObject(video, "usage");
   // Seedance reports a real billable token count once the task succeeds.
-  const usage = source.usage || {};
-  let tokens = Number(usage.completion_tokens);
-  if (!Number.isFinite(tokens) || tokens <= 0) tokens = Number(usage.total_tokens);
-  if (Number.isFinite(tokens) && tokens > 0) facts.tokens = tokens;
+  const tokens = firstNumber([
+    usage.completion_tokens,
+    usage.total_tokens,
+    videoUsage.completion_tokens,
+    videoUsage.total_tokens,
+  ]);
+  if (tokens !== undefined) facts.tokens = tokens;
 
+  return facts;
+}
+
+// Measured values replace the submitted estimates when the upstream reports
+// them; an omitted value keeps the estimate recorded at submit time. The
+// per-task poll passes the raw response body, the batch and completion paths
+// hand back the task instead, so both sources are read.
+export function extractUsageOnComplete(task, result, body) {
+  const facts = {};
+  for (const source of [body, task && task.data, task]) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+    const measured = measuredFacts(source);
+    for (const key of Object.keys(measured)) {
+      if (facts[key] === undefined) facts[key] = measured[key];
+    }
+  }
   return facts;
 }
 

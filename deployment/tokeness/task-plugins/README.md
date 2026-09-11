@@ -55,7 +55,9 @@ carries (`ModelMappedHelper` sets `UpstreamModelName` to the mapping target).
 Billing facts:
 
 - `seconds` — request duration (`seconds` or `duration`, default 5s). Replaced by
-  the measured value when the upstream reports one on completion.
+  the measured value when the upstream reports one on completion. Read from
+  `ctx.requestBody`, falling back to an unwrapped `{kind, value}` decoded body —
+  reading the envelope itself silently yields the 5s default.
 - `tokens` — Seedance only, from the official Ark formula
   `duration × width × height × 24 / 1024`, estimated at submit and overlaid by
   the upstream's measured `usage.completion_tokens` on completion.
@@ -63,6 +65,10 @@ Billing facts:
 - `resolution` — `480p`/`512p`/`720p`/`768p`/`1080p`/`2k`/`4k`, normalized from
   `metadata.resolution`, `size`, `resolution`, or a `WxH` pixel size. Only the
   models whose official price varies by tier read it.
+
+Completion responses nest the measured duration under `video`
+(`{"video": {"duration": 4}}` on xuetianai); the completion hook reads that
+shape as well as the flat keys and the persisted `task.data`.
 
 ### Deploy
 
@@ -77,12 +83,39 @@ Then upload and activate (root-scoped token required):
 
 ```
 POST /api/plugin/task            {"source": "<plugin.js contents>", "remark": "..."}
-POST /api/plugin/task/<key>/activate
+POST /api/plugin/task/<key>/activate   {"version": "<version to activate>"}
 GET  /api/plugin/task/runtime/status
 ```
 
+Upload does not activate. Activate binds one uploaded version and requires an
+explicit body naming it; a bodyless POST fails with `EOF`. A successful activate
+advances `current_generation` in `/api/plugin/task/runtime/status` — compare it
+before and after, and ignore the pre-existing `jimeng`/`kling`/`sunoapi` route
+conflicts in `plugin_errors`.
+
 Bump `meta.version` on every source change: reusing a key/version with different
 source is rejected.
+
+### Live verification (2026-09-11)
+
+Three real calls through `tokeness.ai` on channel 150 (`grok-imagine-video`,
+`tier("base", u("seconds") * 0.05)`, group ratio 1, QuotaPerUnit 500000):
+
+| Call | Request | Pre-consumed | Settled | Notes |
+|---|---|---|---|---|
+| 1 | `seconds: "1"` | 125000 | 125000 | plugin 1.0.2: read the decoded-body envelope, fell back to the 5s default and never corrected it (the completion hook missed `video.duration`) |
+| 2 | `seconds: "1"` | 25000 | 25000 | plugin 1.0.3: 1s × $0.05 × 500000 |
+| 3 | omitted | 125000 | 100000 | estimate asserted the 5s default, settlement refunded to the measured `video.duration: 4` |
+
+Also confirmed: the `tasks` row, one `logs` row per call (`other.is_task: true`,
+`usage_facts`, plugin version and generation), the admin task list
+(`GET /api/task`) behind `/usage-logs/task`, and
+`GET /v1/videos/{id}/content` returning `video/mp4` (513 KB for a 1s clip).
+
+Omitting `seconds` reserves the 5s default while xuetianai's own default is 4s,
+so the reservation over-reserves and is refunded at settlement (`seconds` must
+stay present: a per-second expression errors on a missing usage key rather than
+treating it as zero).
 
 ### Known caveat
 

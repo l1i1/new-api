@@ -153,6 +153,46 @@
       "expected": { "seconds": 6 }
     },
     {
+      "name": "usage unwraps a decoded body envelope instead of defaulting the duration",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "body": { "kind": "json", "value": { "prompt": "a cat", "seconds": "2" } },
+          "model": "grok-imagine-video",
+          "upstreamModel": "grok-imagine-video",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 2 }
+    },
+    {
+      "name": "usage reads multipart fields from a decoded body envelope",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "body": { "kind": "multipart", "fields": { "prompt": ["a cat"], "seconds": ["3"] }, "files": [] },
+          "model": "wan3-720p",
+          "upstreamModel": "wan3-720p",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 3 }
+    },
+    {
+      "name": "usage prefers the request body over a decoded envelope",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": { "prompt": "a cat", "seconds": "1", "resolution": "720p" },
+          "body": { "kind": "json", "value": { "prompt": "a cat", "seconds": "9" } },
+          "model": "grok-imagine-video",
+          "upstreamModel": "grok-imagine-video",
+          "action": "text_to_video"
+        }
+      ],
+      "expected": { "seconds": 1, "resolution": "720p" }
+    },
+    {
       "name": "usage falls back to the default duration",
       "hook": "extractUsage",
       "args": [
@@ -307,6 +347,60 @@
       "name": "completion omits unreported values",
       "hook": "extractUsageOnComplete",
       "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, {}],
+      "expected": {}
+    },
+    {
+      "name": "completion reads the duration nested under video",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS" },
+        { "status": "SUCCESS" },
+        {
+          "id": "task_up",
+          "status": "completed",
+          "url": "https://v.example/a.mp4",
+          "video": { "duration": 1, "url": "https://v.example/a.mp4" }
+        }
+      ],
+      "expected": { "seconds": 1 }
+    },
+    {
+      "name": "completion reads the resolution nested under video",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS" },
+        { "status": "SUCCESS" },
+        { "status": "completed", "video": { "duration": 6, "resolution": "1080P" } }
+      ],
+      "expected": { "seconds": 6, "resolution": "1080p" }
+    },
+    {
+      "name": "completion falls back to the persisted task data",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS", "data": { "video": { "duration": 4 } } },
+        { "status": "SUCCESS" }
+      ],
+      "expected": { "seconds": 4 }
+    },
+    {
+      "name": "completion prefers the poll body over the persisted data",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS", "data": { "video": { "duration": 4 } } },
+        { "status": "SUCCESS" },
+        { "video": { "duration": 2 } }
+      ],
+      "expected": { "seconds": 2 }
+    },
+    {
+      "name": "completion keeps the estimate for a zero duration",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        { "taskId": "t", "status": "SUCCESS" },
+        { "status": "SUCCESS" },
+        { "status": "completed", "video": { "duration": 0 } }
+      ],
       "expected": {}
     },
     {
