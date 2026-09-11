@@ -1169,6 +1169,17 @@ export function ChannelMutateDrawer({
     }))
   }, [allModelsList, currentModelsArray])
 
+  // Scheduled key probes run against this channel, so the probe model selector
+  // only offers the models the channel actually serves.
+  const multiKeyTestModelOptions = useMemo(
+    () =>
+      currentModelsArray.map((model) => ({
+        value: model,
+        label: model,
+      })),
+    [currentModelsArray]
+  )
+
   const modelMappingGuardrail = useMemo<ModelMappingGuardrail>(() => {
     if (!currentModelMapping?.trim()) {
       return createEmptyModelMappingGuardrail()
@@ -4665,7 +4676,7 @@ export function ChannelMutateDrawer({
                                           </FormLabel>
                                           <FormControl>
                                             <Combobox
-                                              options={modelOptions}
+                                              options={multiKeyTestModelOptions}
                                               value={field.value ?? ''}
                                               onValueChange={(value) =>
                                                 field.onChange(value ?? '')
