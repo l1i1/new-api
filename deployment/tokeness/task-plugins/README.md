@@ -43,8 +43,6 @@ Declared models and their official billing dimension:
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
-| `wan3.0-image` | rolldek | **not an official ID** — rolldek packaging for its 图生 (i2v) lane; unsold 2026-09-12 |
-| `wan3.0-image-prime` | rolldek | **not an official ID** — rolldek packaging for its 图生 (i2v) lane; unsold 2026-09-12 |
 | `grok-1.5-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai, zzone* | per second (flat) |
@@ -341,11 +339,21 @@ user's request:
   values — `wan3.0-video` and `wan3.0-video-prime` (wan3-video-generation API
   reference, verbatim) — and neither `wan3.0-image` nor `wan3.0-image-prime`
   appears anywhere in the Bailian model list; image/audio are inputs of
-  `wan3.0-video` itself. `wan3.0-image-*` is rolldek's own storefront lane
-  ("通义万相 3.0 图生 · 图片+音频参考 · 按仅生成视频的秒数计费") — same pattern as
-  zzone's `wan3-720p` packaging. If the lane is ever re-listed it must be
-  understood as a reseller-specific SKU under a non-official name (or folded
-  into the `wan3.0-video` discussion), not as an official model.
+`wan3.0-video` itself. `wan3.0-image-*` is rolldek's own storefront lane
+("通义万相 3.0 图生 · 图片+音频参考 · 按仅生成视频的秒数计费") — same pattern as
+zzone's `wan3-720p` packaging. If the lane is ever re-listed it must be
+understood as a reseller-specific SKU under a non-official name (or folded
+into the `wan3.0-video` discussion), not as an official model.
+
+**Retired from the plugin in 1.0.8** (user directive: keep platform IDs
+aligned with official ones): both names were dropped from `meta.models`,
+`WAN3_RESOLUTION_BASES` and the fixture, and their dormant tiered rows were
+reset through `PATCH /api/option/model_pricing` (`expected_version` taken
+from `GET /api/option/model_pricing`, both back to `empty_version`).
+Channel 151 already carried only the two official wan3 names, so nothing
+routes through the retired names; re-listing the lane means re-declaring
+the names in a future plugin version plus a channel PUT. Lint valid,
+fixture 48/48; activated as 1.0.8.
 - **Channel 152 `Image_RD1`**: group moved `Video-Test` → `GenPic`, so its four
   image models (`gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
   `gemini-3.1-flash-image-preview`) stay on sale under the image group. Three

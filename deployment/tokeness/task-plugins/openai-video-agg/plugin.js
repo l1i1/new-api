@@ -169,8 +169,6 @@ function requestedResolution(req) {
 const WAN3_RESOLUTION_BASES = {
   "wan3.0-video": "wan3.0-video",
   "wan3.0-video-prime": "wan3.0-video-prime",
-  "wan3.0-image": "wan3.0-image",
-  "wan3.0-image-prime": "wan3.0-image-prime",
 };
 
 // Tier used when the request omits resolution or names one the upstream does
@@ -207,7 +205,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.7",
+  version: "1.0.8",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -222,12 +220,18 @@ export const meta = {
   //                  zzone's -1.5-preview name), seedance2.0(fast) via mapping
   //                  to zzone's video-ds-2.0(-fast) / as-sd2.0-fast SKUs
   //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
-  //   rolldek.com    wan3.0-video(-prime), wan3.0-image(-prime) — the wan3
-  //                  families take the tier through the resolution parameter and
-  //                  are rewritten to resolution-suffixed upstream names (see
+  //   rolldek.com    wan3.0-video(-prime) — the wan3 families take the tier
+  //                  through the resolution parameter and are rewritten to
+  //                  resolution-suffixed upstream names (see
   //                  WAN3_RESOLUTION_BASES below)
   // One plugin key may serve several channels; each channel pins the key through
   // its task_plugin_key setting, which is what the identity filter matches on.
+  //
+  // Retired names: wan3.0-image(-prime) were removed in 1.0.8. They were our
+  // parameterization of rolldek's storefront "-image" lane (image-to-video,
+  // resolution baked into its SKU names) — not official IDs, and Bailian's wan3
+  // line only accepts wan3.0-video / wan3.0-video-prime. Re-listing that lane
+  // would be a deliberate non-official SKU decision, not a name restore.
   //
   // Note: seedance2.5 is tagged "openai" (chat) rather than "videos" upstream;
   // if the aggregator rejects it on /v1/videos this surfaces as a submit error.
@@ -244,8 +248,6 @@ export const meta = {
     "minimax-h3",
     "wan3.0-video",
     "wan3.0-video-prime",
-    "wan3.0-image",
-    "wan3.0-image-prime",
     "jimeng-drama-video-v2",
     "jimeng-drama-video-v2-fast",
     "grok-1.5-video",
@@ -301,7 +303,6 @@ export const meta = {
     { label: "kling-video-v3 1080p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "1080p" } },
     { label: "wan3-720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "wan3.0-video 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
-    { label: "wan3.0-image 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "kling-video-v3-omni 720p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
     { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "seedance2.0 task", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },

@@ -122,27 +122,7 @@
         "body": { "model": "wan3.0-video-prime-720p", "prompt": "a cat", "seconds": "5" }
       }
     },
-    {
-      "name": "submit rewrites wan3.0-image to the resolution-suffixed upstream name",
-      "hook": "buildSubmitRequest",
-      "args": [
-        {
-          "requestBody": { "model": "wan3.0-image", "prompt": "a cat", "seconds": "5", "resolution": "1080p" },
-          "model": "wan3.0-image",
-          "upstreamModel": "",
-          "baseUrl": "https://up.example",
-          "apiKey": "secret",
-          "action": "image_to_video",
-          "files": []
-        }
-      ],
-      "expected": {
-        "url": "https://up.example/v1/videos",
-        "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "wan3.0-image-1080p", "prompt": "a cat", "seconds": "5", "resolution": "1080p" }
-      }
-    },
+    
     {
       "name": "submit forwards a channel-mapped model verbatim",
       "hook": "buildSubmitRequest",
