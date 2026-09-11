@@ -167,3 +167,48 @@ func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	})
 }
+
+// The v4.1 line (deepseek-v4.1-*) belongs to the same official-fit family as
+// deepseek-v4-*, so family detection uses the dash-free "deepseek-v4" prefix.
+// The dto matcher accepts the legacy "deepseek-v4-" key as an alias, so a
+// stored pre-v4.1 profile covers the dotted names too.
+func TestDeepSeekV41SharesTheOfficialFitFamily(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newContext := func(profileKey, body string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				profileKey: {Validate: true, Route: true},
+			}},
+		})
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
+		return c
+	}
+
+	t.Run("deepseek-v4 key pins the v4.1 line", func(t *testing.T) {
+		c := newContext("deepseek-v4", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("deepseek-v4 key still pins the v4 line", func(t *testing.T) {
+		c := newContext("deepseek-v4", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("legacy deepseek-v4- key covers the dotted v4.1 name", func(t *testing.T) {
+		c := newContext("deepseek-v4-", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+
+	t.Run("disabled thinking still escapes the pin for v4.1", func(t *testing.T) {
+		c := newContext("deepseek-v4", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	})
+}

@@ -390,7 +390,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 // aggregator pool nondeterministically drops reasoning_content and never
 // reproduces official dual-path logprobs.
 func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
-	officialType := officialFitChannelType(model)
+	officialType := OfficialFitChannelType(model)
 	if !pinOfficial || officialType == 0 || len(abilities) == 0 {
 		return abilities
 	}

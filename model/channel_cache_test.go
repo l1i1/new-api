@@ -254,7 +254,16 @@ func TestGetRandomSatisfiedChannelPinnedKimiK3PrefersMoonshot(t *testing.T) {
 	}
 
 	// Non-fit families are unaffected by the pin.
-	require.Equal(t, 0, officialFitChannelType("qwen3.7-max"))
+	require.Equal(t, 0, OfficialFitChannelType("qwen3.7-max"))
+}
+
+// The official-fit DeepSeek family spans the v4 and v4.1 lines: the prefix
+// deliberately omits the dash so deepseek-v4.1-* maps to the official channel
+// type too.
+func TestOfficialFitChannelTypeCoversDeepSeekV41(t *testing.T) {
+	require.Equal(t, constant.ChannelTypeDeepSeek, OfficialFitChannelType("deepseek-v4-flash"))
+	require.Equal(t, constant.ChannelTypeDeepSeek, OfficialFitChannelType("deepseek-v4.1-flash"))
+	require.Equal(t, constant.ChannelTypeDeepSeek, OfficialFitChannelType("DEEPSEEK-V4.1-FLASH"))
 }
 
 func TestGetRandomSatisfiedChannelUnaffectedForNonV4Models(t *testing.T) {

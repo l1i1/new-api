@@ -151,13 +151,16 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false)
 }
 
-// officialFitChannelType returns the channel type that counts as the official
-// upstream for an official-fit model family: deepseek-v4-* -> official
+// OfficialFitChannelType returns the channel type that counts as the official
+// upstream for an official-fit model family: deepseek-v4* -> official
 // DeepSeek (type 43), kimi-k3 -> Moonshot (type 25), glm-5.3 -> Zhipu v4
-// API (type 26). Zero for other models.
-func officialFitChannelType(model string) int {
+// API (type 26). Zero for other models. The DeepSeek prefix keeps no dash so
+// the v4.1 line (deepseek-v4.1-*) is covered alongside deepseek-v4-*.
+// Exported because the distributor's affinity/pin exclusion needs the same
+// family classification when deciding whether a cached binding may be reused.
+func OfficialFitChannelType(model string) int {
 	m := strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(m, "deepseek-v4-") {
+	if strings.HasPrefix(m, "deepseek-v4") {
 		return constant.ChannelTypeDeepSeek
 	}
 	if strings.HasPrefix(m, "kimi-k3") {
@@ -171,14 +174,14 @@ func officialFitChannelType(model string) int {
 
 // preferOfficialFitChannels narrows official-fit candidates to the official
 // upstream channel type when the request is marked for the official pin. For
-// deepseek-v4-* the mark is set for the extreme-sampling class or by the
+// deepseek-v4* the mark is set for the extreme-sampling class or by the
 // user's Route profile; kimi-k3 only via the Route profile. The pin is HARD:
 // when no official candidate remains (including retries where the failed
 // official channel is excluded), the set is emptied so the request fails
 // honestly instead of silently degrading to a fit-violating aggregator.
 // Caller must hold channelSyncLock (read lock).
 func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) []int {
-	officialType := officialFitChannelType(model)
+	officialType := OfficialFitChannelType(model)
 	if len(channels) == 0 || !pinOfficial || officialType == 0 {
 		return channels
 	}
@@ -198,7 +201,7 @@ func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) [
 // only a strict subset of the cached candidates, meaning the prebuilt selection
 // metadata no longer describes the candidate set and must not be used.
 func officialFitPreferenceApplied(channels []int, model string, pinOfficial bool) bool {
-	officialType := officialFitChannelType(model)
+	officialType := OfficialFitChannelType(model)
 	if !pinOfficial || officialType == 0 {
 		return false
 	}

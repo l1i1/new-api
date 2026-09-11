@@ -84,7 +84,7 @@ export interface OfficialFitConfig {
 }
 
 export const OFFICIAL_FIT_MATCHES = [
-  { match: 'deepseek-v4-', label: 'DeepSeek V4' },
+  { match: 'deepseek-v4', label: 'DeepSeek V4' },
   { match: 'kimi-k3', label: 'Kimi K3' },
   { match: 'glm-5.3', label: 'GLM 5.3' },
 ] as const
@@ -98,12 +98,40 @@ export const OFFICIAL_FIT_FIELDS = [
 
 export type OfficialFitField = (typeof OFFICIAL_FIT_FIELDS)[number]['field']
 
+// The DeepSeek family key used to be dash-terminated ("deepseek-v4-"), which
+// matched the v4 line but not the dotted v4.1 names. Profiles written before
+// the family widened are migrated to the dash-free key on read so the UI shows
+// the effective config; the next save persists the migrated key.
+const LEGACY_FIT_FAMILY_KEYS: Record<string, string> = {
+  'deepseek-v4-': 'deepseek-v4',
+}
+
+function migrateOfficialFitFamilyKeys(
+  config: OfficialFitConfig
+): OfficialFitConfig {
+  const profile = config.profile
+  if (!profile) return config
+  const next: Record<string, OfficialFitProfile> = {}
+  for (const [key, value] of Object.entries(profile)) {
+    if (LEGACY_FIT_FAMILY_KEYS[key]) continue
+    next[key] = { ...value }
+  }
+  for (const [legacy, current] of Object.entries(LEGACY_FIT_FAMILY_KEYS)) {
+    const value = profile[legacy]
+    if (!value) continue
+    // The canonical key wins on conflicts; the legacy entry fills gaps.
+    next[current] = { ...value, ...next[current] }
+  }
+  return { ...config, profile: next }
+}
+
 /** Parse users.setting JSON and extract the official_fit config (if any). */
 export function parseOfficialFit(setting?: string): OfficialFitConfig {
   if (!setting) return {}
   try {
     const parsed = JSON.parse(setting)
-    return (parsed?.official_fit as OfficialFitConfig | undefined) ?? {}
+    const config = parsed?.official_fit as OfficialFitConfig | undefined
+    return config ? migrateOfficialFitFamilyKeys(config) : {}
   } catch {
     return {}
   }

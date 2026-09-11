@@ -244,18 +244,19 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					// Official-fit route traffic applies the pin/affinity
-					// exclusion in BOTH directions: a pinned request must
-					// reach the official channel even when affinity cached an
-					// aggregator, and an unpinned (disabled-thinking)
-					// deepseek-v4 request must not follow affinity cached on
-					// the official channel by a previous pinned request.
+					// Affinity must never override the official-fit routing
+					// decision, which depends only on THIS request's pin — not
+					// on whether the user currently has the Route dimension
+					// enabled. A pinned request must reach the official
+					// channel even when affinity cached an aggregator; an
+					// unpinned request must not be dragged onto the official
+					// channel by a binding left behind from an earlier pinned
+					// request. The second case is what let a stale official
+					// binding hijack every request (including
+					// disabled-thinking ones) after Route was switched off.
 					if preferred != nil {
-						pinActive := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
-						fitFamily := common.GetContextKeyBool(c, constant.ContextKeyV4FitRouteFamily)
-						if pinActive && preferred.Type != constant.ChannelTypeDeepSeek {
-							preferred = nil
-						} else if !pinActive && fitFamily && preferred.Type == constant.ChannelTypeDeepSeek {
+						officialType := model.OfficialFitChannelType(modelRequest.Model)
+						if !officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, preferred.Type) {
 							preferred = nil
 						}
 					}
@@ -561,7 +562,7 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		return
 	}
 	modelName := strings.ToLower(strings.TrimSpace(pinRequest.Model))
-	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4-")
+	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4")
 	isKimiK3 := strings.HasPrefix(modelName, "kimi-k3")
 	isGlm53 := strings.HasPrefix(modelName, "glm-5.3")
 	if !isDeepSeekV4 && !isKimiK3 && !isGlm53 {
@@ -582,10 +583,6 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// DeepSeek V4 -> type 43, kimi-k3 -> type 25.
 	if profile.Route {
 		if isDeepSeekV4 {
-			// Mark the family for the affinity exclusion below even when this
-			// request is not pinned: a disabled-thinking request must not
-			// ride affinity cached on the official channel by a pinned one.
-			common.SetContextKey(c, constant.ContextKeyV4FitRouteFamily, true)
 			if deepSeekV4RequestNeedsOfficial(pinRequest) {
 				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 			}
@@ -607,6 +604,24 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {
 		abortGlmMessage(c, http.StatusBadRequest, "1214", relayhelper.Glm53ModelNotFoundText)
 	}
+}
+
+// officialPinAllowsAffinity reports whether an affinity-cached channel of
+// preferredType may be reused for a request, given the channel type that is
+// official for the model's family (officialType; zero when the model is not an
+// official-fit family) and whether THIS request is pinned to the official
+// channel. When pinned the official channel is mandatory, so an aggregator
+// binding is dropped; when unpinned the official channel is forbidden, so a
+// binding left behind by earlier pinned traffic is dropped instead of dragging
+// this request (and every later one on the same affinity key) onto it.
+func officialPinAllowsAffinity(pinActive bool, officialType int, preferredType int) bool {
+	if officialType == 0 {
+		return true
+	}
+	if pinActive {
+		return preferredType == officialType
+	}
+	return preferredType != officialType
 }
 
 // deepSeekV4RequestNeedsOfficial reports whether a DeepSeek V4 official-fit

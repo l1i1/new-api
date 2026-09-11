@@ -216,7 +216,7 @@ func isDeepSeekV4Model(info *relaycommon.RelayInfo, modelName string) bool {
 	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
 		modelName = info.UpstreamModelName
 	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-v4-")
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-v4")
 }
 
 func normalizeDeepSeekV4ReasoningEffort(effort string) string {

@@ -190,3 +190,25 @@ func TestParseThinkingModifier(t *testing.T) {
 func intPtr(v int) *int {
 	return &v
 }
+
+// The DeepSeek V4 thinking suffix applies to the whole family, including the
+// dotted v4.1 line, so the guard uses the dash-free "deepseek-v4" prefix.
+func TestParseDeepSeekV4ThinkingSuffixCoversV41(t *testing.T) {
+	t.Parallel()
+
+	base, thinkingType, effort, ok := ParseDeepSeekV4ThinkingSuffix("deepseek-v4.1-flash-none")
+	require.True(t, ok)
+	assert.Equal(t, "deepseek-v4.1-flash", base)
+	assert.Equal(t, "disabled", thinkingType)
+	assert.Equal(t, "", effort)
+
+	base, thinkingType, effort, ok = ParseDeepSeekV4ThinkingSuffix("deepseek-v4.1-flash-max")
+	require.True(t, ok)
+	assert.Equal(t, "deepseek-v4.1-flash", base)
+	assert.Equal(t, "enabled", thinkingType)
+	assert.Equal(t, "max", effort)
+
+	// A non-V4 family keeps its name untouched.
+	_, _, _, ok = ParseDeepSeekV4ThinkingSuffix("deepseek-chat-none")
+	assert.False(t, ok)
+}

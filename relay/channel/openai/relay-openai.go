@@ -809,7 +809,7 @@ func requiresDeepSeekV4ReasoningLogprobs(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	if !strings.HasPrefix(modelName, "deepseek-v4-") || strings.HasSuffix(modelName, "-none") {
+	if !strings.HasPrefix(modelName, "deepseek-v4") || strings.HasSuffix(modelName, "-none") {
 		return false
 	}
 	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)

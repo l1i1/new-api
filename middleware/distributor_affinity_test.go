@@ -271,14 +271,72 @@ func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
 	markV4OfficialPinFromDistributor(c)
 	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 
-	// Simulate affinity returning an aggregator channel and the bypass check.
-	aggregator := &model.Channel{Id: 93, Type: constant.ChannelTypeOpenAI}
-	bypass := aggregator != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
-		aggregator.Type != constant.ChannelTypeDeepSeek
-	assert.True(t, bypass, "aggregator affinity must be bypassed for pinned requests")
+	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
+	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, constant.ChannelTypeOpenAI),
+		"aggregator affinity must be bypassed for pinned requests")
+	assert.True(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType),
+		"official affinity stays usable for pinned requests")
+}
 
-	official := &model.Channel{Id: 1, Type: constant.ChannelTypeDeepSeek}
-	bypassOfficial := official != nil && common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) &&
-		official.Type != constant.ChannelTypeDeepSeek
-	assert.False(t, bypassOfficial, "official affinity stays usable for pinned requests")
+// A request that is NOT pinned must never be dragged onto the official channel
+// by an affinity binding. The binding for an official channel can only have
+// been written by earlier pinned traffic, so reusing it would keep the whole
+// affinity key (token-level when key sources fall back to token_id) on the
+// official channel forever — including disabled-thinking requests, and even
+// after the user's Route dimension was switched off.
+func TestOfficialPinAllowsAffinityDropsStaleOfficialBindingWhenUnpinned(t *testing.T) {
+	deepseekOfficial := model.OfficialFitChannelType("deepseek-v4-flash")
+	require.NotZero(t, deepseekOfficial)
+
+	// Unpinned: aggregators are fine, the official channel is excluded.
+	assert.True(t, officialPinAllowsAffinity(false, deepseekOfficial, constant.ChannelTypeOpenAI))
+	assert.False(t, officialPinAllowsAffinity(false, deepseekOfficial, deepseekOfficial))
+
+	// Pinned: mirror image.
+	assert.False(t, officialPinAllowsAffinity(true, deepseekOfficial, constant.ChannelTypeOpenAI))
+	assert.True(t, officialPinAllowsAffinity(true, deepseekOfficial, deepseekOfficial))
+
+	// Families without an official channel are never restricted.
+	assert.True(t, officialPinAllowsAffinity(false, 0, constant.ChannelTypeOpenAI))
+	assert.True(t, officialPinAllowsAffinity(true, 0, constant.ChannelTypeOpenAI))
+}
+
+// The exclusion keys off the model's own official family type, not a hardcoded
+// DeepSeek type. The previous check compared against ChannelTypeDeepSeek for
+// every family, which wrongly dropped the official Moonshot/Zhipu affinity for
+// pinned kimi-k3 / glm-5.3 requests.
+func TestOfficialPinAllowsAffinityIsFamilyGeneric(t *testing.T) {
+	kimiOfficial := model.OfficialFitChannelType("kimi-k3")
+	glmOfficial := model.OfficialFitChannelType("glm-5.3")
+	require.Equal(t, constant.ChannelTypeMoonshot, kimiOfficial)
+	require.Equal(t, constant.ChannelTypeZhipu_v4, glmOfficial)
+
+	// Pinned k3 keeps its official (Moonshot) binding and drops aggregators.
+	assert.True(t, officialPinAllowsAffinity(true, kimiOfficial, constant.ChannelTypeMoonshot))
+	assert.False(t, officialPinAllowsAffinity(true, kimiOfficial, constant.ChannelTypeOpenAI))
+
+	// Pinned glm keeps Zhipu, drops a DeepSeek binding and vice versa.
+	assert.True(t, officialPinAllowsAffinity(true, glmOfficial, constant.ChannelTypeZhipu_v4))
+	assert.False(t, officialPinAllowsAffinity(true, glmOfficial, constant.ChannelTypeDeepSeek))
+	// A DeepSeek binding is not the official family for glm, so a pinned glm
+	// request must drop it (family-specific, not a single hardcoded type).
+	assert.False(t, officialPinAllowsAffinity(true, glmOfficial, model.OfficialFitChannelType("deepseek-v4-flash")))
+}
+
+// The exclusion is driven by the current request's pin, not by whether the
+// user still has Route enabled: unpinned requests drop official affinity even
+// when no official-fit profile is present at all (the stale-binding case).
+func TestUnpinnedRequestDropsOfficialAffinityWithoutRouteProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	// No UserSetting / Route profile on the context, as in the production
+	// incident: the pin is off because the profile no longer enables Route.
+	markV4OfficialPinFromDistributor(c)
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+
+	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
+	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType),
+		"a stale official binding must be dropped for an unpinned request")
 }

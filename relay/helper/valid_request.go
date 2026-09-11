@@ -443,8 +443,14 @@ const (
 	// chain of thought back for every prior turn once tools are involved
 	// (live-probed 2026-09-01; conversations ending on a user turn and
 	// tool-free conversations are exempt).
-	deepSeekV4ReasoningPassbackText     = "The `reasoning_content` in the thinking mode must be passed back to the API."
-	deepSeekV4UnknownModelMessagePrefix = "The supported API model names are deepseek-v4-pro, deepseek-v4-flash, and deepseek-v4-flash-vision-exp, but you passed "
+	deepSeekV4ReasoningPassbackText = "The `reasoning_content` in the thinking mode must be passed back to the API."
+	// deepSeekV4UnknownModelMessagePrefix is the official unknown-model text.
+	// The model list it names is the endpoint's own wording, not an accurate
+	// inventory of accepted ids (live probe 2026-09-11: the list omits
+	// deepseek-v4-flash / deepseek-v4-flash-vision-exp / deepseek-v4.1-flash,
+	// all of which the endpoint accepts). Mirror it verbatim; never derive the
+	// accepted set from it — use DeepSeekV4OfficialModelNames.
+	deepSeekV4UnknownModelMessagePrefix = "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed "
 	// deepSeekV4ReasoningEffortTypeErrorMessage mirrors the official wording for
 	// a non-string reasoning_effort: the endpoint's own parser fails the type
 	// before any enum check. The live response appends " at line 1 column N",
@@ -501,8 +507,12 @@ func deepSeekV4TopLogprobsDeserMessage(value int) string {
 
 // DeepSeekV4OfficialModelNames is the exact model-id list the official
 // api.deepseek.com endpoint accepts (from the live unknown-model error text).
+// The accepted set is probed, not read from /v1/models: the public list omits
+// ids the endpoint still serves (live probe 2026-09-11 accepted
+// deepseek-v4.1-flash while rejecting deepseek-v4.1-pro).
 var DeepSeekV4OfficialModelNames = []string{
 	"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+	"deepseek-v4.1-flash",
 }
 
 // IsDeepSeekV4OfficialModelName reports whether model is one of the exact
@@ -560,7 +570,7 @@ func officialFitEffortTypeError(c *gin.Context, unmarshalErr error) error {
 		return nil
 	}
 	switch {
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4-"):
+	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4"):
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4ReasoningEffortTypeErrorMessage,
 			Type:    "invalid_request_error",
@@ -587,7 +597,7 @@ func deepSeekV4MessagesText(messages []dto.Message) string {
 }
 
 func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
 		return nil
 	}
 	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" && !deepSeekV4ReasoningEffortAllowed[strings.ToLower(effort)] {
@@ -816,7 +826,7 @@ func deepSeekV4ThinkingScalarError(raw json.RawMessage) error {
 // observes official-equivalent behavior. Only the exact lowercase variants are
 // mapped; anything else keeps the deserialization contract of the enum check.
 func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
 		return
 	}
 	switch strings.TrimSpace(request.ReasoningEffort) {
@@ -845,7 +855,7 @@ func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
 // Answering a call consumes it, so a duplicated answer degrades into the
 // orphan rule exactly like the official endpoint.
 func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
 		return nil
 	}
 	pending := map[string]bool{}
@@ -886,7 +896,7 @@ func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
 	// empty and blank strings satisfy it, absent/null does not. Ending on a
 	// bare assistant or user turn is exempt, and the vision variant never
 	// enforces the rule at all, while the state machine above applies to
-	// every deepseek-v4-* variant.
+	// every deepseek-v4* variant (the v4 and v4.1 lines alike).
 	if last := request.Messages[len(request.Messages)-1]; last.Role == "tool" &&
 		!deepSeekV4ThinkingOff(request) && !deepSeekV4PassbackExemptModel(request.Model) {
 		for i := len(request.Messages) - 1; i >= 0; i-- {
@@ -959,7 +969,7 @@ func deepSeekV4ToolChainError(message string) error {
 }
 
 func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4-") || request.TopLogProbs == nil {
+	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") || request.TopLogProbs == nil {
 		return nil
 	}
 	if request.LogProbs == nil || !*request.LogProbs {

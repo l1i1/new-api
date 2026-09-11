@@ -44,7 +44,7 @@ func TestOfficialFitProfileFor(t *testing.T) {
 
 func TestOfficialFitProfileMostSpecificPrefixWins(t *testing.T) {
 	setting := &UserSetting{OfficialFit: &OfficialFitConfig{Profile: map[string]OfficialFitProfile{
-		"deepseek-": {Validate: true},
+		"deepseek-":    {Validate: true},
 		"deepseek-v4-": {Shape: true, Route: true},
 	}}}
 	got, ok := setting.OfficialFitProfileFor("deepseek-v4-flash")
@@ -52,4 +52,39 @@ func TestOfficialFitProfileMostSpecificPrefixWins(t *testing.T) {
 	assert.True(t, got.Shape)
 	assert.True(t, got.Route)
 	assert.False(t, got.Validate)
+}
+
+// The dash-free family key covers the dotted v4.1 line, and the pre-v4.1
+// dash-terminated key is accepted as an alias so stored profiles keep working.
+func TestOfficialFitProfileCoversDeepSeekV41Family(t *testing.T) {
+	canonical := &UserSetting{OfficialFit: &OfficialFitConfig{Profile: map[string]OfficialFitProfile{
+		"deepseek-v4": {Shape: true, Route: true},
+	}}}
+	got, ok := canonical.OfficialFitProfileFor("deepseek-v4.1-flash")
+	assert.True(t, ok)
+	assert.True(t, got.Shape)
+	assert.True(t, got.Route)
+
+	legacy := &UserSetting{OfficialFit: &OfficialFitConfig{Profile: map[string]OfficialFitProfile{
+		"deepseek-v4-": {Shape: true, Route: true},
+	}}}
+	got, ok = legacy.OfficialFitProfileFor("deepseek-v4.1-flash")
+	assert.True(t, ok, "legacy dash-terminated key must cover the dotted v4.1 names")
+	assert.True(t, got.Route)
+}
+
+// When both the canonical and the legacy key are present they resolve to the
+// same family; the canonical entry must win deterministically regardless of
+// map iteration order.
+func TestOfficialFitProfileCanonicalKeyBeatsLegacyAlias(t *testing.T) {
+	setting := &UserSetting{OfficialFit: &OfficialFitConfig{Profile: map[string]OfficialFitProfile{
+		"deepseek-v4-": {Validate: true},
+		"deepseek-v4":  {Route: true},
+	}}}
+	for range 20 {
+		got, ok := setting.OfficialFitProfileFor("deepseek-v4.1-flash")
+		assert.True(t, ok)
+		assert.True(t, got.Route)
+		assert.False(t, got.Validate)
+	}
 }

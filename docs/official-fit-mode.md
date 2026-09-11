@@ -14,7 +14,7 @@
 {
   "official_fit": {
     "profile": {
-      "deepseek-v4-": { "validate": true, "errors": true, "shape": true, "route": true },
+      "deepseek-v4":  { "validate": true, "errors": true, "shape": true, "route": true },
       "kimi-k3":      { "validate": true, "errors": true }
     }
   }
@@ -23,6 +23,9 @@
 
 - `profile` 的 key 是模型族匹配前缀（小写、不区分大小写）；匹配 = 精确相等 或 前缀匹配，
   更长前缀优先，`*` 为兜底。未命中（或未配置）→ 全部维度关闭（平台兼容行为）。
+  DeepSeek 族的规范 key 是 **`deepseek-v4`（无尾横线）**，同时覆盖 `deepseek-v4-*` 与
+  `deepseek-v4.1-*` 两条线；旧的 `deepseek-v4-` key 匹配不到带点的 v4.1 名称，管理端读取时
+  会自动归并到 `deepseek-v4`、下次保存时落库。
 - 四个维度互相独立：
   - `validate`：官方参数校验，本地按官方 400 拦截（DS：temperature∈[0,2]、top_p∈(0,1]、
     reasoning_effort 枚举、json_object 需含 "json" 字样、top_logprobs 规则、双路 logprobs 硬校验；
@@ -57,6 +60,13 @@
     在聚合器池被证明无法保证 100% 拟合前，这部分必须留官方；进一步压缩官方用量的
     前提是**逐渠道验证**（每渠道 × audit 200 例多轮重采样稳定通过后白名单化），
     该机制留作后续演进，需新增渠道级验证/开关设施。
+    - **亲和与 pin 的互斥按「本次请求是否 pin」判定（2026-09-11 修复）**：官方渠道的粘性
+      绑定只可能由 pin 请求写入，因此规则是纯粹的请求级判定——pin 请求必须落在官方渠道
+      （排除聚合器粘性），未 pin 请求**必须排除官方渠道粘性**。此前该排除额外要求用户当前
+      仍开启 Route，导致关掉 Route 后遗留的官方粘性绑定会劫持该亲和 key 的全部流量
+      （含关思考请求；key 回退到 `token_id` 时即整个凭据）。判定抽为
+      `middleware.distributor` 的 `officialPinAllowsAffinity`，家族类型用
+      `model.OfficialFitChannelType`。
 
 ## 行为映射
 

@@ -87,7 +87,7 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	return strings.HasPrefix(modelName, "deepseek-v4-")
+	return strings.HasPrefix(modelName, "deepseek-v4")
 }
 
 // deepSeekV4FitEnabled reports whether the official response-shape fit layer

@@ -25,7 +25,7 @@ func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	if !strings.HasPrefix(modelName, "deepseek-v4-") {
+	if !strings.HasPrefix(modelName, "deepseek-v4") {
 		return false
 	}
 	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
