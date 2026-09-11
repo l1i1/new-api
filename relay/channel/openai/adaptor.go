@@ -442,14 +442,14 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 // bill tokens. Sending the native `thinking:{"type":"disabled"}` alongside the
 // effort field leaves no room for the upstream to misread the intent.
 //
-// Scoped to generic openai channels (type 1). The official DeepSeek channel has
-// its own adaptor that already maps disabled thinking, and OpenRouter-style
-// routers use the `reasoning` object, so both are left untouched.
+// Scoped to the generic OpenAI-compatible API path. The official DeepSeek
+// channel has its own adaptor that already maps disabled thinking, and
+// OpenRouter-style routers use the `reasoning` object, so neither is touched.
 func applyDeepSeekV4DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
 	if info == nil || request == nil {
 		return
 	}
-	if info.ChannelType != constant.ChannelTypeOpenAI {
+	if info.ApiType != constant.APITypeOpenAI {
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {

@@ -20,10 +20,10 @@ import (
 // generated and billed tokens (DEF_aiping, 2026-09-11). The fix mirrors the
 // intent onto the native `thinking` field for generic openai channels.
 
-func deepSeekV4DialectInfo(channelType int, upstreamModel, effort string) *relaycommon.RelayInfo {
+func deepSeekV4DialectInfo(apiType int, upstreamModel, effort string) *relaycommon.RelayInfo {
 	info := &relaycommon.RelayInfo{
 		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelType:       channelType,
+			ApiType:           apiType,
 			UpstreamModelName: upstreamModel,
 		},
 		OriginModelName: "deepseek-v4-flash",
@@ -45,7 +45,7 @@ func thinkingType(t *testing.T, raw json.RawMessage) string {
 }
 
 func TestDisabledThinkingDialectInjectedForOpenAIChannel(t *testing.T) {
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "deepseek-v4-flash", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenAI, "deepseek-v4-flash", "none")
 	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "none"}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
@@ -58,7 +58,7 @@ func TestDisabledThinkingDialectInjectedForOpenAIChannel(t *testing.T) {
 func TestDisabledThinkingDialectSkipsOfficialDeepSeekChannel(t *testing.T) {
 	// The official channel has its own adaptor that already maps disabled
 	// thinking; the generic openai adaptor must not touch it.
-	info := deepSeekV4DialectInfo(constant.ChannelTypeDeepSeek, "deepseek-v4-flash", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeDeepSeek, "deepseek-v4-flash", "none")
 	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "none"}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
@@ -69,7 +69,7 @@ func TestDisabledThinkingDialectSkipsOfficialDeepSeekChannel(t *testing.T) {
 func TestDisabledThinkingDialectSkipsOpenRouterStyleUpstream(t *testing.T) {
 	// A namespaced upstream id marks an OpenRouter-style router whose dialect
 	// is the `reasoning` object, not DeepSeek's `thinking`.
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "deepseek/deepseek-v4-flash-0731", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenRouter, "deepseek/deepseek-v4-flash-0731", "none")
 	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "none"}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
@@ -78,7 +78,7 @@ func TestDisabledThinkingDialectSkipsOpenRouterStyleUpstream(t *testing.T) {
 }
 
 func TestDisabledThinkingDialectSkipsWhenThinkingRequested(t *testing.T) {
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "deepseek-v4-flash", "high")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenAI, "deepseek-v4-flash", "high")
 	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "high"}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
@@ -87,7 +87,7 @@ func TestDisabledThinkingDialectSkipsWhenThinkingRequested(t *testing.T) {
 }
 
 func TestDisabledThinkingDialectPreservesClientThinking(t *testing.T) {
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "deepseek-v4-flash", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenAI, "deepseek-v4-flash", "none")
 	request := &dto.GeneralOpenAIRequest{
 		Model:           "deepseek-v4-flash",
 		ReasoningEffort: "none",
@@ -101,7 +101,7 @@ func TestDisabledThinkingDialectPreservesClientThinking(t *testing.T) {
 }
 
 func TestDisabledThinkingDialectSkipsNonDeepSeekModel(t *testing.T) {
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "glm-5.3-flash", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenAI, "glm-5.3-flash", "none")
 	info.OriginModelName = "glm-5.3-flash"
 	request := &dto.GeneralOpenAIRequest{Model: "glm-5.3-flash", ReasoningEffort: "none"}
 
@@ -113,7 +113,7 @@ func TestDisabledThinkingDialectSkipsNonDeepSeekModel(t *testing.T) {
 func TestDisabledThinkingDialectSurvivesMarshal(t *testing.T) {
 	// The injected field must actually reach the outbound body: `thinking` is a
 	// known GeneralOpenAIRequest field, so MarshalJSON keeps it.
-	info := deepSeekV4DialectInfo(constant.ChannelTypeOpenAI, "deepseek-v4-flash", "none")
+	info := deepSeekV4DialectInfo(constant.APITypeOpenAI, "deepseek-v4-flash", "none")
 	request := &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", ReasoningEffort: "none"}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
