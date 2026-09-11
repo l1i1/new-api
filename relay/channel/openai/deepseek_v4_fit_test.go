@@ -168,7 +168,7 @@ func TestFitDeepSeekV4TextResponseBodyReplacesUsageInPlace(t *testing.T) {
 	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, true, true)
 	require.NoError(t, err)
 
-	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","system_fingerprint":null,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2"}}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":28},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`
+	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","system_fingerprint":null,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"2"},"logprobs":null}],"usage":{"prompt_tokens":8,"completion_tokens":31,"total_tokens":39,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":28},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":8}}`
 	assert.Equal(t, want, string(fitted))
 }
 
@@ -196,7 +196,7 @@ func TestFitDeepSeekV4TextResponseBodyStripsAggregatorMessageKeys(t *testing.T) 
 	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, true)
 	require.NoError(t, err)
 
-	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":289}}`
+	want := `{"id":"router-1","object":"chat.completion","created":1787661622,"model":"deepseek-v4-flash","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"好的，我来查询。","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]},"logprobs":null}],"usage":{"prompt_tokens":289,"completion_tokens":53,"total_tokens":342,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":289}}`
 	assert.Equal(t, want, string(fitted))
 }
 
@@ -297,11 +297,19 @@ func TestFitDeepSeekV4StreamEventSuppressesUsage(t *testing.T) {
 }
 
 func TestFitDeepSeekV4StreamEventKeepUpstreamBytesWhenUsageRequestedButMissing(t *testing.T) {
+	// Usage is requested but nothing was reported, so it must not be fabricated.
+	// The choice still gains the official required keys (logprobs), so the
+	// comparison is on the usage value rather than the whole byte string.
 	data := `{"id":"router-1","object":"chat.completion.chunk","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}`
 
 	patched, err := fitDeepSeekV4StreamEvent(data, nil, true, true, false)
 	require.NoError(t, err)
-	assert.Equal(t, data, patched, "usage requested but nothing to render keeps upstream bytes")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
+	assert.NotContains(t, payload, "usage", "a missing upstream usage must not be fabricated")
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	assert.Nil(t, choice["logprobs"], "the official required choice key is added")
 }
 
 func TestFitDeepSeekV4StreamEventHandlesDuplicateUsageKeyFallback(t *testing.T) {
@@ -378,7 +386,7 @@ func TestFitDeepSeekV4TextResponseBodyMultipleNullToolCalls(t *testing.T) {
 	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, true)
 	require.NoError(t, err)
 
-	want := `{"choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1}}`
+	want := `{"choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop","logprobs":null},{"index":1,"message":{"role":"assistant"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1}}`
 	assert.Equal(t, want, string(fitted))
 }
 
@@ -540,14 +548,17 @@ func TestPromoteLegacyReasoningKeyStreamEvent(t *testing.T) {
 	assert.Contains(t, patched, `"reasoning_content":"正在思考"`)
 	assert.NotContains(t, patched, `"reasoning":"正在思考"`)
 
-	// Chunks without the legacy key pass through untouched.
+	// Chunks without the legacy key keep their reasoning untouched.
 	plain := `{"choices":[{"index":0,"delta":{"reasoning_content":"ok"}}],"usage":null}`
 	patched, err = fitDeepSeekV4StreamEvent(plain, nil, false, true, true)
 	require.NoError(t, err)
-	assert.Equal(t, plain, patched)
+	assert.Contains(t, patched, `"reasoning_content":"ok"`)
+	assert.NotContains(t, patched, `"reasoning"`)
 
-	// Suppressed reasoning (includeReasoningDetails=false) is not promoted.
+	// Suppressed reasoning (includeReasoningDetails=false) is not promoted: the
+	// legacy key stays as-is rather than being renamed.
 	patched, err = fitDeepSeekV4StreamEvent(chunk, nil, false, false, false)
 	require.NoError(t, err)
-	assert.Equal(t, chunk, patched)
+	assert.Contains(t, patched, `"reasoning":"正在思考"`)
+	assert.NotContains(t, patched, `"reasoning_content"`)
 }

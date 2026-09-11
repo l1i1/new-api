@@ -216,6 +216,14 @@ var deepSeekV4OfficialChoiceKeys = map[string]struct{}{
 	"finish_reason": {},
 }
 
+// deepSeekV4RequiredChoiceKeys are the choice keys every official response
+// carries regardless of the request; the fit layer adds them when an aggregator
+// omitted them so identical requests stay structurally identical. `logprobs` is
+// always present on official (null without logprobs=true); it is the only key
+// safe to synthesise, because message/delta presence itself depends on the
+// request and fabricating one would be dishonest.
+var deepSeekV4RequiredChoiceKeys = []string{"logprobs"}
+
 // deleteNonAllowedTopLevelKeys removes every top-level member whose key is not
 // in allowed, preserving the byte layout of the surviving members. ok=false
 // flags a structure (duplicate keys, malformed JSON) the surgical edit
@@ -253,16 +261,51 @@ func stripOfficialChoiceKeysInPlace(rawChoices json.RawMessage) (json.RawMessage
 	out := make([]byte, 0, len(rawChoices))
 	prev := 0
 	for _, span := range spans {
-		stripped, ok := deleteNonAllowedTopLevelKeys(rawChoices[span[0]:span[1]], deepSeekV4OfficialChoiceKeys)
+		element, ok := deleteNonAllowedTopLevelKeys(rawChoices[span[0]:span[1]], deepSeekV4OfficialChoiceKeys)
+		if !ok {
+			return nil, false
+		}
+		element, ok = ensureOfficialChoiceKeys(element)
 		if !ok {
 			return nil, false
 		}
 		out = append(out, rawChoices[prev:span[0]]...)
-		out = append(out, stripped...)
+		out = append(out, element...)
 		prev = span[1]
 	}
 	out = append(out, rawChoices[prev:]...)
 	return out, true
+}
+
+// ensureOfficialChoiceKeys adds the choice keys every official response carries
+// but an aggregator may omit. Official always emits `logprobs` (null when the
+// request did not ask for them), so its absence is a structural variant that
+// breaks an input-identical consistency check; the value is never invented for
+// keys whose presence depends on the request (message vs delta), and null is
+// the honest value for a key the request did not populate.
+func ensureOfficialChoiceKeys(choice []byte) ([]byte, bool) {
+	pairs, _, err := parseTopLevelPairs(choice)
+	if err != nil {
+		return nil, false
+	}
+	result := choice
+	for _, key := range deepSeekV4RequiredChoiceKeys {
+		if _, found, err := findJSONPair(pairs, key); err != nil {
+			return nil, false
+		} else if found {
+			continue
+		}
+		pairs, _, err = parseTopLevelPairs(result)
+		if err != nil {
+			return nil, false
+		}
+		patched, ok := appendTopLevelJSONValue(result, key, json.RawMessage("null"))
+		if !ok {
+			return nil, false
+		}
+		result = patched
+	}
+	return result, true
 }
 
 // stripNonOfficialStreamKeys removes non-official top-level and choice-level

@@ -94,3 +94,55 @@ func TestStripNonOfficialStreamKeysDeclinesMalformedInput(t *testing.T) {
 	_, ok = stripNonOfficialStreamKeys([]byte(`not json`))
 	assert.False(t, ok)
 }
+
+// A sub-provider that omits the official required choice keys makes identical
+// requests structurally inconsistent: the admission suite counts these as
+// distinct variants. Official always emits choice.logprobs (null when not
+// requested), so the fit layer must add it.
+func TestFitDeepSeekV4TextBodyAddsMissingLogprobs(t *testing.T) {
+	body := []byte(`{"id":"as-1","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	usage := &dto.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, usage, false, false)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(fitted, &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	assert.Contains(t, choice, "logprobs", "the official required choice key must be present")
+	assert.Nil(t, choice["logprobs"])
+}
+
+func TestFitDeepSeekV4TextBodyKeepsExistingLogprobs(t *testing.T) {
+	body := []byte(`{"id":"as-1","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"logprobs":{"content":[]},"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, &dto.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}, false, false)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(fitted, &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	assert.Equal(t, map[string]any{"content": []any{}}, choice["logprobs"], "a real logprobs value must not be clobbered")
+}
+
+func TestFitDeepSeekV4StreamEventAddsMissingLogprobs(t *testing.T) {
+	data := `{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":null}`
+
+	patched, err := fitDeepSeekV4StreamEvent(data, nil, false, false, false)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(patched), &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	assert.Contains(t, choice, "logprobs")
+	assert.Nil(t, choice["logprobs"])
+}
+
+// The official envelope is byte-stable, so the key completion must be a no-op
+// on a chunk that already carries every official key.
+func TestEnsureOfficialChoiceKeysNoOpWhenComplete(t *testing.T) {
+	choice := []byte(`{"index":0,"logprobs":null,"finish_reason":"stop","message":{"role":"assistant"}}`)
+	out, ok := ensureOfficialChoiceKeys(choice)
+	require.True(t, ok)
+	assert.Equal(t, string(choice), string(out))
+}
