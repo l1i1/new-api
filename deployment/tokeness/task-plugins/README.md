@@ -43,8 +43,8 @@ Declared models and their official billing dimension:
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
-| `wan3.0-image` | rolldek | per second, by resolution (output seconds only) |
-| `wan3.0-image-prime` | rolldek | per second, by resolution (output seconds only) |
+| `wan3.0-image` | rolldek | **unsold** 2026-09-12 — dropped from the group, see the group-cleanup section |
+| `wan3.0-image-prime` | rolldek | **unsold** 2026-09-12 — dropped from the group, see the group-cleanup section |
 | `grok-1.5-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video` | xuetianai, zzone* | per second (flat) |
 | `grok-imagine-video-1.5` | xuetianai, zzone* | per second (flat) |
@@ -320,6 +320,30 @@ top-up made on 2026-09-11 has not landed on this account — `minimax-h3`
 pre-charges fail with `余额不足 … 需要 ¥2.00`). All routing, mapping,
 rewrite and pricing are live; the SKUs start working the moment zzone opens
 them and funds the account, with no further changes.
+
+### Group cleanup: Video-Test carries video models only (2026-09-12)
+
+The `Video-Test` group had accumulated six non-video models. Removed at the
+user's request:
+
+- **Channel 151 `Video_RD1`**: `wan3.0-image` and `wan3.0-image-prime` dropped
+  from `models`, leaving the pure video pair `wan3.0-video,wan3.0-video-prime`.
+  Note these were *working* task models (image-to-video through the video
+  protocol, verified in the 1.0.6 round) — they were removed because the name
+  reads as an image model, not because they were broken. Their tiered
+  expressions stay dormant in `billing_setting.billing_expr` and the plugin
+  keeps declaring the names; re-listing is a single channel PUT.
+- **Channel 152 `Image_RD1`**: group moved `Video-Test` → `GenPic`, so its four
+  image models (`gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
+  `gemini-3.1-flash-image-preview`) stay on sale under the image group. Three
+  of them are new to `GenPic` (`gpt-image-2` was already served there).
+
+Verified: `Video-Test` abilities = 14 unique video models, all `enabled=true`
+after both channel PUTs (the abilities-zeroing trap did not fire this time);
+the unfiltered (JP-egress) `/api/pricing` shows `GenPic` = 7 models,
+`Video-Test` = 14, and no `wan3.0-image`/-prime rows. The CN-egress view
+cannot confirm the image models (`X-Pricing-Filtered: cn` hides gpt/gemini
+keywords and drops the whole GenPic group from the response).
 
 ### Known caveat
 
