@@ -380,7 +380,7 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
-	case "AutomaticRetryStatusCodes", "ForceRetryStatusCodes", "NeverRetryStatusCodes":
+	case "AutomaticRetryStatusCodes", "ForceRetryStatusCodes", "NeverRetryStatusCodes", "MultiKeyCredentialRetryStatusCodes":
 		_, err = operation_setting.ParseHTTPStatusCodeRanges(option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{

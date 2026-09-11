@@ -778,15 +778,17 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	return operation_setting.ShouldRetryByStatusCode(code)
 }
 
+// isMultiKeyCredentialRetryStatus reports whether an upstream status code means
+// the selected key is unusable while the channel itself may still work, so a
+// multi-key channel should retry itself with another key before the channel is
+// excluded. The code list is operator-configured (Routing Reliability:
+// "Multi-key retry status codes"); it defaults to 402, 403 and 429.
+//
+// 401 stays out of the default list because it usually points at the channel's
+// auth or base-url configuration rather than a single key, so another key would
+// only repeat the same invalid route.
 func isMultiKeyCredentialRetryStatus(statusCode int) bool {
-	// A 401 is a channel-level authentication/configuration failure. Retrying
-	// another key on the same channel only repeats the same invalid route.
-	switch statusCode {
-	case http.StatusForbidden, http.StatusTooManyRequests:
-		return true
-	default:
-		return false
-	}
+	return operation_setting.ShouldRotateMultiKeyCredential(statusCode)
 }
 
 func shouldSkipRetryAfterAffinity(c *gin.Context, statusCode int) bool {

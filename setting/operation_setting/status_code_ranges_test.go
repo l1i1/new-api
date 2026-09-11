@@ -127,3 +127,31 @@ func TestNeverRetryStatusCodesConfigurable(t *testing.T) {
 	require.False(t, ShouldRetryByStatusCode(500))
 	require.Equal(t, "500,504,524", NeverRetryStatusCodesToString())
 }
+
+func TestMultiKeyCredentialRetryStatusCodesDefault(t *testing.T) {
+	orig := MultiKeyCredentialRetryStatusCodeRanges
+	t.Cleanup(func() { MultiKeyCredentialRetryStatusCodeRanges = orig })
+
+	// 402 rotates per-credential; 401 must stay excluded by default since it
+	// signals a channel-level auth/base-url problem another key cannot fix.
+	require.True(t, ShouldRotateMultiKeyCredential(402))
+	require.True(t, ShouldRotateMultiKeyCredential(403))
+	require.True(t, ShouldRotateMultiKeyCredential(429))
+	require.False(t, ShouldRotateMultiKeyCredential(401))
+	require.False(t, ShouldRotateMultiKeyCredential(400))
+	require.False(t, ShouldRotateMultiKeyCredential(500))
+}
+
+func TestMultiKeyCredentialRetryStatusCodesConfigurable(t *testing.T) {
+	orig := MultiKeyCredentialRetryStatusCodeRanges
+	t.Cleanup(func() { MultiKeyCredentialRetryStatusCodeRanges = orig })
+
+	require.NoError(t, MultiKeyCredentialRetryStatusCodesFromString("401,402"))
+	require.True(t, ShouldRotateMultiKeyCredential(401))
+
+	// Empty means "never rotate a key for any code" -- channel failover only.
+	require.NoError(t, MultiKeyCredentialRetryStatusCodesFromString(""))
+	require.False(t, ShouldRotateMultiKeyCredential(402))
+
+	require.Error(t, MultiKeyCredentialRetryStatusCodesFromString("foo"))
+}

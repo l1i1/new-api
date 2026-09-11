@@ -85,6 +85,7 @@ const createRoutingReliabilitySchema = (
       AutomaticRetryStatusCodes: z.string(),
       ForceRetryStatusCodes: z.string(),
       NeverRetryStatusCodes: z.string(),
+      MultiKeyCredentialRetryStatusCodes: z.string(),
       AutomaticRetryKeywords: z.string(),
         monitor_setting: z.object({
           auto_test_channel_enabled: z.boolean(),
@@ -155,6 +156,19 @@ const createRoutingReliabilitySchema = (
           }),
         })
       }
+
+      const multiKeyRetryParsed = parseHttpStatusCodeRules(
+        values.MultiKeyCredentialRetryStatusCodes
+      )
+      if (!multiKeyRetryParsed.ok) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['MultiKeyCredentialRetryStatusCodes'],
+          message: t('Invalid status code rules: {{tokens}}', {
+            tokens: multiKeyRetryParsed.invalidTokens.join(', '),
+          }),
+        })
+      }
     })
 
 type RoutingReliabilitySchema = ReturnType<
@@ -174,6 +188,7 @@ type RoutingReliabilitySectionProps = {
     AutomaticRetryStatusCodes: string
     ForceRetryStatusCodes: string
     NeverRetryStatusCodes: string
+    MultiKeyCredentialRetryStatusCodes: string
     AutomaticRetryKeywords: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
@@ -196,6 +211,7 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticRetryStatusCodes: string
   ForceRetryStatusCodes: string
   NeverRetryStatusCodes: string
+  MultiKeyCredentialRetryStatusCodes: string
   AutomaticRetryKeywords: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
@@ -224,6 +240,8 @@ const buildFormDefaults = (
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
   ForceRetryStatusCodes: defaults.ForceRetryStatusCodes ?? '',
   NeverRetryStatusCodes: defaults.NeverRetryStatusCodes ?? '',
+  MultiKeyCredentialRetryStatusCodes:
+    defaults.MultiKeyCredentialRetryStatusCodes ?? '',
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
   ),
@@ -262,6 +280,9 @@ const normalizeDefaults = (
   NeverRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.NeverRetryStatusCodes ?? ''
   ).normalized,
+  MultiKeyCredentialRetryStatusCodes: parseHttpStatusCodeRules(
+    defaults.MultiKeyCredentialRetryStatusCodes ?? ''
+  ).normalized,
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
   ),
@@ -297,6 +318,9 @@ const normalizeFormValues = (
   ).normalized,
   NeverRetryStatusCodes: parseHttpStatusCodeRules(
     values.NeverRetryStatusCodes
+  ).normalized,
+  MultiKeyCredentialRetryStatusCodes: parseHttpStatusCodeRules(
+    values.MultiKeyCredentialRetryStatusCodes
   ).normalized,
   AutomaticRetryKeywords: normalizeLineEndings(values.AutomaticRetryKeywords),
   'monitor_setting.auto_test_channel_enabled':
@@ -338,6 +362,9 @@ export function RoutingReliabilitySection({
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
   const forceRetryStatusCodes = form.watch('ForceRetryStatusCodes')
   const neverRetryStatusCodes = form.watch('NeverRetryStatusCodes')
+  const multiKeyCredentialRetryStatusCodes = form.watch(
+    'MultiKeyCredentialRetryStatusCodes'
+  )
   const channelTestMode = form.watch('monitor_setting.channel_test_mode')
   let channelTestModeDescription: string
   switch (channelTestMode) {
@@ -371,6 +398,10 @@ export function RoutingReliabilitySection({
   const neverRetryParsed = useMemo(
     () => parseHttpStatusCodeRules(neverRetryStatusCodes),
     [neverRetryStatusCodes]
+  )
+  const multiKeyRetryParsed = useMemo(
+    () => parseHttpStatusCodeRules(multiKeyCredentialRetryStatusCodes),
+    [multiKeyCredentialRetryStatusCodes]
   )
 
   const onSubmit = async (values: RoutingReliabilityFormValues) => {
@@ -513,6 +544,36 @@ export function RoutingReliabilitySection({
                         neverRetryParsed.normalized !== field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {neverRetryParsed.normalized}
+                          </span>
+                        )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='MultiKeyCredentialRetryStatusCodes'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Multi-key retry status codes')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 402, 403, 429')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).'
+                      )}{' '}
+                      {multiKeyRetryParsed.ok &&
+                        multiKeyRetryParsed.normalized &&
+                        multiKeyRetryParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {multiKeyRetryParsed.normalized}
                           </span>
                         )}
                     </FormDescription>

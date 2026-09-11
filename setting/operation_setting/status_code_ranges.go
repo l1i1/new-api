@@ -107,6 +107,47 @@ func IsNeverRetryStatusCode(code int) bool {
 	return shouldMatchStatusCodeRanges(NeverRetryStatusCodeRanges, code)
 }
 
+// MultiKeyCredentialRetryStatusCodeRanges holds the upstream status codes that
+// identify a single credential as unusable rather than the whole channel, so a
+// multi-key channel retries itself with another key before the channel is
+// excluded. Which codes qualify depends on how the channel maps keys to
+// upstream accounts: a channel with one key per account (an official relay)
+// needs rotation on an out-of-balance 402, while a pool whose keys share one
+// account gains nothing but one extra attempt. Operators configure this in
+// Routing Reliability.
+//
+// 402 is included by default because that is the credential-scoped failure that
+// silently broke official-pinned traffic: the channel stayed "healthy", the
+// affinity hash kept selecting the drained key, and the request died with
+// get_channel_failed once the pin left no other candidate. 401 is deliberately
+// absent: it usually points at the channel's auth or base-url configuration,
+// which another key cannot fix (an operator who disagrees can add it).
+var MultiKeyCredentialRetryStatusCodeRanges = []StatusCodeRange{
+	{Start: 402, End: 402},
+	{Start: 403, End: 403},
+	{Start: 429, End: 429},
+}
+
+func MultiKeyCredentialRetryStatusCodesToString() string {
+	return statusCodeRangesToString(MultiKeyCredentialRetryStatusCodeRanges)
+}
+
+func MultiKeyCredentialRetryStatusCodesFromString(s string) error {
+	ranges, err := ParseHTTPStatusCodeRanges(s)
+	if err != nil {
+		return err
+	}
+	MultiKeyCredentialRetryStatusCodeRanges = ranges
+	return nil
+}
+
+// ShouldRotateMultiKeyCredential reports whether the status code means "try
+// another key of this channel". Callers own the surrounding gates: never-retry,
+// local validation errors and non-multi-key channels are out of scope here.
+func ShouldRotateMultiKeyCredential(code int) bool {
+	return shouldMatchStatusCodeRanges(MultiKeyCredentialRetryStatusCodeRanges, code)
+}
+
 // IsForceRetryStatusCode reports whether the code is configured to always
 // retry. Never-retry wins, so an overlap resolves to no retry. Callers decide
 // whether the rule applies to local (platform) errors; local validation errors

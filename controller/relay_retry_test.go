@@ -293,6 +293,37 @@ func TestPrepareChannelRetrySeparatesKeyAndChannelFailures(t *testing.T) {
 	require.Zero(t, param.PreferredChannelID())
 }
 
+func TestPrepareChannelRetryRotatesKeyOnPaymentRequired(t *testing.T) {
+	// Regression: an official multi-key channel whose first credential ran out
+	// of balance returned 402. The old hardcoded 403/429 switch excluded the
+	// whole channel, and because an OfficialFit pin left no other candidate the
+	// request surfaced get_channel_failed. 402 must now rotate the key instead.
+	param := &service.RetryParam{Retry: new(int)}
+	multiKeyChannel := &model.Channel{Id: 43, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
+
+	require.True(t, prepareChannelRetry(param, multiKeyChannel, http.StatusPaymentRequired, false))
+	require.Equal(t, 43, param.PreferredChannelID())
+	require.False(t, param.IsChannelExcluded(43))
+}
+
+func TestMultiKeyCredentialRetryStatusCodesRespectConfig(t *testing.T) {
+	orig := operation_setting.MultiKeyCredentialRetryStatusCodeRanges
+	t.Cleanup(func() { operation_setting.MultiKeyCredentialRetryStatusCodeRanges = orig })
+
+	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusPaymentRequired))
+
+	// An operator can narrow rotation to the classic throttling codes.
+	require.NoError(t, operation_setting.MultiKeyCredentialRetryStatusCodesFromString("403,429"))
+	require.False(t, isMultiKeyCredentialRetryStatus(http.StatusPaymentRequired))
+	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusTooManyRequests))
+
+	// Or opt a credential-scoped 401 into rotation when every key has its own
+	// account.
+	require.NoError(t, operation_setting.MultiKeyCredentialRetryStatusCodesFromString("401"))
+	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusUnauthorized))
+	require.False(t, isMultiKeyCredentialRetryStatus(http.StatusForbidden))
+}
+
 func TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -323,7 +354,10 @@ func TestCredentialErrorsRetryAnotherKeyOnSameChannelExceptUnauthorized(t *testi
 	t.Cleanup(func() { common.RetryTimes = originalRetryTimes })
 
 	gin.SetMode(gin.TestMode)
+	// 402 is the credential-scoped balance failure: it must rotate to the other
+	// key exactly like 403/429, instead of excluding the whole channel.
 	for _, statusCode := range []int{
+		http.StatusPaymentRequired,
 		http.StatusForbidden,
 		http.StatusTooManyRequests,
 	} {

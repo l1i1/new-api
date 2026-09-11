@@ -213,6 +213,7 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	common.OptionMap["ForceRetryStatusCodes"] = operation_setting.ForceRetryStatusCodesToString()
 	common.OptionMap["NeverRetryStatusCodes"] = operation_setting.NeverRetryStatusCodesToString()
+	common.OptionMap["MultiKeyCredentialRetryStatusCodes"] = operation_setting.MultiKeyCredentialRetryStatusCodesToString()
 	common.OptionMap["AutomaticRetryKeywords"] = operation_setting.AutomaticRetryKeywordsToString()
 	common.OptionMap[operation_setting.ErrorMessageFilterEnabledOptionKey] = strconv.FormatBool(operation_setting.IsErrorMessageFilterEnabled())
 	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
@@ -692,6 +693,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.ForceRetryStatusCodesFromString(value)
 	case "NeverRetryStatusCodes":
 		err = operation_setting.NeverRetryStatusCodesFromString(value)
+	case "MultiKeyCredentialRetryStatusCodes":
+		err = operation_setting.MultiKeyCredentialRetryStatusCodesFromString(value)
 	case "AutomaticRetryKeywords":
 		operation_setting.AutomaticRetryKeywordsFromString(value)
 	case operation_setting.ErrorMessageFilterEnabledOptionKey:
