@@ -424,7 +424,65 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		request.Messages[0].Role = "developer"
 	}
 
+	applyDeepSeekV4DisabledThinkingDialect(info, request)
+
 	return request, nil
+}
+
+// applyDeepSeekV4DisabledThinkingDialect mirrors an explicit "disable thinking"
+// request onto the DeepSeek-native `thinking` field for openai-compatible
+// aggregators.
+//
+// Aggregators that resell the DeepSeek V4 line expose the DeepSeek dialect but
+// frequently ignore OpenAI's `reasoning_effort`; a request that only carries
+// `reasoning_effort:"none"` then keeps thinking upstream (observed on
+// DEF_aiping, 2026-09-11). Because the platform strips reasoning_content for a
+// disabled-thinking request — that is the official contract — the caller would
+// get a 200 with no visible content while the upstream really did generate and
+// bill tokens. Sending the native `thinking:{"type":"disabled"}` alongside the
+// effort field leaves no room for the upstream to misread the intent.
+//
+// Scoped to generic openai channels (type 1). The official DeepSeek channel has
+// its own adaptor that already maps disabled thinking, and OpenRouter-style
+// routers use the `reasoning` object, so both are left untouched.
+func applyDeepSeekV4DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
+	if info == nil || request == nil {
+		return
+	}
+	if info.ChannelType != constant.ChannelTypeOpenAI {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
+		return
+	}
+	// An explicit thinking field (client-sent or suffix-derived) is already the
+	// DeepSeek dialect; never rewrite it.
+	if len(request.THINKING) > 0 {
+		return
+	}
+	if !isDeepSeekV4ChatRequest(info, request) {
+		return
+	}
+	// A namespaced upstream id (e.g. deepseek/deepseek-v4-flash-0731) marks an
+	// OpenRouter-style router whose dialect is the `reasoning` object, not
+	// DeepSeek's `thinking`.
+	if strings.Contains(info.GetUpstreamModelName(), "/") {
+		return
+	}
+	request.THINKING = json.RawMessage(`{"type":"disabled"}`)
+}
+
+// isDeepSeekV4ChatRequest reports whether a chat-completions request targets
+// the DeepSeek V4 family, keying off the client-facing model when available so
+// the origin model (not a mapped upstream id) decides the dialect.
+func isDeepSeekV4ChatRequest(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) bool {
+	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions {
+		return false
+	}
+	if isDeepSeekV4ChatModel(info) {
+		return true
+	}
+	return request != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4")
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {

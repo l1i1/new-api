@@ -188,6 +188,111 @@ var deepSeekV4OfficialMessageKeys = map[string]struct{}{
 	"tool_calls":        {},
 }
 
+// deepSeekV4OfficialTopLevelKeys is the official envelope key set observed on
+// the DeepSeek V4 API (non-stream and stream alike). Aggregators add routing
+// metadata (provider / is_fallback / aiping_id / service_tier / cost and the
+// like) that a fit client must not see: it varies per upstream and per
+// sub-provider, so leaking it makes identical requests structurally
+// inconsistent.
+var deepSeekV4OfficialTopLevelKeys = map[string]struct{}{
+	"id":                 {},
+	"object":             {},
+	"created":            {},
+	"model":              {},
+	"choices":            {},
+	"usage":              {},
+	"system_fingerprint": {},
+}
+
+// deepSeekV4OfficialChoiceKeys is the official choice key set. Non-stream
+// choices carry message, stream choices carry delta; logprobs and finish_reason
+// are always present. Aggregator extras (flag, native_finish_reason) are
+// stripped.
+var deepSeekV4OfficialChoiceKeys = map[string]struct{}{
+	"index":         {},
+	"message":       {},
+	"delta":         {},
+	"logprobs":      {},
+	"finish_reason": {},
+}
+
+// deleteNonAllowedTopLevelKeys removes every top-level member whose key is not
+// in allowed, preserving the byte layout of the surviving members. ok=false
+// flags a structure (duplicate keys, malformed JSON) the surgical edit
+// declined, so the caller can fall back.
+func deleteNonAllowedTopLevelKeys(data []byte, allowed map[string]struct{}) ([]byte, bool) {
+	pairs, _, err := parseTopLevelPairs(data)
+	if err != nil {
+		return nil, false
+	}
+	result := data
+	for i := range pairs {
+		if _, ok := allowed[pairs[i].key]; ok {
+			continue
+		}
+		patched, ok := deleteTopLevelJSONKey(result, pairs[i].key)
+		if !ok {
+			return nil, false
+		}
+		result = patched
+	}
+	return result, true
+}
+
+// stripOfficialChoiceKeysInPlace removes non-official keys from every element
+// of a raw choices array, preserving every other byte. It is the choice-level
+// counterpart of deleteNonAllowedTopLevelKeys.
+func stripOfficialChoiceKeysInPlace(rawChoices json.RawMessage) (json.RawMessage, bool) {
+	spans, ok := jsonArrayElementSpans(rawChoices)
+	if !ok {
+		return nil, false
+	}
+	if len(spans) == 0 {
+		return rawChoices, true
+	}
+	out := make([]byte, 0, len(rawChoices))
+	prev := 0
+	for _, span := range spans {
+		stripped, ok := deleteNonAllowedTopLevelKeys(rawChoices[span[0]:span[1]], deepSeekV4OfficialChoiceKeys)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, rawChoices[prev:span[0]]...)
+		out = append(out, stripped...)
+		prev = span[1]
+	}
+	out = append(out, rawChoices[prev:]...)
+	return out, true
+}
+
+// stripNonOfficialStreamKeys removes non-official top-level and choice-level
+// keys from one SSE data object, leaving every other byte (including key order)
+// untouched. ok=false means the object defied the surgical edit and the caller
+// keeps the original bytes.
+func stripNonOfficialStreamKeys(data []byte) ([]byte, bool) {
+	result, ok := deleteNonAllowedTopLevelKeys(data, deepSeekV4OfficialTopLevelKeys)
+	if !ok {
+		return nil, false
+	}
+	pairs, _, err := parseTopLevelPairs(result)
+	if err != nil {
+		return nil, false
+	}
+	choicesPair, found, err := findJSONPair(pairs, "choices")
+	if err != nil || !found {
+		return result, true
+	}
+	rawChoices := result[choicesPair.valueStart:choicesPair.valueEnd]
+	stripped, ok := stripOfficialChoiceKeysInPlace(rawChoices)
+	if !ok {
+		return nil, false
+	}
+	if bytes.Equal(stripped, rawChoices) {
+		return result, true
+	}
+	return replaceTopLevelJSONValue(result, "choices", stripped)
+}
+
 // fitDeepSeekV4TextResponseBody normalizes a non-stream chat completion body to
 // the official DeepSeek V4 schema: strip aggregator extensions (top-level cost,
 // null message.tool_calls, non-official message keys), replace usage with the
@@ -205,8 +310,10 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoni
 		return patched, nil
 	}
 	// Fallback rewrite for inputs the surgical editor declines.
-	if _, ok := payload["cost"]; ok {
-		delete(payload, "cost")
+	for key := range payload {
+		if _, official := deepSeekV4OfficialTopLevelKeys[key]; !official {
+			delete(payload, key)
+		}
 	}
 	if rawChoices, ok := payload["choices"]; ok {
 		choices, err := fitDeepSeekV4Choices(rawChoices, allowToolCalls, includeReasoningDetails)
@@ -226,16 +333,16 @@ func fitDeepSeekV4TextResponseBody(body []byte, usage *dto.Usage, includeReasoni
 }
 
 func fitDeepSeekV4TextResponseBodyInPlace(body []byte, payload map[string]json.RawMessage, usage *dto.Usage, includeReasoningDetails bool, allowToolCalls bool) ([]byte, bool) {
-	result := body
-	if _, ok := payload["cost"]; ok {
-		patched, ok := deleteTopLevelJSONKey(result, "cost")
-		if !ok {
-			return nil, false
-		}
-		result = patched
+	result, ok := deleteNonAllowedTopLevelKeys(body, deepSeekV4OfficialTopLevelKeys)
+	if !ok {
+		return nil, false
 	}
 	if rawChoices, ok := payload["choices"]; ok {
 		fitted, ok := fitDeepSeekV4ChoicesInPlace(rawChoices, allowToolCalls, includeReasoningDetails)
+		if !ok {
+			return nil, false
+		}
+		fitted, ok = stripOfficialChoiceKeysInPlace(fitted)
 		if !ok {
 			return nil, false
 		}
@@ -269,6 +376,11 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool, promo
 		return nil, err
 	}
 	for i, choice := range choices {
+		for key := range choice {
+			if _, official := deepSeekV4OfficialChoiceKeys[key]; !official {
+				delete(choice, key)
+			}
+		}
 		rawMessage, ok := choice["message"]
 		if !ok {
 			continue
@@ -465,6 +577,13 @@ func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, 
 	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
 		return data, err
 	}
+	// Drop aggregator routing metadata (provider / is_fallback / aiping_id /
+	// service_tier) and non-official choice keys before the usage splice, so a
+	// fit client sees the official envelope. Official-shaped chunks are
+	// unchanged by this pass.
+	if stripped, ok := stripNonOfficialStreamKeys([]byte(data)); ok {
+		data = string(stripped)
+	}
 	var replacement json.RawMessage
 	if includeUsage && usage != nil {
 		encoded, err := deepSeekV4UsageJSON(usage, includeReasoningDetails)
@@ -484,7 +603,18 @@ func fitDeepSeekV4StreamEvent(data string, usage *dto.Usage, includeUsage bool, 
 		return string(patched), nil
 	}
 	// Structural surprise (duplicate keys, unusual shape): fall back to a full
-	// rewrite so the client still receives the official usage shape.
+	// rewrite so the client still receives the official usage shape. payload was
+	// parsed before the strip pass, so non-official keys are removed here too.
+	for key := range payload {
+		if _, official := deepSeekV4OfficialTopLevelKeys[key]; !official {
+			delete(payload, key)
+		}
+	}
+	if rawChoices, ok := payload["choices"]; ok {
+		if stripped, ok := stripOfficialChoiceKeysInPlace(rawChoices); ok {
+			payload["choices"] = stripped
+		}
+	}
 	payload["usage"] = replacement
 	patched, err := common.Marshal(payload)
 	if err != nil {
