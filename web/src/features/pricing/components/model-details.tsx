@@ -1053,17 +1053,26 @@ function GroupPricingSection(props: {
   )
 
   if (isDynamicPricingModel(props.model)) {
-    const showOriginalPrices = !hasSimpleTaskPricing(props.model)
-    const dynamicTiers = props.model.billing_usage_schema
-      ? (getTaskMatrixDisplayTiers(
-          props.model.billing_expr,
-          props.model.billing_usage_schema
-        ) ??
-        getTaskPricingDisplayTiers(
-          props.model.billing_expr,
-          props.model.billing_usage_schema
-        ))
-      : getDynamicPricingTiers(props.model)
+    const simpleTaskPricing = hasSimpleTaskPricing(props.model)
+    const showOriginalPrices = !simpleTaskPricing
+    const schema = props.model.billing_usage_schema
+    let dynamicTiers: DynamicPricingTier[]
+    if (!schema) {
+      dynamicTiers = getDynamicPricingTiers(props.model)
+    } else if (simpleTaskPricing) {
+      dynamicTiers = getTaskPricingDisplayTiers(
+        props.model.billing_expr,
+        schema
+      )
+    } else {
+      // A uniform task price is one price. Expanding it over every enum
+      // combination of the plugin schema repeats the same value once per
+      // combination, and it fills every schema number field, so dimensions the
+      // expression never prices show up as a 0 price. Only expand real cases.
+      dynamicTiers =
+        getTaskMatrixDisplayTiers(props.model.billing_expr, schema) ??
+        getTaskPricingDisplayTiers(props.model.billing_expr, schema)
+    }
 
     if (dynamicTiers.length === 0) {
       return (
@@ -1157,7 +1166,7 @@ function GroupPricingSection(props: {
                     `${group}-${tier.label || tierIndex}`
                   }
                   columns={[
-                    ...(hasSimpleTaskPricing(props.model)
+                    ...(simpleTaskPricing
                       ? []
                       : [
                           {

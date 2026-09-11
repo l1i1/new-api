@@ -268,3 +268,84 @@ it('uses the same recharge conversion and token unit in task condition prices', 
   expect(screen.getAllByText('$5/1M token')).toHaveLength(2)
   expect(screen.getAllByText('$3/1M token')).toHaveLength(2)
 })
+
+// A flat per-second model that shares a plugin schema declaring several usage
+// dimensions (the aggregator video plugin declares seconds/tokens/video_input/
+// resolution for every model it owns).
+const flatVideoModel: PricingModel = {
+  ...model,
+  model_name: 'grok-1.5-video',
+  enable_groups: ['Video-Test'],
+  billing_expr: 'tier("base", u("seconds") * 0.08)',
+  billing_usage_schema: {
+    seconds: {
+      type: 'number',
+      unit: 'second',
+      description: { en: 'Video generation unit price', zh: '视频生成单价' },
+    },
+    ...videoSchema,
+  },
+}
+
+it('collapses a uniform task price to one group row and drops unused dimensions', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({ data: { data: { groups: [] } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  clients.push(client)
+  render(
+    <QueryClientProvider client={client}>
+      <ModelDetailsContent
+        model={flatVideoModel}
+        groupRatio={{ 'Video-Test': 1 }}
+        usableGroup={{ 'Video-Test': { desc: '', ratio: 1 } }}
+        endpointMap={{}}
+        autoGroups={[]}
+        priceRate={1}
+        usdExchangeRate={7}
+        tokenUnit='M'
+      />
+    </QueryClientProvider>
+  )
+  // The base price plus exactly one grouped row: not one row per
+  // resolution × video_input combination of the shared plugin schema.
+  expect(screen.getAllByText('$0.08')).toHaveLength(2)
+  expect(document.querySelectorAll('tbody tr')).toHaveLength(1)
+  // Only the dimension this expression prices, so no 0-priced token column.
+  expect(
+    screen.getAllByRole('columnheader').map((cell) => cell.textContent)
+  ).toEqual(['Video generation unit price / s'])
+  expect(screen.queryByText('$0')).not.toBeInTheDocument()
+})
+
+it('keeps the condition column when the task price varies by case', () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  clients.push(client)
+  render(
+    <QueryClientProvider client={client}>
+      <ModelDetailsContent
+        model={{
+          ...flatVideoModel,
+          model_name: 'kling-video-v3',
+          billing_expr:
+            'u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.114286) : tier("720p", u("seconds") * 0.085714)',
+        }}
+        groupRatio={{ 'Video-Test': 1 }}
+        usableGroup={{ 'Video-Test': { desc: '', ratio: 1 } }}
+        endpointMap={{}}
+        autoGroups={[]}
+        priceRate={1}
+        usdExchangeRate={7}
+        tokenUnit='M'
+      />
+    </QueryClientProvider>
+  )
+  expect(
+    screen.getAllByRole('columnheader', { name: 'Applicable conditions' })
+      .length
+  ).toBeGreaterThan(0)
+  expect(screen.getAllByText('1080p').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('720p').length).toBeGreaterThan(0)
+})
