@@ -163,16 +163,26 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
-		// A failed stream can still have produced billable upstream usage before
-		// the transport terminated. Settle that observed usage before returning;
-		// the outer relay defer is idempotent and will not refund a settled billing
-		// session. This keeps provider charges auditable without fabricating a
-		// successful terminal SSE marker for the client.
-		streamUsage, hasStreamUsage := usage.(*dto.Usage)
+		// A failed stream can still have produced billable upstream usage: either
+		// the transport terminated after output, or the response was rejected as
+		// a zero-output/upstream failure after the upstream had already reported
+		// usage (its reasoning was dropped, or the caller disabled thinking while
+		// the provider still billed reasoning tokens). Settle that observed usage
+		// before returning; the outer relay defer is idempotent and will not
+		// refund a settled billing session. Only upstream-reported tokens are
+		// settled -- a genuinely empty response has nothing to bill, so the
+		// caller is not charged for a completion they never received.
+		// The pointer check is the real guard: a typed-nil *dto.Usage in the
+		// interface still asserts ok=true, so `streamUsage != nil` below is what
+		// keeps the dereference safe.
+		streamUsage, _ := usage.(*dto.Usage)
 		isTextCompletion := info.RelayMode == relayconstant.RelayModeChatCompletions ||
 			info.RelayMode == relayconstant.RelayModeCompletions
-		if isTextCompletion && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() &&
-			info.ReceivedResponseCount > 0 && hasStreamUsage {
+		truncatedUpstream := info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() &&
+			info.ReceivedResponseCount > 0
+		rejectedAfterUsage := newApiErr.ShouldEvictChannelAffinity() &&
+			streamUsage != nil && streamUsage.TotalTokens > 0
+		if isTextCompletion && streamUsage != nil && (truncatedUpstream || rejectedAfterUsage) {
 			containAudioTokens := streamUsage.CompletionTokenDetails.AudioTokens > 0 || streamUsage.PromptTokensDetails.AudioTokens > 0
 			containsAudioRatios := ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 			if containAudioTokens && containsAudioRatios {

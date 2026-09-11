@@ -704,7 +704,12 @@ func TestOpenaiHandlerRejectsEmptyFinalOutput(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
-	require.Nil(t, usage)
+	// The empty completion is still a failure, but the upstream-reported usage
+	// now travels back with the error so the relay settles the provider charge
+	// instead of refunding it (billing-gap fix, 2026-09-11).
+	require.NotNil(t, usage)
+	assert.Equal(t, 10, usage.PromptTokens)
+	assert.Equal(t, 256, usage.CompletionTokens)
 	require.NotNil(t, err)
 	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
 	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
@@ -804,7 +809,11 @@ func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyLengthWhenThinkingDisabled(t
 		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
-	require.Nil(t, usage)
+	// Every failed attempt must still report what the upstream billed, so the
+	// platform can settle it rather than silently absorbing the cost.
+	require.NotNil(t, usage)
+	assert.Equal(t, 10, usage.PromptTokens)
+	assert.Equal(t, 256, usage.CompletionTokens)
 	require.NotNil(t, err)
 	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
 	assert.Empty(t, recorder.Body.String())

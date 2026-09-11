@@ -37,6 +37,14 @@
   - `errors`：校验错误消息保持官方原文（不附加网关 request id、以官方 Content-Type 返回）。
   - `shape`：响应形态拟合（DS 官方 7 键 usage、流式 usage 单次拼接、剥离聚合器扩展字段、
     SSE Content-Type 镜像；K3 暂无非官方形状可处理，保持透传）。
+    - **`shape` 只做形态变换，不再拒绝响应（2026-09-11 修复）**。此前存在一个
+      "reasoning 必须先于 content" 的响应级 gate：非官方渠道 + `shape` 开启 + 期望思考时，
+      缺 `reasoning_content`（流式）或先出 content（非流式）即整条拒绝。但**只有官方端点保证
+      该顺序**，聚合器不保证——于是 `route` 关闭（请求落到聚合器）的用户被系统性判失败
+      （流式 502 `upstream returned empty final content`、非流式 502
+      `upstream did not return reasoning_content in thinking mode`），并触发跨全部候选渠道的
+      重试风暴。该 gate 已删除：想要官方顺序保证的用户应开启 `route` pin 官方渠道；未开启者
+      接受聚合器的 content-only 应答。空输出仍判失败。
   - `route`：**选择性官方路由（2026-09-06 起，DS 为 hybrid 分类器）**。Route 开启时按请求特征
     决定是否 pin 官方渠道（DS 按渠道类型 43、K3 按类型 25），复用 `ContextKeyV4OfficialPin`
     机制（distributor 选路前标记，选路时按模型族窄化到对应类型）。

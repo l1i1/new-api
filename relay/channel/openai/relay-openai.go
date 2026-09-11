@@ -130,12 +130,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
-	// Hold the SSE stream until the reasoning gate can decide whether the
-	// upstream honors the thinking contract (reasoning delta before content).
-	// Nothing reaches the client while undecided, so a gate abort leaves the
-	// writer uncommitted and the retry chain picks another channel.
-	resp.Body = newDeepSeekV4ReasoningGateBody(info, resp.Body)
-
 	defer service.CloseResponseBodyGracefully(resp)
 
 	model := info.UpstreamModelName
@@ -368,6 +362,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// flushing it. Disabled thinking strips reasoning, so such streams
 		// still fail empty.
 		!(!shouldSuppressReasoningContent(info) && hasReasoningOutput && info.StreamFinishReason != "") {
+		// The error must keep carrying the usage the upstream reported, never a
+		// nil one: this completion ended normally, so the provider may already
+		// have billed it (a thinking response whose reasoning the caller disabled
+		// still bills reasoning tokens). Returning nil here refunds the
+		// platform-side charge and hides the cost — the billing gap observed on
+		// 2026-09-11. Nothing is synthesized: a genuinely empty completion has no
+		// usage to report and settles to zero.
 		return usage, emptyChatCompletionError(c.Writer.Written())
 	}
 
@@ -583,16 +584,19 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
 		return nil, missingReasoningLogprobsError()
 	}
-	// Same family of gate for the reasoning output itself: a non-official
-	// channel serving a thinking-expected fit request without any
-	// reasoning_content gets rejected so the retry chain can find a channel
-	// that reproduces official bytes.
-	if requiresDeepSeekV4ReasoningOutput(info) && !responseHasReasoningOutput(simpleResponse.Choices) {
-		return nil, missingReasoningOutputError()
-	}
+	// An empty completion is still a failure: there is nothing for the client to
+	// act on, so the request must not be recorded as a success. The upstream may
+	// nevertheless have billed for it (a thinking response that dropped
+	// reasoning_content, or a reasoning-only response whose thinking the caller
+	// disabled), so hand the observed usage back with the error — the relay
+	// settles it so the provider charge stays auditable instead of being
+	// refunded. A non-official channel is no longer rejected for omitting
+	// reasoning_content: only the official upstream guarantees the
+	// reasoning-before-content order, and a caller who wants that guarantee must
+	// pin the official channel (the Route dimension).
 	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) &&
 		!(!shouldSuppressReasoningContent(info) && hasReasoningOnlyFinishedOutput(simpleResponse.Choices)) {
-		return nil, emptyChatCompletionError()
+		return &simpleResponse.Usage, emptyChatCompletionError()
 	}
 
 	for _, choice := range simpleResponse.Choices {
