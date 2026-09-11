@@ -205,7 +205,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.8",
+  version: "1.0.9",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -219,7 +219,7 @@ export const meta = {
   //                  grok-imagine-video(-1.5 via channel model_mapping to
   //                  zzone's -1.5-preview name), seedance2.0(fast) via mapping
   //                  to zzone's video-ds-2.0(-fast) / as-sd2.0-fast SKUs
-  //   xuetianai.com  grok-1.5-video, grok-imagine-video, grok-imagine-video-1.5
+  //   xuetianai.com  grok-imagine-video, grok-imagine-video-1.5
   //   rolldek.com    wan3.0-video(-prime) — the wan3 families take the tier
   //                  through the resolution parameter and are rewritten to
   //                  resolution-suffixed upstream names (see
@@ -232,6 +232,10 @@ export const meta = {
   // resolution baked into its SKU names) — not official IDs, and Bailian's wan3
   // line only accepts wan3.0-video / wan3.0-video-prime. Re-listing that lane
   // would be a deliberate non-official SKU decision, not a name restore.
+  // grok-1.5-video was removed in 1.0.9 for the same reason: it is xuetianai's
+  // catalog spelling of grok-imagine-video-1.5 and does not exist in xAI's API
+  // (whose documented aliases are -preview and -2026-05-30). It duplicated the
+  // official 1.5 SKU on every channel.
   //
   // Note: seedance2.5 is tagged "openai" (chat) rather than "videos" upstream;
   // if the aggregator rejects it on /v1/videos this surfaces as a submit error.
@@ -250,7 +254,6 @@ export const meta = {
     "wan3.0-video-prime",
     "jimeng-drama-video-v2",
     "jimeng-drama-video-v2-fast",
-    "grok-1.5-video",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
   ],

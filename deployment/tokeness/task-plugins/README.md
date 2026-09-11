@@ -43,9 +43,8 @@ Declared models and their official billing dimension:
 | `minimax-h3` | zzone | per second, by resolution |
 | `wan3.0-video` | rolldek | per second, by resolution |
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
-| `grok-1.5-video` | xuetianai, zzone* | per second (flat) |
-| `grok-imagine-video` | xuetianai, zzone* | per second (flat) |
-| `grok-imagine-video-1.5` | xuetianai, zzone* | per second (flat) |
+| `grok-imagine-video` | xuetianai, zzone* | per second, by resolution (official 480p $0.05 / 720p $0.07) |
+| `grok-imagine-video-1.5` | xuetianai, zzone* | per second, by resolution (official 480p $0.08 / 720p $0.14 / 1080p $0.25) |
 | `wan3-720p` | zzone | **delisted** 2026-09-11, merged into `wan3.0-video` (see below) |
 
 \* zzone serves the grok names through channel 136's `model_mapping`
@@ -354,6 +353,24 @@ Channel 151 already carried only the two official wan3 names, so nothing
 routes through the retired names; re-listing the lane means re-declaring
 the names in a future plugin version plus a channel PUT. Lint valid,
 fixture 48/48; activated as 1.0.8.
+
+**Retired from the plugin in 1.0.9** (same directive, grok round):
+`grok-1.5-video` is xuetianai's catalog spelling of `grok-imagine-video-1.5`
+and does not exist in xAI's API — the documented aliases are
+`-preview` and `-2026-05-30`. It duplicated the official 1.5 SKU on every
+channel (both at $0.08/s), so it was dropped from `meta.models`, from
+channels 136/150, and its pricing row was reset. Same model, two different
+generations are NOT duplicates: the base `grok-imagine-video` accepts a
+reference video input, the 1.5 accepts audio. The two official grok SKUs
+also moved from flat pricing to official per-resolution tiers
+(base 480p $0.05 / 720p $0.07; 1.5 480p $0.08 / 720p $0.14 / 1080p $0.25)
+with a missing-resolution fallback to the 480p tier — the previous flat
+prices were the 480p tier, so default requests bill the same as before.
+Logs showed zero production traffic for `grok-1.5-video` (only the
+2026-09-11 verification calls), so the retirement breaks no client.
+Note: the consumer group was renamed `Video-Test` → `Video` and the GenPic
+image catalog reshuffled by a concurrent change on 2026-09-12; this plugin
+work is independent of both.
 - **Channel 152 `Image_RD1`**: group moved `Video-Test` → `GenPic`, so its four
   image models (`gpt-image-2`, `gpt-image-2.5`, `gemini-3-pro-image-preview`,
   `gemini-3.1-flash-image-preview`) stay on sale under the image group. Three
