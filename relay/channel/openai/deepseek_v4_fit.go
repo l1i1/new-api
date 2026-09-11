@@ -424,8 +424,16 @@ func fitDeepSeekV4Choices(rawChoices json.RawMessage, allowToolCalls bool, promo
 				delete(choice, key)
 			}
 		}
+		// Mirror the surgical path: complete the official required choice keys
+		// (logprobs) even when the message block below is absent for this choice.
+		for _, key := range deepSeekV4RequiredChoiceKeys {
+			if _, ok := choice[key]; !ok {
+				choice[key] = json.RawMessage("null")
+			}
+		}
 		rawMessage, ok := choice["message"]
 		if !ok {
+			choices[i] = choice
 			continue
 		}
 		var message map[string]json.RawMessage

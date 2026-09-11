@@ -146,3 +146,35 @@ func TestEnsureOfficialChoiceKeysNoOpWhenComplete(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, string(choice), string(out))
 }
+
+// The map-based fallback (used when the surgical editor declines) must also
+// complete the official required choice keys, or a structurally surprising body
+// would still miss logprobs.
+func TestFitDeepSeekV4ChoicesFallbackAddsLogprobs(t *testing.T) {
+	// A duplicated message key makes the surgical editor decline and the
+	// fallback decide the outcome.
+	body := []byte(`{"id":"as-1","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hi","x":1,"x":2},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+
+	fitted, err := fitDeepSeekV4TextResponseBody(body, &dto.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}, false, false)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(fitted, &payload))
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	assert.Contains(t, choice, "logprobs", "the fallback path must complete the official choice keys")
+	assert.Nil(t, choice["logprobs"])
+	// The non-official message key is still stripped by the fallback.
+	msg := choice["message"].(map[string]any)
+	assert.NotContains(t, msg, "x")
+}
+
+// A choice without a message block still gets the official required keys.
+func TestFitDeepSeekV4ChoicesFallbackAddsLogprobsWithoutMessage(t *testing.T) {
+	raw, err := fitDeepSeekV4Choices(json.RawMessage(`[{"index":0,"finish_reason":"stop"}]`), false, false)
+	require.NoError(t, err)
+
+	var choices []map[string]any
+	require.NoError(t, json.Unmarshal(raw, &choices))
+	assert.Contains(t, choices[0], "logprobs")
+	assert.Nil(t, choices[0]["logprobs"])
+}
