@@ -2399,6 +2399,8 @@
     "HTTP protocol must be Auto or HTTP/1.1": "HTTP-протокол должен быть Auto или HTTP/1.1",
     "HTTP/1.1": "HTTP/1.1",
     "HTTP/2 Connection Shards": "Шарды соединений HTTP/2",
+    "Concurrency Limit": "Лимит параллельных запросов",
+    "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited": "Максимальное число одновременно обрабатываемых запросов для этого канала. При достижении лимита новые запросы переключаются на другие каналы. 0 = без ограничений",
     "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.": "Шарды соединений HTTP/2 недоступны при выборе HTTP/1.1.",
     "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected": "При выборе HTTP/1.1 число шардов соединений HTTP/2 должно быть 1",
     "HTTP/2 connection shards must be between 1 and 8": "Число шардов соединений HTTP/2 должно быть от 1 до 8",

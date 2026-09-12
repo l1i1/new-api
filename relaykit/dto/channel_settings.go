@@ -33,6 +33,12 @@ type ChannelSettings struct {
 	// for multi-key channels. Empty (zero value) means the channel is not
 	// enrolled: the scheduled sweep skips it entirely.
 	MultiKeyTest *MultiKeyTestSetting `json:"multi_key_test,omitempty"`
+	// ConcurrencyLimit caps the number of in-flight relay attempts this
+	// channel may hold at once (across all keys of a multi-key channel).
+	// Zero/unset means unlimited. When every candidate channel for a model
+	// is saturated, the request fails locally with 429 instead of being
+	// forwarded.
+	ConcurrencyLimit int `json:"concurrency_limit,omitempty"`
 }
 
 // MultiKeyTestSetting is one multi-key channel's scheduled credential-test
@@ -48,6 +54,24 @@ type MultiKeyTestSetting struct {
 	// ReenableManual re-enables manually disabled keys after a successful
 	// probe; off keeps manual decisions sticky.
 	ReenableManual bool `json:"reenable_manual,omitempty"`
+}
+
+// MaxConcurrencyLimit caps the configured channel concurrency limit. The
+// value rides in the channel settings JSON and gates Redis semaphore calls,
+// so a runaway value would only waste semaphore slots, but a bound keeps the
+// documented range explicit.
+const MaxConcurrencyLimit = 10000
+
+// ValidateConcurrencyLimit validates the save-time channel concurrency limit.
+// Zero keeps the channel unlimited.
+func (s ChannelSettings) ValidateConcurrencyLimit() error {
+	if s.ConcurrencyLimit < 0 {
+		return fmt.Errorf("concurrency_limit must not be negative")
+	}
+	if s.ConcurrencyLimit > MaxConcurrencyLimit {
+		return fmt.Errorf("concurrency_limit must be between 0 and %d", MaxConcurrencyLimit)
+	}
+	return nil
 }
 
 // NormalizedMultiKeyTest returns the setting with defaults applied, or nil

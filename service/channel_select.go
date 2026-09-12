@@ -44,6 +44,11 @@ type RetryParam struct {
 	resetNextTry       bool
 	preferredChannelID int
 	excludedChannelIDs map[int]struct{}
+	// saturatedExclusions counts how many channels were excluded because
+	// their concurrency limit was full. When the request then runs out of
+	// selectable channels and this equals the total exclusion count, the
+	// failure is a pure saturation outcome and is reported as 429.
+	saturatedExclusions int
 }
 
 type ChannelSelectionFailureKind string
@@ -139,6 +144,25 @@ func (p *RetryParam) ExcludeChannel(channelID int) {
 func (p *RetryParam) IsChannelExcluded(channelID int) bool {
 	_, excluded := p.excludedChannelIDs[channelID]
 	return excluded
+}
+
+// ExcludeSaturatedChannel excludes a channel whose concurrency limit is full
+// for the rest of this request and remembers the saturation, so exhausting
+// the remaining candidates can be classified as 429.
+func (p *RetryParam) ExcludeSaturatedChannel(channelID int) {
+	if channelID <= 0 || p.IsChannelExcluded(channelID) {
+		return
+	}
+	p.saturatedExclusions++
+	p.ExcludeChannel(channelID)
+}
+
+// HasSaturatedChannel reports whether every channel excluded so far was
+// excluded for concurrency saturation (no real upstream failure happened),
+// so running out of candidates is a pure saturation outcome. A request that
+// also saw genuine channel errors keeps the generic failure classification.
+func (p *RetryParam) HasSaturatedChannel() bool {
+	return p.saturatedExclusions > 0 && p.saturatedExclusions == len(p.excludedChannelIDs)
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.

@@ -89,6 +89,7 @@ export interface ChannelSettings {
   system_prompt_override?: boolean
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
+  concurrency_limit?: number
   ollama_cache_estimation_enabled?: boolean
 }
 

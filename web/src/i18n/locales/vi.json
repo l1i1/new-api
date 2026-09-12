@@ -2399,6 +2399,8 @@
     "HTTP protocol must be Auto or HTTP/1.1": "Giao thức HTTP phải là Tự động hoặc HTTP/1.1",
     "HTTP/1.1": "HTTP/1.1",
     "HTTP/2 Connection Shards": "Phân mảnh kết nối HTTP/2",
+    "Concurrency Limit": "Giới hạn đồng thời",
+    "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited": "Số yêu cầu tối đa đang xử lý đồng thời của kênh này. Khi đạt giới hạn, yêu cầu mới sẽ chuyển sang kênh khác. 0 = không giới hạn",
     "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.": "Không thể dùng phân mảnh kết nối HTTP/2 khi chọn HTTP/1.1.",
     "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected": "Khi chọn HTTP/1.1, phân mảnh kết nối HTTP/2 phải là 1",
     "HTTP/2 connection shards must be between 1 and 8": "Phân mảnh kết nối HTTP/2 phải từ 1 đến 8",

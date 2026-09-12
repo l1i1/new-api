@@ -295,9 +295,10 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'proxy',
-  'http_protocol',
-  'http2_connection_shards',
-  'pass_through_body_enabled',
+    'http_protocol',
+    'http2_connection_shards',
+    'concurrency_limit',
+    'pass_through_body_enabled',
   'ollama_cache_estimation_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -363,6 +364,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.http_protocol && values.http_protocol !== 'auto') ||
     (values.http2_connection_shards != null &&
       values.http2_connection_shards > 1) ||
+    (values.concurrency_limit != null && values.concurrency_limit > 0) ||
     values.claude_beta_query ||
     values.official_fit_models?.trim() ||
     values.upstream_model_update_check_enabled ||
@@ -3869,6 +3871,34 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                     <FormDescription>
                                       {t(FIELD_DESCRIPTIONS.WEIGHT)}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='concurrency_limit'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Concurrency Limit')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        max={10000}
+                                        placeholder='0'
+                                        {...field}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(FIELD_DESCRIPTIONS.CONCURRENCY_LIMIT)}
                                     </FormDescription>
                                     <FormMessage />
                                   </FormItem>

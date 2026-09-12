@@ -2399,6 +2399,8 @@
     "HTTP protocol must be Auto or HTTP/1.1": "HTTP プロトコルは自動または HTTP/1.1 である必要があります",
     "HTTP/1.1": "HTTP/1.1",
     "HTTP/2 Connection Shards": "HTTP/2 接続シャード",
+    "Concurrency Limit": "同時実行数上限",
+    "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited": "このチャネルで同時に処理できるリクエストの最大数。上限に達すると新しいリクエストは他のチャネルへ切り替わります。0 は無制限",
     "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.": "HTTP/1.1 選択時は HTTP/2 接続シャードを使用できません。",
     "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected": "HTTP/1.1 選択時、HTTP/2 接続シャードは 1 である必要があります",
     "HTTP/2 connection shards must be between 1 and 8": "HTTP/2 接続シャードは 1 から 8 の間である必要があります",

@@ -244,6 +244,9 @@ export const channelFormSchema = z
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
+    // Per-channel in-flight request cap (stored in setting JSON as
+    // concurrency_limit); 0/absent means unlimited.
+    concurrency_limit: z.number().int().min(0).max(10000).optional(),
     pass_through_body_enabled: z.boolean().optional(),
     ollama_cache_estimation_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
@@ -422,6 +425,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
+  concurrency_limit: 0,
   pass_through_body_enabled: false,
   ollama_cache_estimation_enabled: false,
   system_prompt: '',
@@ -469,6 +473,7 @@ export function transformChannelToFormDefaults(
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
+    concurrency_limit: 0,
     pass_through_body_enabled: false,
     ollama_cache_estimation_enabled: false,
     system_prompt: '',
@@ -493,6 +498,11 @@ export function transformChannelToFormDefaults(
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        concurrency_limit:
+          typeof parsed.concurrency_limit === 'number' &&
+          parsed.concurrency_limit > 0
+            ? parsed.concurrency_limit
+            : 0,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         ollama_cache_estimation_enabled:
           parsed.ollama_cache_estimation_enabled || false,
@@ -658,6 +668,10 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
   } else if (shards > 1) {
     settingObj.http2_connection_shards = shards
+  }
+
+  if ((formData.concurrency_limit ?? 0) > 0) {
+    settingObj.concurrency_limit = formData.concurrency_limit
   }
 
   return JSON.stringify(settingObj)

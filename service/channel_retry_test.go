@@ -35,3 +35,21 @@ func TestUnsupportedFeatureDoesNotAutoDisableChannel(t *testing.T) {
 	)
 	require.False(t, ShouldDisableChannel(err))
 }
+
+func TestRetryParamPureSaturationClassification(t *testing.T) {
+	param := &RetryParam{}
+	require.False(t, param.HasSaturatedChannel())
+
+	param.ExcludeSaturatedChannel(1)
+	require.True(t, param.HasSaturatedChannel())
+	require.True(t, param.IsChannelExcluded(1))
+
+	// Re-excluding the same channel stays a pure saturation outcome.
+	param.ExcludeSaturatedChannel(1)
+	require.True(t, param.HasSaturatedChannel())
+
+	// A genuine channel failure breaks the pure-saturation classification, so
+	// running out of candidates keeps the generic failure instead of 429.
+	param.ExcludeChannel(2)
+	require.False(t, param.HasSaturatedChannel())
+}

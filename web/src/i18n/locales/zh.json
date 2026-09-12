@@ -2399,6 +2399,8 @@
     "HTTP protocol must be Auto or HTTP/1.1": "HTTP 协议必须是自动或 HTTP/1.1",
     "HTTP/1.1": "HTTP/1.1",
     "HTTP/2 Connection Shards": "HTTP/2 连接分片",
+    "Concurrency Limit": "并发上限",
+    "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited": "此渠道允许的最大同时处理请求数。达到上限后新请求将自动切换到其他渠道。0 表示不限制",
     "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.": "选择 HTTP/1.1 时不可用 HTTP/2 连接分片。",
     "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected": "选择 HTTP/1.1 时，HTTP/2 连接分片必须为 1",
     "HTTP/2 connection shards must be between 1 and 8": "HTTP/2 连接分片必须在 1 到 8 之间",

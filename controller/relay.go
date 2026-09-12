@@ -351,6 +351,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		addUsedChannel(c, channel.Id)
+
+		slotRelease, channelSaturated := service.AcquireChannelConcurrency(c, channel)
+		if channelSaturated {
+			logger.LogDebug(c, "channel #%d concurrency limit reached, trying another channel", channel.Id)
+			if _, pinned := c.Get("specific_channel_id"); pinned {
+				// A pinned channel must serve the request itself; switching
+				// channels would defeat the pin, so report saturation as-is.
+				newAPIError = newChannelConcurrencySaturatedError(relayInfo.OriginModelName)
+				break
+			}
+			retryParam.ExcludeSaturatedChannel(channel.Id)
+			retryParam.ResetRetryNextTry()
+			continue
+		}
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
@@ -370,16 +384,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.BeginAttempt(time.Now())
 		service.MarkCurrentMultiKeyTried(c)
 
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
-		}
+		// The slot must be held for exactly this attempt (including the full
+		// stream or WSS session), so the attempt runs in a closure whose defer
+		// releases it before the loop proceeds.
+		newAPIError = func() *types.NewAPIError {
+			if slotRelease != nil {
+				defer slotRelease()
+			}
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime:
+				return relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				return relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				return geminiRelayHandler(c, relayInfo)
+			default:
+				return relayHandler(c, relayInfo)
+			}
+		}()
 		channelobservability.RecordAttempt(relayInfo, newAPIError == nil, func() string {
 			if newAPIError == nil {
 				return ""
@@ -602,28 +624,34 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		// in the request context, but the relay handler has not attached its
 		// RelayInfo metadata yet. Recover the complete channel so first-attempt
 		// failures still preserve multi-key retry semantics.
-		if channel, ok := common.GetContextKeyType[*model.Channel](c, constant.ContextKeySelectedChannel); ok && channel != nil {
-			return channel, nil
-		}
-		if channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId); channelID > 0 {
-			if channel, err := model.CacheGetChannel(channelID); err == nil && channel != nil {
+		contextChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+		if !retryParam.IsChannelExcluded(contextChannelID) {
+			if channel, ok := common.GetContextKeyType[*model.Channel](c, constant.ContextKeySelectedChannel); ok && channel != nil {
 				return channel, nil
 			}
+			if contextChannelID > 0 {
+				if channel, err := model.CacheGetChannel(contextChannelID); err == nil && channel != nil {
+					return channel, nil
+				}
+			}
+			autoBan := c.GetBool("auto_ban")
+			autoBanInt := 1
+			if !autoBan {
+				autoBanInt = 0
+			}
+			return &model.Channel{
+				Id:      contextChannelID,
+				Type:    c.GetInt("channel_type"),
+				Name:    c.GetString("channel_name"),
+				AutoBan: &autoBanInt,
+				ChannelInfo: model.ChannelInfo{
+					IsMultiKey: common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
+				},
+			}, nil
 		}
-		autoBan := c.GetBool("auto_ban")
-		autoBanInt := 1
-		if !autoBan {
-			autoBanInt = 0
-		}
-		return &model.Channel{
-			Id:      c.GetInt("channel_id"),
-			Type:    c.GetInt("channel_type"),
-			Name:    c.GetString("channel_name"),
-			AutoBan: &autoBanInt,
-			ChannelInfo: model.ChannelInfo{
-				IsMultiKey: common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
-			},
-		}, nil
+		// The context channel was excluded (e.g. its concurrency limit is
+		// full): fall through to selection so the request switches channels.
+		// SetupContextForSelectedChannel below then rebinds the context keys.
 	}
 	var (
 		channel     *model.Channel
@@ -686,9 +714,18 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(retryParam)
 	}
 	if err != nil {
+		var selectionErr *service.ChannelSelectionError
+		if retryParam.HasSaturatedChannel() && errors.As(err, &selectionErr) &&
+			selectionErr.Kind != service.ChannelSelectionInternalError &&
+			selectionErr.Kind != service.ChannelSelectionModelNotConfigured {
+			return nil, newChannelConcurrencySaturatedError(info.OriginModelName)
+		}
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		if retryParam.HasSaturatedChannel() {
+			return nil, newChannelConcurrencySaturatedError(info.OriginModelName)
+		}
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
@@ -708,6 +745,19 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, newAPIError
 	}
 	return channel, nil
+}
+
+// newChannelConcurrencySaturatedError reports that every candidate channel
+// for the model is at its configured concurrency limit. It is a local 429:
+// no channel error is recorded and auto-ban must not trigger.
+func newChannelConcurrencySaturatedError(modelName string) *types.NewAPIError {
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("模型 %s 的所有可用渠道并发已达上限，请稍后重试", modelName),
+		types.ErrorCodeGetChannelFailed,
+		http.StatusTooManyRequests,
+		types.ErrOptionWithSkipRetry(),
+		types.ErrOptionWithNoRecordErrorLog(),
+	)
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {

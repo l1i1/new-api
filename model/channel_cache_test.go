@@ -575,3 +575,52 @@ func TestChannelIsOfficialFitForModelDBFallback(t *testing.T) {
 	assert.False(t, ChannelIsOfficialFitForModel(801, "gpt-4o"), "outside the family")
 	assert.False(t, ChannelIsOfficialFitForModel(999, "deepseek-v4.1-flash"), "missing channel")
 }
+
+func TestCacheGetChannelConcurrencyLimitSyncsIncrementally(t *testing.T) {
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	channelSyncLock.Lock()
+	oldChannelsIDM := channelsIDM
+	oldLimits := channel2concurrencyLimits
+	channelsIDM = map[int]*Channel{}
+	channel2concurrencyLimits = map[int]int{}
+	channelSyncLock.Unlock()
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		channelSyncLock.Lock()
+		channelsIDM = oldChannelsIDM
+		channel2concurrencyLimits = oldLimits
+		channelSyncLock.Unlock()
+	})
+
+	limited := `{"concurrency_limit":5}`
+	CacheUpdateChannel(&Channel{Id: 811, Setting: &limited})
+	require.Equal(t, 5, CacheGetChannelConcurrencyLimit(&Channel{Id: 811}))
+
+	// Raising the limit replaces the stored entry.
+	raised := `{"concurrency_limit":9}`
+	CacheUpdateChannel(&Channel{Id: 811, Setting: &raised})
+	require.Equal(t, 9, CacheGetChannelConcurrencyLimit(&Channel{Id: 811}))
+
+	// Clearing the limit removes the channel from the index.
+	CacheUpdateChannel(&Channel{Id: 811})
+	require.Equal(t, 0, CacheGetChannelConcurrencyLimit(&Channel{Id: 811}))
+
+	// Without the memory cache the limit resolves from the passed channel.
+	common.MemoryCacheEnabled = false
+	require.Equal(t, 5, CacheGetChannelConcurrencyLimit(&Channel{Id: 812, Setting: &limited}))
+	require.Equal(t, 0, CacheGetChannelConcurrencyLimit(&Channel{Id: 813}))
+	require.Equal(t, 0, CacheGetChannelConcurrencyLimit(nil))
+}
+
+// The cache read must not self-heal (and thereby write back) a corrupt or
+// nonsensical settings row; save-time ValidateSettings owns rejection.
+func TestConcurrencyLimitForCacheDoesNotMutateChannel(t *testing.T) {
+	broken := "{not-json"
+	channel := &Channel{Id: 814, Setting: &broken}
+	require.Equal(t, 0, concurrencyLimitForCache(channel))
+	require.Equal(t, "{not-json", *channel.Setting)
+
+	negative := `{"concurrency_limit":-3}`
+	require.Equal(t, 0, concurrencyLimitForCache(&Channel{Id: 815, Setting: &negative}))
+}

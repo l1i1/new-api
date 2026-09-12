@@ -2399,6 +2399,8 @@
     "HTTP protocol must be Auto or HTTP/1.1": "HTTP protocol must be Auto or HTTP/1.1",
     "HTTP/1.1": "HTTP/1.1",
     "HTTP/2 Connection Shards": "HTTP/2 Connection Shards",
+    "Concurrency Limit": "Concurrency Limit",
+    "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited": "Max in-flight requests for this channel. At the limit, new requests switch to other channels. 0 = unlimited",
     "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.": "HTTP/2 connection shards are unavailable when HTTP/1.1 is selected.",
     "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected": "HTTP/2 connection shards must be 1 when HTTP/1.1 is selected",
     "HTTP/2 connection shards must be between 1 and 8": "HTTP/2 connection shards must be between 1 and 8",

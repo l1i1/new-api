@@ -25,9 +25,48 @@ var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
 
 // channel2officialFitModels caches each channel's normalized official-behavior
 // model allowlist (dto.ChannelOtherSettings.OfficialFitModels) so official-fit
-// pin selection avoids re-parsing channel settings JSON per candidate.
+// routing avoids re-parsing channel settings JSON per candidate.
 // Refreshed with the channel cache.
 var channel2officialFitModels map[int]map[string]struct{}
+
+// channel2concurrencyLimits caches each channel's configured concurrency limit
+// (dto.ChannelSettings.ConcurrencyLimit, 0 = unlimited) so the relay hot path
+// never parses channel settings JSON per attempt. Refreshed with the channel
+// cache.
+var channel2concurrencyLimits map[int]int
+
+// concurrencyLimitForCache returns the channel's configured concurrency limit.
+// It deliberately avoids Channel.GetSetting, whose malformed-JSON self-heal
+// rewrites the database: this runs on the selection/acquire hot path, so one
+// corrupt row must not cause a write per attempt. Unparseable settings
+// contribute no limit; save-time ValidateSettings already rejects them.
+func concurrencyLimitForCache(channel *Channel) int {
+	if channel == nil || channel.Setting == nil || *channel.Setting == "" {
+		return 0
+	}
+	var settings dto.ChannelSettings
+	if err := common.Unmarshal([]byte(*channel.Setting), &settings); err != nil {
+		return 0
+	}
+	if settings.ConcurrencyLimit < 0 {
+		return 0
+	}
+	return settings.ConcurrencyLimit
+}
+
+// setConcurrencyLimitIn records the channel's concurrency limit into the
+// index, replacing any previous entry. It takes the target map explicitly so
+// the full cache rebuild can populate its private snapshot before publishing
+// it, while the incremental update mutates the live map under the write lock.
+func setConcurrencyLimitIn(channel2 map[int]int, channel *Channel) {
+	if channel == nil {
+		return
+	}
+	delete(channel2, channel.Id)
+	if limit := concurrencyLimitForCache(channel); limit > 0 {
+		channel2[channel.Id] = limit
+	}
+}
 
 // officialFitModelsForCache returns the channel's declared official-behavior
 // allowlist for the cache index. It deliberately avoids Channel.GetOtherSettings,
@@ -96,6 +135,7 @@ func InitChannelCache() {
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
 	newChannel2officialFitModels := make(map[int]map[string]struct{})
+	newChannel2concurrencyLimits := make(map[int]int)
 	var channels []*Channel
 	DB.Find(&channels)
 	for _, channel := range channels {
@@ -107,6 +147,7 @@ func InitChannelCache() {
 			}
 		}
 		setOfficialFitModelsIn(newChannel2officialFitModels, channel)
+		setConcurrencyLimitIn(newChannel2concurrencyLimits, channel)
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
@@ -171,6 +212,7 @@ func InitChannelCache() {
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channel2officialFitModels = newChannel2officialFitModels
+	channel2concurrencyLimits = newChannel2concurrencyLimits
 	group2model2channelSelection = newGroup2model2channelSelection
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
@@ -588,6 +630,23 @@ func CacheGetChannelInfo(id int) (*ChannelInfo, error) {
 	return &c.ChannelInfo, nil
 }
 
+// CacheGetChannelConcurrencyLimit returns the channel's configured concurrency
+// limit (0 = unlimited) from the precomputed cache index. When the memory
+// cache is disabled it parses the passed channel's settings without side
+// effects, so the relay loop can resolve the limit from its already-loaded
+// channel in both modes.
+func CacheGetChannelConcurrencyLimit(channel *Channel) int {
+	if channel == nil {
+		return 0
+	}
+	if !common.MemoryCacheEnabled {
+		return concurrencyLimitForCache(channel)
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	return channel2concurrencyLimits[channel.Id]
+}
+
 func CacheUpdateChannelStatus(id int, status int) {
 	if !common.MemoryCacheEnabled {
 		return
@@ -644,6 +703,10 @@ func CacheUpdateChannel(channel *Channel) {
 		channel2officialFitModels = make(map[int]map[string]struct{})
 	}
 	setOfficialFitModelsIn(channel2officialFitModels, channel)
+	if channel2concurrencyLimits == nil {
+		channel2concurrencyLimits = make(map[int]int)
+	}
+	setConcurrencyLimitIn(channel2concurrencyLimits, channel)
 	group2model2channelSelection = nil
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
 	// Lock ordering: do NOT hold channelSyncLock while calling
