@@ -32,10 +32,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatPaymentAmount } from '@/lib/currency'
-import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { formatTimestampToDate } from '@/lib/format'
 
 import { getInvoiceDetail } from '../api'
+import { formatInvoiceAmount } from '../lib/format'
 import { getInvoiceStatusConfig } from '../lib/status'
 import type { InvoiceDetail } from '../types'
 
@@ -43,15 +43,6 @@ interface InvoiceDetailDialogProps {
   invoiceId: number | null
   open: boolean
   onOpenChange: (open: boolean) => void
-}
-function formatInvoiceAmount(amount: number, currency: string): string {
-  return (
-    formatPaymentAmount(amount, currency, {
-      digitsLarge: 2,
-      digitsSmall: 2,
-      abbreviate: false,
-    }) ?? formatNumber(amount)
-  )
 }
 
 export function InvoiceDetailDialog({

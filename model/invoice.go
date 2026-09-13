@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
 
 	"gorm.io/gorm"
@@ -82,6 +83,23 @@ var (
 	ErrInvoiceSpecialRequiresOrg      = errors.New("VAT special invoices require an organization")
 	ErrInvoiceSpecialRequiresFullInfo = errors.New("VAT special invoices require address, phone, bank name and bank account")
 )
+
+// InvoiceTotalInCNY converts a settled order total to its CNY equivalent for
+// the invoice minimum-amount gate only. InvoiceMinAmount is defined in CNY, so
+// USD orders are compared after applying the platform USDExchangeRate; the
+// invoice amount and currency themselves are never converted. An invalid rate
+// (NaN/Inf/<=0) fails closed to the raw total, matching the fail-closed style
+// of the invoice option parsers.
+func InvoiceTotalInCNY(total decimal.Decimal, currency string) decimal.Decimal {
+	if strings.ToUpper(strings.TrimSpace(currency)) != PaymentCurrencyUSD {
+		return total
+	}
+	rate := operation_setting.USDExchangeRate
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 {
+		return total
+	}
+	return total.Mul(decimal.NewFromFloat(rate))
+}
 
 // NormalizeInvoiceAllowedPaymentMethods validates and canonicalizes the JSON
 // option used by the invoice allowlist. An empty array means no restriction.
@@ -507,8 +525,9 @@ func CreateInvoiceApplicationWithPaymentMethods(userId int, inv *Invoice, itemOr
 		}
 
 		// The minimum is enforced again here, inside the transaction, so a
-		// stale or tampered pre-check cannot bypass the business rule.
-		if minAmount.IsPositive() && total.LessThan(minAmount) {
+		// stale or tampered pre-check cannot bypass the business rule. The
+		// comparison is done on the CNY equivalent (InvoiceMinAmount is in CNY).
+		if minAmount.IsPositive() && InvoiceTotalInCNY(total, currency).LessThan(minAmount) {
 			return ErrInvoiceBelowMinimum
 		}
 

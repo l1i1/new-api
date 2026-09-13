@@ -50,8 +50,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { getSelf } from '@/lib/api'
 import { isLikelyHtml } from '@/lib/content-format'
-import { formatPaymentAmount } from '@/lib/currency'
-import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { formatTimestampToDate } from '@/lib/format'
 import { resolveTntContent } from '@/lib/tnt-content'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
@@ -68,9 +67,12 @@ import {
   canSubmitInvoice,
   hasMixedCurrency,
   isBelowMinimum,
+  minimumForCurrency,
   resolveDefaultEmail,
+  sumByCurrency,
   sumOrderAmounts,
 } from '../lib/apply'
+import { formatInvoiceAmount } from '../lib/format'
 import type {
   InvoiceableOrder,
   InvoiceKind,
@@ -174,16 +176,6 @@ function getInvoiceApplyFormSchema(t: TFunction) {
     })
 }
 
-function formatInvoiceAmount(amount: number, currency: string): string {
-  return (
-    formatPaymentAmount(amount, currency, {
-      digitsLarge: 2,
-      digitsSmall: 2,
-      abbreviate: false,
-    }) ?? formatNumber(amount)
-  )
-}
-
 export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const { t } = useTranslation()
   const authEmail = useAuthStore(
@@ -199,6 +191,9 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const [submitting, setSubmitting] = useState(false)
   const quotaPerUnit = useSystemConfigStore(
     (state) => state.config.currency.quotaPerUnit
+  )
+  const usdExchangeRate = useSystemConfigStore(
+    (state) => state.config.currency.usdExchangeRate
   )
 
   useEffect(() => {
@@ -295,7 +290,14 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
   const mixedCurrency = hasMixedCurrency(selectedOrders)
   const selectedCurrency = selectedOrders[0]?.currency ?? ''
   const selectedTotal = sumOrderAmounts(selectedOrders)
-  const minAmount = options?.min_amount ?? 0
+  // The configured minimum is in CNY; USD selections compare against its
+  // settlement-currency equivalent (threshold conversion only, mirroring the
+  // backend's model.InvoiceTotalInCNY gate).
+  const minAmount = minimumForCurrency(
+    options?.min_amount ?? 0,
+    selectedCurrency,
+    usdExchangeRate
+  )
   const belowMinAmount = isBelowMinimum(selectedTotal, minAmount)
   const accountEmailUnavailable = !authEmail
   const feeRate = options?.fee_rate ?? 0
@@ -435,7 +437,11 @@ export function InvoiceApplyPanel({ onSubmitted }: InvoiceApplyPanelProps) {
         <span className='text-sm font-semibold'>
           {t('Total')}:{' '}
           {mixedCurrency
-            ? formatNumber(selectedTotal)
+            ? sumByCurrency(selectedOrders)
+                .map((group) =>
+                  formatInvoiceAmount(group.total, group.currency)
+                )
+                .join(' + ')
             : formatInvoiceAmount(selectedTotal, selectedCurrency)}
         </span>
       </div>

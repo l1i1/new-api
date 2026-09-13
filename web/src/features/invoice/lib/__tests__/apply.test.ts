@@ -26,8 +26,10 @@ import {
   canSubmitInvoice,
   hasMixedCurrency,
   isBelowMinimum,
+  minimumForCurrency,
   reasonRequired,
   resolveDefaultEmail,
+  sumByCurrency,
   sumOrderAmounts,
 } from '../apply'
 
@@ -181,5 +183,60 @@ describe('reasonRequired', () => {
 
   test('organization invoices do not require a reason', () => {
     assert.equal(reasonRequired('organization'), false)
+  })
+})
+
+describe('sumByCurrency', () => {
+  test('groups amounts by settlement currency preserving first-appearance order', () => {
+    assert.deepEqual(
+      sumByCurrency([
+        order(1, 21, 'CNY'),
+        order(2, 1.02, 'USD'),
+        order(3, 21, 'CNY'),
+      ]),
+      [
+        { currency: 'CNY', total: 42 },
+        { currency: 'USD', total: 1.02 },
+      ]
+    )
+  })
+
+  test('rounds floating-point drift to 2 decimals', () => {
+    assert.deepEqual(
+      sumByCurrency([order(1, 0.1, 'USD'), order(2, 0.2, 'USD')]),
+      [{ currency: 'USD', total: 0.3 }]
+    )
+  })
+
+  test('empty selection yields no groups', () => {
+    assert.deepEqual(sumByCurrency([]), [])
+  })
+})
+
+describe('minimumForCurrency', () => {
+  test('CNY selections use the configured minimum as-is', () => {
+    assert.equal(minimumForCurrency(49, 'CNY', 7), 49)
+  })
+
+  test('USD selections divide the CNY minimum by the platform rate', () => {
+    assert.equal(minimumForCurrency(49, 'USD', 7), 7)
+  })
+
+  test('keeps the exact quotient so the gate cannot diverge from the backend', () => {
+    // 50/7 = 7.142857...: pre-rounding to 7.14 would let a $7.14 selection
+    // pass the client gate while the backend (7.14*7 = 49.98 < 50) rejects it.
+    assert.ok(Math.abs(minimumForCurrency(50, 'USD', 7) - 50 / 7) < 1e-12)
+    assert.ok(minimumForCurrency(50, 'USD', 7) > 7.14)
+  })
+
+  test('invalid rate fails closed to the raw CNY number (mirrors backend)', () => {
+    for (const rate of [0, -7, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.equal(minimumForCurrency(49, 'USD', rate), 49)
+    }
+  })
+
+  test('zero minimum disables the gate for every currency', () => {
+    assert.equal(minimumForCurrency(0, 'USD', 7), 0)
+    assert.equal(minimumForCurrency(0, 'CNY', 7), 0)
   })
 })

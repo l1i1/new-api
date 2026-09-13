@@ -50,10 +50,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatPaymentAmount } from '@/lib/currency'
-import { formatNumber, formatTimestampToDate } from '@/lib/format'
+import { formatTimestampToDate } from '@/lib/format'
 
 import { cancelInvoice, getUserInvoices } from '../api'
+import { formatInvoiceAmount } from '../lib/format'
 import { getInvoiceStatusConfig } from '../lib/status'
 import type { Invoice } from '../types'
 import { InvoiceDetailDialog } from './invoice-detail-dialog'
@@ -62,15 +62,6 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
 
 interface InvoiceRecordsPanelProps {
   refreshKey?: number
-}
-function formatInvoiceAmount(amount: number, currency: string): string {
-  return (
-    formatPaymentAmount(amount, currency, {
-      digitsLarge: 2,
-      digitsSmall: 2,
-      abbreviate: false,
-    }) ?? formatNumber(amount)
-  )
 }
 
 export function InvoiceRecordsPanel({

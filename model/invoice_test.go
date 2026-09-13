@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -335,6 +336,44 @@ func TestCreateInvoiceApplication_MinimumAmountBoundary(t *testing.T) {
 
 	low := &Invoice{Title: "Acme", TaxId: "T", Email: "b@acme.example", Reason: "r"}
 	require.ErrorIs(t, CreateInvoiceApplication(611, low, []*TopUp{{Id: 91}}, min), ErrInvoiceBelowMinimum)
+	assert.Zero(t, low.Id)
+}
+
+func TestInvoiceTotalInCNY(t *testing.T) {
+	origRate := operation_setting.USDExchangeRate
+	t.Cleanup(func() { operation_setting.USDExchangeRate = origRate })
+
+	operation_setting.USDExchangeRate = 7
+	assert.Equal(t, decimal.NewFromInt(100), InvoiceTotalInCNY(decimal.NewFromInt(100), PaymentCurrencyCNY))
+	assert.Equal(t, decimal.NewFromInt(105), InvoiceTotalInCNY(decimal.NewFromInt(15), PaymentCurrencyUSD))
+	assert.Equal(t, decimal.NewFromInt(105), InvoiceTotalInCNY(decimal.NewFromInt(15), " usd "))
+
+	// Invalid rates fail closed to the raw total (no conversion).
+	for _, invalid := range []float64{math.NaN(), math.Inf(1), 0, -7} {
+		operation_setting.USDExchangeRate = invalid
+		assert.Equal(t, decimal.NewFromInt(15), InvoiceTotalInCNY(decimal.NewFromInt(15), PaymentCurrencyUSD))
+	}
+}
+
+func TestCreateInvoiceApplication_MinimumAmountConvertsUsdToCny(t *testing.T) {
+	truncateTables(t)
+	origRate := operation_setting.USDExchangeRate
+	operation_setting.USDExchangeRate = 7
+	t.Cleanup(func() { operation_setting.USDExchangeRate = origRate })
+	insertUserForPaymentGuardTest(t, 613, 100)
+	// $15 = ¥105 passes the ¥100 minimum; $14 = ¥98 fails. The invoice keeps
+	// the settled USD amount and currency (conversion is gate-only).
+	insertTopUpForInvoiceTest(t, 92, 613, "inv-usd-pass", 15, "USD", PaymentProviderEpay, common.TopUpStatusSuccess)
+	insertTopUpForInvoiceTest(t, 93, 613, "inv-usd-low", 14, "USD", PaymentProviderEpay, common.TopUpStatusSuccess)
+
+	min := decimal.NewFromFloat(100.00)
+	ok := &Invoice{Title: "Acme", TaxId: "T", Email: "b@acme.example", Reason: "r"}
+	require.NoError(t, CreateInvoiceApplication(613, ok, []*TopUp{{Id: 92}}, min))
+	assert.InDelta(t, 15.00, ok.TotalAmount, 0.0001)
+	assert.Equal(t, "USD", ok.Currency)
+
+	low := &Invoice{Title: "Acme", TaxId: "T", Email: "b@acme.example", Reason: "r"}
+	require.ErrorIs(t, CreateInvoiceApplication(613, low, []*TopUp{{Id: 93}}, min), ErrInvoiceBelowMinimum)
 	assert.Zero(t, low.Id)
 }
 

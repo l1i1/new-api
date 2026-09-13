@@ -122,7 +122,8 @@ func invoiceNotice() string {
 	return optionValue(optionInvoiceNotice)
 }
 
-// invoiceMinAmount returns the configured minimum as a decimal. Invalid values
+// invoiceMinAmount returns the configured minimum as a decimal, in CNY. USD
+// orders are compared against it via model.InvoiceTotalInCNY. Invalid values
 // (NaN, +Inf, -Inf, negative) fail closed to zero, disabling the threshold.
 func invoiceMinAmount() decimal.Decimal {
 	raw := optionValue(optionInvoiceMinAmount)
@@ -447,10 +448,11 @@ func CreateInvoice(c *gin.Context) {
 		orders = append(orders, topup)
 	}
 
-	// Pre-check the minimum with decimal arithmetic; the transaction re-checks
-	// it against the freshly locked rows.
+	// Pre-check the minimum with decimal arithmetic against the CNY equivalent
+	// of the settled total (InvoiceMinAmount is in CNY); the transaction
+	// re-checks it against the freshly locked rows.
 	minAmount := invoiceMinAmount()
-	if minAmount.IsPositive() && total.LessThan(minAmount) {
+	if minAmount.IsPositive() && model.InvoiceTotalInCNY(total, currency).LessThan(minAmount) {
 		common.ApiErrorI18n(c, i18n.MsgInvoiceBelowMinimum)
 		return
 	}
