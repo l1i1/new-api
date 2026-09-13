@@ -116,6 +116,7 @@ const defaultBillingSettings: BillingSettings = {
   HotPayGatewayURL: '',
   HotPayGatewayAPIKey: '',
   HotPayGatewayAllowedHosts: '',
+  HotPaySettlementURL: '',
   HotPaySettlementSecret: '',
   HotPaySettlementMaxAgeSeconds: 0,
   HotPayPayMethods: '[]',

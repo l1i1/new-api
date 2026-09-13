@@ -140,8 +140,9 @@ func RequestHotPayPay(c *gin.Context) {
 			"provider_amount": hotPayStringAmount(payMoney),
 			"currency":        model.PaymentCurrencyCNY,
 		}),
-		ExpiresAt:   hotPayExpiresAt(45 * 60),
-		Description: fmt.Sprintf("Wallet top-up: %d", req.Amount),
+		SettlementURL: hotPaySettlementURL(),
+		ExpiresAt:     hotPayExpiresAt(45 * 60),
+		Description:   fmt.Sprintf("Wallet top-up: %d", req.Amount),
 	})
 	if createErr != nil {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))
@@ -289,8 +290,9 @@ func SubscriptionRequestHotPayPay(c *gin.Context) {
 			"price_amount": hotPayStringAmount(plan.PriceAmount),
 			"currency":     planCurrency,
 		}),
-		ExpiresAt:   hotPayExpiresAt(45 * 60),
-		Description: "Subscription: " + plan.Title,
+		SettlementURL: hotPaySettlementURL(),
+		ExpiresAt:     hotPayExpiresAt(45 * 60),
+		Description:   "Subscription: " + plan.Title,
 	})
 	if createErr != nil {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 订阅结账失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, createErr.Error()))

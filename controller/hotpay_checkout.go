@@ -228,6 +228,19 @@ func hotPayReturnURL(path string) string {
 	return parsed.String()
 }
 
+// hotPaySettlementURL resolves this deployment's signed settlement receiver,
+// sent with every checkout so HotPay settles back to this application rather
+// than a deployment-wide default. It is configured as an absolute URL; when
+// unset, it is derived from the server address like the EPay callbacks. An
+// empty result is returned when neither source yields a usable URL, and the
+// gateway then fails closed instead of settling to an unknown destination.
+func hotPaySettlementURL() string {
+	if configured := strings.TrimSpace(setting.HotPaySettlementURL); configured != "" {
+		return configured
+	}
+	return hotPayReturnURL("/internal/v1/payment/settlements")
+}
+
 func hotPayGatewayErrorMessage(err error) string {
 	var gatewayErr *service.HotPayGatewayError
 	if errors.As(err, &gatewayErr) && gatewayErr.Code != "" {

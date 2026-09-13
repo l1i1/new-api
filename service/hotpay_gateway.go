@@ -67,25 +67,29 @@ type HotPayGatewayClient struct {
 }
 
 type HotPayGatewayCreateOrderRequest struct {
-	MerchantOrderID       string                         `json:"merchant_order_id"`
-	BusinessType          string                         `json:"business_type"`
-	UserID                string                         `json:"user_id"`
-	BuyerEmail            string                         `json:"buyer_email,omitempty"`
-	ProductID             string                         `json:"product_id,omitempty"`
-	AmountMinor           int64                          `json:"amount_minor"`
-	Currency              string                         `json:"currency"`
-	QuotaAmount           int64                          `json:"quota_amount,omitempty"`
-	Provider              string                         `json:"provider"`
-	PaymentMethod         string                         `json:"payment_method"`
-	ProviderAccountID     string                         `json:"provider_account_id,omitempty"`
-	Environment           string                         `json:"environment,omitempty"`
-	CompatibilityProtocol string                         `json:"compatibility_protocol,omitempty"`
-	MerchantNotifyURL     string                         `json:"merchant_notify_url,omitempty"`
-	ReturnURL             string                         `json:"return_url,omitempty"`
-	PriceSnapshot         map[string]any                 `json:"price_snapshot,omitempty"`
-	ExpiresAt             string                         `json:"expires_at,omitempty"`
-	Description           string                         `json:"description,omitempty"`
-	Fallback              *HotPayGatewayCheckoutFallback `json:"fallback,omitempty"`
+	MerchantOrderID       string `json:"merchant_order_id"`
+	BusinessType          string `json:"business_type"`
+	UserID                string `json:"user_id"`
+	BuyerEmail            string `json:"buyer_email,omitempty"`
+	ProductID             string `json:"product_id,omitempty"`
+	AmountMinor           int64  `json:"amount_minor"`
+	Currency              string `json:"currency"`
+	QuotaAmount           int64  `json:"quota_amount,omitempty"`
+	Provider              string `json:"provider"`
+	PaymentMethod         string `json:"payment_method"`
+	ProviderAccountID     string `json:"provider_account_id,omitempty"`
+	Environment           string `json:"environment,omitempty"`
+	CompatibilityProtocol string `json:"compatibility_protocol,omitempty"`
+	MerchantNotifyURL     string `json:"merchant_notify_url,omitempty"`
+	ReturnURL             string `json:"return_url,omitempty"`
+	// SettlementURL is this deployment's signed settlement receiver. HotPay
+	// stores it on the order and settles there instead of a deployment-wide
+	// endpoint; it must be HTTPS and match the application's allowed hosts.
+	SettlementURL string                         `json:"settlement_url,omitempty"`
+	PriceSnapshot map[string]any                 `json:"price_snapshot,omitempty"`
+	ExpiresAt     string                         `json:"expires_at,omitempty"`
+	Description   string                         `json:"description,omitempty"`
+	Fallback      *HotPayGatewayCheckoutFallback `json:"fallback,omitempty"`
 }
 
 type HotPayGatewayCheckoutFallback struct {

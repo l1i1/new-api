@@ -614,7 +614,7 @@ func RequestWaffoPancakePay(c *gin.Context) {
 				displayCurrency,
 				providerCurrency,
 			),
-			ExpiresAt: hotPayExpiresAt(45 * 60), Description: "Wallet top-up", Fallback: gatewayFallback,
+			SettlementURL: hotPaySettlementURL(), ExpiresAt: hotPayExpiresAt(45 * 60), Description: "Wallet top-up", Fallback: gatewayFallback,
 		})
 		if createErr != nil {
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("HotPay 钱包结账失败 user_id=%d trade_no=%s error=%q", id, tradeNo, createErr.Error()))

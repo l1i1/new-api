@@ -48,11 +48,12 @@ func PaymentGatewaySettlement(c *gin.Context) {
 		writeSettlementError(c, http.StatusUnauthorized, "command_mismatch", "Settlement command is invalid")
 		return
 	}
-	secret := strings.TrimSpace(setting.HotPaySettlementSecret)
-	if secret == "" {
-		secret = strings.TrimSpace(os.Getenv("HOTPAY_SETTLEMENT_SECRET"))
-	}
-	if secret == "" || !model.VerifyPaymentGatewaySettlementSignature(command, secret, command.Signature) {
+	// HotPay signs each order with the secret of the upstream application that
+	// owns it, so every configured settlement secret is a valid candidate. A
+	// deployment that serves several applications lists them all in
+	// HOTPAY_SETTLEMENT_SECRETS; the single-secret setting/environment pair
+	// remains the primary entry.
+	if !model.VerifyPaymentGatewaySettlementSignatureWithSecrets(command, hotPaySettlementSecrets(), command.Signature) {
 		writeSettlementError(c, http.StatusUnauthorized, "signature_invalid", "Settlement signature is invalid")
 		return
 	}
@@ -93,6 +94,29 @@ func PaymentGatewaySettlement(c *gin.Context) {
 		"duplicate":          result.Duplicate,
 		"request_id":         settlementRequestID(c),
 	})
+}
+
+// hotPaySettlementSecrets collects every settlement secret this deployment
+// accepts. The option value wins over the environment, and
+// HOTPAY_SETTLEMENT_SECRETS may list additional secrets (comma-separated) when
+// several upstream applications settle into the same New API instance.
+func hotPaySettlementSecrets() []string {
+	secrets := make([]string, 0, 2)
+	seen := map[string]bool{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		secrets = append(secrets, value)
+	}
+	add(setting.HotPaySettlementSecret)
+	add(os.Getenv("HOTPAY_SETTLEMENT_SECRET"))
+	for _, value := range strings.FieldsFunc(os.Getenv("HOTPAY_SETTLEMENT_SECRETS"), func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
+		add(value)
+	}
+	return secrets
 }
 
 func paymentGatewaySettlementTimestampValid(issuedAt, now time.Time) bool {

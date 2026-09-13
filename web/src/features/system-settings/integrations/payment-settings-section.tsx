@@ -187,6 +187,7 @@ const paymentSchema = z.object({
   }, 'Provide a valid gateway URL starting with http:// or https://'),
   HotPayGatewayAPIKey: z.string(),
   HotPayGatewayAllowedHosts: z.string(),
+  HotPaySettlementURL: z.string(),
   HotPaySettlementSecret: z.string(),
   HotPaySettlementMaxAgeSeconds: z.coerce.number().min(0).max(86400),
   HotPayPayMethods: z.string(),
@@ -502,6 +503,7 @@ export function PaymentSettingsSection({
       HotPayGatewayURL: removeTrailingSlash(values.HotPayGatewayURL.trim()),
       HotPayGatewayAPIKey: values.HotPayGatewayAPIKey.trim(),
       HotPayGatewayAllowedHosts: values.HotPayGatewayAllowedHosts.trim(),
+      HotPaySettlementURL: values.HotPaySettlementURL.trim(),
       HotPaySettlementSecret: values.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds: values.HotPaySettlementMaxAgeSeconds,
       HotPayPayMethods: values.HotPayPayMethods.trim(),
@@ -561,6 +563,7 @@ export function PaymentSettingsSection({
       HotPayGatewayAPIKey: initialRef.current.HotPayGatewayAPIKey.trim(),
       HotPayGatewayAllowedHosts:
         initialRef.current.HotPayGatewayAllowedHosts.trim(),
+      HotPaySettlementURL: initialRef.current.HotPaySettlementURL.trim(),
       HotPaySettlementSecret: initialRef.current.HotPaySettlementSecret.trim(),
       HotPaySettlementMaxAgeSeconds:
         initialRef.current.HotPaySettlementMaxAgeSeconds,
@@ -798,6 +801,13 @@ export function PaymentSettingsSection({
       updates.push({
         key: 'HotPayGatewayAllowedHosts',
         value: sanitized.HotPayGatewayAllowedHosts,
+      })
+    }
+
+    if (sanitized.HotPaySettlementURL !== initial.HotPaySettlementURL) {
+      updates.push({
+        key: 'HotPaySettlementURL',
+        value: sanitized.HotPaySettlementURL,
       })
     }
 
@@ -1466,7 +1476,7 @@ export function PaymentSettingsSection({
                   </AlertTitle>
                   <AlertDescription>
                     {t(
-                      'HotPay signs settlement commands with the endpoint and secret configured in its own environment file (hotpay.env). Keep both sides identical; a mismatch rejects every settlement command.'
+                      'HotPay stores this deployment settlement URL and secret on each order and settles there. Register the same URL host in the owning application allowlist on HotPay and keep the secret identical on both sides; a mismatch rejects every settlement command.'
                     )}
                   </AlertDescription>
                 </Alert>
@@ -1619,6 +1629,28 @@ export function PaymentSettingsSection({
                       <FormDescription>
                         {t(
                           'Maps a buyer-facing HotPay method to the gateway provider that serves it, e.g. {"alipay":"gopay_alipay","wechat_pay":"wechat_v3"}. Supported providers: gopay_alipay (Alipay, CNY), wechat_v3 (native WeChat Pay, CNY), waffo_pancake (multi-currency hosted checkout). An unlisted method uses the built-in default.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='HotPaySettlementURL'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Settlement URL')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='https://tokeness.cn/internal/v1/payment/settlements'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'This deployment settlement receiver, sent with every checkout so HotPay settles back here. It must be HTTPS and match the allowed hosts configured for this application in HotPay.'
                         )}
                       </FormDescription>
                       <FormMessage />

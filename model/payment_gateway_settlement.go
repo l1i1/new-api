@@ -449,20 +449,39 @@ func PaymentGatewaySettlementPayload(command PaymentGatewaySettlementCommand) ([
 }
 
 func VerifyPaymentGatewaySettlementSignature(command PaymentGatewaySettlementCommand, secret, signature string) bool {
-	secret = strings.TrimSpace(secret)
+	return VerifyPaymentGatewaySettlementSignatureWithSecrets(command, []string{secret}, signature)
+}
+
+// VerifyPaymentGatewaySettlementSignatureWithSecrets accepts a command signed
+// with any configured settlement secret. HotPay signs each order with the
+// secret of the upstream application that owns it, so a deployment serving
+// several of them must verify against the whole set. Every candidate is
+// compared before returning so the response time does not reveal which secret
+// matched.
+func VerifyPaymentGatewaySettlementSignatureWithSecrets(command PaymentGatewaySettlementCommand, secrets []string, signature string) bool {
 	signature = strings.TrimSpace(signature)
-	if secret == "" || signature == "" {
+	if signature == "" {
 		return false
 	}
 	payload, err := PaymentGatewaySettlementPayload(command)
 	if err != nil {
 		return false
 	}
-	digest := common.HmacSha256(string(payload), secret)
-	if len(signature) != len(digest) {
-		return false
+	matched := false
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if secret == "" {
+			continue
+		}
+		digest := common.HmacSha256(string(payload), secret)
+		if len(signature) != len(digest) {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(strings.ToLower(signature)), []byte(digest)) == 1 {
+			matched = true
+		}
 	}
-	return subtle.ConstantTimeCompare([]byte(strings.ToLower(signature)), []byte(digest)) == 1
+	return matched
 }
 
 func PaymentGatewaySettlementPayloadHash(command PaymentGatewaySettlementCommand) (string, error) {

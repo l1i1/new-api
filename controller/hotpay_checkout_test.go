@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -150,4 +151,39 @@ func TestHotPayWaffoWalletPriceSnapshotPreservesSettlementCurrency(t *testing.T)
 	require.Equal(t, model.PaymentCurrencyUSD, snapshot["pricing_currency"])
 	require.Equal(t, model.PaymentCurrencyCNY, snapshot["display_currency"])
 	require.Equal(t, model.PaymentCurrencyUSD, snapshot["provider_currency"])
+}
+
+// The checkout carries this deployment settlement receiver so HotPay settles
+// back to the owning application instead of a deployment-wide endpoint.
+func TestHotPaySettlementURLPrefersConfiguredValue(t *testing.T) {
+	previous := setting.HotPaySettlementURL
+	t.Cleanup(func() { setting.HotPaySettlementURL = previous })
+
+	setting.HotPaySettlementURL = "https://tokeness.cn/internal/v1/payment/settlements"
+	require.Equal(t, "https://tokeness.cn/internal/v1/payment/settlements", hotPaySettlementURL())
+
+	// A blank option derives the receiver from the server address.
+	setting.HotPaySettlementURL = ""
+	t.Setenv("HOTPAY_SETTLEMENT_URL", "")
+	derived := hotPaySettlementURL()
+	require.True(t, derived == "" || strings.HasSuffix(derived, "/internal/v1/payment/settlements"), "derived = %q", derived)
+}
+
+// Every configured secret is a valid candidate so a deployment serving several
+// upstream applications can verify each application's commands.
+func TestHotPaySettlementSecretsCollectsAllConfiguredValues(t *testing.T) {
+	previous := setting.HotPaySettlementSecret
+	t.Cleanup(func() { setting.HotPaySettlementSecret = previous })
+
+	setting.HotPaySettlementSecret = "primary"
+	t.Setenv("HOTPAY_SETTLEMENT_SECRET", "environment")
+	t.Setenv("HOTPAY_SETTLEMENT_SECRETS", "extra-a, extra-b;environment")
+
+	secrets := hotPaySettlementSecrets()
+	require.Contains(t, secrets, "primary")
+	require.Contains(t, secrets, "environment")
+	require.Contains(t, secrets, "extra-a")
+	require.Contains(t, secrets, "extra-b")
+	// Duplicates are collapsed: primary + environment + extra-a + extra-b.
+	require.Len(t, secrets, 4)
 }

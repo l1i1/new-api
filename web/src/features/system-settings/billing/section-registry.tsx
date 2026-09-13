@@ -179,6 +179,7 @@ const BILLING_SECTIONS = [
           HotPayGatewayURL: settings.HotPayGatewayURL ?? '',
           HotPayGatewayAPIKey: settings.HotPayGatewayAPIKey ?? '',
           HotPayGatewayAllowedHosts: settings.HotPayGatewayAllowedHosts ?? '',
+          HotPaySettlementURL: settings.HotPaySettlementURL ?? '',
           HotPaySettlementSecret: settings.HotPaySettlementSecret ?? '',
           HotPaySettlementMaxAgeSeconds:
             settings.HotPaySettlementMaxAgeSeconds ?? 0,

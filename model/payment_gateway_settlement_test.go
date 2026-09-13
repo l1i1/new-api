@@ -571,3 +571,35 @@ func TestBindPaymentGatewayOrderIDBackfillsRoutedAccount(t *testing.T) {
 func itoa(value int) string {
 	return strconv.Itoa(value)
 }
+
+// A deployment serving several upstream applications must accept a command
+// signed with any registered settlement secret, while a wrong secret is
+// rejected.
+func TestVerifyPaymentGatewaySettlementSignatureAcceptsAnyConfiguredSecret(t *testing.T) {
+	command := gatewaySettlementCommand("multi_secret", PaymentGatewayBusinessWallet)
+	payload, err := PaymentGatewaySettlementPayload(command)
+	require.NoError(t, err)
+
+	alphaSignature := common.HmacSha256(string(payload), "alpha-secret")
+	betaSignature := common.HmacSha256(string(payload), "beta-secret")
+	secrets := []string{"alpha-secret", "beta-secret"}
+
+	require.True(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, secrets, alphaSignature))
+	require.True(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, secrets, betaSignature))
+	require.False(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, secrets, common.HmacSha256(string(payload), "gamma-secret")))
+	require.False(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, secrets, ""))
+	require.False(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, nil, alphaSignature))
+	// Blank entries never match.
+	require.False(t, VerifyPaymentGatewaySettlementSignatureWithSecrets(command, []string{"", "  "}, alphaSignature))
+}
+
+// The single-secret helper stays a strict subset of the multi-secret form.
+func TestVerifyPaymentGatewaySettlementSignatureSingleSecretRemainsStrict(t *testing.T) {
+	command := gatewaySettlementCommand("single_secret", PaymentGatewayBusinessWallet)
+	payload, err := PaymentGatewaySettlementPayload(command)
+	require.NoError(t, err)
+
+	require.True(t, VerifyPaymentGatewaySettlementSignature(command, "only-secret", common.HmacSha256(string(payload), "only-secret")))
+	require.False(t, VerifyPaymentGatewaySettlementSignature(command, "only-secret", common.HmacSha256(string(payload), "other-secret")))
+	require.False(t, VerifyPaymentGatewaySettlementSignature(command, "", common.HmacSha256(string(payload), "only-secret")))
+}
