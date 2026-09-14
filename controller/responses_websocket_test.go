@@ -537,6 +537,44 @@ func TestResponsesWebSocketReusesConnectionAndSettlesEachRequest(t *testing.T) {
 	assert.Equal(t, 3000, user.UsedQuota)
 }
 
+func TestResponsesWebSocketNestedPassthroughUsesNormalizedBodyForUpstreamAndBilling(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	fixture := newResponsesWSBillingTest(t, `param("service_tier") == "priority" ? tier("priority", p * 4) : tier("base", p * 2)`, func(ws *websocket.Conn, _ *http.Request) {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		var event map[string]any
+		if err := common.Unmarshal(data, &event); err != nil {
+			return
+		}
+		received <- event
+		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"nested-response","status":"completed","usage":{"input_tokens":1000,"output_tokens":10,"total_tokens":1010}}}`))
+	})
+
+	var channel model.Channel
+	require.NoError(t, model.DB.Where("name = ?", "responses-ws-upstream").First(&channel).Error)
+	channelSetting := channel.GetSetting()
+	channelSetting.PassThroughBodyEnabled = true
+	channel.SetSetting(channelSetting)
+	require.NoError(t, model.DB.Model(&channel).Update("setting", channel.Setting).Error)
+
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","event_id":"nested-1","response":{"model":"ws-billing","input":"nested input","service_tier":"priority","vendor":{"tier":"premium"}}}`)))
+	terminal := readResponsesWSTestEvent(t, fixture.client)
+	assert.Equal(t, "response.completed", terminal["type"])
+
+	upstreamEvent := <-received
+	assert.Equal(t, "response.create", upstreamEvent["type"])
+	assert.NotContains(t, upstreamEvent, "response")
+	assert.Equal(t, "priority", upstreamEvent["service_tier"])
+	vendor, ok := upstreamEvent["vendor"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "premium", vendor["tier"])
+
+	fixture.closeAndWait(t)
+	assertResponsesWSAccounting(t, fixture, []int{2000})
+}
+
 func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
 	fixture := newResponsesWSBillingTest(t, `tier("output", c * 2)`, func(ws *websocket.Conn, _ *http.Request) {
 		if _, _, err := ws.ReadMessage(); !assert.NoError(t, err) {

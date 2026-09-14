@@ -195,18 +195,19 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 			s.shutdown()
 		}
 	}()
+	create, id, err := normalizeResponsesWSCreateEvent(message)
+	eventID = id
+	if err != nil {
+		apiErr = newResponsesWSInvalidRequestError(err)
+		return
+	}
+	// Middleware, billing and passthrough must all read the normalized request,
+	// rather than cache the outer websocket envelope or its optional model.
 	request := s.request.Clone(s.ctx)
-	request.Body = io.NopCloser(bytes.NewReader(message))
-	request.ContentLength = int64(len(message))
+	request.Body = io.NopCloser(bytes.NewReader(create.Body))
+	request.ContentLength = int64(len(create.Body))
 	request.Header.Set("Content-Type", "application/json")
 	apiErr = s.runner(request, requestID, func(c *gin.Context) *types.NewAPIError {
-		create, id, err := normalizeResponsesWSCreateEvent(message)
-		eventID = id
-		if err != nil {
-			return newResponsesWSInvalidRequestError(err)
-		}
-		c.Request.Body = io.NopCloser(bytes.NewReader(create.Body))
-		c.Request.ContentLength = int64(len(create.Body))
 		return s.runCall(c, state, create)
 	})
 	if apiErr != nil && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
