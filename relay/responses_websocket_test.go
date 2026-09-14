@@ -68,6 +68,15 @@ func TestSelectResponsesWSChannelHonorsPinsAndFilters(t *testing.T) {
 	for _, channel := range []*model.Channel{enabled, disabled, filtered, wsDisabled} {
 		require.NoError(t, database.Create(channel).Error)
 	}
+	for _, channel := range []*model.Channel{enabled, filtered, wsDisabled} {
+		require.NoError(t, database.Create(&model.Ability{
+			ChannelId: channel.Id,
+			Group:     "default",
+			Model:     "gpt-5.1",
+			Enabled:   true,
+			Priority:  channel.Priority,
+		}).Error)
+	}
 	for _, tc := range []struct {
 		name      string
 		channelID int
@@ -76,12 +85,14 @@ func TestSelectResponsesWSChannelHonorsPinsAndFilters(t *testing.T) {
 		{name: "token pin overrides origin pin", channelID: enabled.Id},
 		{name: "disabled pin rejects", channelID: disabled.Id, status: http.StatusForbidden},
 		{name: "pin cannot bypass websocket switch", channelID: wsDisabled.Id, status: http.StatusBadRequest},
-		{name: "pin cannot bypass path filter", channelID: filtered.Id, status: http.StatusBadRequest},
+		{name: "pin cannot bypass path filter", channelID: filtered.Id, status: http.StatusForbidden},
 		{name: "missing pin rejects", channelID: 99999, status: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 			constraints := service.GetChannelConstraints(c)
 			constraints.AddPin(appdto.ChannelPin{ChannelId: disabled.Id, Source: appdto.PinSourceOriginTask, Rank: appdto.PinRankOriginTask, RetryMode: appdto.PinRetrySameChannel})
 			constraints.AddPin(appdto.ChannelPin{ChannelId: tc.channelID, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken, RetryMode: appdto.PinRetrySingleAttempt})
@@ -127,6 +138,8 @@ func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {
 	model.InitChannelCache()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 	params := &service.RetryParam{Ctx: c, ModelName: "ws-model", TokenGroup: "default"}
 	channel, apiErr := selectResponsesWSChannel(c, "ws-model", params)
 	require.Nil(t, apiErr)

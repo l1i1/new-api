@@ -204,6 +204,10 @@ func TestPasskeyDomainsRejectInvalidAssertions(t *testing.T) {
 			user, identity := setupSecurityEnrollmentTest(t)
 			key := newSecurityLoginPasskey(t, user.Id)
 			settings := system_setting.GetPasskeySettings()
+			// This table covers invalid assertions, including a missing UV flag.
+			// Configure the requirement explicitly because the product default is
+			// "preferred", where a UV-less authenticator is valid.
+			settings.UserVerification = "required"
 			settings.LegacyRPIDs = "www.example.com"
 			settings.Origins = "https://example.com,https://www.example.com"
 			begin := decodePasskeyDomainBegin(t, passkeyDomainRequest(t, "/api/user/passkey/login/begin", map[string]string{"rp_id": "www.example.com"}, identity, "https://www.example.com", PasskeyLoginBegin))
@@ -733,8 +737,12 @@ func TestPasskeyRPIDMigrationPreservesExistingCredentials(t *testing.T) {
 			for range 2 {
 				// Each migration represents a new application startup. Discard
 				// PostgreSQL's old SELECT * prepared plans along with its old pool.
-				pool.SetMaxIdleConns(0)
-				pool.SetMaxIdleConns(2)
+				// Keep SQLite's in-memory database alive; closing its last idle
+				// connection destroys the fixture before the next migration.
+				if common.MainDatabaseType() != common.DatabaseTypeSQLite {
+					pool.SetMaxIdleConns(0)
+					pool.SetMaxIdleConns(2)
+				}
 				require.NoError(t, model.DB.AutoMigrate(&model.PasskeyCredential{}))
 			}
 			after, err := model.GetPasskeyByUserID(user.Id)

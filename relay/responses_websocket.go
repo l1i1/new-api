@@ -1072,29 +1072,40 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 		}
 	}
 
-	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
-	if err != nil {
-		if retryParam.HasSaturatedChannel() {
-			return nil, responsesWSConcurrencySaturatedError(modelName)
+	filteredOut := false
+	for {
+		channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
+		if err != nil {
+			if retryParam.HasSaturatedChannel() {
+				return nil, responsesWSConcurrencySaturatedError(modelName)
+			}
+			if filteredOut {
+				return nil, types.NewErrorWithStatusCode(errors.New("selected channel does not support Responses WebSocket"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+			}
+			return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, modelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}
-		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, modelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-	}
-	if channel == nil {
-		if retryParam.HasSaturatedChannel() {
-			return nil, responsesWSConcurrencySaturatedError(modelName)
+		if channel == nil {
+			if retryParam.HasSaturatedChannel() {
+				return nil, responsesWSConcurrencySaturatedError(modelName)
+			}
+			if filteredOut {
+				return nil, types.NewErrorWithStatusCode(errors.New("selected channel does not support Responses WebSocket"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+			}
+			return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, modelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}
-		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, modelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		if ok, _ := appmodel.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
+			filteredOut = true
+			retryParam.ExcludeChannel(channel.Id)
+			continue
+		}
+		if apiErr := checkResponsesWSGroupRateLimit(c, modelName, channel); apiErr != nil {
+			return nil, apiErr
+		}
+		if err := middleware.SetupContextForSelectedChannel(c, channel, modelName); err != nil {
+			return nil, err
+		}
+		return channel, nil
 	}
-	if ok, kind := appmodel.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
-		return nil, types.NewErrorWithStatusCode(errors.New("selected channel does not support Responses WebSocket"), types.ErrorCode(kind), http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
-	}
-	if apiErr := checkResponsesWSGroupRateLimit(c, modelName, channel); apiErr != nil {
-		return nil, apiErr
-	}
-	if err := middleware.SetupContextForSelectedChannel(c, channel, modelName); err != nil {
-		return nil, err
-	}
-	return channel, nil
 }
 
 func prepareResponsesWSRetry(retryParam *service.RetryParam, channel *appmodel.Channel, statusCode int, skipRetry bool) {

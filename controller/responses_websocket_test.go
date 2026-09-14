@@ -165,8 +165,13 @@ func TestResponsesWSRequestRunnerRefreshesBillingContextAndCleansBody(t *testing
 		assert.Equal(t, "ws-second", c.GetString(common.RequestIdKey))
 		_, leaked := c.Get("previous_turn")
 		assert.False(t, leaked)
-		_, leaked = c.Get(common.KeyBodyStorage)
-		assert.False(t, leaked)
+		storageValue, leaked := c.Get(common.KeyBodyStorage)
+		require.True(t, leaked)
+		storage, ok := storageValue.(common.BodyStorage)
+		require.True(t, ok)
+		body, err := storage.Bytes()
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"input":"second"}`, string(body))
 		return nil
 	}))
 }
@@ -357,7 +362,14 @@ func newResponsesWSBillingTest(t *testing.T, expression string, handle func(*web
 		"group_ratio_setting.group_ratio": `{"default":1}`,
 		"perf_metrics_setting.enabled":    "true",
 	}))
-	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}))
+	require.NoError(t, model.DB.AutoMigrate(
+		&model.Channel{},
+		&model.Ability{},
+		&model.Log{},
+		&model.GroupAccessPolicy{},
+		&model.UserModelRateLimit{},
+		&model.GroupModelRateLimit{},
+	))
 	require.NoError(t, model.DB.Model(user).Updates(map[string]any{"quota": 100000, "setting": `{"billing_preference":"wallet_only"}`}).Error)
 	require.NoError(t, model.DB.Model(token).Update("remain_quota", 3000).Error)
 
