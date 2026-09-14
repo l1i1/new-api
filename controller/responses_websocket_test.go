@@ -550,6 +550,11 @@ func TestResponsesWebSocketNestedPassthroughUsesNormalizedBodyForUpstreamAndBill
 		}
 		received <- event
 		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"nested-response","status":"completed","usage":{"input_tokens":1000,"output_tokens":10,"total_tokens":1010}}}`))
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
 	})
 
 	var channel model.Channel
@@ -558,8 +563,16 @@ func TestResponsesWebSocketNestedPassthroughUsesNormalizedBodyForUpstreamAndBill
 	channelSetting.PassThroughBodyEnabled = true
 	channel.SetSetting(channelSetting)
 	require.NoError(t, model.DB.Model(&channel).Update("setting", channel.Setting).Error)
+	_, err := model.ReplaceUserModelRateLimits(fixture.user.Id, []model.UserModelRateLimit{{
+		ModelName:     "ws-billing",
+		WindowSeconds: 60,
+		MaxRequests:   1,
+		Enabled:       true,
+	}})
+	require.NoError(t, err)
 
-	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","event_id":"nested-1","response":{"model":"ws-billing","input":"nested input","service_tier":"priority","vendor":{"tier":"premium"}}}`)))
+	request := `{"type":"response.create","event_id":"nested-1","model":"unlimited-model","response":{"model":"ws-billing","input":"nested input","service_tier":"priority","vendor":{"tier":"premium"}}}`
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(request)))
 	terminal := readResponsesWSTestEvent(t, fixture.client)
 	assert.Equal(t, "response.completed", terminal["type"])
 
@@ -570,6 +583,14 @@ func TestResponsesWebSocketNestedPassthroughUsesNormalizedBodyForUpstreamAndBill
 	vendor, ok := upstreamEvent["vendor"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "premium", vendor["tier"])
+
+	// The conflicting top-level model must not move the second request into a
+	// different rate-limit bucket. The normalized nested model is limited to one
+	// request, so this event is rejected before it reaches the upstream socket.
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(strings.Replace(request, "nested-1", "nested-2", 1))))
+	limited := readResponsesWSTestEvent(t, fixture.client)
+	assert.Equal(t, "error", limited["type"])
+	assert.Equal(t, float64(http.StatusTooManyRequests), limited["status"])
 
 	fixture.closeAndWait(t)
 	assertResponsesWSAccounting(t, fixture, []int{2000})
