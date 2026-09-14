@@ -537,6 +537,7 @@ it('switches provider group prices, localized conditions and examples, and shows
         priceRate={1}
         usdExchangeRate={1}
         tokenUnit='M'
+        displayCurrency='USD'
       />
     </QueryClientProvider>
   )

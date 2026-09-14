@@ -507,3 +507,16 @@ changes.
   notifications and payments. Record any runtime limitations explicitly.
 - Independent review must close new merge regressions before landing. Preserve
   unrelated mainline changes if the branch advances while the candidate is tested.
+
+### Post-merge review (2026-09-15)
+
+- Review merge `7b7a4b55a` on `tokeness/main`, including unresolved test failures,
+  credential/proxy continuity, billing, authentication and frontend consumers.
+- Fix reproducible defects and incomplete test fixtures without weakening access
+  controls or changing assertions merely to match failing output.
+- Artifact requests must resolve the persisted task credential and proxy snapshot
+  through the existing task-access resolver, including reordered or removed keys.
+- Run both frontend test phases and root/relaykit Go checks to completion. Record
+  exact remaining failures and their evidence; an unfinished process is not a pass.
+- Preserve the user's existing MEMORY.md edits. Commit only reviewed task changes;
+  pushing and deployment remain outside this review.

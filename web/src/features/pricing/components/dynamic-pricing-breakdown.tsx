@@ -212,17 +212,17 @@ function formatBreakdownConditionSummary(
       language
     )
     const optionLabel = taskEnumLabel(definition, condition.value, language)
-    const conditionNode =
-      definition?.type === 'boolean'
-        ? `${label}: ${condition.value === 'true' ? t('Yes') : t('No')}`
-        : optionLabel !== condition.value
-          ? optionLabel
-          : (
-              <>
-                <span>{label}: </span>
-                <span>{optionLabel}</span>
-              </>
-            )
+    let conditionNode: ReactNode = optionLabel
+    if (definition?.type === 'boolean') {
+      conditionNode = `${label}: ${condition.value === 'true' ? t('Yes') : t('No')}`
+    } else if (optionLabel === condition.value) {
+      conditionNode = (
+        <>
+          <span>{label}: </span>
+          <span>{optionLabel}</span>
+        </>
+      )
+    }
 
     return (
       <Fragment key={`${condition.field}:${condition.value}`}>
@@ -413,16 +413,14 @@ export function DynamicPricingBreakdown({
             </div>
           </div>
         )}
-        <>
-          {!compact && (
-            <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
-              {t('Raw expression')}
-            </div>
-          )}
-          <code className='text-muted-foreground block text-xs break-all'>
-            {expr}
-          </code>
-        </>
+        {!compact && (
+          <div className='text-muted-foreground mb-1 text-[10px] font-medium tracking-wider'>
+            {t('Raw expression')}
+          </div>
+        )}
+        <code className='text-muted-foreground block text-xs break-all'>
+          {expr}
+        </code>
       </section>
     )
   }

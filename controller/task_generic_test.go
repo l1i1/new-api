@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -335,6 +336,107 @@ func TestDisabledArtifactStorePreservesPluginUpstreamContent(t *testing.T) {
 	assert.Equal(t, "artifact-bytes", recorder.Body.String())
 	assert.Equal(t, "video/mp4", recorder.Header().Get("Content-Type"))
 	assert.Equal(t, "bytes 0-13/14", recorder.Header().Get("Content-Range"))
+}
+
+func TestPluginArtifactUsesPinnedCredentialAfterChannelKeyRemoval(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCache })
+
+	require.NoError(t, model.MigrateChannelCredentialStore(model.DB))
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, task.ChannelId).Error)
+	channel.Type = constant.ChannelTypeGemini
+	channel.Key = "key-a\nkey-b"
+	channel.ChannelInfo.IsMultiKey = true
+	channel.ChannelInfo.MultiKeySize = 2
+	require.NoError(t, model.DB.Save(&channel).Error)
+	require.NoError(t, model.MigrateLegacyChannelCredentialsWithDB(model.DB))
+
+	credentials, err := model.ListChannelCredentials(model.DB, channel.Id)
+	require.NoError(t, err)
+	var keyA model.ChannelCredential
+	for _, credential := range credentials {
+		if credential.Fingerprint == model.ChannelCredentialFingerprint("key-a") {
+			keyA = credential
+			break
+		}
+	}
+	require.NotZero(t, keyA.Id)
+
+	channel.Key = "key-b"
+	channel.ChannelInfo.MultiKeySize = 1
+	require.NoError(t, model.DB.Save(&channel).Error)
+	require.NoError(t, model.MigrateLegacyChannelCredentialsWithDB(model.DB))
+
+	task.Platform = constant.TaskPlatform("google")
+	task.PrivateData = model.TaskPrivateData{
+		ChannelCredentialID: keyA.Id,
+		Execution: &model.TaskExecutionSnapshot{TaskPlugin: &model.TaskPluginSnapshot{
+			Key: "google", Name: "Google Veo (Gemini API)", Version: "1.0.0", APIVersion: 1,
+		}},
+	}
+	task.SetData(map[string]any{"response": map[string]any{
+		"generateVideoResponse": map[string]any{
+			"generatedVideos": []any{map[string]any{"video": map[string]any{"uri": "https://example.com/video.mp4"}}},
+		},
+	}})
+	require.NoError(t, model.DB.Save(task).Error)
+
+	adaptor, err := initTaskArtifactAdaptor(task)
+	require.NoError(t, err)
+	provider, ok := adaptor.(relaychannel.TaskContentRequestProvider)
+	require.True(t, ok)
+	descriptor, err := provider.BuildContentRequest(task, "video", relaychannel.TaskArtifactClientRequest{Method: http.MethodGet})
+	require.NoError(t, err)
+	require.NotNil(t, descriptor)
+	assert.Equal(t, "key-a", descriptor.Headers["x-goog-api-key"])
+}
+
+func TestProxyTaskMediaUsesPinnedProxySnapshot(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	allowPrivateTaskMediaTest(t)
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCache })
+
+	var currentProxyHits, pinnedProxyHits int
+	currentProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		currentProxyHits++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer currentProxy.Close()
+	pinnedProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		pinnedProxyHits++
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("pinned-content"))
+	}))
+	defer pinnedProxy.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("upstream-content"))
+	}))
+	defer upstream.Close()
+
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, task.ChannelId).Error)
+	channel.SetSetting(dto.ChannelSettings{Proxy: currentProxy.URL})
+	require.NoError(t, model.DB.Save(&channel).Error)
+	task.PrivateData.ProxySnapshot = pinnedProxy.URL
+	task.PrivateData.ProxySnapshotSet = true
+	require.NoError(t, model.DB.Save(task).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+
+	require.NoError(t, proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+		URL: upstream.URL, Method: http.MethodGet,
+	}))
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "pinned-content", recorder.Body.String())
+	assert.Equal(t, 0, currentProxyHits)
+	assert.Equal(t, 1, pinnedProxyHits)
 }
 
 func TestProjectedTaskArtifactValidationRejectsAmbiguousIdentity(t *testing.T) {

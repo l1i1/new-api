@@ -328,7 +328,8 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 			message: "Artifact channel is unavailable", err: err,
 		}
 	}
-	proxy := strings.TrimSpace(channel.GetSetting().Proxy)
+	_, proxy := model.ResolveTaskChannelAccess(task, channel)
+	proxy = strings.TrimSpace(proxy)
 	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
 		return &taskMediaProxyError{
 			status: http.StatusBadGateway, code: "artifact_request_rejected",
