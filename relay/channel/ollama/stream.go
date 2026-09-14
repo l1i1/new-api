@@ -231,6 +231,47 @@ func ollamaToolCallsToOpenAI(toolCalls []OllamaToolCall, startIndex int, include
 	return result, startIndex
 }
 
+func buildOllamaStreamDelta(chunk *ollamaChatStreamChunk, responseID string, created int64, model string, toolCallIndex *int) (dto.ChatCompletionsStreamResponse, bool) {
+	delta := dto.ChatCompletionsStreamResponse{
+		Id:      responseID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   model,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Index: 0,
+			Delta: dto.ChatCompletionsStreamResponseChoiceDelta{Role: "assistant"},
+		}},
+	}
+
+	var content string
+	thinking := chunk.Thinking
+	var toolCalls []OllamaToolCall
+	if chunk.Message != nil {
+		content = chunk.Message.Content
+		if len(chunk.Message.Thinking) > 0 {
+			thinking = chunk.Message.Thinking
+		}
+		toolCalls = chunk.Message.ToolCalls
+	} else {
+		content = chunk.Response
+	}
+	if content != "" {
+		delta.Choices[0].Delta.SetContentString(content)
+	}
+
+	hasPayload := content != ""
+	if thinkingContent := ollamaThinkingText(thinking); thinkingContent != "" {
+		delta.Choices[0].Delta.SetReasoningContent(thinkingContent)
+		hasPayload = true
+	}
+	if len(toolCalls) > 0 {
+		delta.Choices[0].Delta.ToolCalls, *toolCallIndex = ollamaToolCallsToOpenAI(toolCalls, *toolCallIndex, true)
+		hasPayload = true
+	}
+
+	return delta, hasPayload
+}
+
 func toUnix(ts string) int64 {
 	if ts == "" {
 		return time.Now().Unix()
@@ -275,40 +316,6 @@ type ollamaCompletionsResponse struct {
 	Model   string                            `json:"model"`
 	Choices []ollamaCompletionsResponseChoice `json:"choices"`
 	Usage   dto.Usage                         `json:"usage"`
-}
-
-func buildOllamaStreamDelta(responseID string, created int64, model string, chunk ollamaChatStreamChunk, toolCallIndex *int) (*dto.ChatCompletionsStreamResponse, bool) {
-	content := chunk.Response
-	thinking := chunk.Thinking
-	var toolCalls []OllamaToolCall
-	if chunk.Message != nil {
-		content = chunk.Message.Content
-		if len(chunk.Message.Thinking) > 0 {
-			thinking = chunk.Message.Thinking
-		}
-		toolCalls = chunk.Message.ToolCalls
-	}
-	delta := &dto.ChatCompletionsStreamResponse{
-		Id:      responseID,
-		Object:  "chat.completion.chunk",
-		Created: created,
-		Model:   model,
-		Choices: []dto.ChatCompletionsStreamResponseChoice{{
-			Index: 0,
-			Delta: dto.ChatCompletionsStreamResponseChoiceDelta{Role: "assistant"},
-		}},
-	}
-	if content != "" {
-		delta.Choices[0].Delta.SetContentString(content)
-	}
-	if thinkingContent := ollamaThinkingText(thinking); thinkingContent != "" {
-		delta.Choices[0].Delta.SetReasoningContent(thinkingContent)
-	}
-	if len(toolCalls) > 0 {
-		delta.Choices[0].Delta.ToolCalls, *toolCallIndex = ollamaToolCallsToOpenAI(toolCalls, *toolCallIndex, true)
-	}
-	hasPayload := content != "" || ollamaThinkingText(thinking) != "" || len(toolCalls) > 0
-	return delta, hasPayload
 }
 
 func ollamaRelayFormat(info *relaycommon.RelayInfo) types.RelayFormat {
@@ -556,9 +563,9 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			message.ToolCalls = newToolCalls
 			deltaChunk.Message = &message
 		}
-		delta, hasPayload := buildOllamaStreamDelta(responseId, created, model, deltaChunk, &toolCallIndex)
+		delta, hasPayload := buildOllamaStreamDelta(&deltaChunk, responseId, created, model, &toolCallIndex)
 		if hasPayload {
-			if apiErr := writeOllamaStreamChunk(c, info, delta); apiErr != nil {
+			if apiErr := writeOllamaStreamChunk(c, info, &delta); apiErr != nil {
 				return usage, ollamaStreamError(c, apiErr)
 			}
 		}

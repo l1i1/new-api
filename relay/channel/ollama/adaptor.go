@@ -67,6 +67,9 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
+	// OpenAI-compatible chat responses are handled by the OpenAI adaptor, which
+	// relies on the thinking-to-content state initialized here.
+	(&openai.Adaptor{}).Init(info)
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -78,6 +81,9 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	}
 	if strings.Contains(info.RequestURLPath, "/v1/completions") || info.RelayMode == relayconstant.RelayModeCompletions {
 		return info.ChannelBaseUrl + "/api/generate", nil
+	}
+	if info.ChannelOtherSettings.OllamaOpenAIChat {
+		return info.ChannelBaseUrl + "/v1/chat/completions", nil
 	}
 	return info.ChannelBaseUrl + "/api/chat", nil
 }
@@ -95,6 +101,10 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	// decide generate or chat
 	if strings.Contains(info.RequestURLPath, "/v1/completions") || info.RelayMode == relayconstant.RelayModeCompletions {
 		converted, err := openAIToGenerate(c, request)
+		return converted, invalidOllamaRequest(err)
+	}
+	if info.ChannelOtherSettings.OllamaOpenAIChat {
+		converted, err := (&openai.Adaptor{}).ConvertOpenAIRequest(c, info, request)
 		return converted, invalidOllamaRequest(err)
 	}
 	converted, err := openAIChatToOllamaChat(c, request)
@@ -124,6 +134,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	case relayconstant.RelayModeEmbeddings:
 		return ollamaEmbeddingHandler(c, info, resp)
 	default:
+		if info.ChannelOtherSettings.OllamaOpenAIChat {
+			return (&openai.Adaptor{}).DoResponse(c, resp, info)
+		}
 		if info.IsStream {
 			return ollamaStreamHandler(c, info, resp)
 		}

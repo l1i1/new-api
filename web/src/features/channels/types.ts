@@ -106,6 +106,7 @@ export interface ChannelOtherSettings {
   allow_inference_geo?: boolean
   allow_speed?: boolean
   claude_beta_query?: boolean
+  ollama_openai_chat?: boolean
   disable_task_polling_sleep?: boolean
   // Platform model ids this channel serves with verified official-equivalent
   // behavior; official-fit routing may pin them here regardless of channel type.
