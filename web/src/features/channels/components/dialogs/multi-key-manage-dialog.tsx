@@ -56,6 +56,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { handleServerError } from '@/lib/handle-server-error'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -293,13 +294,11 @@ export function MultiKeyManageDialog({
           setKeyMetrics({})
         }
       } else {
-        toast.error(response.message || t('Failed to load key status'))
+        handleServerError(response, t('Failed to load key status'))
       }
     } catch (error: unknown) {
       if (!isCurrentLoad()) return
-      toast.error(
-        error instanceof Error ? error.message : t('Failed to load key status')
-      )
+      handleServerError(error, t('Failed to load key status'))
     } finally {
       if (isCurrentLoad()) setIsLoading(false)
     }
@@ -380,13 +379,11 @@ export function MultiKeyManageDialog({
           loadKeyStatus(currentPage, pageSize)
         }
       } else {
-        toast.error(response?.message || t('Operation failed'))
+        handleServerError(response, t('Operation failed'))
       }
     } catch (error: unknown) {
       if (!isCurrentChannel(channelId)) return
-      toast.error(
-        error instanceof Error ? error.message : t('Operation failed')
-      )
+      handleServerError(error, t('Operation failed'))
     } finally {
       if (isCurrentChannel(channelId)) {
         setIsPerformingAction(false)
@@ -410,11 +407,10 @@ export function MultiKeyManageDialog({
       toast.error(t('No enabled keys to test'))
       return
     }
-    const requestedKeyCount = selectedIds
-      ? selectedIds.length
-      : all
-        ? Math.max(total, 1)
-        : Math.max(enabledCount, 1)
+    let requestedKeyCount = all ? Math.max(total, 1) : Math.max(enabledCount, 1)
+    if (selectedIds) {
+      requestedKeyCount = selectedIds.length
+    }
     if (requestedKeyCount > MAX_KEYS_PER_TEST) {
       toast.error(
         t('A test task supports at most {{count}} keys; select a smaller group', {
@@ -762,6 +758,15 @@ export function MultiKeyManageDialog({
     testProgress && testProgress.total > 0
       ? Math.min(100, Math.round((testProgress.processed / testProgress.total) * 100))
       : null
+  let testButtonLabel = t('Test enabled')
+  if (isTestingKeys) {
+    testButtonLabel = testProgress
+      ? t('Testing {{processed}}/{{total}}', {
+          processed: testProgress.processed,
+          total: testProgress.total,
+        })
+      : t('Testing...')
+  }
 
   return (
     <>
@@ -885,14 +890,7 @@ export function MultiKeyManageDialog({
                 title={enabledCount === 0 ? t('No enabled keys to test') : undefined}
               >
                 <FlaskConical className='mr-2 h-4 w-4' />
-                {isTestingKeys
-                  ? testProgress
-                    ? t('Testing {{processed}}/{{total}}', {
-                        processed: testProgress.processed,
-                        total: testProgress.total,
-                      })
-                    : t('Testing...')
-                  : t('Test enabled')}
+                {testButtonLabel}
               </Button>
               <Button
                 variant='outline'

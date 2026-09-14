@@ -1,5 +1,8 @@
 # French translations
 
+# Task plugin messages
+task_plugin.unknown_meta_field: "Les métadonnées du plugin contiennent un champ inconnu «{{.Field}}». Si ce plugin a été téléchargé depuis le marché officiel, il peut nécessiter une version plus récente de new-api. Essayez de mettre à jour new-api puis de réinstaller le plugin."
+
 # Common messages
 common.invalid_params: "Paramètres invalides"
 common.database_error: "Erreur de base de données, veuillez contacter l'administrateur"
@@ -193,6 +196,9 @@ passkey.login_abnormal: "Statut de connexion passkey anormal"
 passkey.update_failed: "Échec de la mise à jour de la clé d'accès"
 passkey.invalid_user_id: "ID utilisateur invalide"
 passkey.verify_failed: "Échec de la vérification de la passkey, veuillez réessayer ou contacter l'administrateur"
+passkey.rp_id_invalid: "Domaine Passkey invalide. Saisissez un domaine sans schéma, port, chemin ni caractère générique."
+passkey.rp_id_unavailable: "Ce domaine Passkey n'est pas disponible sur ce site. Utilisez son site d'origine ou une autre méthode de vérification."
+passkey.rp_id_removal_confirmation: "Vérifiez les Passkeys concernés et confirmez la suppression du domaine. Si les paramètres ou l'impact ont changé, une nouvelle confirmation est requise."
 
 # 2FA messages
 twofa.not_enabled: "L'utilisateur n'a pas activé la 2FA"

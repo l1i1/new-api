@@ -26,6 +26,7 @@ const emptyExtras = {
   cacheCreateTokens: 0,
   cacheCreate1hTokens: 0,
   imageTokens: 0,
+  imageCacheTokens: 0,
   imageOutputTokens: 0,
   audioInputTokens: 0,
   audioOutputTokens: 0,
@@ -51,7 +52,7 @@ describe('local billing expression evaluator', () => {
       100,
       0,
       emptyExtras,
-      now
+      { now }
     )
 
     assert.equal(result.error, null)
@@ -66,7 +67,7 @@ describe('local billing expression evaluator', () => {
       0,
       0,
       emptyExtras,
-      now
+      { now }
     )
 
     assert.equal(result.error, null)
@@ -80,12 +81,12 @@ describe('local billing expression evaluator', () => {
       0,
       0,
       emptyExtras,
-      new Date('2026-01-01T00:00:00Z')
+      { now: new Date('2026-01-01T00:00:00Z') }
     )
 
     assert.equal(result.cost, 0)
     assert.equal(result.matchedTier, '')
-    assert.match(result.error ?? '', /Local timezone is not supported/)
+    assert.match(result.error ?? '', /Local timezone/)
   })
 
   test('evaluates the DeepSeek peak/off-peak expression without preview errors', () => {
@@ -94,7 +95,7 @@ describe('local billing expression evaluator', () => {
       1000,
       500,
       { ...emptyExtras, cacheReadTokens: 200 },
-      new Date('2026-01-01T02:00:00Z')
+      { now: new Date('2026-01-01T02:00:00Z') }
     )
 
     assert.equal(result.error, null)

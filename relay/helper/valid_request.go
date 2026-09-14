@@ -2,6 +2,7 @@ package helper
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,8 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-
-	"encoding/json"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -127,7 +126,8 @@ func GetAndValidateEmbeddingRequest(c *gin.Context, relayMode int) (*dto.Embeddi
 // overflow the conversion and corrupt billing.
 const maxTokensLimit = math.MaxInt32 / 2
 
-func exceedsMaxTokensLimit(values ...*uint) bool {
+// ExceedsMaxTokensLimit checks token limits before they reach billing arithmetic.
+func ExceedsMaxTokensLimit(values ...*uint) bool {
 	for _, v := range values {
 		if lo.FromPtrOr(v, uint(0)) > maxTokensLimit {
 			return true
@@ -148,7 +148,7 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if request.Input == nil {
 		return nil, errors.New("input is required")
 	}
-	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
+	if ExceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
 	return request, nil
@@ -209,6 +209,9 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			}
 			imageRequest.Quality = formData.Get("quality")
 			imageRequest.Size = formData.Get("size")
+			if parameters := formData.Get("parameters"); parameters != "" {
+				imageRequest.Extra = map[string]json.RawMessage{"parameters": json.RawMessage(parameters)}
+			}
 			if streamValue := strings.TrimSpace(formData.Get("stream")); streamValue != "" {
 				stream, err := strconv.ParseBool(streamValue)
 				if err != nil {
@@ -244,7 +247,6 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 		}
 
 		if imageRequest.Model == "" {
-			//imageRequest.Model = "dall-e-3"
 			return nil, errors.New("model is required")
 		}
 
@@ -256,25 +258,10 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 			return nil, fmt.Errorf("n must be an integer between 1 and %d", dto.MaxImageN)
 		}
 
-		// Not "256x256", "512x512", or "1024x1024"
-		if imageRequest.Model == "dall-e-2" || imageRequest.Model == "dall-e" {
-			if imageRequest.Size != "" && imageRequest.Size != "256x256" && imageRequest.Size != "512x512" && imageRequest.Size != "1024x1024" {
-				return nil, errors.New("size must be one of 256x256, 512x512, or 1024x1024 for dall-e-2 or dall-e")
-			}
-			if imageRequest.Size == "" {
-				imageRequest.Size = "1024x1024"
-			}
-		} else if imageRequest.Model == "dall-e-3" {
-			if imageRequest.Size != "" && imageRequest.Size != "1024x1024" && imageRequest.Size != "1024x1792" && imageRequest.Size != "1792x1024" {
-				return nil, errors.New("size must be one of 1024x1024, 1024x1792 or 1792x1024 for dall-e-3")
-			}
-			if imageRequest.Quality == "" {
-				imageRequest.Quality = "standard"
-			}
-			if imageRequest.Size == "" {
-				imageRequest.Size = "1024x1024"
-			}
-		} else if imageRequest.Model == "gpt-image-1" {
+		if err := imageRequest.NormalizeLegacyDalleImageRequest(); err != nil {
+			return nil, err
+		}
+		if imageRequest.Model == "gpt-image-1" {
 			if imageRequest.Quality == "" {
 				imageRequest.Quality = "auto"
 			}
@@ -289,6 +276,19 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 		}
 	}
 
+	// Provider parameters can override the top-level count. Validate before
+	// pricing so malformed multipliers return a client error, not a pricing
+	// failure after reservation has started.
+	if raw, exists := imageRequest.Extra["parameters"]; exists {
+		parameters := &dto.ImageBillingParameters{}
+		if err := common.Unmarshal(raw, parameters); err != nil {
+			return nil, fmt.Errorf("invalid image parameters: %w", err)
+		}
+		imageRequest.BillingParameters = parameters
+	}
+	if _, err := imageRequest.ImageCount(common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeAli); err != nil {
+		return nil, err
+	}
 	return imageRequest, nil
 }
 
@@ -304,7 +304,7 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 	if textRequest.Model == "" {
 		return nil, errors.New("field model is required")
 	}
-	if exceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxTokensToSample) {
+	if ExceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxTokensToSample) {
 		return nil, errors.New("max_tokens is invalid")
 	}
 
@@ -332,8 +332,11 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		textRequest.Model = c.Param("model")
 	}
 
-	if exceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxCompletionTokens) {
+	if ExceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxCompletionTokens) {
 		return nil, errors.New("max_tokens is invalid")
+	}
+	if ExceedsMaxTokensLimit(textRequest.MinTokens) {
+		return nil, errors.New("min_tokens is invalid")
 	}
 	if textRequest.Model == "" {
 		return nil, errors.New("model is required")
@@ -409,8 +412,8 @@ const (
 	deepSeekV4MaxTokensRangeMessage = "Invalid max_tokens value, the valid range of max_tokens is [1, 393216]"
 	// deepSeekV4MaxTokensUpperLimit is the official per-request output cap from
 	// the model & pricing page (384K).
-	deepSeekV4MaxTokensUpperLimit               = 393216
-	deepSeekV4StopArrayLimit                    = 16
+	deepSeekV4MaxTokensUpperLimit = 393216
+	deepSeekV4StopArrayLimit      = 16
 	// Live-probed 2026-09-01 (audit r6): the official endpoint also rejects
 	// these with their own texts; the penalty ranges surfaced via
 	// presence/frequency_penalty 2.5 probes, the rest via dedicated shapes.
@@ -421,8 +424,8 @@ const (
 	// Official role serde enum (live-probed): `developer` is rejected with the
 	// standard deserialization text listing five variants, latest_reminder
 	// included.
-	deepSeekV4RoleDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: messages["
-	deepSeekV4ToolChoiceDeserMessage = "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool"
+	deepSeekV4RoleDeserMessagePrefix            = "Failed to deserialize the JSON body into the target type: messages["
+	deepSeekV4ToolChoiceDeserMessage            = "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool"
 	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
 	// Official tool-call state machine texts (live-probed 2026-09-01). A tool
@@ -1315,7 +1318,7 @@ func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error)
 	if len(request.Contents) == 0 && len(request.Requests) == 0 {
 		return nil, errors.New("contents is required")
 	}
-	if exceedsMaxTokensLimit(request.GenerationConfig.MaxOutputTokens) {
+	if ExceedsMaxTokensLimit(request.GenerationConfig.MaxOutputTokens) {
 		return nil, errors.New("maxOutputTokens is invalid")
 	}
 

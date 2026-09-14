@@ -547,7 +547,7 @@ func UpdateChannelCredentialStatuses(db *gorm.DB, input ChannelCredentialStatusU
 				delete(other, "status_time")
 				channel.SetOtherInfo(other)
 			}
-		} else {
+		} else if channel.Status != common.ChannelStatusManuallyDisabled {
 			channel.Status = common.ChannelStatusAutoDisabled
 			other["status_reason"] = "All keys are disabled"
 			other["status_time"] = now

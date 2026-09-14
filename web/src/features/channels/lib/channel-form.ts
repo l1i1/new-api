@@ -22,6 +22,8 @@ import {
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_TYPE_NEW_API,
   CHANNEL_TYPE_TASK_PLUGIN,
+  CHANNEL_TYPE_VLLM,
+  CHANNEL_TYPE_SGLANG,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   FIELD_PASSTHROUGH_TYPES,
@@ -249,6 +251,7 @@ export const channelFormSchema = z
     concurrency_limit: z.number().int().min(0).max(10000).optional(),
     pass_through_body_enabled: z.boolean().optional(),
     ollama_cache_estimation_enabled: z.boolean().optional(),
+    responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     // Multi-key scheduled test (stored in setting JSON as multi_key_test)
@@ -281,9 +284,16 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_TASK_PLUGIN].includes(
-        data.type
-      ) &&
+      [
+        3,
+        8,
+        36,
+        45,
+        CHANNEL_TYPE_NEW_API,
+        CHANNEL_TYPE_TASK_PLUGIN,
+        CHANNEL_TYPE_VLLM,
+        CHANNEL_TYPE_SGLANG,
+      ].includes(data.type) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -428,6 +438,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   concurrency_limit: 0,
   pass_through_body_enabled: false,
   ollama_cache_estimation_enabled: false,
+  responses_websocket_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
   multi_key_test_enabled: false,
@@ -476,6 +487,7 @@ export function transformChannelToFormDefaults(
     concurrency_limit: 0,
     pass_through_body_enabled: false,
     ollama_cache_estimation_enabled: false,
+    responses_websocket_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
     multi_key_test_enabled: false,
@@ -506,6 +518,8 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         ollama_cache_estimation_enabled:
           parsed.ollama_cache_estimation_enabled || false,
+        responses_websocket_enabled:
+          parsed.responses_websocket_enabled === true,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
         multi_key_test_enabled: parsed.multi_key_test?.enabled === true,
@@ -640,6 +654,9 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     ollama_cache_estimation_enabled:
       formData.ollama_cache_estimation_enabled || false,
+    responses_websocket_enabled:
+      (formData.type === 1 || formData.type === 57) &&
+      formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
   }

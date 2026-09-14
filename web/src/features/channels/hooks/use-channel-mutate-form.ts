@@ -25,6 +25,8 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { handleServerError } from '@/lib/handle-server-error'
+import { createServerError } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { createChannel, updateChannel } from '../api'
@@ -95,7 +97,6 @@ function getChannelMutationErrorKey(error: unknown): string | undefined {
   }
   return CHANNEL_MUTATION_ERROR_KEYS[message] ?? message
 }
-
 export function useChannelMutateForm(props: UseChannelMutateFormParams) {
   const { t } = useTranslation()
   const currentUser = useAuthStore((s) => s.auth.user)
@@ -126,9 +127,17 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
           delete payload.multi_key_mode
         }
 
-        const response = await updateChannel(props.currentRow.id, payload)
+        const payloadWithKeyMode = {
+          ...payload,
+          ...(canEditSensitive && props.isMultiKeyChannel && data.multi_key_type
+            ? { multi_key_mode: data.multi_key_type }
+            : {}),
+        }
+        const response = await updateChannel(props.currentRow.id, {
+          ...payloadWithKeyMode,
+        })
         if (!response.success) {
-          throw new Error(response.message || t(ERROR_MESSAGES.UPDATE_FAILED))
+          throw createServerError(response, t(ERROR_MESSAGES.UPDATE_FAILED))
         }
         return SUCCESS_MESSAGES.UPDATED
       }
@@ -136,7 +145,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
       const payload = transformFormDataToCreatePayload(data)
       const response = await createChannel(payload)
       if (!response.success) {
-        throw new Error(response.message || t(ERROR_MESSAGES.CREATE_FAILED))
+        throw createServerError(response, t(ERROR_MESSAGES.CREATE_FAILED))
       }
       return SUCCESS_MESSAGES.CREATED
     },
@@ -146,7 +155,11 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
     },
     onError: (error: unknown) => {
       const message = getChannelMutationErrorKey(error)
-      toast.error(message ? t(message) : t(ERROR_MESSAGES.CREATE_FAILED))
+      if (message) {
+        toast.error(t(message))
+      } else {
+        handleServerError(error, t(ERROR_MESSAGES.CREATE_FAILED))
+      }
     },
   })
 }

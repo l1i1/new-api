@@ -23,13 +23,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func updateOpenAIImageCount(info *relaycommon.RelayInfo, count int64) {
-	if info == nil || !info.PriceData.UsePrice || count <= 0 || count > int64(dto.MaxImageN) {
-		return
-	}
-	info.PriceData.AddOtherRatio("n", float64(count))
-}
-
 // emptyImageResponseError marks an upstream 200 image response that carried no
 // images as an upstream failure so the request is retried or refunded instead
 // of being billed for zero output, mirroring emptyChatCompletionError for the
@@ -81,7 +74,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		// instead of billing a full image price for zero output.
 		return nil, emptyImageResponseError()
 	}
-	updateOpenAIImageCount(info, imageCount)
+	info.UpdateImageCount(imageCount)
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -110,12 +103,7 @@ func normalizeOpenAIUsage(usage *dto.Usage) {
 		usage.CompletionTokens = usage.OutputTokens
 	}
 	if usage.InputTokensDetails != nil {
-		usage.PromptTokensDetails.CachedTokens = usage.InputTokensDetails.CachedTokens
-		usage.PromptTokensDetails.CachedCreationTokens = usage.InputTokensDetails.CachedCreationTokens
-		usage.PromptTokensDetails.CacheWriteTokens = usage.InputTokensDetails.CacheWriteTokens
-		usage.PromptTokensDetails.ImageTokens = usage.InputTokensDetails.ImageTokens
-		usage.PromptTokensDetails.TextTokens = usage.InputTokensDetails.TextTokens
-		usage.PromptTokensDetails.AudioTokens = usage.InputTokensDetails.AudioTokens
+		usage.PromptTokensDetails = usage.InputTokensDetails.Clone()
 	}
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -216,12 +204,8 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	if info.StreamStatus != nil {
 		upstreamFinished := info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone ||
 			info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF
-		requestedN := 1.0
-		if n, ok := info.PriceData.OtherRatios()["n"]; ok {
-			requestedN = n
-		}
-		if upstreamFinished || float64(completedImages) > requestedN {
-			updateOpenAIImageCount(info, completedImages)
+		if upstreamFinished || completedImages > int64(info.RequestedImageCount()) {
+			info.UpdateImageCount(completedImages)
 		}
 	}
 	return usage, nil
@@ -321,7 +305,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	if imageCount == 0 {
 		return nil, emptyImageResponseError()
 	}
-	updateOpenAIImageCount(info, imageCount)
+	info.UpdateImageCount(imageCount)
 
 	helper.SetEventStreamHeaders(c)
 	c.Status(http.StatusOK)

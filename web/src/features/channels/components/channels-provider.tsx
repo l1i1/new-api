@@ -41,6 +41,7 @@ type DialogType =
   | 'balance-query'
   | 'fetch-models'
   | 'ollama-models'
+  | 'inference-status'
   | 'multi-key-manage'
   | 'observability'
   | 'tag-batch-edit'

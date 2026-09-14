@@ -1,5 +1,8 @@
 # Vietnamese translations
 
+# Task plugin messages
+task_plugin.unknown_meta_field: "Siêu dữ liệu plugin chứa trường không xác định «{{.Field}}». Nếu plugin được tải xuống từ chợ chính thức, có thể cần phiên bản new-api mới hơn. Hãy cập nhật new-api rồi cài đặt lại plugin."
+
 # Common messages
 common.invalid_params: "Tham số không hợp lệ"
 common.database_error: "Lỗi cơ sở dữ liệu, vui lòng liên hệ quản trị viên"
@@ -193,6 +196,9 @@ passkey.login_abnormal: "Trạng thái đăng nhập Passkey bất thường"
 passkey.update_failed: "Cập nhật thông tin Passkey thất bại"
 passkey.invalid_user_id: "ID người dùng không hợp lệ"
 passkey.verify_failed: "Xác minh Passkey thất bại, vui lòng thử lại hoặc liên hệ quản trị viên"
+passkey.rp_id_invalid: "Tên miền Passkey không hợp lệ. Hãy nhập tên miền không có scheme, cổng, đường dẫn hoặc ký tự đại diện."
+passkey.rp_id_unavailable: "Tên miền Passkey này không khả dụng trên trang web hiện tại. Hãy sử dụng trang web gốc hoặc phương thức xác minh khác."
+passkey.rp_id_removal_confirmation: "Hãy kiểm tra các Passkey bị ảnh hưởng và xác nhận việc xóa tên miền. Nếu cài đặt hoặc phạm vi ảnh hưởng đã thay đổi, cần xác nhận lại."
 
 # 2FA messages
 twofa.not_enabled: "Người dùng chưa bật 2FA"

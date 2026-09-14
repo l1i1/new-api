@@ -39,7 +39,22 @@ export function getTaskMatrixDisplayTiers(
   schema: BillingUsageSchema | null | undefined
 ): ParsedTaskTier[] | null {
   if (!schema) return null
-  if (getTaskEnumFields(schema).length === 0) return null
+  const enumFields = getTaskEnumFields(schema)
+  if (enumFields.length === 0) return null
+
+  // A conditional expression that only mentions one dimension must keep its
+  // fallback row instead of expanding every unrelated plugin-wide enum.
+  // Matrix expansion is reserved for a flat price or a partition that
+  // explicitly constrains every enum field in each non-fallback branch.
+  const parsedTiers = parseTaskTiersFromExpr(expression || '', schema)
+  if (
+    parsedTiers.length > 1 &&
+    parsedTiers
+      .slice(0, -1)
+      .some((tier) => tier.conditions.length !== enumFields.length)
+  ) {
+    return null
+  }
 
   const matrix = tryParseTaskMatrixConfig(expression, schema)
   if (!matrix) return null

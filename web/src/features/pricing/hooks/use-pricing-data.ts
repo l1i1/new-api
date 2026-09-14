@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
 import { resolveTntContent } from '@/lib/tnt-content'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getPricing } from '../api'
 import { localizePricingVendorName } from '../lib/vendor-localization'
@@ -33,7 +34,7 @@ export function usePricingData(enabled = true) {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['pricing'],
-    queryFn: getPricing,
+    queryFn: async () => requireServerSuccess(await getPricing()),
     staleTime: 5 * 60 * 1000,
     enabled,
   })

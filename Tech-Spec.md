@@ -455,3 +455,55 @@ changes.
 - Work is performed on an isolated candidate branch; no deploy or push is part
   of this synchronization.
 - Existing dirty changes in the main checkout remain untouched.
+
+## Upstream Snapshot 2026-09-15 Synchronization
+
+### Scope and immutable inputs
+
+- Fork parent: `b5b7c2d089dac58fe511985b4ca91b754f010766`.
+- Upstream parent: `8529f209c85913de9ec98c5af49dcfce4a41361a` (rc37 plus 16 commits).
+- Common base: rc36 `ea7cb0ba4e0f82e2bfa5e55752eb68bdf902f71b`.
+- Integrate the 41 upstream commits in an isolated worktree, review the candidate,
+  then merge into `tokeness/main`. Push and production deployment are separate work.
+- Preserve the main checkout's existing MEMORY.md modification. The failed-request
+  refund-log feature was intentionally removed before this sync and must not be
+  resurrected from the obsolete `70c3984da` baseline.
+
+### Tasks and contract priorities
+
+1. Resolve conflicts as a behavioral union, with separate ownership for routing,
+   authentication/options, relay/billing, frontend pricing, channel editing,
+   application state, commerce/logs, and locales.
+2. Trace Responses HTTP/WebSocket validation, authorization, billing, retries,
+   concurrency slot lifetime, affinity and credential selection together. Preserve
+   existing official-fit and content-policy behavior and synchronous refunds.
+3. Combine multi-RP passkeys with configured user-verification policy, single-use
+   challenges, trusted origins and atomic domain settings. Review applicable OWASP
+   Authentication/Session guidance before modifying authentication behavior.
+4. Adopt upstream expression parsing while retaining time conditions, currency
+   preferences, original prices, task/video prices, localized model text and TTFT.
+   Trace backend usage fields through summaries and audit details to UI consumers.
+5. Preserve channel settings through create/edit/readback, especially concurrency,
+   official-fit models, credential revisions/proxies and scheduled multi-key tests.
+6. Preserve HotPay per-application settlement, invoice currency/fees, security and
+   deployment controls; verify options/index migrations on representative schemas.
+7. Merge locale keys without dropping translations; require byte-identical JSON
+   round-trip before rewriting, identical final key sets and no duplicate keys.
+
+### Acceptance and verification
+
+- The reviewed result contains both immutable parents, has no unresolved paths or
+  conflict markers, and passes `git diff --check`.
+- Record both directions of parent/result blob equality, inspect suspicious cases,
+  scan fork-only commit additions for surviving behavior, and inspect orphaned
+  producers. Renamed/replaced implementations need semantic evidence, not matching
+  line counts alone.
+- Root Go build/vet/test use `-p 2` on this Windows machine; independently build and
+  test relaykit with `GOWORK=off`. Exercise changed billing/auth/relay contracts.
+- Run frontend typecheck, lint on changed code, production build, i18n synchronization
+  and both Vitest and node:test phases. Compare failures with this exact fork parent
+  in a separate baseline checkout; do not reuse historic rc36 failure counts.
+- Use representative UI smoke checks for pricing, channel settings, passkeys,
+  notifications and payments. Record any runtime limitations explicitly.
+- Independent review must close new merge regressions before landing. Preserve
+  unrelated mainline changes if the branch advances while the candidate is tested.

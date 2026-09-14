@@ -29,6 +29,7 @@ import { SiteNoticeDialog } from '@/components/site-notice-dialog'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import {
   getNotificationAutoOpenOptions,
   useNotifications,
@@ -81,6 +82,7 @@ export function PublicHeader(props: PublicHeaderProps) {
 
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const [scrolled, setScrolled] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [authPromptTarget, setAuthPromptTarget] =
     useState<AuthPromptTarget | null>(null)
@@ -138,6 +140,13 @@ export function PublicHeader(props: PublicHeaderProps) {
   if (loading) {
     desktopAuthContent = <Skeleton className='h-8 w-20 rounded-lg' />
   }
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 20)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? 'hidden' : ''
@@ -215,20 +224,42 @@ export function PublicHeader(props: PublicHeaderProps) {
         onOpenChange={notifications.setSiteNoticeOpen}
       />
       <header className='border-border bg-background/95 pointer-events-none fixed inset-x-0 top-0 z-50 border-b'>
-        <div className='pointer-events-auto mx-auto max-w-7xl px-4 md:px-6'>
-          <nav className='grid h-14 grid-cols-[minmax(0,1fr)_auto] items-center px-1 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-x-4'>
+        <div
+          className={cn(
+            'pointer-events-auto mx-auto transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]',
+            scrolled ? 'max-w-[52rem] px-3 pt-3' : 'max-w-7xl px-4 pt-0 md:px-6'
+          )}
+        >
+          <nav
+            className={cn(
+              'grid grid-cols-[minmax(0,1fr)_auto] items-center px-1 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-x-4',
+              scrolled
+                ? 'bg-background/60 ring-border/50 h-12 rounded-2xl pr-1.5 pl-4 shadow-[0_2px_16px_-6px_rgba(0,0,0,0.08),0_0_0_0.5px_rgba(0,0,0,0.02)] ring-[0.5px] backdrop-blur-2xl dark:shadow-[0_2px_16px_-6px_rgba(0,0,0,0.4)]'
+                : 'h-14'
+            )}
+          >
             {/* Logo */}
-            <Link
-              to={homeUrl}
-              className='group flex shrink-0 items-center gap-2.5'
-            >
-              <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
-                {logoContent}
-              </div>
-              <span className='text-sm font-semibold'>
-                {loading ? <Skeleton className='h-4 w-16' /> : displaySiteName}
-              </span>
-            </Link>
+            <div className='@container/system-brand flex min-w-0 items-center gap-1'>
+              <Link
+                to={homeUrl}
+                className='group flex min-w-0 shrink-0 items-center gap-2.5'
+              >
+                <div className='flex size-7 shrink-0 items-center justify-center transition-all duration-300 group-hover:scale-105'>
+                  {logoContent}
+                </div>
+                <span
+                  className='max-w-48 truncate text-sm font-semibold tracking-tight'
+                  title={displaySiteName}
+                >
+                  {loading ? (
+                    <Skeleton className='h-4 w-16' />
+                  ) : (
+                    displaySiteName
+                  )}
+                </span>
+              </Link>
+              <SystemUpdateAction presentation='version' />
+            </div>
 
             {/* Desktop nav */}
             <div
@@ -269,6 +300,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                   <Link
                     key={link.id ?? `${link.href}-${link.title}`}
                     to={link.href}
+                    title={t(link.title)}
                     disabled={link.disabled}
                     onClick={(event) => handleNavLinkClick(event, link)}
                     className={cn(
@@ -329,7 +361,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                 type='button'
                 variant='ghost'
                 size='icon'
-                className='size-9 xl:hidden'
+                className='size-9'
                 onClick={() => setMobileOpen((v) => !v)}
                 aria-label={t('Toggle navigation menu')}
               >
@@ -362,7 +394,7 @@ export function PublicHeader(props: PublicHeaderProps) {
       {/* Mobile full-screen overlay */}
       <div
         className={cn(
-          'bg-background fixed inset-0 z-40 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] xl:pointer-events-none xl:hidden',
+          'bg-background/98 fixed inset-0 z-40 backdrop-blur-2xl transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] xl:pointer-events-none xl:hidden',
           mobileOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0'

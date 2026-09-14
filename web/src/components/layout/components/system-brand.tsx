@@ -61,12 +61,16 @@ export function SystemBrand(props: SystemBrandProps) {
         to='/'
         aria-label={t('Go to home')}
         className={cn(
-          'text-foreground inline-flex h-8 items-center gap-2 px-2 text-sm font-semibold transition-colors outline-none select-none',
+          'text-foreground inline-flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-sm font-semibold transition-colors outline-none select-none',
           'hover:bg-accent/60 focus-visible:ring-ring/40 focus-visible:ring-2'
         )}
       >
-        <div className='flex size-5 items-center justify-center overflow-hidden'>
-          <img src={logo} alt={t('Logo')} className='size-full object-cover' />
+        <div className='flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-md'>
+          <img
+            src={logo}
+            alt={t('Logo')}
+            className='size-full rounded-md object-cover'
+          />
         </div>
         <span className='max-w-[12rem] truncate'>{name}</span>
       </Link>

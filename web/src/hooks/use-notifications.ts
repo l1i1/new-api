@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { useStatus } from '@/hooks/use-status'
 import { getNotice } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { useNotificationStore } from '@/stores/notification-store'
 
 export const NOTIFICATION_REFRESH_INTERVAL_MS = 5 * 60 * 1000
@@ -102,7 +103,7 @@ export function useNotifications(
     refetch: refetchNotice,
   } = useQuery({
     queryKey: ['notice'],
-    queryFn: getNotice,
+    queryFn: async () => requireServerSuccess(await getNotice()),
     staleTime: 1000 * 60 * 5, // 5 minutes
     refetchInterval:
       options.autoOpenNotice || options.autoOpenPopover ? 1000 * 60 * 5 : false,
@@ -119,7 +120,6 @@ export function useNotifications(
   const announcementsEnabled = status?.announcements_enabled ?? false
   const announcements = useMemo<Record<string, unknown>[]>(() => {
     if (!announcementsEnabled) return []
-
     return ((status?.announcements || []) as Record<string, unknown>[]).slice(
       0,
       20

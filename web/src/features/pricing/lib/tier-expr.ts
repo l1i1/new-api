@@ -17,6 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { BILLING_CACHE_VAR_MAP } from './billing-expr'
+import { compileBillingExpression } from './billing-expression/parser'
+import { evaluateBillingExpression } from './billing-expression/runtime'
+import type {
+  BillingSimulationContext,
+  TokenVariable,
+} from './billing-expression/types'
 
 export const CACHE_MODE_TIMED = 'timed'
 export const CACHE_MODE_GENERIC = 'generic'
@@ -29,6 +35,8 @@ export type TierConditionInput = {
 }
 
 export type VisualTier = {
+  billing_unit?: 'token' | 'request'
+  fixed_price?: string
   label: string
   conditions: TierConditionInput[]
   input_unit_cost: number
@@ -48,7 +56,7 @@ export type VisualConfig = {
   tiers: VisualTier[]
 }
 
-export function getTierCacheMode(
+function getTierCacheMode(
   tier: Partial<VisualTier> | null | undefined
 ): CacheMode {
   if (tier?.cache_mode === CACHE_MODE_TIMED) return CACHE_MODE_TIMED
@@ -58,9 +66,7 @@ export function getTierCacheMode(
     : CACHE_MODE_GENERIC
 }
 
-export function normalizeVisualTier(
-  tier: Partial<VisualTier> = {}
-): VisualTier {
+function normalizeVisualTier(tier: Partial<VisualTier> = {}): VisualTier {
   return {
     label: tier.label ?? '',
     input_unit_cost: Number(tier.input_unit_cost) || 0,
@@ -92,7 +98,7 @@ export function createDefaultVisualConfig(): VisualConfig {
   }
 }
 
-export function normalizeVisualConfig(
+function normalizeVisualConfig(
   config: VisualConfig | null | undefined
 ): VisualConfig {
   if (!config || !Array.isArray(config.tiers) || config.tiers.length === 0) {
@@ -113,6 +119,7 @@ function buildConditionStr(conditions: TierConditionInput[]): string {
 }
 
 function buildTierBodyExpr(tier: VisualTier): string {
+  if (tier.billing_unit === 'request') return `fixed(${tier.fixed_price ?? ''})`
   const parts: string[] = []
   const ic = Number(tier.input_unit_cost) || 0
   const oc = Number(tier.output_unit_cost) || 0
@@ -261,6 +268,7 @@ const ESTIMATOR_VARS = [
   { var: 'cc', stateKey: 'cacheCreateTokens' },
   { var: 'cc1h', stateKey: 'cacheCreate1hTokens' },
   { var: 'img', stateKey: 'imageTokens' },
+  { var: 'img_cr', stateKey: 'imageCacheTokens' },
   { var: 'img_o', stateKey: 'imageOutputTokens' },
   { var: 'ai', stateKey: 'audioInputTokens' },
   { var: 'ao', stateKey: 'audioOutputTokens' },
@@ -275,63 +283,7 @@ export type EvalResult = {
   cost: number
   matchedTier: string
   error: string | null
-}
-
-type LocalTimeParts = {
-  hour: number
-  minute: number
-  weekday: number
-  month: number
-  day: number
-}
-
-const UTC_TIME_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
-  timeZone: 'UTC',
-  hour: '2-digit',
-  hourCycle: 'h23',
-  minute: '2-digit',
-  weekday: 'short',
-  month: '2-digit',
-  day: '2-digit',
-}
-
-function localTimeParts(now: Date, timezone: string): LocalTimeParts {
-  const requestedTimezone = timezone.trim() || 'UTC'
-  if (requestedTimezone === 'Local') {
-    throw new Error(
-      'The Local timezone is not supported in browser billing previews; use an IANA timezone name'
-    )
-  }
-  let formatter: Intl.DateTimeFormat
-  try {
-    formatter = new Intl.DateTimeFormat('en-US', {
-      ...UTC_TIME_FORMAT_OPTIONS,
-      timeZone: requestedTimezone,
-    })
-  } catch {
-    formatter = new Intl.DateTimeFormat('en-US', UTC_TIME_FORMAT_OPTIONS)
-  }
-
-  const parts = Object.fromEntries(
-    formatter.formatToParts(now).map((part) => [part.type, part.value])
-  )
-  const weekdayByName: Record<string, number> = {
-    Sun: 0,
-    Mon: 1,
-    Tue: 2,
-    Wed: 3,
-    Thu: 4,
-    Fri: 5,
-    Sat: 6,
-  }
-
-  return {
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-    weekday: weekdayByName[parts.weekday] ?? 0,
-    month: Number(parts.month),
-    day: Number(parts.day),
-  }
+  billingUnit?: 'token' | 'request'
 }
 
 export function evalExprLocally(
@@ -339,66 +291,57 @@ export function evalExprLocally(
   promptTokens: number,
   completionTokens: number,
   extraTokenValues: ExtraTokenValues,
-  now: Date = new Date()
+  context?: BillingSimulationContext
 ): EvalResult {
-  try {
-    if (!exprStr || !exprStr.trim()) {
-      return { cost: 0, matchedTier: '', error: null }
-    }
-    let matchedTier = ''
-    const tierFn = (name: string, value: number) => {
-      matchedTier = name
-      return value
-    }
-    const cacheReadTokens = extraTokenValues.cacheReadTokens || 0
-    const cacheCreateTokens = extraTokenValues.cacheCreateTokens || 0
-    const cacheCreate1hTokens = extraTokenValues.cacheCreate1hTokens || 0
-    const len =
-      promptTokens + cacheReadTokens + cacheCreateTokens + cacheCreate1hTokens
-    const timeCache = new Map<string, LocalTimeParts>()
-    const getTimeParts = (timezone: string) => {
-      const key = timezone.trim() || 'UTC'
-      const cached = timeCache.get(key)
-      if (cached) return cached
-      const parts = localTimeParts(now, key)
-      timeCache.set(key, parts)
-      return parts
-    }
-    const env: Record<string, unknown> = {
-      p: promptTokens,
-      c: completionTokens,
-      len,
-      tier: tierFn,
-      hour: (timezone: string) => getTimeParts(timezone).hour,
-      minute: (timezone: string) => getTimeParts(timezone).minute,
-      weekday: (timezone: string) => getTimeParts(timezone).weekday,
-      month: (timezone: string) => getTimeParts(timezone).month,
-      day: (timezone: string) => getTimeParts(timezone).day,
-      max: Math.max,
-      min: Math.min,
-      abs: Math.abs,
-      ceil: Math.ceil,
-      floor: Math.floor,
-    }
-    for (const field of ESTIMATOR_VARS) {
-      env[field.var] = extraTokenValues[field.stateKey] || 0
-    }
-    const fn = new Function(
-      ...Object.keys(env),
-      `"use strict"; return (${exprStr});`
-    )
-    const cost = Number(fn(...Object.values(env))) || 0
-    return { cost, matchedTier, error: null }
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    return { cost: 0, matchedTier: '', error: message }
+  if (!exprStr.trim()) return { cost: 0, matchedTier: '', error: null }
+  const result = evaluateBillingExpression(exprStr, {
+    ...context,
+    tokens: {
+      ...buildEstimatorTokens(promptTokens, completionTokens, extraTokenValues),
+      ...context?.tokens,
+    },
+  })
+  if (result.status !== 'success') {
+    return { cost: 0, matchedTier: '', error: result.diagnostic.detail }
+  }
+  return {
+    cost: result.cost,
+    matchedTier: result.matchedTier,
+    error: null,
+    ...(result.billingUnit === 'request'
+      ? { billingUnit: result.billingUnit }
+      : {}),
+  }
+}
+
+export function buildEstimatorTokens(
+  promptTokens: number,
+  completionTokens: number,
+  extraTokenValues: ExtraTokenValues
+): Partial<Record<TokenVariable, number>> {
+  return {
+    p: promptTokens,
+    c: completionTokens,
+    len:
+      promptTokens +
+      extraTokenValues.cacheReadTokens +
+      extraTokenValues.imageCacheTokens +
+      extraTokenValues.imageTokens +
+      extraTokenValues.audioInputTokens +
+      extraTokenValues.cacheCreateTokens +
+      extraTokenValues.cacheCreate1hTokens,
+    ...Object.fromEntries(
+      ESTIMATOR_VARS.map((field) => [
+        field.var,
+        extraTokenValues[field.stateKey],
+      ])
+    ),
   }
 }
 
 export function exprUsesExtraVars(exprStr: string): boolean {
   if (!exprStr) return false
-  const varNames = ESTIMATOR_VARS.map((f) => f.var).join('|')
-  return new RegExp(`\\b(${varNames})\\b`).test(exprStr)
+  const compiled = compileBillingExpression(exprStr)
+  if (compiled.status !== 'ready') return false
+  return ESTIMATOR_VARS.some((field) => compiled.variables.has(field.var))
 }
-
-export const ESTIMATOR_EXTRA_FIELDS = ESTIMATOR_VARS

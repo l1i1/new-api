@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 type StatusCodeRange struct {
@@ -39,6 +41,10 @@ var ForceRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
 var NeverRetryStatusCodeRanges = []StatusCodeRange{
 	{Start: 504, End: 504},
 	{Start: 524, End: 524},
+}
+
+var alwaysSkipRetryCodes = map[types.ErrorCode]struct{}{
+	types.ErrorCodeBadResponseBody: {},
 }
 
 func AutomaticDisableStatusCodesToString() string {
@@ -99,6 +105,11 @@ func NeverRetryStatusCodesFromString(s string) error {
 
 func IsNeverRetryStatusCode(code int) bool {
 	return shouldMatchStatusCodeRanges(NeverRetryStatusCodeRanges, code)
+}
+
+func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
+	_, exists := alwaysSkipRetryCodes[errorCode]
+	return exists
 }
 
 // MultiKeyCredentialRetryStatusCodeRanges holds the upstream status codes that

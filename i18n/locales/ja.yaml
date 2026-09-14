@@ -1,5 +1,8 @@
 # Japanese translations
 
+# Task plugin messages
+task_plugin.unknown_meta_field: "プラグインのメタデータに不明なフィールド「{{.Field}}」が含まれています。このプラグインを公式マーケットプレイスからダウンロードした場合は、new-api の新しいバージョンが必要な可能性があります。new-api を更新してから、プラグインを再インストールしてください。"
+
 # Common messages
 common.invalid_params: "パラメータが無効です"
 common.database_error: "データベースエラーが発生しました。管理者にお問い合わせください"
@@ -193,6 +196,9 @@ passkey.login_abnormal: "Passkey ログインのステータスが異常です"
 passkey.update_failed: "Passkey 認証情報の更新に失敗しました"
 passkey.invalid_user_id: "ユーザー ID が無効です"
 passkey.verify_failed: "Passkey の検証に失敗しました。もう一度お試しいただくか、管理者にお問い合わせください"
+passkey.rp_id_invalid: "Passkey ドメインが無効です。スキーム、ポート、パス、ワイルドカードを含まないドメインを入力してください。"
+passkey.rp_id_unavailable: "この Passkey ドメインはこのウェブサイトでは使用できません。元のウェブサイトを使用するか、別の認証方法を選択してください。"
+passkey.rp_id_removal_confirmation: "影響を受ける Passkey を確認し、ドメインの削除を確定してください。設定または影響範囲が変わった場合は、再度確認が必要です。"
 
 # 2FA messages
 twofa.not_enabled: "ユーザーは 2FA を有効にしていません"

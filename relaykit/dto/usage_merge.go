@@ -59,13 +59,58 @@ func mergeInt(current *int, previous int) {
 }
 
 func mergeInputTokenDetails(previous, current InputTokenDetails) InputTokenDetails {
+	current = current.Clone()
 	mergeInt(&current.CachedTokens, previous.CachedTokens)
 	mergeInt(&current.CachedCreationTokens, previous.CachedCreationTokens)
 	mergeInt(&current.CacheWriteTokens, previous.CacheWriteTokens)
 	mergeInt(&current.TextTokens, previous.TextTokens)
 	mergeInt(&current.AudioTokens, previous.AudioTokens)
 	mergeInt(&current.ImageTokens, previous.ImageTokens)
+	current.CachedTokensDetails = mergeCachedTokenDetails(previous.CachedTokensDetails, current.CachedTokensDetails)
 	return current
+}
+
+func mergeCachedTokenDetails(previous, current *CachedTokenDetails) *CachedTokenDetails {
+	if previous == nil {
+		return cloneCachedTokenDetails(current)
+	}
+	if current == nil {
+		return cloneCachedTokenDetails(previous)
+	}
+	merged := cloneCachedTokenDetails(previous)
+	if current.TextTokens != nil {
+		value := *current.TextTokens
+		merged.TextTokens = &value
+	}
+	if current.ImageTokens != nil {
+		value := *current.ImageTokens
+		merged.ImageTokens = &value
+	}
+	if current.AudioTokens != nil {
+		value := *current.AudioTokens
+		merged.AudioTokens = &value
+	}
+	return merged
+}
+
+func cloneCachedTokenDetails(details *CachedTokenDetails) *CachedTokenDetails {
+	if details == nil {
+		return nil
+	}
+	cloned := &CachedTokenDetails{}
+	if details.TextTokens != nil {
+		value := *details.TextTokens
+		cloned.TextTokens = &value
+	}
+	if details.ImageTokens != nil {
+		value := *details.ImageTokens
+		cloned.ImageTokens = &value
+	}
+	if details.AudioTokens != nil {
+		value := *details.AudioTokens
+		cloned.AudioTokens = &value
+	}
+	return cloned
 }
 
 func mergeOutputTokenDetails(previous, current OutputTokenDetails) OutputTokenDetails {
@@ -245,7 +290,7 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 			details.CacheWriteTokens > 0 ||
 			details.TextTokens > 0 ||
 			details.AudioTokens > 0 ||
-			details.ImageTokens > 0 {
+			details.ImageTokens > 0 || details.CachedTokensDetails != nil {
 			if current.InputTokensDetails == nil {
 				current.InputTokensDetails = &InputTokenDetails{}
 			}
@@ -460,6 +505,11 @@ func normalizeGeminiModality(modality string) string {
 }
 
 func mergeInputTokenDetailsNonZero(current *InputTokenDetails, incoming InputTokenDetails) {
+	if incoming.CachedTokensDetails != nil {
+		// Unlike legacy scalar counters, these optional fields explicitly report
+		// zero. Merge only present modalities and detach the resulting snapshot.
+		current.CachedTokensDetails = mergeCachedTokenDetails(current.CachedTokensDetails, incoming.CachedTokensDetails)
+	}
 	if incoming.CachedTokens > 0 {
 		current.CachedTokens = incoming.CachedTokens
 	}

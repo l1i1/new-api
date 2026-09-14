@@ -16,25 +16,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  QueryCache,
-  QueryClient,
-  QueryClientProvider,
-} from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { AxiosError } from 'axios'
-import i18next from 'i18next'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
-import { toast } from 'sonner'
 
-import { getStatus } from '@/lib/api'
 import { installBuildMetadata } from '@/lib/build-metadata'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
 import { initializeFrontendCache } from '@/lib/frontend-cache'
-import { handleServerError } from '@/lib/handle-server-error'
+import { createAppQueryClient } from '@/lib/query-client'
 import { getCachedSystemName, resolvePageTitle } from '@/lib/route-title'
+import { readCachedStatus, statusQueryOptions } from '@/lib/status-query'
 import { initializeThemeCustomizationDom } from '@/lib/theme-customization-storage'
 
 import { DirectionProvider } from './context/direction-provider'
@@ -53,47 +46,8 @@ initializeFrontendCache()
 installBuildMetadata()
 initializeThemeCustomizationDom()
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: (failureCount, error) => {
-        // eslint-disable-next-line no-console
-        if (import.meta.env.DEV) console.log({ failureCount, error })
-
-        if (failureCount >= 0 && import.meta.env.DEV) return false
-        if (failureCount > 3 && import.meta.env.PROD) return false
-
-        return !(
-          error instanceof AxiosError &&
-          [401, 403].includes(error.response?.status ?? 0)
-        )
-      },
-      // Keep focused tabs from silently re-running heavy pages like logs.
-      refetchOnWindowFocus: false,
-      staleTime: 10 * 1000, // 10s
-    },
-    mutations: {
-      onError: (error) => {
-        handleServerError(error)
-
-        if (error instanceof AxiosError) {
-          if (error.response?.status === 304) {
-            toast.error(i18next.t('Content not modified!'))
-          }
-        }
-      },
-    },
-  },
-  queryCache: new QueryCache({
-    onError: (error) => {
-      if (error instanceof AxiosError) {
-        if (error.response?.status === 500) {
-          toast.error(i18next.t('Internal Server Error!'))
-          router.navigate({ to: '/500' })
-        }
-      }
-    },
-  }),
+const queryClient = createAppQueryClient(() => {
+  void router.navigate({ to: '/500' })
 })
 
 // Create a new router instance
@@ -136,26 +90,15 @@ if (!rootElement) {
   try {
     if (typeof window === 'undefined' || typeof document === 'undefined') return
     // Cache-first
-    try {
-      const saved = localStorage.getItem('status')
-      if (saved) {
-        const s = JSON.parse(saved)
-        if (s?.logo) applyFaviconToDom(s.logo)
-      }
-    } catch {
-      /* empty */
-    }
-    // Background refresh
-    getStatus()
+    const cached = readCachedStatus()
+    if (cached?.logo) applyFaviconToDom(cached.logo as string)
+
+    // Background refresh through the shared cache. This primes ['status']
+    // before React mounts, so every status consumer reuses the same request.
+    queryClient
+      .ensureQueryData(statusQueryOptions)
       .then((s) => {
-        if (s?.logo) {
-          applyFaviconToDom(s.logo as string)
-          try {
-            localStorage.setItem('status', JSON.stringify(s))
-          } catch {
-            /* empty */
-          }
-        }
+        if (s?.logo) applyFaviconToDom(s.logo as string)
       })
       .catch(() => {
         /* empty */

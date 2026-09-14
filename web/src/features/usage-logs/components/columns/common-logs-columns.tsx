@@ -45,6 +45,8 @@ import {
   getTaskUsagePriceUnitLabelKey,
 } from '@/features/pricing/lib/dynamic-price'
 import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
+import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
+import { taskUsageUnitLabel } from '@/features/pricing/lib/task-price-display'
 import type { BillingUsageSchema } from '@/features/pricing/types'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
@@ -186,9 +188,10 @@ function buildTypeDetailSegments(
     )
     if (tier) {
       const prices = Object.entries(tier.unitPrices).map(([field, price]) => {
-        const unit = usageSchema?.[field]?.unit
-        const unitKey = getTaskUsagePriceUnitLabelKey(unit)
-        return `${field} ${formatTaskUsageUnitPrice(price, { tokenUnit: 'M' })}/${t(unitKey)}`
+        const definition = usageSchema?.[field]
+        const unitKey = getTaskUsagePriceUnitLabelKey(definition?.unit)
+        const unitLabel = taskUsageUnitLabel(definition, language, t(unitKey))
+        return `${field} ${formatTaskUsageUnitPrice(price, { tokenUnit: 'M' })}/${unitLabel}`
       })
       if (tier.constant > 0) {
         prices.push(
@@ -243,7 +246,11 @@ function buildTypeDetailSegments(
               'cacheCreate1hPrice',
             ].includes(entry.field)
         )
-        .map((entry) => `${t(entry.shortLabel)} ${formatPrice(entry.price)}`)
+        .map((entry) =>
+          entry.unit
+            ? `${tieredSummary.tier.label || t('Default')} · ${t(entry.shortLabel)} ${formatPriceCompact(entry.price)}/${t(entry.unit)}`
+            : `${t(entry.shortLabel)} ${formatPrice(entry.price)}`
+        )
       if (otherEntries.length > 0) {
         segments.push({
           text: otherEntries.join(' · '),
@@ -305,7 +312,9 @@ function buildTypeDetailSegments(
       userGroupRatio !== -1
     const groupRatio = other.group_ratio
     if (isUserGroup || (groupRatio != null && Number.isFinite(groupRatio))) {
-      const ratioLabel = formatGroupDiscount(billingRatio, language)
+      const ratioLabel =
+        formatGroupDiscount(billingRatio, language) ??
+        (billingRatio === 1 ? '1x' : undefined)
       if (ratioLabel) {
         segments.push({
           text: `${isUserGroup ? t('User Exclusive Ratio') : t('Group Ratio')} ${ratioLabel}`,
@@ -788,9 +797,12 @@ export function useCommonLogsColumns(
             other?.is_task === true &&
             other.billing_mode === 'tiered_expr'
         )
-        const usageSchema = pricingData.models.find(
-          (model) => model.model_name === log.model_name
-        )?.billing_usage_schema
+        const usageSchema = pluginUsageSchema(
+          pricingData.models.find(
+            (model) => model.model_name === log.model_name
+          ),
+          other?.admin_info?.task_plugin?.key
+        )
         const segments = buildDetailSegments(
           log,
           other,

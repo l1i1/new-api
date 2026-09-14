@@ -1,5 +1,8 @@
 # Russian translations
 
+# Task plugin messages
+task_plugin.unknown_meta_field: "Метаданные плагина содержат неизвестное поле «{{.Field}}». Если плагин загружен из официального маркетплейса, возможно, требуется более новая версия new-api. Обновите new-api и установите плагин заново."
+
 # Common messages
 common.invalid_params: "Недопустимые параметры"
 common.database_error: "Ошибка базы данных, обратитесь к администратору"
@@ -193,6 +196,9 @@ passkey.login_abnormal: "Аномальный статус входа Passkey"
 passkey.update_failed: "Не удалось обновить учётные данные Passkey"
 passkey.invalid_user_id: "Недопустимый ID пользователя"
 passkey.verify_failed: "Ошибка проверки Passkey, повторите попытку или обратитесь к администратору"
+passkey.rp_id_invalid: "Недопустимый домен Passkey. Укажите домен без схемы, порта, пути или подстановочного знака."
+passkey.rp_id_unavailable: "Этот домен Passkey недоступен на этом сайте. Используйте исходный сайт или другой способ проверки."
+passkey.rp_id_removal_confirmation: "Проверьте затронутые Passkey и подтвердите удаление домена. Если настройки или последствия изменились, подтверждение потребуется повторить."
 
 # 2FA messages
 twofa.not_enabled: "Пользователь не включил 2FA"

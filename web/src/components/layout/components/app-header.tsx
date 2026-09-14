@@ -18,12 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useRouterState } from '@tanstack/react-router'
 
+import { ConfigDrawer } from '@/components/config-drawer'
 import { CurrencyDisplaySwitcher } from '@/components/currency-display-switcher'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import {
   getNotificationAutoOpenOptions,
   useNotifications,
@@ -94,6 +96,11 @@ type AppHeaderProps = {
    */
   showThemeSwitch?: boolean
   /**
+   * Whether to show the appearance and sidebar configuration drawer
+   * @default true
+   */
+  showConfigDrawer?: boolean
+  /**
    * Whether to show profile dropdown
    * @default true
    */
@@ -108,6 +115,7 @@ export function AppHeader({
   rightContent,
   showNotifications = true,
   showThemeSwitch = true,
+  showConfigDrawer = true,
   showProfileDropdown = true,
 }: AppHeaderProps) {
   // Prioritize dynamically generated links from backend
@@ -128,7 +136,10 @@ export function AppHeader({
 
   return (
     <Header className='relative'>
-      <SystemBrand variant='inline' />
+      <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-1'>
+        <SystemBrand variant='inline' />
+        <SystemUpdateAction presentation='version' />
+      </div>
 
       {leftContent ? (
         <div className='ms-2 flex items-center'>{leftContent}</div>
@@ -141,8 +152,10 @@ export function AppHeader({
       )}
 
       {rightContent ?? (
-        <div className='ms-auto flex items-center gap-1 sm:gap-2'>
-          {showSearch && <Search />}
+        <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2'>
+          {showSearch && (
+            <Search className='w-8 flex-none [&>span]:hidden sm:[&>span]:inline' />
+          )}
           {showNotifications && (
             <NotificationPopover
               open={notifications.popoverOpen}
@@ -157,6 +170,7 @@ export function AppHeader({
           {!IS_MAINLAND_SITE && <CurrencyDisplaySwitcher />}
           <LanguageSwitcher />
           {showThemeSwitch && <ThemeSwitch />}
+          {showConfigDrawer && <ConfigDrawer />}
           {showProfileDropdown && <ProfileDropdown />}
         </div>
       )}

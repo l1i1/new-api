@@ -18,7 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
+
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { sendChatCompletion } from '../api'
 import { ERROR_MESSAGES } from '../constants'
@@ -251,7 +252,7 @@ export function useChatHandler({
       state.isRequesting = false
       setActivityVersion((version) => version + 1)
       const displayError = getDisplayError(error)
-      toast.error(displayError)
+      handleServerError(new Error(displayError))
       const errorTitle = t(ERROR_MESSAGES.API_REQUEST_ERROR)
       onMessageUpdate(sessionId, (previousMessages) =>
         state.generation !== generation
