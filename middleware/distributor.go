@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	relayhelper "github.com/QuantumNous/new-api/relay/helper"
@@ -576,12 +577,14 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		return
 	}
 	modelName := strings.ToLower(strings.TrimSpace(pinRequest.Model))
-	isDeepSeekV4 := strings.HasPrefix(modelName, "deepseek-v4")
-	isKimiK3 := strings.HasPrefix(modelName, "kimi-k3")
-	isGlm53 := strings.HasPrefix(modelName, "glm-5.3")
-	if !isDeepSeekV4 && !isKimiK3 && !isGlm53 {
+	// Family classification comes from the officialfit registry so this pin
+	// logic never carries its own prefix table.
+	fitFamily := officialfit.FamilyOf(modelName)
+	if fitFamily == "" {
 		return
 	}
+	isDeepSeekV4 := fitFamily == officialfit.FamilyDeepSeekV4
+	isGlm53 := fitFamily == officialfit.FamilyGlm53
 	var profile dto.OfficialFitProfile
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
@@ -593,8 +596,8 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// official default). Everything else keeps normal aggregator routing,
 	// which keeps prompt-cache affinity and official-channel spend down.
 	// Disabled thinking genuinely produces no reasoning upstream, so it is
-	// the one non-pinned thinking shape. The pin narrows per family:
-	// DeepSeek V4 -> type 43, kimi-k3 -> type 25.
+	// the one non-pinned thinking shape. The pin narrows per family via the
+	// registry's channel type (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
 	if profile.Route {
 		if isDeepSeekV4 {
 			if deepSeekV4RequestNeedsOfficial(pinRequest) {

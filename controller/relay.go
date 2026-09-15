@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/officialfit"
 	channelobservability "github.com/QuantumNous/new-api/pkg/channel_observability"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
@@ -127,20 +128,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			filteredMessage := operation_setting.FilterErrorMessage(newAPIError.Error())
-			// Official-fit validation errors (DeepSeek V4 / Kimi K3) carry no
-			// gateway request ID suffix and render with the official content
-			// type; keep such messages byte-identical to the provider whenever
-			// the requesting user has the Errors dimension enabled.
+			// Official-fit validation errors carry no gateway request ID suffix
+			// and render with the official content type; keep such messages
+			// byte-identical to the provider whenever the requesting user has
+			// the Errors dimension enabled. Which wire shape applies is a
+			// property of the model's family (see package officialfit), not a
+			// per-family branch here.
 			originalModel := strings.ToLower(strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyOriginalModel)))
-			isStrictFitValidation := relayFormat == types.RelayFormatOpenAI &&
-				helper.IsStrictFitValidationMessage(filteredMessage) &&
-				officialFitErrorsEnabled(c, originalModel)
+			fitErrors := relayFormat == types.RelayFormatOpenAI && officialFitErrorsEnabled(c, originalModel)
+			wireShape := officialfit.WireShapeOf(originalModel)
 			// Zhipu GLM validation errors use their own wire shape: the error
 			// object carries {code: "1210"/"1214", message} and
 			// Content-Type application/json; charset=UTF-8.
-			isStrictGlmValidation := relayFormat == types.RelayFormatOpenAI &&
-				helper.IsStrictGlmValidationMessage(filteredMessage) &&
-				officialFitErrorsEnabled(c, originalModel)
+			isStrictGlmValidation := fitErrors && wireShape == officialfit.WireShapeZhipu &&
+				helper.IsStrictGlmValidationMessage(filteredMessage)
+			isStrictFitValidation := fitErrors && !isStrictGlmValidation &&
+				helper.IsStrictFitValidationMessage(filteredMessage)
 			if !isStrictFitValidation && !isStrictGlmValidation {
 				newAPIError.SetMessage(common.MessageWithRequestId(filteredMessage, requestId))
 			}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -216,7 +217,7 @@ func isDeepSeekV4Model(info *relaycommon.RelayInfo, modelName string) bool {
 	if info != nil && info.ChannelMeta != nil && info.UpstreamModelName != "" {
 		modelName = info.UpstreamModelName
 	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-v4")
+	return officialfit.FamilyOf(modelName) == officialfit.FamilyDeepSeekV4
 }
 
 func normalizeDeepSeekV4ReasoningEffort(effort string) string {

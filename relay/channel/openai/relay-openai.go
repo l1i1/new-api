@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -722,7 +723,8 @@ func requiresDeepSeekV4ReasoningLogprobs(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	if !strings.HasPrefix(modelName, "deepseek-v4") || strings.HasSuffix(modelName, "-none") {
+	// The "-none" suffix alias disables thinking and therefore needs no logprobs pair.
+	if officialfit.FamilyOf(modelName) != officialfit.FamilyDeepSeekV4 || strings.HasSuffix(modelName, "-none") {
 		return false
 	}
 	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)

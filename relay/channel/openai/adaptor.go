@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/ai360"
 	"github.com/QuantumNous/new-api/relay/channel/lingyiwanwu"
@@ -482,7 +483,7 @@ func isDeepSeekV4ChatRequest(info *relaycommon.RelayInfo, request *dto.GeneralOp
 	if isDeepSeekV4ChatModel(info) {
 		return true
 	}
-	return request != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4")
+	return request != nil && officialfit.FamilyOf(request.Model) == officialfit.FamilyDeepSeekV4
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {

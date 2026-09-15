@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	apidto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -241,24 +242,14 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 }
 
 // OfficialFitChannelType returns the channel type that counts as the official
-// upstream for an official-fit model family: deepseek-v4* -> official
-// DeepSeek (type 43), kimi-k3 -> Moonshot (type 25), glm-5.3 -> Zhipu v4
-// API (type 26). Zero for other models. The DeepSeek prefix keeps no dash so
-// the v4.1 line (deepseek-v4.1-*) is covered alongside deepseek-v4-*.
-// Exported because the distributor's affinity/pin exclusion needs the same
-// family classification when deciding whether a cached binding may be reused.
+// upstream for an official-fit model family (deepseek-v4* -> official DeepSeek
+// 43, kimi-k3 -> Moonshot 25, glm-5.3 -> Zhipu v4 26), zero for other models.
+// The family table lives in package officialfit; this wrapper keeps the
+// model-package spelling its callers use. Exported because the distributor's
+// affinity/pin exclusion needs the same family classification when deciding
+// whether a cached binding may be reused.
 func OfficialFitChannelType(model string) int {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(m, "deepseek-v4") {
-		return constant.ChannelTypeDeepSeek
-	}
-	if strings.HasPrefix(m, "kimi-k3") {
-		return constant.ChannelTypeMoonshot
-	}
-	if strings.HasPrefix(m, "glm-5.3") {
-		return constant.ChannelTypeZhipu_v4
-	}
-	return 0
+	return officialfit.ChannelType(model)
 }
 
 // IsOfficialFitChannelForModel reports whether this channel may serve model as

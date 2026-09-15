@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -509,24 +510,17 @@ func deepSeekV4TopLogprobsDeserMessage(value int) string {
 }
 
 // DeepSeekV4OfficialModelNames is the exact model-id list the official
-// api.deepseek.com endpoint accepts (from the live unknown-model error text).
-// The accepted set is probed, not read from /v1/models: the public list omits
-// ids the endpoint still serves (live probe 2026-09-11 accepted
-// deepseek-v4.1-flash while rejecting deepseek-v4.1-pro).
-var DeepSeekV4OfficialModelNames = []string{
-	"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
-	"deepseek-v4.1-flash",
-}
+// api.deepseek.com endpoint accepts. The accepted set is probed, not read from
+// /v1/models: the public list omits ids the endpoint still serves (live probe
+// 2026-09-11 accepted deepseek-v4.1-flash while rejecting deepseek-v4.1-pro).
+// The family table owns the list; this alias keeps the DeepSeek spelling its
+// callers and tests use.
+var DeepSeekV4OfficialModelNames = officialfit.Models(officialfit.FamilyDeepSeekV4)
 
 // IsDeepSeekV4OfficialModelName reports whether model is one of the exact
 // official DeepSeek V4 model ids.
 func IsDeepSeekV4OfficialModelName(model string) bool {
-	for _, n := range DeepSeekV4OfficialModelNames {
-		if strings.EqualFold(strings.TrimSpace(model), n) {
-			return true
-		}
-	}
-	return false
+	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyDeepSeekV4
 }
 
 // DeepSeekV4UnknownModelMessage renders the official unknown-model error text.
@@ -573,7 +567,7 @@ func officialFitEffortTypeError(c *gin.Context, unmarshalErr error) error {
 		return nil
 	}
 	switch {
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-v4"):
+	case officialfit.FamilyOf(model) == officialfit.FamilyDeepSeekV4:
 		return types.WithOpenAIError(types.OpenAIError{
 			Message: deepSeekV4ReasoningEffortTypeErrorMessage,
 			Type:    "invalid_request_error",
@@ -600,7 +594,7 @@ func deepSeekV4MessagesText(messages []dto.Message) string {
 }
 
 func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
+	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 {
 		return nil
 	}
 	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" && !deepSeekV4ReasoningEffortAllowed[strings.ToLower(effort)] {
@@ -829,7 +823,7 @@ func deepSeekV4ThinkingScalarError(raw json.RawMessage) error {
 // observes official-equivalent behavior. Only the exact lowercase variants are
 // mapped; anything else keeps the deserialization contract of the enum check.
 func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
+	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 {
 		return
 	}
 	switch strings.TrimSpace(request.ReasoningEffort) {
@@ -858,7 +852,7 @@ func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
 // Answering a call consumes it, so a duplicated answer degrades into the
 // orphan rule exactly like the official endpoint.
 func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") {
+	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 {
 		return nil
 	}
 	pending := map[string]bool{}
@@ -972,7 +966,7 @@ func deepSeekV4ToolChainError(message string) error {
 }
 
 func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "deepseek-v4") || request.TopLogProbs == nil {
+	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 || request.TopLogProbs == nil {
 		return nil
 	}
 	if request.LogProbs == nil || !*request.LogProbs {
@@ -1058,7 +1052,7 @@ const (
 )
 
 func isGlm53Model(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm-5.3")
+	return officialfit.FamilyOf(model) == officialfit.FamilyGlm53
 }
 
 // glm53Error wraps a GLM official validation error with its numeric code so
@@ -1073,7 +1067,7 @@ func glm53Error(code, message string) error {
 }
 
 func isKimiK3Model(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "kimi-k3")
+	return officialfit.FamilyOf(model) == officialfit.FamilyKimiK3
 }
 
 // validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 request
@@ -1197,17 +1191,12 @@ var Glm53ModelNotFoundText = glm53ModelNotFoundMessage
 
 // Glm53OfficialModelNames is the exact model-id list of the glm-5.3 family
 // (glm-5.2 and older are not part of this fit family).
-var Glm53OfficialModelNames = []string{"glm-5.3", "glm-5.3-flash"}
+var Glm53OfficialModelNames = officialfit.Models(officialfit.FamilyGlm53)
 
 // IsGlm53OfficialModelName reports whether model is one of the glm-5.3
 // family ids the official endpoint accepts.
 func IsGlm53OfficialModelName(model string) bool {
-	for _, n := range Glm53OfficialModelNames {
-		if strings.EqualFold(strings.TrimSpace(model), n) {
-			return true
-		}
-	}
-	return false
+	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyGlm53
 }
 
 // validKimiK3FunctionName mirrors the official tool-name rule: must start with
@@ -1238,10 +1227,6 @@ func kimiK3Error(message string) error {
 	}, http.StatusBadRequest)
 }
 
-// IsStrictFitValidationMessage reports whether an error message carries one of
-// the official request-validation texts (DeepSeek V4 and Kimi K3). Official
-// error bodies do not append gateway request IDs, so callers keep such
-// messages verbatim.
 // StrictFitContentType reports the wire content type the official endpoint
 // uses for a strict-fit validation message (live-probed 2026-09-01):
 // deserialization failures come back as application/json while the plain
@@ -1261,6 +1246,10 @@ func StrictFitRendersPlainText(message string) bool {
 	return strings.HasPrefix(message, "Failed to parse the request body as JSON:")
 }
 
+// IsStrictFitValidationMessage reports whether an error message carries one of
+// the official request-validation texts (DeepSeek V4 and Kimi K3). Official
+// error bodies do not append gateway request IDs, so callers keep such
+// messages verbatim.
 func IsStrictFitValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		deepSeekV4ReasoningEffortDeserMessagePrefix,

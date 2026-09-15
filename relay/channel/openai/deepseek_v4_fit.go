@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -87,7 +88,7 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	return strings.HasPrefix(modelName, "deepseek-v4")
+	return officialfit.FamilyOf(modelName) == officialfit.FamilyDeepSeekV4
 }
 
 // deepSeekV4FitEnabled reports whether the official response-shape fit layer

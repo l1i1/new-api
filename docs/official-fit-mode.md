@@ -127,6 +127,32 @@
 - Web 管理端：用户编辑抽屉（update 模式）"Official Fit" 区块，按模型族（DeepSeek V4 /
   Kimi K3）展示 4 个 Switch；提交时通过独立接口写入。
 
+## 家族注册表
+
+家族知识集中在 **`officialfit` 包**（`officialfit/officialfit.go`，叶子包，只依赖 `constant`）。
+每个家族一行声明：ID、模型前缀、官方接受的精确模型 id、官方渠道类型、错误线格式。
+
+```go
+{ID: FamilyDeepSeekV4, ModelPrefixes: []string{"deepseek-v4"}, OfficialModelNames: []string{...},
+ ChannelType: constant.ChannelTypeDeepSeek, WireShape: WireShapeOpenAI}
+```
+
+消费点一律委托注册表，不再各自持有前缀表：`relay/helper/valid_request.go`（校验与家族谓词）、
+`relay/channel/openai/{adaptor,relay-openai,deepseek_v4_fit}.go`、`relay/channel/deepseek/adaptor.go`、
+`relay/helper/common.go`、`controller/relay.go`（错误线格式）、`model/channel_cache.go` 与
+`middleware/distributor.go`（pin 与亲和判定）。
+
+**新增一个家族 = 注册表加一行 + 写该家族的 validator**，不需要改上面任何一个消费点：
+
+1. `officialfit/officialfit.go`：`Families` 加一条（含 `WireShape`），并加 `Family<Name>` 常量。
+2. `relay/helper/valid_request.go`：实现 `validate<Family>OfficialFields`（本地按官方 400 拦截），
+   在 `GetAndValidateRequest` 的 `chat/completions` 分支按 `profile.Validate` 调用。
+3. 若该家族有非官方响应形状：在对应 channel 适配器加 fit 分支（`profile.Shape` 门控）。
+4. `relaykit/dto/user_settings.go` 无需改动：profile key 就是注册表的家族 ID。
+
+`relaykit` 是**独立嵌套模块**，不能 import 根模块的 `officialfit`，其
+`relayconvert/reasoning/suffix.go` 的 DeepSeek 前缀判断属跨模块固有限制（见「已知限制」）。
+
 ## 已知限制
 
 - K3 校验规则的官方行为与文案已按 2026-08-27 实测校准（`relay/helper/valid_request.go`
@@ -137,6 +163,14 @@
 - K3 官方渠道（type 25）已达最低限速档（org RPM 3）；大用量场景启用 K3 `route` 前需
   先与 Moonshot 协商限速，或将 CN_Kimi 仅作为基准/校验渠道。
 - 无配置用户（绝大多数）行为与启用前完全一致，仅当 profile 命中才改变。
+- **严格拟合必须配合 `route`**：`validate` / `errors` / `shape` 只覆盖**确定性**部分（状态码、文案、
+  媒体类型、信封字段、响应形状）。`system_fingerprint`、思考链内容、chunk 顺序这些**只有上游才知道**
+  的事实无法本地合成，只有 `route` 把这些请求固定到官方渠道才能拿到真值。实测：国内站不配 `route` 时
+  200 响应普遍缺 `system_fingerprint`（且官方侧本身也因请求类型而异，flash 58 个 200 中 5 个不带）。
+- **`relaykit` 跨模块限制**：`relaykit/relayconvert/reasoning/suffix.go` 的 `deepseek-v4` 前缀判断
+  无法委托注册表（嵌套模块不能引用根模块）。新增家族若需要 suffix 语义要单独同步该文件。
+- **serde 位置后缀是有意剥离的**：` at line 1 column N` 是 body 相关且随序列化顺序变化的，
+  网关按既定约定去掉（`relay/helper/valid_request.go`）。买家若要求逐字节一致需书面确认此约定。
 - **渠道白名单是人工信任标记，不做运行时校验**：`official_fit_models` 只表示"该渠道
   在这些模型上已通过离线验证"，网关不会为每次请求重新确认上游真的拟合。白名单必须
   以审计/一致性套件的实测结果为依据（见 `docs/mainland-v4x-channel-report-*.md`），

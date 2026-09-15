@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -24,8 +24,7 @@ func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
 	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions {
 		return false
 	}
-	modelName := strings.ToLower(strings.TrimSpace(info.OriginModelName))
-	if !strings.HasPrefix(modelName, "deepseek-v4") {
+	if officialfit.FamilyOf(info.OriginModelName) != officialfit.FamilyDeepSeekV4 {
 		return false
 	}
 	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
