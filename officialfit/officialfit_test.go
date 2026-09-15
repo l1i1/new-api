@@ -117,6 +117,24 @@ func TestModelsReturnsTheDeclaredList(t *testing.T) {
 	}
 }
 
+// The family table is shared process-wide, so a caller must not be able to
+// write through the slice it receives.
+func TestModelsReturnsACopy(t *testing.T) {
+	first := Models(FamilyGlm53)
+	if len(first) == 0 {
+		t.Fatal("Models(FamilyGlm53) returned no entries")
+	}
+	original := first[0]
+	first[0] = "mutated"
+
+	if again := Models(FamilyGlm53); again[0] != original {
+		t.Errorf("mutating the returned slice changed the family table: got %q, want %q", again[0], original)
+	}
+	if IsOfficialModelName("mutated") {
+		t.Error("a mutated model id became accepted")
+	}
+}
+
 // No family may prefix another, or Of() would depend on table order.
 func TestNoFamilyPrefixesAnother(t *testing.T) {
 	for i, a := range Families {
@@ -131,6 +149,27 @@ func TestNoFamilyPrefixesAnother(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// List is what management surfaces render from, so every family must appear
+// with a non-empty id and label and a stable order.
+func TestListDescribesEveryFamily(t *testing.T) {
+	listed := List()
+	if len(listed) != len(Families) {
+		t.Fatalf("List() returned %d families, want %d", len(listed), len(Families))
+	}
+	for i, descriptor := range listed {
+		if descriptor.ID == "" {
+			t.Errorf("family %d has an empty id", i)
+		}
+		if descriptor.Label == "" {
+			t.Errorf("family %q has an empty label", descriptor.ID)
+		}
+		// The list must stay in table order so the UI is stable across restarts.
+		if descriptor.ID != Families[i].ID {
+			t.Errorf("List()[%d] = %q, want table order %q", i, descriptor.ID, Families[i].ID)
 		}
 	}
 }

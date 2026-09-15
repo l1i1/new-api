@@ -18,7 +18,17 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { OFFICIAL_FIT_MATCHES, parseOfficialFit } from '../types'
+import {
+  OFFICIAL_FIT_MATCHES,
+  normalizeOfficialFitFamilies,
+  parseOfficialFit,
+  type OfficialFitFamily,
+} from '../types'
+
+/** Bypass the response type to feed the normalizer what a bad server would. */
+function asFamilies(value: unknown): OfficialFitFamily[] | undefined {
+  return value as OfficialFitFamily[] | undefined
+}
 
 describe('parseOfficialFit family-key migration', () => {
   test('the DeepSeek family key is dash-free so v4.1 is covered', () => {
@@ -65,5 +75,67 @@ describe('parseOfficialFit family-key migration', () => {
     expect(config.profile).toEqual({ 'glm-5.3': { shape: true } })
     expect(parseOfficialFit('not-json')).toEqual({})
     expect(parseOfficialFit(undefined)).toEqual({})
+  })
+})
+
+describe('normalizeOfficialFitFamilies', () => {
+  test('the backend list is rendered in registry order', () => {
+    expect(
+      normalizeOfficialFitFamilies([
+        { id: 'deepseek-v4', label: 'DeepSeek V4' },
+        { id: 'kimi-k3', label: 'Kimi K3' },
+      ])
+    ).toEqual([
+      { match: 'deepseek-v4', label: 'DeepSeek V4' },
+      { match: 'kimi-k3', label: 'Kimi K3' },
+    ])
+  })
+
+  test('a family the frontend never hardcoded still renders', () => {
+    const rendered = normalizeOfficialFitFamilies(
+      asFamilies([
+        ...OFFICIAL_FIT_MATCHES.map((m) => ({
+          id: m.match,
+          label: m.label,
+        })),
+        { id: 'qwen-4', label: 'Qwen 4' },
+      ])
+    )
+    expect(rendered).toContainEqual({ match: 'qwen-4', label: 'Qwen 4' })
+    expect(rendered).toHaveLength(OFFICIAL_FIT_MATCHES.length + 1)
+  })
+
+  test('the fetched list wins over the local fallback', () => {
+    expect(
+      normalizeOfficialFitFamilies([{ id: 'deepseek-v4', label: 'DeepSeek V4' }])
+    ).toHaveLength(1)
+  })
+
+  test('a missing label degrades to the id and bad entries are dropped', () => {
+    expect(
+      normalizeOfficialFitFamilies(
+        asFamilies([
+          { id: 'glm-5.3' },
+          { id: '', label: 'Nameless' },
+          { label: 'No id' },
+          null,
+          'nope',
+        ])
+      )
+    ).toEqual([{ match: 'glm-5.3', label: 'glm-5.3' }])
+  })
+
+  test('a non-array or empty body falls back instead of crashing the drawer', () => {
+    expect(normalizeOfficialFitFamilies(undefined)).toBe(OFFICIAL_FIT_MATCHES)
+    expect(normalizeOfficialFitFamilies(asFamilies(null))).toBe(
+      OFFICIAL_FIT_MATCHES
+    )
+    expect(normalizeOfficialFitFamilies(asFamilies({}))).toBe(
+      OFFICIAL_FIT_MATCHES
+    )
+    expect(normalizeOfficialFitFamilies([])).toBe(OFFICIAL_FIT_MATCHES)
+    expect(normalizeOfficialFitFamilies(asFamilies([null, 'x']))).toBe(
+      OFFICIAL_FIT_MATCHES
+    )
   })
 })

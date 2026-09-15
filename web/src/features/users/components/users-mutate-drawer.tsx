@@ -85,6 +85,7 @@ import {
   getUser,
   getGroups,
   getPermissionCatalog,
+  getOfficialFitFamilies,
   updateUserOfficialFit,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -96,8 +97,8 @@ import {
   transformUserToFormDefaults,
 } from '../lib'
 import {
+  normalizeOfficialFitFamilies,
   OFFICIAL_FIT_FIELDS,
-  OFFICIAL_FIT_MATCHES,
   parseOfficialFit,
   type OfficialFitConfig,
   type OfficialFitField,
@@ -140,6 +141,20 @@ export function UsersMutateDrawer({
     queryFn: async () => requireServerSuccess(await getPermissionCatalog()),
     staleTime: 5 * 60 * 1000,
   })
+
+  // The official-fit family set is owned by the backend registry, so a newly
+  // registered family shows up here without a frontend change. The local list
+  // is only a fallback (see normalizeOfficialFitFamilies).
+  const { data: officialFitFamilies } = useQuery({
+    queryKey: ['official-fit-families'],
+    queryFn: async () => requireServerSuccess(await getOfficialFitFamilies()),
+    staleTime: 5 * 60 * 1000,
+    enabled: isUpdate,
+  })
+
+  const officialFitMatches = normalizeOfficialFitFamilies(
+    officialFitFamilies?.data
+  )
 
   const form = useForm<UserFormValues>({
     resolver: zodResolver(userFormSchema),
@@ -600,7 +615,7 @@ export function UsersMutateDrawer({
                     )}
                   </p>
                   <div className='space-y-3'>
-                    {OFFICIAL_FIT_MATCHES.map(({ match, label }) => {
+                    {officialFitMatches.map(({ match, label }) => {
                       const profile = officialFit.profile?.[match] ?? {}
                       return (
                         <div

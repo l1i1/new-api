@@ -123,9 +123,13 @@
 
 - 管理员接口 `PUT /api/user/official-fit`（AdminAuth）：body `{ "user_id": 123, "official_fit": {...} | null }`。
   读-改-写 `users.setting`，不覆盖用户自助设置；审计动作 `update_official_fit`。
+- 管理员接口 `GET /api/user/official-fit/families`（AdminAuth）：返回注册表里全部家族的
+  `[{ "id": "deepseek-v4", "label": "DeepSeek V4" }, ...]`，顺序即注册表顺序。
 - 用户自助 `PUT /api/user/setting` 保留 `official_fit` 键，不再整体替换。
-- Web 管理端：用户编辑抽屉（update 模式）"Official Fit" 区块，按模型族（DeepSeek V4 /
-  Kimi K3）展示 4 个 Switch；提交时通过独立接口写入。
+- Web 管理端：用户编辑抽屉（update 模式）"Official Fit" 区块，**按 `GET /api/user/official-fit/families`
+  返回的家族列表**渲染每家族 4 个 Switch；请求失败或响应形状异常时退回本地兜底列表
+  （`web/src/features/users/types.ts` 的 `OFFICIAL_FIT_MATCHES` / `normalizeOfficialFitFamilies`）。
+  提交时通过独立接口写入。
 
 ## 家族注册表
 
@@ -149,6 +153,8 @@
    在 `GetAndValidateRequest` 的 `chat/completions` 分支按 `profile.Validate` 调用。
 3. 若该家族有非官方响应形状：在对应 channel 适配器加 fit 分支（`profile.Shape` 门控）。
 4. `relaykit/dto/user_settings.go` 无需改动：profile key 就是注册表的家族 ID。
+5. Web 管理端无需改动：家族列表由 `GET /api/user/official-fit/families` 下发
+   （`officialfit.List()`），前端只做形状校验与兜底，不持有家族清单。
 
 `relaykit` 是**独立嵌套模块**，不能 import 根模块的 `officialfit`，其
 `relayconvert/reasoning/suffix.go` 的 DeepSeek 前缀判断属跨模块固有限制（见「已知限制」）。

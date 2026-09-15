@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
@@ -1505,4 +1506,12 @@ func UpdateUserOfficialFit(c *gin.Context) {
 		"official_fit": req.Config,
 	})
 	common.ApiSuccess(c, nil)
+}
+
+// GetOfficialFitFamilies returns the official-fit model families this gateway
+// supports, so management surfaces render the supported set instead of keeping
+// their own copy that silently drifts when a family is registered. Admin-only,
+// matching the update endpoint.
+func GetOfficialFitFamilies(c *gin.Context) {
+	common.ApiSuccess(c, officialfit.List())
 }

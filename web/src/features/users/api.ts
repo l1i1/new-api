@@ -32,6 +32,7 @@ import type {
   ApiResponse,
   UserModelRateLimit,
   OfficialFitConfig,
+  OfficialFitFamily,
 } from './types'
 
 // ============================================================================
@@ -124,6 +125,18 @@ export async function updateUserOfficialFit(
     user_id: userId,
     official_fit: officialFit,
   })
+  return res.data
+}
+
+/**
+ * Get the official-fit model families the gateway supports. Admin only.
+ * The backend registry owns this list, so a newly registered family appears
+ * without a frontend change.
+ */
+export async function getOfficialFitFamilies(): Promise<
+  ApiResponse<OfficialFitFamily[]>
+> {
+  const res = await api.get('/api/user/official-fit/families')
   return res.data
 }
 

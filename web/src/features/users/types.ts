@@ -83,6 +83,42 @@ export interface OfficialFitConfig {
   profile?: Record<string, OfficialFitProfile>
 }
 
+/**
+ * One official-fit model family as reported by the backend registry. The
+ * management UI renders the supported set from this instead of keeping its own
+ * list, so a family registered on the backend appears without a frontend change.
+ */
+export interface OfficialFitFamily {
+  id: string
+  label: string
+}
+
+/**
+ * Normalize the backend family list into renderable matches, degrading to the
+ * local fallback when the response is missing, malformed or empty. The list
+ * crosses a trust boundary and its ids become profile keys, so entries without
+ * a usable id are dropped rather than rendered.
+ */
+export function normalizeOfficialFitFamilies(
+  families: OfficialFitFamily[] | undefined
+): readonly { match: string; label: string }[] {
+  if (!Array.isArray(families)) return OFFICIAL_FIT_MATCHES
+  const matches = families
+    .filter((family) => typeof family?.id === 'string' && family.id !== '')
+    .map((family) => ({
+      match: family.id,
+      label:
+        typeof family.label === 'string' && family.label !== ''
+          ? family.label
+          : family.id,
+    }))
+  return matches.length > 0 ? matches : OFFICIAL_FIT_MATCHES
+}
+
+/**
+ * Fallback family list, used only when the backend list cannot be fetched. It
+ * mirrors the registry order; the fetched list always wins.
+ */
 export const OFFICIAL_FIT_MATCHES = [
   { match: 'deepseek-v4', label: 'DeepSeek V4' },
   { match: 'kimi-k3', label: 'Kimi K3' },

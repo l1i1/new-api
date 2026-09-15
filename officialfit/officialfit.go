@@ -47,6 +47,9 @@ type Family struct {
 	// ID is the canonical family key ("deepseek-v4", "kimi-k3", "glm-5.3").
 	// It is also the profile key users write in `official_fit.profile`.
 	ID string
+	// Label is the human-readable family name shown by management surfaces.
+	// It lives with the family so a new family needs no UI edit.
+	Label string
 	// ModelPrefixes select the family from a client-facing model id. The
 	// DeepSeek prefix carries no trailing dash so the dotted v4.1 line is
 	// covered alongside deepseek-v4-*.
@@ -68,6 +71,7 @@ type Family struct {
 var Families = []Family{
 	{
 		ID:            FamilyDeepSeekV4,
+		Label:         "DeepSeek V4",
 		ModelPrefixes: []string{"deepseek-v4"},
 		OfficialModelNames: []string{
 			"deepseek-v4-pro",
@@ -80,6 +84,7 @@ var Families = []Family{
 	},
 	{
 		ID:                 FamilyKimiK3,
+		Label:              "Kimi K3",
 		ModelPrefixes:      []string{"kimi-k3"},
 		OfficialModelNames: []string{"kimi-k3"},
 		ChannelType:        constant.ChannelTypeMoonshot,
@@ -87,11 +92,30 @@ var Families = []Family{
 	},
 	{
 		ID:                 FamilyGlm53,
+		Label:              "GLM 5.3",
 		ModelPrefixes:      []string{"glm-5.3"},
 		OfficialModelNames: []string{"glm-5.3", "glm-5.3-flash"},
 		ChannelType:        constant.ChannelTypeZhipu_v4,
 		WireShape:          WireShapeZhipu,
 	},
+}
+
+// FamilyDescriptor is the registry entry as exposed to management surfaces: the
+// profile key plus its display name. It omits the internal classification
+// fields (prefixes, channel type, wire shape), which no client needs.
+type FamilyDescriptor struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// List returns every family in table order. Management surfaces render directly
+// from this, so registering a family is enough for it to appear.
+func List() []FamilyDescriptor {
+	out := make([]FamilyDescriptor, 0, len(Families))
+	for _, family := range Families {
+		out = append(out, FamilyDescriptor{ID: family.ID, Label: family.Label})
+	}
+	return out
 }
 
 func normalize(model string) string {
@@ -126,12 +150,13 @@ func FamilyOf(model string) string {
 	return family.ID
 }
 
-// Models returns the exact official model ids of the named family, or nil when
-// the family is unknown.
+// Models returns a copy of the exact official model ids of the named family,
+// or nil when the family is unknown. The copy keeps a caller's index
+// assignment from mutating the family table, which is shared process-wide.
 func Models(familyID string) []string {
 	for _, family := range Families {
 		if family.ID == familyID {
-			return family.OfficialModelNames
+			return append([]string(nil), family.OfficialModelNames...)
 		}
 	}
 	return nil

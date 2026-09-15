@@ -174,6 +174,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.POST("/manage", controller.ManageUser)
 				adminRoute.PUT("/", controller.UpdateUser)
 				adminRoute.PUT("/official-fit", controller.UpdateUserOfficialFit)
+				adminRoute.GET("/official-fit/families", controller.GetOfficialFitFamilies)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
 				adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
 
