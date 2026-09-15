@@ -281,27 +281,19 @@ func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usag
 
 // incompleteResponsesStreamError marks a Responses stream that ended without a
 // terminal event as an upstream failure, so the channel is evicted from the
-// affinity binding instead of being re-bound as healthy. hadOutput separates a
-// stream that delivered nothing (mirroring emptyChatCompletionError on the chat
-// path) from one truncated after partial output; both are failures, and the
-// message reports which case occurred.
+// affinity binding instead of being re-bound as healthy. A missing terminal
+// event is a protocol truncation even when the stream carried no output; it is
+// not an empty-completion validation and must use the same upstream-failure
+// classification for every output shape.
 //
-// Only the zero-output case injects a synthetic response.failed event, because
-// there the client has nothing to act on. When partial output was already
-// delivered, the content stays committed and the client's own protocol check
-// ("stream closed before response.completed") drives the retry, so the stream
-// is left untouched.
+// Only a committed zero-output stream gets a synthetic response.failed event,
+// because an uncommitted stream can still be retried before the client sees it.
+// When partial output was already delivered, the content stays committed and the
+// client's own protocol check ("stream closed before response.completed") drives
+// the retry, so the stream is left untouched.
 func incompleteResponsesStreamError(c *gin.Context, committed bool, hadOutput bool) *types.NewAPIError {
-	options := make([]types.NewAPIErrorOptions, 0, 3)
-	message := "upstream returned empty final content"
-	if hadOutput {
-		// Partial output proves the upstream had already started producing, so
-		// this is not an "empty" response: flag it as an upstream failure.
-		options = append(options, types.ErrOptionWithUpstreamFailure())
-		message = "upstream stream ended before response.completed"
-	} else {
-		options = append(options, types.ErrOptionWithEmptyOutput())
-	}
+	options := []types.NewAPIErrorOptions{types.ErrOptionWithUpstreamFailure()}
+	message := "upstream stream ended before response.completed"
 	if committed {
 		options = append(options, types.ErrOptionWithSkipRetry())
 	}

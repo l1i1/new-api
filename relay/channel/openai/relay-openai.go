@@ -139,9 +139,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var containStreamUsage bool
 	var responseTextBuilder strings.Builder
 	var toolCount int
-	var hasContentOutput bool
-	var hasToolOutput bool
-	var hasReasoningOutput bool
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var pendingUsageData string
@@ -299,23 +296,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				logger.LogError(c, "error processing stream token data: "+err.Error())
 				sr.Error(err)
 			}
-			var output dto.ChatCompletionsStreamResponse
-			if err := common.UnmarshalJsonStr(data, &output); err == nil {
-				for _, choice := range output.Choices {
-					if strings.TrimSpace(choice.Delta.GetContentString()) != "" {
-						hasContentOutput = true
-					}
-					if strings.TrimSpace(choice.Delta.GetReasoningContent()) != "" {
-						hasReasoningOutput = true
-					}
-					for _, toolCall := range choice.Delta.ToolCalls {
-						if isValidStreamFunctionToolCall(toolCall) {
-							hasToolOutput = true
-							break
-						}
-					}
-				}
-			}
 		}
 	})
 	if streamErr != nil {
@@ -352,26 +332,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			options...,
 		)
 	}
-	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasContentOutput && !hasToolOutput &&
-		// A reasoning model can end the stream with reasoning content but no
-		// visible content/tool output — either by exhausting max_tokens inside
-		// reasoning (finish_reason=length) or by matching a stop word while
-		// still thinking (finish_reason=stop, e.g. GLM-5.3 stop probes); the
-		// non-stream path already preserves that outcome, so the stream guard
-		// must not 502 (and drop the held terminal chunk plus [DONE]) before
-		// flushing it. Disabled thinking strips reasoning, so such streams
-		// still fail empty.
-		!(!shouldSuppressReasoningContent(info) && hasReasoningOutput && info.StreamFinishReason != "") {
-		// The error must keep carrying the usage the upstream reported, never a
-		// nil one: this completion ended normally, so the provider may already
-		// have billed it (a thinking response whose reasoning the caller disabled
-		// still bills reasoning tokens). Returning nil here refunds the
-		// platform-side charge and hides the cost — the billing gap observed on
-		// 2026-09-11. Nothing is synthesized: a genuinely empty completion has no
-		// usage to report and settles to zero.
-		return usage, emptyChatCompletionError(c.Writer.Written())
-	}
-
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
 		var streamResp struct {
@@ -592,21 +552,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		requiresDeepSeekV4ReasoningLogprobs(info) && !hasBothChatLogprobs(simpleResponse.Choices) {
 		return nil, missingReasoningLogprobsError()
 	}
-	// An empty completion is still a failure: there is nothing for the client to
-	// act on, so the request must not be recorded as a success. The upstream may
-	// nevertheless have billed for it (a thinking response that dropped
-	// reasoning_content, or a reasoning-only response whose thinking the caller
-	// disabled), so hand the observed usage back with the error — the relay
-	// settles it so the provider charge stays auditable instead of being
-	// refunded. A non-official channel is no longer rejected for omitting
-	// reasoning_content: only the official upstream guarantees the
-	// reasoning-before-content order, and a caller who wants that guarantee must
-	// pin the official channel (the Route dimension).
-	if info.RelayMode == relayconstant.RelayModeChatCompletions && !hasUsableChatCompletionOutput(simpleResponse.Choices) &&
-		!(!shouldSuppressReasoningContent(info) && hasReasoningOnlyFinishedOutput(simpleResponse.Choices)) {
-		return &simpleResponse.Usage, emptyChatCompletionError()
-	}
-
 	for _, choice := range simpleResponse.Choices {
 		if choice.FinishReason == constant.FinishReasonContentFilter {
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "openai_finish_reason=content_filter")
@@ -770,50 +715,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil
-}
-
-func hasUsableChatCompletionOutput(choices []dto.OpenAITextResponseChoice) bool {
-	for _, choice := range choices {
-		if strings.TrimSpace(choice.Message.StringContent()) != "" {
-			return true
-		}
-		for _, call := range choice.Message.ParseToolCalls() {
-			if isValidFunctionToolCall(call) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// hasReasoningOnlyFinishedOutput reports whether every visible signal points
-// to a completion whose only non-empty output is reasoning content and which
-// ended with a real finish_reason — a reasoning model can exhaust its max
-// budget inside reasoning (finish_reason=length) or stop while still thinking
-// (the stop word matched the reasoning phase, e.g. GLM-5.3 stop probes), and
-// both are valid upstream answers for any OpenAI-compatible reasoning model
-// (glm-5.x, hy3, kimi, mimo, deepseek-v4 ...), not a broken channel.
-func hasReasoningOnlyFinishedOutput(choices []dto.OpenAITextResponseChoice) bool {
-	for _, choice := range choices {
-		if choice.FinishReason != "" && strings.TrimSpace(choice.Message.GetReasoningContent()) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func emptyChatCompletionError(committed ...bool) *types.NewAPIError {
-	options := make([]types.NewAPIErrorOptions, 0, 2)
-	options = append(options, types.ErrOptionWithEmptyOutput())
-	if len(committed) > 0 && committed[0] {
-		options = append(options, types.ErrOptionWithSkipRetry())
-	}
-	return types.NewOpenAIError(
-		errors.New("upstream returned empty final content"),
-		types.ErrorCode("server_error"),
-		http.StatusBadGateway,
-		options...,
-	)
 }
 
 func requiresDeepSeekV4ReasoningLogprobs(info *relaycommon.RelayInfo) bool {

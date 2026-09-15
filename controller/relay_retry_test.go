@@ -83,6 +83,18 @@ func TestShouldRetryUpstreamBadRequest(t *testing.T) {
 	require.False(t, shouldRetry(c, localErr, 1))
 }
 
+func TestShouldRetryUpstreamServiceTemporarilyUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	err := types.NewOpenAIError(
+		errors.New("Upstream service temporarily unavailable"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+	)
+
+	require.True(t, shouldRetry(c, err, 1))
+}
+
 func TestUpstreamBadRequestRetryFollowsForceRetryStatusCodes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	origForce := operation_setting.ForceRetryStatusCodeRanges

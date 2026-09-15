@@ -2,6 +2,7 @@ package openai
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -10,32 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEmptyOutputErrorsAreFlagged(t *testing.T) {
-	require.True(t, emptyChatCompletionError().IsEmptyOutput())
-	require.True(t, emptyChatCompletionError(true).IsEmptyOutput())
-	// committed=false never touches the writer, so a nil-safe test context is enough
+func TestEmptyOutputIsNotAStandaloneGatewayError(t *testing.T) {
+	// Empty visible content is now valid upstream output. Only explicit upstream
+	// failures and protocol truncation are classified as relay errors.
+	err := types.NewOpenAIError(errors.New("boom"), types.ErrorCode("server_error"), http.StatusBadGateway)
+	require.False(t, err.IsEmptyOutput())
+}
+
+func TestResponsesTruncationIsAnUpstreamFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.True(t, incompleteResponsesStreamError(ctx, false, false).IsEmptyOutput())
-
-	// A stream truncated after partial output is an upstream failure, not an
-	// empty response, and must still evict the pinned channel.
-	truncated := incompleteResponsesStreamError(ctx, false, true)
-	require.True(t, truncated.IsUpstreamFailure())
-	require.False(t, truncated.IsEmptyOutput())
-	require.True(t, truncated.ShouldEvictChannelAffinity())
-
-	// committed variants must keep their skip-retry semantics
-	require.True(t, types.IsSkipRetryError(emptyChatCompletionError(true)))
-	require.False(t, types.IsSkipRetryError(emptyChatCompletionError()))
-
-	// image variants behave the same way
-	require.True(t, emptyImageResponseError().IsEmptyOutput())
-	require.True(t, emptyImageResponseError(true).IsEmptyOutput())
-	require.True(t, types.IsSkipRetryError(emptyImageResponseError(true)))
-	require.False(t, types.IsSkipRetryError(emptyImageResponseError()))
-
-	// unrelated errors must not carry the flag
-	require.False(t, types.NewOpenAIError(
-		errors.New("boom"), types.ErrorCode("server_error"), 502,
-	).IsEmptyOutput())
+	err := incompleteResponsesStreamError(ctx, false, false)
+	require.True(t, err.IsUpstreamFailure())
+	require.False(t, err.IsEmptyOutput())
+	require.True(t, err.ShouldEvictChannelAffinity())
 }
