@@ -437,7 +437,7 @@ func TestOaiStreamHandlerPromotesTopLevelOutputTokens(t *testing.T) {
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
 }
 
-func TestOaiStreamHandlerRejectsEmptyFinalOutput(t *testing.T) {
+func TestOaiStreamHandlerForwardsEmptyFinalOutput(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -463,12 +463,12 @@ func TestOaiStreamHandlerRejectsEmptyFinalOutput(t *testing.T) {
 		DisablePing:        true,
 	}
 	usage, err := OaiStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
-	require.NotNil(t, err)
-	require.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
 	require.Zero(t, usage.CompletionTokens)
 	require.Equal(t, 151, usage.TotalTokens)
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
+	require.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
 }
 
 func TestOaiStreamHandlerEmitsUsageOnlyWhenRequestedAndPreservesChoices(t *testing.T) {
@@ -689,7 +689,7 @@ func TestOpenaiHandlerDeepSeekV4FitsForceFormattedUsage(t *testing.T) {
 	assert.NotContains(t, responseBody, `"system_fingerprint"`, "fingerprint is never fabricated")
 }
 
-func TestOpenaiHandlerRejectsEmptyFinalOutput(t *testing.T) {
+func TestOpenaiHandlerForwardsEmptyFinalOutput(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -704,16 +704,12 @@ func TestOpenaiHandlerRejectsEmptyFinalOutput(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
-	// The empty completion is still a failure, but the upstream-reported usage
-	// now travels back with the error so the relay settles the provider charge
-	// instead of refunding it (billing-gap fix, 2026-09-11).
+	require.Nil(t, err)
 	require.NotNil(t, usage)
 	assert.Equal(t, 10, usage.PromptTokens)
 	assert.Equal(t, 256, usage.CompletionTokens)
-	require.NotNil(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
-	assert.False(t, recorder.Flushed)
+	assert.True(t, recorder.Flushed)
+	assert.Contains(t, recorder.Body.String(), `"content":""`)
 }
 
 func TestOpenaiHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {
@@ -792,7 +788,7 @@ func TestOpenaiHandlerAcceptsDeepSeekV4ReasoningOnlyLengthOutput(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
 }
 
-func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyLengthWhenThinkingDisabled(t *testing.T) {
+func TestOpenaiHandlerForwardsDeepSeekV4ReasoningOnlyLengthWhenThinkingDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -809,14 +805,12 @@ func TestOpenaiHandlerRejectsDeepSeekV4ReasoningOnlyLengthWhenThinkingDisabled(t
 		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"internal reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":256,"total_tokens":266}}`)),
 	})
 
-	// Every failed attempt must still report what the upstream billed, so the
-	// platform can settle it rather than silently absorbing the cost.
+	require.Nil(t, err)
 	require.NotNil(t, usage)
 	assert.Equal(t, 10, usage.PromptTokens)
 	assert.Equal(t, 256, usage.CompletionTokens)
-	require.NotNil(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.Empty(t, recorder.Body.String())
+	assert.NotContains(t, recorder.Body.String(), "reasoning_content")
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
 }
 
 func TestOpenaiHandlerSuppressesReasoningWhenDisabled(t *testing.T) {
@@ -841,7 +835,7 @@ func TestOpenaiHandlerSuppressesReasoningWhenDisabled(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "reasoning_content")
 }
 
-func TestOaiStreamHandlerRejectsReasoningOnlyOutputAfterCommit(t *testing.T) {
+func TestOaiStreamHandlerForwardsReasoningOnlyOutputAfterCommit(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -874,9 +868,7 @@ func TestOaiStreamHandlerRejectsReasoningOnlyOutputAfterCommit(t *testing.T) {
 	})
 
 	require.NotNil(t, usage)
-	require.Error(t, err)
-	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
-	assert.True(t, types.IsSkipRetryError(err))
+	require.Nil(t, err)
 	assert.True(t, recorder.Flushed)
 	assert.Contains(t, recorder.Body.String(), `"token":"answer"`)
 	assert.NotContains(t, recorder.Body.String(), "reasoning_content")

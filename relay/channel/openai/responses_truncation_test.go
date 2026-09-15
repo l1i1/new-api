@@ -75,17 +75,17 @@ func TestOaiResponsesStreamTruncatedAfterPartialOutputIsFailure(t *testing.T) {
 	require.NotContains(t, clientBody, "response.failed")
 }
 
-// The pre-existing zero-output truncation keeps its empty-output semantics and
-// still injects a synthetic response.failed event for the client.
-func TestOaiResponsesStreamTruncatedWithoutOutputIsEmptyFailure(t *testing.T) {
+// A zero-output stream without a terminal event is still a protocol failure,
+// but it is classified as an upstream truncation rather than empty output.
+func TestOaiResponsesStreamTruncatedWithoutOutputIsUpstreamFailure(t *testing.T) {
 	sse := responsesSSE(
 		`{"type":"response.created","response":{"status":"in_progress"}}`,
 	)
 	_, apiErr, clientBody := runResponsesStreamHandler(t, sse)
 
 	require.NotNil(t, apiErr)
-	require.True(t, apiErr.IsEmptyOutput())
-	require.False(t, apiErr.IsUpstreamFailure())
+	require.True(t, apiErr.IsUpstreamFailure())
+	require.False(t, apiErr.IsEmptyOutput())
 	require.True(t, apiErr.ShouldEvictChannelAffinity())
 	require.Contains(t, clientBody, "response.failed")
 }

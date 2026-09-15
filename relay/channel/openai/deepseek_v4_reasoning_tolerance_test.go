@@ -61,12 +61,9 @@ func TestNonStreamThinkingWithoutReasoningIsDelivered(t *testing.T) {
 	assert.Equal(t, "Hello", extractContent(t, recorder.Body.String()))
 }
 
-// Empty output is still a failure (nothing for the client to act on), but the
-// upstream-reported usage must travel back with the error so the relay can
-// settle the provider charge instead of refunding it. This is the billing gap
-// observed on 2026-09-11: aborted/empty completions were recorded with
-// prompt=0/completion=0 while the upstream had already billed.
-func TestEmptyFinalContentReturnsObservedUsage(t *testing.T) {
+// A successful upstream response with empty content is forwarded, while the
+// upstream-reported usage remains available for settlement.
+func TestEmptyFinalContentIsDelivered(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -92,12 +89,11 @@ func TestEmptyFinalContentReturnsObservedUsage(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 	})
-	require.NotNil(t, apiErr, "empty completion must still fail")
-	assert.True(t, apiErr.IsEmptyOutput())
-	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
-	require.NotNil(t, usage, "observed usage must be returned so the relay can settle it")
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
 	assert.Equal(t, 400, usage.PromptTokens)
 	assert.Equal(t, 120, usage.CompletionTokens)
+	assert.Equal(t, "", extractContent(t, recorder.Body.String()))
 }
 
 // extractContent pulls the assistant content out of a chat.completion body.
@@ -140,10 +136,9 @@ func TestStreamContentWithoutReasoningIsDelivered(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"content":"Hello"`)
 }
 
-// Stream twin of the billing regression: an empty terminal completion still
-// fails, but the upstream-reported usage must come back with the error so the
-// relay settles it rather than refunding the provider charge.
-func TestStreamEmptyFinalContentReturnsUsage(t *testing.T) {
+// Stream twin: an empty terminal completion is forwarded and its upstream
+// usage remains available for settlement.
+func TestStreamEmptyFinalContentIsDelivered(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"c1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"usage":null}`,
 		`data: {"id":"c1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":300,"completion_tokens":80,"total_tokens":380}}`,
@@ -156,9 +151,9 @@ func TestStreamEmptyFinalContentReturnsUsage(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
 	usage, apiErr := OaiStreamHandler(c, deepSeekV4RelayInfo(), hres)
-	require.NotNil(t, apiErr, "empty completion must still fail")
-	assert.True(t, apiErr.IsEmptyOutput())
-	require.NotNil(t, usage, "observed usage must be returned so the relay can settle it")
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
 	assert.Equal(t, 300, usage.PromptTokens)
 	assert.Equal(t, 80, usage.CompletionTokens)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
 }

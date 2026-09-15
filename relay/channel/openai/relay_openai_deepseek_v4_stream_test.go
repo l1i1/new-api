@@ -504,9 +504,9 @@ func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamPassesThrough(t *tes
 	assert.Contains(t, final, `"finish_reason":"length"`)
 }
 
-// The same reasoning-only stream with thinking disabled must still fail as
-// empty output: suppressed reasoning cannot satisfy the exemption.
-func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamFailsWhenThinkingDisabled(t *testing.T) {
+// The same reasoning-only stream with thinking disabled is forwarded as-is;
+// empty visible content is not a gateway validation failure.
+func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamPassesWhenThinkingDisabled(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"loop"},"logprobs":null,"finish_reason":null}],"usage":null}`,
@@ -520,16 +520,15 @@ func TestOaiStreamHandlerDeepSeekV4ReasoningOnlyLengthStreamFailsWhenThinkingDis
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	info := deepSeekV4RelayInfo()
 	info.Request = &dto.GeneralOpenAIRequest{Model: "deepseek-v4-flash", THINKING: json.RawMessage(`{"type":"disabled"}`)}
-	_, err := OaiStreamHandler(c, info, resp)
+	usage, err := OaiStreamHandler(c, info, resp)
 
-	require.NotNil(t, err)
-	assert.Contains(t, err.Error(), "upstream returned empty final content")
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
 }
 
-// The reasoning-only-length exemption is behavior-based, not a deepseek-v4
-// whitelist: any OpenAI-compatible reasoning model (glm, hy3, kimi, mimo ...)
-// that exhausts max_tokens inside thinking must pass the stream guard instead
-// of surfacing "upstream returned empty final content" to channel tests.
+// Reasoning-only length output is forwarded for any OpenAI-compatible reasoning
+// model; an empty visible content field is not a gateway validation failure.
 func TestOaiStreamHandlerReasoningOnlyLengthStreamPassesForNonV4ReasoningModel(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}`,
@@ -587,9 +586,9 @@ func TestOpenaiHandlerReasoningOnlyLengthPassesForNonV4ReasoningModel(t *testing
 	assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`)
 }
 
-// Non-stream: empty content with finish_reason=stop and no reasoning is a real
-// empty response and must keep failing.
-func TestOpenaiHandlerEmptyStopResponseStillFails(t *testing.T) {
+// Non-stream: a successful upstream response with empty content remains a
+// valid response and is forwarded without a gateway validation failure.
+func TestOpenaiHandlerForwardsEmptyStopResponse(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
@@ -613,6 +612,7 @@ func TestOpenaiHandlerEmptyStopResponseStillFails(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 	})
 
-	require.NotNil(t, err)
-	assert.Contains(t, err.Error(), "upstream returned empty final content")
+	require.Nil(t, err)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.Contains(t, recorder.Body.String(), `"content":""`)
 }
