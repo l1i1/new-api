@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -51,12 +52,12 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 		{
 			name:    "extreme reasoning effort is rejected with the official deserialization text",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"reasoning_effort":"extreme"}`,
-			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `extreme`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`",
+			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `extreme`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` at line 1 column 104",
 		},
 		{
 			name:    "ultra reasoning effort is rejected with the official deserialization text",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"reasoning_effort":"ultra"}`,
-			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `ultra`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`",
+			message: "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant `ultra`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` at line 1 column 102",
 		},
 		{
 			name:    "top_p above one is rejected",
@@ -81,7 +82,7 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 		{
 			name:    "negative top_logprobs is a deserialization error",
 			body:    `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"1+1=?"}],"logprobs":true,"top_logprobs":-1}`,
-			message: "Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `-1`, expected u8",
+			message: "Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `-1`, expected u8 at line 1 column 109",
 		},
 		{
 			name:    "json_object requires the word json in the prompt",
@@ -139,7 +140,10 @@ func TestDeepSeekV4EffortEnumMatchesOfficial(t *testing.T) {
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
 			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
-			assert.Equal(t, deepSeekV4ReasoningEffortDeserMessage(effort), apiErr.ToOpenAIError().Message)
+			// The official text carries the byte location of the offending
+			// value; the column follows the request this test builds.
+			column := 104 + len(effort) - len("extreme")
+			assert.Equal(t, deepSeekV4ReasoningEffortDeserMessage(effort)+" at line 1 column "+strconv.Itoa(column), apiErr.ToOpenAIError().Message)
 		})
 	}
 }
@@ -207,7 +211,7 @@ func TestDeepSeekV4ToolChoiceMatchesOfficial(t *testing.T) {
 		{"auto in thinking mode", `"tools":` + tools + `,"tool_choice":"auto",`, ""},
 		{"none in thinking mode", `"tools":` + tools + `,"tool_choice":"none",`, ""},
 		{"required without tools", `"tool_choice":"required",`, ""},
-		{"bogus tool_choice string", `"tool_choice":"bogus",`, "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool"},
+		{"bogus tool_choice string", `"tool_choice":"bogus",`, "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool at line 1 column 50"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

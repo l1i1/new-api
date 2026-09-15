@@ -60,14 +60,14 @@ func TestDeepSeekV4PenaltyRangeValidationMatchesOfficial(t *testing.T) {
 
 func TestDeepSeekV4MessageContractValidationMatchesOfficial(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	roleErr := "Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"
+	roleErr := "Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder` at line 1 column 58"
 	tests := []struct {
 		name    string
 		body    string
 		wantErr string
 	}{
 		{"developer role is a deserialization failure", `{"model":"deepseek-v4-pro","messages":[{"role":"developer","content":"x"},{"role":"user","content":"1+1=?"}],"max_tokens":32}`, roleErr},
-		{"function role is a deserialization failure", `{"model":"deepseek-v4-pro","messages":[{"role":"function","content":"x"},{"role":"user","content":"1+1=?"}],"max_tokens":32}`, "Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `function`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"},
+		{"function role is a deserialization failure", `{"model":"deepseek-v4-pro","messages":[{"role":"function","content":"x"},{"role":"user","content":"1+1=?"}],"max_tokens":32}`, "Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `function`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder` at line 1 column 57"},
 		{"latest_reminder is an accepted official variant", `{"model":"deepseek-v4-pro","messages":[{"role":"latest_reminder","content":"x"},{"role":"user","content":"1+1=?"}],"max_tokens":32}`, ""},
 		{"empty message list is Empty input messages", `{"model":"deepseek-v4-pro","messages":[],"max_tokens":32}`, "Empty input messages"},
 		{"image on the text-only flash is accepted (official drift 2026-09-06: 200, not 400)", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/x.png"}},{"type":"text","text":"这是什么？"}]}],"max_tokens":32}`, ""},
@@ -113,24 +113,24 @@ func TestDeepSeekV4ThinkingValidationMatchesOfficial(t *testing.T) {
 	// scalar thinking values, and non-string types each carry their own
 	// official text; thinking:null is ignored.
 	tests := []struct {
-		name    string
+		name     string
 		thinking string
-		wantErr string
+		wantErr  string
 	}{
 		{"adaptive is an accepted official variant", `{"type":"adaptive"}`, ""},
 		{"enabled is accepted", `{"type":"enabled"}`, ""},
 		{"disabled is accepted", `{"type":"disabled"}`, ""},
 		{"unknown extra fields are ignored", `{"type":"adaptive","bogus":1}`, ""},
-		{"bogus type string is the unknown-variant serde error", `{"type":"didn't"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled`"},
-		{"case differs from the enum is rejected", `{"type":"Enabled"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `Enabled`, expected one of `adaptive`, `enabled`, `disabled`"},
-		{"missing type key is a serde error", `{}`, "Failed to deserialize the JSON body into the target type: thinking: missing field `type`"},
+		{"bogus type string is the unknown-variant serde error", `{"type":"didn't"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled` at line 1 column 141"},
+		{"case differs from the enum is rejected", `{"type":"Enabled"}`, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `Enabled`, expected one of `adaptive`, `enabled`, `disabled` at line 1 column 142"},
+		{"missing type key is a serde error", `{}`, "Failed to deserialize the JSON body into the target type: thinking: missing field `type` at line 1 column 127"},
 		{"numeric type is the plain-text parse failure", `{"type":123}`, deepSeekV4ThinkingParseExpectedValueText},
 		{"boolean type is the plain-text parse failure", `{"type":true}`, deepSeekV4ThinkingParseExpectedValueText},
 		{"null type is the plain-text parse failure", `{"type":null}`, deepSeekV4ThinkingParseExpectedValueText},
-		{"scalar string thinking is a serde error", `"disabled"`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: string \"disabled\", expected struct ThinkingOptions"},
-		{"scalar boolean thinking is a serde error", `true`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: boolean `true`, expected struct ThinkingOptions"},
-		{"scalar integer thinking is a serde error", `1`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: integer `1`, expected struct ThinkingOptions"},
-		{"scalar floating point thinking is a serde error", `1.5`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: floating point `1.5`, expected struct ThinkingOptions"},
+		{"scalar string thinking is a serde error", `"disabled"`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: string \"disabled\", expected struct ThinkingOptions at line 1 column 135"},
+		{"scalar boolean thinking is a serde error", `true`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: boolean `true`, expected struct ThinkingOptions at line 1 column 129"},
+		{"scalar integer thinking is a serde error", `1`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: integer `1`, expected struct ThinkingOptions at line 1 column 126"},
+		{"scalar floating point thinking is a serde error", `1.5`, "Failed to deserialize the JSON body into the target type: thinking: invalid type: floating point `1.5`, expected struct ThinkingOptions at line 1 column 128"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -163,7 +163,7 @@ func TestDeepSeekV4ThinkingValidationMatchesOfficial(t *testing.T) {
 		require.Error(t, err)
 		var apiErr *types.NewAPIError
 		require.True(t, errors.As(err, &apiErr))
-		assert.Equal(t, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled`", apiErr.Error())
+		assert.Equal(t, "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `didn't`, expected one of `adaptive`, `enabled`, `disabled` at line 1 column 152", apiErr.Error())
 	})
 }
 
@@ -203,4 +203,15 @@ func TestIsStrictFitValidationMessageCoversAuditR6Texts(t *testing.T) {
 	for _, msg := range recognized {
 		assert.True(t, IsStrictFitValidationMessage(msg), "%q", msg)
 	}
+}
+
+// The remote-image failure embeds both indices in the path, so it is matched by
+// shape; a message that merely contains the words must not be claimed.
+func TestIsStrictFitValidationMessageCoversRemoteImageFailure(t *testing.T) {
+	assert.True(t, IsStrictFitValidationMessage(".messages[0].image[0]: Failed to download image from https://example.com/x.png"))
+	assert.True(t, IsStrictFitValidationMessage(".messages[3].image[2]: Failed to download image from http://a.test/y.jpg"))
+
+	assert.False(t, IsStrictFitValidationMessage("Failed to download image from https://example.com/x.png"))
+	assert.False(t, IsStrictFitValidationMessage(".messages[0].image: failed to download image from x"))
+	assert.False(t, IsStrictFitValidationMessage(".content[0].image[0]: Failed to download image from x"))
 }

@@ -88,8 +88,8 @@ func TestDeepSeekV4ReasoningPassbackRule(t *testing.T) {
 			body: toolChainBodyModel("deepseek-v4-flash-vision-exp", `[{"role":"user","content":"北京天气？"},`+assistantToolCallsJSON("call_real")+`,{"role":"tool","content":"晴","tool_call_id":"call_real"}]`),
 		},
 		{
-			name: "vision variant stays subject to the tool state machine",
-			body: toolChainBodyModel("deepseek-v4-flash-vision-exp", `[{"role":"user","content":"北京天气？"},{"role":"tool","content":"晴","tool_call_id":"call_fake"}]`),
+			name:    "vision variant stays subject to the tool state machine",
+			body:    toolChainBodyModel("deepseek-v4-flash-vision-exp", `[{"role":"user","content":"北京天气？"},{"role":"tool","content":"晴","tool_call_id":"call_fake"}]`),
 			wantErr: "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
 		},
 		{
@@ -148,7 +148,7 @@ func TestDeepSeekV4ToolCallChainValidation(t *testing.T) {
 	orphan := "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
 	unansweredID := "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id', The following tool_call_ids did not have response messages: "
 	insufficient := "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)"
-	missingToolCallIDErr := "Failed to deserialize the JSON body into the target type: messages[2]: missing field `tool_call_id`"
+	missingToolCallIDErr := "Failed to deserialize the JSON body into the target type: messages[2]: missing field `tool_call_id` at line 1 column 254"
 
 	tests := []struct {
 		name    string
@@ -266,7 +266,7 @@ func TestIsStrictFitValidationMessageCoversRound23Texts(t *testing.T) {
 		"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
 		"An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id', The following tool_call_ids did not have response messages: call_other",
 		"An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)",
-		"Failed to deserialize the JSON body into the target type: messages[2]: missing field `tool_call_id`",
+		"Failed to deserialize the JSON body into the target type: messages[2]: missing field `tool_call_id` at line 1 column 254",
 		"The `reasoning_content` in the thinking mode must be passed back to the API.",
 	}
 	for _, msg := range recognized {

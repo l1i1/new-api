@@ -364,13 +364,16 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	case relayconstant.RelayModeChatCompletions:
 		profile, fitEnabled := officialFitProfile(c, textRequest.Model)
 		if fitEnabled && profile.Validate {
-			if err := validateDeepSeekV4OfficialFields(textRequest); err != nil {
+			// The official deserialization texts end in a location suffix
+			// derived from the request bytes; resolve it once per request.
+			loc := serdeLocationForRequest(c)
+			if err := validateDeepSeekV4OfficialFields(textRequest, loc); err != nil {
 				return nil, err
 			}
-			if err := validateDeepSeekV4Logprobs(textRequest); err != nil {
+			if err := validateDeepSeekV4Logprobs(textRequest, loc); err != nil {
 				return nil, err
 			}
-			if err := validateDeepSeekV4ToolCallChain(textRequest); err != nil {
+			if err := validateDeepSeekV4ToolCallChain(textRequest, loc); err != nil {
 				return nil, err
 			}
 			if err := validateKimiK3OfficialFields(textRequest); err != nil {
@@ -422,6 +425,15 @@ const (
 	deepSeekV4ToolChoiceThinkingMessage = "Thinking mode does not support this tool_choice"
 	deepSeekV4EmptyMessagesMessage      = "Empty input messages"
 	deepSeekV4ImageUnsupportedMessage   = "This model does not support image"
+	// deepSeekV4ImageDownloadFailedMarker identifies the official text for a
+	// content part whose remote image could not be fetched (live-probed
+	// 2026-09-15: flash 400, pro 200 — the model difference is real and
+	// per-model). The path carries both indices (`.messages[0].image[0]: ...`),
+	// so it is matched by shape rather than by prefix. Recognising it keeps the
+	// message, error code and media type byte-identical instead of masking the
+	// URL and appending a gateway request id.
+	deepSeekV4ImageDownloadFailedMarker = "].image["
+	deepSeekV4ImageDownloadFailedText   = ": Failed to download image from "
 	// Official role serde enum (live-probed): `developer` is rejected with the
 	// standard deserialization text listing five variants, latest_reminder
 	// included.
@@ -593,13 +605,13 @@ func deepSeekV4MessagesText(messages []dto.Message) string {
 	return sb.String()
 }
 
-func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 {
 		return nil
 	}
 	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" && !deepSeekV4ReasoningEffortAllowed[strings.ToLower(effort)] {
 		return types.WithOpenAIError(types.OpenAIError{
-			Message: deepSeekV4ReasoningEffortDeserMessage(effort),
+			Message: loc.withLocation(deepSeekV4ReasoningEffortDeserMessage(effort), "reasoning_effort"),
 			Type:    "invalid_request_error",
 			Param:   nil,
 			Code:    "invalid_request_error",
@@ -653,13 +665,13 @@ func validateDeepSeekV4OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			Code:    "invalid_request_error",
 		}, http.StatusBadRequest)
 	}
-	if err := validateDeepSeekV4ToolChoice(request); err != nil {
+	if err := validateDeepSeekV4ToolChoice(request, loc); err != nil {
 		return err
 	}
-	if err := validateDeepSeekV4Messages(request); err != nil {
+	if err := validateDeepSeekV4Messages(request, loc); err != nil {
 		return err
 	}
-	if err := validateDeepSeekV4Thinking(request); err != nil {
+	if err := validateDeepSeekV4Thinking(request, loc); err != nil {
 		return err
 	}
 	if count, isArray := deepSeekV4StopArrayLength(request.Stop); isArray && count > deepSeekV4StopArrayLimit {
@@ -696,7 +708,7 @@ func deepSeekV4PenaltyRangeMessage(field string, value *float64) string {
 // rejected in thinking mode (anything except thinking disabled / effort none)
 // whenever the request actually declares tools — without tools every choice
 // is accepted.
-func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	switch choice := request.ToolChoice.(type) {
 	case nil:
 		return nil
@@ -710,7 +722,7 @@ func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest) error {
 			}
 			return nil
 		default:
-			return deepSeekV4ToolChainError(deepSeekV4ToolChoiceDeserMessage)
+			return deepSeekV4ToolChainError(loc.withLocation(deepSeekV4ToolChoiceDeserMessage, "tool_choice"))
 		}
 	case map[string]any:
 		if len(request.Tools) > 0 && !deepSeekV4ThinkingOff(request) {
@@ -731,7 +743,7 @@ func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest) error {
 // V4 model: live-probed 2026-09-06, official renders them 200 even on
 // text-only pro/flash (the pre-2026-09 "This model does not support image"
 // 400 no longer exists), so the parts forward to the upstream untouched.
-func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if len(request.Messages) == 0 {
 		return deepSeekV4ToolChainError(deepSeekV4EmptyMessagesMessage)
 	}
@@ -740,8 +752,9 @@ func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
 		switch role {
 		case "system", "user", "assistant", "tool", "latest_reminder":
 		default:
-			return deepSeekV4ToolChainError(deepSeekV4RoleDeserMessagePrefix + strconv.Itoa(i) +
-				"].role: unknown variant `" + role + "`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`")
+			message := deepSeekV4RoleDeserMessagePrefix + strconv.Itoa(i) +
+				"].role: unknown variant `" + role + "`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"
+			return deepSeekV4ToolChainError(loc.withLocation(message, "messages", i, "role"))
 		}
 	}
 	return nil
@@ -753,7 +766,7 @@ func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest) error {
 // fields are ignored), a missing type key and scalar thinking values each get
 // their own deserialization text, a non-string type is a plain-text body
 // parse failure, and a null thinking value is ignored.
-func validateDeepSeekV4Thinking(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4Thinking(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if len(request.THINKING) == 0 {
 		return nil
 	}
@@ -762,11 +775,11 @@ func validateDeepSeekV4Thinking(request *dto.GeneralOpenAIRequest) error {
 	}
 	var fields map[string]json.RawMessage
 	if err := common.Unmarshal(request.THINKING, &fields); err != nil {
-		return deepSeekV4ThinkingScalarError(request.THINKING)
+		return deepSeekV4ThinkingScalarError(request.THINKING, loc)
 	}
 	typeRaw, hasType := fields["type"]
 	if !hasType {
-		return deepSeekV4ToolChainError("Failed to deserialize the JSON body into the target type: thinking: missing field `type`")
+		return deepSeekV4ToolChainError(loc.withContainerLocation("Failed to deserialize the JSON body into the target type: thinking: missing field `type`", "thinking"))
 	}
 	typeValue := bytes.TrimSpace(typeRaw)
 	if len(typeValue) == 0 || typeValue[0] != '"' {
@@ -780,8 +793,9 @@ func validateDeepSeekV4Thinking(request *dto.GeneralOpenAIRequest) error {
 	case "adaptive", "enabled", "disabled":
 		return nil
 	default:
-		return deepSeekV4ToolChainError("Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `" +
-			thinkingType + "`, expected one of `adaptive`, `enabled`, `disabled`")
+		message := "Failed to deserialize the JSON body into the target type: thinking.type: unknown variant `" +
+			thinkingType + "`, expected one of `adaptive`, `enabled`, `disabled`"
+		return deepSeekV4ToolChainError(loc.withLocation(message, "thinking", "type"))
 	}
 }
 
@@ -794,28 +808,32 @@ const deepSeekV4ThinkingParseExpectedValueText = "Failed to parse the request bo
 // a scalar thinking value: string/boolean/integer/floating point each get a
 // type-specific wording; null never reaches here (accepted upstream of this
 // check).
-func deepSeekV4ThinkingScalarError(raw json.RawMessage) error {
+func deepSeekV4ThinkingScalarError(raw json.RawMessage, loc *serdeLocation) error {
 	value := bytes.TrimSpace(raw)
 	invalid := "Failed to deserialize the JSON body into the target type: thinking: invalid type: "
+	message := ""
 	switch {
 	case len(value) > 0 && value[0] == '"':
 		var scalar string
 		if err := json.Unmarshal(value, &scalar); err != nil {
-			return deepSeekV4ToolChainError(invalid + "string, expected struct ThinkingOptions")
+			message = invalid + "string, expected struct ThinkingOptions"
+			break
 		}
-		return deepSeekV4ToolChainError(invalid + "string \"" + scalar + "\", expected struct ThinkingOptions")
+		message = invalid + "string \"" + scalar + "\", expected struct ThinkingOptions"
 	case string(value) == "true" || string(value) == "false":
-		return deepSeekV4ToolChainError(invalid + "boolean `" + string(value) + "`, expected struct ThinkingOptions")
+		message = invalid + "boolean `" + string(value) + "`, expected struct ThinkingOptions"
 	case len(value) > 0 && value[0] == '[':
-		return deepSeekV4ToolChainError(invalid + "sequence, expected struct ThinkingOptions")
+		message = invalid + "sequence, expected struct ThinkingOptions"
 	case len(value) > 0 && value[0] == '{':
-		return deepSeekV4ToolChainError(invalid + "map, expected struct ThinkingOptions")
+		message = invalid + "map, expected struct ThinkingOptions"
 	default:
 		if strings.ContainsAny(string(value), ".eE") {
-			return deepSeekV4ToolChainError(invalid + "floating point `" + string(value) + "`, expected struct ThinkingOptions")
+			message = invalid + "floating point `" + string(value) + "`, expected struct ThinkingOptions"
+		} else {
+			message = invalid + "integer `" + string(value) + "`, expected struct ThinkingOptions"
 		}
-		return deepSeekV4ToolChainError(invalid + "integer `" + string(value) + "`, expected struct ThinkingOptions")
 	}
+	return deepSeekV4ToolChainError(loc.withLocation(message, "thinking"))
 }
 
 // (docs thinking_mode table: medium and xhigh both map to high) so every
@@ -851,7 +869,7 @@ func mapDeepSeekV4ReasoningEffort(request *dto.GeneralOpenAIRequest) {
 //
 // Answering a call consumes it, so a duplicated answer degrades into the
 // orphan rule exactly like the official endpoint.
-func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 {
 		return nil
 	}
@@ -870,8 +888,9 @@ func validateDeepSeekV4ToolCallChain(request *dto.GeneralOpenAIRequest) error {
 			}
 			id := strings.TrimSpace(msg.ToolCallId)
 			if id == "" {
-				return deepSeekV4ToolChainError(deepSeekV4MissingToolCallIDPrefix +
-					strconv.Itoa(i) + "]: missing field `tool_call_id`")
+				message := deepSeekV4MissingToolCallIDPrefix +
+					strconv.Itoa(i) + "]: missing field `tool_call_id`"
+				return deepSeekV4ToolChainError(loc.withContainerLocation(message, "messages", i))
 			}
 			if !pending[id] {
 				return deepSeekV4ToolChainError(deepSeekV4UnansweredToolCallIDsText + id)
@@ -965,7 +984,7 @@ func deepSeekV4ToolChainError(message string) error {
 	}, http.StatusBadRequest)
 }
 
-func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
+func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if request == nil || officialfit.FamilyOf(request.Model) != officialfit.FamilyDeepSeekV4 || request.TopLogProbs == nil {
 		return nil
 	}
@@ -981,7 +1000,7 @@ func validateDeepSeekV4Logprobs(request *dto.GeneralOpenAIRequest) error {
 		// The official endpoint deserializes top_logprobs as u8, so negatives
 		// fail before the range check with the deserialization text.
 		return types.WithOpenAIError(types.OpenAIError{
-			Message: deepSeekV4TopLogprobsDeserMessage(*request.TopLogProbs),
+			Message: loc.withLocation(deepSeekV4TopLogprobsDeserMessage(*request.TopLogProbs), "top_logprobs"),
 			Type:    "invalid_request_error",
 			Param:   nil,
 			Code:    "invalid_request_error",
@@ -1295,7 +1314,21 @@ func IsStrictFitValidationMessage(message string) bool {
 			return true
 		}
 	}
-	return false
+	return isDeepSeekV4ImageDownloadFailedMessage(message)
+}
+
+// isDeepSeekV4ImageDownloadFailedMessage matches the official remote-image
+// failure text, whose path embeds both indices (`.messages[0].image[0]: Failed
+// to download image from <url>`), so it cannot be matched by a single prefix.
+func isDeepSeekV4ImageDownloadFailedMessage(message string) bool {
+	if !strings.HasPrefix(message, ".messages[") {
+		return false
+	}
+	image := strings.Index(message, deepSeekV4ImageDownloadFailedMarker)
+	if image < 0 {
+		return false
+	}
+	return strings.Contains(message[image:], deepSeekV4ImageDownloadFailedText)
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {
