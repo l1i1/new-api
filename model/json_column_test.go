@@ -33,6 +33,21 @@ func TestJSONColumnValuersReturnString(t *testing.T) {
 			want:   `{"key":"k"}`,
 		},
 		{
+			name:   "TaskPrivateDataCredentialOnly",
+			valuer: TaskPrivateData{ChannelCredentialID: 42},
+			want:   `{"channel_credential_id":42}`,
+		},
+		{
+			name:   "TaskPrivateDataProxyOnly",
+			valuer: TaskPrivateData{ProxySnapshot: "http://proxy.example:8080"},
+			want:   `{"proxy_snapshot":"http://proxy.example:8080"}`,
+		},
+		{
+			name:   "TaskPrivateDataProxyMarkerOnly",
+			valuer: TaskPrivateData{ProxySnapshotSet: true},
+			want:   `{"proxy_snapshot_set":true}`,
+		},
+		{
 			name:   "JSONValue",
 			valuer: JSONValue(`[{"k":"v"}]`),
 			want:   `[{"k":"v"}]`,

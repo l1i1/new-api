@@ -55,18 +55,22 @@ func (a *unrecognizedResponsePollingAdaptor) AdjustBillingOnComplete(_ *model.Ta
 
 type batchPollingAdaptor struct {
 	taskPollingFetchAdaptor
-	batchCalls int
-	batchIDs   []string
-	results    map[string]*BatchTaskResult
+	batchCalls   int
+	batchIDs     []string
+	batchIDCall  [][]string
+	batchProxies []string
+	results      map[string]*BatchTaskResult
 }
 
 func (a *batchPollingAdaptor) FetchMode() string { return "batch" }
-func (a *batchPollingAdaptor) FetchBatchTasks(_ string, _ string, tasks []*model.Task, _ string) (*http.Response, error) {
+func (a *batchPollingAdaptor) FetchBatchTasks(_ string, _ string, tasks []*model.Task, proxy string) (*http.Response, error) {
 	a.batchCalls++
 	a.batchIDs = a.batchIDs[:0]
 	for _, task := range tasks {
 		a.batchIDs = append(a.batchIDs, task.GetUpstreamTaskID())
 	}
+	a.batchIDCall = append(a.batchIDCall, append([]string(nil), a.batchIDs...))
+	a.batchProxies = append(a.batchProxies, proxy)
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader([]byte(`{}`)))}, nil
 }
 func (a *batchPollingAdaptor) ParseBatchResult(_ []*model.Task, _ *http.Response, _ []byte) (map[string]*BatchTaskResult, error) {
@@ -203,6 +207,41 @@ func TestUpdateBatchTasksKeepsSuccessWithDiagnosticReason(t *testing.T) {
 	require.NoError(t, model.DB.First(&updated, task.ID).Error)
 	assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), updated.Status)
 	assert.Equal(t, "100%", updated.Progress)
+}
+
+func TestUpdateBatchTasksSeparatesCredentialTasksByProxy(t *testing.T) {
+	truncate(t)
+
+	const channelID = 9803
+	seedTaskPollingChannel(t, channelID, true)
+	first := seedPollingTask(t, channelID, "task_same_credential_proxy_a", "upstream_same_credential_proxy_a")
+	second := seedPollingTask(t, channelID, "task_same_credential_proxy_b", "upstream_same_credential_proxy_b")
+	first.PrivateData.ChannelCredentialID = 42
+	first.PrivateData.ProxySnapshot = "http://proxy-a.example:8080"
+	first.PrivateData.ProxySnapshotSet = true
+	second.PrivateData.ChannelCredentialID = 42
+	second.PrivateData.ProxySnapshot = "http://proxy-b.example:8080"
+	second.PrivateData.ProxySnapshotSet = true
+
+	adaptor := &batchPollingAdaptor{}
+	taskMap := map[string]*model.Task{
+		first.GetUpstreamTaskID():  first,
+		second.GetUpstreamTaskID(): second,
+	}
+	require.NoError(t, updateBatchTasks(context.Background(), adaptor, channelID, []string{
+		first.GetUpstreamTaskID(),
+		second.GetUpstreamTaskID(),
+	}, taskMap))
+
+	assert.Equal(t, 2, adaptor.batchCalls)
+	got := make(map[string][]string, len(adaptor.batchProxies))
+	for index, proxy := range adaptor.batchProxies {
+		got[proxy] = adaptor.batchIDCall[index]
+	}
+	assert.Equal(t, map[string][]string{
+		first.PrivateData.ProxySnapshot:  {first.GetUpstreamTaskID()},
+		second.PrivateData.ProxySnapshot: {second.GetUpstreamTaskID()},
+	}, got)
 }
 
 func TestRedactVideoResponseBodyPreservesPollingPayloadShape(t *testing.T) {

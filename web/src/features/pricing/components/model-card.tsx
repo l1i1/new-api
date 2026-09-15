@@ -66,8 +66,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const currency = useSystemConfigStore((state) => state.config.currency)
   const tokenUnit = props.tokenUnit ?? DEFAULT_TOKEN_UNIT
   const priceRate = props.priceRate ?? 1
-  const usdExchangeRate =
-    props.usdExchangeRate ?? currency.usdExchangeRate ?? 1
+  const usdExchangeRate = props.usdExchangeRate ?? currency.usdExchangeRate ?? 1
   const showRechargePrice = props.showRechargePrice ?? false
   const displayCurrency =
     props.displayCurrency ??
@@ -76,7 +75,9 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
   const tags = parseTags(props.model.localized_tags || props.model.tags)
   const description = (
-    props.model.localized_description || props.model.description || ''
+    props.model.localized_description ||
+    props.model.description ||
+    ''
   ).trim()
   const vendorName =
     props.model.vendor_localized_name || props.model.vendor_name
@@ -172,11 +173,13 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                     </span>
                   )}
                   <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
-                    {entry.original && !entry.formattedRange && (
-                      <span className='text-muted-foreground/60 text-xs font-normal line-through'>
-                        {entry.original}
-                      </span>
-                    )}
+                    {entry.original &&
+                      entry.original !== entry.formatted &&
+                      !entry.formattedRange && (
+                        <span className='text-muted-foreground/60 text-xs font-normal line-through'>
+                          {entry.original}
+                        </span>
+                      )}
                     <span>{entry.formattedRange ?? entry.formatted}</span>
                     <span className='text-muted-foreground text-xs font-normal whitespace-nowrap'>
                       {' '}
@@ -250,7 +253,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         <div key={price.type} className='flex min-w-0 flex-col gap-1'>
           <span className='text-muted-foreground text-xs'>{price.label}</span>
           <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
-            {parts.original && (
+            {parts.original && parts.original !== parts.price && (
               <span className='text-muted-foreground/60 text-xs font-normal line-through'>
                 {parts.original}
               </span>
@@ -275,11 +278,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     priceSummary = (
       <div className='col-span-full flex min-w-0 flex-col gap-1'>
         <span className='flex flex-wrap items-baseline gap-x-1 font-mono text-sm font-semibold tabular-nums'>
-          {requestParts.original && (
-            <span className='text-muted-foreground/60 text-xs font-normal line-through'>
-              {requestParts.original}
-            </span>
-          )}
+          {requestParts.original &&
+            requestParts.original !== requestParts.price && (
+              <span className='text-muted-foreground/60 text-xs font-normal line-through'>
+                {requestParts.original}
+              </span>
+            )}
           {requestParts.price}
           <span className='text-muted-foreground text-xs font-normal'>
             / {t('request')}

@@ -114,10 +114,12 @@ describe('dynamic pricing breakdown expression display', () => {
     domWindow.close()
   })
 
-  test('shows the billing expression in the model detail layout', async () => {
+  test('shows structured tiers and hides the raw expression in the model detail layout', async () => {
     const { container, root } = await renderBreakdown()
 
-    assert.ok(container.textContent?.includes(billingExpr))
+    const text = container.textContent || ''
+    assert.ok(text.includes('pro_peak'))
+    assert.equal(text.includes(billingExpr), false)
 
     await act(async () => root.unmount())
     container.remove()

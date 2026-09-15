@@ -275,7 +275,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		key, proxy := model.ResolveTaskChannelAccess(task, ch)
 		groupID := "legacy:" + model.ChannelCredentialFingerprint(key) + "\x00" + proxy
 		if task.PrivateData.ChannelCredentialID > 0 {
-			groupID = fmt.Sprintf("credential:%d", task.PrivateData.ChannelCredentialID)
+			groupID = fmt.Sprintf("credential:%d\x00%s", task.PrivateData.ChannelCredentialID, proxy)
 		}
 		group := groups[groupID]
 		if group == nil {
@@ -289,13 +289,11 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelBaseUrl: baseURL,
-			ChannelSetting: ch.GetSetting(),
-			ApiKey:         group.key,
-		}}
-		info.ChannelMeta.ChannelSetting.Proxy = group.proxy
-		adaptor.Init(info)
+		var contextTask *model.Task
+		if len(group.tasks) > 0 {
+			contextTask = group.tasks[0]
+		}
+		adaptor.Init(model.BuildTaskPollingRelayInfo(ch, contextTask, baseURL, group.key, group.proxy))
 		resp, err := adaptor.FetchBatchTasks(baseURL, group.key, group.tasks, group.proxy)
 		if err != nil {
 			common.SysLog(fmt.Sprintf("Get Task Do req error: %v", err))
@@ -483,12 +481,6 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	if adaptor == nil {
 		return fmt.Errorf("video adaptor not found")
 	}
-	info := &relaycommon.RelayInfo{}
-	info.ChannelMeta = &relaycommon.ChannelMeta{
-		ChannelBaseUrl: cacheGetChannel.GetBaseURL(),
-	}
-	info.ApiKey = cacheGetChannel.Key
-	adaptor.Init(info)
 	disablePollingSleep := cacheGetChannel.GetOtherSettings().DisableTaskPollingSleep
 	for i, taskId := range taskIds {
 		if ctx.Err() != nil {
@@ -526,6 +518,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 	snap := task.Snapshot()
 	key, proxy := model.ResolveTaskChannelAccess(task, ch)
+	adaptor.Init(model.BuildTaskPollingRelayInfo(ch, task, baseURL, key, proxy))
 	resp, err := adaptor.FetchTask(baseURL, key, task, proxy)
 	if err != nil {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, 0, err.Error())

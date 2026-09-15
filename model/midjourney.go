@@ -64,8 +64,10 @@ func ResolveMidjourneyChannelAccess(task *Midjourney, channel *Channel) (string,
 			} else if credential.Secret != "" {
 				key = credential.Secret
 			}
-			if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
-				proxy = effectiveProxy
+			if !task.ProxySnapshotSet {
+				if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
+					proxy = effectiveProxy
+				}
 			}
 		}
 	}

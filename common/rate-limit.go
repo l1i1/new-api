@@ -142,12 +142,12 @@ func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration in
 		l.store[key] = entry
 	} else {
 		entry.requests.removeExpired(now.Unix(), duration)
-		entry.lastActive = now
-		l.lru.MoveToFront(entry.element)
 	}
 
 	allowed := entry.requests.length < maxRequestNum
 	if allowed {
+		entry.lastActive = now
+		l.lru.MoveToFront(entry.element)
 		entry.requests.append(now.Unix())
 	}
 

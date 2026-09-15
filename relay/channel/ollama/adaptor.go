@@ -53,6 +53,9 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	openaiRequest.(*dto.GeneralOpenAIRequest).StreamOptions = &dto.StreamOptions{
 		IncludeUsage: true,
 	}
+	if info.ChannelOtherSettings.OllamaOpenAIChat {
+		return openaiRequest, nil
+	}
 	// map to ollama chat request (Claude -> OpenAI -> Ollama chat)
 	converted, err := openAIChatToOllamaChat(c, openaiRequest.(*dto.GeneralOpenAIRequest))
 	return converted, invalidOllamaRequest(err)
@@ -134,7 +137,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	case relayconstant.RelayModeEmbeddings:
 		return ollamaEmbeddingHandler(c, info, resp)
 	default:
-		if info.ChannelOtherSettings.OllamaOpenAIChat {
+		if info.ChannelOtherSettings.OllamaOpenAIChat && info.RelayMode != relayconstant.RelayModeCompletions {
 			return (&openai.Adaptor{}).DoResponse(c, resp, info)
 		}
 		if info.IsStream {

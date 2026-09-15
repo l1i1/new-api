@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -378,6 +379,23 @@ func TestResolveTaskChannelAccessUsesStableCredentialAfterReorderAndRemoval(t *t
 	assert.Equal(t, "key-a", key)
 	assert.Equal(t, proxyURL, proxy)
 
+	// A task with a captured route must keep it even when the credential's
+	// current proxy configuration changes.
+	snapshotTask := &Task{ChannelId: channel.Id, PrivateData: TaskPrivateData{
+		ChannelCredentialID: keyA.Id,
+		ProxySnapshot:       "http://proxy-at-submit.example:8080",
+		ProxySnapshotSet:    true,
+	}}
+	key, proxy = ResolveTaskChannelAccess(snapshotTask, reordered)
+	assert.Equal(t, "key-a", key)
+	assert.Equal(t, snapshotTask.PrivateData.ProxySnapshot, proxy)
+
+	// The marker distinguishes a captured direct route from an absent snapshot.
+	snapshotTask.PrivateData.ProxySnapshot = ""
+	key, proxy = ResolveTaskChannelAccess(snapshotTask, reordered)
+	assert.Equal(t, "key-a", key)
+	assert.Empty(t, proxy)
+
 	// Removed credentials stay addressable for in-flight tasks and retain their
 	// configured proxy instead of falling back to a different active key.
 	require.NoError(t, db.Model(&Channel{}).Where("id = ?", channel.Id).Update("key", "key-b").Error)
@@ -387,6 +405,60 @@ func TestResolveTaskChannelAccessUsesStableCredentialAfterReorderAndRemoval(t *t
 	key, proxy = ResolveTaskChannelAccess(task, removed)
 	assert.Equal(t, "key-a", key)
 	assert.Equal(t, proxyURL, proxy)
+}
+
+func TestBuildTaskPollingRelayInfoLoadsCredentialPositionWhenChannelCacheIsCold(t *testing.T) {
+	db := setupChannelCredentialSQLite(t)
+	channel := &Channel{
+		Key:  "key-a\nkey-b",
+		Name: "async relay context",
+		Type: constant.ChannelTypeVertexAi,
+		ChannelInfo: ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, MigrateChannelCredentialStore(db))
+	credentials, err := ListChannelCredentials(db, channel.Id)
+	require.NoError(t, err)
+	var keyB ChannelCredential
+	for _, credential := range credentials {
+		if credential.Fingerprint == ChannelCredentialFingerprint("key-b") {
+			keyB = credential
+			break
+		}
+	}
+	require.NotZero(t, keyB.Id)
+
+	coldChannel := *channel
+	coldChannel.Credentials = nil
+	task := &Task{
+		TaskID:    "task_context",
+		Action:    "video",
+		ChannelId: channel.Id,
+		Properties: Properties{
+			OriginModelName:   "veo",
+			UpstreamModelName: "veo-3",
+		},
+		PrivateData: TaskPrivateData{
+			ChannelCredentialID: keyB.Id,
+			ProxySnapshot:       "http://proxy.example:8080",
+			ProxySnapshotSet:    true,
+		},
+	}
+
+	info := BuildTaskPollingRelayInfo(&coldChannel, task, "https://vertex.example", "key-b", task.PrivateData.ProxySnapshot)
+	require.NotNil(t, info)
+	require.NotNil(t, info.ChannelMeta)
+	assert.Equal(t, channel.Id, info.ChannelMeta.ChannelId)
+	assert.Equal(t, keyB.Id, info.ChannelMeta.ChannelCredentialId)
+	assert.Equal(t, keyB.Position, info.ChannelMeta.ChannelMultiKeyIndex)
+	assert.Equal(t, "https://vertex.example", info.ChannelMeta.ChannelBaseUrl)
+	assert.Equal(t, task.PrivateData.ProxySnapshot, info.ChannelMeta.ChannelSetting.Proxy)
+	assert.Equal(t, "veo", info.OriginModelName)
+	assert.Equal(t, "veo-3", info.ChannelMeta.UpstreamModelName)
+	assert.Equal(t, "video", info.TaskRelayInfo.Action)
+	assert.Equal(t, "task_context", info.TaskRelayInfo.PublicTaskID)
 }
 
 func mustChannelCredentialRevision(t *testing.T, db *gorm.DB, channelID int) int64 {

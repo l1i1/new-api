@@ -73,7 +73,7 @@ func TestInMemoryRateLimiterEvictsOnlyExpiredLRUTail(t *testing.T) {
 
 	require.True(t, limiter.Request("active", 1, 100))
 	require.True(t, limiter.Request("idle", 1, 100))
-	assert.False(t, limiter.Request("active", 1, 100))
+	require.True(t, limiter.Request("active", 2, 100))
 
 	assert.Equal(t, "active", limiter.lru.Front().Value.(*rateLimitEntry).key)
 	assert.Equal(t, "idle", limiter.lru.Back().Value.(*rateLimitEntry).key)
@@ -91,6 +91,26 @@ func TestInMemoryRateLimiterEvictsOnlyExpiredLRUTail(t *testing.T) {
 	assert.Nil(t, idleEntry.requests.head)
 	assert.Nil(t, idleEntry.requests.tail)
 	assert.Zero(t, idleEntry.requests.length)
+}
+
+func TestInMemoryRateLimiterRejectedRequestDoesNotRefreshKey(t *testing.T) {
+	var limiter InMemoryRateLimiter
+	limiter.Init(0)
+	limiter.expirationDuration = 10 * time.Second
+
+	require.True(t, limiter.Request("idle", 1, 100))
+	require.True(t, limiter.Request("active", 1, 100))
+
+	now := time.Now()
+	limiter.store["idle"].lastActive = now.Add(-10 * time.Second)
+	limiter.store["active"].lastActive = now
+
+	assert.False(t, limiter.Request("idle", 1, 100))
+	assert.Equal(t, "active", limiter.lru.Front().Value.(*rateLimitEntry).key)
+	assert.Equal(t, "idle", limiter.lru.Back().Value.(*rateLimitEntry).key)
+
+	limiter.deleteExpiredEntries(now)
+	assert.NotContains(t, limiter.store, "idle")
 }
 
 func TestInMemoryRateLimiterCleanupTicksEvictExpiredKeys(t *testing.T) {

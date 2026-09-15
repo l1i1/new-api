@@ -93,6 +93,7 @@ export function ModelPriceCell(props: {
       options.showRechargePrice,
       options.selectedGroup,
       billingTime,
+      displayCurrency,
       currency,
     ]
   )
@@ -270,10 +271,10 @@ export function ModelPriceCell(props: {
               {metric.original &&
                 metric.original !== metric.value &&
                 !metric.value.includes(' – ') && (
-                <span className='text-muted-foreground/60 font-mono text-xs line-through'>
-                  {metric.original}
-                </span>
-              )}
+                  <span className='text-muted-foreground/60 font-mono text-xs line-through'>
+                    {metric.original}
+                  </span>
+                )}
               <span
                 className='min-w-0 font-mono text-sm break-words whitespace-normal tabular-nums'
                 title={metric.value}

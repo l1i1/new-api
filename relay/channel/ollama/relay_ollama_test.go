@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -55,6 +57,64 @@ func TestAdaptorRejectsUnsupportedEndpoints(t *testing.T) {
 	_, err = adaptor.ConvertOpenAIResponsesRequest(nil, nil, dto.OpenAIResponsesRequest{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "/v1/responses endpoint not supported")
+}
+
+func TestClaudeRequestUsesOpenAICompatibleOllamaBodyWhenEnabled(t *testing.T) {
+	stream := true
+	info := &relaycommon.RelayInfo{
+		IsStream:    true,
+		RelayFormat: types.RelayFormatClaude,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOllama,
+			UpstreamModelName: "llama3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				OllamaOpenAIChat: true,
+			},
+			SupportStreamOptions: true,
+		},
+	}
+	request := &dto.ClaudeRequest{
+		Model:    "llama3",
+		Stream:   &stream,
+		Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}},
+	}
+
+	converted, err := (&Adaptor{}).ConvertClaudeRequest(nil, info, request)
+	require.NoError(t, err)
+	openAIRequest, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok, "expected OpenAI-compatible request, got %T", converted)
+	assert.Len(t, openAIRequest.Messages, 1)
+	assert.Equal(t, "user", openAIRequest.Messages[0].Role)
+	assert.Equal(t, "hello", openAIRequest.Messages[0].StringContent())
+	require.NotNil(t, openAIRequest.StreamOptions)
+	assert.True(t, openAIRequest.StreamOptions.IncludeUsage)
+}
+
+func TestCompletionsKeepNativeOllamaResponseWhenOpenAIChatEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	info := &relaycommon.RelayInfo{
+		RelayMode:      relayconstant.RelayModeCompletions,
+		RequestURLPath: "/v1/completions",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "llama3",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				OllamaOpenAIChat: true,
+			},
+		},
+	}
+	usage, apiErr := (&Adaptor{}).DoResponse(c, &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"llama3","response":"answer","done":true,"prompt_eval_count":1,"eval_count":1}`,
+		)),
+	}, info)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Contains(t, writer.Body.String(), `"object":"text_completion"`)
+	assert.Contains(t, writer.Body.String(), `"text":"answer"`)
 }
 
 func TestOpenAIToGenerateConvertsPromptSuffixStopAndThinking(t *testing.T) {

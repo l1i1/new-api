@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   BILLING_PRICING_VARS,
@@ -49,6 +48,7 @@ import { formatBillingCondition } from '../lib/billing-expression/condition-disp
 import { compileBillingExpression } from '../lib/billing-expression/parser'
 import { isBreakdownTierMatched } from '../lib/breakdown-tier-match'
 import {
+  formatDynamicUnitPrice,
   formatTaskUsageUnitPrice,
   type DynamicPriceLabelKind,
   type DynamicPriceOptions,
@@ -101,7 +101,7 @@ type DynamicPricingBreakdownProps = {
   usageSchema?: BillingUsageSchema | null
   taskPriceOptions?: Pick<
     DynamicPriceOptions,
-    'showRechargePrice' | 'priceRate' | 'usdExchangeRate'
+    'showRechargePrice' | 'priceRate' | 'usdExchangeRate' | 'displayCurrency'
   >
   /**
    * Settlement usage facts from the consume log. Used to highlight the
@@ -236,8 +236,6 @@ function formatBreakdownConditionSummary(
 function formatBreakdownPrice(
   value: number,
   field: BreakdownPriceField,
-  symbol: string,
-  rate: number,
   t: (key: string) => string,
   taskPriceOptions: DynamicPricingBreakdownProps['taskPriceOptions'],
   language: string
@@ -247,7 +245,7 @@ function formatBreakdownPrice(
     field.unit === 'request' ||
     field.unit === 'image'
       ? formatTaskUsageUnitPrice(value, { tokenUnit: 'M', ...taskPriceOptions })
-      : `${symbol}${(value * rate).toFixed(4)}`
+      : formatDynamicUnitPrice(value, { tokenUnit: 'M', ...taskPriceOptions })
   if (field.unit === 'second') return `${amount}/${t('s')}`
   if (field.unit === 'count') {
     return `${amount}/${taskUsageUnitLabel(field, language, t('unit'))}`
@@ -325,26 +323,19 @@ export function DynamicPricingBreakdown({
   requestRules,
   hideCacheColumns = false,
   compact = false,
+  usdExchangeRate,
+  displayCurrency,
   usageSchema,
   taskPriceOptions,
   usageFacts,
 }: DynamicPricingBreakdownProps) {
   const { t, i18n } = useTranslation()
   const expr = billingExpr || ''
-  const currency = useSystemConfigStore((s) => s.config.currency)
-
-  const { symbol, rate } = useMemo(() => {
-    if (currency.quotaDisplayType === 'CNY') {
-      return { symbol: '¥', rate: currency.usdExchangeRate || 7 }
-    }
-    if (currency.quotaDisplayType === 'CUSTOM') {
-      return {
-        symbol: currency.customCurrencySymbol || '¤',
-        rate: currency.customCurrencyExchangeRate || 1,
-      }
-    }
-    return { symbol: '$', rate: 1 }
-  }, [currency])
+  const effectiveTaskPriceOptions = {
+    ...taskPriceOptions,
+    ...(displayCurrency ? { displayCurrency } : {}),
+    ...(usdExchangeRate !== undefined ? { usdExchangeRate } : {}),
+  }
 
   const { tiers, ruleGroups } = useMemo(() => {
     const split = splitBillingExprAndRequestRules(expr)
@@ -389,7 +380,7 @@ export function DynamicPricingBreakdown({
       !isTaskBreakdownTier(tier) &&
       Boolean(
         tier.conditionText &&
-          formatBillingCondition(tier.conditionText, t, i18n.language)
+        formatBillingCondition(tier.conditionText, t, i18n.language)
       )
   )
 
@@ -632,10 +623,8 @@ export function DynamicPricingBreakdown({
                               ? formatBreakdownPrice(
                                   value,
                                   field,
-                                  symbol,
-                                  rate,
                                   t,
-                                  taskPriceOptions,
+                                  effectiveTaskPriceOptions,
                                   i18n.language
                                 )
                               : '-'}
@@ -749,10 +738,8 @@ export function DynamicPricingBreakdown({
                       {formatBreakdownPrice(
                         value,
                         field,
-                        symbol,
-                        rate,
                         t,
-                        taskPriceOptions,
+                        effectiveTaskPriceOptions,
                         i18n.language
                       )}
                     </span>

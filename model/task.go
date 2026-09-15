@@ -205,6 +205,7 @@ func (p *TaskPrivateData) Scan(val any) error {
 
 func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
+		p.ChannelCredentialID == 0 && p.ProxySnapshot == "" && !p.ProxySnapshotSet &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
 		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 {
@@ -215,6 +216,61 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 		return nil, err
 	}
 	return string(data), nil
+}
+
+// BuildTaskPollingRelayInfo creates the per-task relay context used by async
+// task adaptors. Polling must use the credential and proxy captured at submit
+// time, while still exposing the channel metadata required by provider hooks.
+func BuildTaskPollingRelayInfo(channel *Channel, task *Task, baseURL, key, proxy string) *commonRelay.RelayInfo {
+	meta := &commonRelay.ChannelMeta{
+		ChannelBaseUrl: baseURL,
+		ApiKey:         key,
+	}
+	info := &commonRelay.RelayInfo{ChannelMeta: meta}
+
+	if channel != nil {
+		channelSetting := channel.GetSetting()
+		channelSetting.Proxy = proxy
+		meta.ChannelType = channel.Type
+		meta.ChannelId = channel.Id
+		meta.ChannelIsMultiKey = channel.ChannelInfo.IsMultiKey
+		meta.ChannelSetting = channelSetting
+		meta.ChannelOtherSettings = channel.GetOtherSettings()
+		meta.ApiType, _ = common.ChannelType2APIType(channel.Type)
+
+		if meta.ChannelIsMultiKey {
+			for position, candidate := range channel.GetKeys() {
+				if candidate == key {
+					meta.ChannelMultiKeyIndex = position
+					break
+				}
+			}
+		}
+	}
+
+	if task != nil {
+		meta.ChannelCredentialId = task.PrivateData.ChannelCredentialID
+		if channel != nil && task.PrivateData.ChannelCredentialID > 0 {
+			credential := channel.CredentialForID(task.PrivateData.ChannelCredentialID)
+			if credential == nil {
+				credential, _ = GetChannelCredential(DB, channel.Id, task.PrivateData.ChannelCredentialID)
+			}
+			if credential != nil {
+				meta.ChannelMultiKeyIndex = credential.Position
+			}
+		}
+		info.OriginModelName = task.Properties.OriginModelName
+		meta.UpstreamModelName = task.Properties.UpstreamModelName
+		if meta.UpstreamModelName == "" {
+			meta.UpstreamModelName = task.Properties.OriginModelName
+		}
+		info.TaskRelayInfo = &commonRelay.TaskRelayInfo{
+			Action:       task.Action,
+			PublicTaskID: task.TaskID,
+		}
+	}
+
+	return info
 }
 
 // SyncTaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -305,8 +361,10 @@ func ResolveTaskChannelAccess(task *Task, channel *Channel) (string, string) {
 				// Removed credentials remain addressable for in-flight tasks.
 				key = credential.Secret
 			}
-			if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
-				proxy = effectiveProxy
+			if !task.PrivateData.ProxySnapshotSet {
+				if effectiveProxy, err := credential.EffectiveProxyURL(proxy); err == nil {
+					proxy = effectiveProxy
+				}
 			}
 			return key, proxy
 		}

@@ -238,6 +238,14 @@ it('refreshes memoized provider prices when the group or display currency change
       })
     )
     expect(view.container).toHaveTextContent('1.32/unit')
+
+    view.rerender(
+      <ModelPriceCell
+        model={shared}
+        options={{ selectedGroup: 'premium', displayCurrency: 'USD' }}
+      />
+    )
+    expect(view.container).toHaveTextContent('0.66/unit')
   } finally {
     act(() => useSystemConfigStore.getState().setConfig({ currency: previous }))
   }

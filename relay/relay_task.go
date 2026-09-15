@@ -566,6 +566,7 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		return nil
 	}
 
+	adaptor.Init(model.BuildTaskPollingRelayInfo(channelModel, task, baseURL, key, proxy))
 	resp, err := adaptor.FetchTask(baseURL, key, task, proxy)
 
 	if err != nil || resp == nil {

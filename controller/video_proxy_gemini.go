@@ -35,6 +35,7 @@ func getGeminiVideoURL(channel *model.Channel, task *model.Task, apiKey string, 
 		return "", fmt.Errorf("api key not available for task")
 	}
 
+	adaptor.Init(model.BuildTaskPollingRelayInfo(channel, task, baseURL, apiKey, proxy))
 	resp, err := adaptor.FetchTask(baseURL, apiKey, task, proxy)
 	if err != nil {
 		return "", fmt.Errorf("fetch task failed: %w", err)
@@ -166,6 +167,7 @@ func getVertexVideoURL(channel *model.Channel, task *model.Task, key string, pro
 		return "", fmt.Errorf("vertex key not available for task")
 	}
 
+	adaptor.Init(model.BuildTaskPollingRelayInfo(channel, task, baseURL, key, proxy))
 	resp, err := adaptor.FetchTask(baseURL, key, task, proxy)
 	if err != nil {
 		return "", fmt.Errorf("fetch task failed: %w", err)

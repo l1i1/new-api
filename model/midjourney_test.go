@@ -32,5 +32,13 @@ func TestResolveMidjourneyChannelAccessPinsCredentialAndProxy(t *testing.T) {
 
 	key, proxy := ResolveMidjourneyChannelAccess(task, channel)
 	assert.Equal(t, "key-b", key)
+	assert.Equal(t, task.ProxySnapshot, proxy)
+
+	legacyTask := &Midjourney{
+		ChannelId:           channel.Id,
+		ChannelCredentialID: credential.Id,
+	}
+	key, proxy = ResolveMidjourneyChannelAccess(legacyTask, channel)
+	assert.Equal(t, "key-b", key)
 	assert.Equal(t, credential.ProxyURL, proxy)
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -191,16 +190,7 @@ func initTaskArtifactAdaptor(task *model.Task) (relaychannel.TaskAdaptor, error)
 	if baseURL == "" {
 		baseURL = constant.GetChannelBaseURL(channelModel.Type)
 	}
-	channelSetting := channelModel.GetSetting()
-	channelSetting.Proxy = proxy
-	adaptor.Init(&relaycommon.RelayInfo{
-		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelType:    channelModel.Type,
-			ChannelBaseUrl: baseURL,
-			ApiKey:         pluginKey,
-			ChannelSetting: channelSetting,
-		},
-	})
+	adaptor.Init(model.BuildTaskPollingRelayInfo(channelModel, task, baseURL, pluginKey, proxy))
 	return adaptor, nil
 }
 
