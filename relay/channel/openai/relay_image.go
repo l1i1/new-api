@@ -26,8 +26,7 @@ import (
 // emptyImageResponseError marks an upstream 200 image response that carried no
 // images as an upstream failure so the request is retried or refunded instead
 // of being billed for zero output. The committed variant keeps skip-retry
-// semantics for streams that
-// already forwarded data to the client.
+// semantics for streams that already forwarded data to the client.
 func emptyImageResponseError(committed ...bool) *types.NewAPIError {
 	options := make([]types.NewAPIErrorOptions, 0, 2)
 	options = append(options, types.ErrOptionWithEmptyOutput())
