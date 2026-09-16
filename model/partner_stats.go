@@ -80,10 +80,18 @@ func GetPartnerConsumption(userIDs []int, start, end int64) ([]PartnerConsumptio
 		LogType int    `gorm:"column:type"`
 	}
 	var rows []consumeRow
-	if err := db.Table("logs").Select("user_id, quota, `group`, `type`").
+	// group/type are reserved words: backticks for SQLite/MySQL, double
+	// quotes for PostgreSQL (see model/channel.go for the same pattern).
+	quote := func(column string) string {
+		if common.UsingLogDatabase(common.DatabaseTypePostgreSQL) {
+			return `"` + column + `"`
+		}
+		return "`" + column + "`"
+	}
+	if err := db.Table("logs").Select("user_id, quota, "+quote("group")+", "+quote("type")).
 		Where("user_id IN ?", userIDs).
 		Where("created_at >= ? AND created_at < ?", start, end).
-		Where("`type` IN ?", []int{LogTypeConsume, LogTypeRefund}).
+		Where(quote("type")+" IN ?", []int{LogTypeConsume, LogTypeRefund}).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}

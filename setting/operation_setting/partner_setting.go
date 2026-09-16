@@ -35,16 +35,14 @@ var partnerSetting = PartnerSetting{}
 
 var partnerSettingMu sync.RWMutex
 
-// persistPartnerSetting serializes the in-memory configuration through the
-// callback wired by model (options-table write). Callers must hold at least a
-// read lock; the mutex serializes against concurrent writers.
-func persistPartnerSetting(persist func(key, value string) error) error {
+// persistPartnerSetting writes a marshaled snapshot through the callback
+// wired by model (options-table write). It runs without holding
+// partnerSettingMu: model.UpdateOption dispatches back into
+// LoadPartnerSettingFromJSONString on the same goroutine, and taking the
+// mutex around persist would self-deadlock.
+func persistPartnerSetting(raw []byte, persist func(key, value string) error) error {
 	if persist == nil {
 		return nil
-	}
-	raw, err := json.Marshal(partnerSetting)
-	if err != nil {
-		return err
 	}
 	return persist(PartnerSettingOptionKey, string(raw))
 }
@@ -121,45 +119,67 @@ func FindPartner(partnerID string) (PartnerEntry, bool) {
 }
 
 // UpdatePartnerContent writes contact/notice copy for a partner and bumps the
-// version. The partner entry must already exist. On success the new state is
-// persisted through persist (model options-table write); a persistence
-// failure rolls the in-memory change back so restarts cannot resurrect it.
+// version. The partner entry must already exist. The mutation commits under
+// the mutex, then the new state persists through persist (model options-table
+// write) without holding the mutex — model dispatches back into this package
+// on the same goroutine, so persisting under lock would self-deadlock. A
+// persistence failure rolls the in-memory change back.
 func UpdatePartnerContent(partnerID, contact, notice string, persist func(key, value string) error) (int, error) {
 	partnerSettingMu.Lock()
-	defer partnerSettingMu.Unlock()
+	var previous PartnerEntry
+	version := 0
+	found := false
 	for i, entry := range partnerSetting.Partners {
 		if entry.ID == partnerID {
-			previous := partnerSetting.Partners[i]
+			previous = partnerSetting.Partners[i]
 			partnerSetting.Partners[i].Contact = contact
 			partnerSetting.Partners[i].Notice = notice
 			partnerSetting.Partners[i].Version++
-			if err := persistPartnerSetting(persist); err != nil {
-				partnerSetting.Partners[i] = previous
-				return 0, err
-			}
-			return partnerSetting.Partners[i].Version, nil
+			version = partnerSetting.Partners[i].Version
+			found = true
+			break
 		}
 	}
-	return 0, ErrPartnerNotFound
+	snapshot, marshalErr := json.Marshal(partnerSetting)
+	partnerSettingMu.Unlock()
+	if !found {
+		return 0, ErrPartnerNotFound
+	}
+	if marshalErr != nil {
+		return 0, marshalErr
+	}
+	if err := persistPartnerSetting(snapshot, persist); err != nil {
+		partnerSettingMu.Lock()
+		for i, entry := range partnerSetting.Partners {
+			if entry.ID == partnerID {
+				partnerSetting.Partners[i] = previous
+				break
+			}
+		}
+		partnerSettingMu.Unlock()
+		return 0, err
+	}
+	return version, nil
 }
 
 // UpsertPartnerMembers creates the partner entry when absent and merges
 // inviter user IDs into it, deduplicated and order-preserving. Removal is
 // deliberately unsupported: unattributing users must stay an explicit,
-// audited operator action, not a sync side effect. On success the new state
-// is persisted through persist; a persistence failure rolls the in-memory
-// change back.
+// audited operator action, not a sync side effect. The mutation commits under
+// the mutex, then persists without holding it (see UpdatePartnerContent); a
+// persistence failure rolls the in-memory change back.
 func UpsertPartnerMembers(partnerID string, inviterUserIDs []int, persist func(key, value string) error) (PartnerEntry, error) {
 	partnerID = strings.TrimSpace(partnerID)
 	if partnerID == "" {
 		return PartnerEntry{}, errors.New("partner id is required")
 	}
 	partnerSettingMu.Lock()
-	defer partnerSettingMu.Unlock()
 	snapshot, snapshotErr := json.Marshal(partnerSetting)
 	if snapshotErr != nil {
+		partnerSettingMu.Unlock()
 		return PartnerEntry{}, snapshotErr
 	}
+	var result PartnerEntry
 	for i, entry := range partnerSetting.Partners {
 		if entry.ID != partnerID {
 			continue
@@ -175,27 +195,37 @@ func UpsertPartnerMembers(partnerID string, inviterUserIDs []int, persist func(k
 			seen[id] = true
 			partnerSetting.Partners[i].InviterUserIDs = append(partnerSetting.Partners[i].InviterUserIDs, id)
 		}
-		if err := persistPartnerSetting(persist); err != nil {
-			_ = json.Unmarshal(snapshot, &partnerSetting)
-			return PartnerEntry{}, err
-		}
-		return partnerSetting.Partners[i], nil
+		result = partnerSetting.Partners[i]
+		break
 	}
-	members := make([]int, 0, len(inviterUserIDs))
-	seen := make(map[int]bool, len(inviterUserIDs))
-	for _, id := range inviterUserIDs {
-		if id <= 0 || seen[id] {
-			continue
+	if result.ID == "" {
+		members := make([]int, 0, len(inviterUserIDs))
+		seen := make(map[int]bool, len(inviterUserIDs))
+		for _, id := range inviterUserIDs {
+			if id <= 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			members = append(members, id)
 		}
-		seen[id] = true
-		members = append(members, id)
+		partnerSetting.Partners = append(partnerSetting.Partners, PartnerEntry{ID: partnerID, InviterUserIDs: members})
+		result = partnerSetting.Partners[len(partnerSetting.Partners)-1]
 	}
-	partnerSetting.Partners = append(partnerSetting.Partners, PartnerEntry{ID: partnerID, InviterUserIDs: members})
-	if err := persistPartnerSetting(persist); err != nil {
+	after, marshalErr := json.Marshal(partnerSetting)
+	partnerSettingMu.Unlock()
+	if marshalErr != nil {
+		partnerSettingMu.Lock()
 		_ = json.Unmarshal(snapshot, &partnerSetting)
+		partnerSettingMu.Unlock()
+		return PartnerEntry{}, marshalErr
+	}
+	if err := persistPartnerSetting(after, persist); err != nil {
+		partnerSettingMu.Lock()
+		_ = json.Unmarshal(snapshot, &partnerSetting)
+		partnerSettingMu.Unlock()
 		return PartnerEntry{}, err
 	}
-	return partnerSetting.Partners[len(partnerSetting.Partners)-1], nil
+	return result, nil
 }
 
 // ErrPartnerNotFound is returned when a partner entry does not exist.
