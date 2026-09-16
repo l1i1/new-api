@@ -596,18 +596,6 @@ For commercial licensing, please contact support@quantumnous.com
   justify-content: flex-end;
 }
 
-.tokeness-home__footer-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.tokeness-home__footer-badge img {
-  display: block;
-  width: 150px;
-  height: auto;
-}
-
 @media (max-width: 980px) {
   .tokeness-home__hero,
   .tokeness-home__band,
@@ -675,10 +663,6 @@ For commercial licensing, please contact support@quantumnous.com
   }
 
   .tokeness-home__footer-legal {
-    justify-content: flex-start;
-  }
-
-  .tokeness-home__footer-badge {
     justify-content: flex-start;
   }
 }

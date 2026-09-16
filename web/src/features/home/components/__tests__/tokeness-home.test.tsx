@@ -228,12 +228,6 @@ describe('Tokeness legacy home', () => {
       )?.textContent,
       '基于 New API 开发'
     )
-    assert.equal(
-      footer.querySelector<HTMLAnchorElement>(
-        'a[href="https://lmspeed.net/provider/tokeness-cn"]'
-      )?.rel,
-      'noopener noreferrer'
-    )
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()

@@ -384,17 +384,6 @@ export function TokenessHome() {
           </div>
 
           <div className='tokeness-home__footer-right'>
-            <a
-              className='tokeness-home__footer-badge'
-              href='https://lmspeed.net/provider/tokeness-cn'
-              target='_blank'
-              rel='noopener noreferrer'
-            >
-              <img
-                src='https://lmspeed.net/api/provider/claim-badge/1278?claim=1278--EDVRn1QWCO5Q_Feyad9cpuqsjUZVIb3'
-                alt='Verified on LM Speed'
-              />
-            </a>
             <nav
               className='tokeness-home__footer-legal'
               aria-label='Legal links'
