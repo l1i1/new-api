@@ -192,7 +192,7 @@ func PartnerConfig(c *gin.Context) {
 		return
 	}
 	if len(body.InviterUserIDs) > 0 {
-		if _, err := operation_setting.UpsertPartnerMembers(body.PartnerID, body.InviterUserIDs); err != nil {
+		if _, err := operation_setting.UpsertPartnerMembers(body.PartnerID, body.InviterUserIDs, model.UpdateOption); err != nil {
 			writePartnerError(c, http.StatusBadRequest, "partner_invalid", err.Error())
 			return
 		}
@@ -200,7 +200,7 @@ func PartnerConfig(c *gin.Context) {
 		writePartnerError(c, http.StatusForbidden, "partner_forbidden", "unknown partner")
 		return
 	}
-	version, err := operation_setting.UpdatePartnerContent(body.PartnerID, body.Contact, body.Notice)
+	version, err := operation_setting.UpdatePartnerContent(body.PartnerID, body.Contact, body.Notice, model.UpdateOption)
 	if err != nil {
 		writePartnerError(c, http.StatusForbidden, "partner_forbidden", "unknown partner")
 		return
