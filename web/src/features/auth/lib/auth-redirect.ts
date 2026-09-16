@@ -16,11 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import type { AuthUser } from '@/stores/auth-store'
 
 const allowedRedirectProtocols = new Set(['http:', 'https:'])
 
 export function getSavedLanguage(user: AuthUser): string | undefined {
+  // The mainland edition is Simplified Chinese only, so a language stored on
+  // the account must not switch the interface away from it at sign-in.
+  if (IS_MAINLAND_SITE) return undefined
+
   if (typeof user.language === 'string') {
     return user.language
   }

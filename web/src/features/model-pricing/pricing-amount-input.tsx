@@ -23,7 +23,7 @@ import { Input } from '@/components/ui/input'
 import { InputGroupInput } from '@/components/ui/input-group'
 import { formatPricingNumber } from '@/features/system-settings/models/pricing-format'
 
-import { USD_PRICING_CURRENCY, type PricingCurrency } from './currency'
+import { DEFAULT_PRICING_CURRENCY, type PricingCurrency } from './currency'
 
 type PricingAmountInputProps = Omit<
   ComponentProps<'input'>,
@@ -39,7 +39,7 @@ type PricingAmountInputProps = Omit<
 export function PricingAmountInput({
   value,
   onChange,
-  currency = USD_PRICING_CURRENCY,
+  currency = DEFAULT_PRICING_CURRENCY,
   grouped,
   ...props
 }: PricingAmountInputProps) {

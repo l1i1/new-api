@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { InputGroup, InputGroupAddon } from '@/components/ui/input-group'
 import {
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
 import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
@@ -45,7 +45,7 @@ export function PriceInput(props: {
   return (
     <InputGroup className='has-[[data-pricing-error]]:h-auto has-[[data-pricing-error]]:flex-wrap'>
       <InputGroupAddon>
-        {(props.currency ?? USD_PRICING_CURRENCY).symbol}
+        {(props.currency ?? DEFAULT_PRICING_CURRENCY).symbol}
       </InputGroupAddon>
       <PricingAmountInput
         grouped
@@ -60,7 +60,7 @@ export function PriceInput(props: {
         onChange={props.onChange}
       />
       <InputGroupAddon align='inline-end'>
-        {(props.currency ?? USD_PRICING_CURRENCY).symbol}/1M
+        {(props.currency ?? DEFAULT_PRICING_CURRENCY).symbol}/1M
       </InputGroupAddon>
     </InputGroup>
   )
@@ -115,7 +115,7 @@ export function PriceLane(props: {
         <p className='text-muted-foreground text-xs'>
           {props.enabled
             ? t('{{currency}} price per 1M tokens.', {
-                currency: (props.currency ?? USD_PRICING_CURRENCY).label,
+                currency: (props.currency ?? DEFAULT_PRICING_CURRENCY).label,
               })
             : t('Disabled lanes are omitted on save.')}
         </p>

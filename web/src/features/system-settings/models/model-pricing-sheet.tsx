@@ -69,7 +69,7 @@ import {
 import {
   getSitePricingCurrency,
   isValidPricingCurrency,
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
 } from '@/features/model-pricing/currency'
 import { pricingFromDraft, pricingRow } from '@/features/model-pricing/pricing'
 import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
@@ -215,7 +215,7 @@ export const ModelPricingEditorPanel = forwardRef<
   const currency =
     preference === 'site' && isValidPricingCurrency(siteCurrency)
       ? siteCurrency
-      : USD_PRICING_CURRENCY
+      : DEFAULT_PRICING_CURRENCY
   const [pricingMode, setPricingMode] = useState<PricingMode>('tiered_expr')
   const [promptPrice, setPromptPrice] = useState('')
   const [lanePrices, setLanePrices] = useState<Record<LaneKey, string>>({

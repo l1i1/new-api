@@ -20,7 +20,7 @@ import * as z from 'zod'
 
 import {
   formatPricingAmount,
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
 import type {
@@ -226,7 +226,7 @@ export function buildPreviewRows(
   lanePrices: Record<LaneKey, string>,
   laneEnabled: Record<LaneKey, boolean>,
   t: (key: string) => string,
-  currency: PricingCurrency = USD_PRICING_CURRENCY,
+  currency: PricingCurrency = DEFAULT_PRICING_CURRENCY,
   cacheWriteMode?: CacheWriteMode,
   billingDetails?: LegacyBillingDetails
 ): PreviewRow[] {

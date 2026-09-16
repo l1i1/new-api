@@ -50,7 +50,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import {
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
 import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
@@ -217,7 +217,7 @@ function TaskMatrixTable(props: TaskMatrixTableProps) {
                     )}
                   </span>
                   <span className='text-muted-foreground text-[11px] font-normal'>
-                    {(props.currency ?? USD_PRICING_CURRENCY).symbol}/
+                    {(props.currency ?? DEFAULT_PRICING_CURRENCY).symbol}/
                     {taskUsageUnitLabel(
                       definition,
                       i18n.language,
@@ -244,7 +244,7 @@ function TaskMatrixTable(props: TaskMatrixTableProps) {
                   )}
                 </span>
                 <span className='text-muted-foreground text-[11px] font-normal'>
-                  {(props.currency ?? USD_PRICING_CURRENCY).symbol}/
+                  {(props.currency ?? DEFAULT_PRICING_CURRENCY).symbol}/
                   {t('request')}
                 </span>
               </div>

@@ -51,7 +51,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import {
   formatPricingAmount,
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
   type PricingCurrency,
 } from '@/features/model-pricing/currency'
 import { useBillingTime } from '@/features/pricing/hooks/use-billing-time'
@@ -1045,7 +1045,7 @@ function parseTierEditorDocument(source: string): VisualBillingDocument | null {
 }
 
 export const TieredPricingEditor = memo(function TieredPricingEditor({
-  currency = USD_PRICING_CURRENCY,
+  currency = DEFAULT_PRICING_CURRENCY,
   modelName,
   billingExpr: currentExpr,
   requestRuleExpr: currentRequestRuleExpr,

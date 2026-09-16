@@ -29,6 +29,7 @@ import {
 } from '@/i18n/languages'
 import { handleServerError } from '@/lib/handle-server-error'
 import { createServerError } from '@/lib/server-error-message'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { updateUserLanguage } from '../api'
@@ -96,6 +97,9 @@ export function LanguagePreferencesCard(props: LanguagePreferencesCardProps) {
       setSaving(false)
     }
   }
+
+  // The mainland edition is Simplified Chinese only.
+  if (IS_MAINLAND_SITE) return null
 
   return (
     <TitledCard

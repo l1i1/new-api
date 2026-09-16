@@ -48,7 +48,7 @@ import {
 import {
   getSitePricingCurrency,
   isValidPricingCurrency,
-  USD_PRICING_CURRENCY,
+  DEFAULT_PRICING_CURRENCY,
 } from './currency'
 import { modelPricingDisplay, pricingFromDraft, pricingRow } from './pricing'
 
@@ -134,7 +134,7 @@ export function ModelPricingPanel(props: {
   const currency =
     currencyPreference === 'site' && isValidPricingCurrency(siteCurrency)
       ? siteCurrency
-      : USD_PRICING_CURRENCY
+      : DEFAULT_PRICING_CURRENCY
   const current = pricingRow(entry.model_name, entry.effective)
   const currentLanes = createInitialLaneState(current)
   const details = buildPreviewRows(

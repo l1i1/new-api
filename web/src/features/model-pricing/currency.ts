@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { formatPricingNumber } from '@/features/system-settings/models/pricing-format'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import type { CurrencyConfig } from '@/stores/system-config-store'
 
 export type PricingCurrency = {
@@ -30,6 +31,22 @@ export const USD_PRICING_CURRENCY: PricingCurrency = {
   symbol: '$',
   exchangeRate: 1,
 }
+
+/** The platform's own unit; the mainland edition accounts in it at rate 1. */
+export const CNY_PRICING_CURRENCY: PricingCurrency = {
+  label: 'CNY',
+  symbol: '¥',
+  exchangeRate: 1,
+}
+
+/**
+ * Currency used when no explicit pricing currency is supplied. Both units
+ * convert at 1, so only the label and symbol follow the build flavour: the
+ * mainland edition never renders a dollar price.
+ */
+export const DEFAULT_PRICING_CURRENCY: PricingCurrency = IS_MAINLAND_SITE
+  ? CNY_PRICING_CURRENCY
+  : USD_PRICING_CURRENCY
 
 export function getSitePricingCurrency(
   config: CurrencyConfig
@@ -60,7 +77,7 @@ export function isValidPricingCurrency(
 
 export function formatPricingAmount(
   value: string | number,
-  currency = USD_PRICING_CURRENCY
+  currency = DEFAULT_PRICING_CURRENCY
 ): string {
   if (value === '') return ''
   const amount = Number(value) * currency.exchangeRate

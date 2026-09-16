@@ -30,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
 
 import { isValidPricingCurrency, type PricingCurrency } from './currency'
@@ -52,6 +53,10 @@ export function PricingCurrencySelector(props: {
       }),
     })
   }
+
+  // The mainland edition prices in its own currency only, so there is nothing
+  // to choose between.
+  if (IS_MAINLAND_SITE) return null
 
   return (
     <Field className='mb-4 gap-2'>

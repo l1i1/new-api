@@ -40,6 +40,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
@@ -107,6 +108,20 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
 
   const pricingSchema = createPricingSchema(t)
 
+  // The mainland edition accounts in RMB: display type is pinned to CNY and the
+  // exchange rate to 1, so the form presents those values regardless of what
+  // the server rows hold, and the fields below are disabled.
+  const formDefaults: PricingFormValues = IS_MAINLAND_SITE
+    ? {
+        ...defaultValues,
+        USDExchangeRate: 1,
+        general_setting: {
+          ...defaultValues.general_setting,
+          quota_display_type: 'CNY',
+        },
+      }
+    : defaultValues
+
   const { form, handleSubmit, handleReset, isDirty, isSubmitting } =
     useSettingsForm<PricingFormValues>({
       resolver: zodResolver(pricingSchema) as Resolver<
@@ -114,7 +129,7 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
         unknown,
         PricingFormValues
       >,
-      defaultValues,
+      defaultValues: formDefaults,
       onSubmit: async (_data, changedFields) => {
         for (const [key, value] of Object.entries(changedFields)) {
           if (value === undefined || value === null) continue
@@ -200,6 +215,7 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
                     ]}
                     value={field.value}
                     onValueChange={field.onChange}
+                    disabled={IS_MAINLAND_SITE}
                   >
                     <FormControl>
                       <SelectTrigger>
@@ -238,15 +254,14 @@ export function PricingSection({ defaultValues }: PricingSectionProps) {
                     <FormLabel>
                       {displayType === 'CNY'
                         ? t('CNY per USD')
-                        : displayType === 'USD'
-                          ? t('USD Exchange Rate')
-                          : t('USD Exchange Rate')}
+                        : t('USD Exchange Rate')}
                     </FormLabel>
                     <FormControl>
                       <Input
                         type='number'
                         step='0.01'
                         {...safeNumberFieldProps(field)}
+                        disabled={IS_MAINLAND_SITE}
                       />
                     </FormControl>
                     <FormDescription>

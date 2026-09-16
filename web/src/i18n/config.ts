@@ -30,8 +30,9 @@ import ru from './locales/ru.json'
 import vi from './locales/vi.json'
 import zhTW from './locales/zh-TW.json'
 import zhCN from './locales/zh.json'
+import { withMainlandCurrencyWording } from './mainland-currency'
 
-export const resources = {
+const baseResources = {
   en,
   zhCN,
   fr,
@@ -41,32 +42,42 @@ export const resources = {
   zhTW,
 } as const
 
-i18n
-  .use(LanguageDetector)
-  .use(initReactI18next)
-  .init({
-    resources,
-    // The mainland edition defaults to Simplified Chinese.
-    fallbackLng: IS_MAINLAND_SITE ? 'zhCN' : 'en',
-    supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
-    load: 'currentOnly',
-    nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
-    debug: import.meta.env.DEV,
-    interpolation: {
-      escapeValue: false, // not needed for react as it escapes by default
-    },
-    detection: {
-      // Mainland defaults to Simplified Chinese instead of the browser locale;
-      // an explicit choice previously saved to localStorage still wins.
-      order: IS_MAINLAND_SITE
-        ? ['localStorage']
-        : ['localStorage', 'navigator'],
-      caches: ['localStorage'],
-      // Browsers report `zh-CN`/`zh-TW`/`zh`; map them onto our `zhCN`/`zhTW`
-      // codes (non-Chinese codes pass through for normal supportedLngs matching).
-      convertDetectedLanguage,
-    },
-  })
+// Only the mainland edition renames the platform's own unit from USD to CNY;
+// the overseas bundle keeps the upstream wording.
+export const resources = IS_MAINLAND_SITE
+  ? withMainlandCurrencyWording(baseResources)
+  : baseResources
+
+// The mainland edition never runs the browser-language detector; the language
+// is fixed to Simplified Chinese below.
+if (!IS_MAINLAND_SITE) i18n.use(LanguageDetector)
+i18n.use(initReactI18next)
+
+i18n.init({
+  resources,
+  // The mainland edition is Simplified Chinese only: no detection, no saved
+  // preference, and changeLanguage calls for another locale are rejected.
+  lng: IS_MAINLAND_SITE ? 'zhCN' : undefined,
+  fallbackLng: IS_MAINLAND_SITE ? 'zhCN' : 'en',
+  supportedLngs: IS_MAINLAND_SITE
+    ? ['zhCN']
+    : ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
+  load: 'currentOnly',
+  nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
+  debug: import.meta.env.DEV,
+  interpolation: {
+    escapeValue: false, // not needed for react as it escapes by default
+  },
+  detection: {
+    // Mainland defaults to Simplified Chinese instead of the browser locale;
+    // an explicit choice previously saved to localStorage still wins.
+    order: IS_MAINLAND_SITE ? ['localStorage'] : ['localStorage', 'navigator'],
+    caches: ['localStorage'],
+    // Browsers report `zh-CN`/`zh-TW`/`zh`; map them onto our `zhCN`/`zhTW`
+    // codes (non-Chinese codes pass through for normal supportedLngs matching).
+    convertDetectedLanguage,
+  },
+})
 
 const syncDocumentLanguage = (language?: string) => {
   document.documentElement.lang = toDocumentLanguage(language)

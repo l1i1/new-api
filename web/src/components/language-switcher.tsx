@@ -32,6 +32,7 @@ import {
   normalizeInterfaceLanguage,
 } from '@/i18n/languages'
 import { api } from '@/lib/api'
+import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -52,6 +53,9 @@ export function LanguageSwitcher() {
     },
     [i18n, user]
   )
+
+  // The mainland edition is Simplified Chinese only.
+  if (IS_MAINLAND_SITE) return null
 
   return (
     <DropdownMenu modal={false}>
