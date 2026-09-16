@@ -752,6 +752,7 @@ func (user *User) finishInsert(inviterId int) {
 		if err := inviteUser(inviterId); err != nil {
 			common.SysLog(fmt.Sprintf("failed to record invite registration for inviter %d: %v", inviterId, err))
 		}
+		stampWhiteLabelForInviter(user.Id, inviterId)
 		if operation_setting.IsPaymentComplianceConfirmed() {
 			if common.QuotaForInvitee > 0 {
 				_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
@@ -813,6 +814,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 		if err := inviteUser(inviterId); err != nil {
 			common.SysLog(fmt.Sprintf("failed to record invite registration for inviter %d: %v", inviterId, err))
 		}
+		stampWhiteLabelForInviter(user.Id, inviterId)
 		if operation_setting.IsPaymentComplianceConfirmed() {
 			if common.QuotaForInvitee > 0 {
 				_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)

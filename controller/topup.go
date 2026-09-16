@@ -132,8 +132,9 @@ func GetTopUpInfo(c *gin.Context) {
 		"waffo_pancake_min_topup": setting.WaffoPancakeMinTopUp,
 		"amount_options":          operation_setting.GetPaymentSetting().AmountOptions,
 		"discount":                operation_setting.GetPaymentSetting().AmountDiscount,
-		"topup_contact":           operation_setting.GetPaymentSetting().TopupContact,
+		"topup_contact":           resolveTopupContact(c),
 		"topup_subtitle":          operation_setting.GetPaymentSetting().TopupSubtitle,
+		"partner_notice":          resolvePartnerNotice(c),
 		"topup_link":              common.TopUpLink,
 	}
 	common.ApiSuccess(c, data)

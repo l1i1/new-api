@@ -21,6 +21,17 @@ type UserSetting struct {
 	BillingPreference                string             `json:"billing_preference,omitempty"`                   // BillingPreference 扣费策略（订阅/钱包）
 	Language                         string             `json:"language,omitempty"`                             // Language 用户语言偏好 (zh, en)
 	OfficialFit                      *OfficialFitConfig `json:"official_fit,omitempty"`                         // OfficialFit 官方一致性模式配置（模型族 × 行为维度）
+	WhiteLabel                       *WhiteLabelConfig  `json:"white_label,omitempty"`                          // WhiteLabel 合作方白标配置（隐藏推广入口/替换联系文案，仅服务端写入）
+}
+
+// WhiteLabelConfig is the per-user white-label (合作方白标) configuration.
+// It is stamped at registration when the inviter belongs to a partner account
+// set, expires with the user's commission window, and is only ever written by
+// server-side code: self-service saves must preserve it (see controller).
+type WhiteLabelConfig struct {
+	HideReferral bool   `json:"hide_referral,omitempty"` // 隐藏钱包推广/邀请入口
+	PartnerID    string `json:"partner_id,omitempty"`    // 合作方标识，如 tommy
+	Until        int64  `json:"until,omitempty"`         // 生效截止（unix 秒），届满恢复默认界面
 }
 
 // OfficialFitConfig is the per-user official-fit (官方一致性) configuration.

@@ -31,6 +31,7 @@ import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { HotPayQrCodeDialog } from './components/dialogs/hotpay-qr-code-dialog'
+import { PartnerNoticeCard } from './components/partner-notice-card'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
@@ -54,6 +55,7 @@ import {
   getWaffoPancakePaymentMethod,
   getWaffoPancakeProviderCurrency,
   isWaffoPancakePayment,
+  getWhiteLabelState,
 } from './lib'
 import type {
   UserWalletData,
@@ -358,6 +360,10 @@ export function Wallet(props: WalletProps) {
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
 
+            {topupInfo?.partner_notice?.trim() ? (
+              <PartnerNoticeCard notice={topupInfo.partner_notice} />
+            ) : null}
+
             <div
               className={
                 showSubscriptionPanel
@@ -407,15 +413,17 @@ export function Wallet(props: WalletProps) {
               />
             </div>
 
-            <AffiliateRewardsCard
-              user={user}
-              affiliateLink={affiliateLink}
-              rewards={inviteTopUpRewardsQuery.data}
-              loading={affiliateLoading || userLoading}
-              rewardsLoading={inviteTopUpRewardsQuery.isLoading}
-              rewardsError={inviteTopUpRewardsQuery.isError}
-              onRetryRewards={() => inviteTopUpRewardsQuery.refetch()}
-            />
+            {getWhiteLabelState(user?.setting)?.hideReferral ? null : (
+              <AffiliateRewardsCard
+                user={user}
+                affiliateLink={affiliateLink}
+                rewards={inviteTopUpRewardsQuery.data}
+                loading={affiliateLoading || userLoading}
+                rewardsLoading={inviteTopUpRewardsQuery.isLoading}
+                rewardsError={inviteTopUpRewardsQuery.isError}
+                onRetryRewards={() => inviteTopUpRewardsQuery.refetch()}
+              />
+            )}
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

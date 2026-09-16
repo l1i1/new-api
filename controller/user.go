@@ -1418,6 +1418,7 @@ func UpdateUserSetting(c *gin.Context) {
 	}
 
 	// 构建设置（保留管理员配置的官方一致性 profile，自服务保存不得覆盖）
+	// WhiteLabel 同理：仅服务端写入，自服务保存必须原样保留。
 	settings := dto.UserSetting{
 		NotifyType:                       req.QuotaWarningType,
 		QuotaWarningThreshold:            req.QuotaWarningThreshold,
@@ -1425,6 +1426,7 @@ func UpdateUserSetting(c *gin.Context) {
 		AcceptUnsetRatioModel:            req.AcceptUnsetModelRatioModel,
 		RecordIpLog:                      req.RecordIpLog,
 		OfficialFit:                      existingSettings.OfficialFit,
+		WhiteLabel:                       existingSettings.WhiteLabel,
 	}
 
 	// 如果是webhook类型,添加webhook相关设置

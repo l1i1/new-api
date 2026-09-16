@@ -22,6 +22,19 @@ func SetApiRouter(router *gin.Engine) {
 	// must stay outside the interactive /api rate-limit bucket.
 	router.POST("/internal/v1/payment/settlements", middleware.PaymentWebhookRateLimit("hotpay_settlement"), controller.PaymentGatewaySettlement)
 
+	// Partner-console service endpoints authenticate by HMAC signature. Verified
+	// signatures skip the per-path limiter; everything else keeps it.
+	partnerInternal := router.Group("/internal/v1/partner")
+	partnerInternal.Use(middleware.SignedPartnerBypass())
+	partnerInternal.Use(middleware.PartnerLimiter(middleware.PaymentWebhookRateLimit("partner_console")))
+	{
+		partnerInternal.GET("/health", controller.PartnerHealth)
+		partnerInternal.POST("/users", controller.PartnerUsers)
+		partnerInternal.POST("/consumption", controller.PartnerConsumption)
+		partnerInternal.POST("/invite-reward-offsets", controller.PartnerInviteRewardOffsets)
+		partnerInternal.PUT("/config", controller.PartnerConfig)
+	}
+
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))

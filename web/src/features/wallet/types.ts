@@ -142,6 +142,8 @@ export interface TopupInfo {
   topup_contact?: string
   /** Optional HTML subtitle shown below the add-funds title */
   topup_subtitle?: string
+  /** Optional partner notice shown to white-labeled users (Markdown/HTML, tnt-aware) */
+  partner_notice?: string
   /** Whether Creem topup is enabled */
   enable_creem_topup?: boolean
   /** Available Creem products */
@@ -262,6 +264,8 @@ export interface UserWalletData {
   aff_count: number
   /** User group */
   group: string
+  /** Raw per-user setting blob (string or object); carries the white-label marker */
+  setting?: Record<string, unknown> | string
 }
 
 export type InviteTopUpRewardStatus = 'pending' | 'applied' | 'skipped'
