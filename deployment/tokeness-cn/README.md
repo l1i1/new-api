@@ -4,10 +4,16 @@ The China site uses one Alibaba Cloud ECI instance behind a Shanghai lightweight
 
 ## Release Gate (tag is version)
 
-The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-tokeness-mainland.1`). Pushing such a tag triggers a CNB `tag_push` build that bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere.
+The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-rc.37-tokeness-mainland.1`). Pushing such a tag triggers a CNB `tag_push` build that bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere.
+
+**The `<semver>` base tracks the upstream release the branch is currently synced to, and is re-aligned on every upstream sync — the same rule the overseas line follows.** Both sites are built from one `tokeness/main`, so a shared base keeps the two version labels directly comparable instead of implying that the mainland build is derived from an older upstream than it is. Keep the base in step with the overseas label whenever an upstream sync lands, and let only `<N>` advance for releases that carry no new upstream base.
+
+Examples of a correct re-alignment: the rc37 sync re-bases the line at `v1.0.0-rc.37-tokeness-mainland.1`, and the label then stays `rc.37` for every subsequent fix-only release on that base (`...-mainland.2`, `...-mainland.3`, …) until the next upstream sync moves it again. `<N>` restarts at 1 on each re-base, matching the overseas line's per-base numbering. The rc.33→rc.37 re-base is the first time this rule was applied: the earlier rc34–rc36 syncs did **not** re-align, so the whole `rc.33-tokeness-mainland.1`…`.30` line carried three upstream bases' worth of code under one stale label.
+
+Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh` only pin the `-tokeness-mainland.<N>` suffix, so a stale base is accepted silently — nothing in the pipeline will catch a base that was not re-aligned. The re-alignment is a naming convention only: it changes the tag, the baked `VERSION` and the app's reported version, never the code or the digest.
 
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
-2. Create a release tag `v1.0.0-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
+2. Create a release tag `v<semver>-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
 3. The chained deploy runs the same gated release as the manual button:
 
    - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
