@@ -14,6 +14,7 @@ Prevent real upstream stream failures from being finalized as successful OpenAI-
 
 - `[DONE]`, clean EOF, and handler stop remain compatible normal terminations.
 - `scanner_error`, timeout, client disconnect, panic, and ping failure are incomplete terminations.
+- A client disconnect (request context cancelled, `client_gone`, or the `scanner_error` the cancelled context causes) is not a gateway error: the upstream did not fail and no client remains to receive an error. Settle observed usage, emit no `[DONE]`, and return success rather than a synthesized 5xx. This matches upstream behavior and keeps abandoned requests out of the error rate.
 - An incomplete termination must not emit a synthetic `[DONE]` or terminal usage event.
 - If no upstream data was received and no downstream bytes were committed, return HTTP 502 `server_error` and allow normal channel retry policy.
 - Once upstream data was received, return a skip-retry error so a provider-billed partial generation is not duplicated on another channel. If downstream bytes were already committed, the connection closes without a false success marker.
@@ -33,6 +34,7 @@ Prevent real upstream stream failures from being finalized as successful OpenAI-
 ## Acceptance Criteria
 
 - A stream reader that returns partial content followed by a scanner error returns a skip-retry `server_error`, preserves `scanner_error`, settles observed billable usage, and does not emit `[DONE]`.
+- A request whose context was cancelled mid-stream returns no error, still settles the observed partial usage, and emits no `[DONE]`.
 - Partial tool-call and audio-token failures preserve their existing billing modifiers.
 - A zero-token partial stream remains auditable, while a reader error before any upstream data remains retryable and refundable.
 - Clean EOF after partial content remains successful and emits `[DONE]`.

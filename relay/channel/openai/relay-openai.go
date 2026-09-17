@@ -316,6 +316,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
+		// A caller that walked away mid-stream is not an upstream failure, and
+		// there is nobody left to receive an error: settle the observed usage and
+		// finish without synthesizing one. The scanner reports the same event as
+		// scanner_error whenever the cancelled request context closes the upstream
+		// body first, so the request context is the authoritative signal.
+		if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
+			(c.Request != nil && c.Request.Context().Err() != nil) {
+			return usage, nil
+		}
+
 		terminationErr := info.StreamStatus.EndError
 		if terminationErr == nil {
 			terminationErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)

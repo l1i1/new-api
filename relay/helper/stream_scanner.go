@@ -294,7 +294,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
-			logger.LogError(c, "scanner error: "+err.Error())
+			if requestContextDone(c) {
+				// The cancelled request context is what closed the upstream body,
+				// so this read error is the caller leaving, not a stalled upstream.
+				logger.LogInfo(c, "stream scanner stopped by client disconnect: "+err.Error())
+			} else {
+				logger.LogError(c, "scanner error: "+err.Error())
+			}
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			return
 		}
@@ -330,6 +336,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
+	} else if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone || requestContextDone(c) {
+		// The caller left mid-stream: neither the relay nor the upstream failed,
+		// so this is not an error condition to report. The caller sees a closed
+		// connection, never a synthesized 5xx.
+		logger.LogInfo(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	} else {
 		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	}

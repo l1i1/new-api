@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -998,6 +999,55 @@ func TestOaiStreamHandlerAllowsRetryBeforeAnyUpstreamData(t *testing.T) {
 	assert.Contains(t, err.Error(), "upstream connection failed before response")
 	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`)
 }
+
+func TestOaiStreamHandlerTreatsClientGoneAsNonError(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-flash"},
+		OriginModelName:    "deepseek-v4-flash",
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+	}
+	info.SetEstimatePromptTokens(11)
+	body := io.MultiReader(
+		strings.NewReader(`data: {"id":"chat_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"par"},"finish_reason":null}]}`+"\n"),
+		readerFunc(func(p []byte) (int, error) {
+			// The caller abandoned the request mid-stream: the cancelled request
+			// context closes the upstream body, so the next read reports it.
+			cancel()
+			return 0, context.Canceled
+		}),
+	)
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(body),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err, "a caller that disconnected mid-stream must not surface a gateway error")
+	require.NotNil(t, usage)
+	assert.Equal(t, 11, usage.PromptTokens)
+	assert.Greater(t, usage.CompletionTokens, 0, "observed partial output stays settled")
+	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`, "an abandoned stream never earns a success marker")
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 func TestOaiStreamHandlerAcceptsValidFunctionToolCallWithoutContent(t *testing.T) {
 	oldMode := gin.Mode()
