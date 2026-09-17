@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -149,6 +150,13 @@ func prepareInviteFirstTopUpRewardTx(tx *gorm.DB, topUp *TopUp, creditedQuota in
 		RewardRateBps:   policy.RewardRateBps,
 		Status:          InviteTopUpRewardStatusPending,
 	}
+	// Contract 3.2: partner inviters never earn the 20% first-top-up reward.
+	// Record the exclusion as skipped (auditable in settlement detail) instead
+	// of leaving a pending payout behind.
+	if _, excluded := operation_setting.FindPartnerByInviter(invitee.InviterId); excluded {
+		reward.Status = InviteTopUpRewardStatusSkipped
+		reward.SkipReason = "partner_excluded"
+	}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&reward).Error
 }
 
@@ -169,6 +177,10 @@ func ProcessInviteFirstTopUpReward(topUpId int) (bool, error) {
 		}
 		if reward.Status != InviteTopUpRewardStatusPending {
 			return nil
+		}
+		// Backstop for payouts created pending before the exclusion shipped.
+		if _, excluded := operation_setting.FindPartnerByInviter(reward.InviterId); excluded {
+			return markInviteTopUpRewardSkipped(tx, &reward, "partner_excluded")
 		}
 
 		var inviter User

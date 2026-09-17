@@ -598,3 +598,50 @@ func TestInviteRegistrationKeepsCompliantFixedQuotaReward(t *testing.T) {
 	assert.Equal(t, 7, persisted.AffQuota)
 	assert.Equal(t, 7, persisted.AffHistoryQuota)
 }
+
+func TestPartnerInviterIsExcludedFromFirstTopUpReward(t *testing.T) {
+	truncateTables(t)
+	now := time.Now().Unix()
+	enableInviteFirstTopUpRewardForTest(t, now-100)
+
+	createInviteRewardUser(t, 831, 300, now-90, 0, common.UserStatusEnabled)
+	createInviteRewardUser(t, 832, 100, now-80, 831, common.UserStatusEnabled)
+	_, err := operation_setting.UpsertPartnerMembers("test-exclude", []int{831}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { operation_setting.LoadPartnerSettingFromJSONString(`{"partners":[]}`) })
+
+	topUp := TopUp{
+		UserId:          832,
+		Amount:          2,
+		Money:           9.99,
+		TradeNo:         "invite-reward-partner-excluded",
+		PaymentMethod:   "alipay",
+		PaymentProvider: PaymentProviderEpay,
+		CreateTime:      now - 10,
+		Status:          common.TopUpStatusPending,
+	}
+	require.NoError(t, topUp.Insert())
+
+	require.NoError(t, CompleteEpayTopUp(topUp.TradeNo, "alipay", "9.99", "127.0.0.1"))
+
+	completed := GetTopUpByTradeNo(topUp.TradeNo)
+	require.NotNil(t, completed)
+	assert.Equal(t, common.TopUpStatusSuccess, completed.Status)
+	// Inviter quota untouched: no reward paid out.
+	assert.Equal(t, 300, getUserQuotaForPaymentGuardTest(t, 831))
+
+	var reward InviteTopUpReward
+	require.NoError(t, DB.Where("top_up_id = ?", completed.Id).First(&reward).Error)
+	assert.Equal(t, InviteTopUpRewardStatusSkipped, reward.Status)
+	assert.Equal(t, "partner_excluded", reward.SkipReason)
+
+	// The backstop path skips pre-existing pending payouts the same way.
+	require.NoError(t, DB.Model(&InviteTopUpReward{}).Where("top_up_id = ?", completed.Id).Update("status", InviteTopUpRewardStatusPending).Error)
+	applied, err := ProcessInviteFirstTopUpReward(completed.Id)
+	require.NoError(t, err)
+	assert.False(t, applied)
+	require.NoError(t, DB.Where("top_up_id = ?", completed.Id).First(&reward).Error)
+	assert.Equal(t, InviteTopUpRewardStatusSkipped, reward.Status)
+	assert.Equal(t, "partner_excluded", reward.SkipReason)
+	assert.Equal(t, 300, getUserQuotaForPaymentGuardTest(t, 831))
+}
