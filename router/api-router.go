@@ -34,6 +34,7 @@ func SetApiRouter(router *gin.Engine) {
 		partnerInternal.POST("/ledger", controller.PartnerLedger)
 		partnerInternal.POST("/invite-reward-offsets", controller.PartnerInviteRewardOffsets)
 		partnerInternal.PUT("/config", controller.PartnerConfig)
+		partnerInternal.GET("/content", controller.PartnerContent)
 	}
 
 	apiRouter := router.Group("/api")

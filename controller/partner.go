@@ -243,6 +243,29 @@ func PartnerConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"partner_id": body.PartnerID, "version": version})
 }
 
+// PartnerContent returns one partner's display copy for self-service editing.
+func PartnerContent(c *gin.Context) {
+	if !requirePartnerBypass(c) {
+		return
+	}
+	partnerID := strings.TrimSpace(c.Query("partner_id"))
+	if partnerID == "" {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "partner_id is required")
+		return
+	}
+	entry, found := operation_setting.FindPartner(partnerID)
+	if !found {
+		writePartnerError(c, http.StatusForbidden, "partner_forbidden", "unknown partner")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"partner_id": partnerID,
+		"contact":    entry.Contact,
+		"notice":     entry.Notice,
+		"version":    entry.Version,
+	})
+}
+
 // resolvePartnerNotice returns the partner notice copy for white-labeled
 // users whose commission window is still open, or "" for everyone else.
 func resolvePartnerNotice(c *gin.Context) string {
