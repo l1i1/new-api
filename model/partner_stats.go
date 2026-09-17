@@ -167,3 +167,86 @@ func GetPartnerInviteRewardOffsets(inviterIDs []int) (map[int]int64, error) {
 	}
 	return offsets, nil
 }
+
+// PartnerLedgerEvent is one FIFO-replayable entry: a successful top-up
+// credit or a consume/refund quota movement.
+type PartnerLedgerEvent struct {
+	Kind      string `json:"kind"` // "topup" | "consume" | "refund"
+	CreatedAt int64  `json:"created_at"`
+	Quota     int64  `json:"quota"`
+}
+
+// GetPartnerLedgerEvents returns one user's replayable events in time order
+// for exact FIFO commission computation. page is 1-based, capped at 5000.
+func GetPartnerLedgerEvents(userID int, start, end int64, page, pageSize int) ([]PartnerLedgerEvent, error) {
+	if userID <= 0 || end <= start || page <= 0 || pageSize <= 0 || pageSize > 5000 {
+		return nil, ErrPaymentGatewaySettlementInvalid
+	}
+	logDB := LOG_DB
+	if logDB == nil {
+		logDB = DB
+	}
+	if logDB == nil || DB == nil {
+		return nil, ErrPaymentGatewaySettlementRetryable
+	}
+	type consumeRow struct {
+		Quota     int64  `gorm:"column:quota"`
+		Group     string `gorm:"column:group"`
+		LogType   int    `gorm:"column:type"`
+		CreatedAt int64  `gorm:"column:created_at"`
+	}
+	quote := func(column string) string {
+		if common.UsingLogDatabase(common.DatabaseTypePostgreSQL) {
+			return `"` + column + `"`
+		}
+		return "`" + column + "`"
+	}
+	var logRows []consumeRow
+	if err := logDB.Table("logs").Select("quota, "+quote("group")+", "+quote("type")+" AS type, created_at").
+		Where("user_id = ?", userID).
+		Where("created_at >= ? AND created_at < ?", start, end).
+		Where(quote("type")+" IN ?", []int{LogTypeConsume, LogTypeRefund}).
+		Order("created_at ASC").
+		Offset((page - 1) * pageSize).Limit(pageSize).
+		Find(&logRows).Error; err != nil {
+		return nil, err
+	}
+	var topupRows []struct {
+		Credited    int64 `gorm:"column:credited"`
+		CompletedAt int64 `gorm:"column:completed_at"`
+	}
+	if err := DB.Table("top_ups").Select("credited_quota AS credited, complete_time AS completed_at").
+		Where("user_id = ?", userID).
+		Where("status = ?", common.TopUpStatusSuccess).
+		Where("complete_time >= ? AND complete_time < ?", start, end).
+		Where("credited_quota > 0").
+		Order("complete_time ASC").
+		Offset((page - 1) * pageSize).Limit(pageSize).
+		Find(&topupRows).Error; err != nil {
+		return nil, err
+	}
+	events := make([]PartnerLedgerEvent, 0, len(logRows)+len(topupRows))
+	for _, row := range logRows {
+		switch row.LogType {
+		case LogTypeConsume:
+			if len(row.Group) >= len(officialGroupSuffix) && row.Group[len(row.Group)-len(officialGroupSuffix):] == officialGroupSuffix {
+				continue
+			}
+			events = append(events, PartnerLedgerEvent{Kind: "consume", CreatedAt: row.CreatedAt, Quota: int64(row.Quota)})
+		case LogTypeRefund:
+			events = append(events, PartnerLedgerEvent{Kind: "refund", CreatedAt: row.CreatedAt, Quota: int64(row.Quota)})
+		}
+	}
+	for _, row := range topupRows {
+		events = append(events, PartnerLedgerEvent{Kind: "topup", CreatedAt: row.CompletedAt, Quota: row.Credited})
+	}
+	// Time order with top-ups before same-timestamp consumption, matching the
+	// console replay expectation.
+	for i := 1; i < len(events); i++ {
+		for j := i; j > 0 && (events[j].CreatedAt < events[j-1].CreatedAt ||
+			(events[j].CreatedAt == events[j-1].CreatedAt && events[j].Kind == "topup" && events[j-1].Kind != "topup")); j-- {
+			events[j], events[j-1] = events[j-1], events[j]
+		}
+	}
+	return events, nil
+}

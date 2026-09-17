@@ -163,6 +163,41 @@ func PartnerInviteRewardOffsets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rows": rows})
 }
 
+// PartnerLedger returns one user's replayable topup/consume/refund events in
+// a time window for exact FIFO commission computation on the console side.
+func PartnerLedger(c *gin.Context) {
+	if !requirePartnerBypass(c) {
+		return
+	}
+	var body struct {
+		UserID   int   `json:"user_id"`
+		Since    int64 `json:"since"`
+		Until    int64 `json:"until"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "request body is invalid")
+		return
+	}
+	if body.UserID <= 0 || body.Until <= body.Since {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "user_id and a valid [since, until) range are required")
+		return
+	}
+	if body.Page <= 0 {
+		body.Page = 1
+	}
+	if body.PageSize <= 0 || body.PageSize > 5000 {
+		body.PageSize = 5000
+	}
+	events, err := model.GetPartnerLedgerEvents(body.UserID, body.Since, body.Until, body.Page, body.PageSize)
+	if err != nil {
+		writePartnerError(c, http.StatusServiceUnavailable, "partner_unavailable", "failed to load ledger events")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events})
+}
+
 // PartnerConfig writes white-label display copy for a partner and merges
 // inviter membership. Content-only calls keep the old behavior; passing
 // inviter_user_ids additionally upserts membership (creating the entry when

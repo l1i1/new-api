@@ -31,6 +31,7 @@ func SetApiRouter(router *gin.Engine) {
 		partnerInternal.GET("/health", controller.PartnerHealth)
 		partnerInternal.POST("/users", controller.PartnerUsers)
 		partnerInternal.POST("/consumption", controller.PartnerConsumption)
+		partnerInternal.POST("/ledger", controller.PartnerLedger)
 		partnerInternal.POST("/invite-reward-offsets", controller.PartnerInviteRewardOffsets)
 		partnerInternal.PUT("/config", controller.PartnerConfig)
 	}
