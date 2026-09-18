@@ -57,7 +57,8 @@ func TestGetPartnerConsumptionSplitsOfficialAndRefund(t *testing.T) {
 func TestGetPartnerLedgerEventsReturnsReplayableStream(t *testing.T) {
 	setupPartnerStatsDB(t)
 	require.NoError(t, DB.Exec("ALTER TABLE top_ups ADD COLUMN complete_time integer DEFAULT 0").Error)
-	// Official-group consume is filtered; refund and topup pass through.
+	// Official-group consume stays in the stream but flagged: it spends balance
+	// without accruing commission.
 	require.NoError(t, DB.Exec(`INSERT INTO logs (user_id, quota, "group", type, created_at) VALUES
 		(1, 1000, 'default', 2, 100),
 		(1, 300, 'vip-Official', 2, 150),
@@ -67,14 +68,18 @@ func TestGetPartnerLedgerEventsReturnsReplayableStream(t *testing.T) {
 
 	events, err := GetPartnerLedgerEvents(1, 0, 1000, 1, 5000)
 	require.NoError(t, err)
-	require.Len(t, events, 3)
+	require.Len(t, events, 4)
 	assert.Equal(t, "topup", events[0].Kind)
 	assert.Equal(t, int64(50), events[0].CreatedAt)
 	assert.Equal(t, int64(2000), events[0].Quota)
 	assert.Equal(t, "consume", events[1].Kind)
 	assert.Equal(t, int64(1000), events[1].Quota)
-	assert.Equal(t, "refund", events[2].Kind)
-	assert.Equal(t, int64(50), events[2].Quota)
+	assert.False(t, events[1].Excluded)
+	assert.Equal(t, "consume", events[2].Kind)
+	assert.Equal(t, int64(300), events[2].Quota)
+	assert.True(t, events[2].Excluded)
+	assert.Equal(t, "refund", events[3].Kind)
+	assert.Equal(t, int64(50), events[3].Quota)
 
 	_, err = GetPartnerLedgerEvents(0, 0, 1000, 1, 5000)
 	require.Error(t, err)

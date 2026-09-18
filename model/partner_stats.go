@@ -169,11 +169,14 @@ func GetPartnerInviteRewardOffsets(inviterIDs []int) (map[int]int64, error) {
 }
 
 // PartnerLedgerEvent is one FIFO-replayable entry: a successful top-up
-// credit or a consume/refund quota movement.
+// credit or a consume/refund quota movement. Excluded marks official-group
+// consumption: it spends balance but never accrues commission, so the console
+// drains it from the FIFO lots without counting it.
 type PartnerLedgerEvent struct {
 	Kind      string `json:"kind"` // "topup" | "consume" | "refund"
 	CreatedAt int64  `json:"created_at"`
 	Quota     int64  `json:"quota"`
+	Excluded  bool   `json:"excluded,omitempty"`
 }
 
 // GetPartnerLedgerEvents returns one user's replayable events in time order
@@ -229,10 +232,8 @@ func GetPartnerLedgerEvents(userID int, start, end int64, page, pageSize int) ([
 	for _, row := range logRows {
 		switch row.LogType {
 		case LogTypeConsume:
-			if len(row.Group) >= len(officialGroupSuffix) && row.Group[len(row.Group)-len(officialGroupSuffix):] == officialGroupSuffix {
-				continue
-			}
-			events = append(events, PartnerLedgerEvent{Kind: "consume", CreatedAt: row.CreatedAt, Quota: int64(row.Quota)})
+			official := len(row.Group) >= len(officialGroupSuffix) && row.Group[len(row.Group)-len(officialGroupSuffix):] == officialGroupSuffix
+			events = append(events, PartnerLedgerEvent{Kind: "consume", CreatedAt: row.CreatedAt, Quota: int64(row.Quota), Excluded: official})
 		case LogTypeRefund:
 			events = append(events, PartnerLedgerEvent{Kind: "refund", CreatedAt: row.CreatedAt, Quota: int64(row.Quota)})
 		}
