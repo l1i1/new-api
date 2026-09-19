@@ -5,7 +5,11 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "kling-video-v3", "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "model": "kling-video-v3",
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "kling-video-v3",
           "upstreamModel": "kling-video-v3",
           "baseUrl": "https://up.example",
@@ -17,8 +21,15 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "kling-video-v3", "prompt": "a cat", "seconds": "5" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "kling-video-v3",
+          "prompt": "a cat",
+          "seconds": "5"
+        }
       }
     },
     {
@@ -26,7 +37,9 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "kling-video-v3" },
+          "requestBody": {
+            "model": "kling-video-v3"
+          },
           "model": "kling-video-v3",
           "upstreamModel": "kling-video-v3",
           "baseUrl": "https://up.example",
@@ -42,7 +55,10 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "kling-video-v3", "prompt": "a cat" },
+          "requestBody": {
+            "model": "kling-video-v3",
+            "prompt": "a cat"
+          },
           "model": "kling-video-v3",
           "upstreamModel": "kling-video-v3",
           "baseUrl": "https://up.example",
@@ -58,25 +74,49 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "baseUrl": "https://up.example",
           "apiKey": "secret",
           "action": "image_to_video",
-          "files": [{ "ref": "f1", "field": "input_reference", "filename": "a.png" }]
+          "files": [
+            {
+              "ref": "f1",
+              "field": "input_reference",
+              "filename": "a.png"
+            }
+          ]
         }
       ],
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret" },
+        "headers": {
+          "Authorization": "Bearer secret"
+        },
         "bodyType": "multipart",
         "parts": [
-          { "name": "model", "value": "wan3-720p" },
-          { "name": "prompt", "value": "a cat" },
-          { "name": "seconds", "value": "5" },
-          { "name": "input_reference", "fileRef": "f1", "filename": "a.png" }
+          {
+            "name": "model",
+            "value": "wan3-720p"
+          },
+          {
+            "name": "prompt",
+            "value": "a cat"
+          },
+          {
+            "name": "seconds",
+            "value": "5"
+          },
+          {
+            "name": "input_reference",
+            "fileRef": "f1",
+            "filename": "a.png"
+          }
         ]
       }
     },
@@ -85,7 +125,12 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "wan3.0-video", "prompt": "a cat", "seconds": "5", "resolution": "1080P" },
+          "requestBody": {
+            "model": "wan3.0-video",
+            "prompt": "a cat",
+            "seconds": "5",
+            "resolution": "1080P"
+          },
           "model": "wan3.0-video",
           "upstreamModel": "",
           "baseUrl": "https://up.example",
@@ -97,8 +142,16 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "wan3.0-video-1080p", "prompt": "a cat", "seconds": "5", "resolution": "1080P" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "wan3.0-video-1080p",
+          "prompt": "a cat",
+          "seconds": "5",
+          "resolution": "1080P"
+        }
       }
     },
     {
@@ -106,7 +159,11 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "wan3.0-video-prime", "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "model": "wan3.0-video-prime",
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "wan3.0-video-prime",
           "upstreamModel": "",
           "baseUrl": "https://up.example",
@@ -118,17 +175,27 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "wan3.0-video-prime-720p", "prompt": "a cat", "seconds": "5" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "wan3.0-video-prime-720p",
+          "prompt": "a cat",
+          "seconds": "5"
+        }
       }
     },
-
     {
       "name": "submit forwards a channel-mapped model verbatim",
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "grok-imagine-video-1.5", "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "model": "grok-imagine-video-1.5",
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "grok-imagine-video-1.5",
           "upstreamModel": "grok-imagine-video-1.5-preview",
           "baseUrl": "https://up.example",
@@ -140,8 +207,15 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "grok-imagine-video-1.5-preview", "prompt": "a cat", "seconds": "5" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "grok-imagine-video-1.5-preview",
+          "prompt": "a cat",
+          "seconds": "5"
+        }
       }
     },
     {
@@ -149,7 +223,12 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5", "resolution": "2k" },
+          "requestBody": {
+            "model": "minimax-h3",
+            "prompt": "a cat",
+            "seconds": "5",
+            "resolution": "2k"
+          },
           "model": "minimax-h3",
           "upstreamModel": "",
           "baseUrl": "https://up.example",
@@ -161,8 +240,16 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "minimax-h3-2k", "prompt": "a cat", "seconds": "5", "resolution": "2k" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "minimax-h3-2k",
+          "prompt": "a cat",
+          "seconds": "5",
+          "resolution": "2k"
+        }
       }
     },
     {
@@ -170,7 +257,11 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "model": "minimax-h3",
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "minimax-h3",
           "upstreamModel": "",
           "baseUrl": "https://up.example",
@@ -182,8 +273,15 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "minimax-h3", "prompt": "a cat", "seconds": "5" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "minimax-h3",
+          "prompt": "a cat",
+          "seconds": "5"
+        }
       }
     },
     {
@@ -191,7 +289,12 @@
       "hook": "buildSubmitRequest",
       "args": [
         {
-          "requestBody": { "model": "wan3.0-video", "prompt": "a cat", "seconds": "5", "size": "2560x1440" },
+          "requestBody": {
+            "model": "wan3.0-video",
+            "prompt": "a cat",
+            "seconds": "5",
+            "size": "2560x1440"
+          },
           "model": "wan3.0-video",
           "upstreamModel": "",
           "baseUrl": "https://up.example",
@@ -203,167 +306,323 @@
       "expected": {
         "url": "https://up.example/v1/videos",
         "method": "POST",
-        "headers": { "Authorization": "Bearer secret", "Content-Type": "application/json" },
-        "body": { "model": "wan3.0-video-720p", "prompt": "a cat", "seconds": "5", "size": "2560x1440" }
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "wan3.0-video-720p",
+          "prompt": "a cat",
+          "seconds": "5",
+          "size": "2560x1440"
+        }
       }
     },
     {
       "name": "parseSubmitResponse reads id",
       "hook": "parseSubmitResponse",
       "args": [
-        { "apiKey": "secret" },
-        { "statusCode": 200, "headers": {}, "body": { "id": "task_1", "status": "queued" } }
+        {
+          "apiKey": "secret"
+        },
+        {
+          "statusCode": 200,
+          "headers": {},
+          "body": {
+            "id": "task_1",
+            "status": "queued"
+          }
+        }
       ],
-      "expected": { "taskId": "task_1", "taskData": { "id": "task_1", "status": "queued" } }
+      "expected": {
+        "taskId": "task_1",
+        "taskData": {
+          "id": "task_1",
+          "status": "queued"
+        }
+      }
     },
     {
       "name": "parseSubmitResponse falls back to task_id",
       "hook": "parseSubmitResponse",
-      "args": [{ "apiKey": "secret" }, { "statusCode": 200, "headers": {}, "body": { "task_id": "task_2" } }],
-      "expected": { "taskId": "task_2", "taskData": { "task_id": "task_2" } }
+      "args": [
+        {
+          "apiKey": "secret"
+        },
+        {
+          "statusCode": 200,
+          "headers": {},
+          "body": {
+            "task_id": "task_2"
+          }
+        }
+      ],
+      "expected": {
+        "taskId": "task_2",
+        "taskData": {
+          "task_id": "task_2"
+        }
+      }
     },
     {
       "name": "query request targets the task path",
       "hook": "buildQueryRequest",
-      "args": [{ "taskId": "task_1", "baseUrl": "https://up.example", "apiKey": "secret" }],
+      "args": [
+        {
+          "taskId": "task_1",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret"
+        }
+      ],
       "expected": {
         "url": "https://up.example/v1/videos/task_1",
         "method": "GET",
-        "headers": { "Authorization": "Bearer secret" }
+        "headers": {
+          "Authorization": "Bearer secret"
+        }
       }
     },
     {
       "name": "query request encodes the task id",
       "hook": "buildQueryRequest",
-      "args": [{ "taskId": "a/b", "baseUrl": "https://up.example", "apiKey": "secret" }],
+      "args": [
+        {
+          "taskId": "a/b",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret"
+        }
+      ],
       "expected": {
         "url": "https://up.example/v1/videos/a%2Fb",
         "method": "GET",
-        "headers": { "Authorization": "Bearer secret" }
+        "headers": {
+          "Authorization": "Bearer secret"
+        }
       }
     },
     {
       "name": "task result maps completed",
       "hook": "parseTaskResult",
-      "args": [{ "taskId": "t" }, { "status": "completed", "progress": 100 }],
-      "expected": { "status": "SUCCESS" }
+      "args": [
+        {
+          "taskId": "t"
+        },
+        {
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "expected": {
+        "status": "SUCCESS"
+      }
     },
     {
       "name": "task result maps in_progress with progress",
       "hook": "parseTaskResult",
-      "args": [{ "taskId": "t" }, { "status": "in_progress", "progress": 35 }],
-      "expected": { "status": "IN_PROGRESS", "progress": "35%" }
+      "args": [
+        {
+          "taskId": "t"
+        },
+        {
+          "status": "in_progress",
+          "progress": 35
+        }
+      ],
+      "expected": {
+        "status": "IN_PROGRESS",
+        "progress": "35%"
+      }
     },
     {
       "name": "task result maps failure with upstream reason",
       "hook": "parseTaskResult",
-      "args": [{ "taskId": "t" }, { "status": "failed", "error": { "code": "content_moderated", "message": "rejected" } }],
-      "expected": { "status": "FAILURE", "reason": "rejected" }
+      "args": [
+        {
+          "taskId": "t"
+        },
+        {
+          "status": "failed",
+          "error": {
+            "code": "content_moderated",
+            "message": "rejected"
+          }
+        }
+      ],
+      "expected": {
+        "status": "FAILURE",
+        "reason": "rejected"
+      }
     },
     {
       "name": "task result keeps unrecognized status unknown",
       "hook": "parseTaskResult",
-      "args": [{ "taskId": "t" }, { "status": "weird" }],
-      "expected": { "status": "UNKNOWN", "reason": "unrecognized status: weird" }
+      "args": [
+        {
+          "taskId": "t"
+        },
+        {
+          "status": "weird"
+        }
+      ],
+      "expected": {
+        "status": "UNKNOWN",
+        "reason": "unrecognized status: weird"
+      }
     },
     {
       "name": "usage reports seconds only for a plain model",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "6" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "6"
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 6 }
+      "expected": {
+        "seconds": 6
+      }
     },
     {
       "name": "usage unwraps a decoded body envelope instead of defaulting the duration",
       "hook": "extractUsage",
       "args": [
         {
-          "body": { "kind": "json", "value": { "prompt": "a cat", "seconds": "2" } },
+          "body": {
+            "kind": "json",
+            "value": {
+              "prompt": "a cat",
+              "seconds": "2"
+            }
+          },
           "model": "grok-imagine-video",
           "upstreamModel": "grok-imagine-video",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 2 }
+      "expected": {
+        "seconds": 2
+      }
     },
     {
       "name": "usage reads multipart fields from a decoded body envelope",
       "hook": "extractUsage",
       "args": [
         {
-          "body": { "kind": "multipart", "fields": { "prompt": ["a cat"], "seconds": ["3"] }, "files": [] },
+          "body": {
+            "kind": "multipart",
+            "fields": {
+              "prompt": [
+                "a cat"
+              ],
+              "seconds": [
+                "3"
+              ]
+            },
+            "files": []
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 3 }
+      "expected": {
+        "seconds": 3
+      }
     },
     {
       "name": "usage prefers the request body over a decoded envelope",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "1", "resolution": "720p" },
-          "body": { "kind": "json", "value": { "prompt": "a cat", "seconds": "9" } },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "1",
+            "resolution": "720p"
+          },
+          "body": {
+            "kind": "json",
+            "value": {
+              "prompt": "a cat",
+              "seconds": "9"
+            }
+          },
           "model": "grok-imagine-video",
           "upstreamModel": "grok-imagine-video",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 1, "resolution": "720p" }
+      "expected": {
+        "seconds": 1,
+        "resolution": "720p"
+      }
     },
     {
       "name": "usage falls back to the default duration",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat" },
+          "requestBody": {
+            "prompt": "a cat"
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 5 }
+      "expected": {
+        "seconds": 5
+      }
     },
     {
       "name": "usage accepts the duration alias",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "duration": 10 },
+          "requestBody": {
+            "prompt": "a cat",
+            "duration": 10
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 10 }
+      "expected": {
+        "seconds": 10
+      }
     },
     {
       "name": "usage accepts numeric strings",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "6" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "6"
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 6 }
+      "expected": {
+        "seconds": 6
+      }
     },
     {
       "name": "usage rejects an out-of-range duration",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": 0 },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": 0
+          },
           "model": "wan3-720p",
           "upstreamModel": "wan3-720p",
           "action": "text_to_video"
@@ -376,170 +635,337 @@
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": 5, "size": "1920x1080" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": 5,
+            "size": "1920x1080"
+          },
           "model": "kling-video-v3",
           "upstreamModel": "kling-video-v3",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 5, "resolution": "1080p" }
+      "expected": {
+        "seconds": 5,
+        "resolution": "1080p"
+      }
     },
     {
       "name": "usage reads metadata resolution for kling",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": 5, "metadata": { "resolution": "720p" } },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": 5,
+            "metadata": {
+              "resolution": "720p"
+            }
+          },
           "model": "kling-video-v3",
           "upstreamModel": "kling-video-v3",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 5, "resolution": "720p" }
+      "expected": {
+        "seconds": 5,
+        "resolution": "720p"
+      }
     },
     {
       "name": "usage derives seedance tokens from the ark formula",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "5", "size": "1280x720" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "5",
+            "size": "1280x720"
+          },
           "model": "seedance2.5",
           "upstreamModel": "seedance2.5",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 5, "resolution": "720p", "tokens": 108000, "video_input": "none" }
+      "expected": {
+        "seconds": 5,
+        "resolution": "720p",
+        "tokens": 108000,
+        "video_input": "none"
+      }
     },
     {
       "name": "usage derives seedance 480p tokens",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "5", "metadata": { "resolution": "480P" } },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "5",
+            "metadata": {
+              "resolution": "480P"
+            }
+          },
           "model": "seedance2.5",
           "upstreamModel": "seedance2.5",
           "action": "text_to_video"
         }
       ],
-      "expected": { "seconds": 5, "resolution": "480p", "tokens": 48037.5, "video_input": "none" }
+      "expected": {
+        "seconds": 5,
+        "resolution": "480p",
+        "tokens": 48037.5,
+        "video_input": "none"
+      }
     },
     {
       "name": "usage marks a reference video input",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "5", "video": "https://v.example/a.mp4" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "5",
+            "video": "https://v.example/a.mp4"
+          },
           "model": "seedance2.5",
           "upstreamModel": "seedance2.5",
           "action": "video_to_video"
         }
       ],
-      "expected": { "seconds": 5, "tokens": 108000, "video_input": "video" }
+      "expected": {
+        "seconds": 5,
+        "tokens": 108000,
+        "video_input": "video"
+      }
     },
     {
       "name": "usage reads the reference-video header",
       "hook": "extractUsage",
       "args": [
         {
-          "requestBody": { "prompt": "a cat", "seconds": "5" },
+          "requestBody": {
+            "prompt": "a cat",
+            "seconds": "5"
+          },
           "model": "seedance2.5",
           "upstreamModel": "seedance2.5",
           "action": "video_to_video",
-          "requestHeaders": { "x-input-video": "https://v.example/a.mp4" }
+          "requestHeaders": {
+            "x-input-video": "https://v.example/a.mp4"
+          }
         }
       ],
-      "expected": { "seconds": 5, "tokens": 108000, "video_input": "video" }
+      "expected": {
+        "seconds": 5,
+        "tokens": 108000,
+        "video_input": "video"
+      }
     },
     {
       "name": "completion overlays the measured duration and tier",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS" },
-        { "status": "SUCCESS" },
-        { "seconds": "8", "resolution": "1080p" }
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "seconds": "8",
+          "resolution": "1080p"
+        }
       ],
-      "expected": { "seconds": 8, "resolution": "1080p" }
+      "expected": {
+        "seconds": 8,
+        "resolution": "1080p"
+      }
     },
     {
       "name": "completion overlays the measured seedance tokens",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS" },
-        { "status": "SUCCESS" },
-        { "usage": { "completion_tokens": 216000 } }
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "usage": {
+            "completion_tokens": 216000
+          }
+        }
       ],
-      "expected": { "tokens": 216000 }
+      "expected": {
+        "tokens": 216000
+      }
     },
     {
       "name": "completion omits unreported values",
       "hook": "extractUsageOnComplete",
-      "args": [{ "taskId": "t", "status": "SUCCESS" }, { "status": "SUCCESS" }, {}],
+      "args": [
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {}
+      ],
       "expected": {}
     },
     {
       "name": "completion reads the duration nested under video",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS" },
-        { "status": "SUCCESS" },
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
         {
           "id": "task_up",
           "status": "completed",
           "url": "https://v.example/a.mp4",
-          "video": { "duration": 1, "url": "https://v.example/a.mp4" }
+          "video": {
+            "duration": 1,
+            "url": "https://v.example/a.mp4"
+          }
         }
       ],
-      "expected": { "seconds": 1 }
+      "expected": {
+        "seconds": 1
+      }
     },
     {
       "name": "completion reads the resolution nested under video",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS" },
-        { "status": "SUCCESS" },
-        { "status": "completed", "video": { "duration": 6, "resolution": "1080P" } }
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "status": "completed",
+          "video": {
+            "duration": 6,
+            "resolution": "1080P"
+          }
+        }
       ],
-      "expected": { "seconds": 6, "resolution": "1080p" }
+      "expected": {
+        "seconds": 6,
+        "resolution": "1080p"
+      }
     },
     {
       "name": "completion falls back to the persisted task data",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS", "data": { "video": { "duration": 4 } } },
-        { "status": "SUCCESS" }
+        {
+          "taskId": "t",
+          "status": "SUCCESS",
+          "data": {
+            "video": {
+              "duration": 4
+            }
+          }
+        },
+        {
+          "status": "SUCCESS"
+        }
       ],
-      "expected": { "seconds": 4 }
+      "expected": {
+        "seconds": 4
+      }
     },
     {
       "name": "completion prefers the poll body over the persisted data",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS", "data": { "video": { "duration": 4 } } },
-        { "status": "SUCCESS" },
-        { "video": { "duration": 2 } }
+        {
+          "taskId": "t",
+          "status": "SUCCESS",
+          "data": {
+            "video": {
+              "duration": 4
+            }
+          }
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "video": {
+            "duration": 2
+          }
+        }
       ],
-      "expected": { "seconds": 2 }
+      "expected": {
+        "seconds": 2
+      }
     },
     {
       "name": "completion keeps the estimate for a zero duration",
       "hook": "extractUsageOnComplete",
       "args": [
-        { "taskId": "t", "status": "SUCCESS" },
-        { "status": "SUCCESS" },
-        { "status": "completed", "video": { "duration": 0 } }
+        {
+          "taskId": "t",
+          "status": "SUCCESS"
+        },
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "status": "completed",
+          "video": {
+            "duration": 0
+          }
+        }
       ],
       "expected": {}
     },
     {
       "name": "artifacts expose the video only when successful",
       "hook": "listArtifacts",
-      "args": [{ "taskId": "t", "status": "SUCCESS", "action": "text_to_video", "data": {}, "producerVersion": "1.0.0" }],
-      "expected": [{ "key": "video", "type": "video" }]
+      "args": [
+        {
+          "taskId": "t",
+          "status": "SUCCESS",
+          "action": "text_to_video",
+          "data": {},
+          "producerVersion": "1.0.0"
+        }
+      ],
+      "expected": [
+        {
+          "key": "video",
+          "type": "video"
+        }
+      ]
     },
     {
       "name": "artifacts stay empty while running",
       "hook": "listArtifacts",
-      "args": [{ "taskId": "t", "status": "IN_PROGRESS", "action": "text_to_video", "data": {}, "producerVersion": "1.0.0" }],
+      "args": [
+        {
+          "taskId": "t",
+          "status": "IN_PROGRESS",
+          "action": "text_to_video",
+          "data": {},
+          "producerVersion": "1.0.0"
+        }
+      ],
       "expected": []
     },
     {
@@ -551,63 +977,103 @@
           "baseUrl": "https://up.example",
           "apiKey": "secret",
           "upstreamTaskId": "task_1",
-          "clientRequest": { "method": "GET", "headers": {} }
+          "clientRequest": {
+            "method": "GET",
+            "headers": {}
+          }
         }
       ],
       "expected": {
         "url": "https://up.example/v1/videos/task_1/content",
         "method": "GET",
-        "headers": { "Authorization": "Bearer secret" }
+        "headers": {
+          "Authorization": "Bearer secret"
+        }
       }
     },
     {
       "name": "video decode accepts a json submit",
       "hook": "protocols",
-      "path": ["openai_video", "decodeRequest"],
+      "path": [
+        "openai_video",
+        "decodeRequest"
+      ],
       "args": [
         {
           "protocol": "openai_video",
           "operation": "create",
           "model": "wan3-720p",
-          "body": { "kind": "json", "value": { "prompt": "hi", "seconds": "5" } }
+          "body": {
+            "kind": "json",
+            "value": {
+              "prompt": "hi",
+              "seconds": "5"
+            }
+          }
         }
       ],
       "expected": {
         "kind": "submit",
         "model": "wan3-720p",
         "action": "text_to_video",
-        "requestBody": { "model": "wan3-720p", "prompt": "hi", "seconds": "5" }
+        "requestBody": {
+          "model": "wan3-720p",
+          "prompt": "hi",
+          "seconds": "5"
+        }
       }
     },
     {
       "name": "video decode detects an image input",
       "hook": "protocols",
-      "path": ["openai_video", "decodeRequest"],
+      "path": [
+        "openai_video",
+        "decodeRequest"
+      ],
       "args": [
         {
           "protocol": "openai_video",
           "operation": "create",
           "model": "wan3-720p",
-          "body": { "kind": "json", "value": { "prompt": "hi", "image": "https://img.example/a.png" } }
+          "body": {
+            "kind": "json",
+            "value": {
+              "prompt": "hi",
+              "image": "https://img.example/a.png"
+            }
+          }
         }
       ],
       "expected": {
         "kind": "submit",
         "model": "wan3-720p",
         "action": "image_to_video",
-        "requestBody": { "model": "wan3-720p", "prompt": "hi", "image": "https://img.example/a.png" }
+        "requestBody": {
+          "model": "wan3-720p",
+          "prompt": "hi",
+          "image": "https://img.example/a.png"
+        }
       }
     },
     {
       "name": "video decode rejects an out-of-range duration",
       "hook": "protocols",
-      "path": ["openai_video", "decodeRequest"],
+      "path": [
+        "openai_video",
+        "decodeRequest"
+      ],
       "args": [
         {
           "protocol": "openai_video",
           "operation": "create",
           "model": "wan3-720p",
-          "body": { "kind": "json", "value": { "prompt": "hi", "seconds": 4000 } }
+          "body": {
+            "kind": "json",
+            "value": {
+              "prompt": "hi",
+              "seconds": 4000
+            }
+          }
         }
       ],
       "expectedError": "seconds must be between 1 and 3600"
@@ -615,7 +1081,10 @@
     {
       "name": "video render returns the openai video shape",
       "hook": "protocols",
-      "path": ["openai_video", "render"],
+      "path": [
+        "openai_video",
+        "render"
+      ],
       "args": [
         {},
         {
@@ -623,7 +1092,9 @@
           "status": "IN_PROGRESS",
           "progress": "35%",
           "created_at": 100,
-          "properties": { "origin_model_name": "kling-video-v3" }
+          "properties": {
+            "origin_model_name": "kling-video-v3"
+          }
         }
       ],
       "expected": {
@@ -638,10 +1109,18 @@
     {
       "name": "video render reports failures",
       "hook": "protocols",
-      "path": ["openai_video", "render"],
+      "path": [
+        "openai_video",
+        "render"
+      ],
       "args": [
         {},
-        { "task_id": "task_1", "status": "FAILURE", "fail_reason": "rejected", "properties": {} }
+        {
+          "task_id": "task_1",
+          "status": "FAILURE",
+          "fail_reason": "rejected",
+          "properties": {}
+        }
       ],
       "expected": {
         "id": "task_1",
@@ -650,7 +1129,156 @@
         "status": "failed",
         "progress": 0,
         "created_at": 0,
-        "error": { "code": "video_generation_failed", "message": "rejected" }
+        "error": {
+          "code": "video_generation_failed",
+          "message": "rejected"
+        }
+      }
+    },
+    {
+      "name": "flow video submit inlines the reference image as base64 and pins the 4s duration",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": {
+            "prompt": "camera pushes in",
+            "seconds": "8"
+          },
+          "model": "flow-video-veo-3.1-fast",
+          "upstreamModel": "flow-video-veo-3.1-fast",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "image_to_video",
+          "files": [
+            {
+              "ref": "request_file:input_reference",
+              "field": "input_reference",
+              "filename": "a.png"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos",
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer secret",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "flow-video-veo-3.1-fast",
+          "prompt": "camera pushes in",
+          "seconds": 4,
+          "input_reference": {
+            "__fileRef": "request_file:input_reference",
+            "encoding": "base64"
+          }
+        }
+      }
+    },
+    {
+      "name": "flow video submit without a reference image fails at submit time",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "requestBody": {
+            "prompt": "a cat"
+          },
+          "model": "flow-video-veo-3.1-fast",
+          "upstreamModel": "flow-video-veo-3.1-fast",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "action": "text_to_video",
+          "files": []
+        }
+      ],
+      "expectedError": "requires an input image"
+    },
+    {
+      "name": "flow video content request uses the public artifact url credentialless",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "video",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "upstreamTaskId": "task_1",
+          "clientRequest": {
+            "method": "GET",
+            "headers": {}
+          },
+          "data": {
+            "model": "flow-video-veo-3.1-fast",
+            "status": "completed",
+            "url": "https://video.example/flow/videos/abc.mp4",
+            "data": [
+              {
+                "url": "https://video.example/flow/videos/abc.mp4"
+              }
+            ],
+            "video_url": "https://video.example/flow/videos/abc.mp4"
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://video.example/flow/videos/abc.mp4",
+        "method": "GET",
+        "credentialless": true
+      }
+    },
+    {
+      "name": "non-flow task payloads keep proxying the upstream content route",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "video",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "upstreamTaskId": "task_2",
+          "clientRequest": {
+            "method": "GET",
+            "headers": {}
+          },
+          "data": {
+            "model": "grok-imagine-video",
+            "status": "completed",
+            "url": "https://video.example/flow/videos/abc.mp4"
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos/task_2/content",
+        "method": "GET",
+        "headers": {
+          "Authorization": "Bearer secret"
+        }
+      }
+    },
+    {
+      "name": "flow video task payload without a url falls back to the content route",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "video",
+          "baseUrl": "https://up.example",
+          "apiKey": "secret",
+          "upstreamTaskId": "task_3",
+          "clientRequest": {
+            "method": "GET",
+            "headers": {}
+          },
+          "data": {
+            "model": "flow-video-veo-3.1-fast",
+            "status": "completed"
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://up.example/v1/videos/task_3/content",
+        "method": "GET",
+        "headers": {
+          "Authorization": "Bearer secret"
+        }
       }
     }
   ]

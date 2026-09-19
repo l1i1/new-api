@@ -45,6 +45,7 @@ Declared models and their official billing dimension:
 | `wan3.0-video-prime` | rolldek | per second, by resolution |
 | `grok-imagine-video` | xuetianai, zzone* | per second, by resolution (official 480p $0.05 / 720p $0.07) |
 | `grok-imagine-video-1.5` | xuetianai, zzone* | per second, by resolution (official 480p $0.08 / 720p $0.14 / 1080p $0.25) |
+| `flow-video-veo-3.1-fast` | xuetianai (channel 158 `Video_XT2`) | **per call**, flat — the upstream returns one 8s 720p clip; official Veo 3.1 Fast 720p $0.10/s ⇒ list $0.80 |
 | `wan3-720p` | zzone | **delisted** 2026-09-11, merged into `wan3.0-video` (see below) |
 
 \* zzone serves the grok names through channel 136's `model_mapping`
@@ -52,6 +53,19 @@ Declared models and their official billing dimension:
 `grok-imagine-video-1.5-preview`); channel 136 also runs at priority 10 over
 xuetianai's 0, so the cheaper zzone source (¥0.06/s vs $0.05/s) is preferred
 and xuetianai remains the fallback.
+
+`flow-video-veo-3.1-*` is xuetianai's Flow-wrapper lane, not a Google model ID.
+It deviates from the aggregator wire format in three ways, all handled inside the
+plugin (1.1.1): the reference frame is a base64 string in `input_reference` (the
+client's multipart upload is inlined through the host's file placeholder), only a
+4-second request is accepted — the upstream then renders an 8s 720p clip — at a
+flat per-call price, and the artifact is fetched straight from the public media
+URL in the task payload because the upstream's own `/content` route answers 403.
+Only `-fast` is declared: a 2026-09-19 probe completed fast and lite (both
+$0.40/clip upstream), while `-quality` and the `flow-video-gemini-omni-flash-1.1`
+text-to-video lane failed with "video generation did not complete; automatic
+resubmission is disabled". `-lite` is held back because the upstream prices it the
+same as `-fast` while its official rate is half.
 
 `minimax-h3` is zzone's own spelling, used directly. Declaring it collides with
 the built-in `hailuo` plugin's `MiniMax-H3` because plugin model names are matched

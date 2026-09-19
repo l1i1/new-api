@@ -4,6 +4,11 @@
  * For aggregator upstreams that speak the OpenAI video wire format
  * (POST /v1/videos, GET /v1/videos/{id}, GET /v1/videos/{id}/content).
  *
+ * Upstreams deviate from that format in places; each deviation is handled per
+ * model family (wan3/minimax resolution-suffixed SKUs, xuetianai's flow-video
+ * image-to-video lane) instead of globally, so a new upstream cannot change the
+ * request shape of the ones already in production.
+ *
  * This plugin exists because task-plugin model ownership is declared statically
  * per plugin: billing only accepts u("seconds") when the requested model name
  * belongs to a plugin. Aggregator model IDs cannot reuse the built-in sora
@@ -197,6 +202,39 @@ function minimaxUpstreamModel(name, body) {
   return suffix ? name + suffix : name;
 }
 
+// xuetianai's Flow-wrapper video SKUs (flow-video-veo-3.1-*). They are
+// image-to-video only and deviate from the aggregator wire format in three ways:
+//   * the reference frame is a base64 string in `input_reference` (a plain
+//     string field, not a media id and not a file part), so the client's
+//     multipart upload is inlined through the host's file placeholder;
+//   * only a 4-second clip is sold, for a flat per-call price (the upstream
+//     rejects other durations with unsupported_duration and bills
+//     model_price × 1 regardless of the requested seconds);
+//   * the rendered mp4 lives on a public media host while the upstream's own
+//     /v1/videos/{id}/content route is blocked, so artifacts are fetched
+//     directly from the URL in the task payload.
+const FLOW_VIDEO_PREFIX = "flow-video-";
+const FLOW_VIDEO_SECONDS = 4;
+
+function isFlowVideoModel(name) {
+  return trimmed(name).toLowerCase().indexOf(FLOW_VIDEO_PREFIX) === 0;
+}
+
+// Only flow-video task payloads carry a directly fetchable artifact URL: the
+// upstream echoes the model name back, which keeps the existing /content proxy
+// path in place for every other upstream.
+function flowVideoArtifactUrl(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+  if (!isFlowVideoModel(data.model)) return "";
+  const items = Array.isArray(data.data) ? data.data : [];
+  const nested = items.length > 0 && items[0] && typeof items[0] === "object" ? items[0].url : "";
+  for (const candidate of [data.url, data.video_url, nested]) {
+    const text = trimmed(candidate);
+    if (/^https?:\/\//i.test(text)) return text;
+  }
+  return "";
+}
+
 export const meta = {
   apiVersion: 1,
   key: "openai-video-agg",
@@ -205,7 +243,7 @@ export const meta = {
     en: "Generic OpenAI-compatible async video generation for aggregator upstreams (POST /v1/videos).",
     zh: "通用 OpenAI 兼容异步视频生成，用于提供 OpenAI 视频线格式的聚合上游（POST /v1/videos）。",
   },
-  version: "1.0.9",
+  version: "1.1.1",
   author: { name: "Tokeness" },
   // Model IDs are the upstream aggregator's own names. minimax-h3 is zzone's
   // spelling: declaring it collides with the built-in hailuo plugin's
@@ -219,7 +257,10 @@ export const meta = {
   //                  grok-imagine-video(-1.5 via channel model_mapping to
   //                  zzone's -1.5-preview name), seedance2.0(fast) via mapping
   //                  to zzone's video-ds-2.0(-fast) / as-sd2.0-fast SKUs
-  //   xuetianai.com  grok-imagine-video, grok-imagine-video-1.5
+  //   xuetianai.com  grok-imagine-video, grok-imagine-video-1.5, and the
+  //                  flow-video-veo-3.1-* lane (image-to-video, base64
+  //                  input_reference, flat per-call price — see
+  //                  FLOW_VIDEO_PREFIX below)
   //   rolldek.com    wan3.0-video(-prime) — the wan3 families take the tier
   //                  through the resolution parameter and are rewritten to
   //                  resolution-suffixed upstream names (see
@@ -236,6 +277,21 @@ export const meta = {
   // catalog spelling of grok-imagine-video-1.5 and does not exist in xAI's API
   // (whose documented aliases are -preview and -2026-05-30). It duplicated the
   // official 1.5 SKU on every channel.
+  //
+  // 1.1.0 adds xuetianai's flow-video-veo-3.1-* lane. Those names are the
+  // upstream's own Flow-wrapper SKUs, not Google IDs; they are image-to-video
+  // only and priced per call (a fixed 8s 720p clip), which is why they carry no
+  // resolution fact and their billing expressions ignore seconds.
+  // Only the SKUs that are both verified and profitable at the official price
+  // are declared. A live probe on 2026-09-19 completed fast and lite (8s 720p,
+  // billed $0.4 per clip), while quality and the whole
+  // flow-video-gemini-omni-flash text-to-video lane failed upstream with
+  // "video generation did not complete; automatic resubmission is disabled".
+  // lite is verified but priced the same upstream as fast while its official
+  // rate is half (Veo 3.1 Lite 720p $0.05/s vs Fast $0.10/s), so it is left
+  // out until the upstream differentiates the two. Declare a SKU only once a
+  // probe has produced a clip — an unserved model with no billing expression
+  // would fall back to the placeholder model_ratio if it ever got a channel.
   //
   // Note: seedance2.5 is tagged "openai" (chat) rather than "videos" upstream;
   // if the aggregator rejects it on /v1/videos this surfaces as a submit error.
@@ -256,6 +312,7 @@ export const meta = {
     "jimeng-drama-video-v2-fast",
     "grok-imagine-video",
     "grok-imagine-video-1.5",
+    "flow-video-veo-3.1-fast",
   ],
   fetchMode: "per_task",
   usageSchema: {
@@ -313,6 +370,7 @@ export const meta = {
     { label: "minimax-h3 768p 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "768p" } },
     { label: "minimax-h3 2k 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "2k" } },
     { label: "grok-imagine-video 5s", facts: { seconds: 5, tokens: 0, video_input: "none", resolution: "720p" } },
+    { label: "flow-video-veo-3.1-fast 8s 720p (flat per call)", facts: { seconds: 8, tokens: 0, video_input: "none", resolution: "720p" } },
   ],
   protocols: ["openai_video"],
 };
@@ -324,6 +382,25 @@ export function buildSubmitRequest(ctx) {
 
   const headers = { Authorization: "Bearer " + ctx.apiKey };
   const model = minimaxUpstreamModel(wan3UpstreamModel(ctx.upstreamModel || ctx.model, req), req);
+
+  if (isFlowVideoModel(model)) {
+    const files = ctx.files || [];
+    if (!files.length) {
+      throw new Error("model " + model + " requires an input image (multipart field image or input_reference)");
+    }
+    headers["Content-Type"] = "application/json";
+    return {
+      url: ctx.baseUrl + "/v1/videos",
+      method: "POST",
+      headers,
+      body: {
+        model: model,
+        prompt: trimmed(req.prompt),
+        seconds: FLOW_VIDEO_SECONDS,
+        input_reference: { __fileRef: files[0].ref, encoding: "base64" },
+      },
+    };
+  }
 
   if ((ctx.files || []).length) {
     const values = Object.assign({}, req, { model: model });
@@ -477,6 +554,10 @@ export function listArtifacts(task) {
 
 export function buildContentRequest(ctx) {
   if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
+  const directUrl = flowVideoArtifactUrl(ctx.data);
+  if (directUrl) {
+    return { url: directUrl, method: "GET", credentialless: true };
+  }
   return {
     url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content",
     method: ctx.clientRequest.method,
