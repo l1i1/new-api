@@ -11,9 +11,10 @@ import (
 
 // TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts pins the exact
 // messages recorded on the production channels for one over-length request
-// (2026-09-21, deepseek-v4-pro, five channels in a single retry chain). A
-// wording drift in any upstream must be caught here rather than resurface as a
-// five-channel failover in the error log.
+// (2026-09-21, deepseek-v4-pro, five channels in a single retry chain) plus the
+// remaining wordings the same log window produced. A drift in any upstream must
+// be caught here rather than resurface as a five-channel failover in the error
+// log.
 func TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts(t *testing.T) {
 	messages := []string{
 		"The prompt is too long: 1270711, model maximum context length: 1048571",
@@ -25,6 +26,8 @@ func TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts(t *testing.T)
 		"Input length 1270721 exceeds the maximum allowed input length of 1048576",
 		"Input length 1066563 exceeds the maximum length 1048566. Request id: 0a1b2c3d",
 		"<400> InvalidParameter: Range of input length should be [1, 1048576]",
+		"Error from provider (Console Go): Upstream request failed: [400] The input (1112787 tokens) is longer than the model's context length (1048576 tokens).",
+		"Input token exceed the limit (request id: 2026091505571927208808c955d568TfYQmTMr)",
 	}
 
 	for _, message := range messages {
@@ -41,12 +44,19 @@ func TestIsUpstreamRequestRejectionIgnoresChannelAndTransientFailures(t *testing
 		http.StatusBadRequest,
 	)))
 
-	// An upstream 400 without a request-level marker keeps the force-retry rule.
-	require.False(t, IsUpstreamRequestRejection(types.NewOpenAIError(
-		errors.New("upstream rejected this channel request"),
-		types.ErrorCodeBadResponseStatusCode,
-		http.StatusBadRequest,
-	)))
+	// Parameter rejections outside the context window are exactly what the
+	// force-retry rule exists for: another channel's range or capability differs.
+	for _, message := range []string{
+		"upstream rejected this channel request",
+		`{"error":{"message":"Invalid max_tokens value, the valid range of max_tokens is [1, 393216]","type":"invalid_request_error"}}`,
+		"Error from provider (Console Go): Upstream request failed: [400] Model only supports text input; received unsupported content type 'image_url'.",
+	} {
+		require.False(t, IsUpstreamRequestRejection(types.NewOpenAIError(
+			errors.New(message),
+			types.ErrorCodeBadResponseStatusCode,
+			http.StatusBadRequest,
+		)), message)
+	}
 
 	// The same wording behind a 5xx may be a transient upstream fault, so the
 	// retry stays available.

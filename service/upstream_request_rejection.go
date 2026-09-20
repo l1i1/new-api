@@ -16,12 +16,16 @@ import (
 // A channel cannot change that verdict -- the limit belongs to the model and the
 // request is already past it -- so failing over reproduces the same 400 on every
 // remaining channel while the client waits out the whole retry budget.
+//
+// Parameter rejections that a different channel may well accept (max_tokens
+// outside one aggregator's range, an image part a text-only route refuses) are
+// deliberately absent: those are what the force-retry rule for 400 is for.
 var upstreamRequestRejectionMarkers = []string{
-	"maximum context length",
-	"context length exceeded",
+	"context length", // "maximum context length", "the model's context length", "context length exceeded"
 	"context_length_exceeded",
 	"prompt is too long",
 	"input is too long",
+	"token exceed the limit",
 	"exceeds the maximum allowed input length",
 	"exceeds the maximum length",
 	"range of input length should be",
