@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	partnerMaxUserIDs    = 1000
 	partnerMaxPageSize   = 500
 	partnerContentLimit  = 20000
+	// new-api caps usernames at 20 characters (model.User validate tag).
+	partnerMaxUsernameLength = 20
 )
 
 // shanghaiMonthRange resolves "2026-09" to the half-open unix range of that
@@ -97,6 +100,42 @@ func PartnerUsers(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "users": users})
+}
+
+// PartnerUserLookup resolves a new-api account by its login name, so the
+// console can map a channel to the account's real id and aff code instead of
+// values typed in by hand.
+func PartnerUserLookup(c *gin.Context) {
+	if !requirePartnerBypass(c) {
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "request body is invalid")
+		return
+	}
+	username := strings.TrimSpace(body.Username)
+	if username == "" || len(username) > partnerMaxUsernameLength {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "username must hold 1-20 characters")
+		return
+	}
+	ref, err := model.GetPartnerUserRefByUsername(username)
+	if err != nil {
+		if errors.Is(err, model.ErrPartnerUserNotFound) {
+			writePartnerError(c, http.StatusNotFound, "partner_not_found", "no account carries that username")
+			return
+		}
+		writePartnerError(c, http.StatusServiceUnavailable, "partner_unavailable", "failed to look up the account")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":       ref.ID,
+		"username": ref.Username,
+		"aff_code": ref.AffCode,
+		"status":   ref.Status,
+	})
 }
 
 // PartnerConsumption returns the monthly consumption four-piece per user.
