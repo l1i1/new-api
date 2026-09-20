@@ -3034,6 +3034,8 @@
     "Never expires": "Never expires",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.",
     "Never used an API Gateway?": "Never used an API Gateway?",
+    "Never-retry error keywords": "Never-retry error keywords",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.",
     "Never-retry status codes": "Never-retry status codes",
     "Multi-key retry status codes": "Multi-key retry status codes",
     "NEW": "NEW",

@@ -6,16 +6,17 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/stretchr/testify/require"
 )
 
-// TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts pins the exact
+// TestIsNeverRetryUpstreamErrorMatchesLiveContextOverflowTexts pins the exact
 // messages recorded on the production channels for one over-length request
 // (2026-09-21, deepseek-v4-pro, five channels in a single retry chain) plus the
 // remaining wordings the same log window produced. A drift in any upstream must
 // be caught here rather than resurface as a five-channel failover in the error
 // log.
-func TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts(t *testing.T) {
+func TestIsNeverRetryUpstreamErrorMatchesLiveContextOverflowTexts(t *testing.T) {
 	messages := []string{
 		"The prompt is too long: 1270711, model maximum context length: 1048571",
 		"The prompt is too long: 1270974, model maximum context length: 1048576 (ref: c0dcb7fa-724d-4301-b7e3-82bcf352b926)",
@@ -32,13 +33,13 @@ func TestIsUpstreamRequestRejectionMatchesLiveContextOverflowTexts(t *testing.T)
 
 	for _, message := range messages {
 		err := types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
-		require.True(t, IsUpstreamRequestRejection(err), message)
+		require.True(t, IsNeverRetryUpstreamError(err), message)
 	}
 }
 
-func TestIsUpstreamRequestRejectionIgnoresChannelAndTransientFailures(t *testing.T) {
+func TestIsNeverRetryUpstreamErrorIgnoresChannelAndTransientFailures(t *testing.T) {
 	// A channel-capability 400 stays retryable: another channel can serve it.
-	require.False(t, IsUpstreamRequestRejection(types.NewErrorWithStatusCode(
+	require.False(t, IsNeverRetryUpstreamError(types.NewErrorWithStatusCode(
 		errors.New(`unsupported ollama response format type "text"`),
 		types.ErrorCodeChannelUnsupportedFeature,
 		http.StatusBadRequest,
@@ -51,7 +52,7 @@ func TestIsUpstreamRequestRejectionIgnoresChannelAndTransientFailures(t *testing
 		`{"error":{"message":"Invalid max_tokens value, the valid range of max_tokens is [1, 393216]","type":"invalid_request_error"}}`,
 		"Error from provider (Console Go): Upstream request failed: [400] Model only supports text input; received unsupported content type 'image_url'.",
 	} {
-		require.False(t, IsUpstreamRequestRejection(types.NewOpenAIError(
+		require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
 			errors.New(message),
 			types.ErrorCodeBadResponseStatusCode,
 			http.StatusBadRequest,
@@ -60,11 +61,40 @@ func TestIsUpstreamRequestRejectionIgnoresChannelAndTransientFailures(t *testing
 
 	// The same wording behind a 5xx may be a transient upstream fault, so the
 	// retry stays available.
-	require.False(t, IsUpstreamRequestRejection(types.NewOpenAIError(
+	require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
 		errors.New("This model's maximum context length is 1048576 tokens."),
 		types.ErrorCodeBadResponseStatusCode,
 		http.StatusInternalServerError,
 	)))
 
-	require.False(t, IsUpstreamRequestRejection(nil))
+	require.False(t, IsNeverRetryUpstreamError(nil))
+}
+
+func TestIsNeverRetryUpstreamErrorFollowsOperatorKeywords(t *testing.T) {
+	original := operation_setting.NeverRetryKeywords
+	t.Cleanup(func() { operation_setting.NeverRetryKeywords = original })
+
+	// An operator meeting a new upstream wording adds a line instead of waiting
+	// for a release.
+	newWording := "Error from provider: the request exceeds the serving window"
+	beforeErr := types.NewOpenAIError(
+		errors.New(newWording),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	require.False(t, IsNeverRetryUpstreamError(beforeErr))
+
+	operation_setting.NeverRetryKeywordsFromString(
+		operation_setting.NeverRetryKeywordsToString() + "\nserving window",
+	)
+	require.True(t, IsNeverRetryUpstreamError(beforeErr))
+
+	// Clearing the list turns the rule off and restores the force-retry
+	// behaviour for context-window 400s.
+	operation_setting.NeverRetryKeywordsFromString("")
+	require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
+		errors.New("The prompt is too long: 1270974, model maximum context length: 1048576"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)))
 }

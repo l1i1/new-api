@@ -3034,6 +3034,8 @@
     "Never expires": "N'expire jamais",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Ne jamais réessayer ces codes de statut, même s’ils correspondent aux listes de réessai automatique ou forcé. Cette règle a priorité.",
     "Never used an API Gateway?": "Vous n'avez jamais utilisé de passerelle API ?",
+    "Never-retry error keywords": "Mots-clés de non-réessai",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Si le message d'une erreur 4xx en amont contient l'un de ces mots-clés (insensible à la casse), la requête n'est pas réessayée sur un autre canal : tous les canaux répondent de la même façon, donc basculer ne ferait que consommer le budget de réessai. La valeur par défaut couvre les refus liés à la fenêtre de contexte ; ajoutez une ligne lorsqu'un amont reformule son refus, et videz la liste pour désactiver la règle.",
     "Never-retry status codes": "Codes de statut « ne jamais réessayer »",
     "Multi-key retry status codes": "Codes de nouvelle tentative multi-clés",
     "NEW": "NOUVEAU",

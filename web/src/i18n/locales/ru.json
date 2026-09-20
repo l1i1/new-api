@@ -3034,6 +3034,8 @@
     "Never expires": "Никогда не истекает",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Никогда не повторять эти коды состояния, даже если они есть в списках автоповтора или принудительного повтора. Это правило имеет приоритет.",
     "Never used an API Gateway?": "Никогда не пользовались API-шлюзом?",
+    "Never-retry error keywords": "Ключевые слова запрета повтора",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Если сообщение об ошибке 4xx от вышестоящего сервиса содержит любое из этих ключевых слов (без учёта регистра), запрос не повторяется на другом канале: все каналы отвечают одинаково, поэтому переключение лишь расходует лимит повторов. Значение по умолчанию покрывает отказы из-за окна контекста; добавьте строку, если вышестоящий сервис изменил формулировку, а очистка списка отключает правило.",
     "Never-retry status codes": "Коды состояния «никогда не повторять»",
     "Multi-key retry status codes": "Коды повтора для многоключевых каналов",
     "NEW": "НОВОЕ",

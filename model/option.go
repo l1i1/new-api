@@ -216,6 +216,7 @@ func InitOptionMap() {
 	common.OptionMap["NeverRetryStatusCodes"] = operation_setting.NeverRetryStatusCodesToString()
 	common.OptionMap["MultiKeyCredentialRetryStatusCodes"] = operation_setting.MultiKeyCredentialRetryStatusCodesToString()
 	common.OptionMap["AutomaticRetryKeywords"] = operation_setting.AutomaticRetryKeywordsToString()
+	common.OptionMap["NeverRetryKeywords"] = operation_setting.NeverRetryKeywordsToString()
 	common.OptionMap[operation_setting.ErrorMessageFilterEnabledOptionKey] = strconv.FormatBool(operation_setting.IsErrorMessageFilterEnabled())
 	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
@@ -721,6 +722,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.MultiKeyCredentialRetryStatusCodesFromString(value)
 	case "AutomaticRetryKeywords":
 		operation_setting.AutomaticRetryKeywordsFromString(value)
+	case "NeverRetryKeywords":
+		operation_setting.NeverRetryKeywordsFromString(value)
 	case operation_setting.ErrorMessageFilterEnabledOptionKey:
 		operation_setting.SetErrorMessageFilterEnabled(value == "true")
 	case operation_setting.ErrorMessageFilterPatternOptionKey:

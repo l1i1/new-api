@@ -86,6 +86,7 @@ const MODELS_SECTIONS = [
           MultiKeyCredentialRetryStatusCodes:
             settings.MultiKeyCredentialRetryStatusCodes,
           AutomaticRetryKeywords: settings.AutomaticRetryKeywords,
+          NeverRetryKeywords: settings.NeverRetryKeywords,
           'monitor_setting.auto_test_channel_enabled':
             settings['monitor_setting.auto_test_channel_enabled'],
           'monitor_setting.auto_test_channel_minutes':

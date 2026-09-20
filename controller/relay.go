@@ -727,7 +727,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	// every channel, so the 400 force-retry rule must not spend the budget (and
 	// the client's time) failing over. Keep-alive bytes do not make it retryable
 	// either: the verdict is on the request, not on the writer state.
-	if service.IsUpstreamRequestRejection(openaiErr) {
+	if service.IsNeverRetryUpstreamError(openaiErr) {
 		return false
 	}
 	if shouldSkipRetryAfterAffinity(c, openaiErr.StatusCode) {

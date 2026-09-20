@@ -3034,6 +3034,8 @@
     "Never expires": "無期限",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "自動リトライや強制リトライ一覧に一致しても、これらのステータスコードは決してリトライしません。このルールが最優先されます。",
     "Never used an API Gateway?": "APIゲートウェイを一度も使用したことがありませんか？",
+    "Never-retry error keywords": "再試行しないエラーキーワード",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "上流の 4xx エラーメッセージにこれらのキーワード（大文字と小文字を区別しない）が含まれる場合、他のチャネルでは再試行しません。どのチャネルでも同じ応答になるため、フェイルオーバーは再試行の枠を消費するだけです。既定値は上流が返すコンテキスト長超過の文言を網羅しています。上流の文言が変わったら 1 行追加し、リストを空にするとこのルールは無効になります。",
     "Never-retry status codes": "Never-retry ステータスコード",
     "Multi-key retry status codes": "マルチキー再試行ステータスコード",
     "NEW": "NEW",

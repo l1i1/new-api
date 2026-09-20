@@ -87,6 +87,7 @@ const createRoutingReliabilitySchema = (
       NeverRetryStatusCodes: z.string(),
       MultiKeyCredentialRetryStatusCodes: z.string(),
       AutomaticRetryKeywords: z.string(),
+      NeverRetryKeywords: z.string(),
         monitor_setting: z.object({
           auto_test_channel_enabled: z.boolean(),
           auto_test_channel_minutes: z.coerce
@@ -190,6 +191,7 @@ type RoutingReliabilitySectionProps = {
     NeverRetryStatusCodes: string
     MultiKeyCredentialRetryStatusCodes: string
     AutomaticRetryKeywords: string
+    NeverRetryKeywords: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_concurrency': number
@@ -213,6 +215,7 @@ type NormalizedRoutingReliabilityValues = {
   NeverRetryStatusCodes: string
   MultiKeyCredentialRetryStatusCodes: string
   AutomaticRetryKeywords: string
+  NeverRetryKeywords: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number
@@ -244,6 +247,9 @@ const buildFormDefaults = (
     defaults.MultiKeyCredentialRetryStatusCodes ?? '',
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
+  ),
+  NeverRetryKeywords: normalizeLineEndings(
+    defaults.NeverRetryKeywords ?? ''
   ),
   monitor_setting: {
     auto_test_channel_enabled:
@@ -286,6 +292,9 @@ const normalizeDefaults = (
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
   ),
+  NeverRetryKeywords: normalizeLineEndings(
+    defaults.NeverRetryKeywords ?? ''
+  ),
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -323,6 +332,7 @@ const normalizeFormValues = (
     values.MultiKeyCredentialRetryStatusCodes
   ).normalized,
   AutomaticRetryKeywords: normalizeLineEndings(values.AutomaticRetryKeywords),
+  NeverRetryKeywords: normalizeLineEndings(values.NeverRetryKeywords),
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -599,6 +609,29 @@ export function RoutingReliabilitySection({
                     <FormDescription>
                       {t(
                         'If an upstream error message contains any of these keywords (case insensitive), retry another channel even when the status code alone would not retry. Local request errors and the never-retry status codes are never retried.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='NeverRetryKeywords'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Never-retry error keywords')}</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        rows={6}
+                        placeholder={t('one keyword per line')}
+                        {...field}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.'
                       )}
                     </FormDescription>
                     <FormMessage />

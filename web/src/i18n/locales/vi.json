@@ -3034,6 +3034,8 @@
     "Never expires": "Không hết hạn",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Không bao giờ thử lại các mã trạng thái này, kể cả khi chúng khớp với danh sách tự thử lại hoặc buộc thử lại. Quy tắc này được ưu tiên.",
     "Never used an API Gateway?": "Chưa bao giờ sử dụng API Gateway?",
+    "Never-retry error keywords": "Từ khóa không thử lại",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Nếu thông báo lỗi 4xx từ upstream chứa bất kỳ từ khóa nào sau đây (không phân biệt chữ hoa chữ thường), yêu cầu sẽ không được thử lại trên kênh khác: mọi kênh đều trả lời giống nhau, nên chuyển kênh chỉ tiêu tốn ngân sách thử lại. Giá trị mặc định bao gồm các từ ngữ từ chối do vượt cửa sổ ngữ cảnh; hãy thêm một dòng khi upstream đổi cách diễn đạt, và xóa danh sách để tắt quy tắc này.",
     "Never-retry status codes": "Mã trạng thái không bao giờ thử lại",
     "Multi-key retry status codes": "Mã trạng thái thử lại đa khóa",
     "NEW": "MỚI",

@@ -270,6 +270,7 @@ export type ModelSettings = {
   NeverRetryStatusCodes: string
   MultiKeyCredentialRetryStatusCodes: string
   AutomaticRetryKeywords: string
+  NeverRetryKeywords: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number

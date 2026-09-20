@@ -3034,6 +3034,8 @@
     "Never expires": "永不过期",
     "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "这些状态码永不重试，即使它们匹配自动重试或强制重试列表。此规则优先级最高。",
     "Never used an API Gateway?": "从未使用过 API 网关/中转 API？",
+    "Never-retry error keywords": "永不重试错误关键词",
+    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "当上游 4xx 错误信息包含任一关键词时（不区分大小写），该请求不会再换渠道重试：所有渠道都会给出相同答复，重试只会消耗重试预算。默认值覆盖上游返回的上下文超限类措辞；上游换了说法时在此新增一行，清空列表即关闭该规则。",
     "Never-retry status codes": "永不重试状态码",
     "Multi-key retry status codes": "多 Key 换 Key 重试状态码",
     "NEW": "新",
