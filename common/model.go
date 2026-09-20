@@ -17,6 +17,10 @@ var (
 		"dall-e-2",
 		"prefix:dall-e", // Deprecated upstream models; retained for compatible routes.
 		"gpt-image-",
+		"gemini-2.5-flash-image",
+		"gemini-3-pro-image",
+		"gemini-3.1-flash-image",
+		"gemini-3.1-flash-lite-image",
 		"qwen-image",
 		"z-image",
 		"wan2.7-image-pro",
