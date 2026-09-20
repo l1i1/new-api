@@ -722,6 +722,14 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if retryTimes <= 0 {
 		return false
 	}
+	// An upstream 4xx that rejects the request itself -- the prompt exceeding
+	// the model's context window is the common case -- gets the same answer from
+	// every channel, so the 400 force-retry rule must not spend the budget (and
+	// the client's time) failing over. Keep-alive bytes do not make it retryable
+	// either: the verdict is on the request, not on the writer state.
+	if service.IsUpstreamRequestRejection(openaiErr) {
+		return false
+	}
 	if shouldSkipRetryAfterAffinity(c, openaiErr.StatusCode) {
 		return false
 	}

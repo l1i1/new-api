@@ -37,6 +37,11 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
+	// A request-level rejection is answered identically by every channel; see
+	// IsUpstreamRequestRejection.
+	if IsUpstreamRequestRejection(openaiErr) {
+		return false
+	}
 	if operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) ||
 		operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false

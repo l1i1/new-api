@@ -518,3 +518,41 @@ func TestGatewayAndUnsupportedFeatureErrorsMoveToAnotherChannel(t *testing.T) {
 		})
 	}
 }
+
+// TestShouldRetryContextOverflowStopsFailover pins the production report
+// "status_code=400, The prompt is too long: 1270974, model maximum context
+// length: 1048576": one request spent five channels and 89 seconds because the
+// force-retry rule for upstream 400s treats every rejection as a channel
+// problem. The prompt is over every channel's limit, so the first rejection is
+// the final answer and the client must shorten its request.
+func TestShouldRetryContextOverflowStopsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origForce := operation_setting.ForceRetryStatusCodeRanges
+	t.Cleanup(func() { operation_setting.ForceRetryStatusCodeRanges = origForce })
+	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString("400"))
+
+	overflow := types.NewOpenAIError(
+		errors.New("The prompt is too long: 1270974, model maximum context length: 1048576"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	plainCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(plainCtx, overflow, 1))
+
+	// A keep-alive ping already committed bytes to the client. The verdict on
+	// the request does not change with the writer state, and reopening the retry
+	// here is exactly how the five-channel chain happened: the streaming client
+	// waited long enough for the gateway to ping before the first 400 arrived.
+	pingCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.NoError(t, helper.PingData(pingCtx))
+	require.Equal(t, helper.ResponseKeepAliveOnly, helper.ResponseCommitStateOf(pingCtx))
+	require.False(t, shouldRetry(pingCtx, overflow, 1))
+
+	// Channel-shaped upstream 400s keep failing over.
+	channelCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(channelCtx, types.NewOpenAIError(
+		errors.New("upstream rejected this channel request"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	), 1))
+}
