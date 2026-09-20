@@ -1054,3 +1054,8 @@
 - 语义：`{username}` 去首尾空白后精确匹配、长度 1–20（`model.User` 的 validate 上限）；命中 → `{id, username, aff_code, status}`；不存在 → 404 `partner_not_found`；其他错误 → 503 `partner_unavailable`。**已停用账号仍能解析**（status 原样返回，由 console 决定提示），因为停用账号的历史归因数据仍需对照。
 - 测试：`model/partner_lookup_test.go`（读 id/aff、缺失返回 `ErrPartnerUserNotFound`、停用账号仍可解析）。测试用的 `CREATE TABLE users` 必须带 `deleted_at datetime`，否则 gorm 软删除条件报 `no such column`（本次踩到）。
 - 状态：本地 `go build ./...`、`go test ./model/ ./controller/` 全绿；**未提交到远端**——2026-09-20 22:5x 内网 Gitea `10.126.126.2:222` 连接超时，无法 push（本地提交在 `tokeness/main` 上等待推送）。console 侧已实现但**上线顺序必须本仓库先行**。
+
+## 2026-09-21 `/internal/v1/partner/consumption` 的 `consume_quota` 语义澄清（无代码改动）
+- **事实**：`GetPartnerConsumption`（`model/partner_stats.go`）把 `group LIKE '%-Official'` 的 type=2 流水放进 `official_excluded_quota`、**其余才计入 `consume_quota`**——即 `consume_quota` **已剔除官转**，官转不是它的子集。旧的 `docs/API-Contract.md`（在 partner-console 仓库）写的是「其中 `-Official` 部分」，与实现不符。
+- **后果**：console 的结算页与看板按契约文档写成 `net = consume_quota − official_excluded − refund`，等于把官转扣了两次，凡有官转的用户「消耗/估算返佣」列偏低（精确 FIFO 列不受影响，所以没有人发现）。2026-09-21 已在 console 侧改为只减 refund，并同步修正契约文档措辞（`docs/API-Contract.md` 的 consumption 小节）。
+- **给后来者的口径**：vendored 消费四件套 = {非官转消耗, 官转消耗, 退款, 累计充值}，四项互不重叠；任何调用方算净消耗只能 `consume_quota − refund_quota`。本仓库本次**无代码改动**。
