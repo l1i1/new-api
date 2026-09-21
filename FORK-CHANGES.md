@@ -64,6 +64,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 估算端点预取 + 结算读缓存：两端必须用同一个模型 id（`OriginModelName`），缓存键覆盖整个计价载荷 | `service/video_estimate.go`、`relay/request_billing.go` | `service/video_estimate_test.go`、`relay/request_billing_test.go` |
 | 估算端点在控制台可配（库 > env > 默认，逐字段回退）；密钥走既有脱敏通道不回显；缓存键含端点 URL，换端点即失效 | `setting/operation_setting/video_estimate_setting.go`、`service/video_estimate.go`、`controller/misc.go`、`web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | `controller/video_estimate_option_test.go`、`service/video_estimate_test.go` |
 | `video_usage_mode` 只在**服务该请求的**渠道声明时才修正上报值 | `service/video_token.go`、`relaykit/dto/channel_settings.go` | `service/video_routing_test.go` |
+| 消费日志的 `prompt_tokens` 与 `usage_billing_path` 必须同时反映**实际计费值**（修正后为 `billing-usage-openai-estimated`）；客户端响应的 usage 保持上游原值 | `service/text_quota.go` | `service/video_log_path_test.go`（真实结算+落库） |
 | 上线顺序约束：渠道标记是惰性的，必须与代码同批发布 | `docs/video-usage-estimation.md` | 该文档的"上线顺序"章节 |
 
 ## 5. 路由与可靠性
