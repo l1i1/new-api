@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 // TestRequestBytesCarryVideo pins the body-level detection that channel
@@ -65,10 +66,11 @@ func TestRequestBytesCarryVideo(t *testing.T) {
 	}
 }
 
-// TestVideoDetectorsAgree pins the two detectors together: routing decides from
-// the raw body while settlement decides from the parsed request, so a body that
-// one calls a video request must be one for the other too. Divergence here
-// would route a video request to a channel that then bills it as text.
+// TestVideoDetectorsAgree pins the two halves of the feature together: routing
+// decides from the raw body while pricing and settlement decide from the parsed
+// request. A body that routing calls a video request must also produce a video
+// file for pricing, or the request would be routed to a video-capable channel
+// and then billed as text — and the reverse would send media to a blind one.
 func TestVideoDetectorsAgree(t *testing.T) {
 	bodies := []string{
 		`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"video_url","video_url":{"url":"ms://abc"}}]}]}`,
@@ -82,9 +84,16 @@ func TestVideoDetectorsAgree(t *testing.T) {
 			t.Fatalf("unmarshal %s: %v", body, err)
 		}
 		fromBody := RequestBytesCarryVideo([]byte(body))
-		fromRequest := RequestCarriesVideo(&request)
-		if fromBody != fromRequest {
-			t.Errorf("detectors disagree on %s: body=%v request=%v", body, fromBody, fromRequest)
+
+		// What pricing and settlement see: the request's own token-count meta.
+		sawVideo := false
+		for _, file := range request.GetTokenCountMeta().Files {
+			if file != nil && file.FileType == types.FileTypeVideo {
+				sawVideo = true
+			}
+		}
+		if fromBody != sawVideo {
+			t.Errorf("detectors disagree on %s: routing=%v pricing=%v", body, fromBody, sawVideo)
 		}
 	}
 }

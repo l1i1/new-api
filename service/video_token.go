@@ -252,39 +252,16 @@ func CountVideoTokensForMeta(meta *types.TokenCountMeta) int {
 	return total
 }
 
-// RequestCarriesVideo reports whether a parsed request contains a video part.
-// Routing uses it to keep media-blind upstreams out of the candidate set: such
-// an upstream answers from the text alone, producing a plausible description of
-// nothing. Only chat-shaped requests can carry video; anything else reports
-// false so unrelated relays keep their existing channel choice.
-func RequestCarriesVideo(request dto.Request) bool {
-	chat, ok := request.(*dto.GeneralOpenAIRequest)
-	if !ok || chat == nil {
-		return false
-	}
-	for _, message := range chat.Messages {
-		if message.Content == nil {
-			continue
-		}
-		for _, part := range message.ParseContent() {
-			if part.Type == dto.ContentTypeVideoUrl && part.ToFileSource() != nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // RequestBytesCarryVideo reports whether a raw JSON request body contains a
-// video part. It is the body-level form of RequestCarriesVideo, used before the
-// request DTO exists (channel selection runs ahead of relay validation).
+// video part. Channel selection runs ahead of relay validation, so the routing
+// decision is made from the body rather than from a parsed request.
 //
 // The scan looks for the content-part object that carries a video_url, rather
 // than for the bare string anywhere in the payload: a prompt that merely
 // mentions "video_url" must not be treated as a video request, or it would be
 // routed away from every channel that cannot read video. A part that names the
-// type without a url carries no media and is not a video request, matching
-// RequestCarriesVideo, which requires a resolvable source.
+// type without a url carries no media and is not a video request, matching what
+// the parser yields for pricing and settlement.
 func RequestBytesCarryVideo(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -364,19 +341,15 @@ func correctedVideoBillingUsage(info *relaycommon.RelayInfo, usage *dto.Usage) (
 	return &corrected, true
 }
 
-// videoPromptTotalForSettlement prefers the request-scoped value (set by tests
-// and by any synchronous caller) and otherwise reads the prefetched endpoint
-// answer from its cache. The cache read never blocks: a cold entry means the
-// prefetch is still in flight or failed, and the caller falls back to the
+// videoPromptTotalForSettlement reads the prefetched endpoint answer for this
+// request. The read never blocks: a cold entry means the prefetch is still in
+// flight, was never started, or failed, and the caller falls back to the
 // locally priced video part.
 func videoPromptTotalForSettlement(info *relaycommon.RelayInfo) (int, bool) {
-	if total := info.GetVideoPromptTotal(); total > 0 {
-		return total, true
-	}
 	if info.Request == nil {
 		return 0, false
 	}
-	return VideoPromptTotalForRequest(info.Request)
+	return VideoPromptTotalForRequest(info.UpstreamModelName, info.Request)
 }
 
 // CountVideoToken prices one video file part on the official Kimi vision

@@ -97,21 +97,28 @@ func PrefetchVideoPromptTotal(model string, request dto.Request) {
 
 // VideoPromptTotalForRequest returns the cached endpoint total for this
 // request, if the prefetch has already answered. It never performs I/O, so the
-// settlement path can call it without delaying the client.
-func VideoPromptTotalForRequest(request dto.Request) (int, bool) {
-	_, cacheKey, ok := estimateMessagesFor(request)
+// settlement path can call it without delaying the client. model must be the
+// same upstream model id the prefetch used, because the key covers the whole
+// priced payload; a different id misses and falls back to the local price.
+func VideoPromptTotalForRequest(model string, request dto.Request) (int, bool) {
+	_, cacheKey, ok := estimateRequestBody(model, request)
 	if !ok {
 		return 0, false
 	}
 	return lookupVideoEstimate(cacheKey)
 }
 
-// estimateRequestBody serializes what the endpoint should price, plus a cache
-// key derived from the video bytes. Serializing here (rather than inside the
-// prefetch goroutine) keeps the request DTO on one goroutine: converters mutate
-// it while the upstream request is in flight.
+// estimateRequestBody serializes what the endpoint should price, plus the cache
+// key. Serializing here (rather than inside the prefetch goroutine) keeps the
+// request DTO on one goroutine: converters mutate it while the upstream request
+// is in flight.
+//
+// The key covers the whole payload — model, text and media — because that is
+// what the endpoint prices and the answer replaces the reported prompt count.
+// Keying on the video alone would hand a longer prompt the shorter one's total,
+// silently under-billing every reuse of the same clip.
 func estimateRequestBody(model string, request dto.Request) ([]byte, string, bool) {
-	messages, cacheKey, ok := estimateMessagesFor(request)
+	messages, _, ok := estimateMessagesFor(request)
 	if !ok {
 		return nil, "", false
 	}
@@ -122,13 +129,22 @@ func estimateRequestBody(model string, request dto.Request) ([]byte, string, boo
 	if err != nil {
 		return nil, "", false
 	}
-	return body, cacheKey, true
+	return body, estimateCacheKey(body), true
+}
+
+// estimateCacheKey derives the cache key from the exact bytes sent to the
+// endpoint, so an equal key means an equal request and therefore an equal
+// answer. estimateMessagesFor's video hash is deliberately not used for this:
+// it identifies the media, not the priced payload.
+func estimateCacheKey(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 // estimateMessagesFor extracts the message array an estimate endpoint expects
-// from a chat-completions request, plus a cache key derived from the video
-// bytes. Requests that are not chat shapes, or that carry no video, report
-// ok=false so the caller falls back without an outbound call.
+// from a chat-completions request, plus a key identifying its video content.
+// Requests that are not chat shapes, or that carry no video, report ok=false so
+// the caller falls back without an outbound call.
 func estimateMessagesFor(request dto.Request) (any, string, bool) {
 	chat, ok := request.(*dto.GeneralOpenAIRequest)
 	if !ok || chat == nil || len(chat.Messages) == 0 {
@@ -264,23 +280,4 @@ func estimateTotalViaEndpoint(cfg VideoEstimateConfig, body []byte) (int, bool, 
 		return 0, false, fmt.Errorf("estimate endpoint returned %d tokens", total)
 	}
 	return total, true, nil
-}
-
-// EstimatePromptTokensViaEndpoint asks the configured endpoint for this
-// request's prompt count. It returns ok=false (with no error) when nothing is
-// configured, so callers treat "not set up" as a normal fallback rather than a
-// failure.
-func EstimatePromptTokensViaEndpoint(model string, messages any) (int, bool, error) {
-	cfg, configured := LoadVideoEstimateConfig()
-	if !configured {
-		return 0, false, nil
-	}
-	if model == "" || messages == nil {
-		return 0, false, nil
-	}
-	body, err := json.Marshal(videoEstimateRequest{Model: model, Messages: messages})
-	if err != nil {
-		return 0, false, fmt.Errorf("marshal estimate request: %w", err)
-	}
-	return estimateTotalViaEndpoint(cfg, body)
 }

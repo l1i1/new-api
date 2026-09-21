@@ -1,8 +1,11 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
@@ -40,15 +43,70 @@ func TestLoadVideoEstimateConfigIsInertWithoutAKey(t *testing.T) {
 	}
 }
 
-func TestEstimatePromptTokensViaEndpointReadsTotalTokens(t *testing.T) {
+// videoRequest builds the chat request the prefetch path is given: one message
+// carrying a video part, which is what makes it eligible at all.
+func videoRequest() *dto.GeneralOpenAIRequest {
+	content := []dto.MediaContent{
+		{Type: dto.ContentTypeText, Text: "what happens in this clip?"},
+		{Type: dto.ContentTypeVideoUrl, VideoUrl: &dto.MessageVideoUrl{Url: "ms://file-abc"}},
+	}
+	return &dto.GeneralOpenAIRequest{
+		Model:    "kimi-k3",
+		Messages: []dto.Message{{Role: "user", Content: content}},
+	}
+}
+
+func TestEstimateRequestBodySerializesWhatTheEndpointPrices(t *testing.T) {
+	cfg, ok := LoadVideoEstimateConfig()
+	if ok {
+		t.Fatal("no key configured must mean no endpoint")
+	}
 	t.Setenv(VideoEstimateAPIKeyEnv, "test-key")
+	cfg, ok = LoadVideoEstimateConfig()
+	if !ok {
+		t.Fatal("a configured key must be usable")
+	}
+	if cfg.APIKey != "test-key" {
+		t.Fatalf("key must be trimmed, got %q", cfg.APIKey)
+	}
+
+	body, cacheKey, ok := estimateRequestBody("kimi-k3", videoRequest())
+	if !ok {
+		t.Fatal("a chat request with a video part must serialize")
+	}
+	if cacheKey == "" {
+		t.Fatal("a video content hash must key the cache")
+	}
+	// The body goes out as the client sent it, so the endpoint prices exactly
+	// what the upstream was asked to read.
+	var sent videoEstimateRequest
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("the body must be the endpoint's JSON shape: %v", err)
+	}
+	if sent.Model != "kimi-k3" {
+		t.Fatalf("model: got %q", sent.Model)
+	}
+	if !strings.Contains(string(body), "ms://file-abc") {
+		t.Fatal("the video part must reach the endpoint")
+	}
+
+	// Requests that carry no video, and non-chat shapes, are not estimate work.
+	if _, _, ok := estimateRequestBody("kimi-k3", &dto.GeneralOpenAIRequest{Model: "kimi-k3"}); ok {
+		t.Fatal("a request without video must not be serialized for the endpoint")
+	}
+	if _, _, ok := estimateRequestBody("", videoRequest()); ok {
+		t.Fatal("an unknown model must not be priced")
+	}
+}
+
+func TestEstimateTotalViaEndpointReadsTotalTokens(t *testing.T) {
 	withEstimatePost(t, func(cfg VideoEstimateConfig, body []byte) (int, []byte, error) {
 		if cfg.APIKey != "test-key" {
 			t.Errorf("credential must reach the request, got %q", cfg.APIKey)
 		}
 		return 200, []byte(`{"code":0,"data":{"total_tokens":12789},"status":true}`), nil
 	})
-	total, ok, err := EstimatePromptTokensViaEndpoint("kimi-k3", []any{map[string]any{"role": "user"}})
+	total, ok, err := estimateTotalViaEndpoint(VideoEstimateConfig{APIKey: "test-key"}, []byte(`{}`))
 	if err != nil || !ok {
 		t.Fatalf("expected a usable total, got ok=%v err=%v", ok, err)
 	}
@@ -57,8 +115,7 @@ func TestEstimatePromptTokensViaEndpointReadsTotalTokens(t *testing.T) {
 	}
 }
 
-func TestEstimatePromptTokensViaEndpointReportsFallbackForBadAnswers(t *testing.T) {
-	t.Setenv(VideoEstimateAPIKeyEnv, "test-key")
+func TestEstimateTotalViaEndpointReportsFallbackForBadAnswers(t *testing.T) {
 	cases := []struct {
 		name    string
 		status  int
@@ -78,7 +135,7 @@ func TestEstimatePromptTokensViaEndpointReportsFallbackForBadAnswers(t *testing.
 				}
 				return tc.status, []byte(tc.payload), nil
 			})
-			total, ok, err := EstimatePromptTokensViaEndpoint("kimi-k3", []any{map[string]any{"role": "user"}})
+			total, ok, err := estimateTotalViaEndpoint(VideoEstimateConfig{APIKey: "test-key"}, []byte(`{}`))
 			if ok {
 				t.Fatalf("a %s must not report a usable total (got %d)", tc.name, total)
 			}
@@ -86,6 +143,66 @@ func TestEstimatePromptTokensViaEndpointReportsFallbackForBadAnswers(t *testing.
 				t.Fatalf("a %s must surface an error for logging", tc.name)
 			}
 		})
+	}
+}
+
+// TestPrefetchWarmsTheSettlementLookup is the whole point of the prefetch: it
+// runs alongside the upstream request and settlement then reads its answer
+// without doing I/O. The lookup must also miss cleanly before the answer lands,
+// because settlement falls back to the locally priced video part in that case.
+func TestPrefetchWarmsTheSettlementLookup(t *testing.T) {
+	t.Setenv(VideoEstimateAPIKeyEnv, "test-key")
+
+	request := videoRequest()
+	if _, hit := VideoPromptTotalForRequest("kimi-k3", request); hit {
+		t.Fatal("nothing may be cached before the prefetch runs")
+	}
+
+	answered := make(chan struct{})
+	withEstimatePost(t, func(VideoEstimateConfig, []byte) (int, []byte, error) {
+		close(answered)
+		return 200, []byte(`{"data":{"total_tokens":42416}}`), nil
+	})
+
+	// The prefetch must return promptly rather than waiting for the endpoint,
+	// which is what keeps the call off the first-token path.
+	PrefetchVideoPromptTotal("kimi-k3", request)
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prefetch never reached the endpoint")
+	}
+
+	// The answer lands asynchronously, so poll briefly for the cache write.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if total, hit := VideoPromptTotalForRequest("kimi-k3", request); hit {
+			if total != 42416 {
+				t.Fatalf("cached total: got %d, want 42416", total)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the prefetched total never became readable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestPrefetchIsInertWithoutConfiguration pins the default state: no endpoint
+// configured means no goroutine and no outbound call, so billing falls back to
+// the local container model.
+func TestPrefetchIsInertWithoutConfiguration(t *testing.T) {
+	t.Setenv(VideoEstimateAPIKeyEnv, "")
+	called := false
+	withEstimatePost(t, func(VideoEstimateConfig, []byte) (int, []byte, error) {
+		called = true
+		return 200, []byte(`{"data":{"total_tokens":1}}`), nil
+	})
+	PrefetchVideoPromptTotal("kimi-k3", videoRequest())
+	time.Sleep(80 * time.Millisecond)
+	if called {
+		t.Fatal("an unconfigured endpoint must not be called")
 	}
 }
 
@@ -179,5 +296,50 @@ func TestVideoUsageModeValidation(t *testing.T) {
 		if err := settings.ValidateVideoUsageMode(); err == nil {
 			t.Errorf("mode %q must be rejected at save time", bad)
 		}
+	}
+}
+
+// TestEstimateCacheKeyCoversTextAndModel is a regression test for a billing
+// bug: the cache key originally hashed only the video bytes while the endpoint
+// prices text and media together, so a longer prompt reusing the same clip hit
+// the shorter request's entry and was billed the shorter total (silent
+// under-billing). The key must change whenever anything priced changes.
+func TestEstimateCacheKeyCoversTextAndModel(t *testing.T) {
+	video := []dto.MediaContent{{Type: dto.ContentTypeVideoUrl, VideoUrl: &dto.MessageVideoUrl{Url: "ms://same-clip"}}}
+	withText := func(text string) *dto.GeneralOpenAIRequest {
+		content := append([]dto.MediaContent{{Type: dto.ContentTypeText, Text: text}}, video...)
+		return &dto.GeneralOpenAIRequest{
+			Model:    "kimi-k3",
+			Messages: []dto.Message{{Role: "user", Content: content}},
+		}
+	}
+	keyOf := func(model string, request *dto.GeneralOpenAIRequest) string {
+		_, key, ok := estimateRequestBody(model, request)
+		if !ok {
+			t.Fatalf("request must be serializable")
+		}
+		return key
+	}
+
+	shortKey := keyOf("kimi-k3", withText("hi"))
+	longKey := keyOf("kimi-k3", withText("a much longer prompt that costs thousands of tokens"))
+	if shortKey == longKey {
+		t.Fatal("different text must not share a cache key (it would bill the longer prompt the shorter total)")
+	}
+
+	// A different model prices differently too, so it must not reuse the entry.
+	if keyOf("kimi-k3", withText("hi")) == keyOf("kimi-k2", withText("hi")) {
+		t.Fatal("a different model must not share a cache key")
+	}
+
+	// The same payload must be stable, or the prefetch and settlement lookups
+	// would never meet and every request would pay the endpoint call.
+	if keyOf("kimi-k3", withText("hi")) != shortKey {
+		t.Fatal("an identical payload must produce an identical key")
+	}
+	// Likewise, identical video with identical text must agree across separate
+	// request objects (the prefetch and settlement build different instances).
+	if keyOf("kimi-k3", withText("hi")) != keyOf("kimi-k3", withText("hi")) {
+		t.Fatal("separate but identical requests must share a key")
 	}
 }

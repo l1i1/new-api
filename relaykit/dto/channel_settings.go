@@ -202,15 +202,6 @@ type ChannelOtherSettings struct {
 	VideoUsageMode string `json:"video_usage_mode,omitempty"`
 }
 
-// SupportsVideoInput reports whether this channel may serve a request carrying
-// a video part. Nil-safe so it can be asked of a channel with no settings.
-func (s *ChannelOtherSettings) SupportsVideoInput() bool {
-	if s == nil {
-		return false
-	}
-	return s.SupportsVideo
-}
-
 // VideoUsageMode values. Empty is the default (trust the upstream).
 const (
 	VideoUsageModeEstimate = "estimate"
