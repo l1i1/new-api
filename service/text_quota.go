@@ -408,6 +408,23 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
+	// A channel marked with video usage estimation reports a prompt count that
+	// ignores the video payload entirely. Two corrections are possible, in
+	// order of authority:
+	//   1. a provider-tokenizer total, which prices text and media together and
+	//      therefore replaces the reported count outright;
+	//   2. the locally priced video part, added to the reported count (the
+	//      upstream still counts text correctly).
+	// Both are only applied when the reported count cannot have included the
+	// media; a source that did count it keeps its own number. Marking the
+	// result Estimated routes it to the estimated billing path in the logs.
+	//
+	// The correction is applied to a copy: billingUsage can be the caller's own
+	// usage object, and originUsage (recorded in the log) must keep the
+	// upstream-reported number for auditability.
+	if corrected, ok := correctedVideoBillingUsage(relayInfo, billingUsage); ok {
+		billingUsage = corrected
+	}
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}

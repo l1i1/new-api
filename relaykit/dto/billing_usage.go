@@ -59,6 +59,23 @@ func NewOpenAIChatBillingUsage(usage *Usage) *BillingUsage {
 	return newOpenAIBillingUsage(BillingUsageSourceOAIChat, usage)
 }
 
+// NewEstimatedOpenAIChatBillingUsage marks an OpenAI-shaped usage as locally
+// derived rather than upstream-reported. Callers use it when the upstream's own
+// numbers cannot be trusted for a request class — currently a video request on
+// a channel whose usage accounting ignores media — and bill the estimated
+// value while the log records the "estimated" billing path.
+func NewEstimatedOpenAIChatBillingUsage(usage *Usage) *BillingUsage {
+	if !HasOpenAIUsageTokens(usage) {
+		return nil
+	}
+	return &BillingUsage{
+		Source:      BillingUsageSourceOAIChat,
+		Semantic:    BillingUsageSemanticOpenAI,
+		Estimated:   true,
+		OpenAIUsage: cloneOpenAIUsage(usage),
+	}
+}
+
 func NewOpenAIResponsesBillingUsage(usage *Usage) *BillingUsage {
 	return newOpenAIBillingUsage(BillingUsageSourceOAIResponses, usage)
 }

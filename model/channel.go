@@ -1244,6 +1244,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelOtherSettings.ValidateOfficialFitModels(); err != nil {
 		return err
 	}
+	if err := channelOtherSettings.ValidateVideoUsageMode(); err != nil {
+		return err
+	}
 	for _, m := range channelOtherSettings.NormalizeOfficialFitModels() {
 		if OfficialFitChannelType(m) == 0 {
 			return fmt.Errorf("official_fit_models: %q is not an official-fit model family", m)

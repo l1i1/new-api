@@ -183,6 +183,41 @@ type ChannelOtherSettings struct {
 	// client sends), matched case-insensitively. Empty keeps the pre-existing
 	// behavior: only the family's official channel type qualifies.
 	OfficialFitModels []string `json:"official_fit_models,omitempty"`
+	// VideoUsageMode marks a channel that serves video understanding but whose
+	// upstream usage accounting cannot be trusted for video requests (measured
+	// case: the upstream bills real video tokens but reports a constant prompt
+	// count, so a 3.3 MB clip bills as if the prompt were 27 tokens).
+	// "estimate" bills such requests from a video-aware prompt count instead of
+	// the reported one. Empty keeps upstream-reported values untouched.
+	VideoUsageMode string `json:"video_usage_mode,omitempty"`
+}
+
+// VideoUsageMode values. Empty is the default (trust the upstream).
+const (
+	VideoUsageModeEstimate = "estimate"
+)
+
+// ValidateVideoUsageMode rejects unknown modes at channel save time so a typo
+// cannot silently leave a distorted upstream on the "trusted" billing path.
+func (s *ChannelOtherSettings) ValidateVideoUsageMode() error {
+	if s == nil {
+		return nil
+	}
+	switch strings.TrimSpace(s.VideoUsageMode) {
+	case "", VideoUsageModeEstimate:
+		return nil
+	default:
+		return fmt.Errorf("invalid video_usage_mode: %s", s.VideoUsageMode)
+	}
+}
+
+// EstimatesVideoUsage reports whether video requests on this channel must be
+// billed from an estimate rather than from the upstream-reported prompt count.
+func (s *ChannelOtherSettings) EstimatesVideoUsage() bool {
+	if s == nil {
+		return false
+	}
+	return strings.TrimSpace(s.VideoUsageMode) == VideoUsageModeEstimate
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

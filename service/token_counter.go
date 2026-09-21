@@ -291,7 +291,16 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 		case types.FileTypeAudio:
 			tkm += 256
 		case types.FileTypeVideo:
-			tkm += 4096 * 2
+			// Kimi vision families price video per frame from the container's
+			// own dimensions and duration (see video_token.go). The previous
+			// flat 8192 was five times low on the reference clip. A container
+			// the parser cannot read keeps a conservative flat charge rather
+			// than pricing a large upload as nearly free.
+			if token, err := CountVideoToken(file.Source); err == nil && token > 0 {
+				tkm += token
+			} else {
+				tkm += 4096 * 2
+			}
 		case types.FileTypeFile:
 			tkm += 4096
 		default:

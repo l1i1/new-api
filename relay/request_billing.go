@@ -54,6 +54,30 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	}
 	info.SetEstimatePromptTokens(tokens)
 
+	// Channels marked as serving video with untrustworthy usage accounting
+	// (ChannelOtherSettings.VideoUsageMode == "estimate") carry a video-aware
+	// prompt count into settlement, because such an upstream reports a constant
+	// prompt count that ignores the media entirely. Skipped unless the channel
+	// opted in, and skipped when the request carries no video part, so the
+	// default path parses no containers and makes no outbound call.
+	if info.ChannelOtherSettings.EstimatesVideoUsage() {
+		localVideoTokens := service.CountVideoTokensForMeta(meta)
+		if localVideoTokens > 0 {
+			// Prefer the provider tokenizer when an operator configured one: it
+			// prices text and media together and is authoritative. Its answer
+			// must clear the same "the media was counted" bar as the upstream
+			// count, so an endpoint that sees no video cannot replace the local
+			// price with a text-only number.
+			if total, ok := service.VideoPromptTotalFromEndpoint(info.UpstreamModelName, info.Request); ok &&
+				service.VideoUsageLooksCounted(total, localVideoTokens) {
+				info.SetVideoPromptTotal(total)
+			}
+			if info.GetVideoPromptTotal() == 0 {
+				info.SetVideoTokens(localVideoTokens)
+			}
+		}
+	}
+
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
