@@ -7400,6 +7400,17 @@
     "Multi-key retry error keywords": "换 Key 重试错误关键词",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "上游错误文本包含其中任一关键词（不区分大小写）时，换本渠道的下一个 Key 重试。默认值覆盖余额不足的各种措辞：余额属于 Key，不属于渠道。单 Key 渠道则改为换渠道。",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "命中这些状态码就换渠道重试。支持逗号分隔的状态码与闭区间；400 默认在此，因为上游 400 通常表示「本渠道服务不了这个请求」。本地请求错误永不重试。",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游错误文本包含其中任一关键词（不区分大小写）时换渠道重试，即使状态码本身不会重试。上面的「永不重试」规则优先级更高。"
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游错误文本包含其中任一关键词（不区分大小写）时换渠道重试，即使状态码本身不会重试。上面的「永不重试」规则优先级更高。",
+    "Video token estimation": "视频 token 估算",
+    "Tokenizer base URL": "Token 估算服务地址",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "估算接口的根地址。留空则使用环境变量；环境变量也未设置时使用 Moonshot 官方端点。",
+    "Tokenizer API key": "Token 估算服务密钥",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "把用户视频发送到该端点属于跨供应商数据外发；确认业务需要时再配置密钥。留空以保留现有密钥。",
+    "Remove the stored key": "清除已保存的密钥",
+    "Takes effect on save, unless an environment variable still provides a key.": "保存后生效；若环境变量仍提供密钥，则以环境变量为准。",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "已配置。标记为需估算的渠道在处理视频请求时，将使用服务商 tokenizer 计价。",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未配置。标记为需估算的渠道在处理视频请求时，将使用本地容器模型计价（离线，误差约 5% 以内）。",
+    "Save video estimation settings": "保存视频估算设置"
   }
 }

@@ -7400,6 +7400,17 @@
     "Multi-key retry error keywords": "Ключевые слова повтора другим ключом",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "Повторить тот же канал другим ключом, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра). Значение по умолчанию покрывает формулировки о нехватке баланса: баланс принадлежит ключу, а не каналу. На канале с одним ключом запрос переключается на другой канал.",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "Переключаться на другой канал при этих кодах состояния. Принимает коды через запятую и диапазоны; 400 входит по умолчанию, потому что 400 от вышестоящего сервиса часто означает, что этот канал не может обслужить запрос. Локальные ошибки запроса не повторяются.",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Переключаться на другой канал, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра), даже когда по коду состояния повтор не сработал бы. Правила «не повторять» выше имеют приоритет."
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Переключаться на другой канал, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра), даже когда по коду состояния повтор не сработал бы. Правила «не повторять» выше имеют приоритет.",
+    "Video token estimation": "Оценка токенов видео",
+    "Tokenizer base URL": "Базовый URL токенизатора",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "Корень эндпоинта оценки. Оставьте пустым, чтобы использовать переменную окружения, или документированный эндпоинт Moonshot, если она не задана.",
+    "Tokenizer API key": "API-ключ токенизатора",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "Отправка видео пользователя на этот эндпоинт — это передача данных между поставщиками; настраивайте ключ только если это действительно нужно. Оставьте пустым, чтобы сохранить текущий ключ.",
+    "Remove the stored key": "Удалить сохранённый ключ",
+    "Takes effect on save, unless an environment variable still provides a key.": "Вступает в силу при сохранении, если переменная окружения не задаёт ключ.",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются токенизатором поставщика.",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Не настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются по локальной контейнерной модели (офлайн, точность в пределах около 5 %).",
+    "Save video estimation settings": "Сохранить настройки оценки видео"
   }
 }

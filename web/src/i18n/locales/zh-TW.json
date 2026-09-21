@@ -7400,6 +7400,17 @@
     "Multi-key retry error keywords": "換 Key 重試錯誤關鍵詞",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "上游錯誤文字包含其中任一關鍵詞（不分大小寫）時，換本渠道的下一個 Key 重試。預設值涵蓋餘額不足的各種措辭：餘額屬於 Key，不屬於渠道。單 Key 渠道則改為換渠道。",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "命中這些狀態碼就換渠道重試。支援逗號分隔的狀態碼與閉區間；400 預設在此，因為上游 400 通常表示「本渠道服務不了這個請求」。本地請求錯誤永不重試。",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游錯誤文字包含其中任一關鍵詞（不分大小寫）時換渠道重試，即使狀態碼本身不會重試。上面的「永不重試」規則優先。"
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游錯誤文字包含其中任一關鍵詞（不分大小寫）時換渠道重試，即使狀態碼本身不會重試。上面的「永不重試」規則優先。",
+    "Video token estimation": "影片 token 估算",
+    "Tokenizer base URL": "Token 估算服務位址",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "估算介面的根位址。留空則使用環境變數；環境變數亦未設定時使用 Moonshot 官方端點。",
+    "Tokenizer API key": "Token 估算服務金鑰",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "將使用者影片傳送到該端點屬於跨供應商資料外送；確認業務需要後再設定金鑰。留空以保留現有金鑰。",
+    "Remove the stored key": "清除已儲存的金鑰",
+    "Takes effect on save, unless an environment variable still provides a key.": "儲存後生效；若環境變數仍提供金鑰，則以環境變數為準。",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "已設定。標記為需估算的頻道在處理影片請求時，將使用服務商 tokenizer 計價。",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未設定。標記為需估算的頻道在處理影片請求時，將使用本機容器模型計價（離線，誤差約 5% 以內）。",
+    "Save video estimation settings": "儲存影片估算設定"
   }
 }

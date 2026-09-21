@@ -7400,6 +7400,17 @@
     "Multi-key retry error keywords": "Multi-key retry error keywords",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win."
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.",
+    "Video token estimation": "Video token estimation",
+    "Tokenizer base URL": "Tokenizer base URL",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.",
+    "Tokenizer API key": "Tokenizer API key",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.",
+    "Remove the stored key": "Remove the stored key",
+    "Takes effect on save, unless an environment variable still provides a key.": "Takes effect on save, unless an environment variable still provides a key.",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.",
+    "Save video estimation settings": "Save video estimation settings"
   }
 }

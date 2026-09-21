@@ -7400,6 +7400,17 @@
     "Multi-key retry error keywords": "マルチキー再試行エラーキーワード",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "上流のエラーテキストにこれらの語（大文字小文字を区別しない）が含まれる場合、同じチャネルの別キーで再試行します。既定値は残高不足の文言を網羅しています。残高はチャネルではなくキーに紐づくためです。単一キーのチャネルでは別チャネルへ切り替えます。",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "これらのステータスコードで別チャネルに切り替えます。カンマ区切りのコードと範囲指定に対応。上流の 400 は「このチャネルでは処理できない」ことを示すことが多いため、既定で 400 を含みます。ローカルのリクエストエラーは再試行しません。",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上流のエラーテキストにこれらの語（大文字小文字を区別しない）が含まれる場合、ステータスコードだけでは再試行しない場合でも別チャネルに切り替えます。上記の「再試行しない」ルールが優先されます。"
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上流のエラーテキストにこれらの語（大文字小文字を区別しない）が含まれる場合、ステータスコードだけでは再試行しない場合でも別チャネルに切り替えます。上記の「再試行しない」ルールが優先されます。",
+    "Video token estimation": "動画トークンの推定",
+    "Tokenizer base URL": "トークナイザーのベース URL",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "推定エンドポイントのルート。空欄の場合は環境変数を使用し、それも未設定なら Moonshot の公式エンドポイントを使用します。",
+    "Tokenizer API key": "トークナイザー API キー",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "ユーザーの動画をこのエンドポイントへ送信することはサプライヤー間のデータ転送です。意図がある場合のみキーを設定してください。空欄の場合は既存のキーを保持します。",
+    "Remove the stored key": "保存されたキーを削除",
+    "Takes effect on save, unless an environment variable still provides a key.": "保存時に反映されます。環境変数にキーがある場合はそちらが優先されます。",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "設定済み。推定対象としてマークされたチャネルの動画リクエストは、プロバイダーのトークナイザーで課金されます。",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未設定。推定対象としてマークされたチャネルの動画リクエストは、ローカルのコンテナモデルで課金されます（オフライン、誤差約 5% 以内）。",
+    "Save video estimation settings": "動画推定設定を保存"
   }
 }

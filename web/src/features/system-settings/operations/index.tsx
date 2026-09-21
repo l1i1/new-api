@@ -58,6 +58,8 @@ const defaultOperationsSettings: OperationsSettings = {
   'perf_metrics_setting.flush_interval': 5,
   'perf_metrics_setting.bucket_time': 'hour',
   'perf_metrics_setting.retention_days': 0,
+  'video_estimate_setting.base_url': '',
+  'video_estimate_setting.api_key': '',
 }
 
 export function OperationsSettings() {
