@@ -185,6 +185,8 @@ Tasks that touch none of these (for example unrelated frontend work, authenticat
 
 Resolving an upstream `rcNN` conflict by selecting one side's whole file can silently drop the other side's work, even when that work is still an ancestor of HEAD. rc35 lost five fork changes at once this way. A sync is not finished until the checks below pass.
 
+**The fork's own changes are inventoried in [`FORK-CHANGES.md`](FORK-CHANGES.md).** Walk that list before and after every `rcNN` sync and confirm each entry against the current tree — the checks below find *dropped* changes, the inventory is what they are checked against. Add an entry for every behaviour or contract change this fork introduces, and record which entry supersedes another instead of silently deleting a line. Update the "生成时间 / ref" line in its §2 each time.
+
 **After every upstream sync, before treating the merge as done:**
 
 1. **Compare the merge's parents against its result.** For merge `M` with fork parent `P1` and upstream parent `P2`, list every path where the result matches upstream while the fork side differed, and the reverse. Treat each hit as a suspected dropped fork change until verified by hand. A per-file comparison over `git ls-tree -r -z` is enough; reading every diff is not required.

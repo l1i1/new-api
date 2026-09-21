@@ -1100,6 +1100,14 @@
 - **其余读点安全**：`info.ChannelOtherSettings` 的其它引用（`relay/channel/*/adaptor.go`、`RemoveDisabledFields` 等）都在 handler 内、`InitChannelMeta` 之后，不受影响。
 - **修法（择一，未实施）**：① 最小——gate 改从 gin context 取（distributor 已写 `ContextKeyChannelOtherSetting`，`middleware/distributor.go:1123`），与「billing 只准备一次」的现有设计一致；② 语义更准——把视频估算挪到 `InitChannelMeta` 之后按尝试重算，因为现在即使不 panic，**重试换渠道后修正仍来自首个渠道的标记**，与实际服务该请求的渠道可能不一致（`videoTokens`/`videoPromptTotal` 挂在 `TokenCountMeta` 上，`InitChannelMeta` 重建 `ChannelMeta` 不会清掉它们，故 ① 可行）。**注意**：不能只把 gate 套 `info.ChannelMeta != nil` 就交差——那样默认静默失效（标记渠道永不生效），比 panic 更难发现。
 
+## 2026-09-22 新增 `FORK-CHANGES.md`：自有改造清单
+- **为什么需要**：rc35 一次文件级取边静默丢了 5 处改造、rc39 又把 `service/video_token.go` 的整块加固丢掉，两次都发生在全绿的门禁下。`AGENTS.md` 的三项机械检查能发现"被丢掉的改动"，但前提是有一份"我们本来有哪些改动"的事实来源；`MEMORY.md` 是时间线，不能当清单用。
+- **怎么生成**：以 `git merge-base upstream/main origin/tokeness/main` 为基线，取"只属于 fork 的非 merge 提交"（生成时 470 个，`BASE = 69a500298`、fork `63ebdca9c`、upstream `9310231b3`）按 scope 归组，人工筛出改变行为或对外契约的部分，分 9 节登记：计费与配额、视频能力、路由与可靠性、内容安全、前端与 i18n、运营与合作方与部署、跨边界契约、"最容易被静默覆盖"清单、维护规则。命令写在文档 §2，可直接重跑。
+- **校验**：文档里 89 个仓库内路径逐条用 `git cat-file -e HEAD:<path>` 核对存在（跨仓库的 `tools/partner-console` 已单独标注为不在本仓库）。
+- **维护规则**：改行为必须同批登记；每次 rcNN 合并后重跑 §2 并更新"生成时间/ref"；每次发布前核对 §9 的跨边界契约（request-policy 选项 allowlist、`ChannelOtherSettings` 字段、健康条字段名、locale 键集合、跨仓库 partner 字段）。删除条目必须写原因。
+- 位置：仓库根 `FORK-CHANGES.md`；`AGENTS.md` 的 *Upstream Sync (rcNN merges)* 已加指针，后续会话会先读到它。
+- **下一次同步的起点**：生成时上游已推进到 `v1.0.0-rc.40`（`9310231b3`），rc39 同步候选（本分支）尚未落地；fork 主线是 `63ebdca9c`（含海外发布记录与 affinity 顺序修复）。
+
 ## 2026-09-22 rc39 合并（并入最新主线快照）：结果与耐久事实（已提交，未推送/未部署）
 - **范围**：在隔离 worktree `codex/sync-upstream-rc39` 完成 rc39 上游同步，再以显式 base 三方材料化并入最新主线快照（`a6cab488f` → `c0e674803`，即 `mainland.5` 发布线与视频路由能力/视频计费修正 8 提交）。输入：base `a6cab488f`、ours = 同步候选树 `0d9ac34f`、theirs = `c0e674803`；冲突 5 处（`MEMORY.md`、`model/channel_constraint.go`、`relay/request_billing.go`、`service/video_estimate.go`、`service/video_estimate_test.go`）全部按**并集**人工解决。提交先是合并提交 `b826330dd3`（父：`c0e674803` 最新主线快照、`9978ee1e2` rc39）；落地前发现主线又前进了一条（`32341cfd1`），于是再合并一次（`3381b6a7b`，父：`7fceaf1c6`、`32341cfd1`），均未推送、未部署。
 - **三决策重试已迁入 rc39 的 request-policies**：UI 分组顺序 = 「永不重试（最先判定）→ 换同渠道的另一个 Key → 换渠道」，并带一句顺序说明。`ForceRetryStatusCodes` 从前端下线（后端保留为兼容选项，`FoldLegacyForceRetryStatusCodes` 与 `ShouldRetryByStatusCode` 仍并集读取，`MigrateRetiredFrontendOptions` 迁移旧行）；新增 `MultiKeyCredentialRetryKeywords`（默认 `insufficient credits`/`insufficient balance`/`balance insufficient`）。**新选项必须同时加进 `model.requestPolicyDefaultOptions` 和 `IsRequestPolicyOption`**，否则设置页保存会被 `not a request policy option` 拒绝（本次即补了这两处）。
