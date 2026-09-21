@@ -471,7 +471,14 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
+            </div>
 
+            <div className='flex flex-col gap-1'>
+              <h5 className='text-sm font-medium text-muted-foreground'>
+                {t('When to retry another channel')}
+              </h5>
+            </div>
+            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
               <FormField
                 control={form.control}
                 name='AutomaticRetryStatusCodes'
@@ -486,6 +493,9 @@ export function RoutingReliabilitySection({
                       />
                     </FormControl>
                     <FormDescription>
+                      {t(
+                        'Fail over to another channel when the upstream answers with one of these codes.'
+                      )}{' '}
                       {t(
                         'Accepts comma-separated status codes and inclusive ranges.'
                       )}{' '}
@@ -517,73 +527,13 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.'
+                        'Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means "this channel cannot serve this request".'
                       )}{' '}
                       {forceRetryParsed.ok &&
                         forceRetryParsed.normalized &&
                         forceRetryParsed.normalized !== field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {forceRetryParsed.normalized}
-                          </span>
-                        )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='NeverRetryStatusCodes'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Never-retry status codes')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder={t('e.g. 504, 524')}
-                        value={field.value}
-                        onChange={(event) => field.onChange(event.target.value)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t(
-                        'Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.'
-                      )}{' '}
-                      {neverRetryParsed.ok &&
-                        neverRetryParsed.normalized &&
-                        neverRetryParsed.normalized !== field.value.trim() && (
-                          <span className='text-muted-foreground'>
-                            {t('Normalized:')} {neverRetryParsed.normalized}
-                          </span>
-                        )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='MultiKeyCredentialRetryStatusCodes'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Multi-key retry status codes')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder={t('e.g. 402, 403, 429')}
-                        value={field.value}
-                        onChange={(event) => field.onChange(event.target.value)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t(
-                        'On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).'
-                      )}{' '}
-                      {multiKeyRetryParsed.ok &&
-                        multiKeyRetryParsed.normalized &&
-                        multiKeyRetryParsed.normalized !== field.value.trim() && (
-                          <span className='text-muted-foreground'>
-                            {t('Normalized:')} {multiKeyRetryParsed.normalized}
                           </span>
                         )}
                     </FormDescription>
@@ -608,8 +558,45 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'If an upstream error message contains any of these keywords (case insensitive), retry another channel even when the status code alone would not retry. Local request errors and the never-retry status codes are never retried.'
+                        'Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.'
                       )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className='flex flex-col gap-1'>
+              <h5 className='text-sm font-medium text-muted-foreground'>
+                {t('When never to retry (wins over the rules above)')}
+              </h5>
+            </div>
+            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+              <FormField
+                control={form.control}
+                name='NeverRetryStatusCodes'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Never-retry status codes')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 504, 524')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Never fail over on these codes, even when one of the lists above matches them.'
+                      )}{' '}
+                      {neverRetryParsed.ok &&
+                        neverRetryParsed.normalized &&
+                        neverRetryParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {neverRetryParsed.normalized}
+                          </span>
+                        )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -631,8 +618,45 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.'
+                        'Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.'
                       )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className='flex flex-col gap-1'>
+              <h5 className='text-sm font-medium text-muted-foreground'>
+                {t('Multi-key channels')}
+              </h5>
+            </div>
+            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+              <FormField
+                control={form.control}
+                name='MultiKeyCredentialRetryStatusCodes'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Multi-key retry status codes')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 402, 403, 429')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.'
+                      )}{' '}
+                      {multiKeyRetryParsed.ok &&
+                        multiKeyRetryParsed.normalized &&
+                        multiKeyRetryParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {multiKeyRetryParsed.normalized}
+                          </span>
+                        )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

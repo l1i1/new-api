@@ -366,7 +366,6 @@
     "Already have an account?": "Уже есть аккаунт?",
     "Also bring manually disabled keys back online after a successful probe": "Также возвращать в работу ключи, отключённые вручную, после успешного проба",
     "Always matches (default tier).": "Всегда совпадает (уровень по умолчанию).",
-    "Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.": "Для этих кодов состояния апстрима всегда повторять запрос через другой канал, даже если их нет в списке автоповторов. Локальные ошибки валидации запросов не повторяются никогда.",
     "Amount": "Сумма",
     "Amount cannot be changed when editing.": "Количество нельзя изменить при редактировании.",
     "Amount discount": "Скидка на сумму",
@@ -3032,10 +3031,8 @@
     "Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)": "Сетевой прокси для этого канала (поддерживает HTTP, HTTPS, SOCKS5 и SOCKS5H)",
     "Never": "Никогда",
     "Never expires": "Никогда не истекает",
-    "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Никогда не повторять эти коды состояния, даже если они есть в списках автоповтора или принудительного повтора. Это правило имеет приоритет.",
     "Never used an API Gateway?": "Никогда не пользовались API-шлюзом?",
     "Never-retry error keywords": "Ключевые слова запрета повтора",
-    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Если сообщение об ошибке 4xx от вышестоящего сервиса содержит любое из этих ключевых слов (без учёта регистра), запрос не повторяется на другом канале: все каналы отвечают одинаково, поэтому переключение лишь расходует лимит повторов. Значение по умолчанию покрывает отказы из-за окна контекста; добавьте строку, если вышестоящий сервис изменил формулировку, а очистка списка отключает правило.",
     "Never-retry status codes": "Коды состояния «никогда не повторять»",
     "Multi-key retry status codes": "Коды повтора для многоключевых каналов",
     "NEW": "НОВОЕ",
@@ -3322,7 +3319,6 @@
     "Ollama Models": "Ollama Модели",
     "Ollama Prompt Cache Estimation": "Оценка кэша промптов Ollama",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "Оценивать кэшированные токены промпта сопоставлением префикса сообщения, если апстрим не вернул cached_tokens",
-    "On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).": "В многоключевом канале эти коды повторяют запрос на том же канале с другим ключом, прежде чем исключить канал. Используйте, когда каждый ключ — отдельный вышестоящий аккаунт (402 из-за нулевого баланса должен переключать ключ, а не отбрасывать канал).",
     "One API": "Один API",
     "One domain per line": "Один домен на строку",
     "One domain per line (only used when domain restriction is enabled)": "Один домен на строку (используется только при включении ограничения домена)",
@@ -7144,6 +7140,15 @@
     "Worker metrics": "Метрики рабочих процессов",
     "You are offline. Updates will be checked when you reconnect.": "Нет подключения к сети. Проверка обновлений возобновится после подключения.",
     "You can add models manually or try fetching again.": "Добавьте модели вручную или повторите запрос.",
-    "Zhipu GLM": "Zhipu GLM"
+    "Zhipu GLM": "Zhipu GLM",
+    "When to retry another channel": "Когда повторять на другом канале",
+    "When never to retry (wins over the rules above)": "Когда не повторять (приоритет над правилами выше)",
+    "Multi-key channels": "Каналы с несколькими ключами",
+    "Fail over to another channel when the upstream answers with one of these codes.": "Переключайтесь на другой канал, когда вышестоящий сервис отвечает одним из этих кодов.",
+    "Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means \"this channel cannot serve this request\".": "Переключайтесь и на эти коды — для случаев, которые другой канал обычно может обслужить. По умолчанию здесь 400: ошибка 400 от вышестоящего сервиса часто означает «этот канал не может обслужить запрос».",
+    "Never fail over on these codes, even when one of the lists above matches them.": "Никогда не переключайтесь на этих кодах, даже если один из списков выше их покрывает.",
+    "Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.": "Переключайтесь, когда текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра), даже если сам код не запускает повтор.",
+    "Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.": "Никогда не переключайтесь, когда текст ошибки 4xx вышестоящего сервиса содержит одно из этих слов: все каналы ответят одинаково. Значение по умолчанию покрывает отказы из-за окна контекста; добавьте строку, если сервис изменил формулировку.",
+    "On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.": "На канале с несколькими ключами повторите тот же канал с другим ключом на этих кодах, вместо исключения всего канала."
   }
 }

@@ -59,6 +59,35 @@ afterEach(() => {
 })
 
 describe('never-retry error keywords', () => {
+  it('groups the retry fields by what they do, in decision order', () => {
+    const { container } = renderSection()
+
+    const subheadings = Array.from(container.querySelectorAll('h5')).map(
+      (node) => node.textContent
+    )
+    expect(subheadings).toEqual([
+      'When to retry another channel',
+      'When never to retry (wins over the rules above)',
+      'Multi-key channels',
+    ])
+
+    // The two halves of the rule sit in different groups: the lists that cause a
+    // failover come before the ones that stop it.
+    const order = Array.from(container.querySelectorAll('label, h5')).map(
+      (node) => node.textContent
+    )
+    const at = (label: string) => order.indexOf(label)
+    const neverHeading = 'When never to retry (wins over the rules above)'
+    expect(at('Auto-retry status codes')).toBeLessThan(at(neverHeading))
+    expect(at('Force-retry status codes')).toBeLessThan(at(neverHeading))
+    expect(at('Auto-retry error keywords')).toBeLessThan(at(neverHeading))
+    expect(at(neverHeading)).toBeLessThan(at('Never-retry status codes'))
+    expect(at('Never-retry error keywords')).toBeLessThan(at('Multi-key channels'))
+    expect(at('Multi-key channels')).toBeLessThan(
+      at('Multi-key retry status codes')
+    )
+  })
+
   it('edits the stored keyword list next to the retry keywords it mirrors', () => {
     renderSection()
 

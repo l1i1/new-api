@@ -366,7 +366,6 @@
     "Already have an account?": "Đã có tài khoản?",
     "Also bring manually disabled keys back online after a successful probe": "Also bring manually disabled keys back online after a successful probe",
     "Always matches (default tier).": "Luôn khớp (bậc mặc định).",
-    "Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.": "Luôn thử lại kênh khác cho các mã trạng thái thượng nguồn này, ngay cả khi chúng không có trong danh sách tự thử lại. Lỗi xác thực yêu cầu cục bộ không bao giờ được thử lại.",
     "Amount": "Số lượng",
     "Amount cannot be changed when editing.": "Số tiền không thể thay đổi khi chỉnh sửa.",
     "Amount discount": "Số tiền giảm giá",
@@ -3032,10 +3031,8 @@
     "Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)": "Proxy mạng cho kênh này (hỗ trợ HTTP, HTTPS, SOCKS5 và SOCKS5H)",
     "Never": "Không bao giờ",
     "Never expires": "Không hết hạn",
-    "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Không bao giờ thử lại các mã trạng thái này, kể cả khi chúng khớp với danh sách tự thử lại hoặc buộc thử lại. Quy tắc này được ưu tiên.",
     "Never used an API Gateway?": "Chưa bao giờ sử dụng API Gateway?",
     "Never-retry error keywords": "Từ khóa không thử lại",
-    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Nếu thông báo lỗi 4xx từ upstream chứa bất kỳ từ khóa nào sau đây (không phân biệt chữ hoa chữ thường), yêu cầu sẽ không được thử lại trên kênh khác: mọi kênh đều trả lời giống nhau, nên chuyển kênh chỉ tiêu tốn ngân sách thử lại. Giá trị mặc định bao gồm các từ ngữ từ chối do vượt cửa sổ ngữ cảnh; hãy thêm một dòng khi upstream đổi cách diễn đạt, và xóa danh sách để tắt quy tắc này.",
     "Never-retry status codes": "Mã trạng thái không bao giờ thử lại",
     "Multi-key retry status codes": "Mã trạng thái thử lại đa khóa",
     "NEW": "MỚI",
@@ -3322,7 +3319,6 @@
     "Ollama Models": "Mô hình Ollama",
     "Ollama Prompt Cache Estimation": "Ước tính bộ nhớ đệm prompt Ollama",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "Ước tính token prompt được lưu đệm bằng cách khớp tiền tố tin nhắn khi thượng nguồn bỏ qua cached_tokens",
-    "On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).": "Trên kênh đa khóa, các mã trạng thái này sẽ thử lại cùng kênh bằng khóa khác trước khi loại bỏ kênh. Dùng khi mỗi khóa là một tài khoản thượng nguồn riêng (lỗi 402 hết số dư phải đổi khóa, không phải bỏ kênh).",
     "One API": "Một API",
     "One domain per line": "Một tên miền mỗi dòng",
     "One domain per line (only used when domain restriction is enabled)": "Mỗi dòng một tên miền (chỉ được sử dụng khi hạn chế tên miền được bật)",
@@ -7144,6 +7140,15 @@
     "Worker metrics": "Số liệu từng worker",
     "You are offline. Updates will be checked when you reconnect.": "Bạn đang ngoại tuyến. Cập nhật sẽ được kiểm tra khi kết nối lại.",
     "You can add models manually or try fetching again.": "Bạn có thể thêm mô hình thủ công hoặc thử lấy lại.",
-    "Zhipu GLM": "Zhipu GLM"
+    "Zhipu GLM": "Zhipu GLM",
+    "When to retry another channel": "Khi nào thử lại trên kênh khác",
+    "When never to retry (wins over the rules above)": "Khi nào không thử lại (ưu tiên hơn các quy tắc trên)",
+    "Multi-key channels": "Kênh nhiều khóa",
+    "Fail over to another channel when the upstream answers with one of these codes.": "Chuyển sang kênh khác khi upstream trả về một trong các mã này.",
+    "Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means \"this channel cannot serve this request\".": "Cũng chuyển kênh với các mã này, cho những trường hợp kênh khác thường xử lý được. Mặc định là 400 vì lỗi 400 từ upstream thường có nghĩa là \"kênh này không xử lý được yêu cầu này\".",
+    "Never fail over on these codes, even when one of the lists above matches them.": "Không bao giờ chuyển kênh với các mã này, kể cả khi một trong các danh sách trên khớp.",
+    "Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.": "Chuyển kênh khi nội dung lỗi từ upstream chứa một trong các từ này (không phân biệt chữ hoa chữ thường), kể cả khi chỉ mã trạng thái thì không thử lại.",
+    "Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.": "Không bao giờ chuyển kênh khi nội dung lỗi 4xx từ upstream chứa một trong các từ này: mọi kênh đều trả lời giống nhau. Giá trị mặc định bao gồm các từ ngữ từ chối do vượt cửa sổ ngữ cảnh; hãy thêm một dòng khi upstream đổi cách diễn đạt.",
+    "On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.": "Trên kênh nhiều khóa, hãy thử lại cùng kênh với khóa khác với các mã này thay vì loại bỏ toàn bộ kênh."
   }
 }

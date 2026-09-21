@@ -366,7 +366,6 @@
     "Already have an account?": "アカウントをお持ちの方？",
     "Also bring manually disabled keys back online after a successful probe": "プローブ成功後は手動で無効化されたキーもオンラインに戻す",
     "Always matches (default tier).": "常に一致（デフォルト ティア）。",
-    "Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.": "これらの上流ステータスコードでは、自動リトライ一覧にない場合でも常に別チャンネルへリトライします。ローカルのリクエスト検証エラーは決してリトライされません。",
     "Amount": "金額",
     "Amount cannot be changed when editing.": "編集時は金額を変更できません。",
     "Amount discount": "割引額",
@@ -3032,10 +3031,8 @@
     "Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)": "このチャネルのネットワークプロキシ（HTTP、HTTPS、SOCKS5、SOCKS5H に対応）",
     "Never": "しない",
     "Never expires": "無期限",
-    "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "自動リトライや強制リトライ一覧に一致しても、これらのステータスコードは決してリトライしません。このルールが最優先されます。",
     "Never used an API Gateway?": "APIゲートウェイを一度も使用したことがありませんか？",
     "Never-retry error keywords": "再試行しないエラーキーワード",
-    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "上流の 4xx エラーメッセージにこれらのキーワード（大文字と小文字を区別しない）が含まれる場合、他のチャネルでは再試行しません。どのチャネルでも同じ応答になるため、フェイルオーバーは再試行の枠を消費するだけです。既定値は上流が返すコンテキスト長超過の文言を網羅しています。上流の文言が変わったら 1 行追加し、リストを空にするとこのルールは無効になります。",
     "Never-retry status codes": "Never-retry ステータスコード",
     "Multi-key retry status codes": "マルチキー再試行ステータスコード",
     "NEW": "NEW",
@@ -3322,7 +3319,6 @@
     "Ollama Models": "Ollamaモデル",
     "Ollama Prompt Cache Estimation": "Ollama プロンプトキャッシュ概算",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "上流が cached_tokens を返さない場合、メッセージプレフィックス照合でキャッシュトークン数を推定",
-    "On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).": "マルチキーチャネルでは、これらのステータスコードを受けると同じチャネルの別のキーで再試行し、チャネル全体を除外しません。各キーが別々の上流アカウントである場合に使用します（残高不足の 402 はチャネルを外すのではなくキーを切り替えるべきです）。",
     "One API": "1つのAPI",
     "One domain per line": "1行に1つのドメイン",
     "One domain per line (only used when domain restriction is enabled)": "1行に1つのドメイン (ドメイン制限が有効な場合のみ使用されます)",
@@ -7144,6 +7140,15 @@
     "Worker metrics": "ワーカー別メトリクス",
     "You are offline. Updates will be checked when you reconnect.": "オフラインです。再接続後に更新を確認します。",
     "You can add models manually or try fetching again.": "モデルを手動で追加するか、再取得できます。",
-    "Zhipu GLM": "Zhipu GLM"
+    "Zhipu GLM": "Zhipu GLM",
+    "When to retry another channel": "別チャネルで再試行する条件",
+    "When never to retry (wins over the rules above)": "再試行しない条件（上記のルールより優先）",
+    "Multi-key channels": "マルチキーチャネル",
+    "Fail over to another channel when the upstream answers with one of these codes.": "上流がこれらのステータスコードのいずれかを返したとき、別チャネルに切り替えて再試行します。",
+    "Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means \"this channel cannot serve this request\".": "別のチャネルなら通常処理できるケース向けに、これらのコードでも切り替えます。既定値が 400 なのは、上流の 400 が「このチャネルではこのリクエストを処理できない」を意味することが多いためです。",
+    "Never fail over on these codes, even when one of the lists above matches them.": "これらのコードでは、上記のいずれかのリストに一致しても切り替えません。",
+    "Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.": "上流のエラーメッセージにこれらの語（大文字小文字を区別しない）が含まれる場合、ステータスコードだけでは再試行しないときでも別チャネルに切り替えます。",
+    "Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.": "上流の 4xx エラーメッセージにこれらの語が含まれる場合は切り替えません。どのチャネルでも同じ応答になります。既定値は上流が返すコンテキスト長超過の文言を網羅しています。上流の文言が変わったら 1 行追加してください。",
+    "On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.": "マルチキーチャネルでは、これらのコードでチャネル全体を除外するのではなく、別のキーで同じチャネルを再試行します。"
   }
 }

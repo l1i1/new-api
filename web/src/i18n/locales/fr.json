@@ -366,7 +366,6 @@
     "Already have an account?": "Vous avez déjà un compte ?",
     "Also bring manually disabled keys back online after a successful probe": "Also bring manually disabled keys back online after a successful probe",
     "Always matches (default tier).": "Toujours appliqué (palier par défaut).",
-    "Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.": "Réesayer toujours un autre canal pour ces codes de statut en amont, même s’ils sont absents de la liste des réessais automatiques. Les erreurs de validation locales ne sont jamais réessayées.",
     "Amount": "Montant",
     "Amount cannot be changed when editing.": "Le montant ne peut pas être modifié lors de la modification.",
     "Amount discount": "Remise sur le montant",
@@ -3032,10 +3031,8 @@
     "Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)": "Proxy réseau de ce canal (prend en charge HTTP, HTTPS, SOCKS5 et SOCKS5H)",
     "Never": "Jamais",
     "Never expires": "N'expire jamais",
-    "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "Ne jamais réessayer ces codes de statut, même s’ils correspondent aux listes de réessai automatique ou forcé. Cette règle a priorité.",
     "Never used an API Gateway?": "Vous n'avez jamais utilisé de passerelle API ?",
     "Never-retry error keywords": "Mots-clés de non-réessai",
-    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "Si le message d'une erreur 4xx en amont contient l'un de ces mots-clés (insensible à la casse), la requête n'est pas réessayée sur un autre canal : tous les canaux répondent de la même façon, donc basculer ne ferait que consommer le budget de réessai. La valeur par défaut couvre les refus liés à la fenêtre de contexte ; ajoutez une ligne lorsqu'un amont reformule son refus, et videz la liste pour désactiver la règle.",
     "Never-retry status codes": "Codes de statut « ne jamais réessayer »",
     "Multi-key retry status codes": "Codes de nouvelle tentative multi-clés",
     "NEW": "NOUVEAU",
@@ -3322,7 +3319,6 @@
     "Ollama Models": "Modèles Ollama",
     "Ollama Prompt Cache Estimation": "Estimation du cache de prompt Ollama",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "Estimer les jetons de prompt en cache par correspondance de préfixe de message lorsque l’amont omet cached_tokens",
-    "On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).": "Sur un canal multi-clés, ces codes réessaient le même canal avec une autre clé avant d’exclure le canal. À utiliser lorsque chaque clé correspond à un compte amont distinct (un 402 de solde épuisé doit changer de clé, pas supprimer le canal).",
     "One API": "One API",
     "One domain per line": "Un domaine par ligne",
     "One domain per line (only used when domain restriction is enabled)": "Un domaine par ligne (utilisé uniquement lorsque la restriction de domaine est activée)",
@@ -7144,6 +7140,15 @@
     "Worker metrics": "Métriques par worker",
     "You are offline. Updates will be checked when you reconnect.": "Vous êtes hors ligne. La vérification reprendra à la reconnexion.",
     "You can add models manually or try fetching again.": "Ajoutez des modèles manuellement ou réessayez la récupération.",
-    "Zhipu GLM": "Zhipu GLM"
+    "Zhipu GLM": "Zhipu GLM",
+    "When to retry another channel": "Quand réessayer sur un autre canal",
+    "When never to retry (wins over the rules above)": "Quand ne jamais réessayer (prioritaire sur les règles ci-dessus)",
+    "Multi-key channels": "Canaux à clés multiples",
+    "Fail over to another channel when the upstream answers with one of these codes.": "Basculez vers un autre canal lorsque l'amont répond avec l'un de ces codes.",
+    "Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means \"this channel cannot serve this request\".": "Basculez aussi sur ces codes, pour les cas qu'un autre canal peut généralement servir. 400 figure ici par défaut car une erreur 400 en amont signifie souvent « ce canal ne peut pas servir cette requête ».",
+    "Never fail over on these codes, even when one of the lists above matches them.": "Ne basculez jamais sur ces codes, même si l'une des listes ci-dessus les couvre.",
+    "Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.": "Basculez lorsque le texte d'erreur en amont contient l'un de ces mots (insensible à la casse), même si le code seul ne déclencherait pas de réessai.",
+    "Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.": "Ne basculez jamais lorsque le texte d'une erreur 4xx en amont contient l'un de ces mots : tous les canaux répondraient de la même façon. La valeur par défaut couvre les refus liés à la fenêtre de contexte ; ajoutez une ligne lorsqu'un amont reformule son refus.",
+    "On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.": "Sur un canal à clés multiples, réessayez le même canal avec une autre clé sur ces codes au lieu d'exclure tout le canal."
   }
 }

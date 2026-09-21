@@ -366,7 +366,6 @@
     "Already have an account?": "已有用戶？",
     "Also bring manually disabled keys back online after a successful probe": "探測成功後也恢復手動停用的密鑰",
     "Always matches (default tier).": "始終匹配（預設檔位）。",
-    "Always retry another channel for these upstream status codes, even when they are absent from the auto-retry list. Local request validation errors are never retried.": "這些上游狀態碼一律重試其他渠道，即使它們不在自動重試清單中。本地請求校驗錯誤永不重試。",
     "Amount": "金額",
     "Amount cannot be changed when editing.": "編輯時無法更改數量。",
     "Amount discount": "金額折扣",
@@ -3032,10 +3031,8 @@
     "Network proxy for this channel (supports HTTP, HTTPS, SOCKS5, and SOCKS5H)": "此渠道的網路代理（支援 HTTP、HTTPS、SOCKS5 和 SOCKS5H）",
     "Never": "永不",
     "Never expires": "永不過期",
-    "Never retry these status codes, even when they match the auto-retry or force-retry list. This rule takes precedence.": "這些狀態碼永不重試，即使它們符合自動重試或強制重試清單。此規則優先級最高。",
     "Never used an API Gateway?": "從未使用過 API 閘道/中轉 API？",
     "Never-retry error keywords": "永不重試錯誤關鍵詞",
-    "If an upstream 4xx error message contains any of these keywords (case insensitive), the request is not retried on another channel: every channel answers it the same way, so failing over only spends the retry budget. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal, and clear the list to turn the rule off.": "當上游 4xx 錯誤訊息包含任一關鍵字時（不分大小寫），該請求不會再換渠道重試：所有渠道都會給出相同答覆，重試只會消耗重試預算。預設值涵蓋上游回傳的上下文超限類措辭；上游換了說法時在此新增一行，清空清單即關閉此規則。",
     "Never-retry status codes": "永不重試狀態碼",
     "Multi-key retry status codes": "多 Key 換 Key 重試狀態碼",
     "NEW": "新",
@@ -3322,7 +3319,6 @@
     "Ollama Models": "Ollama 模型",
     "Ollama Prompt Cache Estimation": "Ollama Prompt Cache Estimation",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens",
-    "On a multi-key channel these status codes retry the same channel with another key before excluding the channel. Use it when each key is a separate upstream account (an out-of-balance 402 must switch keys, not drop the channel).": "多 Key 渠道遇到這些狀態碼時，會先用同渠道的另一個 Key 重試，而不是直接排除整個渠道。適用於每個 Key 對應獨立上游帳號的渠道（例如上游欠費回傳 402 時，應換 Key 而不是丟棄渠道）。",
     "One API": "One API",
     "One domain per line": "每行一個域名",
     "One domain per line (only used when domain restriction is enabled)": "每行一個域名 (僅在啟用域名限制時使用)",
@@ -7144,6 +7140,15 @@
     "Worker metrics": "工作程序指標",
     "You are offline. Updates will be checked when you reconnect.": "目前處於離線狀態，恢復連線後將檢查更新。",
     "You can add models manually or try fetching again.": "可以手動新增模型，也可以重新取得。",
-    "Zhipu GLM": "智譜GLM"
+    "Zhipu GLM": "智譜GLM",
+    "When to retry another channel": "什麼時候換渠道重試",
+    "When never to retry (wins over the rules above)": "什麼時候不重試（優先於上面的規則）",
+    "Multi-key channels": "多 Key 渠道",
+    "Fail over to another channel when the upstream answers with one of these codes.": "上游回傳這些狀態碼之一時，換渠道重試。",
+    "Also fail over on these codes, for cases another channel can usually serve. 400 sits here by default because an upstream 400 often means \"this channel cannot serve this request\".": "這些狀態碼同樣換渠道重試，用於「換個渠道通常能成功」的情況。預設填 400：上游 400 往往是「這個渠道服務不了該請求」。",
+    "Never fail over on these codes, even when one of the lists above matches them.": "這些狀態碼永不換渠道，即使命中了上面的清單。",
+    "Fail over when the upstream error text contains one of these words (case insensitive), even if the status code alone would not retry.": "上游報錯文字包含其中任一關鍵字時換渠道重試（不分大小寫），即使該狀態碼本身不會觸發重試。",
+    "Never fail over when an upstream 4xx error text contains one of these words: every channel would answer the same way. The default covers the context-window rejections the upstreams return; add a line when an upstream rewords its refusal.": "上游 4xx 報錯文字包含其中任一關鍵字時永不換渠道——每個渠道都會給出同樣的答覆。預設涵蓋上游回傳的上下文超限類措辭；上游換了說法時加一行即可。",
+    "On a multi-key channel, retry the same channel with another key on these codes instead of excluding the whole channel.": "多 Key 渠道遇到這些狀態碼時，先換 Key 重試同一渠道，而不是排除整個渠道。"
   }
 }
