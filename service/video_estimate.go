@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/bytedance/gopkg/util/gopool"
 )
 
 // Official token estimation for video billing.
@@ -66,31 +67,62 @@ func LoadVideoEstimateConfig() (VideoEstimateConfig, bool) {
 	return VideoEstimateConfig{BaseURL: strings.TrimRight(base, "/"), APIKey: key}, true
 }
 
-// VideoPromptTotalFromEndpoint asks the configured tokenizer endpoint for this
-// request's full prompt count (text and media together). It returns ok=false —
-// never an error to the caller — when nothing is configured, the request cannot
-// be re-serialized, the endpoint fails, or the answer arrives after the
-// timeout, because the caller always has the local container model to fall back
-// on.
-//
-// Every answer is cached by the request's video content, so a repeated clip
-// costs one call. The cache exists because a call carries the whole video: the
-// measured latency was ~2.8 s for a 3.3 MB clip, and billing should not pay
-// that per request.
-func VideoPromptTotalFromEndpoint(model string, request dto.Request) (int, bool) {
-	messages, cacheKey, ok := estimateMessagesFor(request)
+// PrefetchVideoPromptTotal asks the configured tokenizer endpoint for this
+// request's full prompt count (text and media together) and caches the answer.
+// It returns immediately: the call carries the whole clip, so it runs alongside
+// the upstream request and settlement reads the cache entry once it is warm.
+// Nothing here fails a request — an endpoint that is unconfigured, refuses the
+// request or times out simply leaves the cache cold, and settlement bills the
+// locally priced video part instead.
+func PrefetchVideoPromptTotal(model string, request dto.Request) {
+	cfg, configured := LoadVideoEstimateConfig()
+	if !configured {
+		return
+	}
+	body, cacheKey, ok := estimateRequestBody(model, request)
+	if !ok {
+		return
+	}
+	if _, hit := lookupVideoEstimate(cacheKey); hit {
+		return
+	}
+	gopool.Go(func() {
+		total, ok, err := estimateTotalViaEndpoint(cfg, body)
+		if err != nil || !ok {
+			return
+		}
+		storeVideoEstimate(cacheKey, total)
+	})
+}
+
+// VideoPromptTotalForRequest returns the cached endpoint total for this
+// request, if the prefetch has already answered. It never performs I/O, so the
+// settlement path can call it without delaying the client.
+func VideoPromptTotalForRequest(request dto.Request) (int, bool) {
+	_, cacheKey, ok := estimateMessagesFor(request)
 	if !ok {
 		return 0, false
 	}
-	if cached, hit := lookupVideoEstimate(cacheKey); hit {
-		return cached, true
+	return lookupVideoEstimate(cacheKey)
+}
+
+// estimateRequestBody serializes what the endpoint should price, plus a cache
+// key derived from the video bytes. Serializing here (rather than inside the
+// prefetch goroutine) keeps the request DTO on one goroutine: converters mutate
+// it while the upstream request is in flight.
+func estimateRequestBody(model string, request dto.Request) ([]byte, string, bool) {
+	messages, cacheKey, ok := estimateMessagesFor(request)
+	if !ok {
+		return nil, "", false
 	}
-	total, ok, err := EstimatePromptTokensViaEndpoint(model, messages)
-	if err != nil || !ok {
-		return 0, false
+	if model == "" {
+		return nil, "", false
 	}
-	storeVideoEstimate(cacheKey, total)
-	return total, true
+	body, err := json.Marshal(videoEstimateRequest{Model: model, Messages: messages})
+	if err != nil {
+		return nil, "", false
+	}
+	return body, cacheKey, true
 }
 
 // estimateMessagesFor extracts the message array an estimate endpoint expects
@@ -176,7 +208,9 @@ type videoEstimateRequest struct {
 }
 
 type videoEstimateResponse struct {
-	Data  *struct{ TotalTokens int `json:"total_tokens"` } `json:"data"`
+	Data *struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"data"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -207,22 +241,9 @@ func postVideoEstimate(cfg VideoEstimateConfig, body []byte) (int, []byte, error
 	return response.StatusCode, payload, nil
 }
 
-// EstimatePromptTokensViaEndpoint asks the configured endpoint for this
-// request's prompt count. It returns ok=false (with no error) when nothing is
-// configured, so callers treat "not set up" as a normal fallback rather than a
-// failure.
-func EstimatePromptTokensViaEndpoint(model string, messages any) (int, bool, error) {
-	cfg, configured := LoadVideoEstimateConfig()
-	if !configured {
-		return 0, false, nil
-	}
-	if model == "" || messages == nil {
-		return 0, false, nil
-	}
-	body, err := json.Marshal(videoEstimateRequest{Model: model, Messages: messages})
-	if err != nil {
-		return 0, false, fmt.Errorf("marshal estimate request: %w", err)
-	}
+// estimateTotalViaEndpoint posts an already-serialized estimate body and reads
+// the total back. Split out so the prefetch goroutine touches no request state.
+func estimateTotalViaEndpoint(cfg VideoEstimateConfig, body []byte) (int, bool, error) {
 	status, payload, err := videoEstimatePost(cfg, body)
 	if err != nil {
 		return 0, false, fmt.Errorf("estimate request failed: %w", err)
@@ -243,4 +264,23 @@ func EstimatePromptTokensViaEndpoint(model string, messages any) (int, bool, err
 		return 0, false, fmt.Errorf("estimate endpoint returned %d tokens", total)
 	}
 	return total, true, nil
+}
+
+// EstimatePromptTokensViaEndpoint asks the configured endpoint for this
+// request's prompt count. It returns ok=false (with no error) when nothing is
+// configured, so callers treat "not set up" as a normal fallback rather than a
+// failure.
+func EstimatePromptTokensViaEndpoint(model string, messages any) (int, bool, error) {
+	cfg, configured := LoadVideoEstimateConfig()
+	if !configured {
+		return 0, false, nil
+	}
+	if model == "" || messages == nil {
+		return 0, false, nil
+	}
+	body, err := json.Marshal(videoEstimateRequest{Model: model, Messages: messages})
+	if err != nil {
+		return 0, false, fmt.Errorf("marshal estimate request: %w", err)
+	}
+	return estimateTotalViaEndpoint(cfg, body)
 }

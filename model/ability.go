@@ -227,6 +227,85 @@ func getChannelQueryWithBlockedChannels(group string, model string, retry int, b
 	return channelQuery, nil
 }
 
+// abilitiesAtRetryTier keeps only the candidates at the priority tier the
+// retry index addresses, highest priority first. It mirrors the tier choice the
+// memory-cache selector performs, so both paths exhaust priorities in the same
+// order when a filter has already removed the top tier.
+func abilitiesAtRetryTier(abilities []Ability, retry int) []Ability {
+	if len(abilities) == 0 {
+		return abilities
+	}
+	priorities := make([]int64, 0, len(abilities))
+	seen := make(map[int64]struct{}, len(abilities))
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if _, ok := seen[priority]; ok {
+			continue
+		}
+		seen[priority] = struct{}{}
+		priorities = append(priorities, priority)
+	}
+	sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+	if retry < 0 {
+		retry = 0
+	}
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	target := priorities[retry]
+	kept := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if priority == target {
+			kept = append(kept, ability)
+		}
+	}
+	return kept
+}
+
+// filterAbilitiesByVideoCapability drops channels that have not declared they
+// can read video parts. The declaration lives in the channel's settings JSON,
+// which is loaded by the same query that feeds this filter's callers.
+func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) []Ability {
+	if !videoOnly || len(abilities) == 0 {
+		return abilities
+	}
+	channelIds := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := seen[ability.ChannelId]; ok {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIds = append(channelIds, ability.ChannelId)
+	}
+	var channels []*Channel
+	if err := DB.Select("id, settings").Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+		// Fail closed: an unreadable capability must not route a video request
+		// to an upstream that may silently ignore the media.
+		return nil
+	}
+	capable := make(map[int]struct{}, len(channels))
+	for _, channel := range channels {
+		if supportsVideoForCache(channel) {
+			capable[channel.Id] = struct{}{}
+		}
+	}
+	filtered := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := capable[ability.ChannelId]; ok {
+			filtered = append(filtered, ability)
+		}
+	}
+	return filtered
+}
+
 func GetChannel(group string, model string, retry int, requestPathOrFilters interface{}) (*Channel, error) {
 	if filters, ok := requestPathOrFilters.([]dto.ChannelFilter); ok {
 		return getChannelWithFilters(group, model, retry, filters)
@@ -330,33 +409,46 @@ func selectAbilityChannel(abilities []Ability) (*Channel, error) {
 }
 
 func GetChannelWithBlockedChannels(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}) (*Channel, error) {
-	return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, false)
+	return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, false, false)
 }
 
 // GetChannelWithBlockedChannelsPinned behaves like
 // GetChannelWithBlockedChannels but can narrow deepseek-v4 candidates to the
-// official channel when pinOfficial is set for the request.
-func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool) (*Channel, error) {
+// official channel when pinOfficial is set for the request, and to
+// video-declaring channels when videoOnly is set.
+func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool) (*Channel, error) {
 	var abilities []Ability
 
-	var err error = nil
-	channelQuery, err := getChannelQueryWithBlockedChannels(group, model, retry, blockedChannels)
-	if err != nil {
-		return nil, err
-	}
-	if common.UsingMainDatabase(common.DatabaseTypeSQLite) || common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
+	if videoOnly {
+		// The video narrowing must run before the priority tier is chosen, not
+		// after: a media-blind channel can hold the highest priority, and
+		// dropping it after getChannelQueryWithBlockedChannels already reduced
+		// the set to that tier would return no candidate instead of falling
+		// through to the next tier that can read video. So this path fetches
+		// every tier, filters, and only then tiers by retry — the same order
+		// getChannelWithFilters uses for its constraint filters.
+		if err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
+			Order("priority DESC, weight DESC").Find(&abilities).Error; err != nil {
+			return nil, err
+		}
 	} else {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
-	}
-	if err != nil {
-		return nil, err
+		channelQuery, err := getChannelQueryWithBlockedChannels(group, model, retry, blockedChannels)
+		if err != nil {
+			return nil, err
+		}
+		if err := channelQuery.Order("weight DESC").Find(&abilities).Error; err != nil {
+			return nil, err
+		}
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
 	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial)
+	abilities = filterAbilitiesByVideoCapability(abilities, videoOnly)
+	if videoOnly {
+		abilities = abilitiesAtRetryTier(abilities, retry)
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -377,7 +469,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	} else {
 		return nil, nil
 	}
-	err = DB.First(&channel, "id = ?", channel.Id).Error
+	err := DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
 }
 

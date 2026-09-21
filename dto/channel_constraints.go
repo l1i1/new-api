@@ -39,6 +39,11 @@ const (
 	FilterRequestPath        ChannelFilterKind = "request_path"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	// FilterVideoRequest restricts candidates to channels that declared they can
+	// read video (dto.ChannelOtherSettings.SupportsVideo). It exists because a
+	// media-blind upstream does not reject a video part — it silently answers
+	// from the text alone, so the request must never be routed there.
+	FilterVideoRequest ChannelFilterKind = "video_request"
 )
 
 type ChannelFilter struct {

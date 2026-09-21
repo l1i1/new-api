@@ -50,6 +50,12 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// A request carrying video must only reach channels that declared they
+		// can read it; the filter also guards the pinned and affinity paths,
+		// which pick a channel outside the selection functions below.
+		if common.GetContextKeyBool(c, constant.ContextKeyVideoRequest) {
+			constraints.AddFilter(taskdto.ChannelFilter{Kind: taskdto.FilterVideoRequest})
+		}
 		// Channel selection happens here, before relay validation; mark the
 		// official-channel pin for official-fit Route users before
 		// selecting a channel.
@@ -794,6 +800,14 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	group, err := getJSONStringValue(values[1], "group")
 	if err != nil {
 		return nil, err
+	}
+	// A video part restricts channel selection to channels that declared they
+	// can read video, because a media-blind upstream answers from the text alone
+	// instead of rejecting the part. The body is already in hand here, so the
+	// check costs one scan and runs before any channel is chosen. Consumers that
+	// are not chat-shaped simply report false and keep their existing routing.
+	if service.RequestBytesCarryVideo(requestBody) {
+		common.SetContextKey(c, constant.ContextKeyVideoRequest, true)
 	}
 
 	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {

@@ -36,6 +36,43 @@ var channel2officialFitModels map[int]map[string]struct{}
 // cache.
 var channel2concurrencyLimits map[int]int
 
+// channel2supportsVideo is the set of channels that declared they can read
+// video parts (dto.ChannelOtherSettings.SupportsVideo). Only these are
+// candidates for a request carrying video, because a media-blind upstream
+// silently answers from the text alone. Presence in the map is the flag, so
+// both "no settings" and "settings without the declaration" exclude a channel.
+// Refreshed with the channel cache.
+var channel2supportsVideo map[int]struct{}
+
+// supportsVideoForCache reports the channel's video capability declaration. Like
+// the other cache accessors it parses settings JSON directly instead of calling
+// GetOtherSettings, whose malformed-JSON self-heal writes to the database: this
+// runs on the selection hot path.
+func supportsVideoForCache(channel *Channel) bool {
+	if channel == nil || channel.OtherSettings == "" {
+		return false
+	}
+	var settings dto.ChannelOtherSettings
+	if err := common.Unmarshal([]byte(channel.OtherSettings), &settings); err != nil {
+		return false
+	}
+	return settings.SupportsVideo
+}
+
+// setSupportsVideoIn records the channel's video declaration into the index,
+// replacing any previous entry. It takes the target map explicitly so the full
+// cache rebuild can populate its private snapshot before publishing it, while
+// the incremental update mutates the live map under the write lock.
+func setSupportsVideoIn(channel2 map[int]struct{}, channel *Channel) {
+	if channel == nil {
+		return
+	}
+	delete(channel2, channel.Id)
+	if supportsVideoForCache(channel) {
+		channel2[channel.Id] = struct{}{}
+	}
+}
+
 // concurrencyLimitForCache returns the channel's configured concurrency limit.
 // It deliberately avoids Channel.GetSetting, whose malformed-JSON self-heal
 // rewrites the database: this runs on the selection/acquire hot path, so one
@@ -137,6 +174,7 @@ func InitChannelCache() {
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
 	newChannel2officialFitModels := make(map[int]map[string]struct{})
 	newChannel2concurrencyLimits := make(map[int]int)
+	newChannel2supportsVideo := make(map[int]struct{})
 	var channels []*Channel
 	DB.Find(&channels)
 	for _, channel := range channels {
@@ -149,6 +187,7 @@ func InitChannelCache() {
 		}
 		setOfficialFitModelsIn(newChannel2officialFitModels, channel)
 		setConcurrencyLimitIn(newChannel2concurrencyLimits, channel)
+		setSupportsVideoIn(newChannel2supportsVideo, channel)
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
@@ -214,6 +253,7 @@ func InitChannelCache() {
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channel2officialFitModels = newChannel2officialFitModels
 	channel2concurrencyLimits = newChannel2concurrencyLimits
+	channel2supportsVideo = newChannel2supportsVideo
 	group2model2channelSelection = newGroup2model2channelSelection
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
@@ -238,7 +278,7 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 		return getChannelWithFilters(group, model, retry, filters)
 	}
 	requestPath, _ := requestPathOrFilters.(string)
-	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false)
+	return GetRandomSatisfiedChannelPinned(group, model, retry, requestPath, nil, false, false)
 }
 
 // OfficialFitChannelType returns the channel type that counts as the official
@@ -366,11 +406,13 @@ func officialFitPreferenceApplied(channels []int, model string, pinOfficial bool
 
 // GetRandomSatisfiedChannelPinned behaves like
 // GetRandomSatisfiedChannelWithBlockedChannels but can narrow deepseek-v4
-// candidates to the official channel when pinOfficial is set for the request.
-func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool) (*Channel, error) {
+// candidates to the official channel when pinOfficial is set for the request,
+// and to video-capable channels when videoOnly is set (a request carrying a
+// video part must not reach an upstream that answers from text alone).
+func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, pinOfficial)
+		return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, pinOfficial, videoOnly)
 	}
 
 	channelSyncLock.RLock()
@@ -383,6 +425,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
 	channels = preferOfficialFitChannels(channels, model, pinOfficial)
+	channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
@@ -390,6 +433,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
 		channels = preferOfficialFitChannels(channels, model, pinOfficial)
+		channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 	}
 
 	if len(channels) == 0 {
@@ -403,7 +447,9 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
 	}
 
-	if requestPath == "" && len(blockedChannels) == 0 && !officialFitPreferenceApplied(channels, model, pinOfficial) {
+	// The metadata fast path picks from the whole model's candidate set, so it
+	// must not be used when video narrowing may have removed candidates above.
+	if !videoOnly && requestPath == "" && len(blockedChannels) == 0 && !officialFitPreferenceApplied(channels, model, pinOfficial) {
 		if model2selection, ok := group2model2channelSelection[group]; ok {
 			if selection := model2selection[model]; selection != nil {
 				return selectChannelFromMetadata(group, model, retry, selection)
@@ -589,6 +635,24 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 	return filtered
 }
 
+// filterChannelIDsByVideoCapability drops channels that have not declared they
+// can read video parts when the request carries one. Caller must hold
+// channelSyncLock (read lock). The input slice is never mutated. A channel
+// missing from the id map is dropped: an unknown capability cannot be treated
+// as capable.
+func filterChannelIDsByVideoCapability(channels []int, videoOnly bool) []int {
+	if !videoOnly || len(channels) == 0 {
+		return channels
+	}
+	filtered := make([]int, 0, len(channels))
+	for _, channelId := range channels {
+		if _, ok := channel2supportsVideo[channelId]; ok {
+			filtered = append(filtered, channelId)
+		}
+	}
+	return filtered
+}
+
 func CacheGetChannel(id int) (*Channel, error) {
 	if !common.MemoryCacheEnabled {
 		return GetChannelById(id, true)
@@ -698,6 +762,10 @@ func CacheUpdateChannel(channel *Channel) {
 		channel2concurrencyLimits = make(map[int]int)
 	}
 	setConcurrencyLimitIn(channel2concurrencyLimits, channel)
+	if channel2supportsVideo == nil {
+		channel2supportsVideo = make(map[int]struct{})
+	}
+	setSupportsVideoIn(channel2supportsVideo, channel)
 	group2model2channelSelection = nil
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
 	// Lock ordering: do NOT hold channelSyncLock while calling

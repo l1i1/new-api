@@ -8,6 +8,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/tidwall/gjson"
 )
 
 // Kimi vision-family video token model.
@@ -251,6 +252,64 @@ func CountVideoTokensForMeta(meta *types.TokenCountMeta) int {
 	return total
 }
 
+// RequestCarriesVideo reports whether a parsed request contains a video part.
+// Routing uses it to keep media-blind upstreams out of the candidate set: such
+// an upstream answers from the text alone, producing a plausible description of
+// nothing. Only chat-shaped requests can carry video; anything else reports
+// false so unrelated relays keep their existing channel choice.
+func RequestCarriesVideo(request dto.Request) bool {
+	chat, ok := request.(*dto.GeneralOpenAIRequest)
+	if !ok || chat == nil {
+		return false
+	}
+	for _, message := range chat.Messages {
+		if message.Content == nil {
+			continue
+		}
+		for _, part := range message.ParseContent() {
+			if part.Type == dto.ContentTypeVideoUrl && part.ToFileSource() != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RequestBytesCarryVideo reports whether a raw JSON request body contains a
+// video part. It is the body-level form of RequestCarriesVideo, used before the
+// request DTO exists (channel selection runs ahead of relay validation).
+//
+// The scan looks for the content-part object that carries a video_url, rather
+// than for the bare string anywhere in the payload: a prompt that merely
+// mentions "video_url" must not be treated as a video request, or it would be
+// routed away from every channel that cannot read video. A part that names the
+// type without a url carries no media and is not a video request, matching
+// RequestCarriesVideo, which requires a resolvable source.
+func RequestBytesCarryVideo(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	result := gjson.GetBytes(body, "messages")
+	if !result.Exists() || !result.IsArray() {
+		return false
+	}
+	for _, message := range result.Array() {
+		content := message.Get("content")
+		if !content.IsArray() {
+			continue
+		}
+		for _, part := range content.Array() {
+			if part.Get("type").String() != dto.ContentTypeVideoUrl {
+				continue
+			}
+			if part.Get("video_url").Exists() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // VideoUsageLooksCounted reports whether a prompt count (from an upstream or
 // from a tokenizer endpoint) can have included the media, given the locally
 // priced video part. The measured failure reports the text-only count — 27 or
@@ -268,20 +327,28 @@ func VideoUsageLooksCounted(promptTokens, videoTokens int) bool {
 // correctedVideoBillingUsage returns a copy of usage carrying the video-aware
 // prompt count, or ok=false when no correction applies. The input is never
 // mutated: callers keep the upstream-reported number for logging and audit.
+//
+// The decision reads the settings of the channel that actually served the
+// request (info.ChannelMeta is built per attempt and is populated by the time
+// settlement runs), never a channel that was merely tried first, so a
+// cross-channel retry cannot bill one channel's correction against another's
+// report.
 func correctedVideoBillingUsage(info *relaycommon.RelayInfo, usage *dto.Usage) (*dto.Usage, bool) {
-	if info == nil {
+	if info == nil || info.ChannelMeta == nil || !info.ChannelOtherSettings.EstimatesVideoUsage() {
 		return nil, false
 	}
 	corrected := dto.Usage{}
 	if usage != nil {
 		corrected = *usage
 	}
-	switch total := info.GetVideoPromptTotal(); {
-	case total > 0:
-		// Authoritative: the tokenizer priced text and media together.
+	videoTokens := info.GetVideoTokens()
+	switch total, ok := videoPromptTotalForSettlement(info); {
+	case ok && VideoUsageLooksCounted(total, videoTokens):
+		// Authoritative: the tokenizer priced text and media together. The
+		// media-aware guard applies here too, so an endpoint that saw no video
+		// cannot replace the report with a text-only number.
 		corrected.PromptTokens = total
 	default:
-		videoTokens := info.GetVideoTokens()
 		if videoTokens <= 0 || VideoUsageLooksCounted(usagePromptTokens(usage), videoTokens) {
 			return nil, false
 		}
@@ -295,6 +362,21 @@ func correctedVideoBillingUsage(info *relaycommon.RelayInfo, usage *dto.Usage) (
 	payload.BillingUsage = nil
 	corrected.BillingUsage = dto.NewEstimatedOpenAIChatBillingUsage(&payload)
 	return &corrected, true
+}
+
+// videoPromptTotalForSettlement prefers the request-scoped value (set by tests
+// and by any synchronous caller) and otherwise reads the prefetched endpoint
+// answer from its cache. The cache read never blocks: a cold entry means the
+// prefetch is still in flight or failed, and the caller falls back to the
+// locally priced video part.
+func videoPromptTotalForSettlement(info *relaycommon.RelayInfo) (int, bool) {
+	if total := info.GetVideoPromptTotal(); total > 0 {
+		return total, true
+	}
+	if info.Request == nil {
+		return 0, false
+	}
+	return VideoPromptTotalForRequest(info.Request)
 }
 
 // CountVideoToken prices one video file part on the official Kimi vision

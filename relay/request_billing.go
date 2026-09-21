@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -54,30 +55,27 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	}
 	info.SetEstimatePromptTokens(tokens)
 
-	// Channels marked as serving video with untrustworthy usage accounting
-	// (ChannelOtherSettings.VideoUsageMode == "estimate") carry a video-aware
-	// prompt count into settlement, because such an upstream reports a constant
-	// prompt count that ignores the media entirely. Skipped unless the channel
-	// opted in, and skipped when the request carries no video part, so the
-	// default path parses no containers and makes no outbound call.
-	if info.ChannelOtherSettings.EstimatesVideoUsage() {
-		localVideoTokens := service.CountVideoTokensForMeta(meta)
-		if localVideoTokens > 0 {
-			// Prefer the provider tokenizer when an operator configured one: it
-			// prices text and media together and is authoritative. Its answer
-			// must clear the same "the media was counted" bar as the upstream
-			// count, so an endpoint that sees no video cannot replace the local
-			// price with a text-only number.
-			if total, ok := service.VideoPromptTotalFromEndpoint(info.UpstreamModelName, info.Request); ok &&
-				service.VideoUsageLooksCounted(total, localVideoTokens) {
-				info.SetVideoPromptTotal(total)
-			}
-			if info.GetVideoPromptTotal() == 0 {
-				info.SetVideoTokens(localVideoTokens)
-			}
+	// A channel may declare that its upstream serves video but reports usage
+	// that ignores the media (ChannelOtherSettings.VideoUsageMode == "estimate").
+	// For such a channel the video part is priced here — independent of the
+	// global token-counting switch, because the number is needed for settlement
+	// rather than for estimation — and the provider tokenizer's exact answer is
+	// fetched in the background so settlement can prefer it.
+	//
+	// The channel settings are read from the request context rather than from
+	// info.ChannelMeta: this runs before any handler builds ChannelMeta (the
+	// retry loop initializes it per attempt), so that field is still nil here.
+	// The gate is therefore about the channel selected so far; settlement
+	// re-decides from the channel that actually served the request, so a
+	// cross-channel retry cannot misprice anything — at worst the endpoint's
+	// precision is missed once and the local price is billed.
+	if otherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting); ok &&
+		otherSettings.EstimatesVideoUsage() && info.Request != nil {
+		if videoTokens := service.CountVideoTokensForMeta(info.Request.GetTokenCountMeta()); videoTokens > 0 {
+			info.SetVideoTokens(videoTokens)
+			service.PrefetchVideoPromptTotal(info.UpstreamModelName, info.Request)
 		}
 	}
-
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))

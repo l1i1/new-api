@@ -11,6 +11,7 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterRequestPath,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterResponsesWebSocket,
+	dto.FilterVideoRequest,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -106,6 +107,10 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		return filter.TaskPluginKey == "" || slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
 	case dto.FilterResponsesWebSocket:
 		return (ch.Type == constant.ChannelTypeOpenAI || ch.Type == constant.ChannelTypeCodex) && ch.GetSetting().ResponsesWebSocketEnabled
+	case dto.FilterVideoRequest:
+		// A channel with no settings cannot have declared the capability, so an
+		// undeclared channel is excluded rather than assumed capable.
+		return supportsVideoForCache(ch)
 	default:
 		return true
 	}

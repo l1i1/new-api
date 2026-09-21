@@ -151,10 +151,21 @@ func TestEstimatedBillingUsageMarksTheLogPath(t *testing.T) {
 }
 
 func TestVideoUsageModeValidation(t *testing.T) {
-	for _, ok := range []string{"", "estimate", "  estimate  "} {
-		settings := &dto.ChannelOtherSettings{VideoUsageMode: ok}
+	// Empty is always valid: it leaves the upstream-reported values untouched.
+	if err := (&dto.ChannelOtherSettings{}).ValidateVideoUsageMode(); err != nil {
+		t.Errorf("empty mode must validate: %v", err)
+	}
+	// A usage mode requires the video capability on the same channel, because a
+	// video request is never routed to a channel that has not declared it — a
+	// mode alone would be dead configuration that reads as if it worked.
+	for _, mode := range []string{"estimate", "  estimate  "} {
+		settings := &dto.ChannelOtherSettings{SupportsVideo: true, VideoUsageMode: mode}
 		if err := settings.ValidateVideoUsageMode(); err != nil {
-			t.Errorf("mode %q must validate: %v", ok, err)
+			t.Errorf("mode %q with the capability must validate: %v", mode, err)
+		}
+		modeOnly := &dto.ChannelOtherSettings{VideoUsageMode: mode}
+		if err := modeOnly.ValidateVideoUsageMode(); err == nil {
+			t.Errorf("mode %q without the capability must be rejected", mode)
 		}
 	}
 	if !(&dto.ChannelOtherSettings{VideoUsageMode: "estimate"}).EstimatesVideoUsage() {
@@ -164,7 +175,7 @@ func TestVideoUsageModeValidation(t *testing.T) {
 		t.Fatal("empty must leave the upstream values untouched")
 	}
 	for _, bad := range []string{"true", "estiamte", "on"} {
-		settings := &dto.ChannelOtherSettings{VideoUsageMode: bad}
+		settings := &dto.ChannelOtherSettings{SupportsVideo: true, VideoUsageMode: bad}
 		if err := settings.ValidateVideoUsageMode(); err == nil {
 			t.Errorf("mode %q must be rejected at save time", bad)
 		}
