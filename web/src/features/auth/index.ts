@@ -85,7 +85,18 @@ export {
   hasOAuthProviders,
 } from './lib/oauth'
 
-export { getAffiliateCode, saveAffiliateCode } from './lib/storage'
+export {
+  clearAffiliateCode,
+  getAffiliateCode,
+  saveAffiliateCode,
+} from './lib/storage'
+export {
+  AFF_CODE_PARAM,
+  PARTNER_CODE_PARAM,
+  captureAffiliateCode,
+  readAffiliateCode,
+  urlWithAffiliateCode,
+} from './lib/affiliate-param'
 
 export {
   isValidOTP,

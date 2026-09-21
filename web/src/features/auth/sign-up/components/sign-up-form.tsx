@@ -45,9 +45,10 @@ import { registerFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useEmailVerification } from '@/features/auth/hooks/use-email-verification'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
+import { captureAffiliateCode } from '@/features/auth/lib/affiliate-param'
 import {
+  clearAffiliateCode,
   getAffiliateCode,
-  saveAffiliateCode,
 } from '@/features/auth/lib/storage'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -133,10 +134,9 @@ export function SignUpForm({
   }, [requiresLegalConsent])
 
   useEffect(() => {
-    const aff = new URLSearchParams(window.location.search).get('aff')?.trim()
-    if (aff) {
-      saveAffiliateCode(aff)
-    }
+    // The landing page already captured the code; this covers a visitor who
+    // opened the sign-up page directly with one in the URL.
+    captureAffiliateCode(window.location.search)
   }, [])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
@@ -171,6 +171,8 @@ export function SignUpForm({
       })
 
       if (res?.success) {
+        // The attribution is recorded now, so the stored code has done its job.
+        clearAffiliateCode()
         toast.success(t('Account created! Please sign in'))
         redirectToLogin()
       } else {

@@ -59,3 +59,18 @@ export function saveAffiliateCode(code: string): void {
     console.error('Failed to save affiliate code:', error)
   }
 }
+
+/**
+ * Drop the stored code. A successful registration is the end of its life: the
+ * attribution is recorded server-side, and a stale code left behind would only
+ * risk claiming a later account for the same inviter.
+ */
+export function clearAffiliateCode(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(STORAGE_KEYS.AFFILIATE)
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to clear affiliate code:', error)
+  }
+}

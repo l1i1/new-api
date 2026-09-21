@@ -21,6 +21,10 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 
+import {
+  captureAffiliateCode,
+  urlWithAffiliateCode,
+} from '@/features/auth/lib/affiliate-param'
 import { installBuildMetadata } from '@/lib/build-metadata'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
@@ -76,6 +80,17 @@ router.subscribe('onResolved', () => {
     getCachedSystemName()
   )
   document.title = title ?? serverInjectedTitle
+
+  // Invite codes are sticky for the whole visit: whatever this landing page
+  // carried is persisted, and the URL keeps carrying it so the visitor's next
+  // page (and any link they copy) still attributes the eventual registration.
+  // The rewrite is a plain history update, so the router's own search params
+  // and every route's search schema stay untouched.
+  const code = captureAffiliateCode(window.location.search)
+  const next = urlWithAffiliateCode(window.location.href, code)
+  if (next) {
+    window.history.replaceState(window.history.state, '', next)
+  }
 })
 
 // Render the app
