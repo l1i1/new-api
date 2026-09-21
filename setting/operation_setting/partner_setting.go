@@ -3,6 +3,8 @@ package operation_setting
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -19,11 +21,85 @@ type PartnerSetting struct {
 
 // PartnerEntry binds inviter user IDs to one partner and its display copy.
 type PartnerEntry struct {
-	ID             string `json:"id"`               // 合作方标识，如 tommy
-	InviterUserIDs []int  `json:"inviter_user_ids"` // 归属该合作方的邀请人账号
-	Contact        string `json:"contact"`          // 替换全局 topup_contact 的展示文案（Markdown/HTML）
-	Notice         string `json:"notice"`           // 合作方公告文本区（Markdown/HTML，支持 tnt 分块）
-	Version        int    `json:"version"`          // 文案版本号，每次写入递增
+	ID             string              `json:"id"`               // 合作方标识，如 tommy
+	InviterUserIDs []int               `json:"inviter_user_ids"` // 归属该合作方的邀请人账号
+	InviteCodes    []PartnerInviteCode `json:"invite_codes,omitempty"`
+	Contact        string              `json:"contact"` // 替换全局 topup_contact 的展示文案（Markdown/HTML）
+	Notice         string              `json:"notice"`  // 合作方公告文本区（Markdown/HTML，支持 tnt 分块）
+	Version        int                 `json:"version"` // 文案版本号，每次写入递增
+}
+
+// PartnerInviteCode is one partner-console issued invite code. Registration
+// resolves the code to InviterID, which is a synthetic id: a console-created
+// bucket carries no new-api account, so the code is the whole identity behind
+// the attribution. The console owns this list (it is rewritten on every push),
+// because a bucket is created and named in the console, not on the site.
+type PartnerInviteCode struct {
+	Code      string `json:"code"`
+	InviterID int    `json:"inviter_id"`
+}
+
+const (
+	// PartnerInviteCodeMinLength keeps console codes out of the site's own
+	// aff-code namespace: real accounts get exactly 4 alphanumeric characters
+	// (model.User.Insert calls common.GetRandomString(4)), so a 5+ character
+	// code can never shadow a real account's invite link.
+	PartnerInviteCodeMinLength = 5
+	PartnerInviteCodeMaxLength = 32
+
+	// PartnerSyntheticInviterIDFloor opens the id range reserved for
+	// console-issued codes. Real accounts auto-increment from 1, so the gap
+	// leaves room for a billion accounts before the ranges could ever meet.
+	PartnerSyntheticInviterIDFloor = 1_000_000_000
+	// PartnerSyntheticInviterIDCeiling keeps synthetic ids inside int32, which
+	// is what users.inviter_id is.
+	PartnerSyntheticInviterIDCeiling = 2_000_000_000
+
+	// PartnerMaxInviteCodes bounds one partner's code list, matching the
+	// inviter-id cap the push endpoint already enforces.
+	PartnerMaxInviteCodes = 200
+)
+
+var partnerInviteCodeRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ValidatePartnerInviteCode reports whether a console-issued code is usable as
+// an invite link parameter.
+func ValidatePartnerInviteCode(code string) error {
+	if len(code) < PartnerInviteCodeMinLength || len(code) > PartnerInviteCodeMaxLength {
+		return fmt.Errorf("invite code must hold %d-%d characters", PartnerInviteCodeMinLength, PartnerInviteCodeMaxLength)
+	}
+	if !partnerInviteCodeRE.MatchString(code) {
+		return errors.New("invite code must hold letters, digits, underscore or hyphen")
+	}
+	return nil
+}
+
+// ValidatePartnerInviteCodeInviterID rejects an inviter id outside the reserved
+// range: a code whose id could be a real account's would attribute invitees to
+// that account.
+func ValidatePartnerInviteCodeInviterID(inviterID int) error {
+	if inviterID < PartnerSyntheticInviterIDFloor || inviterID > PartnerSyntheticInviterIDCeiling {
+		return fmt.Errorf("inviter id must be within [%d, %d]", PartnerSyntheticInviterIDFloor, PartnerSyntheticInviterIDCeiling)
+	}
+	return nil
+}
+
+// sanitizePartnerInviteCodes drops entries a hand-edited option row could carry
+// that would break attribution, and keeps the first of each duplicated code.
+func sanitizePartnerInviteCodes(codes []PartnerInviteCode) []PartnerInviteCode {
+	cleaned := make([]PartnerInviteCode, 0, len(codes))
+	seen := make(map[string]bool, len(codes))
+	for _, entry := range codes {
+		if ValidatePartnerInviteCode(entry.Code) != nil || ValidatePartnerInviteCodeInviterID(entry.InviterID) != nil {
+			continue
+		}
+		if seen[entry.Code] {
+			continue
+		}
+		seen[entry.Code] = true
+		cleaned = append(cleaned, entry)
+	}
+	return cleaned
 }
 
 // PartnerSettingOptionKey is the options-table row holding the serialized
@@ -68,6 +144,9 @@ func LoadPartnerSettingFromJSONString(value string) {
 	if partnerSetting.Partners == nil {
 		partnerSetting.Partners = []PartnerEntry{}
 	}
+	for i := range partnerSetting.Partners {
+		partnerSetting.Partners[i].InviteCodes = sanitizePartnerInviteCodes(partnerSetting.Partners[i].InviteCodes)
+	}
 }
 
 func init() {
@@ -90,6 +169,9 @@ func GetPartnerSetting() PartnerSetting {
 }
 
 // FindPartnerByInviter returns the partner owning an inviter account, if any.
+// Console-issued invite codes count: their synthetic ids are inviter ids too,
+// which is what keeps white-label stamping and the invite-reward exclusion
+// working for buckets that have no account behind them.
 func FindPartnerByInviter(inviterID int) (PartnerEntry, bool) {
 	if inviterID <= 0 {
 		return PartnerEntry{}, false
@@ -100,8 +182,49 @@ func FindPartnerByInviter(inviterID int) (PartnerEntry, bool) {
 				return entry, true
 			}
 		}
+		for _, code := range entry.InviteCodes {
+			if code.InviterID == inviterID {
+				return entry, true
+			}
+		}
 	}
 	return PartnerEntry{}, false
+}
+
+// FindInviterIDByPartnerCode resolves a console-issued invite code to its
+// synthetic inviter id. Codes are unique across partners (UpsertPartnerInviteCodes
+// refuses duplicates), so the first match is the only match.
+func FindInviterIDByPartnerCode(code string) (int, bool) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return 0, false
+	}
+	for _, entry := range GetPartnerSetting().Partners {
+		for _, candidate := range entry.InviteCodes {
+			if candidate.Code == code {
+				return candidate.InviterID, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// IsPartnerCodeInviter reports whether an inviter id belongs to a
+// console-issued invite code rather than a real account. Registration skips the
+// site's own invite bookkeeping for these ids: there is no users row to carry
+// aff_count or aff_quota, and a partner's money is settled in the console.
+func IsPartnerCodeInviter(inviterID int) bool {
+	if inviterID < PartnerSyntheticInviterIDFloor {
+		return false
+	}
+	for _, entry := range GetPartnerSetting().Partners {
+		for _, code := range entry.InviteCodes {
+			if code.InviterID == inviterID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // FindPartner returns the partner entry by ID.
@@ -230,3 +353,84 @@ func UpsertPartnerMembers(partnerID string, inviterUserIDs []int, persist func(k
 
 // ErrPartnerNotFound is returned when a partner entry does not exist.
 var ErrPartnerNotFound = errors.New("partner not found")
+
+// UpsertPartnerInviteCodes replaces the console-issued invite codes of one
+// partner, creating the entry when absent. The console owns this list — it is
+// rebuilt from the partner's buckets on every push — so unlike the add-only
+// member merge this is a replace. Replacing is safe for attribution: a dropped
+// code stops working for new registrations, while invitees already attributed
+// keep the inviter id stored on their own row.
+func UpsertPartnerInviteCodes(partnerID string, codes []PartnerInviteCode, persist func(key, value string) error) (PartnerEntry, error) {
+	partnerID = strings.TrimSpace(partnerID)
+	if partnerID == "" {
+		return PartnerEntry{}, errors.New("partner id is required")
+	}
+	if len(codes) > PartnerMaxInviteCodes {
+		return PartnerEntry{}, fmt.Errorf("at most %d invite codes per partner", PartnerMaxInviteCodes)
+	}
+	cleaned := make([]PartnerInviteCode, 0, len(codes))
+	seen := make(map[string]bool, len(codes))
+	for _, entry := range codes {
+		if err := ValidatePartnerInviteCode(entry.Code); err != nil {
+			return PartnerEntry{}, fmt.Errorf("invite code %q: %w", entry.Code, err)
+		}
+		if err := ValidatePartnerInviteCodeInviterID(entry.InviterID); err != nil {
+			return PartnerEntry{}, fmt.Errorf("invite code %q: %w", entry.Code, err)
+		}
+		if seen[entry.Code] {
+			return PartnerEntry{}, fmt.Errorf("duplicate invite code %q", entry.Code)
+		}
+		seen[entry.Code] = true
+		cleaned = append(cleaned, entry)
+	}
+
+	partnerSettingMu.Lock()
+	snapshot, snapshotErr := json.Marshal(partnerSetting)
+	if snapshotErr != nil {
+		partnerSettingMu.Unlock()
+		return PartnerEntry{}, snapshotErr
+	}
+	// Codes resolve globally at registration, so the same code under two
+	// partners would attribute to whichever entry is scanned first.
+	for _, entry := range partnerSetting.Partners {
+		if entry.ID == partnerID {
+			continue
+		}
+		for _, candidate := range entry.InviteCodes {
+			if seen[candidate.Code] {
+				partnerSettingMu.Unlock()
+				return PartnerEntry{}, fmt.Errorf("invite code %q already belongs to partner %s", candidate.Code, entry.ID)
+			}
+		}
+	}
+	var result PartnerEntry
+	found := false
+	for i, entry := range partnerSetting.Partners {
+		if entry.ID != partnerID {
+			continue
+		}
+		partnerSetting.Partners[i].InviteCodes = cleaned
+		result = partnerSetting.Partners[i]
+		found = true
+		break
+	}
+	if !found {
+		partnerSetting.Partners = append(partnerSetting.Partners, PartnerEntry{ID: partnerID, InviteCodes: cleaned})
+		result = partnerSetting.Partners[len(partnerSetting.Partners)-1]
+	}
+	after, marshalErr := json.Marshal(partnerSetting)
+	partnerSettingMu.Unlock()
+	if marshalErr != nil {
+		partnerSettingMu.Lock()
+		_ = json.Unmarshal(snapshot, &partnerSetting)
+		partnerSettingMu.Unlock()
+		return PartnerEntry{}, marshalErr
+	}
+	if err := persistPartnerSetting(after, persist); err != nil {
+		partnerSettingMu.Lock()
+		_ = json.Unmarshal(snapshot, &partnerSetting)
+		partnerSettingMu.Unlock()
+		return PartnerEntry{}, err
+	}
+	return result, nil
+}

@@ -729,6 +729,32 @@ func (user *User) Insert(inviterId int) error {
 	return nil
 }
 
+// finishInviteBookkeeping applies the inviter side of a completed registration.
+// A console-issued partner invite code carries a synthetic inviter id with no
+// account behind it: there is no aff_count to credit and no aff_quota to grant
+// (a partner is settled in the partner console), so the site's own invite
+// counters and logs are skipped for it. The white-label stamp and the invitee's
+// own grant always apply.
+func finishInviteBookkeeping(user *User, inviterId int) {
+	codeInviter := operation_setting.IsPartnerCodeInviter(inviterId)
+	if !codeInviter {
+		if err := inviteUser(inviterId); err != nil {
+			common.SysLog(fmt.Sprintf("failed to record invite registration for inviter %d: %v", inviterId, err))
+		}
+	}
+	stampWhiteLabelForInviter(user.Id, inviterId)
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		return
+	}
+	if common.QuotaForInvitee > 0 {
+		_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
+		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
+	}
+	if common.QuotaForInviter > 0 && !codeInviter {
+		RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
+	}
+}
+
 func (user *User) finishInsert(inviterId int) {
 	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
@@ -749,19 +775,7 @@ func (user *User) finishInsert(inviterId int) {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
 	if inviterId != 0 {
-		if err := inviteUser(inviterId); err != nil {
-			common.SysLog(fmt.Sprintf("failed to record invite registration for inviter %d: %v", inviterId, err))
-		}
-		stampWhiteLabelForInviter(user.Id, inviterId)
-		if operation_setting.IsPaymentComplianceConfirmed() {
-			if common.QuotaForInvitee > 0 {
-				_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-				RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
-			}
-			if common.QuotaForInviter > 0 {
-				RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
-			}
-		}
+		finishInviteBookkeeping(user, inviterId)
 	}
 }
 
@@ -811,19 +825,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
 	if inviterId != 0 {
-		if err := inviteUser(inviterId); err != nil {
-			common.SysLog(fmt.Sprintf("failed to record invite registration for inviter %d: %v", inviterId, err))
-		}
-		stampWhiteLabelForInviter(user.Id, inviterId)
-		if operation_setting.IsPaymentComplianceConfirmed() {
-			if common.QuotaForInvitee > 0 {
-				_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-				RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
-			}
-			if common.QuotaForInviter > 0 {
-				RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
-			}
-		}
+		finishInviteBookkeeping(user, inviterId)
 	}
 }
 

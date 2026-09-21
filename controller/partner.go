@@ -21,6 +21,9 @@ const (
 	partnerContentLimit  = 20000
 	// new-api caps usernames at 20 characters (model.User validate tag).
 	partnerMaxUsernameLength = 20
+	// partnerMaxInviteCodeChecks bounds one validate request; the console
+	// checks a single new code, the cap only stops a runaway client.
+	partnerMaxInviteCodeChecks = 100
 )
 
 // shanghaiMonthRange resolves "2026-09" to the half-open unix range of that
@@ -247,10 +250,11 @@ func PartnerConfig(c *gin.Context) {
 		return
 	}
 	var body struct {
-		PartnerID      string `json:"partner_id"`
-		Contact        string `json:"contact"`
-		Notice         string `json:"notice"`
-		InviterUserIDs []int  `json:"inviter_user_ids"`
+		PartnerID      string                                 `json:"partner_id"`
+		Contact        string                                 `json:"contact"`
+		Notice         string                                 `json:"notice"`
+		InviterUserIDs []int                                  `json:"inviter_user_ids"`
+		InviteCodes    *[]operation_setting.PartnerInviteCode `json:"invite_codes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "request body is invalid")
@@ -264,6 +268,35 @@ func PartnerConfig(c *gin.Context) {
 	if len(body.InviterUserIDs) > partnerMaxInviterIDs {
 		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "inviter_user_ids holds at most 100 ids")
 		return
+	}
+	// An absent field leaves the stored codes alone: a caller that only edits
+	// display copy must not silently retire every invite link. The console
+	// always sends the list, so it stays the owner of what is issued.
+	if body.InviteCodes != nil {
+		codes := *body.InviteCodes
+		for _, code := range codes {
+			if err := operation_setting.ValidatePartnerInviteCode(code.Code); err != nil {
+				writePartnerError(c, http.StatusBadRequest, "partner_invalid", err.Error())
+				return
+			}
+			if err := operation_setting.ValidatePartnerInviteCodeInviterID(code.InviterID); err != nil {
+				writePartnerError(c, http.StatusBadRequest, "partner_invalid", err.Error())
+				return
+			}
+			taken, err := model.AffCodeTakenByUser(code.Code)
+			if err != nil {
+				writePartnerError(c, http.StatusServiceUnavailable, "partner_unavailable", "failed to check the invite code")
+				return
+			}
+			if taken {
+				writePartnerError(c, http.StatusConflict, "partner_conflict", "invite code "+code.Code+" is already a site aff code")
+				return
+			}
+		}
+		if _, err := operation_setting.UpsertPartnerInviteCodes(body.PartnerID, codes, model.UpdateOption); err != nil {
+			writePartnerError(c, http.StatusConflict, "partner_conflict", err.Error())
+			return
+		}
 	}
 	if len(body.InviterUserIDs) > 0 {
 		if _, err := operation_setting.UpsertPartnerMembers(body.PartnerID, body.InviterUserIDs, model.UpdateOption); err != nil {
@@ -280,6 +313,55 @@ func PartnerConfig(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"partner_id": body.PartnerID, "version": version})
+}
+
+// partnerInviteCodeCheck is one code's verdict in a validate response.
+type partnerInviteCodeCheck struct {
+	Code   string `json:"code"`
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// PartnerInviteCodeValidate answers "may this code be issued?" before the
+// console stores a bucket, so a taken code is refused at creation instead of
+// leaving a bucket whose invite link can never attribute anyone. The site's own
+// aff codes are the only competition worth checking: console codes are 5+
+// characters, the site's are exactly 4, and the console already knows every
+// code it ever issued.
+func PartnerInviteCodeValidate(c *gin.Context) {
+	if !requirePartnerBypass(c) {
+		return
+	}
+	var body struct {
+		Codes []string `json:"codes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "request body is invalid")
+		return
+	}
+	if len(body.Codes) == 0 || len(body.Codes) > partnerMaxInviteCodeChecks {
+		writePartnerError(c, http.StatusBadRequest, "partner_invalid", "codes holds 1-100 entries")
+		return
+	}
+	results := make([]partnerInviteCodeCheck, 0, len(body.Codes))
+	for _, raw := range body.Codes {
+		code := strings.TrimSpace(raw)
+		result := partnerInviteCodeCheck{Code: code, OK: true}
+		if err := operation_setting.ValidatePartnerInviteCode(code); err != nil {
+			result.OK, result.Reason = false, "format"
+		} else {
+			taken, err := model.AffCodeTakenByUser(code)
+			if err != nil {
+				writePartnerError(c, http.StatusServiceUnavailable, "partner_unavailable", "failed to check the invite code")
+				return
+			}
+			if taken {
+				result.OK, result.Reason = false, "user_aff_code"
+			}
+		}
+		results = append(results, result)
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results})
 }
 
 // PartnerContent returns one partner's display copy for self-service editing.

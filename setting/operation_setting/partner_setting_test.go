@@ -3,6 +3,7 @@ package operation_setting_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -108,5 +109,130 @@ func TestPartnerSettingPersistsThroughCallback(t *testing.T) {
 	operation_setting.LoadPartnerSettingFromJSONString("")
 	if _, ok := operation_setting.FindPartner("test-persist"); !ok {
 		t.Fatal("empty payload wiped config")
+	}
+}
+
+// TestPartnerInviteCodeValidation pins the rule that keeps console codes out of
+// the site's aff-code namespace: real codes are exactly four characters, so a
+// four-character partner code is refused.
+func TestPartnerInviteCodeValidation(t *testing.T) {
+	for _, bad := range []string{"", "O30", "O30E", "with space", "sla/sh", strings.Repeat("x", 33)} {
+		if err := operation_setting.ValidatePartnerInviteCode(bad); err == nil {
+			t.Fatalf("code %q accepted", bad)
+		}
+	}
+	for _, good := range []string{"O30E-G1", "TOMMY-1", "abcde", strings.Repeat("x", 32)} {
+		if err := operation_setting.ValidatePartnerInviteCode(good); err != nil {
+			t.Fatalf("code %q rejected: %v", good, err)
+		}
+	}
+	if err := operation_setting.ValidatePartnerInviteCodeInviterID(7); err == nil {
+		t.Fatal("real-account id accepted as a synthetic inviter id")
+	}
+	if err := operation_setting.ValidatePartnerInviteCodeInviterID(operation_setting.PartnerSyntheticInviterIDFloor); err != nil {
+		t.Fatalf("floor id rejected: %v", err)
+	}
+}
+
+func TestUpsertPartnerInviteCodesReplacesAndResolves(t *testing.T) {
+	first := operation_setting.PartnerSyntheticInviterIDFloor + 1
+	second := operation_setting.PartnerSyntheticInviterIDFloor + 2
+	entry, err := operation_setting.UpsertPartnerInviteCodes("test-codes", []operation_setting.PartnerInviteCode{
+		{Code: "TEST-CODES-1", InviterID: first},
+		{Code: "TEST-CODES-2", InviterID: second},
+	}, nil)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if len(entry.InviteCodes) != 2 {
+		t.Fatalf("unexpected codes: %+v", entry)
+	}
+	if id, found := operation_setting.FindInviterIDByPartnerCode("TEST-CODES-2"); !found || id != second {
+		t.Fatalf("code did not resolve: id=%d found=%v", id, found)
+	}
+	if !operation_setting.IsPartnerCodeInviter(second) {
+		t.Fatal("code inviter not recognised")
+	}
+	if owner, found := operation_setting.FindPartnerByInviter(second); !found || owner.ID != "test-codes" {
+		t.Fatalf("code inviter not attributed to its partner: %+v %v", owner, found)
+	}
+
+	// A real account keeps the site's own invite bookkeeping.
+	if _, err := operation_setting.UpsertPartnerMembers("test-codes", []int{4242}, nil); err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if operation_setting.IsPartnerCodeInviter(4242) {
+		t.Fatal("mapped real account treated as a code inviter")
+	}
+	if owner, found := operation_setting.FindPartnerByInviter(4242); !found || owner.ID != "test-codes" {
+		t.Fatalf("real account lost its partner: %+v %v", owner, found)
+	}
+
+	// Replace semantics: the console owns the list, so a dropped code stops
+	// resolving while the kept one survives.
+	if _, err := operation_setting.UpsertPartnerInviteCodes("test-codes", []operation_setting.PartnerInviteCode{
+		{Code: "TEST-CODES-1", InviterID: first},
+	}, nil); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if _, found := operation_setting.FindInviterIDByPartnerCode("TEST-CODES-2"); found {
+		t.Fatal("dropped code still resolves")
+	}
+	if id, found := operation_setting.FindInviterIDByPartnerCode("TEST-CODES-1"); !found || id != first {
+		t.Fatalf("kept code lost: id=%d found=%v", id, found)
+	}
+	// The replaced list left the member list alone.
+	if owner, found := operation_setting.FindPartnerByInviter(4242); !found || owner.ID != "test-codes" {
+		t.Fatalf("member list was clobbered: %+v %v", owner, found)
+	}
+}
+
+func TestUpsertPartnerInviteCodesRejectsBadInput(t *testing.T) {
+	valid := operation_setting.PartnerInviteCode{Code: "TEST-CLASH-1", InviterID: operation_setting.PartnerSyntheticInviterIDFloor + 10}
+	if _, err := operation_setting.UpsertPartnerInviteCodes("test-clash-a", []operation_setting.PartnerInviteCode{valid}, nil); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	// The same code under another partner would attribute to whichever entry
+	// the registration scan reaches first.
+	if _, err := operation_setting.UpsertPartnerInviteCodes("test-clash-b", []operation_setting.PartnerInviteCode{valid}, nil); err == nil {
+		t.Fatal("cross-partner duplicate accepted")
+	}
+	if _, err := operation_setting.UpsertPartnerInviteCodes("test-clash-c", []operation_setting.PartnerInviteCode{
+		{Code: "TEST-CLASH-2", InviterID: operation_setting.PartnerSyntheticInviterIDFloor + 11},
+		{Code: "TEST-CLASH-2", InviterID: operation_setting.PartnerSyntheticInviterIDFloor + 12},
+	}, nil); err == nil {
+		t.Fatal("duplicate within one request accepted")
+	}
+	if _, err := operation_setting.UpsertPartnerInviteCodes("test-clash-d", []operation_setting.PartnerInviteCode{
+		{Code: "TEST-CLASH-3", InviterID: 12},
+	}, nil); err == nil {
+		t.Fatal("real-account inviter id accepted")
+	}
+	if _, err := operation_setting.UpsertPartnerInviteCodes("", nil, nil); err == nil {
+		t.Fatal("empty partner id accepted")
+	}
+}
+
+// TestPartnerInviteCodeLoadSanitizes makes a hand-edited option row harmless:
+// a code that could shadow a real aff code, or an id outside the reserved
+// range, is dropped instead of being trusted.
+func TestPartnerInviteCodeLoadSanitizes(t *testing.T) {
+	raw := `{"partners":[{"id":"test-sanitize","invite_codes":[` +
+		`{"code":"O30E","inviter_id":1000000001},` +
+		`{"code":"TEST-SANITIZE-OK","inviter_id":1000000002},` +
+		`{"code":"TEST-SANITIZE-BADID","inviter_id":77},` +
+		`{"code":"TEST-SANITIZE-OK","inviter_id":1000000003}]}]}`
+	operation_setting.LoadPartnerSettingFromJSONString(raw)
+	if id, found := operation_setting.FindInviterIDByPartnerCode("TEST-SANITIZE-OK"); !found || id != 1000000002 {
+		t.Fatalf("valid code lost: id=%d found=%v", id, found)
+	}
+	if _, found := operation_setting.FindInviterIDByPartnerCode("O30E"); found {
+		t.Fatal("four-character code survived hydration")
+	}
+	if _, found := operation_setting.FindInviterIDByPartnerCode("TEST-SANITIZE-BADID"); found {
+		t.Fatal("out-of-range inviter id survived hydration")
+	}
+	if operation_setting.IsPartnerCodeInviter(77) {
+		t.Fatal("real-account id treated as a code inviter after hydration")
 	}
 }
