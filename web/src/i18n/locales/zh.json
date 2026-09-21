@@ -7400,6 +7400,16 @@
     "Multi-key retry error keywords": "换 Key 重试错误关键词",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "上游错误文本包含其中任一关键词（不区分大小写）时，换本渠道的下一个 Key 重试。默认值覆盖余额不足的各种措辞：余额属于 Key，不属于渠道。单 Key 渠道则改为换渠道。",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "命中这些状态码就换渠道重试。支持逗号分隔的状态码与闭区间；400 默认在此，因为上游 400 通常表示「本渠道服务不了这个请求」。本地请求错误永不重试。",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游错误文本包含其中任一关键词（不区分大小写）时换渠道重试，即使状态码本身不会重试。上面的「永不重试」规则优先级更高。"
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "上游错误文本包含其中任一关键词（不区分大小写）时换渠道重试，即使状态码本身不会重试。上面的「永不重试」规则优先级更高。",
+    "Accepts comma-separated status codes and inclusive ranges.": "接受逗号分隔的状态码和包含性范围。",
+    "Activate now": "立即激活",
+    "Activating...": "激活中...",
+    "Later": "稍后",
+    "Plugin activation failed": "插件激活失败",
+    "Plugin saved, activation required": "插件已保存，待激活",
+    "Plugin source exceeds the 8 MiB limit.": "插件源码超过 8 MiB 上限。",
+    "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "按预计输入费用乘以此倍率预扣，不预估输出 token。默认为 1，支持 0.5、1.5 等正小数。最终按实际用量结算，按次和任务计费不受影响。",
+    "Single .js file, up to 8 MiB. Its source is shown below before upload.": "单个 .js 文件，最大 8 MiB。上传前会在下方显示其源码。",
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "此版本已保存但尚未激活。激活后将替换当前版本，也可以稍后在插件详情的“版本”页中激活。"
   }
 }

@@ -16,52 +16,42 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { getCookie } from '@/lib/cookies'
 import {
   CONTENT_LAYOUT_VALUES,
   DEFAULT_THEME_CUSTOMIZATION,
   resolveThemeFont,
-  THEME_COOKIE_KEYS,
   THEME_FONT_VALUES,
   THEME_PRESET_VALUES,
   THEME_RADIUS_VALUES,
   THEME_SCALE_VALUES,
   type ThemeCustomization,
 } from '@/lib/theme-customization'
-
-function readPreference<T extends string>(
-  name: string,
-  allowed: ReadonlySet<T>,
-  fallback: T
-): T {
-  const value = getCookie(name)
-  return value && allowed.has(value as T) ? (value as T) : fallback
-}
+import { readThemePreference, THEME_STORAGE_KEYS } from '@/lib/theme-storage'
 
 export function readThemeCustomization(): ThemeCustomization {
   return {
-    preset: readPreference(
-      THEME_COOKIE_KEYS.preset,
+    preset: readThemePreference(
+      THEME_STORAGE_KEYS.preset,
       THEME_PRESET_VALUES,
       DEFAULT_THEME_CUSTOMIZATION.preset
     ),
-    font: readPreference(
-      THEME_COOKIE_KEYS.font,
+    font: readThemePreference(
+      THEME_STORAGE_KEYS.font,
       THEME_FONT_VALUES,
       DEFAULT_THEME_CUSTOMIZATION.font
     ),
-    radius: readPreference(
-      THEME_COOKIE_KEYS.radius,
+    radius: readThemePreference(
+      THEME_STORAGE_KEYS.radius,
       THEME_RADIUS_VALUES,
       DEFAULT_THEME_CUSTOMIZATION.radius
     ),
-    scale: readPreference(
-      THEME_COOKIE_KEYS.scale,
+    scale: readThemePreference(
+      THEME_STORAGE_KEYS.scale,
       THEME_SCALE_VALUES,
       DEFAULT_THEME_CUSTOMIZATION.scale
     ),
-    contentLayout: readPreference(
-      THEME_COOKIE_KEYS.contentLayout,
+    contentLayout: readThemePreference(
+      THEME_STORAGE_KEYS.contentLayout,
       CONTENT_LAYOUT_VALUES,
       DEFAULT_THEME_CUSTOMIZATION.contentLayout
     ),

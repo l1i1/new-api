@@ -20,7 +20,7 @@
 
 ## 2. 清单的机械来源（每次同步后重跑）
 
-生成时间 2026-09-22；`fork = origin/tokeness/main @ 63ebdca9c`、`upstream/main @ 9310231b3`、`BASE = git merge-base upstream/main origin/tokeness/main = 69a500298`；该范围内自有非 merge 提交 **470 个**。
+生成时间 2026-09-22（rc.40 同步时复核）；`fork = origin/tokeness/main @ b24c2294a`（rc.39 已落地主线）、`upstream/main @ 9310231b3`、本次同步锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 69a500298`；该范围内自有非 merge 提交 **473 个**。
 
 ```bash
 BASE=$(git merge-base upstream/main origin/tokeness/main)
@@ -91,6 +91,8 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 原生 Tokeness 前端（导航定制、首页、站点公告） | `web/src/features/*`、`web/src/hooks/use-notifications.ts`、`web/src/main.tsx` | web 测试 + 实机截图 |
 | 定价展示：动态价、原价划线、tier 表达式、vendor 本地化、CNY 文案 | `web/src/features/pricing/lib/dynamic-price.ts`、`tier-expr.ts`、`web/src/features/pricing/components/model-details.tsx`、`web/src/features/pricing/components/dynamic-pricing-breakdown.tsx` | `web/src/features/pricing/**/__tests__/*` |
 | 卡片本地化（`<tnt l="zh">` 标记解析）与 7 语言键集合契约（当前 7401 键） | `web/src/i18n/locales/*.json`、`web/src/lib/tnt-content.ts` | `.review` 里的 locale 校验脚本（键集合一致 + 0 重复）；发布前必跑 |
+| 主题定制持久化与首屏应用 | `web/src/lib/theme-storage.ts`、`web/src/lib/theme-customization-storage.ts`、`web/src/context/theme-customization-provider.tsx` | `web/src/context/__tests__/theme-preferences.test.tsx`、`web/src/context/__tests__/theme-customization-provider.test.tsx`、`web/src/lib/__tests__/theme-customization.test.ts` |
+| 主题定制：**存储底座取上游**（rc.40 起 localStorage `newapi:theme:v1:*`，cookie 通道废弃），**默认值与首屏应用取 fork**（`preset: sunset-glow`、`radius: none`；`main.tsx` 挂载前应用） | 同上 | 同上；三处（provider / 首屏初始化 / 测试）必须读同一套键 |
 | 测试运行器必须两阶段都跑（vitest + node:test） | `web/scripts/run-tests.mjs`、`web/scripts/node-test-setup.ts` | 运行器自身 + 两段汇总 |
 
 ## 8. 运营、合作方与部署
@@ -113,6 +115,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 渠道健康条数据 | 后端序列字段 ↔ 前端读取字段 | 前端 `recent_success_series` 与后端必须同名（rc35 这里错配过） |
 | 流式 usage / `stream_status` | 后端写入 ↔ 日志与前端读取 | 上游 SSE 提前 EOF 时的语义 |
 | locale 键集合 | 7 个 locale 文件 | 键集合完全一致、0 重复、无 BOM/格式翻动 |
+| 主题偏好存储与首屏应用 | `theme-customization-provider.tsx` ↔ `initializeThemeCustomizationDom`（`web/src/main.tsx`） | 换存储底座时两侧一起换；键集合必须一致 |
 | 邀请码与账本字段 | new-api ↔ `tools/partner-console`（根仓库） | 跨仓库，必须同批发布 |
 | 估算缓存的模型 id 与键 | 预取端 ↔ 结算端 | 两端都必须是 `OriginModelName` |
 | 计费数量与配额字段 | `relay/common/relay_info.go` ↔ 前端展示 | 改名/改形状必须同批 |

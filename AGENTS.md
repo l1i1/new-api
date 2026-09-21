@@ -201,6 +201,8 @@ Resolving an upstream `rcNN` conflict by selecting one side's whole file can sil
 
 **Trust the tree, not the history.** "This was fixed before" does not mean it is present now, because an upstream merge can revert a fork fix that is still an ancestor of HEAD. Verify against current file content. Before attributing a commit to the fork or to upstream, check its author and `git merge-base --is-ancestor` instead of assuming.
 
+**One process, many files:** `bun test` runs every `node:test` file in a single process, so a file that installs `window`, `localStorage`, or another browser global at module scope silently changes the environment branch every later file takes — in the rc.40 sync that showed up as 63 unrelated files failing at import. Install such globals inside the test that needs them and delete them afterwards. Test files in `src` and `scripts` share this process.
+
 **Test-runner coverage:** `bun run test` must execute both Vitest and `node:test` files even when the first phase fails, and return a nonzero status if either phase fails. Keep exact file paths for Bun to avoid matching sibling Vitest files. The runner used to exit after a failed Vitest phase, hiding `node:test` regressions. Verify both phase summaries after shared-library changes. Some upstream-authored tests (pricing, usage-logs, models) fail against the fork implementation as a stable baseline; re-check any failure against that baseline so a real new regression is never buried among them.
 
 ### Project Governance

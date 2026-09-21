@@ -28,11 +28,29 @@ Object.defineProperty(globalThis, 'document', {
   configurable: true,
   value: domWindow.document,
 })
+// The storage helpers read window.localStorage. Install the fixture window
+// only inside this file's test and remove it again, because every node:test
+// file shares one process: a window/localStorage pair that leaks out of here
+// changes how the other files take their environment branches.
+function installStorageGlobals() {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: domWindow,
+  })
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: domWindow.localStorage,
+  })
+}
+
+function removeStorageGlobals() {
+  Reflect.deleteProperty(globalThis, 'window')
+  Reflect.deleteProperty(globalThis, 'localStorage')
+}
 
 describe('Tokeness theme defaults', () => {
   afterEach(() => {
-    document.cookie = 'theme_preset=; path=/; max-age=0'
-    document.cookie = 'theme_radius=; path=/; max-age=0'
+    removeStorageGlobals()
     document.body.removeAttribute('data-theme-preset')
     document.body.removeAttribute('data-theme-radius')
   })
@@ -41,15 +59,17 @@ describe('Tokeness theme defaults', () => {
     domWindow.close()
   })
 
-  test('applies defaults before React mounts while preserving valid cookies', () => {
+  test('applies defaults before React mounts while preserving a stored preference', () => {
+    installStorageGlobals()
+
     const defaults = initializeThemeCustomizationDom()
     assert.equal(defaults.preset, 'sunset-glow')
     assert.equal(defaults.radius, 'none')
     assert.equal(document.body.dataset.themePreset, 'sunset-glow')
     assert.equal(document.body.dataset.themeRadius, 'none')
 
-    document.cookie = 'theme_preset=ocean-breeze; path=/'
-    document.cookie = 'theme_radius=xl; path=/'
+    localStorage.setItem('newapi:theme:v1:preset', 'ocean-breeze')
+    localStorage.setItem('newapi:theme:v1:radius', 'xl')
     const stored = initializeThemeCustomizationDom()
     assert.equal(stored.preset, 'ocean-breeze')
     assert.equal(stored.radius, 'xl')

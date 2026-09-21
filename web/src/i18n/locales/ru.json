@@ -7400,6 +7400,16 @@
     "Multi-key retry error keywords": "Ключевые слова повтора другим ключом",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "Повторить тот же канал другим ключом, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра). Значение по умолчанию покрывает формулировки о нехватке баланса: баланс принадлежит ключу, а не каналу. На канале с одним ключом запрос переключается на другой канал.",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "Переключаться на другой канал при этих кодах состояния. Принимает коды через запятую и диапазоны; 400 входит по умолчанию, потому что 400 от вышестоящего сервиса часто означает, что этот канал не может обслужить запрос. Локальные ошибки запроса не повторяются.",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Переключаться на другой канал, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра), даже когда по коду состояния повтор не сработал бы. Правила «не повторять» выше имеют приоритет."
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Переключаться на другой канал, если текст ошибки вышестоящего сервиса содержит одно из этих слов (без учёта регистра), даже когда по коду состояния повтор не сработал бы. Правила «не повторять» выше имеют приоритет.",
+    "Accepts comma-separated status codes and inclusive ranges.": "Принимает коды статуса, разделенные запятыми, и включающие диапазоны.",
+    "Activate now": "Активировать сейчас",
+    "Activating...": "Активация...",
+    "Later": "Позже",
+    "Plugin activation failed": "Не удалось активировать плагин",
+    "Plugin saved, activation required": "Плагин сохранён, требуется активация",
+    "Plugin source exceeds the 8 MiB limit.": "Код плагина превышает лимит 8 МиБ.",
+    "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Резервируется оценочная стоимость ввода, умноженная на это значение, без оценки выходных токенов. По умолчанию 1; допустимы положительные дроби, например 0,5 и 1,5. Итоговая плата зависит от фактического использования. Тарифы за запрос и за задачу не меняются.",
+    "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Один файл .js размером до 8 МиБ. Его исходный код показан ниже перед загрузкой.",
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Эта версия сохранена, но не активна. Активируйте её, чтобы заменить текущую версию, или сделайте это позже на вкладке «Версии»."
   }
 }

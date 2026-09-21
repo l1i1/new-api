@@ -7400,6 +7400,16 @@
     "Multi-key retry error keywords": "Từ khóa thử lại bằng khóa khác",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "Thử lại cùng kênh bằng khóa khác khi văn bản lỗi thượng nguồn chứa một trong các từ này (không phân biệt hoa thường). Giá trị mặc định bao quát các cách diễn đạt hết số dư: số dư thuộc về khóa, không thuộc kênh. Với kênh một khóa, yêu cầu sẽ chuyển sang kênh khác.",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "Chuyển sang kênh khác với các mã trạng thái này. Chấp nhận mã cách nhau bằng dấu phẩy và khoảng bao gồm; 400 mặc định nằm ở đây vì lỗi 400 từ thượng nguồn thường nghĩa là kênh này không phục vụ được yêu cầu. Lỗi yêu cầu cục bộ không bao giờ thử lại.",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Chuyển sang kênh khác khi văn bản lỗi thượng nguồn chứa một trong các từ này (không phân biệt hoa thường), kể cả khi chỉ mã trạng thái thì không thử lại. Các quy tắc \"không thử lại\" ở trên vẫn được ưu tiên."
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Chuyển sang kênh khác khi văn bản lỗi thượng nguồn chứa một trong các từ này (không phân biệt hoa thường), kể cả khi chỉ mã trạng thái thì không thử lại. Các quy tắc \"không thử lại\" ở trên vẫn được ưu tiên.",
+    "Accepts comma-separated status codes and inclusive ranges.": "Chấp nhận mã trạng thái phân cách bằng dấu phẩy và phạm vi bao gồm.",
+    "Activate now": "Kích hoạt ngay",
+    "Activating...": "Đang kích hoạt...",
+    "Later": "Để sau",
+    "Plugin activation failed": "Kích hoạt plugin thất bại",
+    "Plugin saved, activation required": "Đã lưu plugin, cần kích hoạt",
+    "Plugin source exceeds the 8 MiB limit.": "Mã nguồn plugin vượt giới hạn 8 MiB.",
+    "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Giữ trước chi phí đầu vào ước tính nhân với hệ số này, không ước tính token đầu ra. Mặc định là 1; hỗ trợ số thập phân dương như 0,5 và 1,5. Phí cuối cùng dựa trên mức sử dụng thực tế. Giá theo yêu cầu và tác vụ không bị ảnh hưởng.",
+    "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Một tệp .js duy nhất, tối đa 8 MiB. Mã nguồn được hiển thị bên dưới trước khi tải lên.",
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Phiên bản này đã được lưu nhưng chưa kích hoạt. Kích hoạt để thay thế phiên bản hiện tại, hoặc kích hoạt sau trong thẻ Phiên bản."
   }
 }

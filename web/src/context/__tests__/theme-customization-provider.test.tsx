@@ -32,6 +32,7 @@ Object.defineProperty(domWindow.document, 'compatMode', {
 const domGlobals = [
   'window',
   'document',
+  'localStorage',
   'navigator',
   'HTMLElement',
   'SVGElement',
@@ -87,15 +88,15 @@ async function renderProvider() {
   return { container, root }
 }
 
-function clearThemeCookies() {
-  for (const name of ['theme_preset', 'theme_radius']) {
-    document.cookie = `${name}=; path=/; max-age=0`
+function clearThemePreferences() {
+  for (const key of ['newapi:theme:v1:preset', 'newapi:theme:v1:radius']) {
+    localStorage.removeItem(key)
   }
 }
 
 describe('theme customization provider', () => {
   afterEach(() => {
-    clearThemeCookies()
+    clearThemePreferences()
     document.body.replaceChildren()
     document.body.removeAttribute('data-theme-preset')
     document.body.removeAttribute('data-theme-radius')
@@ -105,7 +106,7 @@ describe('theme customization provider', () => {
     domWindow.close()
   })
 
-  test('applies Tokeness defaults when no preference cookies exist', async () => {
+  test('applies Tokeness defaults when no preference is stored', async () => {
     const rendered = await renderProvider()
 
     assert.equal(rendered.container.textContent, 'sunset-glow:none')
@@ -115,9 +116,9 @@ describe('theme customization provider', () => {
     await act(async () => rendered.root.unmount())
   })
 
-  test('keeps explicit preset and radius cookies authoritative', async () => {
-    document.cookie = 'theme_preset=default; path=/'
-    document.cookie = 'theme_radius=xl; path=/'
+  test('keeps explicit preset and radius preferences authoritative', async () => {
+    localStorage.setItem('newapi:theme:v1:preset', 'default')
+    localStorage.setItem('newapi:theme:v1:radius', 'xl')
     const rendered = await renderProvider()
 
     assert.equal(rendered.container.textContent, 'default:xl')
@@ -127,9 +128,9 @@ describe('theme customization provider', () => {
     await act(async () => rendered.root.unmount())
   })
 
-  test('reset removes custom cookies and reapplies Tokeness defaults', async () => {
-    document.cookie = 'theme_preset=ocean-breeze; path=/'
-    document.cookie = 'theme_radius=xl; path=/'
+  test('reset removes stored preferences and reapplies Tokeness defaults', async () => {
+    localStorage.setItem('newapi:theme:v1:preset', 'ocean-breeze')
+    localStorage.setItem('newapi:theme:v1:radius', 'xl')
     const rendered = await renderProvider()
 
     await act(async () => {
@@ -139,8 +140,8 @@ describe('theme customization provider', () => {
     assert.equal(rendered.container.textContent, 'sunset-glow:none')
     assert.equal(document.body.dataset.themePreset, 'sunset-glow')
     assert.equal(document.body.dataset.themeRadius, 'none')
-    assert.doesNotMatch(document.cookie, /(?:^|;\s*)theme_preset=[^;]/)
-    assert.doesNotMatch(document.cookie, /(?:^|;\s*)theme_radius=[^;]/)
+    assert.equal(localStorage.getItem('newapi:theme:v1:preset'), null)
+    assert.equal(localStorage.getItem('newapi:theme:v1:radius'), null)
 
     await act(async () => rendered.root.unmount())
   })

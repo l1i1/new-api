@@ -7400,6 +7400,16 @@
     "Multi-key retry error keywords": "Multi-key retry error keywords",
     "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.": "Retry the same channel with another key when the upstream error text contains one of these words (case insensitive). The default covers the out-of-balance wordings: the balance belongs to the key, not to the channel. On a single-key channel the request fails over instead.",
     "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.": "Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.",
-    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win."
+    "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.": "Retry another channel when the upstream error text contains one of these words (case insensitive), even when the status code alone would not retry. The never-retry rules above still win.",
+    "Accepts comma-separated status codes and inclusive ranges.": "Accepts comma-separated status codes and inclusive ranges.",
+    "Activate now": "Activate now",
+    "Activating...": "Activating...",
+    "Later": "Later",
+    "Plugin activation failed": "Plugin activation failed",
+    "Plugin saved, activation required": "Plugin saved, activation required",
+    "Plugin source exceeds the 8 MiB limit.": "Plugin source exceeds the 8 MiB limit.",
+    "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.",
+    "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Single .js file, up to 8 MiB. Its source is shown below before upload.",
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab."
   }
 }
