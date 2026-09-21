@@ -43,8 +43,9 @@
 
 取值优先级（权威性从高到低）：
 
-1. **provider tokenizer 总值** —— 配了 `VIDEO_ESTIMATE_BASE_URL` + `VIDEO_ESTIMATE_API_KEY`
-   时调用官方 `POST /v1/tokenizers/estimate-token-count`（它接受 `video_url` part，
+1. **provider tokenizer 总值** —— 在控制台配了端点 + 密钥（或环境里配了
+   `VIDEO_ESTIMATE_BASE_URL` + `VIDEO_ESTIMATE_API_KEY`）时调用官方
+   `POST /v1/tokenizers/estimate-token-count`（它接受 `video_url` part，
    实测与真实 prompt 差 **0.08%**，**免费且不占 RPM/TPM**——已用官方请求日志逐条核实）。
    它同时包含文本与媒体，因此**整体替换**上报值。调用在计费准备阶段**并发预取**（携带
    整个视频，实测 3.3 MB 约 2.8 s），结算只读缓存，**不给首字增加延迟**。
@@ -99,16 +100,26 @@ video_tok = min(frames × per_frame, 42320)
 - 非法值同样在保存时被拒绝，避免拼错后静默沿用失真值。
 - 只标 `supports_video`（不标模式）= 「读得准」，如官方直连。
 
-估算端点（可选，不配则只用本地模型）：
+估算端点（可选，不配则只用本地模型）。两个设置都在控制台
+**系统设置 → 集成 → Video token estimation** 里，保存即生效（渠道设置是运行时读的，
+不需要重启；每个节点 60 s 内收敛）：
 
-```
-VIDEO_ESTIMATE_BASE_URL=https://api.moonshot.cn/v1   # 默认值
-VIDEO_ESTIMATE_API_KEY=<tokenizer 所有者侧的 key>
-```
+| 设置键 | 含义 |
+| --- | --- |
+| `video_estimate_setting.base_url` | 端点根地址，默认 `https://api.moonshot.cn/v1` |
+| `video_estimate_setting.api_key` | tokenizer 所有者侧的 key（存储后不回显） |
+
+环境变量 `VIDEO_ESTIMATE_BASE_URL` / `VIDEO_ESTIMATE_API_KEY` 仍然有效，作为
+**bootstrap 与回退**：库里的值优先，且**逐字段**回退（只填了库里的 base URL、
+key 留在环境里也能正常工作），清空库里的一项即把该字段交还环境。密钥走框架既有的
+脱敏通道（`GetOptions` 跳过 `*Key`/`*Token`/`*Secret` 后缀的键），浏览器拿不到已存值，
+提交空值表示「不修改」。`/api/status` 上的 `video_estimate_configured` 只报
+「配没配」，不报任何值。
 
 **为什么不默认开启**：调用它会把用户视频发给 tokenizer 的持有方。经第三方上游进来的
-请求再转投官方，属跨供应商数据外发，必须由运营显式决定。端点答案按**视频内容哈希**
-缓存（512 条上限），同一片段只调一次——单次调用实测 ~2.8 s。
+请求再转投官方，属跨供应商数据外发，必须由运营显式决定。端点答案按**视频内容哈希 +
+端点 URL** 缓存（512 条上限），同一片段只调一次——单次调用实测 ~2.8 s。端点进键是为了
+换端点后旧答案立即失效，而不是继续拿上一个 tokenizer 的数计费。
 
 ## 落点（改动清单）
 
@@ -123,7 +134,10 @@ VIDEO_ESTIMATE_API_KEY=<tokenizer 所有者侧的 key>
 | `constant/context_key.go` / `middleware/distributor.go` | 请求级视频标记（body 层检测，置于选路前） |
 | `service/channel_select.go` | 把标记透传给选择器（每次重试都保持收窄） |
 | `service/video_token.go` | 请求/正则层视频检测、容器解析 + 标定公式 + 媒体感知护栏 |
-| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 + 并发预取 |
+| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 + 并发预取 + 端点解析（库 > env > 默认） |
+| `setting/operation_setting/video_estimate_setting.go` | 控制台设置的注册（`video_estimate_setting` 模块） |
+| `controller/misc.go` | `/api/status` 的 `video_estimate_configured`（只报配没配） |
+| `web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | 控制台表单（集成页），含跨供应商外发的提示文案 |
 | `service/token_counter.go` | `FileTypeVideo` 从固定 8192 改为按容器定价 |
 | `relay/common/relay_info.go` | 请求携带的视频补算值 / 权威总值 |
 | `relay/request_billing.go` | 计费准备阶段从 **gin context** 读渠道设置（避免 ChannelMeta 未建时 panic）+ 并发预取 |
@@ -148,11 +162,12 @@ VIDEO_ESTIMATE_API_KEY=<tokenizer 所有者侧的 key>
 
 **先部署代码，再写渠道标记**，两步都不可省：
 
-1. **代码**：本改动（随 `v1.0.0-rc.37-tokeness-mainland.5` 上线）。此前整条线
-   （至 `mainland.4`）**完全不认识 `supports_video` / `video_usage_mode`**（解析结构体里
-   没有这两个字段），且带着一个未部署的 P0：计费准备阶段在 `ChannelMeta` 建立之前解引用
-   `info.ChannelOtherSettings`，任何中继请求都会 panic——该 P0 已由本改动一并修掉，所以
-   「直接给旧主线打 tag」在修好前是禁止动作。
+1. **代码**：本改动（国内自 `v1.0.0-rc.37-tokeness-mainland.5`、海外自
+   `v1.0.0-rc.37-tokeness-intl.8` 起已在线）。此前整条线（至 `mainland.4`）
+   **完全不认识 `supports_video` / `video_usage_mode`**（解析结构体里没有这两个字段），
+   且带着一个未部署的 P0：计费准备阶段在 `ChannelMeta` 建立之前解引用
+   `info.ChannelOtherSettings`，任何中继请求都会 panic——该 P0 已由本改动一并修掉，
+   所以「直接给旧主线打 tag」在修好前是禁止动作。
 2. **渠道标记**：按实测逐个渠道写入（定级表见下）。
 
 **为什么不能反过来**：标记是**惰性**的——老代码忽略未知字段，所以「先写标记」不会立刻生效，
