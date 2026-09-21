@@ -248,6 +248,16 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 
+				// Affinity keeps a conversation on one channel so its prompt
+				// cache stays warm. The binding is only usable when the bound
+				// channel also satisfies this request's constraint filters: a
+				// binding recorded by ordinary traffic can point at a channel
+				// the current request may not use at all (a video request must
+				// reach a channel that declared the capability), and accepting
+				// it here only for the final constraint check to reject it
+				// would fail the request instead of falling through to
+				// selection. The websocket path already gates affinity this
+				// way; this is the same contract for the HTTP path.
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
@@ -275,33 +285,39 @@ func Distribute() func(c *gin.Context) {
 						}
 					}
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && !service.GroupAccessPolicyBlocksChannel(c, preferred.Id) {
-						if usingGroup == "auto" {
-							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-							autoGroups := service.GetRequestAutoGroups(c, userGroup)
-							for _, g := range autoGroups {
-								routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(g, modelRequest.Model, c.Request.URL.Path)
+						// A bound channel is only a shortcut to the same candidate a
+						// fresh selection would return, so it must clear the same
+						// filters first; otherwise fall through to selection.
+						affinitySatisfied, _ := model.ChannelSatisfiesFilters(preferred, modelRequest.Model, constraints.Filters)
+						if affinitySatisfied {
+							if usingGroup == "auto" {
+								userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+								autoGroups := service.GetRequestAutoGroups(c, userGroup)
+								for _, g := range autoGroups {
+									routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(g, modelRequest.Model, c.Request.URL.Path)
+									if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
+										!service.GroupAccessPolicyBlocksModel(c, routingModel) &&
+										model.IsChannelEnabledForGroupModel(g, routingModel, preferred.Id) {
+										selectGroup = g
+										common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+										setResolvedModelContext(c, routingModel, compactAlias)
+										channel = preferred
+										affinityUsable = true
+										service.MarkChannelAffinityUsed(c, g, preferred.Id)
+										break
+									}
+								}
+							} else {
+								routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(usingGroup, modelRequest.Model, c.Request.URL.Path)
 								if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
 									!service.GroupAccessPolicyBlocksModel(c, routingModel) &&
-									model.IsChannelEnabledForGroupModel(g, routingModel, preferred.Id) {
-									selectGroup = g
-									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
-									setResolvedModelContext(c, routingModel, compactAlias)
+									model.IsChannelEnabledForGroupModel(usingGroup, routingModel, preferred.Id) {
 									channel = preferred
+									selectGroup = usingGroup
+									setResolvedModelContext(c, routingModel, compactAlias)
 									affinityUsable = true
-									service.MarkChannelAffinityUsed(c, g, preferred.Id)
-									break
+									service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 								}
-							}
-						} else {
-							routingModel, compactAlias := model.ResolveCompactModelAliasForGroupPath(usingGroup, modelRequest.Model, c.Request.URL.Path)
-							if channelSupportsRequestPath(preferred, c.Request.URL.Path, routingModel) &&
-								!service.GroupAccessPolicyBlocksModel(c, routingModel) &&
-								model.IsChannelEnabledForGroupModel(usingGroup, routingModel, preferred.Id) {
-								channel = preferred
-								selectGroup = usingGroup
-								setResolvedModelContext(c, routingModel, compactAlias)
-								affinityUsable = true
-								service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 							}
 						}
 					}
@@ -360,7 +376,11 @@ func Distribute() func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
-		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
+		// A video request took the free-selection path regardless of any text
+		// binding, so recording it would move the conversation's stickiness onto
+		// whichever channel happened to serve the video. Leave the binding alone.
+		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest &&
+			!common.GetContextKeyBool(c, constant.ContextKeyVideoRequest) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
