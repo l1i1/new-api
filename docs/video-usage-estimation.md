@@ -1,4 +1,4 @@
-# 视频用量估算（video_usage_mode）
+# 视频用量估算与视频路由（supports_video / video_usage_mode）
 
 ## 问题
 
@@ -8,18 +8,46 @@
 
 后果：我们按 27 计费但按 42,416 付费——成本与收入对不上，且缓存/TPM 类看板全部失真。
 
-## 解决
+更严重的是**另一类上游根本读不了视频**：它不报错，而是**静默丢掉媒体**、仅凭文本作答，
+产出一段看起来合理的「描述」。实测国内站最高优先级的聚合上游就是如此——视频请求落到
+它上面，用户拿到的是没看过视频的答案。**计费再准也救不了选错渠道**，所以能力维度必须
+先于计费维度存在。
 
-渠道级开关 `video_usage_mode: "estimate"`。开启后，带视频 part 的请求在**结算时**用
-视频感知的 prompt 数替换上游上报值，并标记为「估算」（消费日志的计费路径变为
-`openai_estimated`，与上游原值可区分）。
+## 解决（两个正交维度）
+
+| 维度 | 字段 | 含义 | 作用点 |
+| --- | --- | --- | --- |
+| 能力 | `supports_video` | 该渠道上游**真的会读**视频 part | **选路** |
+| 计费 | `video_usage_mode: "estimate"` | 该渠道上游**读得了但报不准** | **结算** |
+
+两者独立：官方直连两者都正常（只标能力）；能读但恒报 27 的上游标两者；读不了的上游
+（如最高优先级的聚合上游）**什么都不标**，于是视频请求会被选路自动绕开。
+
+### 选路（`supports_video`）
+
+请求体带 `video_url` part 时，该请求只会在**声明了能力的渠道**之间选择：
+
+- 检测在**分发中间件**里做（body 已在手），置 `ContextKeyVideoRequest`；
+- 收窄在选路内部完成（缓存路径与 DB 路径各一处），**不是**「先选再否决」——否则最高
+  优先级是不可用渠道时，会返回「无可用渠道」而不是落到下一个优先级；
+- `FilterVideoRequest` 过滤器同时守住**渠道钉定**与**亲和相关**这两条绕过选择器的路径；
+- 没有任何渠道声明能力时，请求**诚实失败**（无可用渠道），而不是退化成「用看不见视频的
+  上游作答」；
+- 非视频请求完全不受影响：不声明能力的渠道照样按原优先级服务文本流量（声明不会让渠道
+  被降级）。
+
+### 计费（`video_usage_mode`）
+
+开启后，带视频 part 的请求在**结算时**用视频感知的 prompt 数替换上游上报值，并标记为
+「估算」（消费日志的计费路径变为 `openai_estimated`，与上游原值可区分）。
 
 取值优先级（权威性从高到低）：
 
 1. **provider tokenizer 总值** —— 配了 `VIDEO_ESTIMATE_BASE_URL` + `VIDEO_ESTIMATE_API_KEY`
    时调用官方 `POST /v1/tokenizers/estimate-token-count`（它接受 `video_url` part，
    实测与真实 prompt 差 **0.08%**，**免费且不占 RPM/TPM**——已用官方请求日志逐条核实）。
-   它同时包含文本与媒体，因此**整体替换**上报值。
+   它同时包含文本与媒体，因此**整体替换**上报值。调用在计费准备阶段**并发预取**（携带
+   整个视频，实测 3.3 MB 约 2.8 s），结算只读缓存，**不给首字增加延迟**。
 2. **本地容器模型** —— 从视频容器自身读取分辨率与时长，按标定公式定价（见下）。
    上游的文本计数是正确的，所以这里是**加到**上报值上。
 3. **上游原值** —— 以上都不适用时不动（含未开启开关、非视频请求、容器无法解析）。
@@ -28,6 +56,13 @@
 `reported < video/2`——实测失败态是 27 或 96（不到视频价的 1%），而任何算过媒体的
 来源至少等于视频价本身，两侧相距悬殊；**部分计数**的上游因此保持原值，不会被
 重复计费。
+
+**判定按「实际服务该请求的渠道」**：`info.ChannelMeta` 是**每次尝试**重建的，结算读它，
+因此跨渠道重试不会把 A 渠道的修正算到 B 渠道的上报值上。这一条同时修掉了此前的一个
+崩溃：早期实现在**建立 ChannelMeta 之前**读渠道设置（`request_billing.go` 的
+`info.ChannelOtherSettings` 解引用 nil 指针），任何中继请求都会 panic——故计费准备阶段
+改从 **gin context** 读渠道设置。
+
 
 ## 本地公式
 
@@ -54,11 +89,15 @@ video_tok = min(frames × per_frame, 42320)
 ```jsonc
 // 渠道 other settings（与 official_fit_models 同处）
 {
-  "video_usage_mode": "estimate"
+  "supports_video": true,          // 上游真的会读视频 → 选路据此收窄
+  "video_usage_mode": "estimate"   // 额外声明：读得了但报不准 → 结算据此修正
 }
 ```
 
-非法值在渠道保存时被拒绝（`ValidateVideoUsageMode`），避免拼错后静默沿用失真值。
+- `video_usage_mode` **必须与 `supports_video` 同时设置**：不带能力的计费模式是死配置
+  （视频请求永远不会路由到该渠道），保存时直接拒绝（`ValidateVideoUsageMode`）。
+- 非法值同样在保存时被拒绝，避免拼错后静默沿用失真值。
+- 只标 `supports_video`（不标模式）= 「读得准」，如官方直连。
 
 估算端点（可选，不配则只用本地模型）：
 
@@ -75,20 +114,62 @@ VIDEO_ESTIMATE_API_KEY=<tokenizer 所有者侧的 key>
 
 | 文件 | 作用 |
 | --- | --- |
-| `relaykit/dto/channel_settings.go` | `VideoUsageMode` 字段 + 校验 + 判定 |
+| `relaykit/dto/channel_settings.go` | `SupportsVideo` / `VideoUsageMode` 字段 + 校验 + 判定 |
+| `relaykit/dto/openai_request.go` | **修复**：`video_url` 支持对象形式（`{"url":...}`），此前只认字符串，官方文档形式被静默丢弃 |
 | `model/channel.go` | 保存渠道时校验 |
-| `service/video_token.go` | 容器解析 + 标定公式 + 媒体感知护栏 |
-| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 |
+| `model/channel_cache.go` | 能力索引 `channel2supportsVideo` + 缓存路径按能力收窄 |
+| `model/ability.go` | DB 路径按能力收窄（**先过滤后分优先级**，否则高优先级不可用渠道会挡住后备） |
+| `model/channel_constraint.go` / `dto/channel_constraints.go` | `FilterVideoRequest`（守住钉定/亲和路径） |
+| `constant/context_key.go` / `middleware/distributor.go` | 请求级视频标记（body 层检测，置于选路前） |
+| `service/channel_select.go` | 把标记透传给选择器（每次重试都保持收窄） |
+| `service/video_token.go` | 请求/正则层视频检测、容器解析 + 标定公式 + 媒体感知护栏 |
+| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 + 并发预取 |
 | `service/token_counter.go` | `FileTypeVideo` 从固定 8192 改为按容器定价 |
 | `relay/common/relay_info.go` | 请求携带的视频补算值 / 权威总值 |
-| `relay/request_billing.go` | 仅在开关开启 + 有视频 part 时计算（默认路径零开销） |
-| `service/text_quota.go` | 结算时按优先级替换，并标记 Estimated |
+| `relay/request_billing.go` | 计费准备阶段从 **gin context** 读渠道设置（避免 ChannelMeta 未建时 panic）+ 并发预取 |
+| `service/text_quota.go` | 结算时按优先级替换（读**实际服务渠道**的设置），并标记 Estimated |
 | `relaykit/dto/billing_usage.go` | `NewEstimatedOpenAIChatBillingUsage` |
 
 ## 验收
 
 - `go test ./service/`：容器解析（含真彩/版本 1 头/垃圾输入）、15 点标定、
-  三条规则、护栏阈值、端点解析与失败回退、`estimated` 标记、开关校验。
+  三条规则、护栏阈值、端点解析与失败回退、`estimated` 标记、开关校验、
+  body 层视频检测（含「文本里提到 video_url」不得误判）、两个检测器一致性、
+  结算按实际服务渠道归属、无 ChannelMeta 时不 panic。
+- `go test ./model/`：能力索引解析、缓存路径收窄、DB 路径「高优先级不可用渠道不挡住
+  后备」、无渠道声明时诚实失败（返回 nil 而非盲渠道）、模式必须带能力。
+- `go test ./relaykit/dto/`：`video_url` 三种拼写（ms:// 对象、http 对象、字符串）
+  均能解析出可读媒体，无 url 的 part 不被当作视频。
 - 真实样本回归（fixture 在仓库外，未设置则跳过）：
   `CDP_BENCH_VIDEO=../tools/cdp-bench/data/tmp/sample.mp4 go test ./service/ -run RealContainer -v`
   ——实测解析 3612×1952 5.533s → **42320**（与官方 42,416−96 吻合）。
+
+## 上线顺序（重要）
+
+**必须先部署代码，再写渠道标记**，两步都不可省：
+
+1. **代码**：本改动。当前线上（`fb3c79a91` / `v1.0.0-rc.37-tokeness-mainland.2`）**完全不认识
+   `supports_video` / `video_usage_mode`**（解析结构体里没有这两个字段）。
+2. **渠道标记**：按实测逐个渠道写入（实测结论见
+   `docs/cdp/mainland-k3-video-capability-20260921.md`）。
+
+**为什么不能反过来**：标记是**惰性**的——老代码忽略未知字段，所以「先写标记」不会立刻生效，
+但会在**下一次任何人部署该功能时静默变成线上选路**，而不是在一次受控、可验证的发布里生效。
+因此标记与代码同批发，且写标记后立刻用真实视频请求验证。
+
+国内站 `kimi-k3` 的实测定级（2026-09-21，19 条渠道）：
+
+| 渠道 | 实测行为 | 应写标记 |
+| --- | --- | --- |
+| ch8 `DEF_Kimi`（官方直连，enabled） | usage 真实（42,416） | `supports_video: true` |
+| ch21 `DEF_gwlink`（disabled） | usage 真实（42,417） | `supports_video: true` |
+| ch17 / ch15 / ch14 / ch34 | **能读**但 usage 恒报 27 | `supports_video` + `video_usage_mode: estimate` |
+| ch37 `DEF-neurvibe`（enabled，**priority 50 最高**） | **静默丢弃视频** | **两个都不写** |
+| 其余 13 条 | 明确拒绝 / 到不了上游 | 不写 |
+
+**写标记前必须先拍板的一件事**：优先级顺序会让 `zzzzz` 系（ch17 priority 2、ch15 priority 16）
+**高于**官方直连 ch8（priority 0）。即视频流量会优先走「能读但计费不可信」的池子，靠估算兜底，
+而不是走 usage 精确的官方直连。若验收要求「原生精确 usage」，需先调整视频相关渠道的
+priority，或只给 ch8/ch21 打标记（其余不打），让视频请求只能落到计费可信的渠道。
+
+

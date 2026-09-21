@@ -804,12 +804,25 @@ func (m *Message) ParseContent() []MediaContent {
 				}
 			}
 		case ContentTypeVideoUrl:
-			if videoUrl, ok := contentItem["video_url"].(string); ok {
+			// Both spellings are in use: Aliyun Bailian sends a bare url string,
+			// while Moonshot's documented video channel sends an object
+			// ({"url":"ms://<file_id>"}, and inline base64 the same way). The
+			// image_url case above already accepts both; accepting only the
+			// string form here silently dropped the media from every
+			// object-shaped request, which left the part invisible to token
+			// pricing and to the estimate endpoint.
+			temp := &MessageVideoUrl{}
+			switch v := contentItem["video_url"].(type) {
+			case string:
+				temp.Url = v
+			case map[string]any:
+				url, _ := v["url"].(string)
+				temp.Url = url
+			}
+			if temp.Url != "" {
 				contentList = append(contentList, MediaContent{
-					Type: ContentTypeVideoUrl,
-					VideoUrl: &MessageVideoUrl{
-						Url: videoUrl,
-					},
+					Type:     ContentTypeVideoUrl,
+					VideoUrl: temp,
 				})
 			}
 		}

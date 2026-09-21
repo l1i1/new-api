@@ -86,11 +86,6 @@ type TokenCountMeta struct {
 	// (the upstream still prices the text correctly). Non-zero only when the
 	// request carries a video part and the channel opted into video estimation.
 	videoTokens int
-	// videoPromptTotal is the provider tokenizer's own prompt count for this
-	// request (text and media together), when an estimation endpoint answered.
-	// It is authoritative, so settlement uses it in place of the reported count
-	// instead of adding to it; videoTokens then stays unused.
-	videoPromptTotal int
 }
 
 type RelayInfo struct {
@@ -860,25 +855,6 @@ func (info *RelayInfo) GetVideoTokens() int {
 		return 0
 	}
 	return info.videoTokens
-}
-
-// SetVideoPromptTotal records an authoritative prompt count from a provider
-// tokenizer (text and media together). Settlement prefers it over the
-// upstream-reported count.
-func (info *RelayInfo) SetVideoPromptTotal(tokens int) {
-	if info == nil || tokens <= 0 {
-		return
-	}
-	info.videoPromptTotal = tokens
-}
-
-// GetVideoPromptTotal returns the provider-tokenizer prompt count, or 0 when no
-// endpoint answered for this request.
-func (info *RelayInfo) GetVideoPromptTotal() int {
-	if info == nil {
-		return 0
-	}
-	return info.videoPromptTotal
 }
 
 // ---------------------------------------------------------------------------

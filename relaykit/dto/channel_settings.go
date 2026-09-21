@@ -183,12 +183,22 @@ type ChannelOtherSettings struct {
 	// client sends), matched case-insensitively. Empty keeps the pre-existing
 	// behavior: only the family's official channel type qualifies.
 	OfficialFitModels []string `json:"official_fit_models,omitempty"`
+	// SupportsVideo declares that this channel's upstream actually reads video
+	// parts. It is a routing capability, not a preference: a request carrying a
+	// video part is only routed to declaring channels, because an upstream that
+	// cannot read video silently drops the media and answers from text alone
+	// (measured: a video request to a media-blind upstream came back with a
+	// plausible description of nothing). Empty/false keeps the pre-existing
+	// behavior of routing such requests by model and priority alone.
+	SupportsVideo bool `json:"supports_video,omitempty"`
 	// VideoUsageMode marks a channel that serves video understanding but whose
 	// upstream usage accounting cannot be trusted for video requests (measured
 	// case: the upstream bills real video tokens but reports a constant prompt
 	// count, so a 3.3 MB clip bills as if the prompt were 27 tokens).
 	// "estimate" bills such requests from a video-aware prompt count instead of
 	// the reported one. Empty keeps upstream-reported values untouched.
+	// Meaningful only together with SupportsVideo: without it no video request
+	// reaches this channel, so a mode set alone can never take effect.
 	VideoUsageMode string `json:"video_usage_mode,omitempty"`
 }
 
@@ -198,13 +208,21 @@ const (
 )
 
 // ValidateVideoUsageMode rejects unknown modes at channel save time so a typo
-// cannot silently leave a distorted upstream on the "trusted" billing path.
+// cannot silently leave a distorted upstream on the "trusted" billing path. A
+// mode without SupportsVideo is rejected too: video routing never sends a video
+// request to an undeclared channel, so such a mode could only ever be dead
+// configuration that reads as if it were doing something.
 func (s *ChannelOtherSettings) ValidateVideoUsageMode() error {
 	if s == nil {
 		return nil
 	}
 	switch strings.TrimSpace(s.VideoUsageMode) {
-	case "", VideoUsageModeEstimate:
+	case "":
+		return nil
+	case VideoUsageModeEstimate:
+		if !s.SupportsVideo {
+			return fmt.Errorf("video_usage_mode requires supports_video on the same channel")
+		}
 		return nil
 	default:
 		return fmt.Errorf("invalid video_usage_mode: %s", s.VideoUsageMode)

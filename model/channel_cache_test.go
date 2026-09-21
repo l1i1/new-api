@@ -165,14 +165,14 @@ func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekForV4Models(t *testing.
 	// pinned requests narrow to the official channel.
 	unpinned := map[int]bool{}
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, false)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, false, false)
 		require.NoError(t, err)
 		unpinned[selected.Id] = true
 	}
 	require.True(t, unpinned[1] && unpinned[2], "unpinned V4 requests keep weighted selection across channel types")
 
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true, false)
 		require.NoError(t, err)
 		require.Equal(t, 1, selected.Id, "pinned V4 requests always select the official channel")
 	}
@@ -247,14 +247,14 @@ func TestGetRandomSatisfiedChannelPinnedKimiK3PrefersMoonshot(t *testing.T) {
 	// official Moonshot channel; the Route pin narrows to the official one.
 	unpinned := map[int]bool{}
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, false)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, false, false)
 		require.NoError(t, err)
 		unpinned[selected.Id] = true
 	}
 	require.True(t, unpinned[1] && unpinned[2], "unpinned kimi-k3 keeps weighted selection across channel types")
 
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, true)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "kimi-k3", 0, "", nil, true, false)
 		require.NoError(t, err)
 		require.Equal(t, 1, selected.Id, "pinned kimi-k3 requests always select the Moonshot official channel")
 	}
@@ -343,7 +343,7 @@ func TestGetRandomSatisfiedChannelPrefersOfficialDeepSeekWithMultipleOfficial(t 
 	})
 
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4-flash", 0, "", nil, true, false)
 		require.NoError(t, err)
 		require.Contains(t, []int{1, 5}, selected.Id, "pinned V4 requests must never select the aggregator when officials exist")
 	}
@@ -395,7 +395,7 @@ func TestGetRandomSatisfiedChannelPinnedHonorsOfficialFitModelsAllowlist(t *test
 	})
 
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true, false)
 		require.NoError(t, err)
 		require.Equal(t, 7, selected.Id,
 			"pinned requests must reach the channel that declared the model, even though 8 has far higher priority")
@@ -404,7 +404,7 @@ func TestGetRandomSatisfiedChannelPinnedHonorsOfficialFitModelsAllowlist(t *test
 	// Unpinned requests are untouched by the allowlist: selection still starts
 	// at the highest priority tier, which is 8 here.
 	for range 30 {
-		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, false)
+		selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, false, false)
 		require.NoError(t, err)
 		require.Equal(t, 8, selected.Id, "the allowlist must not drag normal traffic onto the verified channel")
 	}
@@ -439,7 +439,7 @@ func TestGetRandomSatisfiedChannelPinnedFailsWhenAllowlistHasNoCandidate(t *test
 		channelSyncLock.Unlock()
 	})
 
-	selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true)
+	selected, err := GetRandomSatisfiedChannelPinned("default", "deepseek-v4.1-flash", 0, "", nil, true, false)
 	require.NoError(t, err)
 	require.Nil(t, selected, "a pinned request without an official candidate must not fall back to an aggregator")
 }

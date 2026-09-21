@@ -87,6 +87,12 @@ const (
 	// (extreme values, thinking toggles, logprobs) never trigger the pin.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
 
+	// ContextKeyVideoRequest marks a request whose payload carries a video part.
+	// Channel selection then considers only channels that declared they can read
+	// video, because a media-blind upstream answers from the text alone instead
+	// of rejecting the part. Set once the request body is parsed.
+	ContextKeyVideoRequest ContextKey = "video_request"
+
 	// ContextKeyRelayInfoPtr stores the active *relaycommon.RelayInfo so
 	// shared response writers (e.g. IOCopyBytesGracefully) can rewrite the
 	// client-facing model name after per-format handlers resolved the

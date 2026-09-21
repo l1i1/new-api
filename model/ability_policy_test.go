@@ -137,7 +137,7 @@ func TestGetChannelWithBlockedChannelsPinsDeepSeekV4ToOfficialDatabaseCandidates
 	// the large majority of draws.
 	aggregatorPicks := 0
 	for i := 0; i < 100; i++ {
-		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, false)
+		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, false, false)
 		require.NoError(t, err)
 		require.NotNil(t, selected)
 		if selected.Id == aggregator.Id {
@@ -148,7 +148,7 @@ func TestGetChannelWithBlockedChannelsPinsDeepSeekV4ToOfficialDatabaseCandidates
 
 	// Pinned requests narrow to the official channel.
 	for i := 0; i < 20; i++ {
-		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, true)
+		selected, err := GetChannelWithBlockedChannelsPinned("default", "deepseek-v4-flash", 0, "", nil, true, false)
 		require.NoError(t, err)
 		require.NotNil(t, selected)
 		require.Equal(t, official.Id, selected.Id, "pinned V4 requests narrow to the official channel despite the aggregator's higher weight")

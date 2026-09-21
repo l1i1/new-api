@@ -211,6 +211,14 @@ func v4OfficialPin(param *RetryParam) bool {
 		common.GetContextKeyBool(param.Ctx, constant.ContextKeyV4OfficialPin)
 }
 
+// videoRequestOnly reports whether this request carries a video part, which
+// restricts selection to channels that declared they can read video. The flag
+// lives in the request context so every retry keeps the restriction.
+func videoRequestOnly(param *RetryParam) bool {
+	return param != nil && param.Ctx != nil &&
+		common.GetContextKeyBool(param.Ctx, constant.ContextKeyVideoRequest)
+}
+
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
@@ -283,7 +291,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, err = model.GetRandomSatisfiedChannelPinned(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels, v4OfficialPin(param))
+			channel, err = model.GetRandomSatisfiedChannelPinned(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param))
 			if err != nil {
 				lastAutoGroupSelectionErr = err
 				lastAutoGroupSelectionErrGroup = autoGroup
@@ -348,7 +356,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if len(param.excludedChannelIDs) > 0 {
 			selectionRetry = 0
 		}
-		channel, err = model.GetRandomSatisfiedChannelPinned(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param))
+		channel, err = model.GetRandomSatisfiedChannelPinned(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param))
 		if err != nil {
 			return nil, param.TokenGroup, &ChannelSelectionError{
 				Kind:  ChannelSelectionInternalError,
