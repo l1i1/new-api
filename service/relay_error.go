@@ -16,65 +16,74 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
-	if openaiErr == nil {
-		return false
+// DecideRelayRetry is the single retry decision for relay attempts. The reason
+// is recorded in the request policy decision events of the log details.
+func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
+	if err == nil {
+		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
-	if retryTimes <= 0 {
-		return false
-	}
-	if ShouldSkipRetryAfterChannelAffinityFailure(c) &&
-		!(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
-			ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error())) {
-		return false
+	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		source := RequestPolicy(c).SessionModeSource
+		if source == "" {
+			source = "session_rule"
+		}
+		if !(c != nil && common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
+			ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error())) {
+			return PolicyDecision{Action: "stop", Reason: "strict_session", Source: source}
+		}
 	}
 	if GetChannelConstraints(c).SuppressesRetry() {
-		return false
+		return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
 	}
-	if _, pinned := c.Get("specific_channel_id"); pinned {
-		return false
+	if c != nil {
+		if _, pinned := c.Get("specific_channel_id"); pinned {
+			return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
+		}
 	}
-	if types.IsChannelError(openaiErr) {
-		return true
+	if types.IsChannelError(err) {
+		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
 	}
-	// A request-level rejection is answered identically by every channel; see
-	// IsNeverRetryUpstreamError.
-	if IsNeverRetryUpstreamError(openaiErr) {
-		return false
+	if retryTimes <= 0 {
+		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
 	}
-	if operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) ||
-		operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
-		return false
+	// A request-level rejection is answered identically by every channel. Keep
+	// this after the attempt budget check so an exhausted request reports the
+	// same terminal reason as other failures, and before all configurable retry
+	// rules so a matching never-retry keyword always wins.
+	if IsNeverRetryUpstreamError(err) {
+		return PolicyDecision{Action: "stop", Reason: "request_rejected", Source: "system"}
 	}
-	if operation_setting.MatchesAutomaticRetryKeywords(openaiErr.Error()) {
-		return true
+	code := err.StatusCode
+	if code >= 100 && code <= 599 && operation_setting.IsNeverRetryStatusCode(code) {
+		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
 	}
-	// A credential-scoped failure (out-of-balance 402, "insufficient credits")
-	// retries -- on a multi-key channel the caller rotates the key, otherwise it
-	// is an ordinary channel failover.
-	if ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error()) {
-		return true
+	// A malformed upstream response can succeed on another channel. Local
+	// conversion failures carry an explicit skip-retry marker instead.
+	// An operator-configured keyword is an explicit channel capability signal;
+	// it takes precedence over a generic skip-retry marker.
+	if operation_setting.MatchesAutomaticRetryKeywords(err.Error()) {
+		return PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}
 	}
-	if types.IsSkipRetryError(openaiErr) {
-		return false
+	if types.IsSkipRetryError(err) {
+		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
-	code := openaiErr.StatusCode
 	if code >= 200 && code < 300 {
-		return false
+		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
 	}
 	if code < 100 || code > 599 {
-		return true
+		return PolicyDecision{Action: "retry", Reason: "unrecognized_status", Source: "system"}
 	}
-	// The failover list (default includes 400) expresses "the upstream rejected
-	// this channel's request, try another channel". It never applies to local
-	// (platform) errors, which describe the request or the platform rather than
-	// the channel that served it. Local capability gaps already failed over
-	// above, by their channel: error-code prefix.
-	if openaiErr.GetErrorType() != types.ErrorTypeNewAPIError &&
-		operation_setting.ShouldRetryByStatusCode(code) {
-		return true
+	// Force-retry rules apply only to upstream errors. Local validation errors
+	// must remain non-retryable even when their status is configured (for
+	// example, HTTP 400).
+	if err.GetErrorType() != types.ErrorTypeNewAPIError && operation_setting.ShouldRetryByStatusCode(code) {
+		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
-	return false
+	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
+}
+
+func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+	return DecideRelayRetry(c, openaiErr, retryTimes).Action == "retry"
 }
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
@@ -107,6 +116,7 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other.SetPublic("error_code", err.GetErrorCode())
 		other.SetPublic("status_code", err.StatusCode)
 		AppendRelayLogAdminInfo(c, relayInfo, other)
+		AppendResponseModelLogInfo(relayInfo, other)
 		AppendTaskPluginContextAuditInfo(c, other)
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {

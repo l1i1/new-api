@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
@@ -341,5 +342,42 @@ func TestEstimateCacheKeyCoversTextAndModel(t *testing.T) {
 	// request objects (the prefetch and settlement build different instances).
 	if keyOf("kimi-k3", withText("hi")) != keyOf("kimi-k3", withText("hi")) {
 		t.Fatal("separate but identical requests must share a key")
+	}
+}
+
+// TestSettlementLookupUsesTheOriginalModelId pins the call-site contract of the
+// estimate cache. The prefetch runs in PrepareRequestBilling, which is before
+// the handler runs ModelMappedHelper, so RelayInfo.UpstreamModelName is still
+// empty there and may hold a mapped name later; the original model id is the
+// only id both ends can key on. Without this, an answer that was fetched and
+// cached can never be read back and the endpoint precision is silently lost.
+func TestSettlementLookupUsesTheOriginalModelId(t *testing.T) {
+	ResetVideoEstimateCacheForTest()
+
+	request := videoRequest()
+	_, cacheKey, ok := estimateRequestBody("kimi-k3", request)
+	if !ok {
+		t.Fatal("the fixture must be estimable")
+	}
+	storeVideoEstimate(cacheKey, 42416)
+
+	prefetched := &relaycommon.RelayInfo{
+		Request:         request,
+		OriginModelName: "kimi-k3",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3-mapped"},
+	}
+	total, hit := videoPromptTotalForSettlement(prefetched)
+	if !hit || total != 42416 {
+		t.Fatalf("settlement must read the prefetched answer by the original model id: hit=%v total=%d", hit, total)
+	}
+
+	// The mapped name alone must not fabricate a hit: it is not the key the
+	// prefetch wrote, so the caller has to fall back to the local price.
+	mappedOnly := &relaycommon.RelayInfo{
+		Request:     request,
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3-mapped"},
+	}
+	if _, hit := videoPromptTotalForSettlement(mappedOnly); hit {
+		t.Fatal("a mapped upstream name alone must not read someone else's cache entry")
 	}
 }

@@ -89,7 +89,10 @@ import {
   getMultiKeyConfirmMessage,
   isDestructiveAction,
 } from '../../lib'
-import { parseMultiKeyCredentialText, toMultiKeyCredentialPayload } from '../../lib/multi-key-credentials'
+import {
+  parseMultiKeyCredentialText,
+  toMultiKeyCredentialPayload,
+} from '../../lib/multi-key-credentials'
 import type {
   ChannelObservabilityResult,
   KeyStatus,
@@ -153,9 +156,8 @@ export function MultiKeyManageDialog({
   const [isPerformingAction, setIsPerformingAction] = useState(false)
   const [isTestingKeys, setIsTestingKeys] = useState(false)
   const [testTaskId, setTestTaskId] = useState<string | null>(null)
-  const [testProgress, setTestProgress] = useState<MultiKeyTestTaskState | null>(
-    null
-  )
+  const [testProgress, setTestProgress] =
+    useState<MultiKeyTestTaskState | null>(null)
   const [testResults, setTestResults] = useState<
     Record<number, MultiKeyTestResult>
   >({})
@@ -413,9 +415,12 @@ export function MultiKeyManageDialog({
     }
     if (requestedKeyCount > MAX_KEYS_PER_TEST) {
       toast.error(
-        t('A test task supports at most {{count}} keys; select a smaller group', {
-          count: MAX_KEYS_PER_TEST,
-        })
+        t(
+          'A test task supports at most {{count}} keys; select a smaller group',
+          {
+            count: MAX_KEYS_PER_TEST,
+          }
+        )
       )
       return
     }
@@ -603,9 +608,7 @@ export function MultiKeyManageDialog({
       (value) =>
         value !== undefined &&
         value !== null &&
-        String(value)
-          .toLowerCase()
-          .includes(keyword)
+        String(value).toLowerCase().includes(keyword)
     )
   }
 
@@ -693,9 +696,7 @@ export function MultiKeyManageDialog({
         toast.error(response.message || t('Operation failed'))
         return
       }
-      toast.success(
-        t('Added {{count}} keys', { count: parsed.length })
-      )
+      toast.success(t('Added {{count}} keys', { count: parsed.length }))
       setAddKeysOpen(false)
       setNewKeysText('')
       observabilityCache.current = null
@@ -756,7 +757,10 @@ export function MultiKeyManageDialog({
 
   const testProgressPercent =
     testProgress && testProgress.total > 0
-      ? Math.min(100, Math.round((testProgress.processed / testProgress.total) * 100))
+      ? Math.min(
+          100,
+          Math.round((testProgress.processed / testProgress.total) * 100)
+        )
       : null
   let testButtonLabel = t('Test enabled')
   if (isTestingKeys) {
@@ -793,7 +797,7 @@ export function MultiKeyManageDialog({
         description={t(
           'Manage multi-key status and configuration for this channel'
         )}
-        contentClassName='flex max-h-[90vh] max-w-[min(96vw,1440px)] flex-col sm:max-w-[min(96vw,1440px)]'
+        contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-[min(96vw,1440px)] flex-col sm:max-w-[min(96vw,1440px)]'
         titleClassName='flex items-center gap-2'
         contentHeight='min(72vh, 720px)'
         bodyClassName='flex min-h-0 flex-1 flex-col overflow-hidden'
@@ -846,7 +850,9 @@ export function MultiKeyManageDialog({
 
             <Input
               value={testFilter}
-              onChange={(event) => void handleTestFilterChange(event.target.value)}
+              onChange={(event) =>
+                void handleTestFilterChange(event.target.value)
+              }
               placeholder={t('Filter by status code or error message')}
               className='w-64'
               aria-label={t('Filter by status code or error message')}
@@ -887,7 +893,9 @@ export function MultiKeyManageDialog({
                 size='sm'
                 onClick={() => void runKeyTest(false)}
                 disabled={isTestingKeys || enabledCount === 0}
-                title={enabledCount === 0 ? t('No enabled keys to test') : undefined}
+                title={
+                  enabledCount === 0 ? t('No enabled keys to test') : undefined
+                }
               >
                 <FlaskConical className='mr-2 h-4 w-4' />
                 {testButtonLabel}
@@ -1084,7 +1092,9 @@ export function MultiKeyManageDialog({
                             keys.every(
                               (key) =>
                                 key.credential_id &&
-                                selectedCredentialIds.includes(key.credential_id)
+                                selectedCredentialIds.includes(
+                                  key.credential_id
+                                )
                             )
                           }
                           onCheckedChange={(checked) => {
@@ -1118,7 +1128,9 @@ export function MultiKeyManageDialog({
                                       key.credential_id as number,
                                     ]),
                                   ]
-                                : current.filter((id) => id !== key.credential_id)
+                                : current.filter(
+                                    (id) => id !== key.credential_id
+                                  )
                             )
                           }}
                           aria-label={t('Select key {{index}}', {
@@ -1163,8 +1175,7 @@ export function MultiKeyManageDialog({
                       header: t('Fingerprint'),
                       className: 'w-24',
                       cellClassName: 'font-mono text-xs',
-                      cell: (key) =>
-                        key.fingerprint?.slice(0, 12) || '-',
+                      cell: (key) => key.fingerprint?.slice(0, 12) || '-',
                     },
                     {
                       id: 'proxy',
@@ -1193,7 +1204,9 @@ export function MultiKeyManageDialog({
                         return (
                           <TruncatedCell tooltipContent={detail}>
                             <span
-                              className={isFail ? 'text-destructive' : undefined}
+                              className={
+                                isFail ? 'text-destructive' : undefined
+                              }
                             >
                               {label}
                             </span>
@@ -1218,11 +1231,15 @@ export function MultiKeyManageDialog({
                           ? keyMetrics[key.credential_id]
                           : undefined
                         if (!metric) {
-                          return <span className='text-muted-foreground'>–</span>
+                          return (
+                            <span className='text-muted-foreground'>–</span>
+                          )
                         }
                         if (!metric.sample_sufficient) {
                           return (
-                            <TruncatedCell tooltipContent={t('Insufficient sample')}>
+                            <TruncatedCell
+                              tooltipContent={t('Insufficient sample')}
+                            >
                               <span className='text-muted-foreground'>–</span>
                             </TruncatedCell>
                           )
@@ -1242,8 +1259,8 @@ export function MultiKeyManageDialog({
                           >
                             <div className='space-y-0.5'>
                               <div>
-                                {metric.request_count.toLocaleString()}{' '}
-                                · {metric.request_success_rate.toFixed(1)}%
+                                {metric.request_count.toLocaleString()} ·{' '}
+                                {metric.request_success_rate.toFixed(1)}%
                               </div>
                               <div className='text-muted-foreground'>
                                 {metric.p95_latency_ms} ms ·{' '}
@@ -1391,9 +1408,7 @@ export function MultiKeyManageDialog({
           <Button
             onClick={() => void confirmAddKeys()}
             disabled={
-              isAddingKeys ||
-              parsedNewKeys.length === 0 ||
-              !canEditSensitive
+              isAddingKeys || parsedNewKeys.length === 0 || !canEditSensitive
             }
           >
             {isAddingKeys ? (

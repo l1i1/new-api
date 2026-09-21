@@ -205,7 +205,8 @@ func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 
 	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
 
-	require.Nil(t, usage)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "a failed response without usage must not settle any quota")
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
@@ -215,6 +216,38 @@ func TestOaiResponsesStreamHandlerTreatsFailedEventAsError(t *testing.T) {
 	// error is written to the client.
 	require.False(t, c.Writer.Written())
 	require.Empty(t, w.Body.String())
+}
+
+func TestOaiResponsesStreamHandlerReturnsUsageBeforeFailedEventError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+	}
+	stream := "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"generation failed\"},\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"total_tokens\":12}}}\n\ndata: [DONE]\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.NotNil(t, usage)
+	require.Equal(t, 9, usage.PromptTokens)
+	require.Equal(t, 3, usage.CompletionTokens)
+	require.Equal(t, 12, usage.TotalTokens)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
+	require.False(t, c.Writer.Written())
 }
 
 func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) {
@@ -239,7 +272,8 @@ func TestOaiResponsesStreamHandlerTreatsTopLevelErrorEventAsError(t *testing.T) 
 
 	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
 
-	require.Nil(t, usage)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens)
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
 	require.Equal(t, "Please retry.", apiErr.Error())
@@ -275,7 +309,8 @@ func TestOaiResponsesStreamHandlerFiltersUpstreamKeepaliveEvents(t *testing.T) {
 
 	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
 
-	require.Nil(t, usage)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens)
 	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
 	require.True(t, apiErr.ShouldEvictChannelAffinity())
@@ -297,7 +332,7 @@ func TestOaiResponsesStreamHandlerKeepsCommittedStatusForMidStreamFailure(t *tes
 	info := &relaycommon.RelayInfo{
 		OriginModelName: "gpt-test",
 		DisablePing:     true,
-		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-test"},
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mytest-model"},
 	}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -311,12 +346,46 @@ func TestOaiResponsesStreamHandlerKeepsCommittedStatusForMidStreamFailure(t *tes
 
 	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
 
-	require.Nil(t, usage)
+	require.NotNil(t, usage)
+	require.Greater(t, usage.TotalTokens, 0, "output observed before failure must remain billable")
 	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "response.output_text.delta")
 	require.Contains(t, w.Body.String(), "response.failed")
+}
+
+func TestOaiResponsesStreamHandlerKeepsHadOutputAfterEmptyOutputItemDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "mytest-model",
+		DisablePing:     true,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mytest-model"},
+	}
+	stream := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		`data: {"type":"response.output_item.done"}`,
+	}, "\n\n") + "\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.NotNil(t, usage)
+	require.Greater(t, usage.TotalTokens, 0)
+	require.NotNil(t, apiErr)
+	require.True(t, apiErr.IsUpstreamFailure())
+	require.NotContains(t, w.Body.String(), `"type":"response.failed"`, "existing output must not be replaced by a synthetic failure")
 }
 
 func TestOaiResponsesHandlerCountsCompletedImageGenerationOutputs(t *testing.T) {

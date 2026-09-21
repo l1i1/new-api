@@ -23,6 +23,8 @@ import { describe, expect, test } from 'vitest'
 
 import { Form } from '@/components/ui/form'
 
+import { CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_SUB2API } from '../../constants'
+import { CHANNEL_TYPE_ADVANCED_CUSTOM } from '../../lib/advanced-custom'
 import {
   buildSettingJSON,
   CHANNEL_FORM_DEFAULT_VALUES,
@@ -91,7 +93,13 @@ describe('Responses WebSocket channel setting', () => {
     ).toBe(false)
   })
 
-  test.each([1, 57])(
+  test.each([
+    1,
+    57,
+    CHANNEL_TYPE_ADVANCED_CUSTOM,
+    CHANNEL_TYPE_SUB2API,
+    CHANNEL_TYPE_NEW_API,
+  ])(
     'channel type %s exposes an accessible switch and saves on and off',
     async (channelType) => {
       const user = userEvent.setup()

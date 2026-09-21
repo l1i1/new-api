@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,8 +71,9 @@ func TestIsNeverRetryUpstreamErrorIgnoresChannelAndTransientFailures(t *testing.
 }
 
 func TestIsNeverRetryUpstreamErrorFollowsOperatorKeywords(t *testing.T) {
-	original := operation_setting.NeverRetryKeywords
-	t.Cleanup(func() { operation_setting.NeverRetryKeywords = original })
+	policy := model.CurrentRequestPolicy()
+	original := append([]string(nil), policy.NeverRetryKeywords...)
+	t.Cleanup(func() { policy.NeverRetryKeywords = original })
 
 	// An operator meeting a new upstream wording adds a line instead of waiting
 	// for a release.
@@ -84,14 +85,12 @@ func TestIsNeverRetryUpstreamErrorFollowsOperatorKeywords(t *testing.T) {
 	)
 	require.False(t, IsNeverRetryUpstreamError(beforeErr))
 
-	operation_setting.NeverRetryKeywordsFromString(
-		operation_setting.NeverRetryKeywordsToString() + "\nserving window",
-	)
+	policy.NeverRetryKeywords = append(append([]string(nil), original...), "serving window")
 	require.True(t, IsNeverRetryUpstreamError(beforeErr))
 
 	// Clearing the list turns the rule off and restores the force-retry
 	// behaviour for context-window 400s.
-	operation_setting.NeverRetryKeywordsFromString("")
+	policy.NeverRetryKeywords = nil
 	require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
 		errors.New("The prompt is too long: 1270974, model maximum context length: 1048576"),
 		types.ErrorCodeBadResponseStatusCode,

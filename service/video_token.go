@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -47,7 +48,8 @@ type VideoMetadata struct {
 
 // valid reports whether the metadata is usable for pricing.
 func (m VideoMetadata) valid() bool {
-	return m.Width > 0 && m.Height > 0 && m.DurationSeconds > 0
+	return m.Width > 0 && m.Height > 0 && m.DurationSeconds > 0 &&
+		!math.IsNaN(m.DurationSeconds) && !math.IsInf(m.DurationSeconds, 0)
 }
 
 // EstimateVideoTokens applies the calibrated model to one decoded video.
@@ -55,13 +57,23 @@ func EstimateVideoTokens(meta VideoMetadata) int {
 	if !meta.valid() {
 		return 0
 	}
-	frames := int(meta.DurationSeconds * videoFramesPerSecond)
+	// Bound the float-to-int conversion before converting. A huge finite
+	// duration can still exceed the platform int range even though the final
+	// model is capped.
+	frames := videoTokenCap
+	maxUncappedDuration := float64(videoTokenCap) / float64(videoFramesPerSecond)
+	if meta.DurationSeconds < maxUncappedDuration {
+		frames = int(meta.DurationSeconds * videoFramesPerSecond)
+	}
 	if frames < videoMinFrames {
 		frames = videoMinFrames
 	}
-	perFrame := meta.Width * meta.Height / videoPixelsPerToken
-	if perFrame > videoPerFrameTokenCap {
-		perFrame = videoPerFrameTokenCap
+	// Avoid width*height overflow by proving the product is below the only
+	// threshold that matters before multiplying it.
+	perFrame := videoPerFrameTokenCap
+	maxPixelsAtCap := videoPixelsPerToken * videoPerFrameTokenCap
+	if meta.Width <= maxPixelsAtCap/meta.Height {
+		perFrame = meta.Width * meta.Height / videoPixelsPerToken
 	}
 	if perFrame <= 0 {
 		// Sub-pixel-per-token sizes would price as zero; bill the floor instead
@@ -103,7 +115,7 @@ func readBoxes(data []byte) []isoBmffBox {
 		} else if size == 0 {
 			size = int64(len(data) - offset)
 		}
-		if size < headerSize || offset+int(size) > len(data) {
+		if size < headerSize || size > int64(len(data)-offset) {
 			break
 		}
 		boxes = append(boxes, isoBmffBox{
@@ -246,7 +258,7 @@ func CountVideoTokensForMeta(meta *types.TokenCountMeta) int {
 			continue
 		}
 		if token, err := CountVideoToken(file.Source); err == nil && token > 0 {
-			total += token
+			total = saturatingTokenTotal(total, token)
 		}
 	}
 	return total
@@ -295,10 +307,14 @@ func RequestBytesCarryVideo(body []byte) bool {
 // half the video price sits far from both sides, so a partially-counting
 // source is left alone rather than double-charged or under-charged.
 func VideoUsageLooksCounted(promptTokens, videoTokens int) bool {
-	if videoTokens <= 0 {
+	if promptTokens < 0 || videoTokens <= 0 {
 		return false
 	}
-	return promptTokens*2 >= videoTokens
+	threshold := videoTokens / 2
+	if videoTokens%2 != 0 {
+		threshold++
+	}
+	return promptTokens >= threshold
 }
 
 // correctedVideoBillingUsage returns a copy of usage carrying the video-aware
@@ -330,9 +346,9 @@ func correctedVideoBillingUsage(info *relaycommon.RelayInfo, usage *dto.Usage) (
 			return nil, false
 		}
 		// The upstream's text count is trustworthy; only the media is missing.
-		corrected.PromptTokens += videoTokens
+		corrected.PromptTokens = saturatingTokenTotal(corrected.PromptTokens, videoTokens)
 	}
-	corrected.TotalTokens = corrected.PromptTokens + corrected.CompletionTokens
+	corrected.TotalTokens = saturatingTokenTotal(corrected.PromptTokens, corrected.CompletionTokens)
 	// Build the payload from a copy that does not yet carry a BillingUsage, so
 	// the constructor clones the corrected counts rather than re-entering.
 	payload := corrected
@@ -349,7 +365,7 @@ func videoPromptTotalForSettlement(info *relaycommon.RelayInfo) (int, bool) {
 	if info.Request == nil {
 		return 0, false
 	}
-	return VideoPromptTotalForRequest(info.UpstreamModelName, info.Request)
+	return VideoPromptTotalForRequest(info.OriginModelName, info.Request)
 }
 
 // CountVideoToken prices one video file part on the official Kimi vision

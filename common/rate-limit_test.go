@@ -168,3 +168,65 @@ func TestInMemoryRateLimiterConcurrentInitializationAndRequests(t *testing.T) {
 	assert.Len(t, limiter.store, 1)
 	assert.Equal(t, 10, limiter.store["client"].requests.length)
 }
+
+func TestInMemoryRateLimiterRejectedReservationDoesNotRefreshIdleKey(t *testing.T) {
+	var limiter InMemoryRateLimiter
+	limiter.Init(0)
+	limiter.expirationDuration = 10 * time.Second
+
+	require.True(t, limiter.Request("idle", 1, 100))
+	require.True(t, limiter.Request("active", 1, 100))
+	now := time.Now()
+	idleEntry := limiter.store["idle"]
+	idleLastActive := now.Add(-10 * time.Second)
+	idleEntry.lastActive = idleLastActive
+	limiter.store["active"].lastActive = now
+
+	assert.Nil(t, limiter.Reserve("idle", 1, 100))
+	assert.Equal(t, idleLastActive, idleEntry.lastActive)
+	assert.Equal(t, "active", limiter.lru.Front().Value.(*rateLimitEntry).key)
+	assert.Equal(t, "idle", limiter.lru.Back().Value.(*rateLimitEntry).key)
+
+	limiter.deleteExpiredEntries(now)
+	assert.NotContains(t, limiter.store, "idle")
+}
+
+func TestInMemoryRateLimiterReservationSurvivesBucketEviction(t *testing.T) {
+	var limiter InMemoryRateLimiter
+	limiter.Init(0)
+	limiter.expirationDuration = 10 * time.Second
+
+	reservation := limiter.Reserve("idle", 1, 100)
+	require.NotNil(t, reservation)
+	now := time.Now()
+	limiter.store["idle"].lastActive = now.Add(-10 * time.Second)
+	limiter.deleteExpiredEntries(now)
+	assert.NotContains(t, limiter.store, "idle")
+	assert.Equal(t, 1, limiter.reservations["idle"])
+
+	assert.Nil(t, limiter.Reserve("idle", 1, 100))
+	reservation.Complete(false)
+	assert.NotContains(t, limiter.reservations, "idle")
+
+	retry := limiter.Reserve("idle", 1, 100)
+	require.NotNil(t, retry)
+	retry.Complete(false)
+}
+
+func TestInMemoryRateLimiterReservationCompletesOnceAndNilIsSafe(t *testing.T) {
+	var limiter InMemoryRateLimiter
+	limiter.Init(0)
+
+	reservation := limiter.Reserve("client", 2, 60)
+	require.NotNil(t, reservation)
+	reservation.Complete(true)
+	reservation.Complete(true)
+	assert.Equal(t, 1, limiter.store["client"].requests.length)
+
+	remaining := limiter.Reserve("client", 2, 60)
+	require.NotNil(t, remaining)
+	remaining.Complete(false)
+
+	var nilReservation *RateLimitReservation
+	nilReservation.Complete(true)
+}

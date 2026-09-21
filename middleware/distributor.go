@@ -39,6 +39,12 @@ type ModelRequest struct {
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
+		policy := service.RequestPolicy(c)
+		defer func() {
+			if c.Writer.Status() >= 400 {
+				service.RecordRequestPolicyTermination(c, types.NewErrorWithStatusCode(errors.New("request rejected"), types.ErrorCodeInvalidRequest, c.Writer.Status(), types.ErrOptionWithSkipRetry()))
+			}
+		}()
 		constraints := service.GetChannelConstraints(c)
 		constraints.AddFilter(taskdto.ChannelFilter{
 			Kind:        taskdto.FilterRequestPath,
@@ -308,28 +314,46 @@ func Distribute() func(c *gin.Context) {
 					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
 						service.ClearCurrentChannelAffinityCache(c)
 					}
+					if !affinityUsable && policy.SessionMode == "strict" {
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "strict_session_binding_unavailable")
+						return
+					}
 				}
 
 				if channel == nil {
-					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
+					var selectErr *service.ChannelSelectError
+					channel, selectGroup, selectErr = service.SelectRandomChannelForRequest(c, modelRequest.Model, &service.RetryParam{
 						Ctx:         c,
 						ModelName:   modelRequest.Model,
 						TokenGroup:  usingGroup,
 						RequestPath: c.Request.URL.Path,
 						Retry:       common.GetPointer(0),
 					})
-					if err != nil {
+					if selectErr != nil {
+						if selectErr.NoAvailableChannel || taskPluginNoAvailableSelection(c, selectErr) {
+							if taskPluginNoAvailableSelection(c, selectErr) {
+								logger.LogWarn(c, "task_plugin subsystem=distribution event=channel_selection_failed model=%q error=%q", modelRequest.Model, selectErr)
+							}
+							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, noAvailableChannelMessage(c, usingGroup, modelRequest.Model), types.ErrorCodeModelNotFound)
+							return
+						}
 						showGroup := usingGroup
 						if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 						}
-						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
+						message := selectErr.Message
+						if selectErr.MessageID != "" {
+							message = i18n.T(c, selectErr.MessageID, selectErr.Params)
+						}
+						if message == "" {
+							message = i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": selectErr.Error()})
+						}
 						// 如果错误，但是渠道不为空，说明是数据库一致性问题
 						//if channel != nil {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 						//	message = "数据库一致性已被破坏，请联系管理员"
 						//}
-						statusCode, errorCode := channelSelectionFailureResponse(err)
+						statusCode, errorCode := channelSelectionFailureResponse(selectErr)
 						abortWithOpenAiMessage(c, statusCode, message, errorCode)
 						return
 					}
@@ -485,11 +509,10 @@ func channelSupportsRequestPath(channel *model.Channel, requestPath string, requ
 }
 
 // noAvailableChannelMessage explains a 503 for a task-plugin-claimed model.
-// It identifies all candidate plugins whose channels could serve the request.
+// The response tells the caller the model is plugin-claimed without naming the
+// plugin; the candidate plugin keys go to the server log under the request id.
 func noAvailableChannelMessage(c *gin.Context, group, modelName string) string {
-	value, exists := c.Get(jsplugin.ContextKeyPinnedPlugin)
-	pinned, ok := value.(jsplugin.PinnedPlugin)
-	if exists && ok && pinned.Plugin != nil {
+	if pinned, ok := pinnedTaskPlugin(c); ok {
 		keys := []string{pinned.Plugin.Meta.Key}
 		if value, exists := c.Get(jsplugin.ContextKeyPinnedEndpoint); exists {
 			if endpoint, ok := value.(jsplugin.PinnedEndpoint); ok && len(endpoint.Candidates) > 0 {
@@ -501,9 +524,36 @@ func noAvailableChannelMessage(c *gin.Context, group, modelName string) string {
 				}
 			}
 		}
-		return i18n.T(c, i18n.MsgDistributorNoAvailableChannelTaskPlugin, map[string]any{"Group": group, "Model": modelName, "Plugin": strings.Join(keys, ", ")})
+		logger.LogWarn(c, "task_plugin subsystem=distribution event=no_available_channel group=%q model=%q plugins=%q reason=no_eligible_channel", group, modelName, strings.Join(keys, ","))
+		return i18n.T(c, i18n.MsgDistributorNoAvailableChannelTaskPlugin, map[string]any{"Group": group, "Model": modelName})
 	}
 	return i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": group, "Model": modelName})
+}
+
+func pinnedTaskPlugin(c *gin.Context) (jsplugin.PinnedPlugin, bool) {
+	if c == nil {
+		return jsplugin.PinnedPlugin{}, false
+	}
+	value, exists := c.Get(jsplugin.ContextKeyPinnedPlugin)
+	if !exists {
+		return jsplugin.PinnedPlugin{}, false
+	}
+	pinned, ok := value.(jsplugin.PinnedPlugin)
+	return pinned, ok && pinned.Plugin != nil
+}
+
+func taskPluginNoAvailableSelection(c *gin.Context, err error) bool {
+	if _, ok := pinnedTaskPlugin(c); !ok {
+		return false
+	}
+	var selectionErr *service.ChannelSelectionError
+	if !errors.As(err, &selectionErr) {
+		return false
+	}
+	// A pinned task-plugin model has no usable fallback channel. Keep provider
+	// diagnostics server-side for every selection failure except policy denial;
+	// policy failures must retain their explicit access-denied response.
+	return selectionErr.Kind != service.ChannelSelectionAccessDenied
 }
 
 func channelMatchesExpectedTaskPlugin(c *gin.Context, channel *model.Channel, expected string) bool {
@@ -515,11 +565,11 @@ func channelMatchesExpectedTaskPlugin(c *gin.Context, channel *model.Channel, ex
 			return true
 		}
 	}
-	if channel.Type == constant.ChannelTypeTaskPlugin {
-		return expected != "" && channel.GetSetting().TaskPluginKey == expected
-	}
 	if expected == "" {
-		return true
+		return channel.Type != constant.ChannelTypeTaskPlugin
+	}
+	if channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeNewAPI {
+		return channel.GetSetting().BindsTaskPlugin(expected)
 	}
 
 	if c == nil {
@@ -549,6 +599,7 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 	}
 	expectedOwned := false
 	selected := jsplugin.ProtocolBinding{}
+	setting := channel.GetSetting()
 	for _, candidate := range candidates {
 		if candidate.Plugin == nil {
 			continue
@@ -556,8 +607,12 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 		if candidate.Plugin.Meta.Key == expected {
 			expectedOwned = true
 		}
-		if channel.Type == constant.ChannelTypeTaskPlugin {
-			if channel.GetSetting().TaskPluginKey == candidate.Plugin.Meta.Key {
+		if channel.Type == constant.ChannelTypeTaskPlugin || channel.Type == constant.ChannelTypeNewAPI {
+			// A New API channel may bind several candidates. The first bound
+			// candidate in generation order executes, so the billing provider
+			// depends only on the channel and the request, never on which
+			// channels an earlier retry attempt happened to try.
+			if selected.Plugin == nil && setting.BindsTaskPlugin(candidate.Plugin.Meta.Key) {
 				selected = candidate
 			}
 			continue
@@ -1054,10 +1109,11 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	return &modelRequest, shouldSelectChannel, nil
 }
 
-// tokenModelLimitAllows reports whether a token model-limit map authorizes
+// TokenModelLimitAllows reports whether a token model-limit map authorizes
 // model. Exact name, wildcard-normalized name, and routing-normalized name
-// (modifiers and legacy aliases stripped) are all accepted.
-func tokenModelLimitAllows(limit map[string]bool, model string) bool {
+// (modifiers and legacy aliases stripped) are all accepted. The Responses
+// WebSocket relay shares this rule so both transports admit the same names.
+func TokenModelLimitAllows(limit map[string]bool, model string) bool {
 	if limit[model] {
 		return true
 	}
@@ -1135,8 +1191,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
 	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
-	if channel.Type == constant.ChannelTypeTaskPlugin {
+	switch channel.Type {
+	case constant.ChannelTypeTaskPlugin:
 		c.Set("task_plugin_key", channel.GetSetting().TaskPluginKey)
+	case constant.ChannelTypeNewAPI:
+		// The bound plugin verified above executes; ordinary requests through
+		// the same gateway channel carry no pinned plugin.
+		if executing := c.GetString("expected_task_plugin_key"); executing != "" {
+			c.Set("task_plugin_key", executing)
+		}
 	}
 	logTaskPluginChannelDecision(c, channel, modelName, "channel_selected", "")
 	paramOverride := channel.GetParamOverride()

@@ -68,9 +68,12 @@ type rateLimitEntry struct {
 }
 
 // InMemoryRateLimiter implements a sliding-window limiter with idle-key eviction.
+// Reservations are tracked apart from the LRU so an in-flight request survives
+// its key being evicted while it is still running.
 type InMemoryRateLimiter struct {
 	store              map[string]*rateLimitEntry
 	lru                *list.List
+	reservations       map[string]int
 	mutex              sync.Mutex
 	expirationDuration time.Duration
 }
@@ -86,6 +89,7 @@ func (l *InMemoryRateLimiter) Init(expirationDuration time.Duration) {
 
 	l.store = make(map[string]*rateLimitEntry)
 	l.lru = list.New()
+	l.reservations = make(map[string]int)
 	l.expirationDuration = expirationDuration
 	if expirationDuration > 0 {
 		go l.clearExpiredItems(time.NewTicker(expirationDuration).C)
@@ -126,12 +130,10 @@ func (l *InMemoryRateLimiter) deleteExpiredEntries(now time.Time) {
 	}
 }
 
-// Request parameter duration's unit is seconds
-func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration int64) bool {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	now := time.Now()
+// getEntry returns the key's bucket, creating it on demand. The caller must
+// hold the mutex. Existing entries keep their LRU position until a request is
+// admitted, so rejected requests do not keep idle keys alive.
+func (l *InMemoryRateLimiter) getEntry(key string, now time.Time) *rateLimitEntry {
 	entry, ok := l.store[key]
 	if !ok {
 		entry = &rateLimitEntry{
@@ -140,16 +142,79 @@ func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration in
 		}
 		entry.element = l.lru.PushFront(entry)
 		l.store[key] = entry
-	} else {
-		entry.requests.removeExpired(now.Unix(), duration)
 	}
+	return entry
+}
+
+// touchEntry marks an entry as active after admission. The caller must hold
+// the mutex.
+func (l *InMemoryRateLimiter) touchEntry(entry *rateLimitEntry, now time.Time) {
+	entry.lastActive = now
+	l.lru.MoveToFront(entry.element)
+}
+
+// Request parameter duration's unit is seconds
+func (l *InMemoryRateLimiter) Request(key string, maxRequestNum int, duration int64) bool {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	now := time.Now()
+	entry := l.getEntry(key, now)
+	entry.requests.removeExpired(now.Unix(), duration)
 
 	allowed := entry.requests.length < maxRequestNum
 	if allowed {
-		entry.lastActive = now
-		l.lru.MoveToFront(entry.element)
+		l.touchEntry(entry, now)
 		entry.requests.append(now.Unix())
 	}
 
 	return allowed
+}
+
+// RateLimitReservation counts an active request towards admission until its
+// outcome is known. Failed requests release the slot without consuming quota.
+type RateLimitReservation struct {
+	limiter *InMemoryRateLimiter
+	key     string
+	once    sync.Once
+}
+
+// Reserve admits a request when the key's accepted requests plus its in-flight
+// reservations stay below maxRequests. It returns nil when the key is saturated.
+func (l *InMemoryRateLimiter) Reserve(key string, maxRequests int, duration int64) *RateLimitReservation {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	now := time.Now()
+	entry := l.getEntry(key, now)
+	entry.requests.removeExpired(now.Unix(), duration)
+	if entry.requests.length+l.reservations[key] >= maxRequests {
+		return nil
+	}
+	l.reservations[key]++
+	l.touchEntry(entry, now)
+	return &RateLimitReservation{limiter: l, key: key}
+}
+
+// Complete releases the reservation. A successful outcome records the request
+// in the key's sliding window; a failed one only frees the slot.
+func (r *RateLimitReservation) Complete(success bool) {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() {
+		l := r.limiter
+		l.mutex.Lock()
+		defer l.mutex.Unlock()
+		l.reservations[r.key]--
+		if l.reservations[r.key] == 0 {
+			delete(l.reservations, r.key)
+		}
+		if success {
+			now := time.Now()
+			entry := l.getEntry(r.key, now)
+			l.touchEntry(entry, now)
+			entry.requests.append(now.Unix())
+		}
+	})
 }

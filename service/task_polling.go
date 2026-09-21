@@ -16,6 +16,7 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -109,6 +110,10 @@ func sweepTimedOutTasks(ctx context.Context) {
 			continue
 		}
 		timedOutCount++
+		// Timeout sweep is a terminal CAS path too. Record the failure before
+		// refunding so the metrics denominator includes timed-out requests while
+		// preserving the legacy refund boundary below.
+		perfmetrics.RecordTaskResult(task, relaycommon.FailTaskInfo(reason))
 		if !isLegacy && task.Quota != 0 {
 			RefundTaskQuota(ctx, task, reason)
 		}
@@ -398,10 +403,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 				continue
 			}
 			if terminalTransition {
-				billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, &responseItem.TaskInfo)
-				if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
-					RefundTaskQuota(ctx, task, task.FailReason)
-				}
+				finalizeTerminalTask(ctx, adaptor, task, &responseItem.TaskInfo)
 			}
 		}
 	}
@@ -665,13 +667,19 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	if shouldFinalizeBilling {
-		billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
-		if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, task.FailReason)
-		}
+		finalizeTerminalTask(ctx, adaptor, task, taskResult)
 	}
 
 	return nil
+}
+
+// finalizeTerminalTask 终态统一收尾（状态 CAS 赢家调用，恰好一次）：采样 + 结算 + 失败兜底退款。
+func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
+	perfmetrics.RecordTaskResult(task, taskResult)
+	billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+	if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
+		RefundTaskQuota(ctx, task, task.FailReason)
+	}
 }
 
 func redactVideoResponseBody(body []byte) []byte {
@@ -860,11 +868,7 @@ func failTaskFromPoll(ctx context.Context, adaptor TaskPollingAdaptor, task *mod
 	if !won {
 		return nil
 	}
-	taskResult := relaycommon.FailTaskInfo(reason)
-	billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
-	if !billingSettled && task.Quota != 0 {
-		RefundTaskQuota(ctx, task, reason)
-	}
+	finalizeTerminalTask(ctx, adaptor, task, relaycommon.FailTaskInfo(reason))
 	return nil
 }
 

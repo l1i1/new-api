@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -125,7 +125,7 @@ func estimateRequestBody(model string, request dto.Request) ([]byte, string, boo
 	if model == "" {
 		return nil, "", false
 	}
-	body, err := json.Marshal(videoEstimateRequest{Model: model, Messages: messages})
+	body, err := common.Marshal(videoEstimateRequest{Model: model, Messages: messages})
 	if err != nil {
 		return nil, "", false
 	}
@@ -265,7 +265,7 @@ func estimateTotalViaEndpoint(cfg VideoEstimateConfig, body []byte) (int, bool, 
 		return 0, false, fmt.Errorf("estimate request failed: %w", err)
 	}
 	var parsed videoEstimateResponse
-	if err := json.Unmarshal(payload, &parsed); err != nil {
+	if err := common.Unmarshal(payload, &parsed); err != nil {
 		return 0, false, fmt.Errorf("estimate response is not JSON (status %d)", status)
 	}
 	if status != http.StatusOK || parsed.Data == nil {

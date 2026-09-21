@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Tag as TagIcon } from 'lucide-react'
-import { Fragment, useMemo, type ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
@@ -59,8 +59,9 @@ import {
 } from '../lib/task-matrix-display'
 import {
   taskPriceLabel,
-  taskEnumLabel,
   taskUsageUnitLabel,
+  taskTierConditions,
+  pricingDisplayFallbackKey,
 } from '../lib/task-price-display'
 import type {
   BillingUsageSchema,
@@ -200,37 +201,10 @@ function formatBreakdownConditionSummary(
     }
     return formatConditionSummary(tier.conditions, t)
   }
-  if (tier.conditions.length === 0) {
-    return t(tierCount > 1 ? 'Other cases' : 'All requests')
-  }
-
-  return tier.conditions.map((condition, index) => {
-    const definition = schema?.[condition.field]
-    const label = taskPriceLabel(
-      definition?.description,
-      condition.field,
-      language
-    )
-    const optionLabel = taskEnumLabel(definition, condition.value, language)
-    let conditionNode: ReactNode = optionLabel
-    if (definition?.type === 'boolean') {
-      conditionNode = `${label}: ${condition.value === 'true' ? t('Yes') : t('No')}`
-    } else if (optionLabel === condition.value) {
-      conditionNode = (
-        <>
-          <span>{label}: </span>
-          <span>{optionLabel}</span>
-        </>
-      )
-    }
-
-    return (
-      <Fragment key={`${condition.field}:${condition.value}`}>
-        {index > 0 && <span aria-hidden='true'> · </span>}
-        {conditionNode}
-      </Fragment>
-    )
-  })
+  return (
+    taskTierConditions(tier, schema ?? undefined, language, t) ||
+    t(tierCount > 1 ? 'Other cases' : 'All requests')
+  )
 }
 
 function formatBreakdownPrice(
@@ -399,7 +373,7 @@ export function DynamicPricingBreakdown({
                 {t('Special billing expression')}
               </div>
               <div className='text-muted-foreground text-xs'>
-                {t('Unable to parse structured pricing')}
+                {t(pricingDisplayFallbackKey(expr, usageSchema))}
               </div>
             </div>
           </div>

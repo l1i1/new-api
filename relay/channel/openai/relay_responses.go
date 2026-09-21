@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -13,7 +12,6 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
@@ -46,6 +44,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	info.ObserveResponseModel(responsesResponse.Model)
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
 
 	// 写入新的 response body
@@ -85,14 +84,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	defer service.CloseResponseBodyGracefully(resp)
 
-	var usage = &dto.Usage{}
-	var responseTextBuilder strings.Builder
-	imageCounter := &relaycommon.ImageGenerationCallCounter{}
-	imageCommitted := false
+	accumulator := service.NewResponsesUsageAccumulator(info)
 	responseDataSent := false
 	sawTerminalEvent := false
-	hasToolCall := false
+	hadOutput := false
 	var streamErr *types.NewAPIError
+	policyUsage := &dto.Usage{}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if streamErr != nil {
@@ -121,12 +118,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				return
 			}
 		}
-		if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
-			usage = dto.MergeUsage(usage, usageFromResponsesResponse(streamResponse.Response))
-		}
-		if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, usage); cyberErr != nil {
+		accumulator.Observe(&streamResponse)
+		policyUsage = dto.MergeUsageNonZero(policyUsage, usageFromResponsesResponse(streamResponse.Response))
+		if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, policyUsage); cyberErr != nil {
 			streamErr = cyberErr
 			sendResponsesStreamData(c, streamResponse, data)
+			responseDataSent = true
 			helper.Done(c)
 			service.MarkOpsCyberPolicyForwarded(c)
 			sr.Stop(streamErr)
@@ -158,6 +155,11 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			if oaiError == nil {
 				oaiError = dto.GetOpenAIError(streamResponse.Error)
 			}
+			if oaiError == nil && (streamResponse.Code != "" || streamResponse.Message != "") {
+				// Standard SSE error events carry these fields at the top level.
+				// Preserve the code for request-outcome classification.
+				oaiError = &types.OpenAIError{Code: streamResponse.Code, Message: streamResponse.Message, Param: streamResponse.Param}
+			}
 			if oaiError == nil {
 				oaiError = &types.OpenAIError{Type: "server_error", Message: "responses stream failed"}
 			}
@@ -182,95 +184,39 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		responseDataSent = true
 		switch streamResponse.Type {
-		case "response.completed", "response.done":
+		case "response.completed", "response.done", "response.incomplete", "response.cancelled", "response.canceled":
 			sawTerminalEvent = true
-			if streamResponse.Response != nil {
-				if streamResponse.Response.Usage != nil {
-					incomingUsage := relayconvert.NormalizeResponsesUsage(streamResponse.Response.Usage)
-					usage = dto.MergeUsageNonZero(usage, incomingUsage)
-				}
-				if !imageCommitted {
-					if relaycommon.IsNonBillableResponsesStatus(streamResponse.Response.Status) {
-						imageCounter.Reset()
-						imageCounter.Commit(info)
-						imageCommitted = true
-					} else {
-						for i := range streamResponse.Response.Output {
-							idx := i
-							imageCounter.Observe(&streamResponse.Response.Output[i], &idx)
-						}
-						imageCounter.Commit(info)
-						imageCommitted = true
-					}
-				}
-			} else if !imageCommitted {
-				imageCounter.Commit(info)
-				imageCommitted = true
-			}
-		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
-			sawTerminalEvent = true
-			if !imageCommitted {
-				imageCounter.Reset()
-				imageCounter.Commit(info)
-				imageCommitted = true
-			}
-		case "response.output_text.delta":
-			// 处理输出文本
-			responseTextBuilder.WriteString(streamResponse.Delta)
+		case "response.output_text.delta", "response.function_call_arguments.delta",
+			"response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.refusal.delta":
+			hadOutput = true
 		case dto.ResponsesOutputTypeItemDone:
-			if streamResponse.Item != nil {
-				switch streamResponse.Item.Type {
-				case dto.BuildInCallWebSearchCall:
-					info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
-					hasToolCall = true
-				case dto.BuildInCallFileSearchCall:
-					info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
-					hasToolCall = true
-				case dto.BuildInCallFunctionCall:
-					info.CountBillableToolCall(dto.BuildInCallFunctionCall, streamResponse.Item.Name)
-					hasToolCall = true
-				case dto.ResponsesOutputTypeImageGenerationCall:
-					if !imageCommitted {
-						imageCounter.Observe(streamResponse.Item, streamResponse.OutputIndex)
-					}
-				}
-			}
+			hadOutput = hadOutput || streamResponse.Item != nil
 		}
 	})
+	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
+	if info.StreamStatus != nil {
+		info.StreamStatus.RequireTerminal()
+	}
+	usage := accumulator.Finish()
 	if streamErr != nil {
 		if service.GetOpsCyberPolicy(c) != nil {
-			return usage, streamErr
+			return policyUsage, streamErr
 		}
-		return nil, streamErr
+		return usage, streamErr
 	}
 
-	if usage.CompletionTokens == 0 {
-		// 计算输出文本的 token 数量
-		tempStr := responseTextBuilder.String()
-		if len(tempStr) > 0 {
-			// 非正常结束，使用输出文本的 token 数量
-			completionTokens := service.CountTextToken(tempStr, info.UpstreamModelName)
-			usage.CompletionTokens = completionTokens
-		}
+	// A caller that disconnected is not an upstream protocol failure. The
+	// accumulator has already settled the observed usage, so do not synthesize
+	// a 502 for a response nobody can receive.
+	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
+		(c.Request != nil && c.Request.Context().Err() != nil) {
+		return usage, nil
 	}
 
-	if usage.PromptTokens == 0 && usage.CompletionTokens != 0 {
-		usage.PromptTokens = info.GetEstimatePromptTokens()
-	}
-
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	if usage.BillingUsage != nil {
-		usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
-	}
-
-	// 流以 EOF 结束，但从未发送终端事件（response.completed/done/failed/
-	// incomplete/cancelled）。Responses 协议有显式终端事件，缺少它就说明上游
-	// 在完成前关闭了流——即使已经产出了部分内容（客户端文案即
-	// "stream closed before response.completed"），也必须标记为失败，而不是静默
-	// 记一笔成功。已提交响应时补发合成 response.failed 事件，让客户端（如 Codex
-	// CLI）走重试；未提交时直接返回错误，由 relay 按普通上游错误处理/重试。
+	// Responses requires an explicit terminal event. A clean EOF without one
+	// is an upstream truncation and must remain visible to retry/affinity logic.
 	if !sawTerminalEvent {
-		return usage, incompleteResponsesStreamError(c, c.Writer.Written(), responseTextBuilder.Len() > 0 || hasToolCall || imageCounter.Count() > 0)
+		return usage, incompleteResponsesStreamError(c, c.Writer.Written(), hadOutput)
 	}
 
 	return usage, nil
@@ -295,15 +241,7 @@ func usageFromResponsesResponse(response *dto.OpenAIResponsesResponse) *dto.Usag
 	if response == nil || response.Usage == nil {
 		return usage
 	}
-	usage.PromptTokens = response.Usage.InputTokens
-	usage.InputTokens = response.Usage.InputTokens
-	usage.CompletionTokens = response.Usage.OutputTokens
-	usage.OutputTokens = response.Usage.OutputTokens
-	usage.TotalTokens = response.Usage.TotalTokens
-	if response.Usage.InputTokensDetails != nil {
-		usage.PromptTokensDetails.CachedTokens = response.Usage.InputTokensDetails.CachedTokens
-		usage.PromptTokensDetails.CacheWriteTokens = response.Usage.InputTokensDetails.CacheWriteTokens
-	}
+	service.ApplyResponsesUsage(usage, response.Usage)
 	return usage
 }
 

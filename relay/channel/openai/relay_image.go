@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -66,7 +65,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
-	imageCount := gjson.GetBytes(responseBody, "data.#").Int()
+	imageCount := openaiImageResponseCount(responseBody)
 	if imageCount == 0 {
 		// An upstream 200 without images must fail the request before the
 		// response is forwarded, so the relay refunds the pre-consumed quota
@@ -83,14 +82,54 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	return &usageResp.Usage, nil
 }
 
+// openaiImageResponseCount counts billable images in an OpenAI-format image
+// response body. An object-shaped data is one image when it carries url or
+// b64_json. For arrays the count is the larger of the url-bearing and the
+// b64_json-bearing entry counts: a standard response uses one response_format
+// so this equals the entry count, an upstream that splits one image into a url
+// entry and a b64_json entry bills once, and entries without any image payload
+// bill nothing. Callers reject a zero result before updating the requested
+// quantity, so a payload-less response is refunded as a failure.
+func openaiImageResponseCount(responseBody []byte) int64 {
+	data := gjson.GetBytes(responseBody, "data")
+	if data.IsObject() {
+		if openaiImageDataHasField(data, "url") || openaiImageDataHasField(data, "b64_json") {
+			return 1
+		}
+		return 0
+	}
+	if !data.IsArray() {
+		return 0
+	}
+	var urls, b64s int64
+	data.ForEach(func(_, item gjson.Result) bool {
+		if openaiImageDataHasField(item, "url") {
+			urls++
+		}
+		if openaiImageDataHasField(item, "b64_json") {
+			b64s++
+		}
+		return true
+	})
+	return max(urls, b64s)
+}
+
+// openaiImageDataHasField reports whether an image data entry carries a
+// non-empty string value for field.
+func openaiImageDataHasField(item gjson.Result, field string) bool {
+	value := item.Get(field)
+	return value.Type == gjson.String && value.Raw != `""`
+}
+
 // normalizeOpenAIUsage maps the OpenAI Images usage shape (input_tokens /
-// output_tokens / input_tokens_details) onto the canonical prompt/completion
-// fields. It is used only on the OpenAI image relay paths (generations/edits,
-// streaming and non-streaming): the image API never returns prompt_tokens /
-// completion_tokens, so the overwrite (=) semantics here are equivalent to the
-// previous additive (+=) behavior while avoiding any future double-counting if
-// both field sets are ever populated. Do not reuse this on chat/embedding paths
-// without revisiting the overwrite semantics.
+// output_tokens / input_tokens_details / output_tokens_details) onto the
+// canonical prompt/completion fields. It is used only on the OpenAI image
+// relay paths (generations/edits, streaming and non-streaming): the image
+// API never returns prompt_tokens / completion_tokens, so the overwrite (=)
+// semantics here are equivalent to the previous additive (+=) behavior while
+// avoiding any future double-counting if both field sets are ever populated.
+// Do not reuse this on chat/embedding paths without revisiting the overwrite
+// semantics.
 func normalizeOpenAIUsage(usage *dto.Usage) {
 	if usage == nil {
 		return
@@ -103,6 +142,9 @@ func normalizeOpenAIUsage(usage *dto.Usage) {
 	}
 	if usage.InputTokensDetails != nil {
 		usage.PromptTokensDetails = usage.InputTokensDetails.Clone()
+	}
+	if usage.OutputTokensDetails != nil {
+		usage.CompletionTokenDetails = *usage.OutputTokensDetails
 	}
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -300,7 +342,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
-	imageCount := gjson.GetBytes(responseBody, "data.#").Int()
+	imageCount := openaiImageResponseCount(responseBody)
 	if imageCount == 0 {
 		return nil, emptyImageResponseError()
 	}
@@ -326,8 +368,15 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 	}
 
-	for i := range imageCount {
-		image := gjson.GetBytes(responseBody, "data."+strconv.FormatInt(i, 10))
+	// gjson.Result.Array returns the element list for an array and a single
+	// element for an object-shaped data, keeping document-relative indexes so
+	// the zero-copy field forwarding below stays valid for both shapes.
+	// Entries without url or b64_json carry no image and are not forwarded.
+	emitted := 0
+	for _, image := range gjson.GetBytes(responseBody, "data").Array() {
+		if !openaiImageDataHasField(image, "url") && !openaiImageDataHasField(image, "b64_json") {
+			continue
+		}
 		payload := []byte(`{"type":"image_generation.completed"}`)
 		payload, err = sjson.SetBytes(payload, "created_at", created)
 		if err != nil {
@@ -362,6 +411,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 			}
 			return &usageResp.Usage, nil
 		}
+		emitted++
 	}
 	if err := writeOpenaiImageStreamDone(c); err != nil {
 		if info != nil && info.StreamStatus != nil {
@@ -370,7 +420,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return &usageResp.Usage, nil
 	}
 	if info != nil {
-		info.ReceivedResponseCount += int(imageCount)
+		info.ReceivedResponseCount += emitted
 		if info.StreamStatus == nil {
 			info.StreamStatus = relaycommon.NewStreamStatus()
 		}

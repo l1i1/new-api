@@ -43,6 +43,7 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 
 	if needSensitiveCheck && meta != nil {
 		if contains, words := service.CheckSensitiveText(meta.CombineText); contains {
+			service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeSensitiveWordsDetected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"}, Health: "unchanged"})
 			message := fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", "))
 			logger.LogWarn(c, message)
 			return types.NewError(errors.New(message), types.ErrorCodeSensitiveWordsDetected)
@@ -73,7 +74,10 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		otherSettings.EstimatesVideoUsage() && info.Request != nil {
 		if videoTokens := service.CountVideoTokensForMeta(info.Request.GetTokenCountMeta()); videoTokens > 0 {
 			info.SetVideoTokens(videoTokens)
-			service.PrefetchVideoPromptTotal(info.UpstreamModelName, info.Request)
+			// ModelMappedHelper runs inside the handler, so UpstreamModelName is still
+			// empty here; the original model id is what both ends of the estimate
+			// cache can agree on.
+			service.PrefetchVideoPromptTotal(info.OriginModelName, info.Request)
 		}
 	}
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)

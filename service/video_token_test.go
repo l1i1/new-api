@@ -1,8 +1,14 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/binary"
+	"math"
 	"testing"
+
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 // box builds one ISO-BMFF box: size, type, payload.
@@ -60,8 +66,8 @@ func TestDecodeVideoMetadataRejectsNonVideo(t *testing.T) {
 
 func TestDecodeVideoMetadataHandlesVersion1Headers(t *testing.T) {
 	mvhd := make([]byte, 120)
-	mvhd[0] = 1 // version 1: 64-bit times and duration
-	binary.BigEndian.PutUint32(mvhd[20:], 600) // timescale
+	mvhd[0] = 1                                 // version 1: 64-bit times and duration
+	binary.BigEndian.PutUint32(mvhd[20:], 600)  // timescale
 	binary.BigEndian.PutUint64(mvhd[24:], 3300) // duration
 
 	tkhd := make([]byte, 96)
@@ -171,5 +177,84 @@ func TestEstimateVideoTokensRejectsUnusableMetadata(t *testing.T) {
 		if got := EstimateVideoTokens(meta); got != 0 {
 			t.Fatalf("metadata %+v must not price (%d)", meta, got)
 		}
+	}
+}
+
+func TestEstimateVideoTokensRejectsNonFiniteAndSaturatesLargeMetadata(t *testing.T) {
+	for _, meta := range []VideoMetadata{
+		{Width: 1920, Height: 1080, DurationSeconds: math.NaN()},
+		{Width: 1920, Height: 1080, DurationSeconds: math.Inf(1)},
+		{Width: 1920, Height: 1080, DurationSeconds: math.Inf(-1)},
+	} {
+		if got := EstimateVideoTokens(meta); got != 0 {
+			t.Fatalf("non-finite metadata %+v must not price (%d)", meta, got)
+		}
+	}
+
+	for _, meta := range []VideoMetadata{
+		{Width: math.MaxInt, Height: math.MaxInt, DurationSeconds: math.MaxFloat64},
+		{Width: math.MaxInt, Height: 2, DurationSeconds: math.MaxFloat64},
+	} {
+		got := EstimateVideoTokens(meta)
+		if got <= 0 || got > videoTokenCap {
+			t.Fatalf("large metadata %+v must produce a bounded positive estimate, got %d", meta, got)
+		}
+	}
+}
+
+func TestVideoUsageLooksCountedAvoidsIntegerOverflow(t *testing.T) {
+	if !VideoUsageLooksCounted(math.MaxInt, math.MaxInt) {
+		t.Fatal("a maximum prompt count must not overflow the media threshold check")
+	}
+	if VideoUsageLooksCounted(-1, math.MaxInt) {
+		t.Fatal("negative prompt usage must not be treated as media-aware")
+	}
+}
+
+func TestVideoTokenAccumulationSaturates(t *testing.T) {
+	if got := saturatingTokenTotal(math.MaxInt-1, videoTokenCap); got != math.MaxInt {
+		t.Fatalf("video token accumulation wrapped or underflowed: got %d", got)
+	}
+}
+
+// TestCorrectedVideoBillingUsageSaturatesTokenAddition keeps the overflow guard
+// on the correction path: the serving channel's mode authorises the local price
+// to be added to the upstream text count, and neither the sum nor the total may
+// wrap when both are already enormous.
+func TestCorrectedVideoBillingUsageSaturatesTokenAddition(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		Request: &dto.GeneralOpenAIRequest{Model: "kimi-k3"},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				SupportsVideo:  true,
+				VideoUsageMode: dto.VideoUsageModeEstimate,
+			},
+		},
+	}
+	info.SetVideoTokens(math.MaxInt)
+	usage := &dto.Usage{
+		PromptTokens:     math.MaxInt / 4,
+		CompletionTokens: math.MaxInt,
+	}
+	corrected, ok := correctedVideoBillingUsage(info, usage)
+	if !ok || corrected == nil {
+		t.Fatal("expected a corrected usage")
+	}
+	if corrected.PromptTokens != math.MaxInt || corrected.TotalTokens != math.MaxInt {
+		t.Fatalf("corrected usage must saturate: %+v", corrected)
+	}
+}
+
+func TestCountVideoTokensForMetaUsesSaturatingTotal(t *testing.T) {
+	data := mp4With(3612, 1952, 1000, 5533)
+	source := types.NewBase64FileSource(base64.StdEncoding.EncodeToString(data), "video/mp4")
+	meta := &types.TokenCountMeta{Files: []*types.FileMeta{
+		types.NewFileMeta(types.FileTypeVideo, source),
+		types.NewFileMeta(types.FileTypeVideo, source),
+	}}
+	got := CountVideoTokensForMeta(meta)
+	want := EstimateVideoTokens(VideoMetadata{3612, 1952, 5.533}) * 2
+	if got != want {
+		t.Fatalf("video files must sum their bounded estimates: got %d, want %d", got, want)
 	}
 }

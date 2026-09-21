@@ -94,6 +94,34 @@ function rowValue(label: string): string | null {
   return screen.getByText(label).nextElementSibling?.textContent ?? null
 }
 
+test('shows the recorded request and response models in log details', () => {
+  const queryClient = renderDetails({
+    response_model: {
+      requested_model: 'requested-model',
+      upstream_model: 'mapped-model',
+      returned_model: 'unexpected-model',
+    },
+  })
+  expect(screen.getByText('Response model: unexpected-model')).toBeVisible()
+  expect(rowValue('Request Model')).toBe('requested-model')
+  expect(rowValue('Upstream Model')).toBe('mapped-model')
+  expect(screen.getByText('unexpected-model')).toBeVisible()
+  queryClient.clear()
+})
+
+test('shows a non-completed response status when the stream status is ok', () => {
+  const queryClient = renderDetails({
+    stream_status: { status: 'ok', response_status: 'incomplete' },
+  })
+
+  expect(screen.getByText('Stream Status')).toBeVisible()
+  expect(
+    screen.getByText('ok').closest('[data-slot="status-badge"]')
+  ).toHaveClass('text-success')
+  expect(rowValue('Response')).toBe('Incomplete')
+  queryClient.clear()
+})
+
 describe('usage facts billing details', () => {
   test('shows the settled image count and a per-image price', () => {
     const queryClient = renderDetails({

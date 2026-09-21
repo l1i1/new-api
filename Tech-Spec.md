@@ -520,3 +520,207 @@ changes.
   exact remaining failures and their evidence; an unfinished process is not a pass.
 - Preserve the user's existing MEMORY.md edits. Commit only reviewed task changes;
   pushing and deployment remain outside this review.
+
+## Upstream rc38 Synchronization (2026-09-20)
+
+### Immutable inputs and scope
+
+- Fork parent: `474fe9470e7c2809543293709911198e65b13f0d`.
+- Upstream target: tag `v1.0.0-rc.38`, commit `2906e4f779b715f282ae11203211dca77051d5af`.
+- Merge base: `69a50029819a26c53e6babd276d49cfe2f8880ad`; 26 upstream commits,
+  239 changed paths, 88 paths also changed by the fork, and 42 predicted conflicts.
+- Work in isolated candidate `codex/sync-upstream-rc38`. Exclude the eight later
+  commits on upstream/main. Do not publish images or deploy production.
+- Mainline advanced independently to `3c06c3183` during candidate verification
+  (six commits after the immutable fork parent) and has concurrent uncommitted
+  work. This candidate remains scoped to the immutable inputs. Landing it must
+  preserve and revalidate the newer mainline changes in a subsequent integration;
+  candidate acceptance is not approval to overwrite or reset mainline.
+- A later refresh found mainline/origin at `1acf0f0c1` (eight commits after the
+  fork input), adding operator-editable never-retry keywords. Landing must move
+  that option into the rc38 request-policy snapshot/UI and preserve its tests
+  and locale keys, together with any still-uncommitted concurrent edits.
+
+### Tasks and preserved contracts
+
+1. Capture build, vet, test, frontend typecheck/build, both test-runner phases,
+   lint and format results on the exact fork parent before merging.
+2. Merge without committing; resolve each conflict by behavior, retaining both
+   sides unless replacement is proven. Preserve GitHub identity evidence and
+   fork authentication controls, request-policy routing, retry/dedup/affinity and
+   concurrency cleanup, rate-limit reservations and rejected-request LRU rules.
+3. Preserve empty Chat output, cancellation settlement, image validation, quota
+   saturation/auditing, official-fit behavior, task credential/proxy snapshots,
+   WebSocket passthrough limits and response stream correlation.
+4. Merge channel/settings UI, request policies, pricing/log/performance consumers,
+   mainland CNY/language behavior and partner features. Maintain seven frontend
+   locale key sets without duplicates; prove byte round-trip before writes.
+5. Audit both directions of parent/result blob equality, fork-only commit content
+   survival, orphaned producers and every changed cross-layer field/enum.
+6. Save candidate-specific executor, independent review, manual QA and execution
+   records under the ignored `.review/rc38/` directory; summarize durable findings
+   in MEMORY.md. Do not inherit rc37's rejected release evidence.
+
+### Verification and acceptance
+
+- Root Go build/vet/test and independent relaykit build/vet/test with GOWORK=off.
+- Frontend typecheck/build, full official test runner (both phases even on failure),
+  lint, format, locale parity and git diff --check. Attribute every failure against
+  the exact parent; no unexplained or newly introduced failures may remain.
+- Focused regression checks for authentication, task access, routing/concurrency,
+  stream outcomes, quota settlement and frontend configuration persistence.
+- Representative local browser QA for changed settings, pricing and logs, with
+  limitations recorded rather than treating unavailable checks as passed.
+- The merge must have exactly the immutable parents above; no conflict markers,
+  lost fork behavior, unresolved review findings or missing verification phases.
+- Stop publication if target/ancestry is wrong, a contract regresses, evidence is
+  incomplete, or a gate remains unexplained. Keep the isolated candidate reviewable.
+
+### Open authentication gates identified during review
+
+The exact fork parent already contains three security gaps: anonymous OAuth
+login state is not bound to its initiating browser, built-in provider subjects
+lack database-enforced ownership, and GitHub profile email can become account
+evidence without verified-email confirmation. The candidate retains these root
+causes; their baseline attribution does not grant production approval.
+
+The remediation plan must preserve existing authentication and account data:
+
+1. Bind anonymous login state to a browser-held, HttpOnly nonce validated by the
+   callback; retain expiry and single-use checks. Verify same-browser success,
+   cross-browser rejection, replay, expiry and concurrent login flows.
+2. Evaluate the existing external-identity ownership table before adding a new
+   schema. Protect every built-in binding and legacy migration writer with one
+   database uniqueness rule. Detect legacy duplicate subjects before migration;
+   never silently choose an owner. Verify concurrent binds, rollback, fresh
+   startup and repeated upgrades against SQLite, Oracle MySQL and PostgreSQL.
+3. Use GitHub's verified email list for account evidence. If the endpoint fails
+   or yields no verified address, do not auto-bind the profile email. Verify
+   endpoint failure, denied scope, unverified-only and verified-address cases.
+
+These security-model and legacy-data decisions require their own explicit
+implementation scope. Until the controls are implemented and verified, keep
+authentication approval open and do not publish or deploy this candidate.
+
+### Routing acceptance addendum (rc38 P1 closure)
+
+The distributor and shared selector must use one request-scoped candidate
+predicate for request path, task-plugin identity, Responses WebSocket capability,
+channel status, group/model ability, and the immutable group-access-policy
+snapshot. A candidate rejected by a request filter is excluded for this attempt
+and selection continues through remaining priorities and auto groups. A resolved
+explicit pin remains a single-candidate decision and returns its existing
+validation/access error without falling through to another channel.
+
+Channel affinity is a candidate reuse path, not an authorization bypass. Before
+an unpinned affinity hit is accepted, routing must re-check the current request
+policy for the channel, resolved model, selected target group, request path, and
+channel ability. The same checks apply to Responses WebSocket selection and
+HTTP retries; a denied affinity hit is evicted or skipped according to the
+existing session-mode semantics, then normal eligible selection decides whether
+to fall back.
+
+Acceptance requires regression coverage for: (1) an HTTP task-plugin request
+where a high-priority identity-mismatched channel is skipped in favor of a
+lower-priority matching channel; (2) an unpinned affinity hit rejected after a
+channel/model/group policy block; (3) a valid lower-priority Responses WebSocket
+channel after an incompatible higher-priority candidate; and (4) explicit pin,
+locale/status, token-limit, auto-group, retry, and group-access-denied behavior
+remaining unchanged. Focused middleware, service, and relay tests must pass,
+followed by root build/vet and `git diff --check`.
+
+## Upstream rc39 Synchronization (2026-09-21)
+
+The user advanced the synchronization target to exact `v1.0.0-rc.39` at
+`9978ee1e25a647bfe004e96c8719a2cb62c24732`. This supersedes the rc38-only
+target above. The new isolated candidate is `codex/sync-upstream-rc39`, based on
+fresh fork/origin `dacee08ae13734cbc7b658e7e37d19f7e06d3cf9`.
+
+Keep the reviewed rc38 tree `5cb5074ace552dac0d617e1af26d668dbcc38ed0` and its
+original worktree as a checkpoint. Reconstruct its behavioral resolutions with
+explicit-base tree merges: first integrate the ten newer fork commits against
+the original fork `474fe9470`, then integrate rc39 against rc38 `2906e4f779`.
+The real pending merge must retain the new fork HEAD and exact rc39 MERGE_HEAD.
+No intermediate tree is a releasable commit. Do not commit, push or deploy.
+
+Preserve operator-editable never-retry keywords, their precedence after
+keep-alive-only writes, snapshot consistency and translated grouped settings;
+preserve the new partner username lookup. Review rc39's task-plugin image API,
+multiple plugin bindings, async terminal metrics, trust threshold and input
+pre-consume multiplier, metadata sync, usage-log and pricing contracts. Retain
+fork credential/proxy snapshots, quota saturation/audit, CNY and TNT rendering,
+TTFT, original prices, official-fit routing and protected attribution.
+
+The rc38 verification matrix and three fixed merge audits above apply again to
+the new immutable parents. Re-run the exact-parent baseline, then candidate Go,
+relaykit and frontend gates, real database checks for affected paths and local
+desktop/mobile browser QA. Every failure needs current-parent attribution;
+rc38 checks cannot establish rc39 acceptance. Freeze only when conflicts,
+contract regressions and unexplained new failures are zero and evidence records
+the final index tree. Existing authentication gaps remain production blockers.
+
+Detailed execution evidence is kept under `.review/rc39/`; the main checkout
+must remain untouched. Refresh origin and inspect concurrent changes before
+any later landing.
+
+### rc39 billing reservation closure addendum (2026-09-21)
+
+The tiered-expression reservation must retain the fork's conservative output
+estimate while adopting rc39's configurable input pre-consume multiplier. For
+token-priced expressions, evaluate the frozen expression twice at request
+time: `F = expr(P, C_est, Len)` and `I = expr(P, 0, Len)`, where `C_est` is
+the explicit `max_tokens` estimate or `8192` for a paid group when it is
+omitted. Reserve `max(F, F + (m - 1) * I)` after quota conversion and group
+scaling, so a multiplier below one never reduces the full-output safety
+estimate. Fixed request pricing reserves only `F` and is never multiplied.
+Free groups reserve zero. Freeze `C_est` and the resulting reservation inputs
+in `BillingSnapshot`; settlement continues to evaluate actual usage without
+the reservation multiplier.
+
+The closure must use one small shared estimator for normal tiered pricing and
+image quantity retries, preserve strict quota conversion and older snapshots
+where a missing multiplier means `1`, and avoid AST changes, new settings or
+dependencies. Acceptance requires focused cases for explicit and omitted
+output limits, multipliers below and above one, fixed and free pricing,
+nonlinear completion branches, and image retry reuse of the frozen formula.
+
+### rc39 + 最新主线合并闭环（2026-09-22）
+
+合并结果树 `a1efa7481349380e8a2d11df2bc9c798a38b0ccb`，parents 仍为 fork
+`dacee08ae` 与 rc39 `9978ee1e2`；最新主线 8 提交（`3a2b41d86`..`a6cab488f`）
+以显式 base `dacee08ae` 的 tree-merge 并入后再人工解决 7 处目标冲突。
+仍是**未提交候选**，不 move 任何 ref，不改主 checkout。
+
+重试策略的最终契约（合并后的唯一实现）：
+
+- 决策顺序固定为「永不重试 → 换同渠道另一个 Key → 换渠道」；失效的
+  `ForceRetryStatusCodes` 从前端下线，后端保留为兼容/迁移选项，failover 默认
+  为旧 automatic 范围 ∪ {400}。
+- `MultiKeyCredentialRetryKeywords` 进入 request-policy 快照的默认值与
+  allowlist（缺任一处则设置页无法保存），并同时更新全局
+  `operation_setting.MultiKeyCredentialRetryKeywords`。
+- 永不重试关键词判定读不可变快照（`CurrentRequestPolicy().MatchesNeverRetryKeywords`），
+  状态码与自动重试关键词读全局；两条写路径都会刷新快照。
+- 设置页分组顺序、字段与文案由
+  `web/src/features/system-settings/request-policies/channel-health-section.tsx`
+  定义，7 个 locale 键已对齐（7401 keys × 7）。
+
+证据（均在 `.review/rc39/`）：
+
+- `mainline-blob-compare2.mjs`：双边改动 28 路径、主线覆盖候选 0 路径；3 个
+  「候选胜出」路径是 rc39 的 section 搬迁。
+- `go-test-merged-2.log`、`go-build-merged.log`、`go-vet-merged.log`、
+  `relaykit-*-merged.log`：root 与独立 relaykit 全绿。
+- `db-lifecycle-merged.log`（run `20260922002005_2c7d554e`）与
+  `db-tests-merged-2.log`：SQLite 3.50.4 / Oracle MySQL 8.4.7 /
+  PostgreSQL 18.6，fresh 与 rc38→rc39 upgrade、两次重启、无重复 `ALTER TABLE`。
+- `web-typecheck-merged.log`、`web-build-merged.log`、`web-test-merged.log`：
+  typecheck/build 绿；vitest 5 失败与 node:test 4 失败与 exact-parent 基线一致
+  （基线 12 失败 / 7 失败，本候选更少）。
+- Playwright 真浏览器：桌面 1440×900 与移动 390×844 打开
+  `/system-settings/request-policies/health`，分组顺序、`换 Key 重试错误关键词`
+  字段与保存往返均通过（UI 改值后用独立 API 读回校验，随后恢复默认值）。
+
+已知未覆盖：`agent`/Computer Use 的 in-app 浏览器在本机因
+`unsupported Codex auth method: apikey` 无法初始化，因此改用 Playwright 完成
+真实渲染检查；独立 `LOG_DB`（`LOG_SQL_DSN` 指向另一套库）仍未覆盖。

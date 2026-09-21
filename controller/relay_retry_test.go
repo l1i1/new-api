@@ -591,9 +591,12 @@ func TestInsufficientCreditsRotatesKeyInsteadOfDroppingChannel(t *testing.T) {
 // change.
 func TestNeverRetryOutranksCredentialRotation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	origNever := operation_setting.NeverRetryKeywords
-	t.Cleanup(func() { operation_setting.NeverRetryKeywords = origNever })
-	operation_setting.NeverRetryKeywordsFromString("insufficient credits")
+	// The verdict reads the immutable request-policy snapshot, which is what
+	// the settings page edits and what every option write refreshes.
+	policy := model.CurrentRequestPolicy()
+	original := append([]string(nil), policy.NeverRetryKeywords...)
+	t.Cleanup(func() { policy.NeverRetryKeywords = original })
+	policy.NeverRetryKeywords = append(append([]string(nil), original...), "insufficient credits")
 
 	param := &service.RetryParam{Retry: new(int)}
 	channel := &model.Channel{Id: 2, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}

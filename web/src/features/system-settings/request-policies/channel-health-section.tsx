@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -44,18 +44,23 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { handleServerError } from '@/lib/handle-server-error'
 import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
 import {
+  SettingsControlChildren,
+  SettingsControlGroup,
   SettingsForm,
+  SettingsFormGrid,
   SettingsSwitchContent,
   SettingsSwitchItem,
 } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
-import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
+import type { HealthSettings, RetrySettings } from './defaults'
+import { useSavePolicy } from './use-save-policy'
 
 const numericString = z.string().refine((value) => {
   const trimmed = value.trim()
@@ -71,39 +76,39 @@ const channelTestModes = [
 type ChannelTestMode = (typeof channelTestModes)[number]
 const MAX_CHANNEL_TEST_CONCURRENCY = 32
 
-const createRoutingReliabilitySchema = (
+const createChannelHealthSchema = (
   t: (key: string, options?: Record<string, unknown>) => string
 ) =>
   z
     .object({
-      RetryTimes: z.coerce.number().min(0).max(10),
       ChannelDisableThreshold: numericString,
       AutomaticDisableChannelEnabled: z.boolean(),
       AutomaticEnableChannelEnabled: z.boolean(),
       AutomaticDisableKeywords: z.string(),
       AutomaticDisableStatusCodes: z.string(),
+      RetryTimes: z.coerce.number().int().min(0).max(10),
       AutomaticRetryStatusCodes: z.string(),
       NeverRetryStatusCodes: z.string(),
       MultiKeyCredentialRetryStatusCodes: z.string(),
       AutomaticRetryKeywords: z.string(),
       NeverRetryKeywords: z.string(),
       MultiKeyCredentialRetryKeywords: z.string(),
-        monitor_setting: z.object({
-          auto_test_channel_enabled: z.boolean(),
-          auto_test_channel_minutes: z.coerce
-            .number()
-            .int()
-            .min(1, t('Interval must be at least 1 minute')),
-          channel_test_concurrency: z.coerce
-            .number()
-            .int(t('Enter a positive integer'))
-            .min(1, t('Channel test concurrency must be between 1 and 32'))
-            .max(
-              MAX_CHANNEL_TEST_CONCURRENCY,
-              t('Channel test concurrency must be between 1 and 32')
-            ),
-          channel_test_mode: z.enum(channelTestModes),
-        }),
+      monitor_setting: z.object({
+        auto_test_channel_enabled: z.boolean(),
+        auto_test_channel_minutes: z.coerce
+          .number()
+          .int()
+          .min(1, t('Interval must be at least 1 minute')),
+        channel_test_concurrency: z.coerce
+          .number()
+          .int(t('Enter a positive integer'))
+          .min(1, t('Channel test concurrency must be between 1 and 32'))
+          .max(
+            MAX_CHANNEL_TEST_CONCURRENCY,
+            t('Channel test concurrency must be between 1 and 32')
+          ),
+        channel_test_mode: z.enum(channelTestModes),
+      }),
     })
     .superRefine((values, ctx) => {
       const disableParsed = parseHttpStatusCodeRules(
@@ -118,85 +123,46 @@ const createRoutingReliabilitySchema = (
           }),
         })
       }
-
-      const retryParsed = parseHttpStatusCodeRules(
-        values.AutomaticRetryStatusCodes
-      )
-      if (!retryParsed.ok) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['AutomaticRetryStatusCodes'],
-          message: t('Invalid status code rules: {{tokens}}', {
-            tokens: retryParsed.invalidTokens.join(', '),
-          }),
-        })
-      }
-
-      const neverRetryParsed = parseHttpStatusCodeRules(
-        values.NeverRetryStatusCodes
-      )
-      if (!neverRetryParsed.ok) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['NeverRetryStatusCodes'],
-          message: t('Invalid status code rules: {{tokens}}', {
-            tokens: neverRetryParsed.invalidTokens.join(', '),
-          }),
-        })
-      }
-
-      const multiKeyRetryParsed = parseHttpStatusCodeRules(
-        values.MultiKeyCredentialRetryStatusCodes
-      )
-      if (!multiKeyRetryParsed.ok) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['MultiKeyCredentialRetryStatusCodes'],
-          message: t('Invalid status code rules: {{tokens}}', {
-            tokens: multiKeyRetryParsed.invalidTokens.join(', '),
-          }),
-        })
+      for (const [key, value] of [
+        ['AutomaticRetryStatusCodes', values.AutomaticRetryStatusCodes],
+        ['NeverRetryStatusCodes', values.NeverRetryStatusCodes],
+        [
+          'MultiKeyCredentialRetryStatusCodes',
+          values.MultiKeyCredentialRetryStatusCodes,
+        ],
+      ] as const) {
+        const parsed = parseHttpStatusCodeRules(value)
+        if (!parsed.ok) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: t('Invalid status code rules: {{tokens}}', {
+              tokens: parsed.invalidTokens.join(', '),
+            }),
+          })
+        }
       }
     })
 
-type RoutingReliabilitySchema = ReturnType<
-  typeof createRoutingReliabilitySchema
->
-type RoutingReliabilityFormValues = z.output<RoutingReliabilitySchema>
-type RoutingReliabilityFormInput = z.input<RoutingReliabilitySchema>
+type ChannelHealthSchema = ReturnType<typeof createChannelHealthSchema>
+type ChannelHealthFormValues = z.output<ChannelHealthSchema>
+type ChannelHealthFormInput = z.input<ChannelHealthSchema>
 
-type RoutingReliabilitySectionProps = {
-  defaultValues: {
-    RetryTimes: number
-    ChannelDisableThreshold: string
-    AutomaticDisableChannelEnabled: boolean
-    AutomaticEnableChannelEnabled: boolean
-    AutomaticDisableKeywords: string
-    AutomaticDisableStatusCodes: string
-    AutomaticRetryStatusCodes: string
-    NeverRetryStatusCodes: string
-    MultiKeyCredentialRetryStatusCodes: string
-    AutomaticRetryKeywords: string
-    NeverRetryKeywords: string
-    MultiKeyCredentialRetryKeywords: string
-    'monitor_setting.auto_test_channel_enabled': boolean
-    'monitor_setting.auto_test_channel_minutes': number
-    'monitor_setting.channel_test_concurrency': number
-    'monitor_setting.channel_test_mode': ChannelTestMode
-  }
+type ChannelHealthSectionProps = {
+  defaultValues: HealthSettings & RetrySettings
 }
 
 function normalizeLineEndings(value: string) {
   return value.replaceAll('\r\n', '\n')
 }
 
-type NormalizedRoutingReliabilityValues = {
-  RetryTimes: number
+type NormalizedChannelHealthValues = {
   ChannelDisableThreshold: string
   AutomaticDisableChannelEnabled: boolean
   AutomaticEnableChannelEnabled: boolean
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
+  RetryTimes: number
   AutomaticRetryStatusCodes: string
   NeverRetryStatusCodes: string
   MultiKeyCredentialRetryStatusCodes: string
@@ -217,9 +183,8 @@ function normalizeChannelTestMode(value?: string): ChannelTestMode {
 }
 
 const buildFormDefaults = (
-  defaults: RoutingReliabilitySectionProps['defaultValues']
-): RoutingReliabilityFormInput => ({
-  RetryTimes: defaults.RetryTimes ?? 0,
+  defaults: ChannelHealthSectionProps['defaultValues']
+): ChannelHealthFormInput => ({
   ChannelDisableThreshold: defaults.ChannelDisableThreshold ?? '',
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
   AutomaticEnableChannelEnabled: defaults.AutomaticEnableChannelEnabled,
@@ -227,6 +192,7 @@ const buildFormDefaults = (
     defaults.AutomaticDisableKeywords ?? ''
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
+  RetryTimes: defaults.RetryTimes ?? 0,
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
   NeverRetryStatusCodes: defaults.NeverRetryStatusCodes ?? '',
   MultiKeyCredentialRetryStatusCodes:
@@ -234,9 +200,7 @@ const buildFormDefaults = (
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
   ),
-  NeverRetryKeywords: normalizeLineEndings(
-    defaults.NeverRetryKeywords ?? ''
-  ),
+  NeverRetryKeywords: normalizeLineEndings(defaults.NeverRetryKeywords ?? ''),
   MultiKeyCredentialRetryKeywords: normalizeLineEndings(
     defaults.MultiKeyCredentialRetryKeywords ?? ''
   ),
@@ -254,9 +218,8 @@ const buildFormDefaults = (
 })
 
 const normalizeDefaults = (
-  defaults: RoutingReliabilitySectionProps['defaultValues']
-): NormalizedRoutingReliabilityValues => ({
-  RetryTimes: defaults.RetryTimes ?? 0,
+  defaults: ChannelHealthSectionProps['defaultValues']
+): NormalizedChannelHealthValues => ({
   ChannelDisableThreshold: (defaults.ChannelDisableThreshold ?? '').trim(),
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
   AutomaticEnableChannelEnabled: defaults.AutomaticEnableChannelEnabled,
@@ -266,6 +229,7 @@ const normalizeDefaults = (
   AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticDisableStatusCodes ?? ''
   ).normalized,
+  RetryTimes: defaults.RetryTimes ?? 0,
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
@@ -278,9 +242,7 @@ const normalizeDefaults = (
   AutomaticRetryKeywords: normalizeLineEndings(
     defaults.AutomaticRetryKeywords ?? ''
   ),
-  NeverRetryKeywords: normalizeLineEndings(
-    defaults.NeverRetryKeywords ?? ''
-  ),
+  NeverRetryKeywords: normalizeLineEndings(defaults.NeverRetryKeywords ?? ''),
   MultiKeyCredentialRetryKeywords: normalizeLineEndings(
     defaults.MultiKeyCredentialRetryKeywords ?? ''
   ),
@@ -296,9 +258,8 @@ const normalizeDefaults = (
 })
 
 const normalizeFormValues = (
-  values: RoutingReliabilityFormValues
-): NormalizedRoutingReliabilityValues => ({
-  RetryTimes: values.RetryTimes,
+  values: ChannelHealthFormValues
+): NormalizedChannelHealthValues => ({
   ChannelDisableThreshold: values.ChannelDisableThreshold.trim(),
   AutomaticDisableChannelEnabled: values.AutomaticDisableChannelEnabled,
   AutomaticEnableChannelEnabled: values.AutomaticEnableChannelEnabled,
@@ -308,12 +269,12 @@ const normalizeFormValues = (
   AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticDisableStatusCodes
   ).normalized,
+  RetryTimes: values.RetryTimes,
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticRetryStatusCodes
   ).normalized,
-  NeverRetryStatusCodes: parseHttpStatusCodeRules(
-    values.NeverRetryStatusCodes
-  ).normalized,
+  NeverRetryStatusCodes: parseHttpStatusCodeRules(values.NeverRetryStatusCodes)
+    .normalized,
   MultiKeyCredentialRetryStatusCodes: parseHttpStatusCodeRules(
     values.MultiKeyCredentialRetryStatusCodes
   ).normalized,
@@ -331,13 +292,13 @@ const normalizeFormValues = (
   'monitor_setting.channel_test_mode': values.monitor_setting.channel_test_mode,
 })
 
-export function RoutingReliabilitySection({
+export function ChannelHealthSection({
   defaultValues,
-}: RoutingReliabilitySectionProps) {
+}: ChannelHealthSectionProps) {
   const { t } = useTranslation()
-  const updateOption = useUpdateOption()
-  const routingReliabilitySchema = createRoutingReliabilitySchema(t)
-  const baselineRef = useRef<NormalizedRoutingReliabilityValues>(
+  const updateOption = useSavePolicy()
+  const channelHealthSchema = createChannelHealthSchema(t)
+  const baselineRef = useRef<NormalizedChannelHealthValues>(
     normalizeDefaults(defaultValues)
   )
 
@@ -347,15 +308,18 @@ export function RoutingReliabilitySection({
   )
 
   const form = useForm<
-    RoutingReliabilityFormInput,
+    ChannelHealthFormInput,
     unknown,
-    RoutingReliabilityFormValues
+    ChannelHealthFormValues
   >({
-    resolver: zodResolver(routingReliabilitySchema),
+    resolver: zodResolver(channelHealthSchema),
     defaultValues: formDefaults,
   })
 
   useResetForm(form, formDefaults)
+  useEffect(() => {
+    baselineRef.current = normalizeDefaults(defaultValues)
+  }, [defaultValues])
 
   const autoDisableStatusCodes = form.watch('AutomaticDisableStatusCodes')
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
@@ -398,10 +362,10 @@ export function RoutingReliabilitySection({
     [multiKeyCredentialRetryStatusCodes]
   )
 
-  const onSubmit = async (values: RoutingReliabilityFormValues) => {
+  const onSubmit = async (values: ChannelHealthFormValues) => {
     const normalized = normalizeFormValues(values)
     const updates = (
-      Object.keys(normalized) as Array<keyof NormalizedRoutingReliabilityValues>
+      Object.keys(normalized) as Array<keyof NormalizedChannelHealthValues>
     ).filter((key) => normalized[key] !== baselineRef.current[key])
 
     if (updates.length === 0) {
@@ -409,36 +373,48 @@ export function RoutingReliabilitySection({
       return
     }
 
-    for (const key of updates) {
-      const value = normalized[key]
-      await updateOption.mutateAsync({
-        key,
-        value,
-      })
+    try {
+      await updateOption.mutateAsync(
+        Object.fromEntries(updates.map((key) => [key, String(normalized[key])]))
+      )
+      baselineRef.current = normalized
+    } catch (error) {
+      handleServerError(error)
     }
-
-    baselineRef.current = normalized
   }
 
   return (
-    <SettingsSection title={t('Routing Reliability')}>
+    <SettingsSection title={t('Channel health')}>
+      <div className='text-muted-foreground space-y-1 text-sm'>
+        <p>{t('Source: global settings. Changes take effect after saving.')}</p>
+        <p>
+          {form.watch('AutomaticDisableChannelEnabled')
+            ? t(
+                'Channels must also enable Auto Ban before automatic disabling can take effect.'
+              )
+            : t(
+                'With these settings, automatic disabling is off for all channels.'
+              )}
+        </p>
+        {form.watch('AutomaticEnableChannelEnabled') &&
+          !form.watch('monitor_setting.auto_test_channel_enabled') && (
+            <p>
+              {t(
+                'Scheduled recovery is off. Bulk channel tests can still re-enable automatically disabled channels.'
+              )}
+            </p>
+          )}
+      </div>
       <Form {...form}>
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending}
+            isSaving={form.formState.isSubmitting}
           />
 
           <div className='flex min-w-0 flex-col gap-4'>
-            <div className='flex flex-col gap-1'>
-              <h4 className='text-sm font-medium'>{t('Request retry')}</h4>
-              <p className='text-sm text-muted-foreground'>
-                {t(
-                  'The rules are checked in this order: never retry, then another key of the same channel, then another channel. A failure that matches nothing is returned to the client.'
-                )}
-              </p>
-            </div>
-            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+            <h4 className='text-sm font-medium'>{t('Request retry')}</h4>
+            <SettingsFormGrid>
               <FormField
                 control={form.control}
                 name='RetryTimes'
@@ -448,8 +424,8 @@ export function RoutingReliabilitySection({
                     <FormControl>
                       <Input
                         type='number'
-                        min='0'
-                        max='10'
+                        min={0}
+                        max={10}
                         {...safeNumberFieldProps(field)}
                       />
                     </FormControl>
@@ -460,14 +436,22 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
+            </SettingsFormGrid>
+
+            <div className='flex flex-col gap-1'>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'The rules are checked in this order: never retry, then another key of the same channel, then another channel. A failure that matches nothing is returned to the client.'
+                )}
+              </p>
             </div>
 
             <div className='flex flex-col gap-1'>
-              <h5 className='text-sm font-medium text-muted-foreground'>
+              <h5 className='text-muted-foreground text-sm font-medium'>
                 {t('When never to retry (checked first)')}
               </h5>
             </div>
-            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+            <SettingsFormGrid>
               <FormField
                 control={form.control}
                 name='NeverRetryStatusCodes'
@@ -486,7 +470,6 @@ export function RoutingReliabilitySection({
                         'Stop on these status codes, whatever the rules below say.'
                       )}{' '}
                       {neverRetryParsed.ok &&
-                        neverRetryParsed.normalized &&
                         neverRetryParsed.normalized !== field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {neverRetryParsed.normalized}
@@ -521,14 +504,14 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
-            </div>
+            </SettingsFormGrid>
 
             <div className='flex flex-col gap-1'>
-              <h5 className='text-sm font-medium text-muted-foreground'>
+              <h5 className='text-muted-foreground text-sm font-medium'>
                 {t('When to retry another key of the same channel')}
               </h5>
             </div>
-            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+            <SettingsFormGrid>
               <FormField
                 control={form.control}
                 name='MultiKeyCredentialRetryStatusCodes'
@@ -547,8 +530,8 @@ export function RoutingReliabilitySection({
                         'On a multi-key channel, retry the same channel with another key on these status codes instead of dropping the channel. Use it when each key is a separate upstream account, so a 402 means this key is out of balance.'
                       )}{' '}
                       {multiKeyRetryParsed.ok &&
-                        multiKeyRetryParsed.normalized &&
-                        multiKeyRetryParsed.normalized !== field.value.trim() && (
+                        multiKeyRetryParsed.normalized !==
+                          field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {multiKeyRetryParsed.normalized}
                           </span>
@@ -564,9 +547,7 @@ export function RoutingReliabilitySection({
                 name='MultiKeyCredentialRetryKeywords'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>
-                      {t('Multi-key retry error keywords')}
-                    </FormLabel>
+                    <FormLabel>{t('Multi-key retry error keywords')}</FormLabel>
                     <FormControl>
                       <Textarea
                         rows={6}
@@ -584,14 +565,14 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
-            </div>
+            </SettingsFormGrid>
 
             <div className='flex flex-col gap-1'>
-              <h5 className='text-sm font-medium text-muted-foreground'>
+              <h5 className='text-muted-foreground text-sm font-medium'>
                 {t('When to retry another channel')}
               </h5>
             </div>
-            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+            <SettingsFormGrid>
               <FormField
                 control={form.control}
                 name='AutomaticRetryStatusCodes'
@@ -610,7 +591,6 @@ export function RoutingReliabilitySection({
                         'Retry another channel on these status codes. Accepts comma-separated codes and inclusive ranges; 400 belongs here because an upstream 400 often means this channel cannot serve the request. Local request errors are never retried.'
                       )}{' '}
                       {autoRetryParsed.ok &&
-                        autoRetryParsed.normalized &&
                         autoRetryParsed.normalized !== field.value.trim() && (
                           <span className='text-muted-foreground'>
                             {t('Normalized:')} {autoRetryParsed.normalized}
@@ -645,119 +625,127 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
-            </div>
+            </SettingsFormGrid>
           </div>
 
           <Separator />
 
           <div className='flex min-w-0 flex-col gap-4'>
-            <div className='flex flex-col gap-1'>
-              <h4 className='text-sm font-medium'>
-                {t('Channel health checks')}
-              </h4>
-            </div>
-            <div className='grid min-w-0 gap-6 lg:grid-cols-3'>
-              <FormField
-                control={form.control}
-                name='monitor_setting.auto_test_channel_enabled'
-                render={({ field }) => (
-                  <SettingsSwitchItem>
-                    <SettingsSwitchContent>
-                      <FormLabel>{t('Scheduled channel tests')}</FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Automatically probe all channels in the background'
-                        )}
-                      </FormDescription>
-                    </SettingsSwitchContent>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </SettingsSwitchItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.channel_test_mode'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Channel test mode')}</FormLabel>
-                    <Select
-                      items={[
-                        {
-                          value: 'scheduled_all',
-                          label: t('Actively check all channels'),
-                        },
-                        {
-                          value: 'auto_ban_only',
-                          label: t(
-                            'Actively check auto-disable-enabled channels'
-                          ),
-                        },
-                        {
-                          value: 'passive_recovery',
-                          label: t('Check channels awaiting recovery only'),
-                        },
-                      ]}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                    >
+            <h4 className='text-sm font-medium'>
+              {t('Channel health checks')}
+            </h4>
+            <SettingsFormGrid>
+              <SettingsControlGroup>
+                <FormField
+                  control={form.control}
+                  name='monitor_setting.auto_test_channel_enabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>{t('Scheduled channel tests')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Run background checks using the selected test mode'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
                       </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          <SelectItem value='scheduled_all'>
-                            {t('Actively check all channels')}
-                          </SelectItem>
-                          <SelectItem value='auto_ban_only'>
-                            {t('Actively check auto-disable-enabled channels')}
-                          </SelectItem>
-                          <SelectItem value='passive_recovery'>
-                            {t('Check channels awaiting recovery only')}
-                          </SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormDescription>
-                      {channelTestModeDescription}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                    </SettingsSwitchItem>
+                  )}
+                />
 
-              <FormField
-                control={form.control}
-                name='monitor_setting.auto_test_channel_minutes'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Test interval (minutes)')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        min={1}
-                        step={1}
-                        {...safeNumberFieldProps(field)}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {channelTestMode === 'passive_recovery'
-                        ? t(
-                            'How frequently the system checks auto-disabled channels for recovery'
-                          )
-                        : t('How frequently the system tests all channels')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                <SettingsControlChildren
+                  role='group'
+                  aria-label={t('Scheduled test options')}
+                  className='grid gap-x-5 gap-y-4 lg:grid-cols-2'
+                >
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.channel_test_mode'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Channel test mode')}</FormLabel>
+                        <Select
+                          items={[
+                            {
+                              value: 'scheduled_all',
+                              label: t('Actively check all channels'),
+                            },
+                            {
+                              value: 'auto_ban_only',
+                              label: t(
+                                'Actively check auto-disable-enabled channels'
+                              ),
+                            },
+                            {
+                              value: 'passive_recovery',
+                              label: t('Check channels awaiting recovery only'),
+                            },
+                          ]}
+                          value={field.value}
+                          onValueChange={field.onChange}
+                        >
+                          <FormControl>
+                            <SelectTrigger className='w-full'>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              <SelectItem value='scheduled_all'>
+                                {t('Actively check all channels')}
+                              </SelectItem>
+                              <SelectItem value='auto_ban_only'>
+                                {t(
+                                  'Actively check auto-disable-enabled channels'
+                                )}
+                              </SelectItem>
+                              <SelectItem value='passive_recovery'>
+                                {t('Check channels awaiting recovery only')}
+                              </SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription>
+                          {channelTestModeDescription}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_test_channel_minutes'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Test interval (minutes)')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            step={1}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {channelTestMode === 'passive_recovery'
+                            ? t(
+                                'How frequently the system checks auto-disabled channels for recovery'
+                              )
+                            : t('Time between scheduled channel checks')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </SettingsControlChildren>
+              </SettingsControlGroup>
 
               <FormField
                 control={form.control}
@@ -793,7 +781,7 @@ export function RoutingReliabilitySection({
                       <FormLabel>{t('Re-enable on success')}</FormLabel>
                       <FormDescription>
                         {t(
-                          'Bring channels back online after successful checks'
+                          'Successful scheduled or bulk checks can restore automatically disabled channels. Manually disabled channels stay disabled.'
                         )}
                       </FormDescription>
                     </SettingsSwitchContent>
@@ -806,16 +794,14 @@ export function RoutingReliabilitySection({
                   </SettingsSwitchItem>
                 )}
               />
-            </div>
+            </SettingsFormGrid>
           </div>
 
           <Separator />
 
           <div className='flex min-w-0 flex-col gap-4'>
-            <div className='flex flex-col gap-1'>
-              <h4 className='text-sm font-medium'>{t('Auto-disable rules')}</h4>
-            </div>
-            <div className='grid min-w-0 gap-6 lg:grid-cols-2'>
+            <h4 className='text-sm font-medium'>{t('Auto-disable rules')}</h4>
+            <SettingsFormGrid>
               <FormField
                 control={form.control}
                 name='AutomaticDisableChannelEnabled'
@@ -824,7 +810,9 @@ export function RoutingReliabilitySection({
                     <SettingsSwitchContent>
                       <FormLabel>{t('Disable on failure')}</FormLabel>
                       <FormDescription>
-                        {t('Automatically disable channels when tests fail')}
+                        {t(
+                          'Apply disable rules to upstream request errors and scheduled or bulk health checks'
+                        )}
                       </FormDescription>
                     </SettingsSwitchContent>
                     <FormControl>
@@ -842,7 +830,9 @@ export function RoutingReliabilitySection({
                 name='ChannelDisableThreshold'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Disable threshold (seconds)')}</FormLabel>
+                    <FormLabel>
+                      {t('Health check timeout threshold (seconds)')}
+                    </FormLabel>
                     <FormControl>
                       <Input
                         type='number'
@@ -854,7 +844,7 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'Automatically disable channels exceeding this response time'
+                        'Scheduled or bulk health checks can disable a channel when this duration is exceeded, if both global and channel auto-disable are enabled.'
                       )}
                     </FormDescription>
                     <FormMessage />
@@ -915,7 +905,7 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
-            </div>
+            </SettingsFormGrid>
           </div>
         </SettingsForm>
       </Form>

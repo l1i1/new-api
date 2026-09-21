@@ -55,13 +55,13 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Label } from '@/components/ui/label'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import { BILLING_PRICING_VARS } from '@/features/pricing/lib/billing-expr'
 import { formatGroupDiscount } from '@/features/pricing/lib/model-helpers'
 import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
+import { PolicyDecisionRecord } from '@/features/system-settings/request-policies/decision-record'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
@@ -90,7 +90,9 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
+import { DetailRow, DetailSection } from './log-detail-layout'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -109,68 +111,6 @@ function timingTextColorClass(
   if (variant === 'success') return 'text-emerald-600'
   if (variant === 'warning') return 'text-amber-600'
   return 'text-rose-600'
-}
-
-function DetailRow(props: {
-  label: React.ReactNode
-  value: React.ReactNode
-  mono?: boolean
-  muted?: boolean
-}) {
-  return (
-    <div className='grid min-w-0 grid-cols-[5.25rem_minmax(0,1fr)] gap-2 text-sm sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3'>
-      <span className='text-muted-foreground min-w-0 text-xs'>
-        {props.label}
-      </span>
-      <span
-        className={cn(
-          'max-w-full min-w-0 text-xs break-all sm:wrap-break-word',
-          props.mono && 'font-mono',
-          props.muted && 'text-muted-foreground'
-        )}
-      >
-        {props.value}
-      </span>
-    </div>
-  )
-}
-
-function DetailSection(props: {
-  icon?: React.ReactNode
-  iconTone?: IconBadgeTone
-  label: string
-  variant?: 'default' | 'danger'
-  children: React.ReactNode
-}) {
-  const isDanger = props.variant === 'danger'
-  const iconTone = isDanger ? 'destructive' : props.iconTone
-  return (
-    <div className='min-w-0 space-y-1.5'>
-      <Label
-        className={cn(
-          'flex items-center gap-1.5 text-xs font-semibold',
-          isDanger && 'text-red-500'
-        )}
-      >
-        {props.icon && (
-          <IconBadge tone={iconTone} size='xs'>
-            {props.icon}
-          </IconBadge>
-        )}
-        {props.label}
-      </Label>
-      <div
-        className={cn(
-          'min-w-0 space-y-1 overflow-hidden rounded-md border p-2.5 max-sm:p-2',
-          isDanger
-            ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20'
-            : 'bg-muted/30'
-        )}
-      >
-        {props.children}
-      </div>
-    </div>
-  )
 }
 
 function getUsageBillingPathLabel(
@@ -198,6 +138,21 @@ function getUsageBillingPathLabel(
       return adminInfo?.local_count_tokens
         ? t('Local Billing')
         : t('Upstream Response')
+  }
+}
+
+function getResponseStatusLabel(t: TFunction, value: string): string {
+  switch (value) {
+    case 'completed':
+      return t('Completed')
+    case 'failed':
+      return t('Failed')
+    case 'incomplete':
+      return t('Incomplete')
+    case 'cancelled':
+      return t('Cancelled')
+    default:
+      return t('Unknown')
   }
 }
 
@@ -704,7 +659,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
       description={t('View the complete details for this log entry')}
       contentClassName={cn(
         'min-w-0 overflow-hidden',
-        'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
+        'max-sm:max-h-(--dialog-available-height) max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
         isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
@@ -856,6 +811,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Quota saturation marker (admin only) */}
+        {props.isAdmin && adminInfo?.request_policy?.length ? (
+          <DetailSection
+            label={t('Request policy decisions')}
+            icon={<Route className='size-4' />}
+          >
+            <PolicyDecisionRecord events={adminInfo.request_policy} />
+          </DetailSection>
+        ) : null}
         {props.isAdmin && other?.admin_info?.quota_saturation && (
           <DetailSection
             icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
@@ -1186,12 +1149,36 @@ export function DetailsDialog(props: DetailsDialogProps) {
           />
         )}
 
-        {/* Request model */}
-        <DetailRow
-          label={t('Request Model')}
-          value={props.log.model_name}
-          mono
-        />
+        {other?.response_model && (
+          <DetailSection label={t('Response Model')}>
+            <ResponseModelDetails observation={other.response_model} />
+          </DetailSection>
+        )}
+        {/* Model mapping for logs without response observations */}
+        {!other?.response_model &&
+          other?.is_model_mapped &&
+          other?.upstream_model_name && (
+            <DetailSection label={t('Model Mapping')}>
+              <DetailRow
+                label={t('Request Model')}
+                value={props.log.model_name}
+                mono
+              />
+              <DetailRow
+                label={t('Actual Model')}
+                value={other.upstream_model_name}
+                mono
+              />
+            </DetailSection>
+          )}
+        {!other?.response_model &&
+          !(other?.is_model_mapped && other?.upstream_model_name) && (
+            <DetailRow
+              label={t('Request Model')}
+              value={props.log.model_name}
+              mono
+            />
+          )}
 
         {/* Token breakdown (for consume/error types with token data) */}
         {isDisplayableType(props.log.type) && other && (
@@ -1253,45 +1240,59 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
 
         {/* Stream status details */}
-        {other?.stream_status && other.stream_status.status !== 'ok' && (
-          <DetailSection label={t('Stream Status')}>
-            <DetailRow
-              label={t('Status')}
-              value={
-                <StatusBadge
-                  label={other.stream_status.status || t('Error')}
-                  variant='red'
-                  size='sm'
-                  copyable={false}
+        {other?.stream_status &&
+          (other.stream_status.status !== 'ok' ||
+            (other.stream_status.response_status &&
+              other.stream_status.response_status !== 'completed')) && (
+            <DetailSection label={t('Stream Status')}>
+              <DetailRow
+                label={t('Status')}
+                value={
+                  <StatusBadge
+                    label={other.stream_status.status || t('Error')}
+                    variant={
+                      other.stream_status.status === 'ok' ? 'green' : 'red'
+                    }
+                    size='sm'
+                    copyable={false}
+                  />
+                }
+              />
+              {other.stream_status.response_status && (
+                <DetailRow
+                  label={t('Response')}
+                  value={getResponseStatusLabel(
+                    t,
+                    other.stream_status.response_status
+                  )}
                 />
-              }
-            />
-            {other.stream_status.end_reason && (
-              <DetailRow
-                label={t('End Reason')}
-                value={other.stream_status.end_reason}
-              />
-            )}
-            {(other.stream_status.error_count ?? 0) > 0 && (
-              <DetailRow
-                label={t('Soft Errors')}
-                value={String(other.stream_status.error_count)}
-              />
-            )}
-            {other.stream_status.end_error && (
-              <DetailRow
-                label={t('End Error')}
-                value={other.stream_status.end_error}
-              />
-            )}
-            {Array.isArray(other.stream_status.errors) &&
-              other.stream_status.errors.length > 0 && (
-                <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>
-                  {other.stream_status.errors.join('\n')}
-                </pre>
               )}
-          </DetailSection>
-        )}
+              {other.stream_status.end_reason && (
+                <DetailRow
+                  label={t('End Reason')}
+                  value={other.stream_status.end_reason}
+                />
+              )}
+              {(other.stream_status.error_count ?? 0) > 0 && (
+                <DetailRow
+                  label={t('Soft Errors')}
+                  value={String(other.stream_status.error_count)}
+                />
+              )}
+              {other.stream_status.end_error && (
+                <DetailRow
+                  label={t('End Error')}
+                  value={other.stream_status.end_error}
+                />
+              )}
+              {Array.isArray(other.stream_status.errors) &&
+                other.stream_status.errors.length > 0 && (
+                  <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>
+                    {other.stream_status.errors.join('\n')}
+                  </pre>
+                )}
+            </DetailSection>
+          )}
 
         {/* Subscription billing details */}
         {isSubscription && other && (

@@ -174,10 +174,8 @@ func (p *GitHubProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*O
 	githubEmails, emailErr := p.getEmails(ctx, token)
 	if emailErr != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("[OAuth-GitHub] GetUserEmail failed: %s", emailErr.Error()))
-	} else {
-		if selectedEmail := selectGitHubEmail(githubEmails); selectedEmail != "" {
-			email = selectedEmail
-		}
+	} else if selectedEmail := selectGitHubEmail(githubEmails); selectedEmail != "" {
+		email = selectedEmail
 	}
 
 	logger.LogDebug(ctx, "[OAuth-GitHub] GetUserInfo success: id=%d, login=%s, name=%s, email=%s",
@@ -195,11 +193,11 @@ func (p *GitHubProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*O
 }
 
 func (p *GitHubProvider) getEmails(ctx context.Context, token *OAuthToken) ([]gitHubEmail, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(githubAPIBaseURL, "/")+"/user/emails", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(githubAPIBaseURL, "/")+"/user/emails", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	client := http.Client{Timeout: 20 * time.Second}
@@ -208,16 +206,56 @@ func (p *GitHubProvider) getEmails(ctx context.Context, token *OAuthToken) ([]gi
 		return nil, err
 	}
 	defer res.Body.Close()
-
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub email API returned status %d", res.StatusCode)
 	}
 
 	var emails []gitHubEmail
-	if err := json.NewDecoder(res.Body).Decode(&emails); err != nil {
+	if err := common.DecodeJson(res.Body, &emails); err != nil {
 		return nil, err
 	}
 	return emails, nil
+}
+
+// GetVerifiedEmails lists the addresses GitHub has confirmed for the signed-in
+// account. The email field of the user endpoint carries no confirmation status
+// and is not used for this.
+func (p *GitHubProvider) GetVerifiedEmails(ctx context.Context, token *OAuthToken) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(githubAPIBaseURL, "/")+"/user/emails", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := http.Client{
+		Timeout: 20 * time.Second,
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-GitHub] GetVerifiedEmails error: %s", err.Error()))
+		return nil, NewOAuthErrorWithRaw(i18n.MsgOAuthConnectFailed, map[string]any{"Provider": "GitHub"}, err.Error())
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-GitHub] GetVerifiedEmails failed: status=%d", res.StatusCode))
+		return nil, NewOAuthErrorWithRaw(i18n.MsgOAuthGetUserErr, map[string]any{"Provider": "GitHub"}, fmt.Sprintf("status %d", res.StatusCode))
+	}
+
+	var emails []gitHubEmail
+	if err := common.DecodeJson(res.Body, &emails); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-GitHub] GetVerifiedEmails decode error: %s", err.Error()))
+		return nil, err
+	}
+	verified := make([]string, 0, len(emails))
+	for _, email := range emails {
+		if email.Verified && strings.TrimSpace(email.Email) != "" {
+			verified = append(verified, strings.TrimSpace(email.Email))
+		}
+	}
+	logger.LogDebug(ctx, "[OAuth-GitHub] GetVerifiedEmails success: verified=%d", len(verified))
+	return verified, nil
 }
 
 func (p *GitHubProvider) IsUserIDTaken(providerUserID string) bool {

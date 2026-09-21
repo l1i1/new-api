@@ -22,7 +22,10 @@ function collectFiles(directory) {
 
 const vitestFiles = []
 const nodeTestFiles = []
-for (const file of collectFiles(path.join(root, 'src'))) {
+const testFiles = ['src', 'scripts'].flatMap((directory) =>
+  collectFiles(path.join(root, directory))
+)
+for (const file of testFiles) {
   const source = readFileSync(file, 'utf8')
   const relativeFile = `./${path.relative(root, file).split(path.sep).join('/')}`
   if (/from\s+['"]vitest['"]/.test(source)) {
@@ -46,6 +49,12 @@ if (vitestFiles.length > 0) {
   exitCode = run(['x', 'vitest', 'run', ...vitestFiles]) || exitCode
 }
 if (nodeTestFiles.length > 0) {
-  exitCode = run(['test', ...nodeTestFiles]) || exitCode
+  exitCode =
+    run([
+      'test',
+      '--preload',
+      './scripts/node-test-setup.ts',
+      ...nodeTestFiles,
+    ]) || exitCode
 }
 process.exitCode = exitCode

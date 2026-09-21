@@ -3,8 +3,8 @@ package service
 import (
 	"net/http"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
 
 // IsNeverRetryUpstreamError reports whether an upstream error is configured to
@@ -23,5 +23,5 @@ func IsNeverRetryUpstreamError(err *types.NewAPIError) bool {
 	if err.StatusCode < http.StatusBadRequest || err.StatusCode >= http.StatusInternalServerError {
 		return false
 	}
-	return operation_setting.MatchesNeverRetryKeywords(err.Error())
+	return model.CurrentRequestPolicy().MatchesNeverRetryKeywords(err.Error())
 }

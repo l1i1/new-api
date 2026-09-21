@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -53,7 +53,9 @@ export interface ModelCardGridProps {
   selectedGroup?: string
 }
 
-export function ModelCardGrid(props: ModelCardGridProps) {
+export const ModelCardGrid = memo(function ModelCardGrid(
+  props: ModelCardGridProps
+) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PRICING_PAGE_SIZE)
@@ -76,7 +78,11 @@ export function ModelCardGrid(props: ModelCardGridProps) {
   const perfMap = useMemo(() => {
     const map = new Map<string, ModelPerfBadgeData>()
     for (const model of perfQuery.data?.data?.models ?? []) {
-      map.set(model.model_name, model)
+      map.set(model.model_name, {
+        ...model,
+        window_start: perfQuery.data?.data.window_start,
+        window_end: perfQuery.data?.data.window_end,
+      })
     }
     return map
   }, [perfQuery.data])
@@ -99,7 +105,7 @@ export function ModelCardGrid(props: ModelCardGridProps) {
             displayCurrency={props.displayCurrency}
             selectedGroup={props.selectedGroup}
             perf={perfMap.get(model.model_name || '')}
-            onClick={() => props.onModelClick(model.model_name || '')}
+            onClick={props.onModelClick}
           />
         ))}
       </div>
@@ -176,4 +182,4 @@ export function ModelCardGrid(props: ModelCardGridProps) {
       )}
     </div>
   )
-}
+})
