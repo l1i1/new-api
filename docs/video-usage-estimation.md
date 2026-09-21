@@ -39,7 +39,10 @@
 ### 计费（`video_usage_mode`）
 
 开启后，带视频 part 的请求在**结算时**用视频感知的 prompt 数替换上游上报值，并标记为
-「估算」（消费日志的计费路径变为 `openai_estimated`，与上游原值可区分）。
+「估算」：`prompt_tokens` 记的是**实际扣费的那个数**，消费日志的计费路径变为
+`billing-usage-openai-estimated`（前端显示为「Upstream Response
+(billing-usage-openai-estimated)」），与上游原值可区分。客户端响应的 usage
+**不被改动**——它仍是上游自己的报告，两者在日志里可对照。
 
 取值优先级（权威性从高到低）：
 
@@ -149,7 +152,9 @@ key 留在环境里也能正常工作），清空库里的一项即把该字段�
 - `go test ./service/`：容器解析（含真彩/版本 1 头/垃圾输入）、15 点标定、
   三条规则、护栏阈值、端点解析与失败回退、`estimated` 标记、开关校验、
   body 层视频检测（含「文本里提到 video_url」不得误判）、两个检测器一致性、
-  结算按实际服务渠道归属、无 ChannelMeta 时不 panic。
+  结算按实际服务渠道归属、无 ChannelMeta 时不 panic；**修正后的消费日志行**
+  （`video_log_path_test.go`：走真实结算与落库，断言记录的是修正值且计费路径为
+  `billing-usage-openai-estimated`——该用例在标签回退成上游原值时会失败）。
 - `go test ./model/`：能力索引解析、缓存路径收窄、DB 路径「高优先级不可用渠道不挡住
   后备」、无渠道声明时诚实失败（返回 nil 而非盲渠道）、模式必须带能力。
 - `go test ./relaykit/dto/`：`video_url` 三种拼写（ms:// 对象、http 对象、字符串）
