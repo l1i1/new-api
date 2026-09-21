@@ -26,7 +26,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -334,7 +333,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.LastError = apiErr
 				service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
 				if service.ShouldRetryRelayError(c, apiErr, common.RetryTimes-retry.GetRetry()) {
-					prepareResponsesWSRetry(retry, channel, apiErr.StatusCode, types.IsSkipRetryError(apiErr))
+					prepareResponsesWSRetry(retry, channel, apiErr.StatusCode, apiErr.Error(), types.IsSkipRetryError(apiErr))
 					continue
 				}
 				return apiErr
@@ -1109,11 +1108,11 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 	}
 }
 
-func prepareResponsesWSRetry(retryParam *service.RetryParam, channel *appmodel.Channel, statusCode int, skipRetry bool) {
+func prepareResponsesWSRetry(retryParam *service.RetryParam, channel *appmodel.Channel, statusCode int, message string, skipRetry bool) {
 	if retryParam == nil || channel == nil || skipRetry {
 		return
 	}
-	if channel.ChannelInfo.IsMultiKey && operation_setting.ShouldRotateMultiKeyCredential(statusCode) {
+	if channel.ChannelInfo.IsMultiKey && service.ShouldRotateMultiKeyCredentialOn(statusCode, message) {
 		retryParam.PreferChannel(channel.Id)
 		retryParam.ResetRetryNextTry()
 		return

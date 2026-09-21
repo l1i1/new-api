@@ -25,7 +25,7 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) &&
 		!(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
-			operation_setting.ShouldRotateMultiKeyCredential(openaiErr.StatusCode)) {
+			ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error())) {
 		return false
 	}
 	if GetChannelConstraints(c).SuppressesRetry() {
@@ -49,6 +49,12 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	if operation_setting.MatchesAutomaticRetryKeywords(openaiErr.Error()) {
 		return true
 	}
+	// A credential-scoped failure (out-of-balance 402, "insufficient credits")
+	// retries -- on a multi-key channel the caller rotates the key, otherwise it
+	// is an ordinary channel failover.
+	if ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error()) {
+		return true
+	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
@@ -59,11 +65,16 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	if code < 100 || code > 599 {
 		return true
 	}
+	// The failover list (default includes 400) expresses "the upstream rejected
+	// this channel's request, try another channel". It never applies to local
+	// (platform) errors, which describe the request or the platform rather than
+	// the channel that served it. Local capability gaps already failed over
+	// above, by their channel: error-code prefix.
 	if openaiErr.GetErrorType() != types.ErrorTypeNewAPIError &&
-		operation_setting.IsForceRetryStatusCode(code) {
+		operation_setting.ShouldRetryByStatusCode(code) {
 		return true
 	}
-	return operation_setting.ShouldRetryByStatusCode(code)
+	return false
 }
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {

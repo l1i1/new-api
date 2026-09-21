@@ -16,24 +16,36 @@ type StatusCodeRange struct {
 
 var AutomaticDisableStatusCodeRanges = []StatusCodeRange{{Start: 401, End: 401}}
 
-// Default behavior matches legacy hardcoded retry rules in controller/relay.go shouldRetry:
-// retry for 1xx, 3xx, 4xx(except 400/408), 5xx(except 504/524), and no retry for 2xx.
+// AutomaticRetryStatusCodeRanges is the failover list: the upstream answered
+// with one of these codes, so the retry loop excludes the channel and tries
+// another. It merges what used to be two fields -- the automatic list and the
+// "force retry" list -- because both meant "this channel could not serve the
+// request, try another", and the split only made the page harder to read: the
+// defaults {100-199, 300-407, 409-503, 505-523, 525-599} cover the legacy
+// automatic ranges plus 400, which used to arrive through the force-retry
+// default.
+//
+// The list is deliberately not gated on the error type. A local (platform)
+// error carrying one of these codes is often a channel capability gap -- the
+// live adaptors report "unsupported ollama response format type", "ollama
+// channel: image endpoint not supported" and DFlash's "does not support
+// return_logprob yet" as local 400s, and those requests are served by failing
+// over to a channel that does support them. Request-shaped local errors are
+// kept out by their skip-retry marker, which is the explicit signal, rather
+// than by a status-code rule that cannot tell the two apart.
 var AutomaticRetryStatusCodeRanges = []StatusCodeRange{
 	{Start: 100, End: 199},
-	{Start: 300, End: 399},
-	{Start: 401, End: 407},
-	{Start: 409, End: 499},
-	{Start: 500, End: 503},
+	{Start: 300, End: 407},
+	{Start: 409, End: 503},
 	{Start: 505, End: 523},
 	{Start: 525, End: 599},
 }
 
-// ForceRetryStatusCodeRanges holds status codes that are always retried, even
-// when they are absent from AutomaticRetryStatusCodeRanges. The default {400}
-// preserves the legacy rule that an upstream 400 means "this channel cannot
-// serve the request", so the retry loop excludes the channel and tries another.
-// Callers decide whether the rule applies to local (platform) errors too.
-var ForceRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+// ForceRetryStatusCodeRanges is a deprecated alias kept for installs whose
+// options row still holds a value: those codes are read, honored and shown as
+// part of the failover list (see FailoverStatusCodesToString), but new saves
+// write the failover list alone. The default is empty.
+var ForceRetryStatusCodeRanges = []StatusCodeRange{}
 
 // NeverRetryStatusCodeRanges holds status codes that are never retried, even
 // when they match AutomaticRetryStatusCodeRanges or ForceRetryStatusCodeRanges.
@@ -77,6 +89,10 @@ func AutomaticRetryStatusCodesFromString(s string) error {
 	return nil
 }
 
+// ForceRetryStatusCodesToString reports the deprecated force-retry list. The
+// field was merged into the failover list, so a fresh install reports empty;
+// an install whose persisted value has not been migrated yet reports it, and
+// ShouldRetryByStatusCode honors it either way.
 func ForceRetryStatusCodesToString() string {
 	return statusCodeRangesToString(ForceRetryStatusCodeRanges)
 }
@@ -88,6 +104,45 @@ func ForceRetryStatusCodesFromString(s string) error {
 	}
 	ForceRetryStatusCodeRanges = ranges
 	return nil
+}
+
+// MergeRetryStatusCodes returns the union of two status-code lists in the same
+// normalized form the option fields use. Either list may be empty or blank.
+func MergeRetryStatusCodes(lists ...string) (string, error) {
+	nonEmpty := make([]string, 0, len(lists))
+	for _, list := range lists {
+		if strings.TrimSpace(list) != "" {
+			nonEmpty = append(nonEmpty, list)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return "", nil
+	}
+	ranges, err := ParseHTTPStatusCodeRanges(strings.Join(nonEmpty, ","))
+	if err != nil {
+		return "", err
+	}
+	return statusCodeRangesToString(ranges), nil
+}
+
+// FoldLegacyForceRetryStatusCodes merges the deprecated force-retry list into
+// the failover list in memory. The persisted row is removed by
+// model.MigrateRetiredFrontendOptions, which only runs on the master node; this
+// covers non-master nodes and the window before that migration runs.
+// ShouldRetryByStatusCode already unions both lists, so the merge is
+// behavior-preserving on its own.
+func FoldLegacyForceRetryStatusCodes() {
+	if len(ForceRetryStatusCodeRanges) == 0 {
+		return
+	}
+	merged, err := MergeRetryStatusCodes(AutomaticRetryStatusCodesToString(), ForceRetryStatusCodesToString())
+	if err != nil {
+		return
+	}
+	if err := AutomaticRetryStatusCodesFromString(merged); err != nil {
+		return
+	}
+	ForceRetryStatusCodeRanges = nil
 }
 
 func NeverRetryStatusCodesToString() string {
@@ -153,25 +208,26 @@ func ShouldRotateMultiKeyCredential(code int) bool {
 	return shouldMatchStatusCodeRanges(MultiKeyCredentialRetryStatusCodeRanges, code)
 }
 
-// IsForceRetryStatusCode reports whether the code is configured to always
-// retry. Never-retry wins, so an overlap resolves to no retry. Callers decide
-// whether the rule applies to local (platform) errors; local validation errors
-// must stay non-retryable even for a force-retry code such as 400.
+// IsForceRetryStatusCode reports whether the code is on the failover list.
+// Deprecated name: the force-retry field was merged into the failover list, so
+// this is now the same decision as ShouldRetryByStatusCode.
 func IsForceRetryStatusCode(code int) bool {
-	if IsNeverRetryStatusCode(code) {
-		return false
-	}
-	return shouldMatchStatusCodeRanges(ForceRetryStatusCodeRanges, code)
+	return ShouldRetryByStatusCode(code)
 }
 
-// ShouldRetryByStatusCode applies the automatic retry ranges. Force-retry and
-// never-retry codes are separate rules; callers that want the full decision use
-// IsForceRetryStatusCode in addition to this function.
+// ShouldRetryByStatusCode applies the failover list: the upstream answered with
+// one of these codes, so the retry loop excludes the channel and tries another.
+// Never-retry wins, so an overlap resolves to no retry.
 func ShouldRetryByStatusCode(code int) bool {
 	if IsNeverRetryStatusCode(code) {
 		return false
 	}
-	return shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)
+	if shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code) {
+		return true
+	}
+	// A legacy force-retry list that has not been folded in yet (options not
+	// loaded, or a direct write) still counts.
+	return shouldMatchStatusCodeRanges(ForceRetryStatusCodeRanges, code)
 }
 
 func statusCodeRangesToString(ranges []StatusCodeRange) string {

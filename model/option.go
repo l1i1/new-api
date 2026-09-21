@@ -217,6 +217,7 @@ func InitOptionMap() {
 	common.OptionMap["MultiKeyCredentialRetryStatusCodes"] = operation_setting.MultiKeyCredentialRetryStatusCodesToString()
 	common.OptionMap["AutomaticRetryKeywords"] = operation_setting.AutomaticRetryKeywordsToString()
 	common.OptionMap["NeverRetryKeywords"] = operation_setting.NeverRetryKeywordsToString()
+	common.OptionMap["MultiKeyCredentialRetryKeywords"] = operation_setting.MultiKeyCredentialRetryKeywordsToString()
 	common.OptionMap[operation_setting.ErrorMessageFilterEnabledOptionKey] = strconv.FormatBool(operation_setting.IsErrorMessageFilterEnabled())
 	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
@@ -244,6 +245,10 @@ func loadOptionsFromDatabase() {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
 	}
+	// Non-master nodes do not run MigrateRetiredFrontendOptions, and on the
+	// master the fold runs before the migration anyway; either way the retired
+	// force-retry value keeps applying until it is folded away.
+	operation_setting.FoldLegacyForceRetryStatusCodes()
 	applyPasskeyDomainOptions(passkeyOptions)
 }
 
@@ -724,6 +729,8 @@ func updateOptionMap(key string, value string) (err error) {
 		operation_setting.AutomaticRetryKeywordsFromString(value)
 	case "NeverRetryKeywords":
 		operation_setting.NeverRetryKeywordsFromString(value)
+	case "MultiKeyCredentialRetryKeywords":
+		operation_setting.MultiKeyCredentialRetryKeywordsFromString(value)
 	case operation_setting.ErrorMessageFilterEnabledOptionKey:
 		operation_setting.SetErrorMessageFilterEnabled(value == "true")
 	case operation_setting.ErrorMessageFilterPatternOptionKey:

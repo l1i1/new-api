@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/console_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"gorm.io/gorm"
 )
 
@@ -44,7 +45,57 @@ func MigrateRetiredFrontendOptions() error {
 	if err := migrateLegacyUptimeOptions(); err != nil {
 		migrationErrors = append(migrationErrors, err)
 	}
+	if err := migrateForceRetryStatusCodes(); err != nil {
+		migrationErrors = append(migrationErrors, err)
+	}
 	return errors.Join(migrationErrors...)
+}
+
+// migrateForceRetryStatusCodes merges the retired force-retry list into the
+// failover list, which is the single field the Routing Reliability page edits
+// now. Both lists meant "this channel cannot serve the request, try another",
+// so the union preserves behavior while the page shows one decision instead of
+// two. The source row is deleted, which makes the migration idempotent and
+// keeps a later options sync from re-adding codes an operator has since removed.
+func migrateForceRetryStatusCodes() error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var force Option
+		if err := tx.Where(&Option{Key: "ForceRetryStatusCodes"}).First(&force).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return fmt.Errorf("read legacy option ForceRetryStatusCodes: %w", err)
+		}
+		if strings.TrimSpace(force.Value) == "" {
+			return tx.Delete(&force).Error
+		}
+
+		var automatic Option
+		err := tx.Where(&Option{Key: "AutomaticRetryStatusCodes"}).First(&automatic).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("read option AutomaticRetryStatusCodes: %w", err)
+		}
+		// With no persisted row the effective value is the compiled default, so
+		// the union must start from that: writing the legacy codes alone would
+		// silently drop the defaults for an install that never saved the field.
+		base := automatic.Value
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			base = operation_setting.AutomaticRetryStatusCodesToString()
+			automatic = Option{Key: "AutomaticRetryStatusCodes"}
+		}
+		merged, mergeErr := operation_setting.MergeRetryStatusCodes(base, force.Value)
+		if mergeErr != nil {
+			// Leave both rows untouched: ShouldRetryByStatusCode still unions the
+			// in-memory lists, and an operator can fix the malformed entry.
+			common.SysError(fmt.Sprintf("force-retry status codes were not merged: %v", mergeErr))
+			return nil
+		}
+		automatic.Value = merged
+		if err := tx.Save(&automatic).Error; err != nil {
+			return fmt.Errorf("write option AutomaticRetryStatusCodes: %w", err)
+		}
+		return tx.Delete(&force).Error
+	})
 }
 
 func normalizeRetiredThemeOption() error {

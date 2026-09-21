@@ -95,26 +95,37 @@ func TestShouldRetryUpstreamServiceTemporarilyUnavailable(t *testing.T) {
 	require.True(t, shouldRetry(c, err, 1))
 }
 
-func TestUpstreamBadRequestRetryFollowsForceRetryStatusCodes(t *testing.T) {
+// TestLocalErrorsDoNotFollowTheFailoverList pins the boundary of the merged
+// failover list: it governs upstream rejections, not local (platform) errors.
+// A local request-shaped 400 must surface, and a local capability gap fails
+// over through its channel: error-code prefix, which is a framework rule and
+// deliberately not operator-configurable.
+func TestLocalErrorsDoNotFollowTheFailoverList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	origForce := operation_setting.ForceRetryStatusCodeRanges
-	t.Cleanup(func() { operation_setting.ForceRetryStatusCodeRanges = origForce })
 
-	upstreamErr := types.NewOpenAIError(
+	localCapabilityErr := types.NewErrorWithStatusCode(
+		errors.New("ollama channel: image endpoint not supported"),
+		types.ErrorCodeChannelUnsupportedEndpoint,
+		http.StatusBadRequest,
+	)
+	localCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(localCtx, localCapabilityErr, 1))
+
+	localRequestErr := types.NewErrorWithStatusCode(
+		errors.New("malformed request"),
+		types.ErrorCodeInvalidRequest,
+		http.StatusBadRequest,
+	)
+	requestCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(requestCtx, localRequestErr, 1), "a local request error must not fail over")
+
+	// The same shape from upstream does fail over: 400 is on the failover list.
+	upstreamCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(upstreamCtx, types.NewOpenAIError(
 		errors.New("upstream rejected this channel request"),
 		types.ErrorCodeBadResponseStatusCode,
 		http.StatusBadRequest,
-	)
-
-	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString("400"))
-	forceCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.True(t, shouldRetry(forceCtx, upstreamErr, 1))
-
-	// Clearing the option makes an upstream 400 follow AutomaticRetryStatusCodes,
-	// which excludes 400, so the request is no longer retried.
-	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString(""))
-	clearedCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.False(t, shouldRetry(clearedCtx, upstreamErr, 1))
+	), 1))
 }
 
 func TestNeverRetryStatusCodesOverrideAutomaticRetry(t *testing.T) {
@@ -323,20 +334,28 @@ func TestPrepareChannelRetryRotatesKeyOnPaymentRequired(t *testing.T) {
 
 func TestMultiKeyCredentialRetryStatusCodesRespectConfig(t *testing.T) {
 	orig := operation_setting.MultiKeyCredentialRetryStatusCodeRanges
-	t.Cleanup(func() { operation_setting.MultiKeyCredentialRetryStatusCodeRanges = orig })
+	origKeywords := operation_setting.MultiKeyCredentialRetryKeywords
+	t.Cleanup(func() {
+		operation_setting.MultiKeyCredentialRetryStatusCodeRanges = orig
+		operation_setting.MultiKeyCredentialRetryKeywords = origKeywords
+	})
 
-	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusPaymentRequired))
+	require.True(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusPaymentRequired, "402"))
 
 	// An operator can narrow rotation to the classic throttling codes.
 	require.NoError(t, operation_setting.MultiKeyCredentialRetryStatusCodesFromString("403,429"))
-	require.False(t, isMultiKeyCredentialRetryStatus(http.StatusPaymentRequired))
-	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusTooManyRequests))
+	require.False(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusPaymentRequired, "402"))
+	require.True(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusTooManyRequests, ""))
 
 	// Or opt a credential-scoped 401 into rotation when every key has its own
 	// account.
 	require.NoError(t, operation_setting.MultiKeyCredentialRetryStatusCodesFromString("401"))
-	require.True(t, isMultiKeyCredentialRetryStatus(http.StatusUnauthorized))
-	require.False(t, isMultiKeyCredentialRetryStatus(http.StatusForbidden))
+	require.True(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusUnauthorized, ""))
+	require.False(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusForbidden, ""))
+
+	// The keyword list is the text form of the same decision, so it rotates even
+	// when the status code alone would not.
+	require.True(t, service.ShouldRotateMultiKeyCredentialOn(http.StatusBadRequest, "You have insufficient credits to make this request"))
 }
 
 func TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized(t *testing.T) {
@@ -345,10 +364,17 @@ func TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized(t *tes
 	c.Set("channel_affinity_skip_retry_on_failure", true)
 	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 
-	require.True(t, shouldSkipRetryAfterAffinity(c, http.StatusUnauthorized))
-	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusForbidden))
-	require.False(t, shouldSkipRetryAfterAffinity(c, http.StatusTooManyRequests))
-	require.True(t, shouldSkipRetryAfterAffinity(c, http.StatusBadRequest))
+	errWithStatus := func(code int, message string) *types.NewAPIError {
+		return types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, code)
+	}
+
+	require.True(t, shouldSkipRetryAfterAffinity(c, errWithStatus(http.StatusUnauthorized, "")))
+	require.False(t, shouldSkipRetryAfterAffinity(c, errWithStatus(http.StatusForbidden, "")))
+	require.False(t, shouldSkipRetryAfterAffinity(c, errWithStatus(http.StatusTooManyRequests, "")))
+	require.True(t, shouldSkipRetryAfterAffinity(c, errWithStatus(http.StatusBadRequest, "")))
+	// A credential-scoped keyword exempts the pin just like the status code does:
+	// the pinned channel can still serve the request with another key.
+	require.False(t, shouldSkipRetryAfterAffinity(c, errWithStatus(http.StatusBadRequest, "You have insufficient credits")))
 }
 
 func TestRetryParamCancelResetAfterMultiKeyExhaustion(t *testing.T) {
@@ -525,12 +551,68 @@ func TestGatewayAndUnsupportedFeatureErrorsMoveToAnotherChannel(t *testing.T) {
 // force-retry rule for upstream 400s treats every rejection as a channel
 // problem. The prompt is over every channel's limit, so the first rejection is
 // the final answer and the client must shorten its request.
+// TestInsufficientCreditsRotatesKeyInsteadOfDroppingChannel pins the production
+// report "status_code=400, You have insufficient credits to make this request":
+// 562 rejections in seven days, all on one multi-key channel, 28 of which spent
+// a second channel before dying. The balance belongs to the key, so the channel
+// rotates its credential instead of being excluded.
+func TestInsufficientCreditsRotatesKeyInsteadOfDroppingChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	channel := &model.Channel{
+		Id: 2,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true,
+		},
+	}
+	creditsErr := types.NewOpenAIError(
+		errors.New("You have insufficient credits to make this request. Please purchase more credits to continue using the service."),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+
+	retryCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.True(t, shouldRetry(retryCtx, creditsErr, 1))
+
+	param := &service.RetryParam{Retry: new(int)}
+	require.True(t, prepareChannelRetryWithMessage(param, channel, creditsErr.StatusCode, creditsErr.Error(), false))
+	require.Equal(t, channel.Id, param.PreferredChannelID(), "the channel keeps the next attempt")
+	require.False(t, param.IsChannelExcluded(channel.Id), "the channel must not be dropped")
+
+	// A single-key channel cannot rotate: the same failure fails the channel over.
+	singleKeyParam := &service.RetryParam{Retry: new(int)}
+	singleKey := &model.Channel{Id: 3}
+	require.False(t, prepareChannelRetryWithMessage(singleKeyParam, singleKey, creditsErr.StatusCode, creditsErr.Error(), false))
+	require.True(t, singleKeyParam.IsChannelExcluded(singleKey.Id))
+}
+
+// TestNeverRetryOutranksCredentialRotation pins the priority order: a
+// request-level verdict stops the request even when the text also looks
+// credential-scoped, so the retry budget is never spent on an answer no key can
+// change.
+func TestNeverRetryOutranksCredentialRotation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origNever := operation_setting.NeverRetryKeywords
+	t.Cleanup(func() { operation_setting.NeverRetryKeywords = origNever })
+	operation_setting.NeverRetryKeywordsFromString("insufficient credits")
+
+	param := &service.RetryParam{Retry: new(int)}
+	channel := &model.Channel{Id: 2, ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
+	creditsErr := types.NewOpenAIError(
+		errors.New("You have insufficient credits to make this request"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+
+	neverCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.False(t, shouldRetry(neverCtx, creditsErr, 1))
+	require.False(t, prepareChannelRetryWithMessage(param, channel, creditsErr.StatusCode, creditsErr.Error(), true))
+}
+
 func TestShouldRetryContextOverflowStopsFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	origForce := operation_setting.ForceRetryStatusCodeRanges
 	t.Cleanup(func() { operation_setting.ForceRetryStatusCodeRanges = origForce })
 	require.NoError(t, operation_setting.ForceRetryStatusCodesFromString("400"))
-
 	overflow := types.NewOpenAIError(
 		errors.New("The prompt is too long: 1270974, model maximum context length: 1048576"),
 		types.ErrorCodeBadResponseStatusCode,

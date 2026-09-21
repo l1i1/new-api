@@ -71,9 +71,7 @@ const defaultModelSettings: ModelSettings = {
   AutomaticEnableChannelEnabled: false,
   AutomaticDisableKeywords: '',
   AutomaticDisableStatusCodes: '401',
-  AutomaticRetryStatusCodes:
-    '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
-  ForceRetryStatusCodes: '400',
+  AutomaticRetryStatusCodes: '100-199,300-407,409-503,505-523,525-599',
   NeverRetryStatusCodes: '504,524',
   MultiKeyCredentialRetryStatusCodes: '402,403,429',
   AutomaticRetryKeywords: '',
@@ -86,6 +84,11 @@ const defaultModelSettings: ModelSettings = {
     'exceeds the maximum allowed input length',
     'exceeds the maximum length',
     'range of input length should be',
+  ].join('\n'),
+  MultiKeyCredentialRetryKeywords: [
+    'insufficient credits',
+    'insufficient balance',
+    'balance insufficient',
   ].join('\n'),
   'monitor_setting.auto_test_channel_enabled': false,
   'monitor_setting.auto_test_channel_minutes': 10,

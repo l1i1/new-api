@@ -389,7 +389,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
-		prepareChannelRetry(retryParam, channel, newAPIError.StatusCode, types.IsSkipRetryError(newAPIError))
+		prepareChannelRetryWithMessage(retryParam, channel, newAPIError.StatusCode, newAPIError.Error(), types.IsSkipRetryError(newAPIError))
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -730,7 +730,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.IsNeverRetryUpstreamError(openaiErr) {
 		return false
 	}
-	if shouldSkipRetryAfterAffinity(c, openaiErr.StatusCode) {
+	if shouldSkipRetryAfterAffinity(c, openaiErr) {
 		return false
 	}
 	if service.GetChannelConstraints(c).SuppressesRetry() {
@@ -749,6 +749,13 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		operation_setting.MatchesAutomaticRetryKeywords(openaiErr.Error()) {
 		return true
 	}
+	// A credential-scoped failure (out-of-balance 402, "insufficient credits")
+	// also retries -- on a multi-key channel the caller rotates the key, on a
+	// single-key channel it is an ordinary channel failover.
+	if !operation_setting.IsNeverRetryStatusCode(openaiErr.StatusCode) &&
+		service.ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error()) {
+		return true
+	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
@@ -759,42 +766,43 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if code < 100 || code > 599 {
 		return true
 	}
-	// Force-retry codes (default 400) express "the upstream rejected this
-	// channel's request, try another channel". They never apply to local
-	// validation errors, which describe the request rather than the channel.
+	// The failover list (default includes 400) expresses "the upstream rejected
+	// this channel's request, try another channel". It never applies to local
+	// (platform) errors, which describe the request or the platform rather than
+	// the channel that served it: a local request-shaped 400 must surface. Local
+	// capability gaps still fail over, because the adaptors mark them with the
+	// channel: error-code prefix handled at the top of this function.
 	if openaiErr.GetErrorType() != types.ErrorTypeNewAPIError &&
-		operation_setting.IsForceRetryStatusCode(code) {
+		operation_setting.ShouldRetryByStatusCode(code) {
 		return true
 	}
-	return operation_setting.ShouldRetryByStatusCode(code)
+	return false
 }
 
-// isMultiKeyCredentialRetryStatus reports whether an upstream status code means
-// the selected key is unusable while the channel itself may still work, so a
-// multi-key channel should retry itself with another key before the channel is
-// excluded. The code list is operator-configured (Routing Reliability:
-// "Multi-key retry status codes"); it defaults to 402, 403 and 429.
-//
-// 401 stays out of the default list because it usually points at the channel's
-// auth or base-url configuration rather than a single key, so another key would
-// only repeat the same invalid route.
-func isMultiKeyCredentialRetryStatus(statusCode int) bool {
-	return operation_setting.ShouldRotateMultiKeyCredential(statusCode)
-}
-
-func shouldSkipRetryAfterAffinity(c *gin.Context, statusCode int) bool {
+// shouldSkipRetryAfterAffinity keeps an affinity-pinned channel in place: a
+// failover would defeat the pin. A credential-scoped failure is exempt, because
+// rotating to another key of the pinned channel is exactly what the pin wants.
+func shouldSkipRetryAfterAffinity(c *gin.Context, openaiErr *types.NewAPIError) bool {
 	if !service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
 	return !(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
-		isMultiKeyCredentialRetryStatus(statusCode))
+		service.ShouldRotateMultiKeyCredentialOn(openaiErr.StatusCode, openaiErr.Error()))
 }
 
 func prepareChannelRetry(retryParam *service.RetryParam, channel *model.Channel, statusCode int, skipRetry bool) bool {
+	return prepareChannelRetryWithMessage(retryParam, channel, statusCode, "", skipRetry)
+}
+
+// prepareChannelRetryWithMessage routes the next attempt: a credential-scoped
+// failure (status code or keyword) keeps the multi-key channel and rotates its
+// key; anything else excludes the channel. Key rotation does not consume the
+// retry budget -- the loop bounds it with the untried-key set.
+func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *model.Channel, statusCode int, message string, skipRetry bool) bool {
 	if retryParam == nil || channel == nil || skipRetry {
 		return false
 	}
-	if channel.ChannelInfo.IsMultiKey && isMultiKeyCredentialRetryStatus(statusCode) {
+	if channel.ChannelInfo.IsMultiKey && service.ShouldRotateMultiKeyCredentialOn(statusCode, message) {
 		retryParam.PreferChannel(channel.Id)
 		retryParam.ResetRetryNextTry()
 		return true
@@ -1154,7 +1162,7 @@ func executeTaskSubmissionWith(
 		if !willRetry {
 			break
 		}
-		if !prepareChannelRetry(retryParam, channel, taskErr.StatusCode, taskErr.LocalError) {
+		if !prepareChannelRetryWithMessage(retryParam, channel, taskErr.StatusCode, taskErr.Message, taskErr.LocalError) {
 			relayInfo.LockedChannel = nil
 		}
 	}
@@ -1336,7 +1344,7 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if retryTimes <= 0 {
 		return false
 	}
-	if shouldSkipRetryAfterAffinity(c, taskErr.StatusCode) {
+	if shouldSkipRetryAfterAffinity(c, &types.NewAPIError{Err: errors.New(taskErr.Message), StatusCode: taskErr.StatusCode}) {
 		return false
 	}
 	if service.GetChannelConstraints(c).SuppressesRetry() {
@@ -1345,9 +1353,6 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if taskErr.LocalError {
 		return false
 	}
-	if operation_setting.IsForceRetryStatusCode(taskErr.StatusCode) {
-		return true
-	}
 	code := taskErr.StatusCode
 	if code >= 200 && code < 300 {
 		return false
@@ -1355,8 +1360,15 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if code < 100 || code > 599 {
 		return true
 	}
-	if !operation_setting.IsNeverRetryStatusCode(code) &&
-		operation_setting.MatchesAutomaticRetryKeywords(taskErr.Message) {
+	if operation_setting.IsNeverRetryStatusCode(code) {
+		return false
+	}
+	if operation_setting.MatchesAutomaticRetryKeywords(taskErr.Message) {
+		return true
+	}
+	// A credential-scoped failure retries, and on a multi-key channel the caller
+	// rotates the key (see prepareChannelRetryWithMessage).
+	if service.ShouldRotateMultiKeyCredentialOn(code, taskErr.Message) {
 		return true
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)

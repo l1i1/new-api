@@ -35,11 +35,12 @@ const storedDefaults = {
   AutomaticDisableKeywords: '',
   AutomaticDisableStatusCodes: '401',
   AutomaticRetryStatusCodes: '100-199,300-407,409-503,505-523,525-599',
-  ForceRetryStatusCodes: '400',
   NeverRetryStatusCodes: '504,524',
   MultiKeyCredentialRetryStatusCodes: '402,403,429',
   AutomaticRetryKeywords: '',
   NeverRetryKeywords: 'context length\nprompt is too long',
+  MultiKeyCredentialRetryKeywords:
+    'insufficient credits\ninsufficient balance\nbalance insufficient',
   'monitor_setting.auto_test_channel_enabled': false,
   'monitor_setting.auto_test_channel_minutes': 10,
   'monitor_setting.channel_test_concurrency': 1,
@@ -58,43 +59,44 @@ afterEach(() => {
   cleanup()
 })
 
-describe('never-retry error keywords', () => {
-  it('groups the retry fields by what they do, in decision order', () => {
+describe('retry rules', () => {
+  it('groups the retry fields in the order the decision is made', () => {
     const { container } = renderSection()
 
     const subheadings = Array.from(container.querySelectorAll('h5')).map(
       (node) => node.textContent
     )
     expect(subheadings).toEqual([
+      'When never to retry (checked first)',
+      'When to retry another key of the same channel',
       'When to retry another channel',
-      'When never to retry (wins over the rules above)',
-      'Multi-key channels',
     ])
 
-    // The two halves of the rule sit in different groups: the lists that cause a
-    // failover come before the ones that stop it.
+    // A decision that stops the request is read before the ones that act on it,
+    // and rotating the key comes before dropping the channel.
     const order = Array.from(container.querySelectorAll('label, h5')).map(
       (node) => node.textContent
     )
     const at = (label: string) => order.indexOf(label)
-    const neverHeading = 'When never to retry (wins over the rules above)'
-    expect(at('Auto-retry status codes')).toBeLessThan(at(neverHeading))
-    expect(at('Force-retry status codes')).toBeLessThan(at(neverHeading))
-    expect(at('Auto-retry error keywords')).toBeLessThan(at(neverHeading))
-    expect(at(neverHeading)).toBeLessThan(at('Never-retry status codes'))
-    expect(at('Never-retry error keywords')).toBeLessThan(at('Multi-key channels'))
-    expect(at('Multi-key channels')).toBeLessThan(
-      at('Multi-key retry status codes')
-    )
+    const neverHeading = 'When never to retry (checked first)'
+    const keyHeading = 'When to retry another key of the same channel'
+    const channelHeading = 'When to retry another channel'
+    expect(at('Never-retry status codes')).toBeGreaterThan(at(neverHeading))
+    expect(at('Never-retry error keywords')).toBeLessThan(at(keyHeading))
+    expect(at('Multi-key retry status codes')).toBeLessThan(at(channelHeading))
+    expect(at('Multi-key retry error keywords')).toBeLessThan(at(channelHeading))
+    expect(at('Auto-retry status codes')).toBeLessThan(at('Auto-retry error keywords'))
   })
 
-  it('edits the stored keyword list next to the retry keywords it mirrors', () => {
+  it('edits the key-scoped keyword list and keeps it independent', () => {
     renderSection()
 
-    const field = screen.getByLabelText('Never-retry error keywords')
-    expect(field).toHaveValue('context length\nprompt is too long')
+    const field = screen.getByLabelText('Multi-key retry error keywords')
+    expect(field).toHaveValue(
+      'insufficient credits\ninsufficient balance\nbalance insufficient'
+    )
 
-    // The sibling list keeps its own field, so the two rules stay independent.
+    // The channel-failover keyword list keeps its own field.
     expect(screen.getByLabelText('Auto-retry error keywords')).toHaveValue('')
   })
 

@@ -70,7 +70,7 @@ func TestShouldRetryByStatusCode(t *testing.T) {
 
 func TestShouldRetryByStatusCode_DefaultMatchesLegacyBehavior(t *testing.T) {
 	require.False(t, ShouldRetryByStatusCode(200))
-	require.False(t, ShouldRetryByStatusCode(400))
+	require.True(t, ShouldRetryByStatusCode(400))
 	require.True(t, ShouldRetryByStatusCode(401))
 	require.False(t, ShouldRetryByStatusCode(408))
 	require.True(t, ShouldRetryByStatusCode(429))
@@ -86,36 +86,60 @@ func TestNeverRetryStatusCodes(t *testing.T) {
 	require.False(t, IsNeverRetryStatusCode(500))
 }
 
-func TestForceRetryStatusCodes(t *testing.T) {
+// TestFailoverListCoversLegacyForceRetryDefault pins the merge: the failover
+// list alone now carries everything the old force-retry default did, so an
+// upstream 400 still fails over without a second field.
+func TestFailoverListCoversLegacyForceRetryDefault(t *testing.T) {
+	require.True(t, ShouldRetryByStatusCode(400))
 	require.True(t, IsForceRetryStatusCode(400))
-	require.False(t, IsForceRetryStatusCode(500))
 
-	// Never-retry wins over force-retry when the same code appears in both.
-	origForce := ForceRetryStatusCodeRanges
+	// Never-retry wins over the failover list when a code appears in both.
 	origNever := NeverRetryStatusCodeRanges
-	t.Cleanup(func() {
-		ForceRetryStatusCodeRanges = origForce
-		NeverRetryStatusCodeRanges = origNever
-	})
-	ForceRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+	t.Cleanup(func() { NeverRetryStatusCodeRanges = origNever })
 	NeverRetryStatusCodeRanges = []StatusCodeRange{{Start: 400, End: 400}}
+	require.False(t, ShouldRetryByStatusCode(400))
 	require.False(t, IsForceRetryStatusCode(400))
+}
+
+func TestFailoverStatusCodesConfigurable(t *testing.T) {
+	orig := AutomaticRetryStatusCodeRanges
+	t.Cleanup(func() { AutomaticRetryStatusCodeRanges = orig })
+
+	require.NoError(t, AutomaticRetryStatusCodesFromString("400,422"))
+	require.True(t, ShouldRetryByStatusCode(400))
+	require.True(t, ShouldRetryByStatusCode(422))
+	require.False(t, ShouldRetryByStatusCode(404))
+	require.Equal(t, "400,422", AutomaticRetryStatusCodesToString())
+
+	// Clearing the option removes the failover rule entirely.
+	require.NoError(t, AutomaticRetryStatusCodesFromString(""))
 	require.False(t, ShouldRetryByStatusCode(400))
 }
 
-func TestForceRetryStatusCodesConfigurable(t *testing.T) {
-	orig := ForceRetryStatusCodeRanges
-	t.Cleanup(func() { ForceRetryStatusCodeRanges = orig })
+// TestLegacyForceRetryIsFoldedOnce covers the migration for an install whose
+// options row still holds the retired field: the value is folded into the
+// failover list, and the union in ShouldRetryByStatusCode means an unmigrated
+// install behaves the same.
+func TestLegacyForceRetryIsFoldedOnce(t *testing.T) {
+	origAuto := AutomaticRetryStatusCodeRanges
+	origForce := ForceRetryStatusCodeRanges
+	t.Cleanup(func() {
+		AutomaticRetryStatusCodeRanges = origAuto
+		ForceRetryStatusCodeRanges = origForce
+	})
 
+	// Before the fold the union is already honored, so nothing depends on it.
+	require.NoError(t, AutomaticRetryStatusCodesFromString("500-599"))
 	require.NoError(t, ForceRetryStatusCodesFromString("400,422"))
-	require.True(t, IsForceRetryStatusCode(400))
-	require.True(t, IsForceRetryStatusCode(422))
-	require.False(t, IsForceRetryStatusCode(404))
-	require.Equal(t, "400,422", ForceRetryStatusCodesToString())
+	require.True(t, ShouldRetryByStatusCode(400))
+	require.True(t, ShouldRetryByStatusCode(422))
+	require.True(t, ShouldRetryByStatusCode(550))
 
-	// Clearing the option removes the forced-retry rule entirely.
-	require.NoError(t, ForceRetryStatusCodesFromString(""))
-	require.False(t, IsForceRetryStatusCode(400))
+	FoldLegacyForceRetryStatusCodes()
+	require.Equal(t, "400,422,500-599", AutomaticRetryStatusCodesToString())
+	require.Empty(t, ForceRetryStatusCodesToString())
+	require.True(t, ShouldRetryByStatusCode(422))
+	require.True(t, ShouldRetryByStatusCode(550))
 }
 
 func TestNeverRetryStatusCodesConfigurable(t *testing.T) {

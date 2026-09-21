@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/hot"
 )
@@ -139,4 +140,15 @@ func MarkCurrentMultiKeyTried(c *gin.Context) {
 
 func IsMultiKeyRetryExhausted(err error) bool {
 	return errors.Is(err, model.ErrNoUntriedMultiKey)
+}
+
+// ShouldRotateMultiKeyCredentialOn reports whether this failure marks the
+// credential rather than the channel: either the status code is in the
+// multi-key retry list, or the error text matches a credential-scoped keyword
+// such as "insufficient credits". Callers own the surrounding gates -- a
+// never-retry verdict outranks this, and only a multi-key channel can act on
+// it; on a single-key channel the caller treats it as a plain channel retry.
+func ShouldRotateMultiKeyCredentialOn(statusCode int, message string) bool {
+	return operation_setting.ShouldRotateMultiKeyCredential(statusCode) ||
+		operation_setting.MatchesMultiKeyCredentialRetryKeywords(message)
 }

@@ -47,6 +47,42 @@ func MatchesAutomaticRetryKeywords(text string) bool {
 	return matchesKeyword(AutomaticRetryKeywords, text)
 }
 
+// MultiKeyCredentialRetryKeywords holds case-insensitive substrings of an
+// upstream error message that mark one credential as unusable while the
+// channel itself may still work, so a multi-key channel retries itself with
+// another key instead of being excluded. This is the text form of
+// MultiKeyCredentialRetryStatusCodeRanges and matches the live out-of-balance
+// wordings: an upstream 400 "insufficient credits" is key-scoped (another key
+// of the same channel has its own balance), and the Ark wording puts the same
+// verdict behind "balance insufficient". A channel-shaped text ("endpoint not
+// supported") still belongs to the channel-failover keywords.
+//
+// The request-level rejections are deliberately absent: an upstream that words
+// a request rejection with these words (none observed on the live channels)
+// would make every key repeat it, but the rotation is budget-free and stops at
+// the first untried-key exhaustion, so the cost is one extra attempt.
+var MultiKeyCredentialRetryKeywords = []string{
+	"insufficient credits",
+	"insufficient balance",
+	"balance insufficient",
+}
+
+func MultiKeyCredentialRetryKeywordsToString() string {
+	return strings.Join(MultiKeyCredentialRetryKeywords, "\n")
+}
+
+func MultiKeyCredentialRetryKeywordsFromString(s string) {
+	MultiKeyCredentialRetryKeywords = parseKeywordLines(s)
+}
+
+// MatchesMultiKeyCredentialRetryKeywords reports whether the error text marks
+// the credential rather than the channel. Case-insensitive; an empty keyword
+// list never matches, which disables the text rule and leaves the status-code
+// list in charge.
+func MatchesMultiKeyCredentialRetryKeywords(text string) bool {
+	return matchesKeyword(MultiKeyCredentialRetryKeywords, text)
+}
+
 func NeverRetryKeywordsToString() string {
 	return strings.Join(NeverRetryKeywords, "\n")
 }
