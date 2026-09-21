@@ -1192,3 +1192,10 @@
 - **顺带发现并修掉的真实缺陷（`b837b429d`）：修正后的日志行被标成「上游」**。`PostTextConsumeQuota` 里 `usage_billing_path` 由**调用方的 originUsage**（上游原值）推出，而扣费与日志 `prompt_tokens` 用的是修正值 → 该行自相矛盾（估算的计数 + upstream 的标签），审计上无法区分「估算收费」与「上游上报」，而标签存在的意义正是这个。**修法**：标签改用 `billingUsage`（实际计费值）；`originUsage` 失去唯一读者，随之改名消除。**回归测试 `service/video_log_path_test.go`**（走真实 `PreConsumeBilling` + 结算 + SQLite 落库，断言修正值 + `billing-usage-openai-estimated`；已在改回旧行为时验证会失败）。**坑**：`:memory:` sqlite 每连接一个库，测试必须 `SetMaxOpenConns(1)`，否则落库连接看不到 schema（首版就是这么假绿的）。
 - **文档同步**：`docs/video-usage-estimation.md` 明确「`prompt_tokens` = 实际扣费值、计费路径 = `billing-usage-openai-estimated`、客户端 usage 不改动」，并把该回归测试写进验收清单。
 - **国际站**：zz 同族存在（`CN_zz_0`=ch144 / `CN_zz_1`=ch147 / `CN_zz_3`=ch149，同上游域名），**但本次未打标记**——国际站 `/api/channel/:id/key` 需要交互式安全验证（`SECURITY_PROOF_INVALID`），无法脚本取真 key 实测；按「未实测不打标记」的纪律留待补测。国际站 estimate 端点已配好，随时可用。
+
+### 2026-09-22 补记：`mainland.2` / `intl.2`（渠道标记落地 + 日志计费路径修正）
+
+- **发布内容**：`b837b429d`（修正后的消费日志行不再被标成上游）+ `22045ff25`（文档）+ 渠道标记落地。国内 `v1.0.0-rc.39-tokeness-mainland.2`（digest `sha256:0639ff5f23c80ed2e4cc96e57b3d1a05eec3f8d43f358b9fc1f7d3d0f2bca4bb`，回滚目标 `.1` = `sha256:ffb4e7a4…50c1`）；国际 `v1.0.0-rc.39-tokeness-intl.2`（digest `sha256:0c5a52a13b34051d493a61cb9484c957b430c07b04d892e08444c603a587a329`，回滚目标 `intl.1` = `sha256:02399838…525a`）。两条线 CNB/GHA 全绿。
+- **缺陷与修法**：`PostTextConsumeQuota` 的 `usage_billing_path` 原先由调用方 `originUsage`（上游原值）推出，而 `prompt_tokens`/扣费用的是视频修正值 → **修正行自相矛盾**（估算计数 + upstream 标签），审计无法区分估算与上报。改用 `billingUsage`；`originUsage` 因此失去唯一读者而消除。**回归测试** `service/video_log_path_test.go` 走真实 `PreConsumeBilling`+结算+SQLite 落库；改回旧行为即失败（已实测）。**测试坑**：`:memory:` sqlite 是每连接一个库，必须 `SetMaxOpenConns(1)`，否则落库连接看不到 schema（首版因此假绿）。
+- **线上实证（两站）**：国内站真实视频请求 → 日志 `channel=15`、`prompt_tokens=33957`、`usage_billing_path=billing-usage-openai-estimated`，**客户端 usage 仍是上游 26**；国际站文本中继 200；两站 `/v1/models`、`/api/option/` 匿名 401。
+- **国际站 Cloudflare 坑**：tokeness.ai 对非浏览器 UA 回 403 `error code: 1010`（admin API 与 `/v1` 都中招），脚本必须带浏览器 `User-Agent`——否则会把正常服务误判成故障（本次先误导了一次诊断）。
