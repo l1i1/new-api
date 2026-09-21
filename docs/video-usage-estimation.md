@@ -146,26 +146,31 @@ VIDEO_ESTIMATE_API_KEY=<tokenizer 所有者侧的 key>
 
 ## 上线顺序（重要）
 
-**必须先部署代码，再写渠道标记**，两步都不可省：
+**先部署代码，再写渠道标记**，两步都不可省：
 
-1. **代码**：本改动。当前线上（`fb3c79a91` / `v1.0.0-rc.37-tokeness-mainland.2`）**完全不认识
-   `supports_video` / `video_usage_mode`**（解析结构体里没有这两个字段）。
-2. **渠道标记**：按实测逐个渠道写入（实测结论见
-   `docs/cdp/mainland-k3-video-capability-20260921.md`）。
+1. **代码**：本改动（随 `v1.0.0-rc.37-tokeness-mainland.5` 上线）。此前整条线
+   （至 `mainland.4`）**完全不认识 `supports_video` / `video_usage_mode`**（解析结构体里
+   没有这两个字段），且带着一个未部署的 P0：计费准备阶段在 `ChannelMeta` 建立之前解引用
+   `info.ChannelOtherSettings`，任何中继请求都会 panic——该 P0 已由本改动一并修掉，所以
+   「直接给旧主线打 tag」在修好前是禁止动作。
+2. **渠道标记**：按实测逐个渠道写入（定级表见下）。
 
 **为什么不能反过来**：标记是**惰性**的——老代码忽略未知字段，所以「先写标记」不会立刻生效，
 但会在**下一次任何人部署该功能时静默变成线上选路**，而不是在一次受控、可验证的发布里生效。
-因此标记与代码同批发，且写标记后立刻用真实视频请求验证。
+代码上线后标记即写即生效（渠道设置是运行时读的），写入后立刻用真实视频请求验证。
 
-国内站 `kimi-k3` 的实测定级（2026-09-21，19 条渠道）：
+国内站 `kimi-k3` 的实测定级（2026-09-21 晚，共 22 条渠道；当晚新测结果见
+`docs/cdp/mainland-k3-new-channels-20260921.md`）：
 
 | 渠道 | 实测行为 | 应写标记 |
 | --- | --- | --- |
 | ch8 `DEF_Kimi`（官方直连，enabled） | usage 真实（42,416） | `supports_video: true` |
-| ch21 `DEF_gwlink`（disabled） | usage 真实（42,417） | `supports_video: true` |
+| ch21 `DEF_gwlink`（disabled） | **午后** usage 真实（42,417）；**当晚 10 次尝试 0 成功**（静默丢弃/400 拒绝，异构池漂移） | **暂不写**，启用前重测 |
 | ch17 / ch15 / ch14 / ch34 | **能读**但 usage 恒报 27 | `supports_video` + `video_usage_mode: estimate` |
 | ch37 `DEF-neurvibe`（enabled，**priority 50 最高**） | **静默丢弃视频** | **两个都不写** |
-| 其余 13 条 | 明确拒绝 / 到不了上游 | 不写 |
+| ch38/ch39 `DEF_APlink-B`/`DEF_APlink`（OFF-manual，同源） | 能读、usage 真实（≤1.9 MB；2.4 MB 上游 504） | 启用时可写 `supports_video: true`（**不要**加 estimate） |
+| ch40 `DEF_Tongba-Tokens`（OFF-manual） | 同上（能读、usage 真实、ms:// 不可用） | 同上 |
+| 其余各条 | 明确拒绝 / 到不了上游 / 静默丢弃 | 不写 |
 
 **写标记前必须先拍板的一件事**：优先级顺序会让 `zzzzz` 系（ch17 priority 2、ch15 priority 16）
 **高于**官方直连 ch8（priority 0）。即视频流量会优先走「能读但计费不可信」的池子，靠估算兜底，
