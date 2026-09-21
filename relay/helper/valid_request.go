@@ -1032,23 +1032,65 @@ func officialFitProfile(c *gin.Context, model string) (dto.OfficialFitProfile, b
 	return setting.OfficialFitProfileFor(model)
 }
 
-// Kimi K3 official validation texts, calibrated 2026-08-27 against the live
-// api.moonshot.cn API. The official endpoint does NOT enum-check
-// reasoning_effort strings and silently ignores the K2.x thinking field; only
-// fixed sampling params, the logprobs pair and a specified tool_choice are
-// rejected, with the exact wordings below.
+// Kimi K3 official validation texts, re-probed live against api.moonshot.cn on
+// 2026-09-21 (the 2026-08-27 set had drifted: `logprobs: only false` and the
+// single fixed temperature no longer match the endpoint). Facts pinned by that
+// probe:
+//   - the fixed temperature follows the thinking state: enabled (the default)
+//     pins 1.0, `thinking.type=disabled` pins 0.6 — two distinct texts;
+//   - `logprobs: true` is ACCEPTED in both states and returns logprobs data;
+//     only `top_logprobs > 0` without `logprobs: true` is rejected;
+//   - any tool_choice string outside auto/none/required is rejected with the
+//     "specified" text, and `required` needs at least one tool (request-level
+//     or dynamic);
+//   - the tool-call chain has its own state machine and texts;
+//   - dynamic tools, response_format and empty messages have their own texts.
+//
+// Everything the endpoint tolerates (reasoning_effort strings, the K2.x
+// thinking field, max_completion_tokens, strict=false tools, missing tool
+// parameters) must pass through unvalidated.
 const (
-	kimiK3TemperatureMessage         = "invalid temperature: only 1 is allowed for this model"
+	kimiK3TemperatureThinkingMessage = "invalid temperature: only 1 is allowed for this model"
+	kimiK3TemperatureDisabledMessage = "invalid temperature: only 0.6 is allowed for this model"
 	kimiK3TopPMessage                = "invalid top_p: only 0.95 is allowed for this model"
 	kimiK3NMessage                   = "invalid n: only 1 is allowed for this model"
 	kimiK3PresencePenaltyMessage     = "invalid presence_penalty: only 0 is allowed for this model"
 	kimiK3FrequencyPenaltyMessage    = "invalid frequency_penalty: only 0 is allowed for this model"
-	kimiK3LogprobsFalseMessage       = "invalid logprobs: only false is allowed for this model"
 	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
+	kimiK3ToolChoiceRequiredMessage  = "Invalid request: tool_choice 'required' requires at least one tool"
 	kimiK3ToolNameMessage            = "Invalid request: function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
 	kimiK3MessagesEmptyMessage       = "Invalid request: messages must not be empty"
 	kimiK3ReasoningEffortTypeMessage = "Invalid request: the `reasoning_effort` field in the request (expected type string) is illegal, and number is not acceptable"
+	// Tool-call chain. The not-found text carries two spaces after
+	// `tool_call_id`, exactly as the official endpoint renders it.
+	kimiK3ToolCallIDNotFoundMessage = "Invalid request: tool_call_id  is not found"
+	kimiK3UnansweredToolCallsPrefix = "Invalid request: an assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: "
+	kimiK3DuplicateToolCallIDPrefix = "Invalid request: tool call id "
+	kimiK3DuplicateToolCallIDSuffix = " is duplicated"
+	// kimiK3TokenizationFailedMessage is what the official endpoint answers
+	// when the same pending call is answered twice.
+	kimiK3TokenizationFailedMessage = "Invalid request: tokenization failed"
+	// Dynamic tools (message-level declarations).
+	kimiK3MessageToolsPositionPrefix = "Invalid request: message tools at position "
+	kimiK3MessageToolsRoleSuffix     = " must be used with role 'system'"
+	kimiK3MessageToolsContentSuffix  = " cannot be used with content"
+	kimiK3MessageToolsInvalidSuffix  = " is invalid: "
+	kimiK3MessageToolsTypePrefix     = "Invalid request: the `messages.tools` field in the request (expected type []object) is illegal, and "
+	kimiK3FunctionNameInvalidText    = "function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
+	kimiK3FunctionNameDuplicateText  = "function name %s is duplicated"
+	kimiK3UnknownToolTypePrefix      = "unknown tool type: "
+	kimiK3UnknownToolTypeSuffix      = ", currently only function and plugin are supported"
+	kimiK3DuplicateToolNamePrefix    = "Invalid request: duplicate tool name "
+	kimiK3DuplicateBetweenMessages   = " between message tools at positions "
+	kimiK3DuplicateWithGlobalTools   = " between request-level tools and message tools at message position "
+	// response_format.
+	kimiK3ResponseFormatTypeMessage       = "Invalid request: response_format.type must be one of 'text', 'json_object', 'json_schema'"
+	kimiK3ResponseFormatMissingSchemaName = "Invalid request: missing required parameter: 'response_format.json_schema.name'"
+	kimiK3ResponseFormatEmptySchema       = "Invalid request: schema must not be empty"
+	kimiK3ResponseFormatMissingSchema     = "Invalid request: missing required parameter: 'response_format.json_schema'"
+	kimiK3ResponseFormatStrictTypePrefix  = "Invalid request: the `response_format.json_schema.strict` field in the request (expected type bool) is illegal, and "
+	kimiK3ResponseFormatSchemaTypePrefix  = "Invalid request: the `response_format.json_schema.schema` field in the request (expected type dict[string,interface]) is illegal, and "
 )
 
 // GLM-5.3 official validation texts calibrated 2026-08-28 against the live
@@ -1090,19 +1132,24 @@ func isKimiK3Model(model string) bool {
 }
 
 // validateKimiK3OfficialFields mirrors the official Moonshot kimi-k3 request
-// contract as observed live: non-fixed sampling values (temperature must be
-// 1.0, top_p 0.95, n 1, both penalties 0), logprobs disabled by design, the
-// top_logprobs pair requirement, no specified tool_choice and non-empty
-// messages. Explicit fixed values are accepted exactly as the official
-// endpoint does. Only requests targeting a kimi-k3 model are inspected; other
-// fields (thinking, reasoning_effort strings, max_completion_tokens) are
-// passed through as the official endpoint accepts them.
+// contract as re-probed live on 2026-09-21. The validator is deliberately
+// narrow: every rule below was observed on the endpoint, and the fields it
+// does not inspect (reasoning_effort strings, the K2.x thinking field,
+// max_completion_tokens, tool parameters, strict=false) are tolerated there.
 func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isKimiK3Model(request.Model) {
 		return nil
 	}
-	if request.Temperature != nil && math.Abs(*request.Temperature-1.0) > 1e-9 {
-		return kimiK3Error(kimiK3TemperatureMessage)
+	thinkingEnabled := kimiK3ThinkingEnabled(request.THINKING)
+	if request.Temperature != nil {
+		// The fixed temperature follows the thinking state: enabled (the
+		// default) pins 1.0, disabled pins 0.6, with distinct texts.
+		if thinkingEnabled && math.Abs(*request.Temperature-1.0) > 1e-9 {
+			return kimiK3Error(kimiK3TemperatureThinkingMessage)
+		}
+		if !thinkingEnabled && math.Abs(*request.Temperature-0.6) > 1e-9 {
+			return kimiK3Error(kimiK3TemperatureDisabledMessage)
+		}
 	}
 	if request.TopP != nil && math.Abs(*request.TopP-0.95) > 1e-9 {
 		return kimiK3Error(kimiK3TopPMessage)
@@ -1116,28 +1163,349 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request.FrequencyPenalty != nil && *request.FrequencyPenalty != 0 {
 		return kimiK3Error(kimiK3FrequencyPenaltyMessage)
 	}
-	if request.LogProbs != nil && *request.LogProbs {
-		return kimiK3Error(kimiK3LogprobsFalseMessage)
-	}
-	if request.TopLogProbs != nil && (request.LogProbs == nil || !*request.LogProbs) {
+	// logprobs=true is allowed (and returns logprobs); only a positive
+	// top_logprobs without it is rejected.
+	if request.TopLogProbs != nil && *request.TopLogProbs > 0 && (request.LogProbs == nil || !*request.LogProbs) {
 		return kimiK3Error(kimiK3TopLogprobsPairMessage)
 	}
-	if tc, ok := request.ToolChoice.(map[string]any); ok {
-		if t, _ := tc["type"].(string); strings.EqualFold(t, "function") {
-			if _, hasFn := tc["function"]; hasFn {
-				return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
-			}
-		}
+	if err := validateKimiK3ToolChoice(request); err != nil {
+		return err
 	}
-	for i := range request.Tools {
-		if !validKimiK3FunctionName(request.Tools[i].Function.Name) {
-			return kimiK3Error(kimiK3ToolNameMessage)
-		}
+	if err := validateKimiK3DynamicTools(request); err != nil {
+		return err
+	}
+	if err := validateKimiK3ToolCallChain(request); err != nil {
+		return err
+	}
+	if err := validateKimiK3ResponseFormat(request); err != nil {
+		return err
 	}
 	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
 		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
 	return nil
+}
+
+// kimiK3ThinkingEnabled reports whether the request runs in thinking mode.
+// Official K3 defaults to enabled; only an explicit type=disabled (or
+// disabled-equivalent casing) turns it off. A malformed thinking value is
+// ignored by the endpoint and therefore counts as enabled here.
+func kimiK3ThinkingEnabled(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var thinking map[string]any
+	if err := json.Unmarshal(raw, &thinking); err != nil {
+		return true
+	}
+	if t, ok := thinking["type"].(string); ok {
+		return !strings.EqualFold(strings.TrimSpace(t), "disabled")
+	}
+	return true
+}
+
+// validateKimiK3ToolChoice enforces the three legal string values. The official
+// endpoint answers any other string (including object forms and unexpected
+// casings) with the "specified" text, and `required` demands at least one tool
+// so a request with none (or an empty array) is rejected.
+func validateKimiK3ToolChoice(request *dto.GeneralOpenAIRequest) error {
+	switch choice := request.ToolChoice.(type) {
+	case nil:
+		return nil
+	case string:
+		switch choice {
+		case "":
+			// The endpoint treats an empty string as absent.
+			return nil
+		case "auto", "none":
+			return nil
+		case "required":
+			if len(request.Tools) == 0 && kimiK3DynamicToolCount(request) == 0 {
+				return kimiK3Error(kimiK3ToolChoiceRequiredMessage)
+			}
+			return nil
+		default:
+			return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
+		}
+	default:
+		// Object forms (and any non-string) get the same "specified" text.
+		return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
+	}
+}
+
+// kimiK3DynamicToolCount counts tools declared on messages, which participate
+// in tool_choice and duplicate-name checks exactly like request-level tools.
+func kimiK3DynamicToolCount(request *dto.GeneralOpenAIRequest) int {
+	count := 0
+	for i := range request.Messages {
+		if len(request.Messages[i].Tools) == 0 {
+			continue
+		}
+		var tools []dto.ToolCallRequest
+		if err := json.Unmarshal(request.Messages[i].Tools, &tools); err == nil {
+			count += len(tools)
+		}
+	}
+	return count
+}
+
+// validateKimiK3DynamicTools mirrors the dynamic-tool loading contract: tools
+// may only appear on a system message whose content is empty, their names must
+// satisfy the same rule as request-level tools, the type must be function (or
+// plugin), and no name may repeat within or across declarations — including
+// against the request-level tools.
+func validateKimiK3DynamicTools(request *dto.GeneralOpenAIRequest) error {
+	seenByMessage := make(map[string]int)
+	for i := range request.Messages {
+		message := &request.Messages[i]
+		if len(message.Tools) == 0 {
+			continue
+		}
+		var tools []map[string]any
+		if err := json.Unmarshal(message.Tools, &tools); err != nil {
+			// The declaration is not an array of objects. Official names the
+			// offending JSON type; unknown types fall through to the upstream.
+			if typeName, ok := kimiK3JSONTypeName(message.Tools); ok {
+				return kimiK3Error(kimiK3MessageToolsTypePrefix + typeName + " is not acceptable")
+			}
+			return nil
+		}
+		if !strings.EqualFold(message.Role, "system") {
+			return kimiK3Error(kimiK3MessageToolsPositionPrefix + strconv.Itoa(i) + kimiK3MessageToolsRoleSuffix)
+		}
+		if content, ok := message.Content.(string); ok && strings.TrimSpace(content) != "" {
+			return kimiK3Error(kimiK3MessageToolsPositionPrefix + strconv.Itoa(i) + kimiK3MessageToolsContentSuffix)
+		}
+		namesInMessage := make(map[string]bool)
+		for _, entry := range tools {
+			toolType, _ := entry["type"].(string)
+			function, _ := entry["function"].(map[string]any)
+			name := ""
+			if function != nil {
+				name, _ = function["name"].(string)
+			}
+			if toolType != "function" && toolType != "plugin" {
+				return kimiK3Error(
+					kimiK3MessageToolsPositionPrefix + strconv.Itoa(i) + kimiK3MessageToolsInvalidSuffix +
+						kimiK3UnknownToolTypePrefix + toolType + kimiK3UnknownToolTypeSuffix,
+				)
+			}
+			if !validKimiK3FunctionName(name) {
+				return kimiK3Error(
+					kimiK3MessageToolsPositionPrefix + strconv.Itoa(i) + kimiK3MessageToolsInvalidSuffix + kimiK3FunctionNameInvalidText,
+				)
+			}
+			if namesInMessage[name] {
+				return kimiK3Error(
+					kimiK3MessageToolsPositionPrefix + strconv.Itoa(i) + kimiK3MessageToolsInvalidSuffix +
+						fmt.Sprintf(kimiK3FunctionNameDuplicateText, name),
+				)
+			}
+			namesInMessage[name] = true
+		}
+		for name := range namesInMessage {
+			if first, ok := seenByMessage[name]; ok {
+				return kimiK3Error(kimiK3DuplicateToolNamePrefix + name + kimiK3DuplicateBetweenMessages + strconv.Itoa(first) + " and " + strconv.Itoa(i))
+			}
+			seenByMessage[name] = i
+		}
+	}
+	for i := range request.Tools {
+		name := request.Tools[i].Function.Name
+		if !validKimiK3FunctionName(name) {
+			return kimiK3Error(kimiK3ToolNameMessage)
+		}
+		if position, ok := seenByMessage[name]; ok {
+			return kimiK3Error(kimiK3DuplicateToolNamePrefix + name + kimiK3DuplicateWithGlobalTools + strconv.Itoa(position))
+		}
+	}
+	return nil
+}
+
+// kimiK3ToolCallRef is one declared tool call, in declaration order.
+type kimiK3ToolCallRef struct {
+	id   string
+	rank int
+}
+
+// validateKimiK3ToolCallChain mirrors the official tool-call state machine,
+// which is sequential (live-probed 2026-09-21 across eight shapes):
+//   - ids must not repeat within one assistant message;
+//   - a following tool message must name an id that is currently pending —
+//     an unknown id, a missing id and an orphan tool message all answer with
+//     the not-found text;
+//   - answering the same pending id twice fails tokenization;
+//   - any other message (including the end of the conversation) while calls
+//     are still pending reports them as unanswered, labelled
+//     `<function name>:<index>` in declaration order;
+//   - re-declaring an id in a later assistant message is allowed.
+func validateKimiK3ToolCallChain(request *dto.GeneralOpenAIRequest) error {
+	var (
+		pending  []kimiK3DeclaredCall
+		consumed map[string]bool
+	)
+	unanswered := func() error {
+		labels := make([]string, 0, len(pending))
+		for _, call := range pending {
+			labels = append(labels, call.name+":"+strconv.Itoa(call.rank))
+		}
+		return kimiK3Error(kimiK3UnansweredToolCallsPrefix + strings.Join(labels, ", "))
+	}
+	for i := range request.Messages {
+		message := &request.Messages[i]
+		switch strings.ToLower(message.Role) {
+		case "assistant":
+			if len(pending) > 0 {
+				return unanswered()
+			}
+			calls, err := kimiK3DeclaredToolCalls(message.ToolCalls)
+			if err != nil {
+				return nil
+			}
+			seen := make(map[string]bool)
+			for _, call := range calls {
+				if seen[call.id] {
+					return kimiK3Error(kimiK3DuplicateToolCallIDPrefix + call.id + kimiK3DuplicateToolCallIDSuffix)
+				}
+				seen[call.id] = true
+			}
+			pending = calls
+			consumed = make(map[string]bool)
+		case "tool":
+			id := strings.TrimSpace(message.ToolCallId)
+			index := -1
+			for i, call := range pending {
+				if call.id == id && id != "" {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				if consumed[id] {
+					// A second answer to the same call fails the official
+					// tokenizer rather than the chain check.
+					return kimiK3Error(kimiK3TokenizationFailedMessage)
+				}
+				return kimiK3Error(kimiK3ToolCallIDNotFoundMessage)
+			}
+			consumed[id] = true
+			pending = append(pending[:index], pending[index+1:]...)
+		default:
+			if len(pending) > 0 {
+				return unanswered()
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return unanswered()
+	}
+	return nil
+}
+
+// kimiK3JSONTypeName names the JSON type of a raw value the way the official
+// deserializer reports it in a type-mismatch text. ok=false for shapes the
+// gateway does not know how to name, which leaves the request to the upstream.
+func kimiK3JSONTypeName(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "", false
+	}
+	switch trimmed[0] {
+	case '{':
+		return "object", true
+	case '"':
+		return "string", true
+	case 't', 'f':
+		return "boolean", true
+	case 'n':
+		return "null", true
+	default:
+		return "", false
+	}
+}
+
+// kimiK3DeclaredCall is one tool call with the official <name>:<index> label
+// parts. er=false is ignored by the caller: a malformed declaration is left
+// for the upstream to judge.
+type kimiK3DeclaredCall struct {
+	id   string
+	name string
+	rank int
+}
+
+func kimiK3DeclaredToolCalls(raw json.RawMessage) ([]kimiK3DeclaredCall, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var calls []map[string]any
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return nil, err
+	}
+	declared := make([]kimiK3DeclaredCall, 0, len(calls))
+	for rank, entry := range calls {
+		id, _ := entry["id"].(string)
+		name := ""
+		if function, ok := entry["function"].(map[string]any); ok {
+			name, _ = function["name"].(string)
+		}
+		declared = append(declared, kimiK3DeclaredCall{id: id, name: name, rank: rank})
+	}
+	return declared, nil
+}
+
+// validateKimiK3ResponseFormat mirrors the response_format contract: the type
+// must be one of the three documented values, json_schema requires a name and
+// an object schema (strict, when present, must be a boolean).
+func validateKimiK3ResponseFormat(request *dto.GeneralOpenAIRequest) error {
+	format := request.ResponseFormat
+	if format == nil {
+		return nil
+	}
+	switch format.Type {
+	case "", "text", "json_object":
+		return nil
+	case "json_schema":
+	default:
+		return kimiK3Error(kimiK3ResponseFormatTypeMessage)
+	}
+	if len(format.JsonSchema) == 0 {
+		return kimiK3Error(kimiK3ResponseFormatMissingSchema)
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(format.JsonSchema, &schema); err != nil {
+		return kimiK3Error(kimiK3ResponseFormatMissingSchema)
+	}
+	if name, ok := schema["name"]; !ok || !isNonEmptyJSONString(name) {
+		return kimiK3Error(kimiK3ResponseFormatMissingSchemaName)
+	}
+	rawSchema, ok := schema["schema"]
+	if !ok || !isNonEmptyJSONObject(rawSchema) {
+		return kimiK3Error(kimiK3ResponseFormatEmptySchema)
+	}
+	if strict, ok := schema["strict"]; ok {
+		switch strings.TrimSpace(string(strict)) {
+		case "true", "false":
+		default:
+			return kimiK3Error(kimiK3ResponseFormatStrictTypePrefix + strings.TrimSpace(string(strict)) + " is not acceptable")
+		}
+	}
+	return nil
+}
+
+// isNonEmptyJSONObject reports whether raw is a JSON object with at least one
+// member.
+func isNonEmptyJSONObject(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return len(trimmed) > 2 && trimmed[0] == '{'
+}
+
+// isNonEmptyJSONString reports whether raw is a JSON string with non-empty
+// content ("" and whitespace-only count as empty). Mirrors the predicate the
+// DeepSeek fit layer uses; the helper package cannot import that one without a
+// cycle.
+func isNonEmptyJSONString(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return len(trimmed) > 2 && trimmed[0] == '"'
 }
 
 // validateGlm53OfficialFields mirrors the live Zhipu glm-5.3 contract: the
@@ -1237,20 +1605,47 @@ func isLetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// kimiK3Error builds a K3 validation error. The official endpoint renders every
+// business rejection as {error:{message,type}} with Content-Type
+// application/json (13/13 classes re-probed 2026-09-21), so the gateway keeps
+// param/code out of the envelope: controller/relay.go drops them for this wire
+// shape. The internal error object still carries the platform's usual Code so
+// non-fit consumers keep their existing shape.
 func kimiK3Error(message string) error {
 	return types.WithOpenAIError(types.OpenAIError{
 		Message: message,
 		Type:    "invalid_request_error",
-		Param:   nil,
 		Code:    "invalid_request_error",
 	}, http.StatusBadRequest)
 }
 
+// K3ModelNotFoundStatus is the status the official endpoint returns for an
+// unknown model id (live-probed 2026-09-21), distinctly lower than the 400 the
+// platform's own unknown-model path uses.
+const K3ModelNotFoundStatus = http.StatusNotFound
+
+// K3ModelNotFoundText mirrors the official unknown-model text so the
+// distributor can render it without duplicating the wording.
+func K3ModelNotFoundText(model string) string {
+	return "Not found the model " + model + " or Permission denied"
+}
+
+// IsKimiK3OfficialModelName reports whether model is one of the exact model ids
+// the kimi-k3 family accepts.
+func IsKimiK3OfficialModelName(model string) bool {
+	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyKimiK3
+}
+
 // StrictFitContentType reports the wire content type the official endpoint
-// uses for a strict-fit validation message (live-probed 2026-09-01):
-// deserialization failures come back as application/json while the plain
-// business rejections use application/octet-stream.
-func StrictFitContentType(message string) string {
+// uses for a strict-fit validation message, as a property of the family's wire
+// shape (live-probed 2026-09-01 for DeepSeek, 2026-09-21 for Moonshot):
+// DeepSeek deserialization failures come back as application/json while its
+// plain business rejections use application/octet-stream; Moonshot uses
+// application/json for every business rejection (13/13 classes re-probed).
+func StrictFitContentType(wireShape officialfit.WireShape, message string) string {
+	if wireShape == officialfit.WireShapeMoonshot {
+		return "application/json"
+	}
 	if strings.HasPrefix(message, "Failed to deserialize the JSON body into the target type") {
 		return "application/json"
 	}
@@ -1298,17 +1693,31 @@ func IsStrictFitValidationMessage(message string) bool {
 		"Failed to deserialize the JSON body into the target type: thinking: missing field",
 		"Failed to deserialize the JSON body into the target type: thinking: invalid type:",
 		deepSeekV4ThinkingParseExpectedValueText,
-		kimiK3TemperatureMessage,
+		kimiK3TemperatureThinkingMessage,
+		kimiK3TemperatureDisabledMessage,
 		kimiK3TopPMessage,
 		kimiK3NMessage,
 		kimiK3PresencePenaltyMessage,
 		kimiK3FrequencyPenaltyMessage,
-		kimiK3LogprobsFalseMessage,
 		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
+		kimiK3ToolChoiceRequiredMessage,
 		kimiK3ToolNameMessage,
 		kimiK3MessagesEmptyMessage,
 		kimiK3ReasoningEffortTypeMessage,
+		kimiK3ToolCallIDNotFoundMessage,
+		kimiK3UnansweredToolCallsPrefix,
+		kimiK3DuplicateToolCallIDPrefix,
+		kimiK3TokenizationFailedMessage,
+		kimiK3MessageToolsPositionPrefix,
+		kimiK3MessageToolsTypePrefix,
+		kimiK3DuplicateToolNamePrefix,
+		kimiK3ResponseFormatTypeMessage,
+		kimiK3ResponseFormatMissingSchemaName,
+		kimiK3ResponseFormatEmptySchema,
+		kimiK3ResponseFormatMissingSchema,
+		kimiK3ResponseFormatStrictTypePrefix,
+		kimiK3ResponseFormatSchemaTypePrefix,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true

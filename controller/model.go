@@ -321,12 +321,38 @@ func ListModels(c *gin.Context, modelType int) {
 			"nextPageToken": nil,
 		})
 	default:
+		// Official-fit users see the official /v1/models envelope: top-level
+		// {object, data} and nothing else (the platform's `success` wrapper is
+		// a gateway extension the official endpoint never sends).
+		if officialFitEnabledForAnyModel(c) {
+			c.JSON(200, gin.H{
+				"object": "list",
+				"data":   userOpenAiModels,
+			})
+			return
+		}
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    userOpenAiModels,
 			"object":  "list",
 		})
 	}
+}
+
+// officialFitEnabledForAnyModel reports whether the requesting user enabled the
+// official-fit Errors dimension for at least one family. Model discovery has no
+// single model to key off, so the user-level flag decides the envelope.
+func officialFitEnabledForAnyModel(c *gin.Context) bool {
+	setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
+	if !ok || setting.OfficialFit == nil {
+		return false
+	}
+	for _, profile := range setting.OfficialFit.Profile {
+		if profile.Errors {
+			return true
+		}
+	}
+	return false
 }
 
 func ChannelListModels(c *gin.Context) {

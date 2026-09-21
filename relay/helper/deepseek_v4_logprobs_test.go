@@ -188,7 +188,7 @@ func TestKimiK3ValidationGatedByOfficialFitProfile(t *testing.T) {
 	var apiErr *types.NewAPIError
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
-	assert.Equal(t, kimiK3TemperatureMessage, apiErr.ToOpenAIError().Message)
+	assert.Equal(t, kimiK3TemperatureThinkingMessage, apiErr.ToOpenAIError().Message)
 }
 
 func TestDeepSeekV4ToolChoiceMatchesOfficial(t *testing.T) {

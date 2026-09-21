@@ -170,15 +170,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				if isStrictFitValidation {
 					// The official endpoints return validation errors with
-					// their own wire shapes (live-probed 2026-09-01/02):
+					// their own wire shapes (live-probed 2026-09-01/02 for
+					// DeepSeek, 2026-09-21 for Moonshot): DeepSeek renders
 					// deserialization failures as application/json JSON
 					// objects, plain business rejections as
 					// application/octet-stream JSON objects, and the
 					// body-parse class as bare application/octet-stream text.
-					contentType := helper.StrictFitContentType(filteredMessage)
+					// Moonshot renders every business rejection as
+					// application/json with exactly {message,type}.
+					contentType := helper.StrictFitContentType(wireShape, filteredMessage)
 					if helper.StrictFitRendersPlainText(filteredMessage) {
 						c.Data(newAPIError.StatusCode, contentType, []byte(filteredMessage))
 						return
+					}
+					if wireShape == officialfit.WireShapeMoonshot {
+						// Moonshot's envelope carries exactly message and type: the
+						// shared OpenAIError struct always renders param/code (their
+						// tags have no omitempty), so the two fields are mapped
+						// explicitly here instead.
+						if body, marshalErr := common.Marshal(gin.H{"error": gin.H{
+							"message": filteredMessage,
+							"type":    newAPIError.ToOpenAIError().Type,
+						}}); marshalErr == nil {
+							c.Data(newAPIError.StatusCode, contentType, body)
+							return
+						}
 					}
 					// Strict-fit messages are first-party official texts, so
 					// the response object must carry the unmasked message:

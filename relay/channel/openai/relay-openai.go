@@ -149,11 +149,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	var deepSeekV4PendingFinalData string
+	var kimiK3PendingFinalData string
 	var streamErr *types.NewAPIError
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
 	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
+	isK3OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info)
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -239,6 +241,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 						common.SysLog("error handling stream format: " + err.Error())
 						sr.Error(err)
+					}
+				}
+			} else if info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info) {
+				// Official K3 attaches usage to choices[0] of the terminal
+				// chunk and never emits a usage-only event. Hold the
+				// terminal chunk so the official usage shape lands exactly
+				// where the official endpoint puts it; forward every other
+				// chunk with the aggregator's top-level usage and blanket
+				// choice.logprobs stripped.
+				if lastStreamHasFinish {
+					kimiK3PendingFinalData = lastStreamData
+				} else if lastStreamHasUsage && !lastStreamHasChoices {
+					// Usage-only metadata: official has no such event, so
+					// it is folded away rather than forwarded.
+				} else {
+					streamData := FitKimiK3StreamEventForAdapters(c, info, lastStreamData, nil, false)
+					if streamData != "" {
+						if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+							common.SysLog("error handling stream format: " + err.Error())
+							sr.Error(err)
+						}
 					}
 				}
 			} else if info.RelayFormat == types.RelayFormatOpenAI && lastStreamHasUsage {
@@ -421,6 +444,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					streamData = patched
 				}
 				_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+		case isK3OpenAIStream:
+			// Official K3 renders usage inside choices[0] of the terminal
+			// chunk. The held terminal chunk is emitted here with the official
+			// usage shape injected; a usage-only event has already been folded
+			// away by the per-chunk branch.
+			streamData := lastStreamData
+			if !lastStreamHasFinish && kimiK3PendingFinalData != "" {
+				streamData = kimiK3PendingFinalData
+			}
+			if streamData != "" {
+				streamData = FitKimiK3StreamEventForAdapters(c, info, streamData, usage, true)
+				if streamData != "" {
+					_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+				}
 			}
 		case lastStreamHasUsage:
 			pendingUsageData = lastStreamData
@@ -712,6 +750,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewOpenAIError(fitErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		responseBody = fitted
+	}
+
+	if info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info) {
+		// The K3 fit runs after conversion as well, so aggregator usage
+		// extensions cannot escape either the passthrough or the ForceFormat
+		// route.
+		responseBody = FitKimiK3TextResponseBodyForAdapters(c, info, responseBody, &simpleResponse.Usage)
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {

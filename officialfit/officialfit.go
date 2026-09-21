@@ -30,6 +30,12 @@ const (
 	// WireShapeZhipu renders Zhipu v4's {error:{code,message}}: a numeric
 	// machine code and no type/param pair.
 	WireShapeZhipu WireShape = "zhipu"
+	// WireShapeMoonshot renders Moonshot's {error:{message,type}} with
+	// Content-Type application/json — exactly two fields, no param/code, for
+	// every business rejection (live-probed 2026-09-21 across 13 classes:
+	// sampling params, tool_choice, tool names, empty messages, logprobs pair,
+	// response_format and the tool-call chain).
+	WireShapeMoonshot WireShape = "moonshot"
 )
 
 // Canonical family ids. They are both the table keys and the profile keys
@@ -88,7 +94,7 @@ var Families = []Family{
 		ModelPrefixes:      []string{"kimi-k3"},
 		OfficialModelNames: []string{"kimi-k3"},
 		ChannelType:        constant.ChannelTypeMoonshot,
-		WireShape:          WireShapeOpenAI,
+		WireShape:          WireShapeMoonshot,
 	},
 	{
 		ID:                 FamilyGlm53,

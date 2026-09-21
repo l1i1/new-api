@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -94,15 +95,15 @@ func TestDeepSeekV4MessageContractValidationMatchesOfficial(t *testing.T) {
 func TestStrictFitContentTypeSplitsSerdeClass(t *testing.T) {
 	// Official serde failures ride application/json; every other strict-fit
 	// rejection rides application/octet-stream (probed 2026-09-01).
-	assert.Equal(t, "application/json", StrictFitContentType("Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `-1`, expected u8"))
-	assert.Equal(t, "application/json", StrictFitContentType("Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"))
-	assert.Equal(t, "application/json", StrictFitContentType(deepSeekV4ReasoningEffortDeserMessage("extreme")))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType("Invalid temperature value, the valid range of temperature is [0, 2]"))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ReasoningPassbackText))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4JSONSchemaMessage))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4EmptyMessagesMessage))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ImageUnsupportedMessage))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ToolChoiceThinkingMessage))
+	assert.Equal(t, "application/json", StrictFitContentType(officialfit.WireShapeOpenAI, "Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `-1`, expected u8"))
+	assert.Equal(t, "application/json", StrictFitContentType(officialfit.WireShapeOpenAI, "Failed to deserialize the JSON body into the target type: messages[0].role: unknown variant `developer`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"))
+	assert.Equal(t, "application/json", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4ReasoningEffortDeserMessage("extreme")))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, "Invalid temperature value, the valid range of temperature is [0, 2]"))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4ReasoningPassbackText))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4JSONSchemaMessage))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4EmptyMessagesMessage))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4ImageUnsupportedMessage))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4ToolChoiceThinkingMessage))
 }
 
 func TestDeepSeekV4ThinkingValidationMatchesOfficial(t *testing.T) {
@@ -169,9 +170,9 @@ func TestDeepSeekV4ThinkingValidationMatchesOfficial(t *testing.T) {
 
 func TestStrictFitPlainRenderClass(t *testing.T) {
 	assert.True(t, StrictFitRendersPlainText(deepSeekV4ThinkingParseExpectedValueText))
-	assert.Equal(t, "application/octet-stream", StrictFitContentType(deepSeekV4ThinkingParseExpectedValueText))
+	assert.Equal(t, "application/octet-stream", StrictFitContentType(officialfit.WireShapeOpenAI, deepSeekV4ThinkingParseExpectedValueText))
 	assert.False(t, StrictFitRendersPlainText("Failed to deserialize the JSON body into the target type: thinking: missing field `type`"))
-	assert.Equal(t, "application/json", StrictFitContentType("Failed to deserialize the JSON body into the target type: thinking: missing field `type`"))
+	assert.Equal(t, "application/json", StrictFitContentType(officialfit.WireShapeOpenAI, "Failed to deserialize the JSON body into the target type: thinking: missing field `type`"))
 }
 
 func TestIsStrictFitValidationMessageCoversRound6ThinkingTexts(t *testing.T) {

@@ -411,6 +411,25 @@ func abortGlmMessage(c *gin.Context, status int, code, message string) {
 	c.Abort()
 }
 
+// abortKimiK3NotFound renders the official Moonshot unknown-model rejection:
+// 404 with application/json and exactly {error:{message,type}}, where type is
+// resource_not_found_error (live-probed 2026-09-21). The shared OpenAIError
+// struct always renders param/code, so the two fields are mapped explicitly.
+// The platform's own unknown-model path answers 400 model_not_configured,
+// which is a documented divergence for this family.
+func abortKimiK3NotFound(c *gin.Context, message string) {
+	payload, marshalErr := common.Marshal(gin.H{"error": gin.H{
+		"message": message,
+		"type":    "resource_not_found_error",
+	}})
+	if marshalErr != nil {
+		abortWithOpenAiMessage(c, relayhelper.K3ModelNotFoundStatus, message)
+		return
+	}
+	c.Data(relayhelper.K3ModelNotFoundStatus, "application/json", payload)
+	c.Abort()
+}
+
 func tokenModelLimitAllowsExact(tokenModelLimit map[string]bool, modelName string) bool {
 	return tokenModelLimit[modelName] || tokenModelLimit[ratio_setting.FormatMatchingModelName(modelName)]
 }
@@ -584,6 +603,7 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		return
 	}
 	isDeepSeekV4 := fitFamily == officialfit.FamilyDeepSeekV4
+	isKimiK3 := fitFamily == officialfit.FamilyKimiK3
 	isGlm53 := fitFamily == officialfit.FamilyGlm53
 	var profile dto.OfficialFitProfile
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
@@ -610,12 +630,16 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's
 	// model_not_configured wording differs from the official "supported API
-	// model names" 400. The Moonshot official model set is not enumerable
-	// from the gateway, so kimi-k3 keeps the platform wording. The glm-5.3
-	// family is enumerable (glm-5.3 / glm-5.3-flash) and uses the Zhipu
-	// 1214 wire shape.
+	// model names" 400. kimi-k3 has exactly one official id, so the same
+	// rejection applies with Moonshot's own 404 resource_not_found_error. The
+	// glm-5.3 family is enumerable (glm-5.3 / glm-5.3-flash) and uses the
+	// Zhipu 1214 wire shape.
 	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(pinRequest.Model) {
 		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(pinRequest.Model))
+		return
+	}
+	if isKimiK3 && profile.Validate && !relayhelper.IsKimiK3OfficialModelName(pinRequest.Model) {
+		abortKimiK3NotFound(c, relayhelper.K3ModelNotFoundText(pinRequest.Model))
 		return
 	}
 	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {

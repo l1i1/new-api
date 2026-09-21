@@ -90,7 +90,8 @@ func TestWireShapeIsPerFamily(t *testing.T) {
 		want  WireShape
 	}{
 		{"deepseek-v4.1-flash", WireShapeOpenAI},
-		{"kimi-k3", WireShapeOpenAI},
+		// Moonshot renders {error:{message,type}} with no param/code.
+		{"kimi-k3", WireShapeMoonshot},
 		// GLM renders {error:{code,message}} with no type/param.
 		{"glm-5.3", WireShapeZhipu},
 		{"glm-5.3-flash", WireShapeZhipu},
