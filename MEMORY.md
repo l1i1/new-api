@@ -1162,3 +1162,22 @@
 - **首个国际站渠道标记已写入**：**ch130 `CN_Kimi`**（type 25 = Moonshot 官方直连，priority 1）`supports_video: true`——与国内站 ch8 同型的「计费可信」路径。**注意 ch130 曾瞬时探测失败（`do request failed`）、3 次重试后 3/3 正常**，属抖动不是故障；写标记脚本 `tools/cdp-bench/data/write-video-mark.mjs` 已泛化为 `write-video-mark.mjs <mainland|intl> <id> [apply]`。
 - **端到端实证（修复后）**：22 KB 样片经 `tokeness.ai` → HTTP 200、消费日志落 **`ch130 CN_Kimi`**、`prompt_tokens=3468`（= 官方标定 3,374 + 文本 94，与国内站 ch8 逐位一致），正文正确描述视频。**即：亲和绑定不再拦截视频请求，能力维度在亲和开启的站点也可用**。
 - **仍未做（需用户拍板，两站同）**：`zzzzz` 系 + ch34 + 国内站新三条（ch38/39/40）能读视频但 usage 恒报 27，需 `supports_video` + `video_usage_mode: estimate`，但会因优先级高于官方直连而改变视频流量去向；`VIDEO_ESTIMATE_API_KEY` 未配。**国际站另有待观察项**：`CN_Kimi` 文本流量实际很少（48h 内 kimi-k3 主要走 zz/Ollama/CommandGOAT 等转售池），标记后视频请求会强制落到官方直连，成本与配额影响需留意。
+
+## 2026-09-22 rc.39 基座首发布（`mainland.1` / `intl.1`）+ 估算端点改为控制台可配
+
+- **任务**：用户先问「`VIDEO_ESTIMATE_API_KEY` 是环境变量吗？不能配在后台吗？」（答：是 env-only；框架本身支持后台配置），随后一句「改」＝把估算端点从 env-only 改为**控制台可配**。本次一并把 rc39 基座推上两站（首个 rc39 部署）。
+- **实现（`a80f487c3`，17 文件 +606/−27）**：
+  - 新模块 `setting/operation_setting/video_estimate_setting.go`，按框架 `config.GlobalConfig.Register("video_estimate_setting", &struct{BaseURL, APIKey})` 注册，落库键 `video_estimate_setting.base_url` / `.api_key`。
+  - `LoadVideoEstimateConfig()` 取值 **库 > env > 默认**，且**逐字段回退**（只存 base_url、key 留 env 也能用；清空一项只把该字段交还 env）。响应面 `TrimmedVideoEstimate...()` 统一做 trim（存值原样保留，读时裁剪）。
+  - **缓存键纳入端点 URL**（`estimateCacheKey(endpoint, body)`）：端点现在是运行时配置，键里不含它的话，换/修 tokenizer 后**已见过的载荷会继续拿上一个 tokenizer 的数计费**直到进程重启。
+  - `/api/status` 新增 `video_estimate_configured`（**只报配没配，不报值**），控制台据此显示状态行。
+  - 前端 `web/src/features/system-settings/integrations/video-estimate-settings-section.tsx`（仿 worker-settings 节）：zod 校验 `https?://`、`type=password` 占位「Enter new key to update」、`clearApiKey` 开关；注册进 operations `section-registry`（id `video-estimate`）+ operations defaults/types + `auth/types.ts`；11 个 i18n 键 × 7 locale（先插全 7 份再跑 `web/scripts/sync-i18n.mjs`，该脚本只做 locale 间对齐、不扫源码）。文案里明写「把用户视频发给第二个供应商是跨供应商数据流」。
+- **没有新增 secret 通路**：复用框架既有的 `GetOptions` 脱敏（跳过 `*Key`/`*Token`/`*Secret`/`secret`/`api_key` 结尾的键）——已存密钥**永不回浏览器**，前端留空即「不修改」。**线上实证**：`GET /api/option/` 返回 `video_estimate_setting.base_url`，**不返回** `api_key`。
+- **rc39 重定基（重要）**：提交先落在旧基线上，push 被非快进拒（另一会话的 rc39 同步已推 `b24c2294a`，领先 61 提交且已含我上一个提交 `63ebdca9c`）→ **rebase 零冲突**（rc39 对 `service/video_estimate.go` 只做了 `json.Marshal`→`common.Marshal` 机械替换，两边都在）。但**文本干净 ≠ 语义正确**：rc39 侧新增的 `TestSettlementLookupUsesTheOriginalModelId` 仍用旧的 2 参 `estimateRequestBody`（`go build` 过、`go vet` 才报）→ 补端点参数，并**为测试钉住端点**（结算侧现在自己解析配置，且**只有配了端点才读缓存**，未配置直接回落本地定价）。该测试修正随 `--amend` 并入 `a80f487c3`。
+- **验证（基线换成 rc39 后重跑全部，不沿用旧结论）**：`go build ./...` / `go vet ./...` exit 0；**`go test -count=1 ./...` 53 包全绿**（含 `controller/video_estimate_option_test.go` 的真实 SQLite 落库往返、`service` 的估算矩阵、`middleware` 亲和回归）；web `tsgo -b` exit 0；oxlint 对我改的 5 个文件 **0 error**（全仓 143 error 全在 211 个未触碰文件里，属既有）；`npm test` **274 pass / 4 fail**，4 条（vendor-management ×1、pricing-columns ×3）**已用「回退 web/src 到 HEAD 后同名同断言复现」证明为既有失败**。
+- **发布（两站，rc39 基座 N 从 1 重计）**：
+  - 国内 `v1.0.0-rc.39-tokeness-mainland.1`：tag_push → CNB `cnb-oq8-1k32pdd15`（sha 核对 `a80f487c3` 无误）→ 链式 `api_trigger` 部署**全绿**；镜像 digest `sha256:ffb4e7a4c0e4a1b9851b56719f7f389a75a6353e497c5f0a059bb83178c505c1`（回滚目标 `mainland.6` = `sha256:2659dec56dae494abeb522f6c54890150b607f617fdc67474f9599a8dc9e65bb`）。
+  - 国际 `v1.0.0-rc.39-tokeness-intl.1`：`tokeness-publish` → digest `sha256:02399838d90e252db33b71041ea598dd2e5cb66e6a9f226d0e11a9c8e9fc525a` → `tokeness-deploy` 四节点蓝绿**全绿**（回滚目标 `intl.8` = `sha256:ab6e767ba717ccdc6bda48bd168e2f0b1fca216585c989f620f9e5f2587c652f`）。
+- **gh 账号坑（新）**：派发/审批 GHA 必须用 **`l1i1`**（`gh auth switch --user l1i1`；活跃账号 `VirtualHotBar` 对该仓库无 admin → dispatch 403），且**必须带 `-R l1i1/new-api`**，否则 gh 解析到 upstream `QuantumNous/new-api` 报 workflow not found。审批用 `printf '{"environment_ids":[<id>],...}' | gh api --input -`（`-f` 会把数组元素当字符串，422）。
+- **发布后线上验证（两站同过）**：`/api/status` 报新版本 + `video_estimate_configured:false`；`/v1/models` 与 `/api/option/` 匿名均 401；**控制台往返实测**（国内站 admin API：写 `video_estimate_setting.base_url` → 读回一致 → 清空还原，期间 `video_estimate_configured` 保持 false —— 证明「只有 base URL 没有 key」确实不启用，逐字段回退生效）；前端 bundle 确认含 `video-estimate` 节与新键（两站 index.js 各 1 处）；中继冒烟 **kimi-k3 文本两站 200**（国内 92/16、国际 17/18）；**视频冒烟两站 200 且 `prompt=33957` 逐位一致**（= 官方标定 33,858 + 文本 99）→ rc39 同步未破坏能力选路与真实 usage。
+- **仍未变**：估算端点**仍未配置**（无 key，`configured:false`）→ 即使渠道标了 `video_usage_mode: estimate`，目前也只用本地容器定价；`zzzzz` 系 + ch34 + 国内新三条（ch38/39/40）的标记仍需用户拍板（优先级会改变视频流量去向）。
