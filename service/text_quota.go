@@ -404,7 +404,6 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
-	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
 	// A channel marked with video usage estimation reports a prompt count that
 	// ignores the video payload entirely. Two corrections are possible, in
@@ -415,18 +414,18 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	//      upstream still counts text correctly).
 	// Both are only applied when the reported count cannot have included the
 	// media; a source that did count it keeps its own number. Marking the
-	// result Estimated routes it to the estimated billing path in the logs.
+	// result Estimated routes it to the estimated billing path in the logs, so
+	// a corrected count is never mistaken for the upstream's report.
 	//
 	// The correction is applied to a copy: billingUsage can be the caller's own
-	// usage object, and originUsage (recorded in the log) must keep the
-	// upstream-reported number for auditability.
+	// usage object, and that object must keep the upstream-reported numbers.
 	if corrected, ok := correctedVideoBillingUsage(relayInfo, billingUsage); ok {
 		billingUsage = corrected
 	}
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}
-	if originUsage != nil {
+	if usage != nil {
 		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
 	}
 
@@ -527,7 +526,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
-	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
+	// The billed usage, not the caller's: a video correction replaces the
+	// upstream count, and the path has to name where the money came from.
+	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), billingUsage)
 	if adminRejectReason != "" {
 		other.SetAdmin("reject_reason", adminRejectReason)
 	}

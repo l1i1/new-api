@@ -7410,6 +7410,17 @@
     "Plugin source exceeds the 8 MiB limit.": "插件源码超过 8 MiB 上限。",
     "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "按预计输入费用乘以此倍率预扣，不预估输出 token。默认为 1，支持 0.5、1.5 等正小数。最终按实际用量结算，按次和任务计费不受影响。",
     "Single .js file, up to 8 MiB. Its source is shown below before upload.": "单个 .js 文件，最大 8 MiB。上传前会在下方显示其源码。",
-    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "此版本已保存但尚未激活。激活后将替换当前版本，也可以稍后在插件详情的“版本”页中激活。"
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "此版本已保存但尚未激活。激活后将替换当前版本，也可以稍后在插件详情的“版本”页中激活。",
+    "Video token estimation": "视频 token 估算",
+    "Tokenizer base URL": "Token 估算服务地址",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "估算接口的根地址。留空则使用环境变量；环境变量也未设置时使用 Moonshot 官方端点。",
+    "Tokenizer API key": "Token 估算服务密钥",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "把用户视频发送到该端点属于跨供应商数据外发；确认业务需要时再配置密钥。留空以保留现有密钥。",
+    "Remove the stored key": "清除已保存的密钥",
+    "Takes effect on save, unless an environment variable still provides a key.": "保存后生效；若环境变量仍提供密钥，则以环境变量为准。",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "已配置。标记为需估算的渠道在处理视频请求时，将使用服务商 tokenizer 计价。",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未配置。标记为需估算的渠道在处理视频请求时，将使用本地容器模型计价（离线，误差约 5% 以内）。",
+    "Save video estimation settings": "保存视频估算设置"
   }
 }

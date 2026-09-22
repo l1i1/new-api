@@ -7410,6 +7410,17 @@
     "Plugin source exceeds the 8 MiB limit.": "Le code du plugin dépasse la limite de 8 Mio.",
     "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Réserve le coût estimé des entrées multiplié par cette valeur, sans estimer les tokens de sortie. Valeur par défaut : 1. Les décimales positives, comme 0,5 et 1,5, sont acceptées. La facturation finale utilise la consommation réelle. Les tarifs par requête et par tâche restent inchangés.",
     "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Un seul fichier .js, jusqu’à 8 Mio. Sa source est affichée ci-dessous avant l’envoi.",
-    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Cette version est enregistrée mais inactive. Activez-la pour remplacer la version actuelle, ou activez-la plus tard dans l’onglet Versions."
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Cette version est enregistrée mais inactive. Activez-la pour remplacer la version actuelle, ou activez-la plus tard dans l’onglet Versions.",
+    "Video token estimation": "Estimation des tokens vidéo",
+    "Tokenizer base URL": "URL de base du tokenizer",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "Racine du point de terminaison d'estimation. Laissez vide pour utiliser la variable d'environnement, ou le point de terminaison Moonshot documenté si elle n'est pas définie.",
+    "Tokenizer API key": "Clé API du tokenizer",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "Envoyer la vidéo d'un utilisateur à ce point de terminaison est un flux de données entre fournisseurs ; ne configurez une clé que si c'est voulu. Laissez vide pour conserver la clé existante.",
+    "Remove the stored key": "Supprimer la clé enregistrée",
+    "Takes effect on save, unless an environment variable still provides a key.": "Prend effet à l'enregistrement, sauf si une variable d'environnement fournit encore une clé.",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Configuré. Les requêtes vidéo sur les canaux marqués pour l'estimation sont facturées avec le tokenizer du fournisseur.",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Non configuré. Les requêtes vidéo sur les canaux marqués pour l'estimation sont facturées à partir du modèle de conteneur local, hors ligne et précis à environ 5 % près.",
+    "Save video estimation settings": "Enregistrer les paramètres d'estimation vidéo"
   }
 }

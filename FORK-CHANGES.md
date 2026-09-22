@@ -20,7 +20,7 @@
 
 ## 2. 清单的机械来源（每次同步后重跑）
 
-生成时间 2026-09-22（rc.40 同步时复核）；`fork = origin/tokeness/main @ b24c2294a`（rc.39 已落地主线）、`upstream/main @ 9310231b3`、本次同步锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 69a500298`；该范围内自有非 merge 提交 **473 个**。
+生成时间 2026-09-22（rc.40 并主线前复核）；`fork = origin/tokeness/main @ eac71cfd8`、`upstream/main @ 9310231b3`、rc.40 锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 69a500298`；该范围内自有非 merge 提交 **481 个**。
 
 ```bash
 BASE=$(git merge-base upstream/main origin/tokeness/main)
@@ -61,8 +61,11 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | `supports_video` 能力维度：带视频的请求只路由到声明了能力的渠道；无声明就诚实失败，文本流量不受影响 | `middleware/distributor.go`、`model/channel_constraint.go`、`model/channel_cache.go`、`service/channel_select.go`、`constant/context_key.go` | `model/channel_video_selection_test.go`、`middleware/video_request_flag_test.go` |
 | body 层检测器（`RequestBytesCarryVideo`，按 part 形状匹配）与 DTO 层检测器必须一致 | `service/video_token.go`、`relaykit/dto/openai_request.go` | `service/video_routing_test.go`（含"正文提到 video_url 不得误判"） |
 | 本地容器定价（Kimi vision 系标定模型）含非有限值/溢出/饱和加固 | `service/video_token.go` | `service/video_token_test.go` |
+| 估算端点可由控制台配置：管理员设置优先、env 作为引导与回退 | `setting/operation_setting/video_estimate_setting.go`、`service/video_estimate.go`、`web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | `service/video_estimate_test.go`（含 `TestLoadVideoEstimateConfigPrefersTheAdminSetting`）、`controller/video_estimate_option_test.go` |
 | 估算端点预取 + 结算读缓存：两端必须用同一个模型 id（`OriginModelName`），缓存键覆盖整个计价载荷 | `service/video_estimate.go`、`relay/request_billing.go` | `service/video_estimate_test.go`、`relay/request_billing_test.go` |
+| 估算端点在控制台可配（库 > env > 默认，逐字段回退）；密钥走既有脱敏通道不回显；缓存键含端点 URL，换端点即失效 | `setting/operation_setting/video_estimate_setting.go`、`service/video_estimate.go`、`controller/misc.go`、`web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | `controller/video_estimate_option_test.go`、`service/video_estimate_test.go` |
 | `video_usage_mode` 只在**服务该请求的**渠道声明时才修正上报值 | `service/video_token.go`、`relaykit/dto/channel_settings.go` | `service/video_routing_test.go` |
+| 消费日志的 `prompt_tokens` 与 `usage_billing_path` 必须同时反映**实际计费值**（修正后为 `billing-usage-openai-estimated`）；客户端响应的 usage 保持上游原值 | `service/text_quota.go` | `service/video_log_path_test.go`（真实结算+落库） |
 | 上线顺序约束：渠道标记是惰性的，必须与代码同批发布 | `docs/video-usage-estimation.md` | 该文档的"上线顺序"章节 |
 
 ## 5. 路由与可靠性

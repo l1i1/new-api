@@ -9,6 +9,7 @@ import (
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
 
 // withEstimatePost swaps the seam for the duration of one test.
@@ -71,7 +72,7 @@ func TestEstimateRequestBodySerializesWhatTheEndpointPrices(t *testing.T) {
 		t.Fatalf("key must be trimmed, got %q", cfg.APIKey)
 	}
 
-	body, cacheKey, ok := estimateRequestBody("kimi-k3", videoRequest())
+	body, cacheKey, ok := estimateRequestBody("kimi-k3", videoRequest(), cfg.BaseURL)
 	if !ok {
 		t.Fatal("a chat request with a video part must serialize")
 	}
@@ -92,10 +93,10 @@ func TestEstimateRequestBodySerializesWhatTheEndpointPrices(t *testing.T) {
 	}
 
 	// Requests that carry no video, and non-chat shapes, are not estimate work.
-	if _, _, ok := estimateRequestBody("kimi-k3", &dto.GeneralOpenAIRequest{Model: "kimi-k3"}); ok {
+	if _, _, ok := estimateRequestBody("kimi-k3", &dto.GeneralOpenAIRequest{Model: "kimi-k3"}, cfg.BaseURL); ok {
 		t.Fatal("a request without video must not be serialized for the endpoint")
 	}
-	if _, _, ok := estimateRequestBody("", videoRequest()); ok {
+	if _, _, ok := estimateRequestBody("", videoRequest(), cfg.BaseURL); ok {
 		t.Fatal("an unknown model must not be priced")
 	}
 }
@@ -315,7 +316,7 @@ func TestEstimateCacheKeyCoversTextAndModel(t *testing.T) {
 		}
 	}
 	keyOf := func(model string, request *dto.GeneralOpenAIRequest) string {
-		_, key, ok := estimateRequestBody(model, request)
+		_, key, ok := estimateRequestBody(model, request, DefaultVideoEstimateBaseURL)
 		if !ok {
 			t.Fatalf("request must be serializable")
 		}
@@ -343,6 +344,65 @@ func TestEstimateCacheKeyCoversTextAndModel(t *testing.T) {
 	if keyOf("kimi-k3", withText("hi")) != keyOf("kimi-k3", withText("hi")) {
 		t.Fatal("separate but identical requests must share a key")
 	}
+
+	// The endpoint is live configurable, so its identity is part of the key:
+	// otherwise a replaced tokenizer would keep serving the old one's counts for
+	// every payload already seen.
+	_, otherEndpointKey, ok := estimateRequestBody("kimi-k3", withText("hi"), "https://other.test/v1")
+	if !ok {
+		t.Fatal("request must be serializable")
+	}
+	if otherEndpointKey == shortKey {
+		t.Fatal("a different endpoint must not share a cache key")
+	}
+}
+
+// TestLoadVideoEstimateConfigPrefersTheAdminSetting pins the precedence the
+// console relies on: the stored setting wins, the environment is the bootstrap
+// and the fallback, and clearing the setting hands control back to the
+// environment rather than leaving the endpoint unconfigured.
+func TestLoadVideoEstimateConfigPrefersTheAdminSetting(t *testing.T) {
+	setting := operation_setting.GetVideoEstimateSetting()
+	originalBase, originalKey := setting.BaseURL, setting.APIKey
+	t.Cleanup(func() {
+		setting.BaseURL, setting.APIKey = originalBase, originalKey
+	})
+
+	t.Setenv(VideoEstimateAPIKeyEnv, "env-key")
+	t.Setenv(VideoEstimateBaseURLEnv, "https://env.test/v1")
+
+	setting.BaseURL, setting.APIKey = "", ""
+	cfg, ok := LoadVideoEstimateConfig()
+	if !ok || cfg.APIKey != "env-key" || cfg.BaseURL != "https://env.test/v1" {
+		t.Fatalf("with no stored setting the environment must be used, got %+v ok=%v", cfg, ok)
+	}
+
+	// A stored key alone must not lose the environment's base URL.
+	setting.APIKey = "  stored-key  "
+	cfg, ok = LoadVideoEstimateConfig()
+	if !ok || cfg.APIKey != "stored-key" || cfg.BaseURL != "https://env.test/v1" {
+		t.Fatalf("a stored key must be trimmed and keep the environment base URL, got %+v ok=%v", cfg, ok)
+	}
+
+	setting.BaseURL = "https://stored.test/v1/"
+	cfg, ok = LoadVideoEstimateConfig()
+	if !ok || cfg.APIKey != "stored-key" || cfg.BaseURL != "https://stored.test/v1" {
+		t.Fatalf("the stored setting must win and be trimmed, got %+v ok=%v", cfg, ok)
+	}
+
+	// Each field falls back on its own, so a half-configured console still works:
+	// clearing the stored key hands the credential back to the environment while
+	// the stored base URL stays in effect.
+	setting.APIKey = ""
+	cfg, ok = LoadVideoEstimateConfig()
+	if !ok || cfg.APIKey != "env-key" || cfg.BaseURL != "https://stored.test/v1" {
+		t.Fatalf("clearing the stored key must fall back per field, got %+v ok=%v", cfg, ok)
+	}
+	setting.BaseURL = ""
+	cfg, ok = LoadVideoEstimateConfig()
+	if !ok || cfg.APIKey != "env-key" || cfg.BaseURL != "https://env.test/v1" {
+		t.Fatalf("clearing both stored fields must return to the environment, got %+v ok=%v", cfg, ok)
+	}
 }
 
 // TestSettlementLookupUsesTheOriginalModelId pins the call-site contract of the
@@ -353,9 +413,18 @@ func TestEstimateCacheKeyCoversTextAndModel(t *testing.T) {
 // cached can never be read back and the endpoint precision is silently lost.
 func TestSettlementLookupUsesTheOriginalModelId(t *testing.T) {
 	ResetVideoEstimateCacheForTest()
+	// The settlement side resolves the endpoint itself, so the fixture has to
+	// pin one: the lookup reads the cache only while an endpoint is configured,
+	// and it keys on the resolved endpoint's URL.
+	t.Setenv(VideoEstimateAPIKeyEnv, "test-key")
+	t.Setenv(VideoEstimateBaseURLEnv, "https://estimate.test/v1")
 
 	request := videoRequest()
-	_, cacheKey, ok := estimateRequestBody("kimi-k3", request)
+	cfg, configured := LoadVideoEstimateConfig()
+	if !configured {
+		t.Fatal("the fixture must configure an endpoint")
+	}
+	_, cacheKey, ok := estimateRequestBody("kimi-k3", request, cfg.BaseURL)
 	if !ok {
 		t.Fatal("the fixture must be estimable")
 	}

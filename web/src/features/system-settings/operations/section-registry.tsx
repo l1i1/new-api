@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
+import { VideoEstimateSettingsSection } from '../integrations/video-estimate-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
 import { ErrorMessageFilterSection } from '../maintenance/error-message-filter-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
@@ -89,6 +90,21 @@ const OPERATIONS_SECTIONS = [
           WorkerValidKey: settings.WorkerValidKey,
           WorkerAllowHttpImageRequestEnabled:
             settings.WorkerAllowHttpImageRequestEnabled,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'video-estimate',
+    titleKey: 'Video token estimation',
+    build: (settings: OperationsSettings) => (
+      <VideoEstimateSettingsSection
+        defaultValues={{
+          'video_estimate_setting.base_url':
+            settings['video_estimate_setting.base_url'] ?? '',
+          'video_estimate_setting.api_key':
+            settings['video_estimate_setting.api_key'] ?? '',
+          clearApiKey: false,
         }}
       />
     ),

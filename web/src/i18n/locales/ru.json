@@ -7410,6 +7410,17 @@
     "Plugin source exceeds the 8 MiB limit.": "Код плагина превышает лимит 8 МиБ.",
     "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Резервируется оценочная стоимость ввода, умноженная на это значение, без оценки выходных токенов. По умолчанию 1; допустимы положительные дроби, например 0,5 и 1,5. Итоговая плата зависит от фактического использования. Тарифы за запрос и за задачу не меняются.",
     "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Один файл .js размером до 8 МиБ. Его исходный код показан ниже перед загрузкой.",
-    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Эта версия сохранена, но не активна. Активируйте её, чтобы заменить текущую версию, или сделайте это позже на вкладке «Версии»."
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Эта версия сохранена, но не активна. Активируйте её, чтобы заменить текущую версию, или сделайте это позже на вкладке «Версии».",
+    "Video token estimation": "Оценка токенов видео",
+    "Tokenizer base URL": "Базовый URL токенизатора",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "Корень эндпоинта оценки. Оставьте пустым, чтобы использовать переменную окружения, или документированный эндпоинт Moonshot, если она не задана.",
+    "Tokenizer API key": "API-ключ токенизатора",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "Отправка видео пользователя на этот эндпоинт — это передача данных между поставщиками; настраивайте ключ только если это действительно нужно. Оставьте пустым, чтобы сохранить текущий ключ.",
+    "Remove the stored key": "Удалить сохранённый ключ",
+    "Takes effect on save, unless an environment variable still provides a key.": "Вступает в силу при сохранении, если переменная окружения не задаёт ключ.",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются токенизатором поставщика.",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Не настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются по локальной контейнерной модели (офлайн, точность в пределах около 5 %).",
+    "Save video estimation settings": "Сохранить настройки оценки видео"
   }
 }

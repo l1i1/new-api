@@ -100,6 +100,10 @@ func GetStatus(c *gin.Context) {
 	defer common.OptionMapRWMutex.RUnlock()
 
 	legalSetting := system_setting.GetLegalSettings()
+	// Reports only whether the video estimate endpoint has a credential (never
+	// the value), so an operator can tell whether the console or the
+	// environment is providing it.
+	_, videoEstimateConfigured := service.LoadVideoEstimateConfig()
 
 	data := gin.H{
 		"version":                     common.Version,
@@ -115,6 +119,7 @@ func GetStatus(c *gin.Context) {
 		"linuxdo_minimum_trust_level": common.LinuxDOMinimumTrustLevel,
 		"telegram_oauth":              common.TelegramOAuthEnabled,
 		"telegram_oauth_configured":   oauth.TelegramConfigurationError() == nil,
+		"video_estimate_configured":   videoEstimateConfigured,
 		"telegram_bot_name":           common.TelegramBotName,
 		"theme":                       "default",
 		"system_name":                 common.SystemName,

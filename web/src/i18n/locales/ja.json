@@ -7410,6 +7410,17 @@
     "Plugin source exceeds the 8 MiB limit.": "プラグインのソースが 8 MiB の上限を超えています。",
     "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "推定入力料金にこの倍率を掛けた額を確保し、出力トークンは推定しません。既定値は 1 で、0.5 や 1.5 などの正の小数を指定できます。最終料金は実際の使用量で精算します。リクエスト単位とタスクの料金には影響しません。",
     "Single .js file, up to 8 MiB. Its source is shown below before upload.": "単一の .js ファイル、最大 8 MiB。アップロード前に下部でソースを確認できます。",
-    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "このバージョンは保存済みですが、まだ有効ではありません。有効化すると現在のバージョンを置き換えます。後で「バージョン」タブから有効化することもできます。"
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "このバージョンは保存済みですが、まだ有効ではありません。有効化すると現在のバージョンを置き換えます。後で「バージョン」タブから有効化することもできます。",
+    "Video token estimation": "動画トークンの推定",
+    "Tokenizer base URL": "トークナイザーのベース URL",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "推定エンドポイントのルート。空欄の場合は環境変数を使用し、それも未設定なら Moonshot の公式エンドポイントを使用します。",
+    "Tokenizer API key": "トークナイザー API キー",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "ユーザーの動画をこのエンドポイントへ送信することはサプライヤー間のデータ転送です。意図がある場合のみキーを設定してください。空欄の場合は既存のキーを保持します。",
+    "Remove the stored key": "保存されたキーを削除",
+    "Takes effect on save, unless an environment variable still provides a key.": "保存時に反映されます。環境変数にキーがある場合はそちらが優先されます。",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "設定済み。推定対象としてマークされたチャネルの動画リクエストは、プロバイダーのトークナイザーで課金されます。",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未設定。推定対象としてマークされたチャネルの動画リクエストは、ローカルのコンテナモデルで課金されます（オフライン、誤差約 5% 以内）。",
+    "Save video estimation settings": "動画推定設定を保存"
   }
 }

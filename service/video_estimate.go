@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/bytedance/gopkg/util/gopool"
 )
 
@@ -34,9 +35,11 @@ import (
 // estimate, so billing never silently falls back to the untrustworthy number.
 
 const (
-	// VideoEstimateBaseURLEnv / VideoEstimateAPIKeyEnv configure the endpoint.
-	// The key is read from the environment so it never lands in the database or
-	// in a tracked file.
+	// VideoEstimateBaseURLEnv / VideoEstimateAPIKeyEnv are the deployment-level
+	// configuration. The administrator setting (video_estimate_setting.*) takes
+	// precedence when it is set, so an operator can rotate the key from the
+	// console without a release; these remain as the bootstrap and as the way to
+	// configure a fleet that never opens that page.
 	VideoEstimateBaseURLEnv = "VIDEO_ESTIMATE_BASE_URL"
 	VideoEstimateAPIKeyEnv  = "VIDEO_ESTIMATE_API_KEY"
 	// DefaultVideoEstimateBaseURL is Moonshot's documented estimate endpoint,
@@ -52,15 +55,21 @@ type VideoEstimateConfig struct {
 	APIKey  string
 }
 
-// LoadVideoEstimateConfig reads the endpoint from the environment. ok is false
-// when no key is configured, which is the default state and means "use the
-// local model".
+// LoadVideoEstimateConfig resolves the endpoint, preferring the administrator
+// setting over the environment. ok is false when no key is configured in either
+// place, which is the default state and means "use the local model".
 func LoadVideoEstimateConfig() (VideoEstimateConfig, bool) {
-	key := strings.TrimSpace(os.Getenv(VideoEstimateAPIKeyEnv))
+	key := operation_setting.TrimmedVideoEstimateAPIKey()
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv(VideoEstimateAPIKeyEnv))
+	}
 	if key == "" {
 		return VideoEstimateConfig{}, false
 	}
-	base := strings.TrimSpace(os.Getenv(VideoEstimateBaseURLEnv))
+	base := operation_setting.TrimmedVideoEstimateBaseURL()
+	if base == "" {
+		base = strings.TrimSpace(os.Getenv(VideoEstimateBaseURLEnv))
+	}
 	if base == "" {
 		base = DefaultVideoEstimateBaseURL
 	}
@@ -79,7 +88,7 @@ func PrefetchVideoPromptTotal(model string, request dto.Request) {
 	if !configured {
 		return
 	}
-	body, cacheKey, ok := estimateRequestBody(model, request)
+	body, cacheKey, ok := estimateRequestBody(model, request, cfg.BaseURL)
 	if !ok {
 		return
 	}
@@ -101,7 +110,14 @@ func PrefetchVideoPromptTotal(model string, request dto.Request) {
 // same upstream model id the prefetch used, because the key covers the whole
 // priced payload; a different id misses and falls back to the local price.
 func VideoPromptTotalForRequest(model string, request dto.Request) (int, bool) {
-	_, cacheKey, ok := estimateRequestBody(model, request)
+	cfg, configured := LoadVideoEstimateConfig()
+	if !configured {
+		// Unconfigured between the prefetch and settlement: fall back to the
+		// locally priced part rather than serving an answer the operator has
+		// just turned off.
+		return 0, false
+	}
+	_, cacheKey, ok := estimateRequestBody(model, request, cfg.BaseURL)
 	if !ok {
 		return 0, false
 	}
@@ -117,7 +133,7 @@ func VideoPromptTotalForRequest(model string, request dto.Request) (int, bool) {
 // what the endpoint prices and the answer replaces the reported prompt count.
 // Keying on the video alone would hand a longer prompt the shorter one's total,
 // silently under-billing every reuse of the same clip.
-func estimateRequestBody(model string, request dto.Request) ([]byte, string, bool) {
+func estimateRequestBody(model string, request dto.Request, endpoint string) ([]byte, string, bool) {
 	messages, _, ok := estimateMessagesFor(request)
 	if !ok {
 		return nil, "", false
@@ -129,16 +145,23 @@ func estimateRequestBody(model string, request dto.Request) ([]byte, string, boo
 	if err != nil {
 		return nil, "", false
 	}
-	return body, estimateCacheKey(body), true
+	return body, estimateCacheKey(endpoint, body), true
 }
 
 // estimateCacheKey derives the cache key from the exact bytes sent to the
 // endpoint, so an equal key means an equal request and therefore an equal
 // answer. estimateMessagesFor's video hash is deliberately not used for this:
 // it identifies the media, not the priced payload.
-func estimateCacheKey(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])[:32]
+//
+// The endpoint is part of the key because the answer is that tokenizer's count
+// of this payload. The endpoint is live configurable, so without this a
+// corrected or replaced tokenizer would keep serving the previous one's numbers
+// for every payload already seen, until the process restarted.
+func estimateCacheKey(endpoint string, body []byte) string {
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, endpoint)
+	_, _ = hash.Write(body)
+	return hex.EncodeToString(hash.Sum(nil))[:32]
 }
 
 // estimateMessagesFor extracts the message array an estimate endpoint expects

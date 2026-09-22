@@ -7410,6 +7410,17 @@
     "Plugin source exceeds the 8 MiB limit.": "Mã nguồn plugin vượt giới hạn 8 MiB.",
     "Reserve the estimated input cost multiplied by this value, without estimating output tokens. Defaults to 1; positive decimals such as 0.5 and 1.5 are supported. Final charges use actual usage. Per-request and task prices are unaffected.": "Giữ trước chi phí đầu vào ước tính nhân với hệ số này, không ước tính token đầu ra. Mặc định là 1; hỗ trợ số thập phân dương như 0,5 và 1,5. Phí cuối cùng dựa trên mức sử dụng thực tế. Giá theo yêu cầu và tác vụ không bị ảnh hưởng.",
     "Single .js file, up to 8 MiB. Its source is shown below before upload.": "Một tệp .js duy nhất, tối đa 8 MiB. Mã nguồn được hiển thị bên dưới trước khi tải lên.",
-    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Phiên bản này đã được lưu nhưng chưa kích hoạt. Kích hoạt để thay thế phiên bản hiện tại, hoặc kích hoạt sau trong thẻ Phiên bản."
+    "This version is saved but not active. Activate it to replace the current version, or activate it later from the Versions tab.": "Phiên bản này đã được lưu nhưng chưa kích hoạt. Kích hoạt để thay thế phiên bản hiện tại, hoặc kích hoạt sau trong thẻ Phiên bản.",
+    "Video token estimation": "Ước tính token video",
+    "Tokenizer base URL": "URL cơ sở của tokenizer",
+    "https://api.moonshot.cn/v1": "https://api.moonshot.cn/v1",
+    "The estimate endpoint root. Leave blank to use the environment variable, or the documented Moonshot endpoint when that is unset.": "Gốc của endpoint ước tính. Để trống để dùng biến môi trường, hoặc endpoint Moonshot được tài liệu hóa nếu biến đó chưa được đặt.",
+    "Tokenizer API key": "Khóa API tokenizer",
+    "Sending a user video to this endpoint is a cross-supplier data flow; configure a key only when that is intended. Leave blank to keep the existing key.": "Gửi video của người dùng tới endpoint này là luồng dữ liệu giữa các nhà cung cấp; chỉ cấu hình khóa khi thực sự có ý định đó. Để trống để giữ khóa hiện có.",
+    "Remove the stored key": "Xóa khóa đã lưu",
+    "Takes effect on save, unless an environment variable still provides a key.": "Có hiệu lực khi lưu, trừ khi biến môi trường vẫn cung cấp khóa.",
+    "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Đã cấu hình. Các yêu cầu video trên kênh được đánh dấu để ước tính sẽ được tính giá bằng tokenizer của nhà cung cấp.",
+    "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Chưa cấu hình. Các yêu cầu video trên kênh được đánh dấu để ước tính sẽ được tính giá bằng mô hình container cục bộ (ngoại tuyến, chính xác trong khoảng 5%).",
+    "Save video estimation settings": "Lưu cài đặt ước tính video"
   }
 }
