@@ -334,3 +334,63 @@ func TestFitKimiK3StreamEventInjectsUsageWhenUpstreamOmits(t *testing.T) {
 		t.Error("non-terminal chunks never carry usage")
 	}
 }
+
+// TestChatCompletionsStreamChoiceRoundTripKeepsUsage pins the transport
+// property the K3 stream fit depends on: the official endpoint puts usage on
+// choices[0], and chunks that pass through sendStreamData's unmarshal /
+// re-marshal branches (reasoning suppression, ForceFormat, thinking-to-content)
+// keep it only if the DTO carries the field. Without it, a thinking-disabled
+// request — the shape that always takes the suppression branch — lost the
+// usage the fit had just injected, and KVV's stream cases read no token counts
+// at all.
+func TestChatCompletionsStreamChoiceRoundTripKeepsUsage(t *testing.T) {
+	const chunk = `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop",` +
+		`"usage":{"prompt_tokens":21,"completion_tokens":11,"total_tokens":32}}]}`
+
+	var decoded dto.ChatCompletionsStreamResponse
+	if err := json.Unmarshal([]byte(chunk), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.Choices) != 1 {
+		t.Fatalf("expected one choice, got %d", len(decoded.Choices))
+	}
+	if len(decoded.Choices[0].Usage) == 0 {
+		t.Fatal("the choice-level usage must survive unmarshalling")
+	}
+	reencoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var roundTripped struct {
+		Choices []struct {
+			Usage map[string]any `json:"usage"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(reencoded, &roundTripped); err != nil {
+		t.Fatalf("unmarshal round trip: %v", err)
+	}
+	if got := roundTripped.Choices[0].Usage["prompt_tokens"]; got != float64(21) {
+		t.Errorf("choice usage lost in the round trip: prompt_tokens=%v, want 21", got)
+	}
+	// A chunk with no choice-level usage must not grow the key.
+	var plain dto.ChatCompletionsStreamResponse
+	if err := json.Unmarshal([]byte(`{"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}`), &plain); err != nil {
+		t.Fatalf("unmarshal plain: %v", err)
+	}
+	plainEncoded, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	// A chunk with no choice-level usage must not grow the key. The top-level
+	// `usage` key is the preceding envelope field and is out of scope here.
+	var plainShape struct {
+		Choices []map[string]json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(plainEncoded, &plainShape); err != nil {
+		t.Fatalf("unmarshal plain shape: %v", err)
+	}
+	if _, present := plainShape.Choices[0]["usage"]; present {
+		t.Errorf("a chunk without choice usage must not gain one: %s", plainEncoded)
+	}
+}

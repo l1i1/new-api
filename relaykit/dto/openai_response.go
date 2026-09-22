@@ -85,6 +85,13 @@ type ChatCompletionsStreamResponseChoice struct {
 	Logprobs     *any                                     `json:"logprobs"`
 	FinishReason *string                                  `json:"finish_reason"`
 	Index        int                                      `json:"index"`
+	// Usage carries Moonshot K3's choice-level usage. The official endpoint
+	// attaches the terminal chunk's usage to choices[0] rather than to the
+	// top-level object, so any chunk that is unmarshalled and re-marshalled —
+	// which is what the reasoning-suppression and format-conversion paths do —
+	// silently drops it unless the field exists here. Kept as raw JSON so the
+	// provider's own key set and key order survive the round trip.
+	Usage json.RawMessage `json:"usage,omitempty"`
 }
 
 type ChatCompletionsStreamResponseChoiceDelta struct {
