@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -56,6 +57,35 @@ func TestRequestBytesCarryVideo(t *testing.T) {
 		{name: "no messages", body: `{"model":"kimi-k3","input":"hi"}`, want: false},
 		{name: "empty body", body: ``, want: false},
 		{name: "invalid json", body: `{"model":`, want: false},
+		{
+			// The Gemini-native shape has no named part type: the media is an
+			// inline part typed by its mime string.
+			name: "gemini inline video (camelCase)",
+			body: `{"contents":[{"role":"user","parts":[{"text":"what is this?"},{"inlineData":{"mimeType":"video/mp4","data":"AAAA"}}]}]}`,
+			want: true,
+		},
+		{
+			name: "gemini inline video (snake_case)",
+			body: `{"contents":[{"role":"user","parts":[{"text":"what is this?"},{"inline_data":{"mime_type":"video/webm","data":"AAAA"}}]}]}`,
+			want: true,
+		},
+		{
+			name: "gemini inline image",
+			body: `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}]}`,
+			want: false,
+		},
+		{
+			// A mime type with no payload describes nothing to read or price.
+			name: "gemini video part without data",
+			body: `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"video/mp4"}}]}]}`,
+			want: false,
+		},
+		{name: "gemini text only", body: `{"contents":[{"role":"user","parts":[{"text":"1+1=?"}]}]}`, want: false},
+		{
+			name: "gemini text that mentions the field",
+			body: `{"contents":[{"role":"user","parts":[{"text":"how do I send an inlineData video/mp4 part?"}]}]}`,
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,20 +102,47 @@ func TestRequestBytesCarryVideo(t *testing.T) {
 // file for pricing, or the request would be routed to a video-capable channel
 // and then billed as text — and the reverse would send media to a blind one.
 func TestVideoDetectorsAgree(t *testing.T) {
-	bodies := []string{
+	// Each case pairs the body with the parsed request pricing would see, so a
+	// second protocol cannot be added to the detector without a body to check it
+	// against. The Gemini shape is here because it was missing from the routing
+	// side: pricing already recognised it, so the two halves disagreed and a
+	// Gemini video request was routed with no capability narrowing at all.
+	chatBodies := []string{
 		`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"video_url","video_url":{"url":"ms://abc"}}]}]}`,
 		`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"video_url"}]}]}`,
 		`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://e.test/a.png"}}]}]}`,
 		`{"model":"kimi-k3","messages":[{"role":"user","content":"plain text"}]}`,
 	}
-	for _, body := range bodies {
+	for _, body := range chatBodies {
 		var request dto.GeneralOpenAIRequest
 		if err := common.Unmarshal([]byte(body), &request); err != nil {
 			t.Fatalf("unmarshal %s: %v", body, err)
 		}
 		fromBody := RequestBytesCarryVideo([]byte(body))
+		sawVideo := false
+		for _, file := range request.GetTokenCountMeta().Files {
+			if file != nil && file.FileType == types.FileTypeVideo {
+				sawVideo = true
+			}
+		}
+		if fromBody != sawVideo {
+			t.Errorf("detectors disagree on %s: routing=%v pricing=%v", body, fromBody, sawVideo)
+		}
+	}
 
-		// What pricing and settlement see: the request's own token-count meta.
+	geminiBodies := []string{
+		`{"contents":[{"role":"user","parts":[{"text":"hi"},{"inlineData":{"mimeType":"video/mp4","data":"AAAA"}}]}]}`,
+		`{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"video/webm","data":"AAAA"}}]}]}`,
+		`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}]}`,
+		`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"video/mp4"}}]}]}`,
+		`{"contents":[{"role":"user","parts":[{"text":"plain text"}]}]}`,
+	}
+	for _, body := range geminiBodies {
+		var request dto.GeminiChatRequest
+		if err := common.Unmarshal([]byte(body), &request); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		fromBody := RequestBytesCarryVideo([]byte(body))
 		sawVideo := false
 		for _, file := range request.GetTokenCountMeta().Files {
 			if file != nil && file.FileType == types.FileTypeVideo {
@@ -179,5 +236,66 @@ func TestCorrectedVideoBillingUsageWithoutChannelMeta(t *testing.T) {
 	}
 	if _, ok := correctedVideoBillingUsage(nil, &dto.Usage{PromptTokens: 27}); ok {
 		t.Fatal("a nil relay info must mean no correction")
+	}
+}
+
+// TestEndpointTotalIsBilledWithoutALocalPrice is the regression for a real
+// under-billing: the local container model reads mp4/mov only, and the
+// endpoint call used to be gated on it having produced a price. A webm clip
+// therefore bypassed the one source that could price it and was billed the
+// upstream's fabricated text-only count (measured in production: 26 tokens for
+// a 4 s clip the endpoint priced at 1027). The endpoint answer must be billed
+// on its own, without a local yardstick.
+func TestEndpointTotalIsBilledWithoutALocalPrice(t *testing.T) {
+	withEstimatePost(t, func(VideoEstimateConfig, []byte) (int, []byte, error) {
+		return 200, []byte(`{"data":{"total_tokens":1027}}`), nil
+	})
+	t.Setenv(VideoEstimateAPIKeyEnv, "test-key")
+
+	request := videoRequest()
+	// The local model could not read this container, so no local price exists
+	// for the video part.
+	info := &relaycommon.RelayInfo{
+		Request: request,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+			SupportsVideo:  true,
+			VideoUsageMode: dto.VideoUsageModeEstimate,
+		}},
+		OriginModelName: "kimi-k3",
+	}
+	info.SetVideoTokens(0)
+
+	// Warm the cache the way the prefetch would, then settle.
+	PrefetchVideoPromptTotal("kimi-k3", request)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, hit := VideoPromptTotalForRequest("kimi-k3", request); hit {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the endpoint answer never reached the cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	corrected, applied := correctedVideoBillingUsage(info, &dto.Usage{PromptTokens: 26, CompletionTokens: 4})
+	if !applied {
+		t.Fatal("an endpoint total must be billed even without a local price")
+	}
+	if corrected.PromptTokens != 1027 {
+		t.Fatalf("prompt tokens: got %d, want the endpoint's 1027", corrected.PromptTokens)
+	}
+	if !corrected.BillingUsage.Estimated {
+		t.Fatal("the correction must stay flagged as estimated")
+	}
+
+	// A media-blind endpoint answer (no better than the report) must not be
+	// accepted on that weakened branch: it would replace one text-only count
+	// with another.
+	if videoPromptTotalSawMedia(26, 0, 26) {
+		t.Fatal("an endpoint total equal to the report must not supersede it")
+	}
+	if videoPromptTotalSawMedia(0, 0, 26) {
+		t.Fatal("a zero endpoint total must never supersede the report")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -273,13 +274,19 @@ func CountVideoTokensForMeta(meta *types.TokenCountMeta) int {
 // mentions "video_url" must not be treated as a video request, or it would be
 // routed away from every channel that cannot read video. A part that names the
 // type without a url carries no media and is not a video request, matching what
-// the parser yields for pricing and settlement.
+// the parser yields for pricing and settlement; the Gemini shape is matched on
+// the same terms, against the mime type the DTO prices it by.
 func RequestBytesCarryVideo(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
+	return openAIBodyCarriesVideo(body) || geminiBodyCarriesVideo(body)
+}
+
+// openAIBodyCarriesVideo matches the chat-completions shape.
+func openAIBodyCarriesVideo(body []byte) bool {
 	result := gjson.GetBytes(body, "messages")
-	if !result.Exists() || !result.IsArray() {
+	if !result.IsArray() {
 		return false
 	}
 	for _, message := range result.Array() {
@@ -292,6 +299,48 @@ func RequestBytesCarryVideo(body []byte) bool {
 				continue
 			}
 			if part.Get("video_url").Exists() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// geminiBodyCarriesVideo matches the Gemini-native shape, where media arrives
+// as an inline part typed by its mime string rather than as a named content
+// part. Without this, a Gemini video request was routed with no capability
+// narrowing at all — measured: it was offered to a channel that silently drops
+// video before landing on one that reads it — and its video part was never
+// priced, so an estimate-mode channel billed the upstream's text-only count.
+//
+// Both spellings the DTO accepts are accepted here, and the part must carry
+// data: a mime type alone describes nothing to price.
+func geminiBodyCarriesVideo(body []byte) bool {
+	contents := gjson.GetBytes(body, "contents")
+	if !contents.IsArray() {
+		return false
+	}
+	for _, content := range contents.Array() {
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			continue
+		}
+		for _, part := range parts.Array() {
+			inline := part.Get("inlineData")
+			if !inline.Exists() {
+				inline = part.Get("inline_data")
+			}
+			if !inline.Exists() {
+				continue
+			}
+			mime := inline.Get("mimeType").String()
+			if mime == "" {
+				mime = inline.Get("mime_type").String()
+			}
+			if !strings.HasPrefix(mime, "video/") {
+				continue
+			}
+			if inline.Get("data").String() != "" {
 				return true
 			}
 		}
@@ -317,6 +366,28 @@ func VideoUsageLooksCounted(promptTokens, videoTokens int) bool {
 	return promptTokens >= threshold
 }
 
+// videoPromptTotalSawMedia decides whether the tokenizer endpoint's total may
+// supersede the upstream report.
+//
+// With a local video price the yardstick is that price, exactly as
+// VideoUsageLooksCounted uses it. Without one — a container the local model
+// cannot read, so nothing was priced locally — the only yardstick left is the
+// report itself: estimate mode exists because the report counted text alone,
+// so an endpoint total above it saw at least something of the media. That
+// branch is deliberately weaker than the priced one; it is reachable only for
+// containers the local model does not parse, and the alternative is to keep
+// billing a full video as if it were text (measured: 26 tokens for a 4 s clip
+// the endpoint priced at 1027).
+func videoPromptTotalSawMedia(total, videoTokens, reportedTokens int) bool {
+	if total <= 0 {
+		return false
+	}
+	if videoTokens > 0 {
+		return VideoUsageLooksCounted(total, videoTokens)
+	}
+	return total > reportedTokens
+}
+
 // correctedVideoBillingUsage returns a copy of usage carrying the video-aware
 // prompt count, or ok=false when no correction applies. The input is never
 // mutated: callers keep the upstream-reported number for logging and audit.
@@ -334,15 +405,16 @@ func correctedVideoBillingUsage(info *relaycommon.RelayInfo, usage *dto.Usage) (
 	if usage != nil {
 		corrected = *usage
 	}
+	reportedTokens := usagePromptTokens(usage)
 	videoTokens := info.GetVideoTokens()
 	switch total, ok := videoPromptTotalForSettlement(info); {
-	case ok && VideoUsageLooksCounted(total, videoTokens):
+	case ok && videoPromptTotalSawMedia(total, videoTokens, reportedTokens):
 		// Authoritative: the tokenizer priced text and media together. The
 		// media-aware guard applies here too, so an endpoint that saw no video
 		// cannot replace the report with a text-only number.
 		corrected.PromptTokens = total
 	default:
-		if videoTokens <= 0 || VideoUsageLooksCounted(usagePromptTokens(usage), videoTokens) {
+		if videoTokens <= 0 || VideoUsageLooksCounted(reportedTokens, videoTokens) {
 			return nil, false
 		}
 		// The upstream's text count is trustworthy; only the media is missing.

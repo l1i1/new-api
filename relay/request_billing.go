@@ -72,13 +72,19 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	// precision is missed once and the local price is billed.
 	if otherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting); ok &&
 		otherSettings.EstimatesVideoUsage() && info.Request != nil {
-		if videoTokens := service.CountVideoTokensForMeta(info.Request.GetTokenCountMeta()); videoTokens > 0 {
-			info.SetVideoTokens(videoTokens)
-			// ModelMappedHelper runs inside the handler, so UpstreamModelName is still
-			// empty here; the original model id is what both ends of the estimate
-			// cache can agree on.
-			service.PrefetchVideoPromptTotal(info.OriginModelName, info.Request)
-		}
+		info.SetVideoTokens(service.CountVideoTokensForMeta(info.Request.GetTokenCountMeta()))
+		// The endpoint is asked whenever the request carries a video part, not
+		// only when the local container model could price it: the local model
+		// reads mp4/mov and nothing else, so gating the call on it also cancelled
+		// the one source that *can* price the rest (measured: a webm clip on a
+		// marked channel billed the upstream's fabricated 26 instead of the
+		// endpoint's 1027). PrefetchVideoPromptTotal reports nothing to do for a
+		// payload without video, so a text request still makes no outbound call.
+		//
+		// ModelMappedHelper runs inside the handler, so UpstreamModelName is still
+		// empty here; the original model id is what both ends of the estimate
+		// cache can agree on.
+		service.PrefetchVideoPromptTotal(info.OriginModelName, info.Request)
 	}
 	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
 	if err != nil {

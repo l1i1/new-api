@@ -43,18 +43,21 @@ import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
-import { removeTrailingSlash } from './utils'
+import { isCompleteHttpUrl, removeTrailingSlash } from './utils'
 
 const BASE_URL_KEY = 'video_estimate_setting.base_url'
 const API_KEY_KEY = 'video_estimate_setting.api_key'
 
 const createVideoEstimateSchema = (t: (key: string) => string) =>
   z.object({
-    [BASE_URL_KEY]: z.string().refine((value) => {
-      const trimmed = value.trim()
-      if (!trimmed) return true
-      return /^https?:\/\//.test(trimmed)
-    }, t('Provide a valid URL starting with http:// or https://')),
+    // A scheme with no host passes a prefix check but builds a request that can
+    // never work, so the check parses the value instead.
+    [BASE_URL_KEY]: z
+      .string()
+      .refine(
+        isCompleteHttpUrl,
+        t('Provide a valid URL starting with http:// or https://')
+      ),
     [API_KEY_KEY]: z.string(),
     clearApiKey: z.boolean(),
   })

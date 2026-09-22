@@ -1059,6 +1059,15 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if modelName != "" {
 			modelRequest.Model = modelName
 		}
+		// This branch takes the model from the URL and never parses the body,
+		// so the video scan has to run here too: a Gemini request carrying a
+		// video part must be narrowed to channels that declared the capability,
+		// exactly like a chat request.
+		if storage, err := common.GetBodyStorage(c); err == nil {
+			if body, err := storage.Bytes(); err == nil && service.RequestBytesCarryVideo(body) {
+				common.SetContextKey(c, constant.ContextKeyVideoRequest, true)
+			}
+		}
 		c.Set("relay_mode", relayMode)
 	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
 		req, err := getModelFromRequest(c)

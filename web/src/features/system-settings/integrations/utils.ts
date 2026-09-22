@@ -19,7 +19,35 @@ For commercial licensing, please contact support@quantumnous.com
 export function removeTrailingSlash(value: string) {
   const trimmed = value.trim()
   if (!trimmed) return ''
-  return trimmed.replace(/\/+$/, '')
+  const stripped = trimmed.replace(/\/+$/, '')
+  // A scheme with no host ("https://") has nothing but slashes to strip, and
+  // "https:/" would then be stored and silently fail every request built from
+  // it. Leave such a value alone — the caller's validation is what rejects it.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:$/.test(stripped)) return trimmed
+  return stripped
+}
+
+/**
+ * Whether a value is a complete absolute http(s) URL. An empty string is not
+ * judged here: callers that treat blank as "unset" check for it themselves.
+ *
+ * A scheme alone ("https://") parses as nothing at all, so it must be rejected
+ * rather than saved: the endpoint composes its request path onto this base, and
+ * a value without a host produces a URL that fails at call time with no visible
+ * cause — the setting would simply look configured and never work.
+ */
+export function isCompleteHttpUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  try {
+    const parsed = new URL(trimmed)
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.hostname !== ''
+    )
+  } catch {
+    return false
+  }
 }
 
 export function formatJsonForEditor(value: string) {
