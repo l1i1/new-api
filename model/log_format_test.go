@@ -164,6 +164,38 @@ func TestFormatUserLogsHidesUpstreamModel(t *testing.T) {
 	require.Contains(t, parsed, "model_price")
 }
 
+// TestFormatUserLogsHidesResponseModelObservation verifies the nested
+// response-model observation is stripped from regular-user log views. Its
+// upstream_model field repeats the channel-mapped id that the top-level
+// upstream_model_name is hidden for, so leaving it in would hand the same fact
+// to the same audience under a different key.
+func TestFormatUserLogsHidesResponseModelObservation(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"model_price": 0.004,
+		"response_model": map[string]interface{}{
+			"requested_model": "deepseek-v4-flash",
+			"upstream_model":  "deepseek/deepseek-v4-flash-0731",
+			"returned_model":  "accounts/fireworks/models/deepseek-v4-flash-0731",
+		},
+	})
+	userLogs := []*Log{{Other: other}}
+	adminLogs := []*Log{{Other: other}}
+
+	formatUserLogs(userLogs, 0)
+
+	userParsed, err := common.StrToMap(userLogs[0].Other)
+	require.NoError(t, err)
+	require.NotContains(t, userParsed, "response_model")
+	// The billing metadata sharing the same object stays visible.
+	require.Contains(t, userParsed, "model_price")
+
+	// Admins keep the observation: the mismatch warning is their diagnostic.
+	FormatAdminLogs(adminLogs)
+	adminParsed, err := common.StrToMap(adminLogs[0].Other)
+	require.NoError(t, err)
+	require.Contains(t, adminParsed, "response_model")
+}
+
 func TestLegacyLogOtherVisibilityIsRoleSeparated(t *testing.T) {
 	other := common.MapToJsonStr(map[string]interface{}{
 		"request_path":  "/v1/chat/completions",

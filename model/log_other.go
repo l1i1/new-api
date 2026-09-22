@@ -239,7 +239,13 @@ func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
 				changed = true
 			}
 		}
-		for _, key := range []string{"upstream_model_name", "is_model_mapped"} {
+		// response_model belongs with the two keys above rather than with the
+		// public billing metadata: its upstream_model field carries the same
+		// channel-mapped upstream id that upstream_model_name is hidden for, and
+		// the top-level key is the only thing that used to stop it. The mismatch
+		// warning it drives is an operator diagnostic; the log owner does not
+		// need the upstream's real id to read their own usage.
+		for _, key := range []string{"upstream_model_name", "is_model_mapped", "response_model"} {
 			if _, exists := values[key]; exists {
 				delete(values, key)
 				changed = true
