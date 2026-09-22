@@ -1152,19 +1152,24 @@ func TestDeepSeekThinkingLogprobsRequireBothOutputStreams(t *testing.T) {
 func boolPtr(value bool) *bool { return &value }
 
 // TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame pins the interlock
-// between the two writers of K3's official usage-only event. Official puts the
-// counts on choices[0] of the terminal chunk and then, when the client asked
-// for stream usage, repeats them in a choices:[] event. Which writer produces
-// that second event depends on what the upstream reported:
+// that keeps K3's official usage-only event coming from exactly one writer.
+// Official puts the counts on choices[0] of the terminal chunk and then, when
+// the client asked for stream usage, repeats them in a choices:[] event. Both
+// upstream shapes end up emitted by the K3 fit, which is the point of the
+// gate in HandleFinalResponse:
 //
-//   - upstream carried usage  -> the fit rebuilds the event from the terminal
-//     chunk, so the two events agree byte for byte;
-//   - upstream carried none   -> the terminal chunk holds only the placeholder
-//     the fit injected, and the generic HandleFinalResponse injection sends the
-//     counts derived from the response text instead.
+//   - upstream carried usage  -> the fit renders those counts into the terminal
+//     chunk and lifts the emitted object from it verbatim, so the two events
+//     cannot disagree;
+//   - upstream carried none   -> the relay derives the counts from the answer,
+//     the fit renders those into the terminal chunk, and the same lift runs;
+//     the client sees real counts, never the placeholder the fit injected.
 //
-// Getting this wrong is visible to the client either way: skip the first branch
-// and it sees a zeroed usage; skip the interlock and it sees two events.
+// The gate is what makes that true: the generic HandleFinalResponse injection
+// is gated on ShouldIncludeUsage (forced on for billing) rather than on the
+// client's ask, and it serializes the platform's own usage struct. Letting it
+// also fire hands the client two top-level events, the second in a shape
+// official never sends.
 func TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
@@ -1275,6 +1280,9 @@ func TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame(t *testing.T) {
 			// GenerateFinalUsageResponse unconditionally sets system_fingerprint
 			// (to "" when it knows none), which would leak an extra key. So this
 			// assertion is what keeps the fit as the writer in both branches.
+			// Measured: the generic frame serializes 7 top-level keys against the
+			// fit's 6, and its usage object can render 16 keys where the official
+			// usage has 6.
 			var keys []string
 			for key := range topKeys {
 				keys = append(keys, key)

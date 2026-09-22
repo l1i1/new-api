@@ -345,13 +345,16 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	case types.RelayFormatOpenAI:
 		// The V4 and K3 fits own their terminal usage rendering: each mirrors
 		// its provider's event layout, including whether a usage-only event
-		// follows the terminal chunk at all. The K3 gate is load-bearing because
+		// follows the terminal chunk at all. Both gates are load-bearing because
 		// this generic frame is gated on ShouldIncludeUsage (which
-		// FORCE_STREAM_OPTION forces on for billing) while the fit is gated on
-		// the client's own ask, and because it serializes the platform's internal
-		// usage struct. With an upstream that reported no usage, leaving both
-		// enabled emitted two top-level events, the second carrying fourteen
-		// extra fields the official shape never has. Pinned by
+		// FORCE_STREAM_OPTION forces on for billing) while each fit is gated on
+		// the client's own ask, and because it serializes the platform's own
+		// usage struct rather than the provider's shape: for K3 that struct
+		// renders up to 16 keys where the official usage has 6, and the frame
+		// always carries a system_fingerprint (empty when none is known) that
+		// the fit never sends. Leaving the K3 gate out while the upstream
+		// reported no usage emitted two top-level events, the second being that
+		// internal shape. Pinned by
 		// TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame.
 		if info.ShouldIncludeUsage && !containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
 			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
