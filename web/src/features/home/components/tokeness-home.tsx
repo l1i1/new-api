@@ -109,6 +109,10 @@ const DOMESTIC_PROVIDERS = PROVIDERS.filter(
 const ICP_BEIAN = import.meta.env.VITE_ICP_BEIAN as string | undefined
 // Public-security (公安联网备案) filing number for the mainland edition.
 const POLICE_BEIAN = import.meta.env.VITE_POLICE_BEIAN as string | undefined
+// Support mailbox. The mainland edition is operated by 合江册知软件有限公司 and
+// its user agreement names this address, so reviewers must not be sent to the
+// overseas brand's mailbox.
+const CONTACT_EMAIL = isMainland ? 'contact@czpro.cn' : 'contact@tokeness.ai'
 
 const HOME_KEYS = {
   dashboard: 'home.legacy.actions.dashboard',
@@ -375,7 +379,7 @@ export function TokenessHome() {
                 {t(HOME_KEYS.footerModels)}
               </Link>
               <a
-                href='mailto:contact@tokeness.ai'
+                href={`mailto:${CONTACT_EMAIL}`}
                 className='tokeness-home__footer-link'
               >
                 {t(HOME_KEYS.footerContact)}
