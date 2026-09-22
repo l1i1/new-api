@@ -653,6 +653,9 @@ type v4OfficialPinRequest struct {
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	THINKING        json.RawMessage `json:"thinking,omitempty"`
 	Messages        []dto.Message   `json:"messages,omitempty"`
+	// ToolChoice stays raw because the field is either a strategy string or a
+	// named-function object, and the pin predicate must see both forms.
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -691,20 +694,26 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
 	}
 	// The official-fit Route dimension is the only pin source. The pin is
-	// selective: only requests with features the aggregator pool cannot
-	// reproduce land on the official channel (DeepSeek V4: dual-path
-	// logprobs, image parts on text-only models, thinking output — the
-	// official default). Everything else keeps normal aggregator routing,
-	// which keeps prompt-cache affinity and official-channel spend down.
-	// Disabled thinking genuinely produces no reasoning upstream, so it is
-	// the one non-pinned thinking shape. The pin narrows per family via the
-	// registry's channel type (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
+	// selective per family: only requests carrying a feature the aggregator
+	// pool cannot reproduce land on the official channel. For DeepSeek V4 that
+	// is dual-path logprobs, image parts on text-only models, and thinking
+	// output (the official default); for kimi-k3 it is a forced tool call.
+	// Everything else keeps normal aggregator routing, which keeps prompt-cache
+	// affinity and official-channel spend down. glm-5.3 pins the whole family
+	// for now, since no selective predicate has been measured for it. The pin
+	// narrows per family via the registry's channel type (DeepSeek V4 -> 43,
+	// kimi-k3 -> 25, glm-5.3 -> 26).
 	if profile.Route {
-		if isDeepSeekV4 {
+		switch {
+		case isDeepSeekV4:
 			if deepSeekV4RequestNeedsOfficial(pinRequest) {
 				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 			}
-		} else {
+		case isKimiK3:
+			if kimiK3RequestNeedsOfficial(pinRequest) {
+				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+			}
+		default:
 			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 		}
 	}
@@ -774,6 +783,36 @@ func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 		return true
 	}
 	return !deepSeekV4ThinkingDisabled(req)
+}
+
+// kimiK3RequestNeedsOfficial reports whether a kimi-k3 request carries a
+// feature the aggregator pool cannot serve faithfully.
+//
+// The one measured class is a forced tool call: `tool_choice` = "required" or
+// the named-function object, both of which oblige the model to emit tool_calls.
+// Sampled 4x per upstream on 2026-09-22, the preferred aggregator channel
+// degraded the named-function form to a plain text answer 3 times out of 4
+// (finish_reason=stop with no tool_calls) while the official endpoint honored
+// it every time; KVV's dynamic-tool cases assert exactly that obligation, and
+// their `required` cases failed on the same upstream. `auto`/`none` carry no
+// such obligation and stay on the pool.
+//
+// An unparseable tool_choice is treated as forcing: the relay's local K3
+// validation answers it with the official 400 before any upstream call, so
+// over-pinning it costs nothing, while under-pinning a shape that really does
+// force a call would leak the pool's degraded behavior.
+func kimiK3RequestNeedsOfficial(req v4OfficialPinRequest) bool {
+	raw := bytes.TrimSpace(req.ToolChoice)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return false
+	}
+	var strategy string
+	if err := common.Unmarshal(raw, &strategy); err == nil {
+		return strings.EqualFold(strings.TrimSpace(strategy), "required")
+	}
+	// Not a string: the named-function object (or a malformed value the local
+	// validator rejects). Both are forcing shapes.
+	return true
 }
 
 // deepSeekV4ThinkingDisabled mirrors the official no-thinking states:

@@ -161,10 +161,23 @@ func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"reasoning_effort":"none"}`)
 	})
 
-	t.Run("kimi-k3 keeps whole-family pin", func(t *testing.T) {
-		c := newContext(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	t.Run("kimi-k3 without a forced tool call does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	})
+	t.Run("kimi-k3 required pins (aggregator degrades forced calls)", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"required"}`)
+	})
+	t.Run("kimi-k3 named-function object pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}},"thinking":{"type":"disabled"}}`)
+	})
+	t.Run("kimi-k3 auto does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`)
+	})
+	t.Run("kimi-k3 none does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"none"}`)
+	})
+	t.Run("kimi-k3 unparseable tool_choice pins (local validation 400s it anyway)", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":7}`)
 	})
 }
 

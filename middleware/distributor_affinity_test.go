@@ -243,9 +243,10 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 	markV4OfficialPinFromDistributor(routeOff)
 	assert.False(t, common.GetContextKeyBool(routeOff, constant.ContextKeyV4OfficialPin))
 
-	// kimi-k3 with the Route profile pins to the Moonshot official channel;
-	// without the profile it stays unpinned even for "extreme" sampling.
-	k3Route := newCtx(`{"model":"kimi-k3","temperature":0.7}`, "/v1/chat/completions")
+	// kimi-k3 with the Route profile pins only a forced tool call, the one
+	// shape the aggregator pool was measured to degrade; a plain request stays
+	// unpinned, and so does the same request without the profile.
+	k3Route := newCtx(`{"model":"kimi-k3","tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"required"}`, "/v1/chat/completions")
 	common.SetContextKey(k3Route, constant.ContextKeyUserSetting, dto.UserSetting{
 		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
 			"kimi-k3": {Route: true},
@@ -253,6 +254,15 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 	})
 	markV4OfficialPinFromDistributor(k3Route)
 	assert.True(t, common.GetContextKeyBool(k3Route, constant.ContextKeyV4OfficialPin))
+
+	k3PlainRoute := newCtx(`{"model":"kimi-k3","temperature":0.7}`, "/v1/chat/completions")
+	common.SetContextKey(k3PlainRoute, constant.ContextKeyUserSetting, dto.UserSetting{
+		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+			"kimi-k3": {Route: true},
+		}},
+	})
+	markV4OfficialPinFromDistributor(k3PlainRoute)
+	assert.False(t, common.GetContextKeyBool(k3PlainRoute, constant.ContextKeyV4OfficialPin))
 
 	k3Plain := newCtx(`{"model":"kimi-k3","temperature":2}`, "/v1/chat/completions")
 	markV4OfficialPinFromDistributor(k3Plain)

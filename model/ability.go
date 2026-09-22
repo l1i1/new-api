@@ -413,20 +413,22 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 }
 
 // GetChannelWithBlockedChannelsPinned behaves like
-// GetChannelWithBlockedChannels but can narrow deepseek-v4 candidates to the
-// official channel when pinOfficial is set for the request, and to
-// video-declaring channels when videoOnly is set.
+// GetChannelWithBlockedChannels but can narrow candidates to the official
+// channel when pinOfficial is set for the request, and to video-declaring
+// channels when videoOnly is set.
 func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool) (*Channel, error) {
 	var abilities []Ability
 
-	if videoOnly {
-		// The video narrowing must run before the priority tier is chosen, not
-		// after: a media-blind channel can hold the highest priority, and
+	if videoOnly || pinOfficial {
+		// Both narrowings must run before the priority tier is chosen, not
+		// after: the channel a filter keeps can sit below the top tier, and
 		// dropping it after getChannelQueryWithBlockedChannels already reduced
 		// the set to that tier would return no candidate instead of falling
-		// through to the next tier that can read video. So this path fetches
-		// every tier, filters, and only then tiers by retry — the same order
-		// getChannelWithFilters uses for its constraint filters.
+		// through to the next tier that qualifies. The official channel is
+		// routinely the lowest-priority row, so a pin on the tier-first order
+		// would fail every request. So this path fetches every tier, filters,
+		// and only then tiers by retry — the same order getChannelWithFilters
+		// uses for its constraint filters.
 		if err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
 			Order("priority DESC, weight DESC").Find(&abilities).Error; err != nil {
 			return nil, err
@@ -446,7 +448,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	}
 	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial)
 	abilities = filterAbilitiesByVideoCapability(abilities, videoOnly)
-	if videoOnly {
+	if videoOnly || pinOfficial {
 		abilities = abilitiesAtRetryTier(abilities, retry)
 	}
 	channel := Channel{}

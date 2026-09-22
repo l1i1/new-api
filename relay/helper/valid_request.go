@@ -1630,10 +1630,19 @@ func IsGlm53OfficialModelName(model string) bool {
 	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyGlm53
 }
 
+// kimiK3FunctionNameMaxLength is the longest tool name the official endpoint
+// accepts. Live-probed 2026-09-22 on both declaration positions: 128 characters
+// pass (and a forced call with such a name works), 129 is rejected with the same
+// "function name is invalid" text as a malformed name — the length limit is not
+// a separate error class, which is why it lives inside the name predicate
+// instead of getting its own message.
+const kimiK3FunctionNameMaxLength = 128
+
 // validKimiK3FunctionName mirrors the official tool-name rule: must start with
-// a letter and may contain letters, numbers, underscores and dashes.
+// a letter, may contain letters, numbers, underscores and dashes, and is at most
+// kimiK3FunctionNameMaxLength characters.
 func validKimiK3FunctionName(name string) bool {
-	if name == "" || !isLetter(name[0]) {
+	if name == "" || len(name) > kimiK3FunctionNameMaxLength || !isLetter(name[0]) {
 		return false
 	}
 	for i := 1; i < len(name); i++ {

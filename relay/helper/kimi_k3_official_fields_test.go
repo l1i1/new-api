@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/officialfit"
@@ -248,6 +249,26 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 			kimiK3MessageToolsPositionPrefix + "0" + kimiK3MessageToolsInvalidSuffix + kimiK3FunctionNameInvalidText,
 		},
 		{
+			// The live endpoint answers an over-long name with the malformed-name
+			// text, not a length-specific one (probed 2026-09-22: 128 passes,
+			// 129 fails). The name here is one character past the limit.
+			"dynamic tool name past the length limit",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Messages: []dto.Message{
+				dynamicTools("system", "", []any{functionTool(strings.Repeat("a", kimiK3FunctionNameMaxLength+1))}),
+			}},
+			kimiK3MessageToolsPositionPrefix + "0" + kimiK3MessageToolsInvalidSuffix + kimiK3FunctionNameInvalidText,
+		},
+		{
+			// The request-level declaration carries the same limit and the same
+			// wording (the position prefix is dynamic-tool-only).
+			"request-level tool name past the length limit",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3",
+				Tools:    []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: strings.Repeat("a", kimiK3FunctionNameMaxLength+1)}}},
+				Messages: []dto.Message{message("user", "1+1=?")},
+			},
+			kimiK3ToolNameMessage,
+		},
+		{
 			"unsupported dynamic tool type",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Messages: []dto.Message{
 				dynamicTools("system", "", []any{map[string]any{"type": "bogus", "function": map[string]any{"name": "x"}}}),
@@ -386,6 +407,12 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 			ReasoningEffort: "high", Temperature: floatPtr(0.6)},
 		// strict=false and a missing parameters field are both tolerated.
 		{Model: "kimi-k3", Messages: []dto.Message{dynamicTool("x")}},
+		// A name exactly at the length limit is legal on both declaration
+		// positions (probed 2026-09-22: 128 accepted, 129 rejected).
+		{Model: "kimi-k3", Messages: []dto.Message{dynamicTool(strings.Repeat("a", kimiK3FunctionNameMaxLength))}},
+		{Model: "kimi-k3", Messages: base.Messages, Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: strings.Repeat("a", kimiK3FunctionNameMaxLength)}},
+		}},
 		// The chain may be answered across several tool messages in any order.
 		{Model: "kimi-k3", Messages: []dto.Message{
 			{Role: "user", Content: "天气？"},
