@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "Prend effet à l'enregistrement, sauf si une variable d'environnement fournit encore une clé.",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Configuré. Les requêtes vidéo sur les canaux marqués pour l'estimation sont facturées avec le tokenizer du fournisseur.",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Non configuré. Les requêtes vidéo sur les canaux marqués pour l'estimation sont facturées à partir du modèle de conteneur local, hors ligne et précis à environ 5 % près.",
-    "Save video estimation settings": "Enregistrer les paramètres d'estimation vidéo"
+    "Save video estimation settings": "Enregistrer les paramètres d'estimation vidéo",
+    "Reads video": "Comprend la vidéo",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "Ne le déclarez que si l'amont a été mesuré comme comprenant réellement une partie vidéo. Les requêtes contenant une vidéo ne sont routées que vers les canaux qui le déclarent, et échouent honnêtement si aucun ne le fait.",
+    "Video usage accounting": "Comptabilisation de l'usage vidéo",
+    "Trust the reported usage": "Faire confiance à l'amont",
+    "Estimate from the video": "Estimer à partir de la vidéo",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "Faites confiance à l'amont lorsqu'il compte la vidéo qu'il a lue. Ne choisissez l'estimation que s'il a été mesuré qu'il rapporte un compte ignorant le média : le point de terminaison tokenizer, ou le modèle de conteneur local lorsqu'il n'est pas configuré, remplace alors le compte rapporté."
   }
 }

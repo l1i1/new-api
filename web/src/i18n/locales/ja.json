@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "保存時に反映されます。環境変数にキーがある場合はそちらが優先されます。",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "設定済み。推定対象としてマークされたチャネルの動画リクエストは、プロバイダーのトークナイザーで課金されます。",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未設定。推定対象としてマークされたチャネルの動画リクエストは、ローカルのコンテナモデルで課金されます（オフライン、誤差約 5% 以内）。",
-    "Save video estimation settings": "動画推定設定を保存"
+    "Save video estimation settings": "動画推定設定を保存",
+    "Reads video": "動画を理解できる",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "上流が実際に動画パートを理解できると実測で確認できた場合のみ宣言してください。動画を含むリクエストは宣言したチャネルにのみルーティングされ、どのチャネルも宣言していない場合は正直に失敗します。",
+    "Video usage accounting": "動画の使用量の扱い",
+    "Trust the reported usage": "上流の報告値を使用",
+    "Estimate from the video": "動画から推定",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "上流が読み取った動画を計上している場合は、その報告値を使用します。報告値がメディアを無視していると実測で判明した場合にのみ推定を選んでください。その場合、tokenizer エンドポイント（未設定時はローカルコンテナモデル）の数値が報告値を置き換えます。"
   }
 }

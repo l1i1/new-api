@@ -278,6 +278,12 @@ export const channelFormSchema = z
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     ollama_openai_chat: z.boolean().optional(), // Ollama: OpenAI-compatible /v1/chat/completions instead of native /api/chat
     disable_task_polling_sleep: z.boolean().optional(),
+    // Video understanding: whether this channel's upstream actually reads a
+    // video part (routing), and whether its reported prompt count ignores the
+    // media (billing). Independent of channel type — a relay and a vendor's own
+    // line can both qualify.
+    supports_video: z.boolean().optional(),
+    video_usage_mode: z.enum(['', 'estimate']).optional(),
     // Channel-level official-fit behavior allowlist (stored in settings JSON).
     // Comma-separated platform model ids verified byte-level official on this
     // channel; empty keeps the channel's default (official family type only).
@@ -466,6 +472,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   claude_beta_query: false,
   ollama_openai_chat: false,
   disable_task_polling_sleep: false,
+  supports_video: false,
+  video_usage_mode: '',
   official_fit_models: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
@@ -558,6 +566,8 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let ollamaOpenAIChat = false
   let disableTaskPollingSleep = false
+  let supportsVideo = false
+  let videoUsageMode: '' | 'estimate' = ''
   let officialFitModels = ''
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
@@ -580,6 +590,10 @@ export function transformChannelToFormDefaults(
       claudeBetaQuery = parsed.claude_beta_query === true
       ollamaOpenAIChat = parsed.ollama_openai_chat === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      supportsVideo = parsed.supports_video === true
+      // Anything other than the known mode reads as "trust the upstream": an
+      // unrecognised value must not become a different billing rule in the UI.
+      videoUsageMode = parsed.video_usage_mode === 'estimate' ? 'estimate' : ''
       officialFitModels = Array.isArray(parsed.official_fit_models)
         ? parsed.official_fit_models.join(',')
         : ''
@@ -642,6 +656,8 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     ollama_openai_chat: ollamaOpenAIChat,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    supports_video: supportsVideo,
+    video_usage_mode: videoUsageMode,
     official_fit_models: officialFitModels,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
@@ -816,6 +832,27 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
+
+  // Video understanding. Both keys are dropped when they are at their default
+  // so a channel that was never touched keeps a clean settings object, and so
+  // clearing the capability really removes the routing restriction instead of
+  // leaving a stored `false`.
+  //
+  // The mode is gated on the capability here as well as in the form: the server
+  // rejects `video_usage_mode` without `supports_video`, and a stale mode left
+  // behind by switching the capability off would fail the save with an error
+  // that points at a field the operator cannot see.
+  if (formData.supports_video === true) {
+    settingsObj.supports_video = true
+    if (formData.video_usage_mode === 'estimate') {
+      settingsObj.video_usage_mode = 'estimate'
+    } else {
+      delete settingsObj.video_usage_mode
+    }
+  } else {
+    delete settingsObj.supports_video
+    delete settingsObj.video_usage_mode
+  }
 
   // Channel-level official-fit behavior allowlist: comma-separated model ids.
   // An empty list drops the key so the channel keeps its default behavior.

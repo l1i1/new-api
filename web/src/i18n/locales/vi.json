@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "Có hiệu lực khi lưu, trừ khi biến môi trường vẫn cung cấp khóa.",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Đã cấu hình. Các yêu cầu video trên kênh được đánh dấu để ước tính sẽ được tính giá bằng tokenizer của nhà cung cấp.",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Chưa cấu hình. Các yêu cầu video trên kênh được đánh dấu để ước tính sẽ được tính giá bằng mô hình container cục bộ (ngoại tuyến, chính xác trong khoảng 5%).",
-    "Save video estimation settings": "Lưu cài đặt ước tính video"
+    "Save video estimation settings": "Lưu cài đặt ước tính video",
+    "Reads video": "Hiểu được video",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "Chỉ khai báo khi đã đo được rằng upstream thực sự hiểu phần video. Các yêu cầu có video chỉ được định tuyến tới những kênh đã khai báo, và sẽ thất bại trung thực nếu không kênh nào khai báo.",
+    "Video usage accounting": "Cách tính usage video",
+    "Trust the reported usage": "Tin giá trị upstream báo",
+    "Estimate from the video": "Ước lượng từ video",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "Hãy tin upstream khi nó tính cả video đã đọc. Chỉ chọn ước lượng khi đã đo được rằng nó báo con số bỏ qua media: khi đó endpoint tokenizer, hoặc mô hình container cục bộ nếu chưa cấu hình, sẽ thay thế con số được báo."
   }
 }

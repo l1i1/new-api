@@ -277,6 +277,15 @@ const MODEL_MAPPING_PREVIEW_FALLBACK: Array<{
   target: string
 }> = [{ source: 'client-model', target: 'upstream-model' }]
 
+// The stored value for "trust the upstream" is an absent key, which a select
+// cannot hold, so it gets an explicit empty-string value that the serializer
+// turns back into a removed key.
+const VIDEO_USAGE_MODE_TRUSTED = ''
+const VIDEO_USAGE_MODE_OPTIONS = [
+  { value: VIDEO_USAGE_MODE_TRUSTED, label: 'Trust the reported usage' },
+  { value: 'estimate', label: 'Estimate from the video' },
+] as const
+
 const ADVANCED_CUSTOM_ROUTE_TYPE_PREVIEW_LIMIT = 3
 const UPSTREAM_DETECTED_MODEL_PREVIEW_LIMIT = 8
 const SENSITIVE_FORM_FIELDS = [
@@ -319,6 +328,11 @@ const SENSITIVE_FORM_FIELDS = [
   'claude_beta_query',
   'ollama_openai_chat',
   'disable_task_polling_sleep',
+  // These two decide which channel a video request reaches and how it is
+  // billed, so they sit behind the same permission as the rest of the
+  // settings-backed fields.
+  'supports_video',
+  'video_usage_mode',
   'official_fit_models',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
@@ -2015,6 +2029,80 @@ export function ChannelMutateDrawer({
         </FormItem>
       )}
     />
+  )
+
+  // Video understanding. Deliberately not gated on channel type: a relay and a
+  // vendor's own line both qualify, and the capability is a property of the
+  // upstream, not of its protocol.
+  const videoUnderstandingFields = (
+    <div className='border-border/60 rounded-lg border'>
+      <FormField
+        control={form.control}
+        name='supports_video'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between px-4 py-3'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Reads video')}</FormLabel>
+              <FormDescription>
+                {t(
+                  'Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value === true}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      {/* The mode is meaningless without the capability, and the server rejects
+          that combination, so the control only appears once it is declared. */}
+      {form.watch('supports_video') === true && (
+        <FormField
+          control={form.control}
+          name='video_usage_mode'
+          render={({ field }) => (
+            <FormItem className='border-border/60 border-t px-4 py-3'>
+              <FormLabel>{t('Video usage accounting')}</FormLabel>
+              <Select
+                disabled={sensitiveLocked}
+                items={VIDEO_USAGE_MODE_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: t(option.label),
+                }))}
+                value={field.value || VIDEO_USAGE_MODE_TRUSTED}
+                onValueChange={field.onChange}
+              >
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectGroup>
+                    {VIDEO_USAGE_MODE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                {t(
+                  'Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.'
+                )}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      )}
+    </div>
   )
 
   const officialFitModelsField = (
@@ -4923,6 +5011,7 @@ export function ChannelMutateDrawer({
               >
                 {concurrencyLimitField}
                 {ollamaCacheEstimationField}
+                {videoUnderstandingFields}
                 {officialFitModelsField}
                 {multiKeyScheduledTestFields}
                 {taskPollingFields}

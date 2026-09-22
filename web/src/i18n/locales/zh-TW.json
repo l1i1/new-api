@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "儲存後生效；若環境變數仍提供金鑰，則以環境變數為準。",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "已設定。標記為需估算的頻道在處理影片請求時，將使用服務商 tokenizer 計價。",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "未設定。標記為需估算的頻道在處理影片請求時，將使用本機容器模型計價（離線，誤差約 5% 以內）。",
-    "Save video estimation settings": "儲存影片估算設定"
+    "Save video estimation settings": "儲存影片估算設定",
+    "Reads video": "能理解影片",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "僅在實測確認該上游真的能理解影片 part 時才宣告。帶影片的請求只會被路由到宣告了此能力的通路；沒有任何通路宣告時會誠實失敗。",
+    "Video usage accounting": "影片用量口徑",
+    "Trust the reported usage": "採信上游回報值",
+    "Estimate from the video": "依影片估算",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "上游算了它讀到的影片，就採信它的回報值。只有實測發現它回報的數忽略了媒體時才選「依影片估算」：此時改用 tokenizer 端點（未設定時用本機容器模型）的數值取代回報值。"
   }
 }

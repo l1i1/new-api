@@ -109,6 +109,16 @@ export interface ChannelOtherSettings {
   claude_beta_query?: boolean
   ollama_openai_chat?: boolean
   disable_task_polling_sleep?: boolean
+  // Whether this channel's upstream actually reads a video part. A request that
+  // carries video is only routed to channels that declare it; without any
+  // declaration such a request fails honestly instead of reaching an upstream
+  // that would answer from the text alone.
+  supports_video?: boolean
+  // How to treat the upstream's reported prompt count once it does read video.
+  // "estimate" replaces it with the provider tokenizer's or the local container
+  // model's number, for an upstream that reads the media but ignores it when
+  // counting. Requires supports_video; absent means trust the upstream.
+  video_usage_mode?: 'estimate'
   // Platform model ids this channel serves with verified official-equivalent
   // behavior; official-fit routing may pin them here regardless of channel type.
   official_fit_models?: string[]

@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "Takes effect on save, unless an environment variable still provides a key.",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.",
-    "Save video estimation settings": "Save video estimation settings"
+    "Save video estimation settings": "Save video estimation settings",
+    "Reads video": "Reads video",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.",
+    "Video usage accounting": "Video usage accounting",
+    "Trust the reported usage": "Trust the reported usage",
+    "Estimate from the video": "Estimate from the video",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count."
   }
 }

@@ -7421,6 +7421,12 @@
     "Takes effect on save, unless an environment variable still provides a key.": "Вступает в силу при сохранении, если переменная окружения не задаёт ключ.",
     "Configured. Video requests on channels marked for estimation are priced with the provider tokenizer.": "Настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются токенизатором поставщика.",
     "Not configured. Video requests on channels marked for estimation are priced from the local container model, which is offline and accurate to within about 5%.": "Не настроено. Запросы с видео на каналах, помеченных для оценки, тарифицируются по локальной контейнерной модели (офлайн, точность в пределах около 5 %).",
-    "Save video estimation settings": "Сохранить настройки оценки видео"
+    "Save video estimation settings": "Сохранить настройки оценки видео",
+    "Reads video": "Понимает видео",
+    "Declare this only when the upstream was measured to actually understand a video part. Video requests are routed only to channels that declare it, and fail honestly when none does.": "Указывайте это только если измерено, что вышестоящий сервис действительно понимает видеочасть. Запросы с видео маршрутизируются только в каналы, где это объявлено, и честно завершаются ошибкой, если таких нет.",
+    "Video usage accounting": "Учёт использования видео",
+    "Trust the reported usage": "Доверять отчёту вышестоящего сервиса",
+    "Estimate from the video": "Оценивать по видео",
+    "Trust the upstream when it counts the video it read. Choose estimation only when it was measured to report a count that ignores the media: the tokenizer endpoint, or the local container model when that is unconfigured, then replaces the reported count.": "Доверяйте вышестоящему сервису, если он учитывает прочитанное видео. Выбирайте оценку только если измерено, что он сообщает число, игнорирующее медиа: тогда endpoint tokenizer или, если он не настроен, локальная контейнерная модель заменяет это число."
   }
 }
