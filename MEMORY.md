@@ -1100,7 +1100,7 @@
 - **其余读点安全**：`info.ChannelOtherSettings` 的其它引用（`relay/channel/*/adaptor.go`、`RemoveDisabledFields` 等）都在 handler 内、`InitChannelMeta` 之后，不受影响。
 - **修法（择一，未实施）**：① 最小——gate 改从 gin context 取（distributor 已写 `ContextKeyChannelOtherSetting`，`middleware/distributor.go:1123`），与「billing 只准备一次」的现有设计一致；② 语义更准——把视频估算挪到 `InitChannelMeta` 之后按尝试重算，因为现在即使不 panic，**重试换渠道后修正仍来自首个渠道的标记**，与实际服务该请求的渠道可能不一致（`videoTokens`/`videoPromptTotal` 挂在 `TokenCountMeta` 上，`InitChannelMeta` 重建 `ChannelMeta` 不会清掉它们，故 ① 可行）。**注意**：不能只把 gate 套 `info.ChannelMeta != nil` 就交差——那样默认静默失效（标记渠道永不生效），比 panic 更难发现。
 
-## 2026-09-22（未部署）K3 官方拟合的两个实测缺陷：400 信封多字段 + 流式 usage-only chunk 被吞
+## 2026-09-22（已修复，未部署）K3 官方拟合的两个实测缺陷：400 信封多字段 + 流式 usage-only chunk 被吞
 
 - **发现方式**：`tools/cdp-bench` 对国内站 Kimi 分组（cdp 账号 user 3 的 `cdp-kimi` key，profile `kimi-k3: validate+errors+shape`）跑官方基线比对：**官方侧 48/48 PASS**，被测 **30/48**，`SEVERE 0 / WORDING 0 / SHAPE 18`。参数校验语义与 400 文案**全对**，18 个差异归三类。
 - **缺陷 1（14 例）：K3 业务 400 的信封多了 `param`/`code`**。官方 K3 恰好是 `{"error":{"message":...,"type":"invalid_request_error"}}`（2026-09-22 对 `api.moonshot.cn` 复核，14/14 例都是这两个键），平台回的是 `{"error":{"message":...,"type":...,"param":null,"code":"invalid_request_error"}}`。
@@ -1112,6 +1112,18 @@
 - **第三类差异（2 例，非代码缺陷）**：`logprobs=true` 时官方返回 `choices[0].logprobs`，组内首选 ch37（NeurVibe）不上报该字段，而**唯一支持它的 ch8（Moonshot 官方直连）priority=0 永不被选中** → 200 但没有 logprobs。属**渠道路由/优先级**问题。
 - **第四类（2 例，设计取舍）**：`system_fingerprint` 官方每 chunk 都带（`fpv0_...`），ch37 一个都不带，而拟合遵循 DS 先例**绝不合成后端身份**（`kimi_k3_fit.go` 顶部注释已声明），因此该键保持缺失。要闭合只能换到真有该字段的渠道（如 ch8）。
 - **验证手段（可复用）**：官方基线 `data/baselines/official-kimi-k3-kimi-k3-2026-09-22T04-27-38-988.json`（新采，48/48）；被测运行 `data/runs/2026-09-22T04-36-31-992-consistency.json`；信封实测用 `curl`/Node 直取 raw body（**不要打印解析后的 `j.error`，会看不出外层 `{"error":...}` 包装**）；流式形态用 `Bun` 逐 chunk 统计 `topUsage`/`choiceUsage`/`sysFP` 三个计数即可判定。**注意**：3MB 的 video base64 请求体用 Node/Bun 发会被 undici 的 300s headers 硬超时截断（盖过 AbortSignal），必须走 `curl --max-time`。
+- **修复（2026-09-22，8 文件 +252/-6，未部署）**：
+  - **缺陷 1**：`controller/relay.go` 的 strict-fit 分支按 `wireShape` 增加 Moonshot 专用渲染——`common.Marshal(gin.H{"error": gin.H{"message": filteredMessage, "type": newAPIError.ToOpenAIError().Type}})`，与既有 `abortKimiK3NotFound`（404 路径）同一手法。`type` 仍取自 `ToOpenAIError().Type`（实测官方恒为 `invalid_request_error`，平台一致），只是不再把 `param`/`code` 写出去。
+  - **缺陷 2**：新增 `FitKimiK3StreamUsageOnlyChunk(info, terminalData)`（`relay/channel/openai/kimi_k3_fit.go`），在 `relay-openai.go` 的 `isK3OpenAIStream` 分支里，终端帧发出后按条件补发一帧 `{"id","object":"chat.completion.chunk","created","model","choices":[],"usage"}`；usage 值**直接从已拟合的终端帧里原样取出**（`kimiK3FirstChoiceUsage` 走 `parseTopLevelPairs`/`findJSONPair` 的字节级定位），两个事件因此不可能给出不同的数字。键序对齐官方（id/object/created/model/choices/usage），且**不带** `system_fingerprint`。
+  - **门控用的是客户端自己的意图**：新增 `RelayInfo.ClientIncludeUsage`（`relay/common/relay_info.go`），在 `relay/compatible_handler.go` 里于 `FORCE_STREAM_OPTION` 改写请求**之前**写入，取值 `request.StreamOptions != nil && request.StreamOptions.IncludeUsage`。**不能用 `ShouldIncludeUsage`**——它默认 true（客户端什么都没说时），而且就是被强制打开用于计费的那个值；官方只在客户端显式要求时才发这帧（实测 `include_usage=false` 与省略 `stream_options` 都不发）。
+  - **同时关掉通用补发**：`relay/channel/openai/helper.go` 的 `HandleFinalResponse` 里，通用 usage 帧的注入条件加上 `!kimiK3FitEnabled(info)`（与既有 `!deepseekV4FitEnabled(info)` 并列），否则上游不报 usage 时会与新的补发帧**重复**。
+  - **测试**：新增 `TestFitKimiK3StreamUsageOnlyChunkMatchesOfficial`（断言 identity 来自终端帧、choices 为空、usage 与终端帧**字节相同**、无 system_fingerprint）与 `...RespectsTheClientAsk`（省略/显式 false 都不发、无 usage 可提升时不发）；`kimi_k3_fit_test.go:183` 那条「usage-only 事件应被丢弃」的**注释**改成真实理由（丢弃的是**上游**那一帧，官方那帧由拟合自己重建），断言本身仍成立故保留；新增 `controller/relay_committed_response_test.go:TestRelayRendersMoonshotTwoFieldEnvelopeForKimiK3`。**反向验证**：临时摘掉信封分支后该测试确实以 `should not contain "param"` 失败，加回后通过。
+- **修复的端到端证据（本地网关 + 忠实 mock 上游）**：`git worktree` 之外的当前树直接 `go build`，SQLite 引导 + `PUT /api/user/official-fit`（kimi-k3 三维）+ `type=25` 渠道指向 mock（mock 按 ch37 实测形态构造：非流式**无** choice.logprobs、流式**每帧都带** logprobs、usage 挂**顶层**）。
+  - 400 信封实测 `{"error":{"message":"invalid top_p: only 0.95 is allowed for this model","type":"invalid_request_error"}}`，`Content-Type: application/json`，键集只有 `['message','type']`。
+  - 流式（带 `include_usage:true`）实测 4 帧：2 帧增量 + 终端帧（choice 级 usage）+ `choices:[]` 顶层 usage 帧，两者 usage **字节相同**，logprobs 已被剥离，无 system_fingerprint；省略与显式 `include_usage:false` 均为 3 帧、**无**顶层 usage 帧（与官方一致）。
+  - 非流式回归：顶层 6 键、choice 3 键、usage 官方 5 键，聚合器扩展（credit/prompt_cache_write_tokens/…）全部剥离。
+  - **业务指标**：把 cdp-bench 压测指向打过补丁的本地网关，`usageReports` **120/120**（修复前在线上是 0/200），Total TPM 由 0.000 M 变为 0.532 M（Input 0.334 M + Output 0.198 M）。用同一官方基线跑一致性套件：**14 个信封用例全部 PASS**（修复前全是 SHAPE），K3-051 的差异里 `usage` 一项消失、只剩 `system_fingerprint`。
+- **仍未闭合（都不是本次代码缺陷）**：① `system_fingerprint` 官方每帧都带，ch37 一个都不带，拟合按 DS 先例**绝不合成**，要闭合只能换到真有该字段的渠道；② `logprobs` 需要真正支持它的渠道（如 ch8，priority=0 永不被选中）；③ 组内首选 ch37 的 priority 结构决定了路由落点。
 - **顺带确认正常的部分**：视频估算计费链路完全正确——客户端在 estimate 模式下仍看到上游伪造的 19/47，日志按端点总值计费（`billing-usage-openai-estimated`，12818/25490/12795 与 Moonshot 估算端点返回值**逐字相同**，证明是「端点总值替换」而非「本地容器相加」），流式+视频也走同一路径；多次响应一致性 100/100、结构变体 1、invalid 0；组内 9 个模型全部 200。
 
 ## 2026-09-22 rc.40 并主线：又一次"审查后合一"

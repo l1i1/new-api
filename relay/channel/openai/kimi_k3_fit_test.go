@@ -1,10 +1,14 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 // usageFromUpstream builds the aggregator-shaped usage object the NeurVibe
@@ -181,8 +185,11 @@ func TestFitKimiK3StreamEventKeepsRequestedLogprobs(t *testing.T) {
 }
 
 func TestFitKimiK3StreamEventDropsUsageOnlyEvent(t *testing.T) {
-	// A usage-only event has no choices to attach usage to; the official
-	// stream never emits one, so the fit drops it entirely.
+	// An upstream usage-only event has no choices to attach usage to. Official
+	// does emit such an event, but only after the terminal chunk and only when
+	// the client asked for stream usage — and the fit rebuilds that one from the
+	// terminal chunk (FitKimiK3StreamUsageOnlyChunk). Forwarding the upstream's
+	// as well would put two of them in the stream, so it is dropped here.
 	chunk := `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 	patched, err := fitKimiK3StreamEvent(chunk, &dto.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, true, false)
 	if err != nil {
@@ -190,6 +197,98 @@ func TestFitKimiK3StreamEventDropsUsageOnlyEvent(t *testing.T) {
 	}
 	if patched != "" {
 		t.Errorf("usage-only event should be dropped, got %q", patched)
+	}
+}
+
+// newKimiK3FitInfo builds the RelayInfo shape kimiK3FitEnabled accepts, with the
+// K3 Shape dimension on. clientAsked is the client's own
+// stream_options.include_usage, which the usage-only event is gated on.
+func newKimiK3FitInfo(t *testing.T, clientAsked bool) *relaycommon.RelayInfo {
+	t.Helper()
+	return &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3"},
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		OriginModelName:    "kimi-k3",
+		ClientIncludeUsage: clientAsked,
+		UserSetting: dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{
+				Profile: map[string]dto.OfficialFitProfile{"kimi-k3": {Shape: true}},
+			},
+		},
+	}
+}
+
+// TestFitKimiK3StreamUsageOnlyChunkMatchesOfficial pins the official contract
+// live-probed on 2026-09-22: after the terminal chunk, and only when the client
+// set stream_options.include_usage, official sends one more event carrying the
+// terminal chunk's identity, no choices, and the same usage at the top level.
+// Without it a standard OpenAI client reads no token counts at all from a K3
+// stream, which is how the acceptance bench came to report 0/200 usage.
+func TestFitKimiK3StreamUsageOnlyChunkMatchesOfficial(t *testing.T) {
+	info := newKimiK3FitInfo(t, true)
+	terminal := `{"id":"chatcmpl-9","object":"chat.completion.chunk","created":1790053753,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop",` +
+		`"usage":{"prompt_tokens":89,"completion_tokens":72,"total_tokens":161,"prompt_tokens_details":{"cache_write_tokens":0}}}],` +
+		`"system_fingerprint":"fpv0_c96a51ed"}`
+
+	event := FitKimiK3StreamUsageOnlyChunk(info, terminal)
+	if event == "" {
+		t.Fatal("the usage-only event must be emitted when the client asked for stream usage")
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(event), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := got["system_fingerprint"]; present {
+		t.Error("the usage-only event must not carry a system_fingerprint")
+	}
+	var choices []json.RawMessage
+	if err := json.Unmarshal(got["choices"], &choices); err != nil {
+		t.Fatalf("choices: %v", err)
+	}
+	if len(choices) != 0 {
+		t.Errorf("official sends an empty choices array, got %s", got["choices"])
+	}
+	for _, key := range []string{"id", "object", "created", "model", "usage"} {
+		if _, present := got[key]; !present {
+			t.Errorf("missing %q", key)
+		}
+	}
+	// The usage must be byte-identical to what the terminal chunk carried, or
+	// the two events would tell the client different numbers.
+	var terminalPayload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(terminal), &terminalPayload); err != nil {
+		t.Fatalf("unmarshal terminal: %v", err)
+	}
+	var terminalChoices []map[string]json.RawMessage
+	if err := json.Unmarshal(terminalPayload["choices"], &terminalChoices); err != nil {
+		t.Fatalf("terminal choices: %v", err)
+	}
+	if string(got["usage"]) != string(terminalChoices[0]["usage"]) {
+		t.Errorf("usage drifted from the terminal chunk:\n got %s\nwant %s", got["usage"], terminalChoices[0]["usage"])
+	}
+	if !bytes.Equal(got["id"], terminalPayload["id"]) {
+		t.Errorf("id drifted: got %s want %s", got["id"], terminalPayload["id"])
+	}
+}
+
+// TestFitKimiK3StreamUsageOnlyChunkRespectsTheClientAsk: official emits the
+// event only when the client set include_usage, so an omitted stream_options
+// must not produce one even though the relay forced usage collection for
+// billing.
+func TestFitKimiK3StreamUsageOnlyChunkRespectsTheClientAsk(t *testing.T) {
+	terminal := `{"id":"chatcmpl-9","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}]}`
+	quiet := newKimiK3FitInfo(t, false)
+	if event := FitKimiK3StreamUsageOnlyChunk(quiet, terminal); event != "" {
+		t.Errorf("no usage-only event when the client did not ask, got %q", event)
+	}
+	// A terminal chunk with no usage to lift yields nothing either.
+	withoutUsage := `{"id":"chatcmpl-9","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	if event := FitKimiK3StreamUsageOnlyChunk(newKimiK3FitInfo(t, true), withoutUsage); event != "" {
+		t.Errorf("no usage-only event without a usage value, got %q", event)
 	}
 }
 

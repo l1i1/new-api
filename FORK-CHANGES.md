@@ -77,6 +77,8 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 空输出的 chat completions 不再合成 502；客户端中途断开不再合成 502 | `relay/channel/openai/relay-openai.go`、`relay/helper/stream_scanner.go` | `relay/channel/openai/*stream*test.go` |
 | 流式 usage 完整保留 + passthrough 原始字节 + websocket 负载归一化 | `relay/channel/openai/relay_responses.go`、`relay/helper/valid_request.go` | `relay/channel/openai/relay_openai_stream_usage_test.go`、`relay/passthrough_body_test.go` |
 | official-fit：官方渠道定型（Kimi K3 / Moonshot 契约、family registry、serde 位置后缀） | `officialfit/officialfit.go`、`relay/channel/openai/deepseek_v4_fit.go`、`docs/official-fit-mode.md` | `relay/channel/openai/deepseek_v4_fit_test.go` |
+| official-fit：K3 业务 400 只用 Moonshot 的两字段信封 `{message,type}`（共享 `OpenAIError` 恒带 `param`/`code`，必须显式映射） | `controller/relay.go` | `controller/relay_committed_response_test.go`（`TestRelayRendersMoonshotTwoFieldEnvelopeForKimiK3`） |
+| official-fit：K3 流式在终端帧之后按**客户端自己的** `stream_options.include_usage` 补发官方的 usage-only 帧（`choices:[]` + 顶层 usage），否则标准 OpenAI 客户端读不到任何 token 数 | `relay/channel/openai/kimi_k3_fit.go`、`relay/channel/openai/relay-openai.go`、`relay/channel/openai/helper.go`、`relay/common/relay_info.go`、`relay/compatible_handler.go` | `relay/channel/openai/kimi_k3_fit_test.go`（`TestFitKimiK3StreamUsageOnlyChunk*`） |
 | DeepSeek V4 / Ollama / GLM 等适配加固（内容类型校验、thinking、prompt cache） | `relay/channel/openai/*`、`relay/channel/ollama/*` | 各自 `*_test.go` |
 
 ## 6. 内容安全

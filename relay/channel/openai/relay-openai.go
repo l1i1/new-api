@@ -449,9 +449,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		case isK3OpenAIStream:
 			// Official K3 renders usage inside choices[0] of the terminal
-			// chunk. The held terminal chunk is emitted here with the official
-			// usage shape injected; a usage-only event has already been folded
-			// away by the per-chunk branch.
+			// chunk, then — only when the client asked for stream usage —
+			// follows it with a choices:[] event carrying the same usage at the
+			// top level. A usage-only event from the upstream has already been
+			// folded away by the per-chunk branch, and the official one is
+			// rebuilt here from the fitted terminal chunk.
 			streamData := lastStreamData
 			if !lastStreamHasFinish && kimiK3PendingFinalData != "" {
 				streamData = kimiK3PendingFinalData
@@ -460,6 +462,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				streamData = FitKimiK3StreamEventForAdapters(c, info, streamData, usage, true)
 				if streamData != "" {
 					_ = sendStreamData(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+				}
+				if usageOnly := FitKimiK3StreamUsageOnlyChunk(info, streamData); usageOnly != "" {
+					_ = sendStreamData(c, info, usageOnly, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 				}
 			}
 		case lastStreamHasUsage:

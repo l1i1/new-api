@@ -152,6 +152,85 @@ func kimiK3RequestWantsLogprobs(info *relaycommon.RelayInfo) bool {
 	return ok && request.LogProbs != nil && *request.LogProbs
 }
 
+// kimiK3UsageOnlyChunk is the official usage-only event: the terminal chunk's
+// identity, no choices, the usage object at the top level. Field order matches
+// the endpoint (id, object, created, model, choices, usage).
+type kimiK3UsageOnlyChunk struct {
+	ID      json.RawMessage `json:"id"`
+	Object  string          `json:"object"`
+	Created json.RawMessage `json:"created"`
+	Model   json.RawMessage `json:"model"`
+	Choices json.RawMessage `json:"choices"`
+	Usage   json.RawMessage `json:"usage"`
+}
+
+// FitKimiK3StreamUsageOnlyChunk builds the usage-only event official Moonshot
+// emits after the terminal chunk when the request asked for stream usage, or ""
+// when it must not be sent.
+//
+// A standard OpenAI client reads its token counts from a top-level usage chunk,
+// so dropping this event leaves every such client with no usage at all on K3 —
+// the load bench measured 0/200 usage reports (TPM and cache-hit rate
+// unmeasurable) purely because of it. Official sends the event only when the
+// *client* asked (live-probed: an omitted stream_options and an explicit false
+// both produce no top-level usage), which is why it is gated on the client's
+// own flag rather than on info.ShouldIncludeUsage — that one defaults to true
+// when the client asked nothing, and it is also the value the relay forces on
+// for billing.
+//
+// terminalData is the terminal chunk *after* the fit ran, so the usage object
+// is lifted from it verbatim: the two events cannot disagree, whatever the
+// upstream reported.
+func FitKimiK3StreamUsageOnlyChunk(info *relaycommon.RelayInfo, terminalData string) string {
+	if !kimiK3FitEnabled(info) || terminalData == "" || !info.ClientIncludeUsage {
+		return ""
+	}
+	var payload map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(terminalData, &payload); err != nil {
+		return ""
+	}
+	id, okID := payload["id"]
+	created, okCreated := payload["created"]
+	model, okModel := payload["model"]
+	if !okID || !okCreated || !okModel {
+		return ""
+	}
+	usage, ok := kimiK3FirstChoiceUsage(payload["choices"])
+	if !ok {
+		return ""
+	}
+	event, err := common.Marshal(kimiK3UsageOnlyChunk{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   model,
+		Choices: json.RawMessage(`[]`),
+		Usage:   usage,
+	})
+	if err != nil {
+		return ""
+	}
+	return string(event)
+}
+
+// kimiK3FirstChoiceUsage lifts choices[0].usage out of a fitted terminal chunk.
+func kimiK3FirstChoiceUsage(rawChoices json.RawMessage) (json.RawMessage, bool) {
+	spans, ok := jsonArrayElementSpans(rawChoices)
+	if !ok || len(spans) == 0 {
+		return nil, false
+	}
+	first := rawChoices[spans[0][0]:spans[0][1]]
+	pairs, _, err := parseTopLevelPairs(first)
+	if err != nil {
+		return nil, false
+	}
+	found, present, err := findJSONPair(pairs, "usage")
+	if err != nil || !present || found == nil {
+		return nil, false
+	}
+	return json.RawMessage(first[found.valueStart:found.valueEnd]), true
+}
+
 // kimiK3PromptTokensDetails mirrors the official prompt_tokens_details:
 // cached_tokens only on a cache hit, cache_write_tokens always.
 type kimiK3PromptTokensDetails struct {

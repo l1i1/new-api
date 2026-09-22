@@ -343,7 +343,11 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if info.ShouldIncludeUsage && !containStreamUsage && !deepSeekV4FitEnabled(info) {
+		// The V4 and K3 fits own their terminal usage rendering: each mirrors
+		// its provider's event layout, including whether a usage-only event
+		// follows the terminal chunk at all. The generic injection here would
+		// otherwise duplicate the K3 one whenever the upstream reported no usage.
+		if info.ShouldIncludeUsage && !containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
 			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
 			response.SetSystemFingerprint(systemFingerprint)
 			helper.ObjectData(c, response)

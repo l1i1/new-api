@@ -120,6 +120,13 @@ type RelayInfo struct {
 	RequestURLPath     string
 	RequestHeaders     map[string]string
 	ShouldIncludeUsage bool
+	// ClientIncludeUsage is the client's own stream_options.include_usage,
+	// captured before FORCE_STREAM_OPTION rewrites the outgoing request. The two
+	// differ in the case that matters to official-fit response shaping: the flag
+	// is forced on so the relay can always bill, while the official endpoint
+	// only emits a top-level usage chunk when the client asked for one, and
+	// ShouldIncludeUsage defaults to true for a client that asked nothing.
+	ClientIncludeUsage bool
 	DisablePing        bool // 是否禁止向下游发送自定义 Ping
 	ClientWs           *websocket.Conn
 	TargetWs           *websocket.Conn

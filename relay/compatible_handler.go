@@ -51,6 +51,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if request.StreamOptions != nil {
 		includeUsage = request.StreamOptions.IncludeUsage
 	}
+	// The client's explicit ask, read before the forcing below overwrites the
+	// request. includeUsage above answers "should we bill from stream usage" and
+	// is true by default; this one answers "did the client ask for a usage
+	// event", which official endpoints treat as false when stream_options is
+	// absent entirely. Response shaping that mirrors such a contract needs the
+	// difference.
+	info.ClientIncludeUsage = request.StreamOptions != nil && request.StreamOptions.IncludeUsage
 
 	// 如果不支持StreamOptions，将StreamOptions设置为nil
 	if !info.SupportStreamOptions || !lo.FromPtrOr(request.Stream, false) {

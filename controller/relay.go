@@ -180,6 +180,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 						c.Data(newAPIError.StatusCode, contentType, []byte(filteredMessage))
 						return
 					}
+					if wireShape == officialfit.WireShapeMoonshot {
+						// Moonshot's K3 answers a business rejection with
+						// exactly {error:{message,type}} — no param, no code
+						// (live-probed 2026-09-22: 14/14 sampled 400s). The
+						// shared OpenAIError renders both extra keys because
+						// their tags carry no omitempty, so the two fields
+						// are mapped explicitly here, the same way
+						// abortKimiK3NotFound does for the 404.
+						if body, marshalErr := common.Marshal(gin.H{"error": gin.H{
+							"message": filteredMessage,
+							"type":    newAPIError.ToOpenAIError().Type,
+						}}); marshalErr == nil {
+							c.Data(newAPIError.StatusCode, contentType, body)
+							return
+						}
+					}
 					// Strict-fit messages are first-party official texts, so
 					// the response object must carry the unmasked message:
 					// ToOpenAIError runs the generic info masker whose domain
