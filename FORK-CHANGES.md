@@ -48,6 +48,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | --- | --- | --- | --- |
 | 三决策重试：永不重试（最先判定）→ 换同渠道另一个 Key → 换渠道，顺序在 UI 里写明；关键词列表可由运营编辑 | `model/request_policy.go`、`controller/request_policy.go`、`service/upstream_request_rejection.go`、`web/src/features/system-settings/request-policies/*` | `controller/relay_retry_test.go`、`model/request_policy_test.go` | 高：上游持续改 retry/request-policy；新增选项必须同时进 `requestPolicyDefaultOptions` 与 `IsRequestPolicyOption`，否则设置页保存被拒 |
 | 请求形状错误的 4xx 不重试（换渠道重试救不了无效请求） | `relay/helper/valid_request.go`、`service/upstream_request_rejection.go` | `controller/relay_retry_test.go` | 中：与上游"自动关键词/状态码区间"判定共用入口 |
+| 官方拟合 pin 的请求不被运营重试关键词换渠道（官方原文须原样回客；多 Key 官方渠道仍换 Key） | `service/relay_error.go`（`officialFitPinKeepsVerdict`） | `service/relay_error_test.go`（`TestOfficialFitPinKeepsUpstreamVerdict`） | 中：与上游重试决策同函数，上游重构 `DecideRelayRetry` 时需重新接上；`ContextKeyV4OfficialPin` 是本 fork 的上下文键 |
 | 视频计费：能力维度选路 + 从容器定价 + 预取/结算缓存协议（详见 §4） | `service/video_token.go`、`service/video_estimate.go`、`relay/request_billing.go` | `service/video_estimate_test.go`、`relay/request_billing_test.go` | 高：上游同一批文件重写过一次，已验证会整块丢加固 |
 | 渠道已用额度重置 | `docs/CHANNEL_USED_QUOTA_RESET.md`、`controller/channel.go` | 该文档内的验证步骤 | 中 |
 | 计费会话与资金来源（预扣费 / 退款 / 违规费语义） | `service/billing_session.go`、`service/funding_source.go`、`service/text_quota.go` | `service/billing_session_test.go`、`service/text_quota_test.go` | 高：上游改结算路径时的默认落点 |
