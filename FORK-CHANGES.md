@@ -53,6 +53,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 计费会话与资金来源（预扣费 / 退款 / 违规费语义） | `service/billing_session.go`、`service/funding_source.go`、`service/text_quota.go` | `service/billing_session_test.go`、`service/text_quota_test.go` | 高：上游改结算路径时的默认落点 |
 | 每用户-模型速率限制（RPM 与长窗口并存） | `Tech-Spec.md`、`docs/global-model-rate-limit-tech-spec.md`、`middleware/model-rate-limit.go` | `middleware/model_rate_limit_test.go` | 中 |
 | 邀请首充奖励排除 partner 邀请人；充值/配额审计日志本地化 | `model/user.go`、`web/src/features/usage-logs/lib/format.ts`、`quota-audit-operation.ts` | `web/src/features/usage-logs/**/*.test.ts` | 高：`format.ts` 是已知双向冲突（保留 fork 的 `getEffectiveBillingRatio` + 上游的 quota 委托） |
+| 日志可见性：普通用户视图额外剥掉 `response_model`（其 `upstream_model` 是与 `upstream_model_name` 同一个上游模型 id，上游只在顶层剥离，嵌套字段会带着它绕过） | `model/log_other.go` | `model/log_format_test.go`（`TestFormatUserLogsHidesResponseModelObservation`；管理员与 root 视图保留该字段） | **高**：`response_model` 是上游 2026-09-18/19 新增（PR #7418/#7464），与本清单的剥离逻辑相隔两周，上游再动 `log_other.go` 时容易把这条挤掉 |
 
 ## 4. 视频能力（最新的自有维度）
 
@@ -66,6 +67,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 估算端点在控制台可配（库 > env > 默认，逐字段回退）；密钥走既有脱敏通道不回显；缓存键含端点 URL，换端点即失效 | `setting/operation_setting/video_estimate_setting.go`、`service/video_estimate.go`、`controller/misc.go`、`web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | `controller/video_estimate_option_test.go`、`service/video_estimate_test.go` |
 | `video_usage_mode` 只在**服务该请求的**渠道声明时才修正上报值 | `service/video_token.go`、`relaykit/dto/channel_settings.go` | `service/video_routing_test.go` |
 | 消费日志的 `prompt_tokens` 与 `usage_billing_path` 必须同时反映**实际计费值**（修正后为 `billing-usage-openai-estimated`）；客户端响应的 usage 保持上游原值 | `service/text_quota.go` | `service/video_log_path_test.go`（真实结算+落库） |
+| 渠道抽屉可写视频标记：`supports_video` 开关 + 条件出现的 `video_usage_mode` 下拉（默认值下两键从 settings 删除，关掉能力即真的移除选路限制） | `web/src/features/channels/components/drawers/channel-mutate-drawer.tsx`、`web/src/features/channels/lib/channel-form.ts`、`web/src/features/channels/types.ts` | `web/src/features/channels/lib/__tests__/video-understanding.test.ts`（8 例） |
 | 上线顺序约束：渠道标记是惰性的，必须与代码同批发布 | `docs/video-usage-estimation.md` | 该文档的"上线顺序"章节 |
 
 ## 5. 路由与可靠性
@@ -95,7 +97,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | --- | --- | --- |
 | 原生 Tokeness 前端（导航定制、首页、站点公告） | `web/src/features/*`、`web/src/hooks/use-notifications.ts`、`web/src/main.tsx` | web 测试 + 实机截图 |
 | 定价展示：动态价、原价划线、tier 表达式、vendor 本地化、CNY 文案 | `web/src/features/pricing/lib/dynamic-price.ts`、`tier-expr.ts`、`web/src/features/pricing/components/model-details.tsx`、`web/src/features/pricing/components/dynamic-pricing-breakdown.tsx` | `web/src/features/pricing/**/__tests__/*` |
-| 卡片本地化（`<tnt l="zh">` 标记解析）与 7 语言键集合契约（当前 7401 键） | `web/src/i18n/locales/*.json`、`web/src/lib/tnt-content.ts` | `.review` 里的 locale 校验脚本（键集合一致 + 0 重复）；发布前必跑 |
+| 卡片本地化（`<tnt l="zh">` 标记解析）与 7 语言键集合契约（当前 7428 键） | `web/src/i18n/locales/*.json`、`web/src/lib/tnt-content.ts` | `.review` 里的 locale 校验脚本（键集合一致 + 0 重复）；发布前必跑 |
 | 主题定制持久化与首屏应用 | `web/src/lib/theme-storage.ts`、`web/src/lib/theme-customization-storage.ts`、`web/src/context/theme-customization-provider.tsx` | `web/src/context/__tests__/theme-preferences.test.tsx`、`web/src/context/__tests__/theme-customization-provider.test.tsx`、`web/src/lib/__tests__/theme-customization.test.ts` |
 | 主题定制：**存储底座取上游**（rc.40 起 localStorage `newapi:theme:v1:*`，cookie 通道废弃），**默认值与首屏应用取 fork**（`preset: sunset-glow`、`radius: none`；`main.tsx` 挂载前应用） | 同上 | 同上；三处（provider / 首屏初始化 / 测试）必须读同一套键 |
 | 测试运行器必须两阶段都跑（vitest + node:test） | `web/scripts/run-tests.mjs`、`web/scripts/node-test-setup.ts` | 运行器自身 + 两段汇总 |
@@ -119,6 +121,8 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | `ChannelOtherSettings` 字段（`supports_video`、`video_usage_mode`） | `relaykit/dto/channel_settings.go` ↔ 选路/结算 | `ValidateVideoUsageMode` 要求两者同渠道 |
 | 渠道健康条数据 | 后端序列字段 ↔ 前端读取字段 | 前端 `recent_success_series` 与后端必须同名（rc35 这里错配过） |
 | 流式 usage / `stream_status` | 后端写入 ↔ 日志与前端读取 | 上游 SSE 提前 EOF 时的语义 |
+| 渠道视频标记的读写两端 | 渠道抽屉表单 ↔ `relaykit/dto/channel_settings.go` 的 `supports_video`/`video_usage_mode` | 表单写入后重开抽屉须回读一致；关掉能力后两键必须从 settings 消失 |
+| 日志字段的可见性分级 | `model/log_other.go` 的 user/admin/root 投影 ↔ 前端读取 | 新增任何会落到 `other` 的上游字段时，判断它是否重复了顶层被剥的值（`response_model` 就是这么漏过去的） |
 | locale 键集合 | 7 个 locale 文件 | 键集合完全一致、0 重复、无 BOM/格式翻动 |
 | 主题偏好存储与首屏应用 | `theme-customization-provider.tsx` ↔ `initializeThemeCustomizationDom`（`web/src/main.tsx`） | 换存储底座时两侧一起换；键集合必须一致 |
 | 邀请码与账本字段 | new-api ↔ `tools/partner-console`（根仓库） | 跨仓库，必须同批发布 |
