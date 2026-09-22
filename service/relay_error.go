@@ -110,9 +110,12 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 // registry and needs both the user's Route dimension and a family predicate),
 // so the pin flag alone is sufficient evidence here; no model lookup is needed.
 //
-// Credential rotation is exempt: the next key of the same official channel is the
-// same official endpoint, so the fit contract holds while the request still gets
-// served. That path keeps the channel and does not consume the retry budget.
+// Credential rotation is the one retry that keeps this contract: the next key of
+// the same official channel is the same official endpoint, so the request is
+// still served the official way. It is therefore allowed — but only while another
+// enabled credential actually remains (see anotherCredentialAvailable), because
+// a one-key channel reported as multi-key would otherwise consume the retry,
+// exhaust immediately, and reach the same routing error through the back door.
 func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 	if c == nil || err == nil {
 		return false
@@ -120,8 +123,48 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
 		return false
 	}
-	return !(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
-		ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()))
+	return !(ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()) && anotherCredentialAvailable(c))
+}
+
+// anotherCredentialAvailable reports whether the channel selected for this
+// request still holds an enabled credential that this request has not used. It
+// mirrors the selection side (model.selectMultiKeyCredential): for each key of
+// the channel, skip the ones the status list marks disabled and the ones this
+// request already tried, and report whether anything is left. A disabled
+// credential is skipped rather than counted because rotation is only real when
+// the next key can actually be handed to the upstream.
+func anotherCredentialAvailable(c *gin.Context) bool {
+	if !common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
+		return false
+	}
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	if channelID <= 0 {
+		return false
+	}
+	channel, err := model.CacheGetChannel(channelID)
+	if err != nil || channel == nil || !channel.ChannelInfo.IsMultiKey {
+		return false
+	}
+	keys := channel.Keys
+	if len(keys) == 0 {
+		keys = channel.GetKeys()
+	}
+	if len(keys) == 0 {
+		return false
+	}
+	tried, _ := common.GetContextKeyType[map[int]map[string]struct{}](c, constant.ContextKeyChannelMultiKeyTried)
+	triedForChannel := tried[channelID]
+	statusList := channel.ChannelInfo.MultiKeyStatusList
+	for index, key := range keys {
+		if status, ok := statusList[index]; ok && status != common.ChannelStatusEnabled {
+			continue
+		}
+		if _, used := triedForChannel[model.ChannelCredentialFingerprint(key)]; used {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {

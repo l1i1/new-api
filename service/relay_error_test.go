@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,7 +224,8 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 // keyword must not fail an official-fit request over to another channel: the pin
 // admits only official-behaving channels and a family may have just one, so the
 // retry would re-pin, exclude it, and replace the upstream verdict with a routing
-// error. Credential rotation is still allowed because it keeps the channel.
+// error. Credential rotation is the one exception, and only while the pinned
+// channel really has another enabled key to hand out.
 func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	origKeywords := operation_setting.AutomaticRetryKeywords
@@ -248,40 +250,55 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision)
 	})
 
-	t.Run("official-pinned request keeps the upstream verdict", func(t *testing.T) {
+	t.Run("official-pinned single-channel request keeps the upstream verdict", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 		decision := DecideRelayRetry(c, balanceErr, 1)
 		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
 	})
 
-	t.Run("official-pinned multi-key channel still rotates its credential", func(t *testing.T) {
-		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+	// A channel reported as multi-key with a single credential must NOT be treated
+	// as rotatable: letting it retry would spend the attempt, exhaust the only key,
+	// and land on the same routing error the guard exists to prevent. The key that
+	// just failed is already in the tried set when this decision runs
+	// (MarkCurrentMultiKeyTried executes before the attempt).
+	t.Run("official-pinned one-key channel is not treated as rotatable", func(t *testing.T) {
+		c, channelID := newPinnedMultiKeyContext(t, []string{"only-key"}, nil, []string{"only-key"})
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision,
+			"a one-key channel has nowhere to rotate, so the official verdict is kept")
+		require.NotZero(t, channelID)
+	})
+
+	t.Run("official-pinned channel with a spare key rotates", func(t *testing.T) {
+		c, _ := newPinnedMultiKeyContext(t, []string{"drained-key", "spare-key"}, nil, []string{"drained-key"})
 		decision := DecideRelayRetry(c, balanceErr, 1)
 		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision,
 			"another key of the same official channel keeps the fit contract and still serves the request")
+	})
+
+	t.Run("official-pinned channel whose spare key is disabled keeps the verdict", func(t *testing.T) {
+		c, _ := newPinnedMultiKeyContext(t, []string{"drained-key", "disabled-key"}, map[int]int{1: common.ChannelStatusManuallyDisabled}, []string{"drained-key"})
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision,
+			"a disabled credential cannot serve the request, so rotation would not help")
 	})
 
 	t.Run("official DeepSeek out-of-balance keeps rotating keys", func(t *testing.T) {
 		// The real wording and status the official DeepSeek channel returns when
 		// its account runs dry (`status_code=402, Insufficient Balance`, observed
 		// on the live channel). It matches the operator balance keyword
-		// case-insensitively, and the channel is multi-key, so the pinned request
-		// must still rotate to the next key of the SAME official endpoint.
+		// case-insensitively, and the live channel holds two keys, so the pinned
+		// request must still rotate to the next key of the SAME official endpoint.
 		pinned := types.NewOpenAIError(
 			errors.New("Insufficient Balance"),
 			types.ErrorCodeBadResponseStatusCode,
 			http.StatusPaymentRequired,
 		)
-		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
-		decision := DecideRelayRetry(c, pinned, 1)
-		assert.Equal(t, "retry", decision.Action,
+		assert.True(t, ShouldRotateMultiKeyCredentialOn(pinned.StatusCode, pinned.Error()))
+		c, _ := newPinnedMultiKeyContext(t, []string{"key-a", "key-b"}, nil, []string{"key-a"})
+		assert.Equal(t, "retry", DecideRelayRetry(c, pinned, 1).Action,
 			"a drained official credential is recovered by rotating keys on the same official channel")
-		assert.Equal(t, true, ShouldRotateMultiKeyCredentialOn(pinned.StatusCode, pinned.Error()))
 	})
 
 	t.Run("the guard never changes a decision the keyword list did not make", func(t *testing.T) {
@@ -300,4 +317,70 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 		assert.Equal(t, DecideRelayRetry(plain, otherErr, 1), DecideRelayRetry(pinned, otherErr, 1),
 			"the official-fit guard only intercepts keyword matches")
 	})
+}
+
+// newPinnedMultiKeyContext builds a context whose request is marked official-fit
+// pinned and whose selected channel is a real cached multi-key channel, so the
+// credential-availability check reads the same state the relay would.
+// triedKeys names the credentials this request already used.
+func newPinnedMultiKeyContext(t *testing.T, keys []string, statusList map[int]int, triedKeys []string) (*gin.Context, int) {
+	t.Helper()
+
+	previousDB := model.DB
+	previousCache := common.MemoryCacheEnabled
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:pinnedmq_%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	model.DB = db
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.MemoryCacheEnabled = previousCache
+		if previousCache && previousDB != nil && previousDB.Migrator().HasTable(&model.Channel{}) {
+			model.InitChannelCache()
+		}
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	priority := int64(0)
+	weight := uint(100)
+	channel := &model.Channel{
+		Id:       901,
+		Type:     constant.ChannelTypeDeepSeek,
+		Key:      strings.Join(keys, "\n"),
+		Status:   common.ChannelStatusEnabled,
+		Name:     "pinned-multi-key",
+		Weight:   &weight,
+		Models:   "deepseek-v4-flash",
+		Group:    "default",
+		Priority: &priority,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       len(keys),
+			MultiKeyStatusList: statusList,
+			MultiKeyMode:       constant.MultiKeyModeAffinity,
+		},
+	}
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "default", Model: "deepseek-v4-flash", ChannelId: channel.Id, Enabled: true, Priority: &priority, Weight: weight,
+	}).Error)
+	model.InitChannelCache()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
+	common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+	if len(triedKeys) > 0 {
+		tried := map[int]map[string]struct{}{channel.Id: {}}
+		for _, key := range triedKeys {
+			tried[channel.Id][model.ChannelCredentialFingerprint(key)] = struct{}{}
+		}
+		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyTried, tried)
+	}
+	return c, channel.Id
 }
