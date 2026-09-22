@@ -1232,3 +1232,10 @@
 - **`mainland.1`（`d39620059`）**：D1+D2+D3 三修复。**上线后 D2 被证明有害**（详见上一条的回退段）：Gemini 视频请求 500。D1 的修复则在上线后**立即实测确认有效**（同一 webm 从 `prompt=26/quota=996/upstream` 变为 **`prompt=1027/quota=7032/billing-usage-openai-estimated`**，客户端仍见上游的 26）。
 - **`mainland.2`（`860776684`）**：回退 D2（3 处代码 + 3 处测试），保留 D1/D3。全量 53 包重跑全绿。**这是本会话第二次「干净合并但语义有误」的实例**（第一次是 rc39 侧测试签名），两次都靠**上线后真实请求**而非测试发现——纯文本合并、甚至全量测试全绿，都不足以证明行为正确。
 - **未决项（新，已单列）**：**Gemini→OpenAI 的请求转换器把内联视频转坏**（`400 invalid image base64 content`，ch15/ch17）。与 D2 无关，是既有缺陷；修好它之后，Gemini 形态的能力收窄才重新可取（届时扫描与转换两侧都要补，且必须用真实请求验证）。
+
+## 2026-09-22 主工作区收尾：那条挂了 16 小时的废弃合并已结束，主线已合入
+
+- **用户「合并进主线」的处置**：主工作区的 rc39 合并（`HEAD a6cab488f` + `MERGE_HEAD=9978ee1e2` + 59 冲突）**已被另一会话用隔离 worktree 取代**——核对结论：`MERGE_HEAD` 自身**已是 `origin/tokeness/main` 的祖先**，本地 `tokeness/main` 落后 100 提交、领先 0，且 56/59 个冲突文件**仍带冲突标记**（没有任何人工解冲突成果可保留）。两份输入都能从历史还原，故 `git merge --abort` 结束它**不丢任何内容**，随后 `git merge --ff-only origin/tokeness/main` 纯快进到主线。
+- **也核过一个易被误判为「有未合入内容」的孤立合并提交**：reflog 里的 `37fec3371`（`Merge branch 'feat/video-routing-capability' into tokeness/main`，19:47 那次短暂推进后回退的产物）**不在主线**，但它的内容**一项不少**——其引入的四个提交（`d9b3a1cb0`/`19219cbcd`/`5ac83c274`/`efa1225f5`）**全部已是 HEAD 祖先**，该分支后由 `c02bafa40` 正式合入；`git rev-list --objects 37fec3371 --not HEAD` 只剩 **2 个对象（提交本身 + 根树）**、**零个 blob**，即没有任何文件内容只存在于它。**教训**：判断「某提交是否有未合入内容」要用 `--not HEAD` 比对象集合，不要用 `git diff HEAD <commit>`——后者会因基线差异显示上百个文件，完全误导。
+- **收尾后的状态（可信基线）**：`apps/new-api` 工作树干净（仅未跟踪 `node_modules/`，已被 `.gitignore` 忽略），HEAD = `origin/tokeness/main` = CNB 镜像 = GitHub 镜像 = `0c309255c`；`go build ./...` / `go vet ./...` clean、**`go test -count=1 ./...` 53 包全绿**、web `tsgo -b` 通过。全部侧分支（`codex/sync-upstream-rc36/38/39/40/8529f209`、`feat/video-routing-capability`）均已合入主线。
+- **遗留（非本次引入，未动）**：① 3 条 stash 均在主线中已有对应内容（`stash@{1}` 与主线**逐字节一致**；`stash@{0}` 是视频分支的旧快照，其符号在 HEAD 中只多不少；`stash@{2}` 早于两次上游同步），保留未删。② 根仓库 `scripts/test-workspace-repos.ps1` 报 3 个 FAIL ——`tools/channel-switcher`、`tools/tokeness-ops`、`tools/nginx-dev-proxy/repo-newapi-webdist` 在 `workspace-repos.json` 里声明但磁盘上不存在，且**根仓库从未跟踪过它们**（`git log --all` 为空），属既有工作区状态问题，与本日改动无关。
