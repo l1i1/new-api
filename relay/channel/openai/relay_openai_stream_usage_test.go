@@ -1150,3 +1150,148 @@ func TestDeepSeekThinkingLogprobsRequireBothOutputStreams(t *testing.T) {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+// TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame pins the interlock
+// between the two writers of K3's official usage-only event. Official puts the
+// counts on choices[0] of the terminal chunk and then, when the client asked
+// for stream usage, repeats them in a choices:[] event. Which writer produces
+// that second event depends on what the upstream reported:
+//
+//   - upstream carried usage  -> the fit rebuilds the event from the terminal
+//     chunk, so the two events agree byte for byte;
+//   - upstream carried none   -> the terminal chunk holds only the placeholder
+//     the fit injected, and the generic HandleFinalResponse injection sends the
+//     counts derived from the response text instead.
+//
+// Getting this wrong is visible to the client either way: skip the first branch
+// and it sees a zeroed usage; skip the interlock and it sees two events.
+func TestOaiStreamHandlerK3EmitsExactlyOneTopLevelUsageFrame(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	terminal := func(withUsage bool) string {
+		chunk := `{"id":"chatcmpl-k3","object":"chat.completion.chunk","created":1790053753,"model":"kimi-k3",` +
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+		if !withUsage {
+			return chunk
+		}
+		return `{"id":"chatcmpl-k3","object":"chat.completion.chunk","created":1790053753,"model":"kimi-k3",` +
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":93,"completion_tokens":55,"total_tokens":148,` +
+			`"prompt_token_details":{},"prompt_cache_write_tokens":17,"credit":0.2}}`
+	}
+	body := func(withUsage bool) string {
+		return strings.Join([]string{
+			`data: {"id":"chatcmpl-k3","object":"chat.completion.chunk","created":1790053753,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null,"logprobs":null}]}`,
+			`data: ` + terminal(withUsage),
+			`data: [DONE]`,
+			``,
+		}, "\n")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		withUsage bool
+	}{
+		{name: "upstream reports usage", withUsage: true},
+		{name: "upstream reports none", withUsage: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3"},
+				OriginModelName:    "kimi-k3",
+				IsStream:           true,
+				RelayMode:          relayconstant.RelayModeChatCompletions,
+				RelayFormat:        types.RelayFormatOpenAI,
+				ShouldIncludeUsage: true,
+				ClientIncludeUsage: true,
+				DisablePing:        true,
+				UserSetting: dto.UserSetting{
+					OfficialFit: &dto.OfficialFitConfig{
+						Profile: map[string]dto.OfficialFitProfile{"kimi-k3": {Shape: true}},
+					},
+				},
+			}
+			info.SetEstimatePromptTokens(40)
+
+			_, err := OaiStreamHandler(c, info, &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body(tc.withUsage))),
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			})
+			require.Nil(t, err)
+
+			// Collect the usage objects by where they appeared. The values are
+			// decoded loosely: a real usage carries nested detail objects, so
+			// only the counts are read back as numbers.
+			var choiceUsage, topUsage []map[string]any
+			var topKeys map[string]any
+			count := func(usage map[string]any, key string) int {
+				value, ok := usage[key].(float64)
+				require.Truef(t, ok, "%s missing or not a number in %v", key, usage)
+				return int(value)
+			}
+			for _, line := range strings.Split(recorder.Body.String(), "\n") {
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if payload == "" || payload == "[DONE]" {
+					continue
+				}
+				var chunk map[string]any
+				require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+				choices, _ := chunk["choices"].([]any)
+				if len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]any); ok {
+						if usage, ok := choice["usage"].(map[string]any); ok {
+							choiceUsage = append(choiceUsage, usage)
+						}
+					}
+				}
+				if usage, ok := chunk["usage"].(map[string]any); ok {
+					topUsage = append(topUsage, usage)
+					topKeys = chunk
+				}
+			}
+
+			require.Len(t, choiceUsage, 1, "the terminal chunk carries the counts on choices[0]")
+			require.Len(t, topUsage, 1, "exactly one top-level usage event, never two")
+			for _, key := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
+				assert.Equalf(t, count(choiceUsage[0], key), count(topUsage[0], key),
+					"the two events must not disagree on %s", key)
+			}
+
+			// The event's field set is the discriminator between the two writers
+			// that could produce it. Official's is exactly these six keys, and
+			// the K3 fit never invents a backend identity — whereas
+			// GenerateFinalUsageResponse unconditionally sets system_fingerprint
+			// (to "" when it knows none), which would leak an extra key. So this
+			// assertion is what keeps the fit as the writer in both branches.
+			var keys []string
+			for key := range topKeys {
+				keys = append(keys, key)
+			}
+			assert.ElementsMatch(t,
+				[]string{"id", "object", "created", "model", "choices", "usage"}, keys,
+				"the usage-only event must carry exactly the official field set")
+
+			// The counts must be real, whichever writer produced them: the
+			// upstream's own values, or values derived from the answer — never
+			// the placeholder the fit injected.
+			assert.Greater(t, count(topUsage[0], "prompt_tokens"), 0, "a zeroed usage means the wrong writer won the interlock")
+			assert.Greater(t, count(topUsage[0], "completion_tokens"), 0, "a zeroed usage means the wrong writer won the interlock")
+			if tc.withUsage {
+				assert.Equal(t, 93, count(topUsage[0], "prompt_tokens"), "the upstream's own counts are preserved")
+				assert.Equal(t, 55, count(topUsage[0], "completion_tokens"), "the upstream's own counts are preserved")
+			}
+		})
+	}
+}
