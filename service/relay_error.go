@@ -62,6 +62,9 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// An operator-configured keyword is an explicit channel capability signal;
 	// it takes precedence over a generic skip-retry marker.
 	if operation_setting.MatchesAutomaticRetryKeywords(err.Error()) {
+		if officialFitPinKeepsVerdict(c, err) {
+			return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
+		}
 		return PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}
 	}
 	if types.IsSkipRetryError(err) {
@@ -84,6 +87,41 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 
 func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	return DecideRelayRetry(c, openaiErr, retryTimes).Action == "retry"
+}
+
+// officialFitPinKeepsVerdict reports whether a retry-keyword match must NOT
+// trigger channel failover because the request is pinned to an official-fit
+// channel and retrying cannot produce a different answer.
+//
+// Why this is needed: the operator keyword list is written for aggregator
+// traffic, where one upstream's wording is a channel capability gap that another
+// channel can serve — that is the entire point of the list. An official-fit
+// request is a different kind of traffic. Its pin is hard: channel selection
+// keeps only channels that are official-behaving for the model
+// (model.preferOfficialFitChannels), and a family may have a single such channel
+// (Kimi K3, GLM 5.3). Failing over there cannot reach a second candidate, so the
+// retry re-pins, excludes the only official channel, and the request dies with a
+// routing error that REPLACES the official text — the exact opposite of what the
+// pin exists for (the fit contract promises the official verdict passes through
+// verbatim). Stopping keeps that verdict intact.
+//
+// The marker is set only for official-fit families
+// (middleware.markV4OfficialPinFromDistributor classifies via the officialfit
+// registry and needs both the user's Route dimension and a family predicate),
+// so the pin flag alone is sufficient evidence here; no model lookup is needed.
+//
+// Credential rotation is exempt: the next key of the same official channel is the
+// same official endpoint, so the fit contract holds while the request still gets
+// served. That path keeps the channel and does not consume the retry budget.
+func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
+	if c == nil || err == nil {
+		return false
+	}
+	if !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
+		return false
+	}
+	return !(common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) &&
+		ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()))
 }
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {

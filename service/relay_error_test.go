@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
@@ -216,4 +217,87 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	other := model.NewLogOther()
 	AppendRelayLogAdminInfo(untouched, nil, other)
 	assert.NotContains(t, other.Snapshot()["admin_info"], "request_policy", "requests without decisions do not carry an empty record")
+}
+
+// TestOfficialFitPinKeepsUpstreamVerdict pins the rule that an operator retry
+// keyword must not fail an official-fit request over to another channel: the pin
+// admits only official-behaving channels and a family may have just one, so the
+// retry would re-pin, exclude it, and replace the upstream verdict with a routing
+// error. Credential rotation is still allowed because it keeps the channel.
+func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	origMultiKeyKeywords := operation_setting.MultiKeyCredentialRetryKeywords
+	t.Cleanup(func() {
+		operation_setting.AutomaticRetryKeywords = origKeywords
+		operation_setting.MultiKeyCredentialRetryKeywords = origMultiKeyKeywords
+	})
+	operation_setting.AutomaticRetryKeywordsFromString("insufficient balance")
+
+	// A 400 is outside the automatic retry ranges, so the keyword is the only
+	// thing that could admit failover.
+	balanceErr := types.NewOpenAIError(
+		errors.New("credit insufficient balance: balance=0 required=114"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+
+	t.Run("unpinned request still fails over on the keyword", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision)
+	})
+
+	t.Run("official-pinned request keeps the upstream verdict", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+	})
+
+	t.Run("official-pinned multi-key channel still rotates its credential", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision,
+			"another key of the same official channel keeps the fit contract and still serves the request")
+	})
+
+	t.Run("official DeepSeek out-of-balance keeps rotating keys", func(t *testing.T) {
+		// The real wording and status the official DeepSeek channel returns when
+		// its account runs dry (`status_code=402, Insufficient Balance`, observed
+		// on the live channel). It matches the operator balance keyword
+		// case-insensitively, and the channel is multi-key, so the pinned request
+		// must still rotate to the next key of the SAME official endpoint.
+		pinned := types.NewOpenAIError(
+			errors.New("Insufficient Balance"),
+			types.ErrorCodeBadResponseStatusCode,
+			http.StatusPaymentRequired,
+		)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+		decision := DecideRelayRetry(c, pinned, 1)
+		assert.Equal(t, "retry", decision.Action,
+			"a drained official credential is recovered by rotating keys on the same official channel")
+		assert.Equal(t, true, ShouldRotateMultiKeyCredentialOn(pinned.StatusCode, pinned.Error()))
+	})
+
+	t.Run("the guard never changes a decision the keyword list did not make", func(t *testing.T) {
+		// A wording outside the keyword list must decide exactly as it would
+		// without the pin. Asserting the two against each other keeps this test
+		// independent of the compiled status-code default (which still lists
+		// 400; production excludes it through the operational option).
+		otherErr := types.NewOpenAIError(
+			errors.New("max_tokens must be greater than 2"),
+			types.ErrorCodeBadResponseStatusCode,
+			http.StatusBadRequest,
+		)
+		plain, _ := gin.CreateTestContext(httptest.NewRecorder())
+		pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(pinned, constant.ContextKeyV4OfficialPin, true)
+		assert.Equal(t, DecideRelayRetry(plain, otherErr, 1), DecideRelayRetry(pinned, otherErr, 1),
+			"the official-fit guard only intercepts keyword matches")
+	})
 }
