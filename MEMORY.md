@@ -1282,7 +1282,14 @@
 - **校验**：`tsgo -b` 通过、`oxlint` 0/0、`video-understanding.test.ts` 8/8（此前已验证：把「关能力时删 mode」那行去掉会让其中 2 条失败）。**提交纪律**：同一工作树里另有并发会话未提交的 8 个 Go 文件（Kimi K3 fit 相关），按路径只暂存自己的 12 个文件，对方改动原样未动；`git diff --cached` 扫过密钥，无命中。
 - **状态**：已推 `origin/tokeness/main`（`a91e8ead0..e184c1ae8`）。**未发版**——生产部署需用户显式指令；发版后线上运营才能在渠道抽屉里打这两个标记。此前「运营改渠道会破坏标记」的结论仍成立（`buildSettingsJSON` 保留未知键，本次改动只是**补上写入入口**，不是修复破坏）。
 
-## 2026-09-22 发现（未修，待决策）：普通用户能经 `response_model` 看到上游模型名
+## 2026-09-22 修复：普通用户不再能经 `response_model` 看到上游模型名（提交 `b4fa063b3`，**已推送未发版**）
+
+- **用户拍板「对普通用户隐藏，仅管理可见」**，按处置选项①实施：把 `response_model` 加进 `logOtherVisibilityUser` 的剥离清单（`model/log_other.go` 里与 `upstream_model_name`/`is_model_mapped` 同一循环）。管理员与 root 视图不受影响——不一致警示是他们的运营诊断。
+- **端到端实测（本地实例，非推断）**：同一份日志（三元组与用户截图逐字一致），**普通用户** `/api/log/self` 的 `other` 只剩计费字段（`response_model`/`upstream_model_name`/`is_model_mapped`/`admin_info` 全无、`model_price` 保留）；**管理员** `/api/log/` 四项俱全。浏览器侧：普通用户 `/usage-logs/common` 里警示与上游 id **都不再出现**；管理员仍显示 `响应模型：accounts/fireworks/models/deepseek-v4-flash-0731` 且浮层三行完整。前端无需改动——`response_model` 本就声明为可选（`types.ts:202`），`isResponseModelMismatch(undefined)` 返回 false 自然降级。
+- **测试与回归证明**：新增 `TestFormatUserLogsHidesResponseModelObservation`（用户视图无该键、同对象的计费字段保留、管理员视图仍有）。**已验证测试有效**：临时把 `"response_model"` 从剥离清单移除后该用例 FAIL 且报错内容正是泄漏本身，恢复后通过。全量 `go build ./...` / `go vet ./...` clean，`go test -count=1 ./...` 全绿（一次 `relay/channel/openai` 偶发失败，单独连跑 3 次与全量重跑均通过，与本改动无关）。
+- **顺带澄清（有意不动）**：用户视图仍带**数字渠道号** `channel: 37`（结构体字段 `ChannelId json:"channel"`，`formatUserLogs` 只清 `ChannelName` 而特意留下数字 id）。这是既有可见性设计的一部分，用户本次要求仅针对上游模型名，故不扩大范围。若将来认为渠道号也算商业信息，需另行决策。
+
+## 2026-09-22 早期记录：该问题的发现过程（已处置，保留作为判据来源）
 
 - **问题（用户问「/usage-logs/common 里的这个提示普通用户能吗」，实测答案：能）**：普通用户在自己的用量日志里**完整看到**「响应模型不一致」警示，展开后 `请求模型 / 上游请求模型 / 响应模型` 三项俱全。该字段是 `other.response_model`（`{requested_model, upstream_model, returned_model}`），其中 `upstream_model` 就是**渠道映射后的上游真实模型 id**（截图例子：`deepseek/deepseek-v4-flash-0731`）。
 - **为什么这是个疏漏而不是有意为之**：同一份日志里，**顶层**的 `upstream_model_name` 与 `is_model_mapped` 被 `formatLogOtherJSON(..., logOtherVisibilityUser)` **明确剥离**（`model/log_other.go:242`，且有测试 `TestFormatUserLogsHidesUpstreamModel` 守着）——即「不让普通用户看到上游模型名」是既定意图，而**嵌套的 `response_model.upstream_model` 带着同一个值绕过了它**。`SetPublic` 的保留字检查只管顶层键，管不到嵌套字段。
