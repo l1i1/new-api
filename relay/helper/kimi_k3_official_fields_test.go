@@ -108,19 +108,57 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 			kimiK3TopLogprobsPairMessage,
 		},
 		{
-			"tool_choice outside the three strings",
+			"tool_choice outside the three strings while thinking is enabled",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", ToolChoice: "bogus"},
 			kimiK3ToolChoiceSpecifiedMessage,
 		},
 		{
-			"tool_choice specified function object",
+			"tool_choice specified function object while thinking is enabled",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3",
 				ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
 			kimiK3ToolChoiceSpecifiedMessage,
 		},
 		{
+			// Q1: the object form is rejected by the thinking state alone, so a
+			// request that declares no tools is rejected the same way.
+			"tool_choice specified function object without tools while thinking is enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"enabled"}`),
+				ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
+			kimiK3ToolChoiceSpecifiedMessage,
+		},
+		{
+			// S2/G4: with thinking off the same unknown string answers the
+			// unknown-strategy text instead, naming the value.
+			"tool_choice outside the three strings while thinking is off",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"disabled"}`),
+				ToolChoice: "bogus"},
+			kimiK3UnknownToolChoicePrefix + "bogus" + kimiK3UnknownToolChoiceSuffix,
+		},
+		{
+			// A/C: `reasoning_effort: "none"` is the second control that turns
+			// thinking off, so it pins the same 0.6 temperature.
+			"temperature above the thinking-off pin with effort none",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", ReasoningEffort: "none", Temperature: floatPtr(1.0)},
+			kimiK3TemperatureDisabledMessage,
+		},
+		{
+			// K1: an explicit thinking type outranks the effort field.
+			"temperature at the thinking-off pin while thinking is explicitly enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"enabled"}`),
+				ReasoningEffort: "none", Temperature: floatPtr(0.6)},
+			kimiK3TemperatureThinkingMessage,
+		},
+		{
 			"tool_choice required without tools",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", ToolChoice: "required"},
+			kimiK3ToolChoiceRequiredMessage,
+		},
+		{
+			// Q2: the required-without-tools check runs before the
+			// thinking-state one, so it answers the same text with thinking off.
+			"tool_choice required without tools while thinking is off",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"disabled"}`),
+				ToolChoice: "required"},
 			kimiK3ToolChoiceRequiredMessage,
 		},
 		{
@@ -323,6 +361,29 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "kimi-k3", Messages: base.Messages, ToolChoice: "required",
 			Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get_weather"}}}},
 		{Model: "kimi-k3", Messages: []dto.Message{dynamicTool("get_weather"), {Role: "user", Content: "天气？"}}, ToolChoice: "required"},
+		// R2: `required` with a tool is accepted while thinking is on too
+		// (unlike DeepSeek V4, which rejects it there).
+		{Model: "kimi-k3", Messages: base.Messages, ToolChoice: "required",
+			Tools:       []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get_weather"}}},
+			Temperature: floatPtr(1.0)},
+		// T1/T2/O1: the named-function object is legal once thinking is off,
+		// which is the shape the Channel Mate probe sends; the two controls
+		// that turn it off are each covered, plus the effort-axis fallbacks
+		// (M3/M4) that leave the state to the effort field.
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"disabled"}`),
+			ToolChoice:  map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
+			Tools:       []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get_weather"}}},
+			Temperature: floatPtr(0.6)},
+		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "none",
+			ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
+			Tools:      []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get_weather"}}}},
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`null`), ReasoningEffort: "NONE",
+			ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{}`), ReasoningEffort: "none",
+			ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}},
+		// K2: thinking "disabled" outranks a high effort, so the 0.6 pin holds.
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"disabled"}`),
+			ReasoningEffort: "high", Temperature: floatPtr(0.6)},
 		// strict=false and a missing parameters field are both tolerated.
 		{Model: "kimi-k3", Messages: []dto.Message{dynamicTool("x")}},
 		// The chain may be answered across several tool messages in any order.

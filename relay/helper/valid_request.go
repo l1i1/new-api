@@ -1034,19 +1034,27 @@ func officialFitProfile(c *gin.Context, model string) (dto.OfficialFitProfile, b
 
 // Kimi K3 official validation texts, re-probed live against api.moonshot.cn on
 // 2026-09-21 (the 2026-08-27 set had drifted: `logprobs: only false` and the
-// single fixed temperature no longer match the endpoint). Facts pinned by that
-// probe:
+// single fixed temperature no longer match the endpoint) and again on
+// 2026-09-22 for the thinking state and tool_choice. Facts pinned by those
+// probes:
 //   - the fixed temperature follows the thinking state: enabled (the default)
-//     pins 1.0, `thinking.type=disabled` pins 0.6 — two distinct texts;
+//     pins 1.0, thinking off pins 0.6 — two distinct texts;
+//   - "thinking off" has two controls: `thinking.type=disabled`, or
+//     `reasoning_effort: "none"` when thinking carries no recognized type; an
+//     explicit thinking type outranks the effort field in both directions;
 //   - `logprobs: true` is ACCEPTED in both states and returns logprobs data;
 //     only `top_logprobs > 0` without `logprobs: true` is rejected;
-//   - any tool_choice string outside auto/none/required is rejected with the
-//     "specified" text, and `required` needs at least one tool (request-level
-//     or dynamic);
+//   - tool_choice's "specified" class is gated on the thinking state: while
+//     thinking is on, both the named-function object and a string outside the
+//     enum answer the "specified" text; with thinking off the object is
+//     accepted and really forces the call, while such a string answers the
+//     "unknown tool choice strategy" text naming the value;
+//   - `required` needs at least one tool (request-level or dynamic) in both
+//     thinking states, and that check comes before the thinking-state one;
 //   - the tool-call chain has its own state machine and texts;
 //   - dynamic tools, response_format and empty messages have their own texts.
 //
-// Everything the endpoint tolerates (reasoning_effort strings, the K2.x
+// Everything else the endpoint tolerates (reasoning_effort strings, the K2.x
 // thinking field, max_completion_tokens, strict=false tools, missing tool
 // parameters) must pass through unvalidated.
 const (
@@ -1059,6 +1067,10 @@ const (
 	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolChoiceRequiredMessage  = "Invalid request: tool_choice 'required' requires at least one tool"
+	// The unknown-strategy text interrupts the value with the endpoint's own
+	// (slightly off) list of supported strategies; mirrored verbatim.
+	kimiK3UnknownToolChoicePrefix    = "Invalid request: unknown tool choice strategy: "
+	kimiK3UnknownToolChoiceSuffix    = ", currently only auto and none are supported"
 	kimiK3ToolNameMessage            = "Invalid request: function name is invalid, must start with a letter and can contain letters, numbers, underscores, and dashes"
 	kimiK3MessagesEmptyMessage       = "Invalid request: messages must not be empty"
 	kimiK3ReasoningEffortTypeMessage = "Invalid request: the `reasoning_effort` field in the request (expected type string) is illegal, and number is not acceptable"
@@ -1140,7 +1152,7 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isKimiK3Model(request.Model) {
 		return nil
 	}
-	thinkingEnabled := kimiK3ThinkingEnabled(request.THINKING)
+	thinkingEnabled := kimiK3ThinkingEnabled(request)
 	if request.Temperature != nil {
 		// The fixed temperature follows the thinking state: enabled (the
 		// default) pins 1.0, disabled pins 0.6, with distinct texts.
@@ -1187,28 +1199,50 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 }
 
 // kimiK3ThinkingEnabled reports whether the request runs in thinking mode.
-// Official K3 defaults to enabled; only an explicit type=disabled (or
-// disabled-equivalent casing) turns it off. A malformed thinking value is
-// ignored by the endpoint and therefore counts as enabled here.
-func kimiK3ThinkingEnabled(raw json.RawMessage) bool {
-	if len(raw) == 0 {
+// Official K3 defaults to enabled, and two fields can turn it off: a
+// thinking.type of disabled, or reasoning_effort "none". A recognized
+// thinking.type outranks the effort field in both directions (live-probed
+// 2026-09-22: thinking "enabled" with effort "none" stays enabled, and thinking
+// "disabled" with effort "high" stays disabled), so the effort field only
+// decides when thinking carries no usable type — absent, null, an empty object,
+// or a value that is not an object at all.
+//
+// Matching is case-insensitive and trims nothing around reasoning_effort (live
+// probe: effort "NONE" flips the state, " none " does not) but does trim around
+// the thinking type. That trim is the one deliberate divergence: the endpoint
+// answers a padded type with its own deserialization-class rejection
+// (`invalid value for thinking type: "  disabled  "`), which this predicate does
+// not reproduce — a padded value is classified as the disabled state here and
+// the request reaches the upstream, which still rejects it. Both paths fail the
+// request, so the divergence costs a message text on malformed input, never a
+// wrong outcome.
+func kimiK3ThinkingEnabled(request *dto.GeneralOpenAIRequest) bool {
+	if request == nil {
 		return true
 	}
-	var thinking map[string]any
-	if err := json.Unmarshal(raw, &thinking); err != nil {
-		return true
+	if raw := request.THINKING; len(raw) > 0 {
+		var thinking map[string]any
+		if err := json.Unmarshal(raw, &thinking); err == nil {
+			if t, ok := thinking["type"].(string); ok {
+				return !strings.EqualFold(strings.TrimSpace(t), "disabled")
+			}
+		}
 	}
-	if t, ok := thinking["type"].(string); ok {
-		return !strings.EqualFold(strings.TrimSpace(t), "disabled")
-	}
-	return true
+	return !strings.EqualFold(request.ReasoningEffort, "none")
 }
 
-// validateKimiK3ToolChoice enforces the three legal string values. The official
-// endpoint answers any other string (including object forms and unexpected
-// casings) with the "specified" text, and `required` demands at least one tool
-// so a request with none (or an empty array) is rejected.
+// validateKimiK3ToolChoice mirrors the official tool_choice contract
+// (live-probed 2026-09-22). `required` demands at least one tool — request-level
+// or dynamic — in either thinking state, and that check comes first: with a tool
+// declared, `required` is accepted even while thinking (unlike DeepSeek V4,
+// which rejects it there). The "specified" class is gated on the thinking state.
+// While thinking is off, the named-function object is legal and really forces
+// the call (a name that is not declared gets its own upstream "not found" 400),
+// and a string outside auto/none/required answers the "unknown tool choice
+// strategy" text naming the value. While thinking is on, both shapes answer the
+// "specified" text, whose wording is what ties the rejection to that state.
 func validateKimiK3ToolChoice(request *dto.GeneralOpenAIRequest) error {
+	thinkingEnabled := kimiK3ThinkingEnabled(request)
 	switch choice := request.ToolChoice.(type) {
 	case nil:
 		return nil
@@ -1225,10 +1259,20 @@ func validateKimiK3ToolChoice(request *dto.GeneralOpenAIRequest) error {
 			}
 			return nil
 		default:
+			if thinkingEnabled {
+				return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
+			}
+			return kimiK3Error(kimiK3UnknownToolChoicePrefix + choice + kimiK3UnknownToolChoiceSuffix)
+		}
+	case map[string]any:
+		if thinkingEnabled {
 			return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
 		}
+		return nil
 	default:
-		// Object forms (and any non-string) get the same "specified" text.
+		// Non-string, non-object shapes are the deserialization class; the
+		// "specified" text is the closest observed answer and is what the
+		// endpoint renders for every other unexpected shape, so they keep it.
 		return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
 	}
 }
@@ -1702,6 +1746,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		kimiK3TopLogprobsPairMessage,
 		kimiK3ToolChoiceSpecifiedMessage,
 		kimiK3ToolChoiceRequiredMessage,
+		kimiK3UnknownToolChoicePrefix,
 		kimiK3ToolNameMessage,
 		kimiK3MessagesEmptyMessage,
 		kimiK3ReasoningEffortTypeMessage,

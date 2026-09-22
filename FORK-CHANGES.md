@@ -81,6 +81,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | official-fit：官方渠道定型（Kimi K3 / Moonshot 契约、family registry、serde 位置后缀） | `officialfit/officialfit.go`、`relay/channel/openai/deepseek_v4_fit.go`、`docs/official-fit-mode.md` | `relay/channel/openai/deepseek_v4_fit_test.go` |
 | official-fit：K3 业务 400 只用 Moonshot 的两字段信封 `{message,type}`（共享 `OpenAIError` 恒带 `param`/`code`，必须显式映射） | `controller/relay.go` | `controller/relay_committed_response_test.go`（`TestRelayRendersMoonshotTwoFieldEnvelopeForKimiK3`） |
 | official-fit：K3 流式在终端帧之后按**客户端自己的** `stream_options.include_usage` 补发官方的 usage-only 帧（`choices:[]` + 顶层 usage），否则标准 OpenAI 客户端读不到任何 token 数 | `relay/channel/openai/kimi_k3_fit.go`、`relay/channel/openai/relay-openai.go`、`relay/channel/openai/helper.go`、`relay/common/relay_info.go`、`relay/compatible_handler.go` | `relay/channel/openai/kimi_k3_fit_test.go`（`TestFitKimiK3StreamUsageOnlyChunk*`） |
+| official-fit：K3 本地参数校验里与思考状态相关的两条规则（temperature 的固定值与 `tool_choice` 的「specified」类）必须按**思考状态**分支。`tool_choice`：「specified」只在思考开启时成立，关闭时命名函数对象合法并真的强制调用，未知字符串改回官方的「unknown tool choice strategy」原文。「关闭思考」有两个控制轴（`thinking.type=disabled` 与 `reasoning_effort:"none"`），显式 type 优先于 effort | `relay/helper/valid_request.go` | `relay/helper/kimi_k3_official_fields_test.go`、`relay/helper/deepseek_v4_logprobs_test.go`（`TestKimiK3NamedToolChoiceAcceptedWithThinkingOff`，实测 2026-09-22 官方端点逐条校准） |
 | DeepSeek V4 / Ollama / GLM 等适配加固（内容类型校验、thinking、prompt cache） | `relay/channel/openai/*`、`relay/channel/ollama/*` | 各自 `*_test.go` |
 
 ## 6. 内容安全
@@ -123,6 +124,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 流式 usage / `stream_status` | 后端写入 ↔ 日志与前端读取 | 上游 SSE 提前 EOF 时的语义 |
 | 渠道视频标记的读写两端 | 渠道抽屉表单 ↔ `relaykit/dto/channel_settings.go` 的 `supports_video`/`video_usage_mode` | 表单写入后重开抽屉须回读一致；关掉能力后两键必须从 settings 消失 |
 | 日志字段的可见性分级 | `model/log_other.go` 的 user/admin/root 投影 ↔ 前端读取 | 新增任何会落到 `other` 的上游字段时，判断它是否重复了顶层被剥的值（`response_model` 就是这么漏过去的） |
+| K3 本地校验器与官方契约的逐条对齐 | `relay/helper/valid_request.go` 的校验文本/规则 ↔ `IsStrictFitValidationMessage` 的识别清单 ↔ `controller/relay.go` 的 Moonshot 两字段信封 | 改任一校验文本时必须三处同步：文本常量、识别前缀（否则错误会带上网关 request id、破坏 byte-identical）、信封渲染；新增/修改规则后用官方端点逐条复测 |
 | locale 键集合 | 7 个 locale 文件 | 键集合完全一致、0 重复、无 BOM/格式翻动 |
 | 主题偏好存储与首屏应用 | `theme-customization-provider.tsx` ↔ `initializeThemeCustomizationDom`（`web/src/main.tsx`） | 换存储底座时两侧一起换；键集合必须一致 |
 | 邀请码与账本字段 | new-api ↔ `tools/partner-console`（根仓库） | 跨仓库，必须同批发布 |

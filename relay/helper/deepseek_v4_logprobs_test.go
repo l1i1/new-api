@@ -191,6 +191,55 @@ func TestKimiK3ValidationGatedByOfficialFitProfile(t *testing.T) {
 	assert.Equal(t, kimiK3TemperatureThinkingMessage, apiErr.ToOpenAIError().Message)
 }
 
+// TestKimiK3NamedToolChoiceAcceptedWithThinkingOff pins the outer entry point
+// against the body a live feature probe sends and our validator used to reject:
+// a named-function tool_choice with thinking disabled and the 0.6 temperature
+// that state pins. The upstream answers it 200 and really forces the call
+// (live-probed 2026-09-22); only the thinking-on state owns the "specified"
+// text, which is the whole wording of that rejection. The same request is
+// checked through the two controls that disable thinking, and the unknown-string
+// class through the text the endpoint actually renders with thinking off.
+func TestKimiK3NamedToolChoiceAcceptedWithThinkingOff(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tools := `[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]`
+	named := `"tool_choice":{"type":"function","function":{"name":"get_weather"}}`
+	k3FitContext := func(body string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		common.SetContextKey(c, coreconstant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"kimi-k3": {Validate: true},
+			}},
+		})
+		return c
+	}
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"named tool_choice with thinking disabled", `{"model":"kimi-k3","thinking":{"type":"disabled"},` + named + `,"tools":` + tools + `,"temperature":0.6,"messages":[{"role":"user","content":"天气？"}]}`, ""},
+		{"named tool_choice with effort none", `{"model":"kimi-k3","reasoning_effort":"none",` + named + `,"tools":` + tools + `,"messages":[{"role":"user","content":"天气？"}]}`, ""},
+		{"named tool_choice with thinking on", `{"model":"kimi-k3",` + named + `,"tools":` + tools + `,"messages":[{"role":"user","content":"天气？"}]}`, kimiK3ToolChoiceSpecifiedMessage},
+		{"unknown string with thinking off", `{"model":"kimi-k3","thinking":{"type":"disabled"},"tool_choice":"bogus","temperature":0.6,"messages":[{"role":"user","content":"天气？"}]}`, kimiK3UnknownToolChoicePrefix + "bogus" + kimiK3UnknownToolChoiceSuffix},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := GetAndValidateTextRequest(k3FitContext(tt.body), constant.RelayModeChatCompletions)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			var apiErr *types.NewAPIError
+			require.True(t, errors.As(err, &apiErr))
+			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			assert.Equal(t, tt.wantErr, apiErr.ToOpenAIError().Message)
+		})
+	}
+}
+
 func TestDeepSeekV4ToolChoiceMatchesOfficial(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	// Official contract (live-probed 2026-09-01, audit r6): in thinking mode
