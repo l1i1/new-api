@@ -57,35 +57,6 @@ func TestRequestBytesCarryVideo(t *testing.T) {
 		{name: "no messages", body: `{"model":"kimi-k3","input":"hi"}`, want: false},
 		{name: "empty body", body: ``, want: false},
 		{name: "invalid json", body: `{"model":`, want: false},
-		{
-			// The Gemini-native shape has no named part type: the media is an
-			// inline part typed by its mime string.
-			name: "gemini inline video (camelCase)",
-			body: `{"contents":[{"role":"user","parts":[{"text":"what is this?"},{"inlineData":{"mimeType":"video/mp4","data":"AAAA"}}]}]}`,
-			want: true,
-		},
-		{
-			name: "gemini inline video (snake_case)",
-			body: `{"contents":[{"role":"user","parts":[{"text":"what is this?"},{"inline_data":{"mime_type":"video/webm","data":"AAAA"}}]}]}`,
-			want: true,
-		},
-		{
-			name: "gemini inline image",
-			body: `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}]}`,
-			want: false,
-		},
-		{
-			// A mime type with no payload describes nothing to read or price.
-			name: "gemini video part without data",
-			body: `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"video/mp4"}}]}]}`,
-			want: false,
-		},
-		{name: "gemini text only", body: `{"contents":[{"role":"user","parts":[{"text":"1+1=?"}]}]}`, want: false},
-		{
-			name: "gemini text that mentions the field",
-			body: `{"contents":[{"role":"user","parts":[{"text":"how do I send an inlineData video/mp4 part?"}]}]}`,
-			want: false,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,29 +101,6 @@ func TestVideoDetectorsAgree(t *testing.T) {
 		}
 	}
 
-	geminiBodies := []string{
-		`{"contents":[{"role":"user","parts":[{"text":"hi"},{"inlineData":{"mimeType":"video/mp4","data":"AAAA"}}]}]}`,
-		`{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"video/webm","data":"AAAA"}}]}]}`,
-		`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}]}`,
-		`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"video/mp4"}}]}]}`,
-		`{"contents":[{"role":"user","parts":[{"text":"plain text"}]}]}`,
-	}
-	for _, body := range geminiBodies {
-		var request dto.GeminiChatRequest
-		if err := common.Unmarshal([]byte(body), &request); err != nil {
-			t.Fatalf("unmarshal %s: %v", body, err)
-		}
-		fromBody := RequestBytesCarryVideo([]byte(body))
-		sawVideo := false
-		for _, file := range request.GetTokenCountMeta().Files {
-			if file != nil && file.FileType == types.FileTypeVideo {
-				sawVideo = true
-			}
-		}
-		if fromBody != sawVideo {
-			t.Errorf("detectors disagree on %s: routing=%v pricing=%v", body, fromBody, sawVideo)
-		}
-	}
 }
 
 // TestCorrectedVideoBillingUsageUsesServingChannelSettings is the settlement

@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"strings"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -274,17 +273,20 @@ func CountVideoTokensForMeta(meta *types.TokenCountMeta) int {
 // mentions "video_url" must not be treated as a video request, or it would be
 // routed away from every channel that cannot read video. A part that names the
 // type without a url carries no media and is not a video request, matching what
-// the parser yields for pricing and settlement; the Gemini shape is matched on
-// the same terms, against the mime type the DTO prices it by.
+// the parser yields for pricing and settlement.
+//
+// Deliberately chat-shaped only. The Gemini-native shape is not scanned because
+// narrowing it cannot be satisfied in this deployment: the channels that
+// declare video (two OpenAI relays and the Moonshot direct line) cannot serve
+// the Gemini-native protocol at all — measured after enabling the scan, a Gemini
+// video request went from 200 (the retry chain reached a converter-capable
+// channel) to 500 with "not implemented" and "invalid image base64 content" on
+// the capable ones. A protocol the capability set cannot serve must not be
+// narrowed by it; see the note in docs/video-usage-estimation.md.
 func RequestBytesCarryVideo(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
-	return openAIBodyCarriesVideo(body) || geminiBodyCarriesVideo(body)
-}
-
-// openAIBodyCarriesVideo matches the chat-completions shape.
-func openAIBodyCarriesVideo(body []byte) bool {
 	result := gjson.GetBytes(body, "messages")
 	if !result.IsArray() {
 		return false
@@ -299,48 +301,6 @@ func openAIBodyCarriesVideo(body []byte) bool {
 				continue
 			}
 			if part.Get("video_url").Exists() {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// geminiBodyCarriesVideo matches the Gemini-native shape, where media arrives
-// as an inline part typed by its mime string rather than as a named content
-// part. Without this, a Gemini video request was routed with no capability
-// narrowing at all — measured: it was offered to a channel that silently drops
-// video before landing on one that reads it — and its video part was never
-// priced, so an estimate-mode channel billed the upstream's text-only count.
-//
-// Both spellings the DTO accepts are accepted here, and the part must carry
-// data: a mime type alone describes nothing to price.
-func geminiBodyCarriesVideo(body []byte) bool {
-	contents := gjson.GetBytes(body, "contents")
-	if !contents.IsArray() {
-		return false
-	}
-	for _, content := range contents.Array() {
-		parts := content.Get("parts")
-		if !parts.IsArray() {
-			continue
-		}
-		for _, part := range parts.Array() {
-			inline := part.Get("inlineData")
-			if !inline.Exists() {
-				inline = part.Get("inline_data")
-			}
-			if !inline.Exists() {
-				continue
-			}
-			mime := inline.Get("mimeType").String()
-			if mime == "" {
-				mime = inline.Get("mime_type").String()
-			}
-			if !strings.HasPrefix(mime, "video/") {
-				continue
-			}
-			if inline.Get("data").String() != "" {
 				return true
 			}
 		}

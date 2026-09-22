@@ -169,30 +169,11 @@ func estimateCacheKey(endpoint string, body []byte) string {
 // not chat shapes, or that carry no video, report ok=false so the caller falls
 // back without an outbound call.
 func estimateMessagesFor(request dto.Request) (any, string, bool) {
-	var messages []dto.Message
-	switch chat := request.(type) {
-	case *dto.GeneralOpenAIRequest:
-		if chat == nil || len(chat.Messages) == 0 {
-			return nil, "", false
-		}
-		// The message array goes out as the client sent it, so the endpoint
-		// prices exactly what the upstream was asked to read.
-		messages = chat.Messages
-	case *dto.GeminiChatRequest:
-		// The endpoint speaks the OpenAI shape, so a Gemini request is
-		// translated rather than skipped. Skipping it left the same hole the
-		// local model has: an inline video the local parser cannot read had no
-		// source left that could price it.
-		if chat == nil {
-			return nil, "", false
-		}
-		messages = geminiMessagesForEstimate(chat)
-		if len(messages) == 0 {
-			return nil, "", false
-		}
-	default:
+	chat, ok := request.(*dto.GeneralOpenAIRequest)
+	if !ok || chat == nil || len(chat.Messages) == 0 {
 		return nil, "", false
 	}
+	messages := chat.Messages
 
 	hash := sha256.New()
 	sawVideo := false
@@ -216,52 +197,6 @@ func estimateMessagesFor(request dto.Request) (any, string, bool) {
 		return nil, "", false
 	}
 	return messages, hex.EncodeToString(hash.Sum(nil))[:32], true
-}
-
-// geminiMessagesForEstimate renders a Gemini request as the OpenAI message
-// array the endpoint prices. Media travels inline as a data URL, which is the
-// same media the client sent; only the envelope changes. Text parts are kept
-// so the endpoint prices the whole prompt, not just the media.
-func geminiMessagesForEstimate(chat *dto.GeminiChatRequest) []dto.Message {
-	messages := make([]dto.Message, 0, len(chat.Contents))
-	for _, content := range chat.Contents {
-		parts := make([]dto.MediaContent, 0, len(content.Parts))
-		for _, part := range content.Parts {
-			if part.Text != "" {
-				parts = append(parts, dto.MediaContent{Type: dto.ContentTypeText, Text: part.Text})
-			}
-			if part.InlineData == nil || part.InlineData.Data == "" {
-				continue
-			}
-			dataUrl := "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data
-			switch {
-			case strings.HasPrefix(part.InlineData.MimeType, "video/"):
-				parts = append(parts, dto.MediaContent{
-					Type:     dto.ContentTypeVideoUrl,
-					VideoUrl: &dto.MessageVideoUrl{Url: dataUrl},
-				})
-			case strings.HasPrefix(part.InlineData.MimeType, "image/"):
-				parts = append(parts, dto.MediaContent{
-					Type:     dto.ContentTypeImageURL,
-					ImageUrl: &dto.MessageImageUrl{Url: dataUrl},
-				})
-			}
-		}
-		if len(parts) == 0 {
-			continue
-		}
-		role := content.Role
-		if role == "model" {
-			// The endpoint follows the OpenAI vocabulary.
-			role = "assistant"
-		}
-		if role == "" {
-			role = "user"
-		}
-		contentCopy := parts
-		messages = append(messages, dto.Message{Role: role, Content: contentCopy})
-	}
-	return messages
 }
 
 // videoEstimateCache holds endpoint answers keyed by video content. It is

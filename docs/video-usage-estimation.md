@@ -27,11 +27,12 @@
 
 请求体带 `video_url` part 时，该请求只会在**声明了能力的渠道**之间选择：
 
-- 检测在**分发中间件**里做（body 已在手），置 `ContextKeyVideoRequest`。**两种协议都要认**：
-  OpenAI 形态（`messages[].content[]` 的 `video_url` part）与 Gemini 原生形态
-  （`contents[].parts[].inlineData`，mime 以 `video/` 开头且带 data）。Gemini 分支的
-  distributor **不解析 body**（模型名取自 URL），所以那里的扫描必须单独接线——漏掉它
-  的后果已实测：视频请求先被投给静默丢弃视频的渠道，且视频 part 从未被计价；
+- 检测在**分发中间件**里做（body 已在手），置 `ContextKeyVideoRequest`，**只认 chat 形态**
+  （`messages[].content[]` 的 `video_url` part）。Gemini 原生形态**刻意不扫**：能力收窄对它
+  无法满足——本站声明了视频的渠道（两条 OpenAI 中转 + Moonshot 直连）**都服务不了 Gemini
+  原生协议**（实测：开启该扫描后，Gemini 视频请求从 200 变成 500，报 `not implemented`
+  与 `invalid image base64 content`；关闭时重试链会落到能转换的渠道并正确返回）。**能力集
+  覆盖不到某协议时，就不能用能力收窄它**；
 - 收窄在选路内部完成（缓存路径与 DB 路径各一处），**不是**「先选再否决」——否则最高
   优先级是不可用渠道时，会返回「无可用渠道」而不是落到下一个优先级；
 - `FilterVideoRequest` 过滤器同时守住**渠道钉定**与**亲和相关**这两条绕过选择器的路径；
@@ -145,8 +146,8 @@ key 留在环境里也能正常工作），清空库里的一项即把该字段�
 | `model/channel_constraint.go` / `dto/channel_constraints.go` | `FilterVideoRequest`（守住钉定/亲和路径） |
 | `constant/context_key.go` / `middleware/distributor.go` | 请求级视频标记（body 层检测，置于选路前） |
 | `service/channel_select.go` | 把标记透传给选择器（每次重试都保持收窄） |
-| `service/video_token.go` | 请求/正则层视频检测（OpenAI + Gemini 两种形态）、容器解析 + 标定公式 + 媒体感知护栏 + 无本地价格时的端点判据 |
-| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 + 并发预取 + 端点解析（库 > env > 默认）+ Gemini 请求的 OpenAI 形态转换 |
+| `service/video_token.go` | 请求/正则层视频检测（chat 形态）、容器解析 + 标定公式 + 媒体感知护栏 + 无本地价格时的端点判据 |
+| `service/video_estimate.go` | 官方估算端点客户端 + 内容哈希缓存 + 并发预取 + 端点解析（库 > env > 默认） |
 | `setting/operation_setting/video_estimate_setting.go` | 控制台设置的注册（`video_estimate_setting` 模块） |
 | `controller/misc.go` | `/api/status` 的 `video_estimate_configured`（只报配没配） |
 | `web/src/features/system-settings/integrations/video-estimate-settings-section.tsx` | 控制台表单（集成页），含跨供应商外发的提示文案 |
@@ -165,9 +166,7 @@ key 留在环境里也能正常工作），清空库里的一项即把该字段�
   （`video_log_path_test.go`：走真实结算与落库，断言记录的是修正值且计费路径为
   `billing-usage-openai-estimated`——该用例在标签回退成上游原值时会失败）；
   **无本地价格时端点值仍被计费**（`TestEndpointTotalIsBilledWithoutALocalPrice`，
-  对应 webm 漏计费）；**Gemini 形态的检测与计价转换**
-  （`TestRequestBytesCarryVideo` / `TestVideoDetectorsAgree` / `TestGeminiRequestIsPricedByTheEndpoint`）。
-  以上每条都在移除对应修复时验证过会失败。
+  对应 webm 漏计费）。以上每条都在移除对应修复时验证过会失败。
 - `go test ./model/`：能力索引解析、缓存路径收窄、DB 路径「高优先级不可用渠道不挡住
   后备」、无渠道声明时诚实失败（返回 nil 而非盲渠道）、模式必须带能力。
 - `go test ./relaykit/dto/`：`video_url` 三种拼写（ms:// 对象、http 对象、字符串）
