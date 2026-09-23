@@ -63,6 +63,44 @@ type promptCacheObservation struct {
 	ChainHash     string `json:"message_chain_hash,omitempty"`
 }
 
+// promptCacheGenerationOnlyOptions lists Ollama options that change how the
+// response is decoded but not the prompt or its KV cache. Clients recompute the
+// output budget from the remaining context on every request (ZCode sends a new
+// max_output_tokens each turn, which the OpenAI conversion maps to num_predict),
+// so keeping these in the partition identity would place every request of one
+// conversation in a fresh partition and the estimator could never hit.
+var promptCacheGenerationOnlyOptions = map[string]struct{}{
+	"num_predict":       {},
+	"temperature":       {},
+	"top_p":             {},
+	"top_k":             {},
+	"seed":              {},
+	"frequency_penalty": {},
+	"presence_penalty":  {},
+	"stop":              {},
+}
+
+// promptCacheKeyOptions drops generation-only options from the identity's key
+// material. Unknown keys are retained: an option this list does not know could
+// still change the prompt, and wrongly sharing a partition would estimate a
+// cache hit that upstream never had.
+func promptCacheKeyOptions(options map[string]any) map[string]any {
+	if len(options) == 0 {
+		return nil
+	}
+	filtered := make(map[string]any, len(options))
+	for key, value := range options {
+		if _, generationOnly := promptCacheGenerationOnlyOptions[key]; generationOnly {
+			continue
+		}
+		filtered[key] = value
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
 type promptCacheCandidate struct {
 	MessageHashes        []string `json:"h,omitempty"`
 	PrefixHash           string   `json:"x,omitempty"`
@@ -607,7 +645,7 @@ func buildOllamaChatPromptCacheIdentity(request *OllamaChatRequest) promptCacheI
 		Format  any             `json:"format,omitempty"`
 		Options map[string]any  `json:"options,omitempty"`
 		Think   json.RawMessage `json:"think,omitempty"`
-	}{Model: request.Model, Tools: request.Tools, Format: request.Format, Options: request.Options, Think: request.Think})
+	}{Model: request.Model, Tools: request.Tools, Format: request.Format, Options: promptCacheKeyOptions(request.Options), Think: request.Think})
 	if len(request.Messages) == 0 {
 		return promptCacheIdentity{Family: "chat", KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
 	}
@@ -644,7 +682,7 @@ func buildOllamaGeneratePromptCacheIdentity(request *OllamaGenerateRequest) prom
 		Format  any             `json:"format,omitempty"`
 		Options map[string]any  `json:"options,omitempty"`
 		Think   json.RawMessage `json:"think,omitempty"`
-	}{Model: request.Model, Format: request.Format, Options: request.Options, Think: request.Think})
+	}{Model: request.Model, Format: request.Format, Options: promptCacheKeyOptions(request.Options), Think: request.Think})
 	if request.Prompt == "" {
 		return promptCacheIdentity{Family: "generate", KeyMaterial: keyMaterial, TTL: ttl, Clear: !cacheable}
 	}

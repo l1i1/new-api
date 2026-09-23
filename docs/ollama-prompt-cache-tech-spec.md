@@ -49,6 +49,17 @@ OpenCode-compatible chat requests commonly omit `prompt_cache_key`, `metadata.us
   values retain the normal five-minute bound.
 - The partition includes the normalized channel base URL and final Ollama model
   so a channel endpoint or model override cannot reuse stale simulated state.
+- The partition excludes generation-only Ollama options (`num_predict`,
+  `temperature`, `top_p`, `top_k`, `seed`, `frequency_penalty`,
+  `presence_penalty`, `stop`). They change decoding, not the prompt or its KV
+  cache, and clients recompute the output budget every turn: ZCode sends a fresh
+  `max_output_tokens` per request (remaining context), which the OpenAI
+  conversion maps to `num_predict`. Keeping them in the identity put every turn
+  of one conversation into a fresh partition, so estimation never hit (measured
+  2026-09-23 on the mainland Ollama channel: 195/197 rows `cold_miss`, one
+  partition per request). Unrecognized option keys stay in the identity — an
+  unknown option could still change the prompt, and sharing a partition wrongly
+  would bill an estimate upstream never served.
 - A completed chat response may add a separate assistant-prefix candidate using
   the normalized final Ollama message. Its token count is prompt plus output
   tokens, but it is only reusable when the assistant content, tool calls, and

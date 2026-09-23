@@ -84,6 +84,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | official-fit：K3 流式在终端帧之后按**客户端自己的** `stream_options.include_usage` 补发官方的 usage-only 帧（`choices:[]` + 顶层 usage），否则标准 OpenAI 客户端读不到任何 token 数 | `relay/channel/openai/kimi_k3_fit.go`、`relay/channel/openai/relay-openai.go`、`relay/channel/openai/helper.go`、`relay/common/relay_info.go`、`relay/compatible_handler.go` | `relay/channel/openai/kimi_k3_fit_test.go`（`TestFitKimiK3StreamUsageOnlyChunk*`） |
 | official-fit：K3 本地参数校验里与思考状态相关的两条规则（temperature 的固定值与 `tool_choice` 的「specified」类）必须按**思考状态**分支。`tool_choice`：「specified」只在思考开启时成立，关闭时命名函数对象合法并真的强制调用，未知字符串改回官方的「unknown tool choice strategy」原文。「关闭思考」有两个控制轴（`thinking.type=disabled` 与 `reasoning_effort:"none"`），显式 type 优先于 effort | `relay/helper/valid_request.go` | `relay/helper/kimi_k3_official_fields_test.go`、`relay/helper/deepseek_v4_logprobs_test.go`（`TestKimiK3NamedToolChoiceAcceptedWithThinkingOff`，实测 2026-09-22 官方端点逐条校准） |
 | DeepSeek V4 / Ollama / GLM 等适配加固（内容类型校验、thinking、prompt cache） | `relay/channel/openai/*`、`relay/channel/ollama/*` | 各自 `*_test.go` |
+| Ollama 近似缓存：分区身份必须排除**只影响解码**的 Ollama 选项（`num_predict`、采样参数、`stop`）。客户端每轮重算输出预算（ZCode 按剩余上下文发新的 `max_output_tokens` → 转成 `num_predict`），把它们算进 key 会让同一会话每一轮落进新分区、估算永不命中 | `relay/channel/ollama/prompt_cache.go` | `relay/channel/ollama/prompt_cache_generation_options_test.go`（`TestOllamaPromptCacheIdentityIgnoresGenerationOnlyOptions`、`TestOllamaPromptCacheEstimatorHitsWhenBudgetChangesEachTurn`） |
 
 ## 6. 内容安全
 
