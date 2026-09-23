@@ -125,11 +125,19 @@ export const OFFICIAL_FIT_MATCHES = [
   { match: 'glm-5.3', label: 'GLM 5.3' },
 ] as const
 
+// Labels for the four official-fit dimensions. The `route` label is
+// "Fidelity routing" rather than "Official route" on purpose: the dimension
+// selects a *behavior*, not a destination. Whatever it pins is resolved to
+// channels verified to behave like the official endpoint — which includes
+// resellers that carry the channel-level mark — and priority still chooses among
+// them, so traffic routinely lands on a reseller with the official endpoint at
+// zero requests. A label promising the official endpoint reads as "send
+// everything there", which is neither what the switch means nor what happens.
 export const OFFICIAL_FIT_FIELDS = [
   { field: 'validate', label: 'Param validation' },
   { field: 'errors', label: 'Verbatim errors' },
   { field: 'shape', label: 'Response shape' },
-  { field: 'route', label: 'Official route' },
+  { field: 'route', label: 'Fidelity routing' },
 ] as const
 
 export type OfficialFitField = (typeof OFFICIAL_FIT_FIELDS)[number]['field']

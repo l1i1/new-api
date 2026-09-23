@@ -722,16 +722,19 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
 	}
-	// The official-fit Route dimension is the only pin source. The pin is
-	// selective per family: only requests carrying a feature the aggregator
-	// pool cannot reproduce land on the official channel. For DeepSeek V4 that
-	// is dual-path logprobs, image parts on text-only models, and thinking
-	// output (the official default); for kimi-k3 it is a forced tool call.
-	// Everything else keeps normal aggregator routing, which keeps prompt-cache
-	// affinity and official-channel spend down. glm-5.3 pins the whole family
-	// for now, since no selective predicate has been measured for it. The pin
-	// narrows per family via the registry's channel type (DeepSeek V4 -> 43,
-	// kimi-k3 -> 25, glm-5.3 -> 26).
+	// The official-fit Route dimension is the only pin source. "Official
+	// channel" here means an official-BEHAVING channel, not the vendor's own
+	// endpoint: candidates are the family's official channel type UNION any
+	// channel that declared the model in official_fit_models, and priority then
+	// picks among them — so a marked reseller normally takes the traffic and the
+	// vendor endpoint can sit at zero requests. The pin is selective per family,
+	// derived from measured divergence against the official endpoint (see each
+	// predicate): DeepSeek V4 pins logprobs, image parts and thinking output;
+	// kimi-k3 pins five measured shape classes; glm-5.3 still pins the whole
+	// family because no selective predicate has been measured for it. Everything
+	// else keeps normal priority routing, which keeps prompt-cache affinity and
+	// official-endpoint spend down. The pin narrows per family via the
+	// registry's channel type (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
 	if profile.Route {
 		switch {
 		case isDeepSeekV4:

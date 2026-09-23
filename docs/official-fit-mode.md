@@ -43,13 +43,18 @@
       该顺序**，聚合器不保证——于是 `route` 关闭（请求落到聚合器）的用户被系统性判失败
       （流式 502 `upstream returned empty final content`、非流式 502
       `upstream did not return reasoning_content in thinking mode`），并触发跨全部候选渠道的
-      重试风暴。该 gate 已删除：想要官方顺序保证的用户应开启 `route` pin 官方渠道；未开启者
-      接受聚合器的 content-only 应答。空输出仍判失败。
-  - `route`：**选择性官方路由（2026-09-06 起，DS 为 hybrid 分类器）**。Route 开启时按请求特征
-    决定是否 pin 官方渠道（DS 按渠道类型 43、K3 按类型 25；候选集中同时包含渠道级
-    `official_fit_models` 白名单命中的渠道，见下文），复用 `ContextKeyV4OfficialPin`
+      重试风暴。该 gate 已删除：想要官方顺序保证的用户应开启 `route` 把请求收窄到官方行为
+      渠道；未开启者接受聚合器的 content-only 应答。空输出仍判失败。
+  - `route`：**保真路由（选择性，2026-09-06 起；名称含义见下）**。Route 开启时按请求形状
+    决定是否把候选**收窄到「官方行为渠道」**，复用 `ContextKeyV4OfficialPin`
     机制（distributor 选路前标记，选路时按模型族窄化到对应类型/白名单）。
-    - DeepSeek V4：仅三类请求 pin 官方——① `logprobs=true`（聚合器无法复刻官方双路
+    **「官方行为渠道」= 本族官方渠道类型 ∪ 渠道级 `official_fit_models` 白名单命中的渠道，
+    再由 priority 在候选内选路**——所以 pin 不等于「送往官方端点」：带标记的转售渠道
+    通常承接该流量，官方端点可以长期零请求（国内站 k3 实测：标记渠道 ch19 承接、ch8
+    Moonshot 官方 24h 内 0 请求）。同理它不是「整族收窄」，各族范围由各自的形状谓词决定。
+    **`route` 这个字段名是历史遗留**（早期语义确为「整族 pin 到官方渠道」），为免迁移已存
+    用户配置而保留；界面标签用 **Fidelity routing / 保真路由**。
+    - DeepSeek V4：仅三类请求 pin——① `logprobs=true`（聚合器无法复刻官方双路
       logprobs）；② messages 含 `image_url` part（聚合器兼容性未验证；且 2026-09-06 实测
       官方已接受文本模型传图，旧 400 契约不复存在）；③ 思考输出类请求（缺省 / enabled /
       adaptive / effort≠none——实测聚合器池会**非确定性**丢失 `reasoning_content`，
@@ -57,14 +62,27 @@
       （`thinking.type=disabled` 或无 thinking 对象时 `reasoning_effort=none`）：官方返回
       `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
       "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
-    - K3 / GLM：保持整族 pin（K3 官方为唯一已验证通道；GLM 思考不可关同理）。
-    **route 仍是官方 pin 的唯一触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
+    - kimi-k3：**五类形状 pin**（2026-09-23 实测，官方端点 vs 首选上游逐例比对
+      `prompt_tokens`）：① **思考关闭**（`thinking.type=disabled` 或
+      `reasoning_effort=none`；池报思考开计数 **+67**，也是全部 vision 用例失败的原因）；
+      ② **`tool_choice` 非 auto**（required **-36** / none **-112**；auto 与缺省一致）；
+      ③ **`response_format` 非 text**（json_object **+6**、json_schema **+6~+28**；text 一致）；
+      ④ **历史不以 user 开头**（首条 assistant **-12**、只有 system **+12**）；
+      ⑤ **消息里带 `tools` 的 dynamic tools**（**-8~-79**）。这套子句对 KVV 全部用例做过
+      **离线覆盖度校验：命中 30 / 漏报 0 / 过报 0**。不可解析的 tool_choice /
+      response_format 选择 pin（本地校验会按官方 400，过 pin 零成本）。
+    - GLM 5.3：**保持整族 pin**（尚无实测出来的选择性谓词）。
+    **route 仍是唯一 pin 触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
     （temperature>1.5 / top_p<0.3 / penalty>1.0 / thinking 字段 / logprobs=true 自动
     钉到官方渠道）已删除——它会在官方渠道不可用时反复清掉渠道粘性缓存，导致
     deepseek-v4 流量永远无法粘在聚合渠道上（prompt cache 全碎）。未开启 route 的用户
-    无论带什么采样参数，都保持正常聚合器路由与粘性。
+    无论带什么采样参数，都保持正常优先级路由与粘性。
+    **pin 的请求不写亲和绑定**（2026-09-23 修复）：affinity 键在 chat 规则下会退到
+    `token_id`（覆盖整个 token 而非一次会话），pin 请求若写绑定，后续所有请求都会
+    留在 pin 渠道上、优先级彻底失效。视频请求早有同样的例外，两者现在同路径。
     注意：CN_Kimi 当前为 Moonshot 官方账号最低档限速（org RPM 3）且 priority=0——
-    开启 K3 route 前必须先与 Moonshot 谈大额限速，否则买家流量会持续 429。
+    **但这不再阻塞 k3 的 route**：pin 收窄到「官方行为渠道」后，带标记的转售渠道即可承接，
+    官方端点无需承载流量（国内站 k3 已验证）。若要 pin 真·官方端点，才需先谈大额限速。
     成本事实（2026-09-06 CN 实测）：thinking 输出类是买家（ZCode agent 流量）的主体，
     在聚合器池被证明无法保证 100% 拟合前，这部分必须留官方；进一步压缩官方用量的
     前提是**逐渠道验证**（每渠道 × audit 200 例多轮重采样稳定通过后白名单化），
@@ -114,10 +132,11 @@
 | `relay/helper/common.go` `isDeepSeekV4StreamModel`（stream_scanner Content-Type） | 加入 profile.Shape 判定 |
 | `relay/channel/openai/relay-openai.go` `requiresDeepSeekV4ReasoningLogprobs` | 加入 profile.Validate 判定 |
 | `controller/relay.go` 错误原文 + octet-stream | `IsDeepSeekV4ValidationMessage`（仅 DS）→ `IsStrictFitValidationMessage`（DS+K3），并加 `profile.Errors` 门控 |
-| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时整族 pin（选路前生效）；DS 与 K3 均可（按模型族类型窄化） |
+| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时按**各族的形状谓词**标记 pin（选路前生效）；DS 三类、K3 五类，GLM 仍整族（见上文「route」条） |
 | `model/channel_cache.go` `preferOfficialFitChannels` / `OfficialFitChannelType` | 候选窄化从"仅官方渠道类型"扩展为"官方类型 ∪ `channel.settings.official_fit_models` 白名单"（按模型，不整族）；新增 `ChannelIsOfficialFitForModel` 缓存索引查询 |
 | `model/ability.go` `preferOfficialFitAbilities` | 无内存缓存（DB）路径同步支持白名单（`SELECT id, type, settings`） |
 | `middleware/distributor.go` `officialPinAllowsAffinity` | 改为 (pinActive, officialType, preferredType, preferredIsOfficialBehavior)，pin 用白名单并集、未 pin 只排除官方渠道类型 |
+| `middleware/distributor.go` `shouldRecordChannelAffinity` | **pin 请求不写亲和绑定**（与视频请求同例外）：affinity 键退到 `token_id` 时覆盖整个 token，pin 写绑定会让后续所有请求留在 pin 渠道上、优先级失效（2026-09-23 修复） |
 
 ## 管理入口
 
