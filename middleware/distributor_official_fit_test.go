@@ -161,23 +161,62 @@ func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"reasoning_effort":"none"}`)
 	})
 
-	t.Run("kimi-k3 without a forced tool call does not pin", func(t *testing.T) {
-		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	t.Run("kimi-k3 plain user turn does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`)
 	})
-	t.Run("kimi-k3 required pins (aggregator degrades forced calls)", func(t *testing.T) {
+	t.Run("kimi-k3 required pins (pool cannot force a call)", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"required"}`)
 	})
 	t.Run("kimi-k3 named-function object pins", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}},"thinking":{"type":"disabled"}}`)
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`)
 	})
 	t.Run("kimi-k3 auto does not pin", func(t *testing.T) {
 		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`)
 	})
-	t.Run("kimi-k3 none does not pin", func(t *testing.T) {
-		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"none"}`)
+	t.Run("kimi-k3 tool_choice none pins (pool under-reports the declared tools)", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"none"}`)
 	})
 	t.Run("kimi-k3 unparseable tool_choice pins (local validation 400s it anyway)", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":7}`)
+	})
+	t.Run("kimi-k3 thinking disabled pins (pool reports the thinking-on count)", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	})
+	t.Run("kimi-k3 reasoning_effort none pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+	})
+	t.Run("kimi-k3 explicit enabled thinking outranks the none effort", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"},"reasoning_effort":"none"}`)
+	})
+	t.Run("kimi-k3 response_format text does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"text"}}`)
+	})
+	t.Run("kimi-k3 response_format json_object pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`)
+	})
+	t.Run("kimi-k3 response_format json_schema pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"w","schema":{"type":"object"}}}}`)
+	})
+	t.Run("kimi-k3 response_format without a type pins (local validation 400s it anyway)", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{}}`)
+	})
+	t.Run("kimi-k3 assistant-first history pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"assistant","content":"hi"}]}`)
+	})
+	t.Run("kimi-k3 system-only history pins", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"system","content":"hi"}]}`)
+	})
+	t.Run("kimi-k3 leading system then user does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"system","content":"hi"},{"role":"user","content":"hi"}]}`)
+	})
+	t.Run("kimi-k3 later assistant turn does not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hi"},{"role":"user","content":"hi"}]}`)
+	})
+	t.Run("kimi-k3 dynamic tools on a message pin", func(t *testing.T) {
+		pinned(t, `{"model":"kimi-k3","messages":[{"role":"system","tools":[{"type":"function","function":{"name":"get_time"}}]},{"role":"user","content":"hi"}]}`)
+	})
+	t.Run("kimi-k3 global tools alone do not pin", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`)
 	})
 }
 

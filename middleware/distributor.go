@@ -656,6 +656,10 @@ type v4OfficialPinRequest struct {
 	// ToolChoice stays raw because the field is either a strategy string or a
 	// named-function object, and the pin predicate must see both forms.
 	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	// ResponseFormat stays raw for the same reason as ToolChoice: the predicate
+	// only needs the type discriminator, and it must not reject a shape the
+	// relay's own validation answers with the official 400.
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -782,44 +786,128 @@ func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 	if messagesContainImagePart(req.Messages) {
 		return true
 	}
-	return !deepSeekV4ThinkingDisabled(req)
+	return !officialFitThinkingDisabled(req)
 }
 
-// kimiK3RequestNeedsOfficial reports whether a kimi-k3 request carries a
-// feature the aggregator pool cannot serve faithfully.
+// kimiK3RequestNeedsOfficial reports whether a kimi-k3 request has a shape the
+// priority pool cannot serve with official fidelity.
 //
-// The one measured class is a forced tool call: `tool_choice` = "required" or
-// the named-function object, both of which oblige the model to emit tool_calls.
-// Sampled 4x per upstream on 2026-09-22, the preferred aggregator channel
-// degraded the named-function form to a plain text answer 3 times out of 4
-// (finish_reason=stop with no tool_calls) while the official endpoint honored
-// it every time; KVV's dynamic-tool cases assert exactly that obligation, and
-// their `required` cases failed on the same upstream. `auto`/`none` carry no
-// such obligation and stay on the pool.
+// Every clause below is a measured divergence against the official endpoint
+// (2026-09-23, official `api.moonshot.cn` vs the top-priority reseller, bodies
+// byte-identical, prompt_tokens read from the terminal chunk). KVV's
+// prompt-token suite asserts Moonshot's own constants with a tolerance of
+// [expected, expected+3], so a shape whose count differs by more than that
+// cannot be served by the pool: the caller is billed tokens the official
+// endpoint never reports. The clause set was checked against the suite's
+// measured failure list and selects exactly those cases — no misses, no
+// over-selection.
 //
-// An unparseable tool_choice is treated as forcing: the relay's local K3
-// validation answers it with the official 400 before any upstream call, so
-// over-pinning it costs nothing, while under-pinning a shape that really does
-// force a call would leak the pool's degraded behavior.
+// Divergences, with the delta observed for the reseller:
+//   - thinking off (thinking.type=disabled, or reasoning_effort=none without a
+//     thinking object re-enabling it): +67. The pool reports the thinking-on
+//     count for every thinking-off request, which is also why the suite's
+//     vision cases fail — they all send reasoning_effort=none.
+//   - tool_choice other than "auto": -36 (required), -112 (none), -38 (none
+//     without tools). "auto" and an absent field agree exactly.
+//   - response_format other than type=text: +6 (json_object) to +28
+//     (json_schema). type=text agrees.
+//   - a history that does not begin with a user turn: -12 (a leading assistant
+//     message), +12 (system messages only). A leading user turn agrees,
+//     whichever precedes it.
+//   - dynamic tools (a `tools` key on a message): -8 to -79. The clause covers
+//     every dynamic-tool shape, and the suite's behavioral dynamic-tool cases
+//     fail on the same pool for the same reason.
+//
+// Shapes whose classification is ambiguous pin: an unparseable tool_choice or
+// response_format is answered by the relay's local K3 validation with the
+// official 400 before any upstream call, so over-pinning costs nothing, while
+// under-pinning a shape that really does diverge would leak the pool's
+// behavior to a caller comparing against the official endpoint.
 func kimiK3RequestNeedsOfficial(req v4OfficialPinRequest) bool {
-	raw := bytes.TrimSpace(req.ToolChoice)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+	return kimiK3ToolChoiceNeedsOfficial(req.ToolChoice) ||
+		officialFitThinkingDisabled(req) ||
+		kimiK3ResponseFormatNeedsOfficial(req.ResponseFormat) ||
+		!historyBeginsWithUserTurn(req.Messages) ||
+		messagesCarryDynamicTools(req.Messages)
+}
+
+// kimiK3ToolChoiceNeedsOfficial reports whether the tool_choice value obliges
+// the pool to behave in a way it does not reproduce. "auto" and an absent field
+// stay servable; "required", "none", the named-function object and any
+// unparseable value do not.
+func kimiK3ToolChoiceNeedsOfficial(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return false
 	}
 	var strategy string
-	if err := common.Unmarshal(raw, &strategy); err == nil {
-		return strings.EqualFold(strings.TrimSpace(strategy), "required")
+	if err := common.Unmarshal(trimmed, &strategy); err == nil {
+		return !strings.EqualFold(strings.TrimSpace(strategy), "auto")
 	}
 	// Not a string: the named-function object (or a malformed value the local
 	// validator rejects). Both are forcing shapes.
 	return true
 }
 
-// deepSeekV4ThinkingDisabled mirrors the official no-thinking states:
+// kimiK3ResponseFormatNeedsOfficial reports whether response_format asks for a
+// structured output the pool prices differently. An absent field and
+// type=text stay servable; json_object, json_schema and an unparseable value
+// do not.
+func kimiK3ResponseFormatNeedsOfficial(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	var format struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(trimmed, &format); err != nil {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(format.Type), "text")
+}
+
+// historyBeginsWithUserTurn reports whether the first non-system message is a
+// user turn. The pool's count diverges for every other opening (a leading
+// assistant message, or only system messages), so anything else pins. A request
+// with no messages cannot be served by either endpoint — the relay's local
+// validation rejects it — so it stays unpinned rather than claiming a
+// divergence it will never exercise.
+func historyBeginsWithUserTurn(messages []dto.Message) bool {
+	if len(messages) == 0 {
+		return true
+	}
+	for i := range messages {
+		role := strings.ToLower(strings.TrimSpace(messages[i].Role))
+		if role == "system" {
+			continue
+		}
+		return role == "user"
+	}
+	return false
+}
+
+// messagesCarryDynamicTools reports whether any message declares tools, which is
+// how K3 loads a tool set mid-conversation. The pool prices those declarations
+// differently from the official endpoint.
+func messagesCarryDynamicTools(messages []dto.Message) bool {
+	for i := range messages {
+		raw := bytes.TrimSpace(messages[i].Tools)
+		if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+			return true
+		}
+	}
+	return false
+}
+
+// officialFitThinkingDisabled mirrors the official no-thinking states:
 // thinking.type=disabled, or reasoning_effort=none when the thinking object
 // does not explicitly re-enable it. Effort values other than none map to
 // thinking output (medium/xhigh are silently mapped to high by the relay).
-func deepSeekV4ThinkingDisabled(req v4OfficialPinRequest) bool {
+// Both official-fit families with a selective pin read it: DeepSeek V4 treats
+// disabled thinking as the servable-by-pool class, and kimi-k3 the opposite —
+// the pool reports the thinking-on prompt count for every thinking-off request.
+func officialFitThinkingDisabled(req v4OfficialPinRequest) bool {
 	thinkingEnabled := false
 	thinkingDisabled := false
 	if raw := bytes.TrimSpace(req.THINKING); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
