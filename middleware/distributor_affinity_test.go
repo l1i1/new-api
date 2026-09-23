@@ -396,3 +396,26 @@ func TestUnpinnedRequestDropsOfficialAffinityWithoutRouteProfile(t *testing.T) {
 	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType, false),
 		"a stale official binding must be dropped for an unpinned request")
 }
+
+// Writing an affinity binding is a promise that the channel is the right answer
+// for the key's future requests. A pinned request never made that choice — the
+// shape predicate routed it — so it must not write the binding, or the whole
+// affinity key (token-level when the key falls back to token_id) would keep the
+// pin channel and stop following the configured priorities. The video path has
+// the same shape and the same exception.
+func TestShouldRecordChannelAffinitySkipsRoutedRequests(t *testing.T) {
+	// A request that chose its channel through selection records normally.
+	assert.True(t, shouldRecordChannelAffinity(http.StatusOK, false, false))
+
+	// The pin target must not become the key's sticky channel.
+	assert.False(t, shouldRecordChannelAffinity(http.StatusOK, false, true),
+		"an official-fit pinned request must not write the affinity binding")
+
+	// The video path keeps its existing exception.
+	assert.False(t, shouldRecordChannelAffinity(http.StatusOK, true, false))
+
+	// A committed-but-failed relay is never a healthy binding, on either path.
+	assert.False(t, shouldRecordChannelAffinity(http.StatusBadRequest, false, false))
+	assert.False(t, shouldRecordChannelAffinity(http.StatusBadGateway, false, false))
+	assert.False(t, shouldRecordChannelAffinity(http.StatusBadRequest, true, true))
+}

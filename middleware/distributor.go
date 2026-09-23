@@ -400,14 +400,39 @@ func Distribute() func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
-		// A video request took the free-selection path regardless of any text
-		// binding, so recording it would move the conversation's stickiness onto
-		// whichever channel happened to serve the video. Leave the binding alone.
-		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest &&
-			!common.GetContextKeyBool(c, constant.ContextKeyVideoRequest) {
+		if channel != nil && c.Writer != nil &&
+			shouldRecordChannelAffinity(c.Writer.Status(),
+				common.GetContextKeyBool(c, constant.ContextKeyVideoRequest),
+				common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+// shouldRecordChannelAffinity reports whether a served request may write the
+// affinity binding for its channel.
+//
+// The binding makes the affinity key sticky — and because the chat rule's key
+// sources fall back to token_id, the key often covers a whole token rather than
+// one conversation. Writing it is therefore a promise that this channel is the
+// right answer for that key's future requests, which is only true when the
+// request actually chose the channel through selection.
+//
+// Two paths deliberately do not: a video request, which is routed by the video
+// capability filter rather than by priority (recording it would move the key's
+// stickiness onto whichever channel happened to read the video), and an
+// official-fit pinned request, which is routed by the shape predicate to an
+// official-behaving channel. Recording the pin would hand the key to that
+// channel, so every later request from the same token — pinned or not — would
+// keep it and stop following the configured priorities. The read side already
+// refuses a pin channel for an unpinned request; not writing the binding is the
+// matching half, and together they keep the pin exactly as wide as the
+// predicate while unmarked traffic stays priority-driven.
+func shouldRecordChannelAffinity(status int, videoRequest bool, officialPin bool) bool {
+	if status >= http.StatusBadRequest {
+		return false
+	}
+	return !videoRequest && !officialPin
 }
 
 func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
