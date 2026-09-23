@@ -2,6 +2,7 @@ package oairesponses
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -172,8 +173,9 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 			text := kitutil.Interface2String(contentPart["text"])
 			if text != "" {
 				parts = append(parts, dto.ClaudeMediaMessage{
-					Type: "text",
-					Text: kitutil.GetPointer(text),
+					Type:         "text",
+					Text:         kitutil.GetPointer(text),
+					CacheControl: contentPartCacheControl(contentPart),
 				})
 			}
 		case "input_image", "input_file", "input_audio", "input_video":
@@ -186,6 +188,7 @@ func responsesInputContentToClaudeMediaMessages(c context.Context, content any) 
 				return nil, fmt.Errorf("get file data failed: %s", err.Error())
 			}
 			claudePart := dto.ClaudeMediaMessage{
+				CacheControl: contentPartCacheControl(contentPart),
 				Source: &dto.ClaudeMessageSource{
 					Type:      "base64",
 					MediaType: mimeType,
@@ -275,6 +278,21 @@ func claudeMessageContentParts(content any) []dto.ClaudeMediaMessage {
 		parts, _ := kitutil.Any2Type[[]dto.ClaudeMediaMessage](content)
 		return parts
 	}
+}
+
+// contentPartCacheControl carries an explicit Anthropic prompt-cache breakpoint
+// that arrived on a Responses content part. Dropping it would silently disable
+// caching upstream: Claude only writes/reads cache at declared breakpoints.
+func contentPartCacheControl(contentPart map[string]any) json.RawMessage {
+	value := contentPart["cache_control"]
+	if value == nil {
+		return nil
+	}
+	encoded, err := kitutil.Marshal(value)
+	if err != nil || !kitutil.Valid(encoded) {
+		return nil
+	}
+	return json.RawMessage(encoded)
 }
 
 func responsesClaudeRole(role string) string {

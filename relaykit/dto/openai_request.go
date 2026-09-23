@@ -683,6 +683,21 @@ func (m *Message) IsStringContent() bool {
 	return false
 }
 
+// rawCacheControl re-encodes a cache_control value found on a raw content part
+// so it can be carried onto the parsed MediaContent. Invalid or absent values
+// yield nil, which the omitempty tags then drop from the outgoing request.
+func rawCacheControl(contentItem map[string]any, key string) json.RawMessage {
+	value, ok := contentItem[key]
+	if !ok || value == nil {
+		return nil
+	}
+	encoded, err := kitutil.Marshal(value)
+	if err != nil || len(encoded) == 0 || string(encoded) == "null" {
+		return nil
+	}
+	return json.RawMessage(encoded)
+}
+
 func (m *Message) ParseContent() []MediaContent {
 	if m.Content == nil {
 		return nil
@@ -731,13 +746,19 @@ func (m *Message) ParseContent() []MediaContent {
 		if !ok {
 			continue
 		}
+		// Anthropic prompt caching is explicit, and OpenRouter-style clients
+		// express the breakpoint as cache_control on the content part. Carry it
+		// onto every part we build here: a converter downstream cannot restore a
+		// field this layer already discarded.
+		cacheControl := rawCacheControl(contentItem, "cache_control")
 
 		switch contentType {
 		case ContentTypeText:
 			if text, ok := contentItem["text"].(string); ok {
 				contentList = append(contentList, MediaContent{
-					Type: ContentTypeText,
-					Text: text,
+					Type:         ContentTypeText,
+					Text:         text,
+					CacheControl: cacheControl,
 				})
 			}
 
@@ -760,8 +781,9 @@ func (m *Message) ParseContent() []MediaContent {
 				}
 			}
 			contentList = append(contentList, MediaContent{
-				Type:     ContentTypeImageURL,
-				ImageUrl: temp,
+				Type:         ContentTypeImageURL,
+				ImageUrl:     temp,
+				CacheControl: cacheControl,
 			})
 
 		case ContentTypeInputAudio:
@@ -774,8 +796,9 @@ func (m *Message) ParseContent() []MediaContent {
 						Format: format,
 					}
 					contentList = append(contentList, MediaContent{
-						Type:       ContentTypeInputAudio,
-						InputAudio: temp,
+						Type:         ContentTypeInputAudio,
+						InputAudio:   temp,
+						CacheControl: cacheControl,
 					})
 				}
 			}
@@ -788,6 +811,7 @@ func (m *Message) ParseContent() []MediaContent {
 						File: &MessageFile{
 							FileId: fileId,
 						},
+						CacheControl: cacheControl,
 					})
 				} else {
 					fileName, ok1 := fileData["filename"].(string)
@@ -799,6 +823,7 @@ func (m *Message) ParseContent() []MediaContent {
 								FileName: fileName,
 								FileData: fileDataStr,
 							},
+							CacheControl: cacheControl,
 						})
 					}
 				}
@@ -821,8 +846,9 @@ func (m *Message) ParseContent() []MediaContent {
 			}
 			if temp.Url != "" {
 				contentList = append(contentList, MediaContent{
-					Type:     ContentTypeVideoUrl,
-					VideoUrl: temp,
+					Type:         ContentTypeVideoUrl,
+					VideoUrl:     temp,
+					CacheControl: cacheControl,
 				})
 			}
 		}

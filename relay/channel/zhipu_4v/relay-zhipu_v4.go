@@ -12,6 +12,9 @@ func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIReq
 		if !message.IsStringContent() {
 			mediaMessages := message.ParseContent()
 			for j, mediaMessage := range mediaMessages {
+				// Zhipu content parts carry no prompt-cache breakpoint, and these
+				// parts are re-marshalled into the outgoing body.
+				mediaMessage.CacheControl = nil
 				if mediaMessage.Type == dto.ContentTypeImageURL {
 					imageUrl := mediaMessage.GetImageMedia()
 					// check if base64
@@ -22,8 +25,8 @@ func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIReq
 						}
 					}
 					mediaMessage.ImageUrl = imageUrl
-					mediaMessages[j] = mediaMessage
 				}
+				mediaMessages[j] = mediaMessage
 			}
 			message.SetMediaContent(mediaMessages)
 		}

@@ -52,11 +52,15 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAI
 			mediaMessages = []dto.MediaContent{}
 		}
 		for j, mediaMessage := range mediaMessages {
+			// Mistral's content parts have no prompt-cache breakpoint. The parsed
+			// parts are re-marshalled into the outgoing body, so an Anthropic-only
+			// cache_control would be forwarded to a strict validator.
+			mediaMessage.CacheControl = nil
 			if mediaMessage.Type == dto.ContentTypeImageURL {
 				imageUrl := mediaMessage.GetImageMedia()
 				mediaMessage.ImageUrl = imageUrl.Url
-				mediaMessages[j] = mediaMessage
 			}
+			mediaMessages[j] = mediaMessage
 		}
 		message.SetMediaContent(mediaMessages)
 		messages = append(messages, dto.Message{
