@@ -1,0 +1,61 @@
+name: Fork Invariants
+
+# The upstream-sync discipline, as a gate instead of a ritual. rc35 and rc39
+# both dropped fork changes during a sync merge while every test stayed green;
+# these checks compare the merge against its parents and against the fork
+# inventory in FORK-CHANGES.md, which is what actually catches that.
+#
+# Runs offline (no upstream fetch): the upstream-derived facts it needs are
+# recorded in scripts/fork-invariants/upstream-locales.json at sync time.
+
+on:
+  pull_request:
+    branches: ['tokeness/main']
+  push:
+    branches: ['sync/**', 'codex/sync-upstream-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-invariants-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Fork invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the fork
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The sync PR head is the merge commit itself; the merge-divergence
+          # check needs it (and its parents' history) rather than the synthetic
+          # refs/pull/N/merge commit GitHub would otherwise check out.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch the base branch
+        run: git fetch --no-tags origin "+refs/heads/tokeness/main:refs/remotes/origin/tokeness/main"
+
+      - name: Gate self-test
+        run: node --test scripts/fork-invariants/main.test.mjs
+
+      - name: Fork invariants
+        run: node scripts/fork-invariants/main.mjs --check manifest,i18n,orphans,merge --base origin/tokeness/main
+
+      - name: Fork-only commit survival (advisory)
+        run: |
+          if git rev-parse --verify --quiet upstream/main >/dev/null; then
+            node scripts/fork-invariants/main.mjs --check history
+          else
+            echo "upstream/main is not fetched in this job; the survival scan runs locally and on sync PRs."
+          fi
