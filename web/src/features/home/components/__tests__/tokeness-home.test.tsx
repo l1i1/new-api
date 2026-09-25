@@ -29,13 +29,7 @@ import {
 } from '@tanstack/react-router'
 import { Window } from 'happy-dom'
 
-import en from '@/i18n/locales/en.json'
-import fr from '@/i18n/locales/fr.json'
-import ja from '@/i18n/locales/ja.json'
-import ru from '@/i18n/locales/ru.json'
-import vi from '@/i18n/locales/vi.json'
-import zhTW from '@/i18n/locales/zh-TW.json'
-import zh from '@/i18n/locales/zh.json'
+import { en, fr, ja, ru, vi, zhCN as zh, zhTW } from '@/i18n/fork-bundles'
 
 const domWindow = new Window({ url: 'https://tokeness.test/' })
 const domGlobals = [

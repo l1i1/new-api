@@ -35,8 +35,7 @@ import {
   vi,
 } from 'vitest'
 
-import en from '@/i18n/locales/en.json'
-import zh from '@/i18n/locales/zh.json'
+import { en, zhCN as zh } from '@/i18n/fork-bundles'
 import {
   DEFAULT_CURRENCY_CONFIG,
   useSystemConfigStore,

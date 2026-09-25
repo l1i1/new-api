@@ -22,7 +22,7 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { expect, test, vi } from 'vitest'
 
-import zh from '@/i18n/locales/zh.json'
+import { zhCN as zh } from '@/i18n/fork-bundles'
 
 import type { TaskPluginOption } from '../../api'
 import { ChannelProviderPicker } from '../drawers/channel-provider-picker'

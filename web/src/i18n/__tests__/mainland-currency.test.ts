@@ -19,19 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import en from '../locales/en.json'
-import fr from '../locales/fr.json'
-import ja from '../locales/ja.json'
-import ru from '../locales/ru.json'
-import vi from '../locales/vi.json'
-import zhTW from '../locales/zh-TW.json'
-import zh from '../locales/zh.json'
+import { FORK_LOCALE_BUNDLES } from '../fork-bundles'
 import {
   MAINLAND_OVERRIDE_KEYS,
   withMainlandCurrencyWording,
 } from '../mainland-currency'
 
-const resources = { en, zhCN: zh, fr, ru, ja, vi, zhTW } as const
+// Same composition as config.ts: the fork bundles already carry the overlay,
+// and the mainland currency pass runs on top of them.
+const resources = FORK_LOCALE_BUNDLES
 
 const mainland = withMainlandCurrencyWording(resources)
 
@@ -142,7 +138,10 @@ describe('mainland currency wording', () => {
 
   test('every override key exists in the base English locale', () => {
     for (const key of MAINLAND_OVERRIDE_KEYS) {
-      assert.ok(key in translationOf(en), `override key missing: ${key}`)
+      assert.ok(
+        key in translationOf(resources.en),
+        `override key missing: ${key}`
+      )
     }
   })
 

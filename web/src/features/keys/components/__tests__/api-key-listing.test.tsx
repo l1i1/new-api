@@ -43,7 +43,7 @@ import { I18nextProvider } from 'react-i18next'
 import { Toaster, toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import zh from '@/i18n/locales/zh.json'
+import { zhCN as zh } from '@/i18n/fork-bundles'
 import { api } from '@/lib/api'
 import { useCurrencyDisplayStore } from '@/stores/currency-display-store'
 import {

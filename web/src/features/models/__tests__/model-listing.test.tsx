@@ -48,8 +48,7 @@ import type {
 import { pricingOptions } from '@/features/model-pricing/pricing'
 import { usePricingColumns } from '@/features/pricing/components/pricing-columns'
 import type { PricingModel } from '@/features/pricing/types'
-import fr from '@/i18n/locales/fr.json'
-import zhCN from '@/i18n/locales/zh.json'
+import { fr, zhCN } from '@/i18n/fork-bundles'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 import {

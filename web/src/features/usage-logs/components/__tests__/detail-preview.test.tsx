@@ -27,7 +27,7 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterAll, afterEach, beforeEach, expect, test, vi } from 'vitest'
 
-import en from '@/i18n/locales/en.json'
+import { en } from '@/i18n/fork-bundles'
 import {
   DEFAULT_CURRENCY_CONFIG,
   useSystemConfigStore,

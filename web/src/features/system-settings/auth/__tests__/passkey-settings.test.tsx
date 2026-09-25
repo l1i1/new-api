@@ -29,12 +29,12 @@ import {
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createInstance, type i18n } from 'i18next'
-import { useState, type ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { toast } from 'sonner'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import zh from '@/i18n/locales/zh.json'
+import { zhCN as zh } from '@/i18n/fork-bundles'
 import { api } from '@/lib/api'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'

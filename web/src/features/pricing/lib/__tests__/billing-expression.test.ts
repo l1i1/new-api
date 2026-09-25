@@ -17,10 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { createInstance } from 'i18next'
-import { assert, afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, assert, describe, expect, test, vi } from 'vitest'
 
 import { getTieredBillingSummary } from '@/features/usage-logs/lib/format'
-import zh from '@/i18n/locales/zh.json'
+import { zhCN as zh } from '@/i18n/fork-bundles'
 
 import contract from '../../../../../../pkg/billingexpr/testdata/frontend_simulation.json'
 import {

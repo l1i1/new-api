@@ -28,7 +28,7 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import zh from '@/i18n/locales/zh.json'
+import { zhCN as zh } from '@/i18n/fork-bundles'
 
 import type { AuditLog } from '../api'
 import { AuditLogDetailsDialog } from '../components/audit-log-details-dialog'

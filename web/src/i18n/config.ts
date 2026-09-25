@@ -22,31 +22,17 @@ import { initReactI18next } from 'react-i18next'
 
 import { IS_MAINLAND_SITE } from '@/lib/site-flavor'
 
+import { FORK_LOCALE_BUNDLES } from './fork-bundles'
 import { convertDetectedLanguage, toDocumentLanguage } from './languages'
-import en from './locales/en.json'
-import fr from './locales/fr.json'
-import ja from './locales/ja.json'
-import ru from './locales/ru.json'
-import vi from './locales/vi.json'
-import zhTW from './locales/zh-TW.json'
-import zhCN from './locales/zh.json'
 import { withMainlandCurrencyWording } from './mainland-currency'
 
-const baseResources = {
-  en,
-  zhCN,
-  fr,
-  ru,
-  ja,
-  vi,
-  zhTW,
-} as const
-
-// Only the mainland edition renames the platform's own unit from USD to CNY;
-// the overseas bundle keeps the upstream wording.
+// The bundles under src/i18n/locales are upstream-owned and carry no fork
+// strings; FORK_LOCALE_BUNDLES composes them with src/i18n/overlay, which is
+// where every Tokeness-added or re-worded string lives. Keep this composition
+// before the mainland currency pass below.
 export const resources = IS_MAINLAND_SITE
-  ? withMainlandCurrencyWording(baseResources)
-  : baseResources
+  ? withMainlandCurrencyWording(FORK_LOCALE_BUNDLES)
+  : FORK_LOCALE_BUNDLES
 
 // The mainland edition never runs the browser-language detector; the language
 // is fixed to Simplified Chinese below.

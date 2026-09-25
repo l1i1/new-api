@@ -19,15 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import en from '@/i18n/locales/en.json'
-import fr from '@/i18n/locales/fr.json'
-import ja from '@/i18n/locales/ja.json'
-import ru from '@/i18n/locales/ru.json'
-import vi from '@/i18n/locales/vi.json'
-import zhTW from '@/i18n/locales/zh-TW.json'
-import zh from '@/i18n/locales/zh.json'
+// The invoice labels are fork-only strings: they live in the fork overlay and
+// only reach a bundle through the composed fork bundles.
+import { FORK_BUNDLES_BY_FILE } from '@/i18n/fork-bundles'
 
-const locales = { en, zh, 'zh-TW': zhTW, fr, ja, ru, vi }
+const locales = FORK_BUNDLES_BY_FILE
+const enBundle = FORK_BUNDLES_BY_FILE.en
 const sidebarInvoiceKeys = ['Invoices', 'Invoice Review'] as const
 const invoiceFormKeys = [
   'Invoice Type',
@@ -67,7 +64,7 @@ function assertTranslatedForEveryLocale(
     const text = value as string
     assert.notEqual(text, '', `${locale} has an empty ${key}`)
     if (locale === 'en') continue
-    const enTranslation = en.translation as Record<string, string>
+    const enTranslation = enBundle.translation
     assert.notEqual(
       text,
       enTranslation[key],
@@ -76,7 +73,11 @@ function assertTranslatedForEveryLocale(
     // The zh/zh-TW strings must be real Chinese, not another language.
     if (locale === 'zh' || locale === 'zh-TW') {
       assert.ok(containsCJK(text), `${locale} has no CJK for ${key}: ${text}`)
-      assert.doesNotMatch(text, ACCENTED, `${locale} has accented text for ${key}: ${text}`)
+      assert.doesNotMatch(
+        text,
+        ACCENTED,
+        `${locale} has accented text for ${key}: ${text}`
+      )
     }
   }
 }
@@ -87,12 +88,16 @@ describe('invoice sidebar localization', () => {
       for (const key of sidebarInvoiceKeys) {
         const translation = resource.translation[key]
 
-        assert.equal(typeof translation, 'string', `${locale} is missing ${key}`)
+        assert.equal(
+          typeof translation,
+          'string',
+          `${locale} is missing ${key}`
+        )
         assert.notEqual(translation, '', `${locale} has an empty ${key}`)
         if (locale !== 'en') {
           assert.notEqual(
             translation,
-            en.translation[key],
+            enBundle.translation[key],
             `${locale} falls back to the English ${key} label`
           )
         }
@@ -105,12 +110,16 @@ describe('invoice sidebar localization', () => {
       for (const key of invoiceFormKeys) {
         const translation = resource.translation[key]
 
-        assert.equal(typeof translation, 'string', `${locale} is missing ${key}`)
+        assert.equal(
+          typeof translation,
+          'string',
+          `${locale} is missing ${key}`
+        )
         assert.notEqual(translation, '', `${locale} has an empty ${key}`)
         if (locale !== 'en') {
           assert.notEqual(
             translation,
-            en.translation[key],
+            enBundle.translation[key],
             `${locale} falls back to the English ${key} label`
           )
         }

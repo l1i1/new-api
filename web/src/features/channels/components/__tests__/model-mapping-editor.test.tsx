@@ -22,8 +22,7 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { expect, test, vi } from 'vitest'
 
-import en from '@/i18n/locales/en.json'
-import zh from '@/i18n/locales/zh.json'
+import { en, zhCN as zh } from '@/i18n/fork-bundles'
 
 import { ModelMappingEditor } from '../model-mapping-editor'
 

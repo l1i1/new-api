@@ -31,13 +31,15 @@ import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import en from '@/i18n/locales/en.json'
-import fr from '@/i18n/locales/fr.json'
-import ja from '@/i18n/locales/ja.json'
-import ru from '@/i18n/locales/ru.json'
-import viLocale from '@/i18n/locales/vi.json'
-import zhTW from '@/i18n/locales/zh-TW.json'
-import zh from '@/i18n/locales/zh.json'
+import {
+  en,
+  fr,
+  ja,
+  ru,
+  vi as viLocale,
+  zhCN as zh,
+  zhTW,
+} from '@/i18n/fork-bundles'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
