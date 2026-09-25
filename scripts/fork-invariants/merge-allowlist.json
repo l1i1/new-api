@@ -1,0 +1,4 @@
+{
+  "$comment": "Paths the merge-divergence check must not fail on: the merge took upstream's side over a fork-modified path on purpose. Every entry needs a reason. Allowlisted paths stay VISIBLE in the gate output (they are counted as acknowledged), so this file records decisions instead of hiding them. Remove an entry when the fork behaviour moves back into the file.",
+  "paths": []
+}

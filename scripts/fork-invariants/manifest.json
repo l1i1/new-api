@@ -1,0 +1,1741 @@
+{
+  "$comment": "Machine-checked survival list for the fork changes inventoried in FORK-CHANGES.md. Run: node scripts/fork-invariants/main.mjs --check manifest. Add or fix anchors by hand; a dropped anchor after an upstream sync means the merge silently reverted fork behaviour.",
+  "upstreamRef": "upstream/main",
+  "entries": [
+    {
+      "id": "三决策重试-永不重试-最先判定-换同渠道另一个-key-换渠道-顺序在-ui-里写明-关键词列表-1",
+      "title": "三决策重试：永不重试（最先判定）→ 换同渠道另一个 Key → 换渠道，顺序在 UI 里写明；关键词列表可由运营编辑",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "model/request_policy.go",
+        "controller/request_policy.go",
+        "service/upstream_request_rejection.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/request_policy.go",
+          "name": "MatchesNeverRetryKeywords"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/request_policy.go",
+          "name": "parseRequestPolicyKeywords"
+        },
+        {
+          "kind": "file",
+          "file": "service/upstream_request_rejection.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/upstream_request_rejection.go",
+          "name": "IsNeverRetryUpstreamError"
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/relay_retry_test.go",
+          "names": [
+            "TestShouldRetryUnsupportedChannelEndpoint",
+            "TestShouldRetryOllamaResponsesEndpointUnsupported",
+            "TestShouldRetryUnsupportedChannelFeature",
+            "TestShouldRetryUpstreamBadRequest",
+            "TestShouldRetryUpstreamServiceTemporarilyUnavailable",
+            "TestLocalErrorsDoNotFollowTheFailoverList",
+            "TestNeverRetryStatusCodesOverrideAutomaticRetry",
+            "TestShouldRetryUpstreamErrorMatchingKeyword",
+            "TestRetryKeywordIsBoundedByHardGates",
+            "TestRetryKeywordOverridesConversionSkipRetry",
+            "TestShouldNotRetryAfterResponseWriterCommit",
+            "TestShouldRetryKeepAliveOnlyCommitAllowsChannelSwap",
+            "TestShouldNotRetryWhenPayloadFollowsKeepAlive",
+            "TestPrepareChannelRetrySeparatesKeyAndChannelFailures",
+            "TestPrepareChannelRetryRotatesKeyOnPaymentRequired",
+            "TestMultiKeyCredentialRetryStatusCodesRespectConfig",
+            "TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized",
+            "TestRetryParamCancelResetAfterMultiKeyExhaustion",
+            "TestCredentialErrorsRetryAnotherKeyOnSameChannelExceptUnauthorized",
+            "TestUnauthorizedMultiKeyFailureMovesToNextChannel",
+            "TestFirstAttemptWithoutRelayChannelMetaKeepsMultiKeyRetry",
+            "TestGatewayAndUnsupportedFeatureErrorsMoveToAnotherChannel",
+            "TestInsufficientCreditsRotatesKeyInsteadOfDroppingChannel",
+            "TestNeverRetryOutranksCredentialRotation",
+            "TestShouldRetryContextOverflowStopsFailover"
+          ]
+        },
+        {
+          "file": "model/request_policy_test.go",
+          "names": [
+            "TestRequestPolicyDatabaseMatrix"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "请求形状错误的-4xx-不重试-换渠道重试救不了无效请求-2",
+      "title": "请求形状错误的 4xx 不重试（换渠道重试救不了无效请求）",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "relay/helper/valid_request.go",
+        "service/upstream_request_rejection.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4ReasoningEffortDeserMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopTooLongMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopArrayLength"
+        },
+        {
+          "kind": "file",
+          "file": "service/upstream_request_rejection.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/upstream_request_rejection.go",
+          "name": "IsNeverRetryUpstreamError"
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/relay_retry_test.go",
+          "names": [
+            "TestShouldRetryUnsupportedChannelEndpoint",
+            "TestShouldRetryOllamaResponsesEndpointUnsupported",
+            "TestShouldRetryUnsupportedChannelFeature",
+            "TestShouldRetryUpstreamBadRequest",
+            "TestShouldRetryUpstreamServiceTemporarilyUnavailable",
+            "TestLocalErrorsDoNotFollowTheFailoverList",
+            "TestNeverRetryStatusCodesOverrideAutomaticRetry",
+            "TestShouldRetryUpstreamErrorMatchingKeyword",
+            "TestRetryKeywordIsBoundedByHardGates",
+            "TestRetryKeywordOverridesConversionSkipRetry",
+            "TestShouldNotRetryAfterResponseWriterCommit",
+            "TestShouldRetryKeepAliveOnlyCommitAllowsChannelSwap",
+            "TestShouldNotRetryWhenPayloadFollowsKeepAlive",
+            "TestPrepareChannelRetrySeparatesKeyAndChannelFailures",
+            "TestPrepareChannelRetryRotatesKeyOnPaymentRequired",
+            "TestMultiKeyCredentialRetryStatusCodesRespectConfig",
+            "TestAffinitySkipStillAllowsMultiKeyCredentialRetryExceptUnauthorized",
+            "TestRetryParamCancelResetAfterMultiKeyExhaustion",
+            "TestCredentialErrorsRetryAnotherKeyOnSameChannelExceptUnauthorized",
+            "TestUnauthorizedMultiKeyFailureMovesToNextChannel",
+            "TestFirstAttemptWithoutRelayChannelMetaKeepsMultiKeyRetry",
+            "TestGatewayAndUnsupportedFeatureErrorsMoveToAnotherChannel",
+            "TestInsufficientCreditsRotatesKeyInsteadOfDroppingChannel",
+            "TestNeverRetryOutranksCredentialRotation",
+            "TestShouldRetryContextOverflowStopsFailover"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "官方拟合-pin-的请求不被运营重试关键词换渠道-官方原文须原样回客-多-key-官方渠道仍换--3",
+      "title": "官方拟合 pin 的请求不被运营重试关键词换渠道（官方原文须原样回客；多 Key 官方渠道仍换 Key）",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "service/relay_error.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "officialFitPinKeepsVerdict"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "anotherCredentialAvailable"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/relay_error_test.go",
+          "names": [
+            "TestShouldRetryRelayErrorHonorsChannelPinOnChannelError",
+            "TestProcessChannelErrorMasksDisableReasonAndNotification",
+            "TestDecideRelayRetryReasons",
+            "TestRequestPolicyEventsReachLogAdminInfo",
+            "TestOfficialFitPinKeepsUpstreamVerdict"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "视频计费-能力维度选路-从容器定价-预取-结算缓存协议-详见-4-4",
+      "title": "视频计费：能力维度选路 + 从容器定价 + 预取/结算缓存协议（详见 §4）",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "service/video_token.go",
+        "service/video_estimate.go",
+        "relay/request_billing.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/video_token.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "EstimateVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "readBoxes"
+        },
+        {
+          "kind": "file",
+          "file": "service/video_estimate.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "LoadVideoEstimateConfig"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "PrefetchVideoPromptTotal"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/video_estimate_test.go",
+          "names": [
+            "TestLoadVideoEstimateConfigIsInertWithoutAKey",
+            "TestEstimateRequestBodySerializesWhatTheEndpointPrices",
+            "TestEstimateTotalViaEndpointReadsTotalTokens",
+            "TestEstimateTotalViaEndpointReportsFallbackForBadAnswers",
+            "TestPrefetchWarmsTheSettlementLookup",
+            "TestPrefetchIsInertWithoutConfiguration",
+            "TestVideoUsageLooksCountedFixatesTheThreshold",
+            "TestVideoEstimateFallbackKeepsLocalPrice",
+            "TestEstimatedBillingUsageMarksTheLogPath",
+            "TestVideoUsageModeValidation",
+            "TestEstimateCacheKeyCoversTextAndModel",
+            "TestLoadVideoEstimateConfigPrefersTheAdminSetting",
+            "TestSettlementLookupUsesTheOriginalModelId"
+          ]
+        },
+        {
+          "file": "relay/request_billing_test.go",
+          "names": [
+            "TestPrepareRequestBillingReadsTheSelectedChannelFromTheContext"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "渠道已用额度重置-5",
+      "title": "渠道已用额度重置",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "controller/channel.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/channel.go",
+          "name": "validateTwoFactorAuth"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel.go",
+          "name": "validateCodexOAuthKey"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel.go",
+          "name": "mergeCodexMultiKeyCredentials"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "计费会话与资金来源-预扣费-退款-违规费语义-6",
+      "title": "计费会话与资金来源（预扣费 / 退款 / 违规费语义）",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "service/billing_session.go",
+        "service/funding_source.go",
+        "service/text_quota.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/billing_session.go",
+          "name": "FoldUsageIntoWalletSettle"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/funding_source.go",
+          "name": "SetUsageDelta"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/text_quota.go",
+          "name": "saturatingTokenTotal"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/billing_session_test.go",
+          "names": [
+            "TestBillingSessionSettleExactMatchRecordsWalletUsage",
+            "TestBillingSessionSettleRefundRecordsWalletUsage",
+            "TestBillingSessionSettleDebitPersistsBeforeReturn",
+            "TestBillingSessionRefundAfterSettleIsNoOp",
+            "TestBillingSessionRefundPersistsWalletQuotaBeforeReturn",
+            "TestBillingSessionRefundFailureRetainsPendingState",
+            "TestBillingSessionSettleExactMatchRecordsZeroQuotaRequest",
+            "TestNewBillingSessionSubscriptionFirstUsesWalletWhenNoSubscription",
+            "TestNewBillingSessionSubscriptionFirstUsesActiveSubscription",
+            "TestNewBillingSessionSubscriptionFirstFallsBackToWalletOnAllowedOverflow"
+          ]
+        },
+        {
+          "file": "service/text_quota_test.go",
+          "names": [
+            "TestFixedPriceBillingDatabaseMatrix",
+            "TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic",
+            "TestCalculateTextQuotaSummarySaturatesTokenTotal",
+            "TestCalculateTextQuotaSummaryUsesSplitClaudeCacheCreationRatios",
+            "TestCalculateTextQuotaSummaryUsesAnthropicUsageSemanticFromUpstreamUsage",
+            "TestCalculateTextQuotaSummaryUsesClaudeBillingUsageBeforeTopLevelUsage",
+            "TestCalculateTextQuotaSummaryUsesGeminiBillingUsageBeforeTopLevelUsage",
+            "TestEffectiveBillingUsageNormalizesPartialGeminiCompletionAndImageDetails",
+            "TestEffectiveBillingUsageRaisesGeminiTotalToReportedComponents",
+            "TestCalculateTextQuotaSummaryUsesOpenAIBillingUsageBeforeTopLevelUsage",
+            "TestCalculateTextQuotaSummaryUsesOpenAIResponsesInputTokenDetails",
+            "TestUsageFromOpenAIBillingUsageNormalizesCacheDetailsWithoutOverwritingCanonicalValues",
+            "TestUsageFromOpenAIBillingUsageFallsBackToPromptCacheHitTokens",
+            "TestCalculateTextQuotaSummaryNormalizesOpenAIResponsesBillingUsageDetails",
+            "TestUsageBillingPathForLog",
+            "TestAppendUsageBillingPathForLogWritesAdminInfo",
+            "TestCacheWriteTokensTotal",
+            "TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage",
+            "TestCalculateTextQuotaSummaryBillsOpenAICacheWriteTokens",
+            "TestCalculateTextQuotaSummarySeparatesOpenRouterCacheReadFromPromptBilling",
+            "TestCalculateTextQuotaSummarySeparatesOpenRouterCacheCreationFromPromptBilling",
+            "TestCalculateTextQuotaSummaryKeepsPrePRClaudeOpenRouterBilling",
+            "TestComposeTieredTextQuotaKeepsToolCallSurcharges",
+            "TestComposeTieredTextQuotaFallbackKeepsToolCallSurcharges",
+            "TestComposeTieredTextQuotaErrorFallbackUsesPreConsumedQuota",
+            "TestTryTieredSettleRecordsClampOnOverflow",
+            "TestTryTieredSettleNoClampInRange",
+            "TestCalculateTextQuotaSummaryFixedPriceAppliesImageCountOnceAndAllowsOverride",
+            "TestCalculateTextToolCallSurchargeGeneralizedBuiltInTools",
+            "TestCalculateTextToolCallSurchargeKeepsSearchPreviewFallbackWithCustomFunctions",
+            "TestCalculateTextToolCallSurchargeDoesNotInferSearchForResponses",
+            "TestCalculateTextToolCallSurchargeMergesSameNameAndPrice",
+            "TestMergeToolSurchargeItemsSaturatesCountOverflow",
+            "TestCalculateTextQuotaSummaryZeroTokensStillBillsToolSurcharge",
+            "TestCalculateTextQuotaSummaryDoesNotApplyRequestMultipliersToToolSurcharge",
+            "TestCalculateTextToolCallSurchargeGeminiGoogleSearch",
+            "TestCalculateTextToolCallSurchargeGeminiFunctionCall",
+            "TestCalculateTextToolCallSurchargeImageGenerationDefaultPrice",
+            "TestCalculateTextToolCallSurchargeImageGenerationExplicitZeroDisables",
+            "TestCalculateTextQuotaSummaryImageGenerationUsesStructuredSurcharge",
+            "TestAppendToolSurchargeLogInfoWritesOnlyStructuredFields"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "每用户-模型速率限制-rpm-与长窗口并存-7",
+      "title": "每用户-模型速率限制（RPM 与长窗口并存）",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "middleware/model-rate-limit.go"
+      ],
+      "anchors": [],
+      "tests": [
+        {
+          "file": "middleware/model_rate_limit_test.go",
+          "names": [
+            "TestModelRedisRateLimitUsesUTCRegardlessOfLocalTimezone",
+            "TestModelRateLimitStreamFailuresDoNotConsumeSuccessLimit",
+            "TestModelMemoryRateLimitReservesConcurrentSuccessAdmission"
+          ]
+        }
+      ],
+      "status": "absorbed-upstream",
+      "supersededBy": "upstream v1.0.0-rc.40 (middleware/model-rate-limit.go and its test are byte-identical to upstream)"
+    },
+    {
+      "id": "邀请首充奖励排除-partner-邀请人-充值-配额审计日志本地化-8",
+      "title": "邀请首充奖励排除 partner 邀请人；充值/配额审计日志本地化",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "model/user.go",
+        "web/src/features/usage-logs/lib/format.ts",
+        "web/src/features/usage-logs/lib/quota-audit-operation.ts"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "finishInviteBookkeeping"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "invalidateUserQuotaCacheAfterMutation"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "debitUserQuotaTx"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/usage-logs/lib/format.ts",
+          "name": "getEffectiveBillingRatio"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "日志可见性-普通用户视图额外剥掉-responsemodel-其-upstreammodel-是-9",
+      "title": "日志可见性：普通用户视图额外剥掉 `responsemodel`（其 `upstreammodel` 是与 `upstreammodelname` 同一个上游模型 id，上游只在顶层剥离，嵌套字段会带着它绕过）",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "model/log_other.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/log_other.go",
+          "contains": "is_model_mapped\", \"response_model",
+          "note": "user-view strip list must keep response_model"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/log_other.go",
+          "contains": "response_model belongs with the two keys above",
+          "note": "the rationale comment for that strip"
+        }
+      ],
+      "tests": [
+        {
+          "file": "model/log_format_test.go",
+          "names": [
+            "TestFormatUserLogsStripsQuotaSaturation",
+            "TestTaskPluginLogVisibilityIsRoleSeparated",
+            "TestFormatUserLogsSanitizesStreamErrors",
+            "TestFormatUserLogsFiltersErrorContentForNonAdminViews",
+            "TestFormatUserLogsHidesUpstreamModel",
+            "TestFormatUserLogsHidesResponseModelObservation",
+            "TestLegacyLogOtherVisibilityIsRoleSeparated",
+            "TestLegacyRejectReasonDoesNotOverrideScopedValue",
+            "TestLegacyRejectReasonHandlesNullAdminInfo",
+            "TestLogFormattingPreservesLargeIntegerLexemes"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "supportsvideo-能力维度-带视频的请求只路由到声明了能力的渠道-无声明就诚实失败-文-10",
+      "title": "`supportsvideo` 能力维度：带视频的请求只路由到声明了能力的渠道；无声明就诚实失败，文本流量不受影响",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "middleware/distributor.go",
+        "model/channel_constraint.go",
+        "model/channel_cache.go",
+        "service/channel_select.go",
+        "constant/context_key.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "shouldRecordChannelAffinity"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "channelSelectionFailureResponse"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "abortOfficialFitMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "IsOfficialFitChannelForModel"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "supportsVideoForCache"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "setSupportsVideoIn"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "Unwrap"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "CancelRetryReset"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "PreferChannel"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "body-层检测器-requestbytescarryvideo-按-part-形状匹配-与-d-11",
+      "title": "body 层检测器（`RequestBytesCarryVideo`，按 part 形状匹配）与 DTO 层检测器必须一致",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "service/video_token.go",
+        "relaykit/dto/openai_request.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/video_token.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "EstimateVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "readBoxes"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/openai_request.go",
+          "name": "rawCacheControl"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "本地容器定价-kimi-vision-系标定模型-含非有限值-溢出-饱和加固-12",
+      "title": "本地容器定价（Kimi vision 系标定模型）含非有限值/溢出/饱和加固",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "service/video_token.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/video_token.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "EstimateVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "readBoxes"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "估算端点可由控制台配置-管理员设置优先-env-作为引导与回退-13",
+      "title": "估算端点可由控制台配置：管理员设置优先、env 作为引导与回退",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "setting/operation_setting/video_estimate_setting.go",
+        "service/video_estimate.go",
+        "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "setting/operation_setting/video_estimate_setting.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/video_estimate_setting.go",
+          "name": "GetVideoEstimateSetting"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/video_estimate_setting.go",
+          "name": "TrimmedVideoEstimateBaseURL"
+        },
+        {
+          "kind": "file",
+          "file": "service/video_estimate.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "LoadVideoEstimateConfig"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "PrefetchVideoPromptTotal"
+        },
+        {
+          "kind": "file",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx",
+          "name": "VideoEstimateSettingsSection"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx",
+          "name": "BASE_URL_KEY"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "估算端点预取-结算读缓存-两端必须用同一个模型-id-originmodelname-缓存键覆盖-14",
+      "title": "估算端点预取 + 结算读缓存：两端必须用同一个模型 id（`OriginModelName`），缓存键覆盖整个计价载荷",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "service/video_estimate.go",
+        "relay/request_billing.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/video_estimate.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "LoadVideoEstimateConfig"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "PrefetchVideoPromptTotal"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "估算端点在控制台可配-库-env-默认-逐字段回退-密钥走既有脱敏通道不回显-缓存键含端点-ur-15",
+      "title": "估算端点在控制台可配（库 > env > 默认，逐字段回退）；密钥走既有脱敏通道不回显；缓存键含端点 URL，换端点即失效",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "setting/operation_setting/video_estimate_setting.go",
+        "service/video_estimate.go",
+        "controller/misc.go",
+        "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "setting/operation_setting/video_estimate_setting.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/video_estimate_setting.go",
+          "name": "GetVideoEstimateSetting"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/video_estimate_setting.go",
+          "name": "TrimmedVideoEstimateBaseURL"
+        },
+        {
+          "kind": "file",
+          "file": "service/video_estimate.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "LoadVideoEstimateConfig"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_estimate.go",
+          "name": "PrefetchVideoPromptTotal"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/misc.go",
+          "name": "HealthLive"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/misc.go",
+          "name": "HealthReady"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/misc.go",
+          "name": "buildEmailVerificationMessage"
+        },
+        {
+          "kind": "file",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx",
+          "name": "VideoEstimateSettingsSection"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/system-settings/integrations/video-estimate-settings-section.tsx",
+          "name": "BASE_URL_KEY"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "videousagemode-只在服务该请求的渠道声明时才修正上报值-16",
+      "title": "`videousagemode` 只在服务该请求的渠道声明时才修正上报值",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "service/video_token.go",
+        "relaykit/dto/channel_settings.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/video_token.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "EstimateVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/video_token.go",
+          "name": "readBoxes"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateConcurrencyLimit"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "NormalizedMultiKeyTest"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateMultiKeyTest"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "消费日志的-prompttokens-与-usagebillingpath-必须同时反映实际计费-17",
+      "title": "消费日志的 `prompttokens` 与 `usagebillingpath` 必须同时反映实际计费值（修正后为 `billing-usage-openai-estimated`）；客户端响应的 usage 保持上游原值",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "service/text_quota.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/text_quota.go",
+          "name": "saturatingTokenTotal"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "渠道抽屉可写视频标记-supportsvideo-开关-条件出现的-videousagemode-18",
+      "title": "渠道抽屉可写视频标记：`supportsvideo` 开关 + 条件出现的 `videousagemode` 下拉（默认值下两键从 settings 删除，关掉能力即真的移除选路限制）",
+      "source": "FORK-CHANGES.md › 4. 视频能力（最新的自有维度）",
+      "files": [
+        "web/src/features/channels/components/drawers/channel-mutate-drawer.tsx",
+        "web/src/features/channels/lib/channel-form.ts",
+        "web/src/features/channels/types.ts"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "web/src/features/channels/components/drawers/channel-mutate-drawer.tsx",
+          "name": "VIDEO_USAGE_MODE_TRUSTED"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/channels/components/drawers/channel-mutate-drawer.tsx",
+          "name": "VIDEO_USAGE_MODE_OPTIONS"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "affinity-绑定必须先过约束过滤-视频请求不记录绑定-否则会话黏性把视频请求钉在读不了视频-19",
+      "title": "affinity 绑定必须先过约束过滤，视频请求不记录绑定（否则会话黏性把视频请求钉在读不了视频的渠道上）",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "middleware/distributor.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "shouldRecordChannelAffinity"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "channelSelectionFailureResponse"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "abortOfficialFitMessage"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "fixed-affinity-多-key-选路-token-affinity-20",
+      "title": "fixed-affinity 多 Key 选路（token-affinity）",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "service/channel_select.go",
+        "model/channel_cache.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "Unwrap"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "CancelRetryReset"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "PreferChannel"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "IsOfficialFitChannelForModel"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "supportsVideoForCache"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "setSupportsVideoIn"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "空输出的-chat-completions-不再合成-502-客户端中途断开不再合成-502-21",
+      "title": "空输出的 chat completions 不再合成 502；客户端中途断开不再合成 502",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/channel/openai/relay-openai.go",
+        "relay/helper/stream_scanner.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "requiresDeepSeekV4ReasoningLogprobs"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "deepSeekThinkingDisabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "hasBothChatLogprobs"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "流式-usage-完整保留-passthrough-原始字节-websocket-负载归一化-22",
+      "title": "流式 usage 完整保留 + passthrough 原始字节 + websocket 负载归一化",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/channel/openai/relay_responses.go",
+        "relay/helper/valid_request.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay_responses.go",
+          "name": "usageFromResponsesResponse"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay_responses.go",
+          "name": "incompleteResponsesStreamError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4ReasoningEffortDeserMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopTooLongMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopArrayLength"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "official-fit-官方渠道定型-kimi-k3-moonshot-契约-family-r-23",
+      "title": "official-fit：官方渠道定型（Kimi K3 / Moonshot 契约、family registry、serde 位置后缀）",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "officialfit/officialfit.go",
+        "relay/channel/openai/deepseek_v4_fit.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "officialfit/officialfit.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "officialfit/officialfit.go",
+          "name": "normalize"
+        },
+        {
+          "kind": "symbol",
+          "file": "officialfit/officialfit.go",
+          "name": "FamilyOf"
+        },
+        {
+          "kind": "file",
+          "file": "relay/channel/openai/deepseek_v4_fit.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/deepseek_v4_fit.go",
+          "name": "FitDeepSeekV4StreamEventForAdapters"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/deepseek_v4_fit.go",
+          "name": "deepSeekV4RequestAllowsToolCalls"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "official-fit-k3-业务-400-只用-moonshot-的两字段信封-messag-24",
+      "title": "official-fit：K3 业务 400 只用 Moonshot 的两字段信封 `{message,type}`（共享 `OpenAIError` 恒带 `param`/`code`，必须显式映射）",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "controller/relay.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "WriteString"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "officialFitErrorsEnabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "checkRelayContentModeration"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "official-fit-k3-流式在终端帧之后按客户端自己的-streamoptions-in-25",
+      "title": "official-fit：K3 流式在终端帧之后按客户端自己的 `streamoptions.includeusage` 补发官方的 usage-only 帧（`choices:[]` + 顶层 usage），否则标准 OpenAI 客户端读不到任何 token 数",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/channel/openai/kimi_k3_fit.go",
+        "relay/channel/openai/relay-openai.go",
+        "relay/channel/openai/helper.go",
+        "relay/common/relay_info.go",
+        "relay/compatible_handler.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "relay/channel/openai/kimi_k3_fit.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/kimi_k3_fit.go",
+          "name": "kimiK3FitEnabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/kimi_k3_fit.go",
+          "name": "FitKimiK3TextResponseBodyForAdapters"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "requiresDeepSeekV4ReasoningLogprobs"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "deepSeekThinkingDisabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "hasBothChatLogprobs"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/helper.go",
+          "name": "cyberPolicyGeminiError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/helper.go",
+          "name": "writeCyberPolicyStreamError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/helper.go",
+          "name": "writeCyberPolicyResponseError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "SetVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "GetVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "GetClientModelName"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "official-fit-k3-本地参数校验里与思考状态相关的两条规则-temperature--26",
+      "title": "official-fit：K3 本地参数校验里与思考状态相关的两条规则（temperature 的固定值与 `toolchoice` 的「specified」类）必须按思考状态分支。`toolchoice`：「specified」只在思考开启时成立，关闭时命名函数对象合法并真的强",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/helper/valid_request.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4ReasoningEffortDeserMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopTooLongMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopArrayLength"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "ollama-近似缓存-分区身份必须排除只影响解码的-ollama-选项-numpredict--27",
+      "title": "Ollama 近似缓存：分区身份必须排除只影响解码的 Ollama 选项（`numpredict`、采样参数、`stop`）。客户端每轮重算输出预算（ZCode 按剩余上下文发新的 `maxoutputtokens` → 转成 `numpredict`），把它们算进 key 会让",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/channel/ollama/prompt_cache.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "relay/channel/ollama/prompt_cache.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/ollama/prompt_cache.go",
+          "name": "promptCacheKeyOptions"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/ollama/prompt_cache.go",
+          "name": "getPromptCache"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "claude-prompt-cache-断点必须穿过多协议转换-上游缺陷-cachecontro-28",
+      "title": "Claude prompt cache 断点必须穿过多协议转换（上游缺陷：`cachecontrol` 在 DTO 解析层就没被提取，两个 converter 也未带上）。Claude 缓存是显式的，断点丢失 = 每轮按全价重算整段上下文，OpenAI 兼容协议进来的 Claud",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relaykit/dto/openai_request.go",
+        "relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go",
+        "relaykit/relayconvert/internal/oai_responses/to_claude_messages_req.go",
+        "relay/channel/mistral/text.go",
+        "relay/channel/zhipu_4v/relay-zhipu_v4.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/openai_request.go",
+          "name": "rawCacheControl"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/relayconvert/internal/oai_responses/to_claude_messages_req.go",
+          "name": "contentPartCacheControl"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "内容审核-可运营配置-日志与状态-29",
+      "title": "内容审核（可运营配置、日志与状态）",
+      "source": "FORK-CHANGES.md › 6. 内容安全",
+      "files": [
+        "service/content_moderation.go",
+        "model/content_moderation.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "service/content_moderation.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/content_moderation.go",
+          "name": "Unwrap"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/content_moderation.go",
+          "name": "normalize"
+        },
+        {
+          "kind": "file",
+          "file": "model/content_moderation.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/content_moderation.go",
+          "name": "TableName"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/content_moderation.go",
+          "name": "CreateContentModerationLog"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "cyber-policy-违规费用归一化-30",
+      "title": "cyber policy / 违规费用归一化",
+      "source": "FORK-CHANGES.md › 6. 内容安全",
+      "files": [
+        "controller/relay.go",
+        "service/relay_error.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "WriteString"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "officialFitErrorsEnabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "checkRelayContentModeration"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "officialFitPinKeepsVerdict"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "anotherCredentialAvailable"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "原生-tokeness-前端-导航定制-首页-站点公告-31",
+      "title": "原生 Tokeness 前端（导航定制、首页、站点公告）",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/src/hooks/use-notifications.ts",
+        "web/src/main.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "web/src/hooks/use-notifications.ts",
+          "name": "getNotificationRefreshInterval"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/hooks/use-notifications.ts",
+          "name": "getNotificationAutoOpenOptions"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/hooks/use-notifications.ts",
+          "name": "NOTIFICATION_REFRESH_INTERVAL_MS"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/main.tsx",
+          "name": "serverInjectedTitle"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "定价展示-动态价-原价划线-tier-表达式-vendor-本地化-cny-文案-32",
+      "title": "定价展示：动态价、原价划线、tier 表达式、vendor 本地化、CNY 文案",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/src/features/pricing/lib/dynamic-price.ts",
+        "web/src/features/pricing/lib/tier-expr.ts",
+        "web/src/features/pricing/components/model-details.tsx",
+        "web/src/features/pricing/components/dynamic-pricing-breakdown.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "web/src/features/pricing/lib/dynamic-price.ts",
+          "name": "taskPriceFractionDigits"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/pricing/lib/dynamic-price.ts",
+          "name": "taskDisplayAmount"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/pricing/lib/dynamic-price.ts",
+          "name": "formatTaskUsagePrice"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "卡片本地化-tnt-l-zh-标记解析-与-7-语言键集合契约-当前-7428-键-33",
+      "title": "卡片本地化（`<tnt l=\"zh\">` 标记解析）与 7 语言键集合契约（当前 7428 键）",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/src/lib/tnt-content.ts"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "web/src/lib/tnt-content.ts"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/lib/tnt-content.ts",
+          "name": "normalizeTntContentLanguage"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/lib/tnt-content.ts",
+          "name": "findOpeningTagEnd"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "主题定制持久化与首屏应用-34",
+      "title": "主题定制持久化与首屏应用",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/src/lib/theme-storage.ts",
+        "web/src/lib/theme-customization-storage.ts",
+        "web/src/context/theme-customization-provider.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "web/src/lib/theme-customization-storage.ts"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/lib/theme-customization-storage.ts",
+          "name": "readThemeCustomization"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/lib/theme-customization-storage.ts",
+          "name": "applyAttribute"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "测试运行器必须两阶段都跑-vitest-node-test-35",
+      "title": "测试运行器必须两阶段都跑（vitest + node:test）",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/scripts/run-tests.mjs",
+        "web/scripts/node-test-setup.ts"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "web/scripts/run-tests.mjs"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/scripts/run-tests.mjs",
+          "name": "collectFiles"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/scripts/run-tests.mjs",
+          "name": "testFilePattern"
+        },
+        {
+          "kind": "file",
+          "file": "web/scripts/node-test-setup.ts"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "partner-白标-统计-账本-fifo-回放-签名旁路-按用户名解析-36",
+      "title": "partner 白标、统计、账本（FIFO 回放）、签名旁路、按用户名解析",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "controller/partner.go",
+        "model/partner_stats.go",
+        "setting/operation_setting/partner_setting.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "controller/partner.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/partner.go",
+          "name": "shanghaiMonthRange"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/partner.go",
+          "name": "writePartnerError"
+        },
+        {
+          "kind": "file",
+          "file": "model/partner_stats.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/partner_stats.go",
+          "name": "GetPartnerInvitees"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/partner_stats.go",
+          "name": "GetPartnerConsumption"
+        },
+        {
+          "kind": "file",
+          "file": "setting/operation_setting/partner_setting.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/partner_setting.go",
+          "name": "ValidatePartnerInviteCode"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/partner_setting.go",
+          "name": "ValidatePartnerInviteCodeInviterID"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "console-签发的邀请码可归因注册-长度即命名空间-账号码恰好-4-字符-console-码-37",
+      "title": "console 签发的邀请码可归因注册（长度即命名空间：账号码恰好 4 字符，console 码 5–32）",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "model/partner_invite_code.go",
+        "setting/operation_setting/partner_setting.go",
+        "model/user.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "model/partner_invite_code.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/partner_invite_code.go",
+          "name": "ResolveInviterByAffCode"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/partner_invite_code.go",
+          "name": "AffCodeTakenByUser"
+        },
+        {
+          "kind": "file",
+          "file": "setting/operation_setting/partner_setting.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/partner_setting.go",
+          "name": "ValidatePartnerInviteCode"
+        },
+        {
+          "kind": "symbol",
+          "file": "setting/operation_setting/partner_setting.go",
+          "name": "ValidatePartnerInviteCodeInviterID"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "finishInviteBookkeeping"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "invalidateUserQuotaCacheAfterMutation"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/user.go",
+          "name": "debitUserQuotaTx"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "渠道可观测性-多-key-测试-指标-凭据管理-38",
+      "title": "渠道可观测性（多 Key 测试、指标、凭据管理）",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "pkg/channel_observability/observability.go",
+        "controller/channel_credentials.go",
+        "model/channel_observation_metric.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "pkg/channel_observability/observability.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/channel_observability/observability.go",
+          "name": "RecordAttempt"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/channel_observability/observability.go",
+          "name": "normalizeErrorClass"
+        },
+        {
+          "kind": "file",
+          "file": "controller/channel_credentials.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_credentials.go",
+          "name": "UpdateMultiKeyStatus"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_credentials.go",
+          "name": "UpdateMultiKeyProxy"
+        },
+        {
+          "kind": "file",
+          "file": "model/channel_observation_metric.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_observation_metric.go",
+          "name": "sampleSketchComplete"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_observation_metric.go",
+          "name": "sampleWeights"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "invoice-wallet-支付结算加固-39",
+      "title": "invoice / wallet / 支付结算加固",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "web/src/features/system-settings/integrations/payment-settings-section.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "web/src/features/system-settings/integrations/payment-settings-section.tsx",
+          "name": "parseHotPayTypes"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "双站发布-mainland-cny-简体固定-与-intl-staged-发布-金丝雀-回滚-40",
+      "title": "双站发布：`mainland`（CNY + 简体固定）与 `intl`；staged 发布、金丝雀、回滚",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness/rollout.sh",
+        "deployment/tokeness-cn/deploy.sh",
+        ".cnb.yml",
+        ".github/workflows/tokeness-publish.yml",
+        ".github/workflows/tokeness-deploy.yml",
+        ".github/workflows/tokeness-upstream-sync.yml"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "deployment/tokeness/rollout.sh"
+        },
+        {
+          "kind": "file",
+          "file": "deployment/tokeness-cn/deploy.sh"
+        },
+        {
+          "kind": "file",
+          "file": ".cnb.yml"
+        },
+        {
+          "kind": "file",
+          "file": ".github/workflows/tokeness-publish.yml"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "channelothersettings-字段-supportsvideo-videousage-41",
+      "title": "`ChannelOtherSettings` 字段（`supportsvideo`、`videousagemode`）",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "relaykit/dto/channel_settings.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateConcurrencyLimit"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "NormalizedMultiKeyTest"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateMultiKeyTest"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "渠道视频标记的读写两端-42",
+      "title": "渠道视频标记的读写两端",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "relaykit/dto/channel_settings.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateConcurrencyLimit"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "NormalizedMultiKeyTest"
+        },
+        {
+          "kind": "symbol",
+          "file": "relaykit/dto/channel_settings.go",
+          "name": "ValidateMultiKeyTest"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "日志字段的可见性分级-43",
+      "title": "日志字段的可见性分级",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "model/log_other.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/log_other.go",
+          "contains": "end_error\", \"errors",
+          "note": "stream_status error detail must stay hidden from the log owner"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "k3-本地校验器与官方契约的逐条对齐-44",
+      "title": "K3 本地校验器与官方契约的逐条对齐",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "relay/helper/valid_request.go",
+        "controller/relay.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4ReasoningEffortDeserMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopTooLongMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "deepSeekV4StopArrayLength"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "WriteString"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "officialFitErrorsEnabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "checkRelayContentModeration"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "主题偏好存储与首屏应用-45",
+      "title": "主题偏好存储与首屏应用",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "web/src/context/theme-customization-provider.tsx",
+        "web/src/main.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "web/src/main.tsx",
+          "name": "serverInjectedTitle"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "计费数量与配额字段-46",
+      "title": "计费数量与配额字段",
+      "source": "FORK-CHANGES.md › 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）",
+      "files": [
+        "relay/common/relay_info.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "SetVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "GetVideoTokens"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/common/relay_info.go",
+          "name": "GetClientModelName"
+        }
+      ],
+      "tests": []
+    }
+  ]
+}

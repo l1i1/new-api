@@ -1,0 +1,56 @@
+{
+  "$comment": "Upstream-owned locale bundles (web/src/i18n/locales/*.json): sha256 of the upstream bytes plus the upstream facts the offline gate needs (key-set hash, key count, and any collision between an upstream key and a fork overlay key). Every fork string lives in web/src/i18n/overlay/ instead. Refresh with: node scripts/fork-invariants/main.mjs --record-locales",
+  "upstreamRef": "upstream/main",
+  "recordedAt": "2026-09-25",
+  "files": {
+    "en.json": {
+      "sha256": "dff8faae706db1d6f54229069524f52a494da34b66b0ed794f713359007f49ab",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "fr.json": {
+      "sha256": "f55cda1d214ecb9ef30cf0e863f99f1f4dc13499690980ee3c31c177d9c270fd",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "ja.json": {
+      "sha256": "16f65ee8db75cb51be4350250f020470fd580d4eb1b85136658d5d25bb0793c1",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "ru.json": {
+      "sha256": "de6568ae6cf7f16612ad06320127387d0f9ac0d504c9740f385ab528eccfb7f5",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "vi.json": {
+      "sha256": "88bbdc20310de42a7acb1b51f90fa25460d6821a84cc108ddc23af4c6d6ec8d9",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "zh-TW.json": {
+      "sha256": "e0ef91a4f2f73c82499fcd87e29bcf27c1c25a4ed59b8807c44b93a4810e117c",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    },
+    "zh.json": {
+      "sha256": "a72fa66c30665c513abb265a62309834d3730bfc6b7b8be144e756bc7d4df611",
+      "upstreamKeyCount": 6778,
+      "keySetHash": "1c5f86a9f0375f998d70cf859bf20647c1f0929eff4770e54b02c500f74f29b3",
+      "forkKeyCollisions": [],
+      "staleOverrides": []
+    }
+  }
+}

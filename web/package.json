@@ -21,7 +21,9 @@
     "copyright:check": "node scripts/add-copyright.mjs --check",
     "copyright": "node scripts/add-copyright.mjs",
     "i18n:sync": "node scripts/sync-i18n.mjs",
-    "knip": "knip"
+    "knip": "knip",
+    "i18n:check": "node ../scripts/fork-invariants/main.mjs --check i18n",
+    "fork:check": "node ../scripts/fork-invariants/main.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
