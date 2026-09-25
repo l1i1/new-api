@@ -20,7 +20,9 @@
 
 ## 2. 清单的机械来源（每次同步后重跑）
 
-生成时间 2026-09-22（rc.40 并主线前复核）；`fork = origin/tokeness/main @ eac71cfd8`、`upstream/main @ 9310231b3`、rc.40 锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 69a500298`；该范围内自有非 merge 提交 **481 个**。
+生成时间 2026-09-25（引入 `scripts/fork-invariants` 门禁与 i18n overlay 时复核）；`fork = origin/tokeness/main @ 3bf0d16b3`、`upstream/main @ c2b7a9a9e`、rc.40 锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 0aec08fee`；该范围内自有非 merge 提交 **518 个**（7 月 45 / 8 月 218 / 9 月 255）。
+
+> **清单一经登记即由门禁核对**：`node scripts/fork-invariants/main.mjs --check manifest` 按 `scripts/fork-invariants/manifest.json` 逐条断言本文件的条目仍在树里（关键文件、fork 独有符号、测试名）。本文件的表格是给人读的，`manifest.json` 是给门禁读的，两者同批更新（§10）。
 
 ```bash
 BASE=$(git merge-base upstream/main origin/tokeness/main)
@@ -52,7 +54,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 视频计费：能力维度选路 + 从容器定价 + 预取/结算缓存协议（详见 §4） | `service/video_token.go`、`service/video_estimate.go`、`relay/request_billing.go` | `service/video_estimate_test.go`、`relay/request_billing_test.go` | 高：上游同一批文件重写过一次，已验证会整块丢加固 |
 | 渠道已用额度重置 | `docs/CHANNEL_USED_QUOTA_RESET.md`、`controller/channel.go` | 该文档内的验证步骤 | 中 |
 | 计费会话与资金来源（预扣费 / 退款 / 违规费语义） | `service/billing_session.go`、`service/funding_source.go`、`service/text_quota.go` | `service/billing_session_test.go`、`service/text_quota_test.go` | 高：上游改结算路径时的默认落点 |
-| 每用户-模型速率限制（RPM 与长窗口并存） | `Tech-Spec.md`、`docs/global-model-rate-limit-tech-spec.md`、`middleware/model-rate-limit.go` | `middleware/model_rate_limit_test.go` | 中 |
+| 每用户-模型速率限制（RPM 与长窗口并存） | ~~`middleware/model-rate-limit.go`~~ 上游已吸收（`v1.0.0-rc.40` 起该文件与其测试与上游逐字节相同） | `middleware/model_rate_limit_test.go`（上游同样有） | 无（`manifest.json` 中该条目 `status: absorbed-upstream`，不再作为 fork 契约核对） |
 | 邀请首充奖励排除 partner 邀请人；充值/配额审计日志本地化 | `model/user.go`、`web/src/features/usage-logs/lib/format.ts`、`quota-audit-operation.ts` | `web/src/features/usage-logs/**/*.test.ts` | 高：`format.ts` 是已知双向冲突（保留 fork 的 `getEffectiveBillingRatio` + 上游的 quota 委托） |
 | 日志可见性：普通用户视图额外剥掉 `response_model`（其 `upstream_model` 是与 `upstream_model_name` 同一个上游模型 id，上游只在顶层剥离，嵌套字段会带着它绕过） | `model/log_other.go` | `model/log_format_test.go`（`TestFormatUserLogsHidesResponseModelObservation`；管理员与 root 视图保留该字段） | **高**：`response_model` 是上游 2026-09-18/19 新增（PR #7418/#7464），与本清单的剥离逻辑相隔两周，上游再动 `log_other.go` 时容易把这条挤掉 |
 
@@ -101,7 +103,8 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | --- | --- | --- |
 | 原生 Tokeness 前端（导航定制、首页、站点公告） | `web/src/features/*`、`web/src/hooks/use-notifications.ts`、`web/src/main.tsx` | web 测试 + 实机截图 |
 | 定价展示：动态价、原价划线、tier 表达式、vendor 本地化、CNY 文案 | `web/src/features/pricing/lib/dynamic-price.ts`、`tier-expr.ts`、`web/src/features/pricing/components/model-details.tsx`、`web/src/features/pricing/components/dynamic-pricing-breakdown.tsx` | `web/src/features/pricing/**/__tests__/*` |
-| 卡片本地化（`<tnt l="zh">` 标记解析）与 7 语言键集合契约（当前 7428 键） | `web/src/i18n/locales/*.json`、`web/src/lib/tnt-content.ts` | `.review` 里的 locale 校验脚本（键集合一致 + 0 重复）；发布前必跑 |
+| 卡片本地化（`<tnt l="zh">` 标记解析）与 7 语言键集合契约（当前 **上游 6778 键 + fork overlay 650 键 = 7428 键**） | 上游文案在 `web/src/i18n/locales/*.json`（**上游所有，不得编辑**）；fork 文案在 `web/src/i18n/overlay/*.json`；合并点 `web/src/i18n/fork-bundles.ts`、`web/src/i18n/overlay.ts` | `node scripts/fork-invariants/main.mjs --check i18n`（键集合一致、0 重复、与上游键不冲突、失效 override）+ `web/src/i18n/__tests__/fork-overlay.test.ts`；发布前必跑 |
+| i18n overlay 机制本身：上游 bundle 与 fork 文案分离，sync 时 `git checkout upstream/main -- web/src/i18n/locales` 整目录取上游，fork 侧只动 `overlay/` | `web/src/i18n/overlay.ts`、`web/src/i18n/fork-bundles.ts`、`scripts/fork-invariants/upstream-locales.json`、`.github/workflows/tokeness-upstream-sync.yml` | 同上；**任何直接 import `i18n/locales/*.json` 的文件（除 `fork-bundles.ts`/`overlay.ts`）都会被门禁判失败** |
 | 主题定制持久化与首屏应用 | `web/src/lib/theme-storage.ts`、`web/src/lib/theme-customization-storage.ts`、`web/src/context/theme-customization-provider.tsx` | `web/src/context/__tests__/theme-preferences.test.tsx`、`web/src/context/__tests__/theme-customization-provider.test.tsx`、`web/src/lib/__tests__/theme-customization.test.ts` |
 | 主题定制：**存储底座取上游**（rc.40 起 localStorage `newapi:theme:v1:*`，cookie 通道废弃），**默认值与首屏应用取 fork**（`preset: sunset-glow`、`radius: none`；`main.tsx` 挂载前应用） | 同上 | 同上；三处（provider / 首屏初始化 / 测试）必须读同一套键 |
 | 测试运行器必须两阶段都跑（vitest + node:test） | `web/scripts/run-tests.mjs`、`web/scripts/node-test-setup.ts` | 运行器自身 + 两段汇总 |
@@ -136,9 +139,10 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 
 ## 10. 维护规则
 
-1. **谁改行为谁登记**：任何改变 fork 行为或对外契约的提交，同批更新本文档（新增条目，或把被替代的条目标成 `superseded`）。
-2. **每次 `rcNN` 合并后**：跑 `AGENTS.md` 的三项机械检查 + §2 的脚本，逐条确认清单里的改造仍在当前树里；把这次核对的日期写进 `§2 生成时间/ref`。
-3. **每次生产发布前**：确认 §9 的契约两侧都在，并确认必须同批上线的条目（跨仓库、前后端、渠道标记）确实同批。
-4. **删除条目必须写原因**（上游吸收了 / 主动废弃 / 被替代），不允许静默删行——静默删行正是这份清单要防的事。
-5. 只写"secret 配置在哪里"，不写 secret 值。
-6. 条目要可验证：给出关键文件，能给出测试/脚本/文档就给出，避免"某处支持了 X"这种无法核对的说法。
+1. **谁改行为谁登记**：任何改变 fork 行为或对外契约的提交，同批更新本文档（新增条目，或把被替代的条目标成 `superseded`），并在同批运行 `node scripts/fork-invariants/seed-manifest.mjs` 后把新条目的锚点补进 `scripts/fork-invariants/manifest.json`——**表格给人读，manifest 给门禁读**。
+2. **每次 `rcNN` 合并后（同一批必须做）**：跑 `node scripts/fork-invariants/main.mjs`（等价于「三项机械检查 + 本清单逐条核对」，见 `scripts/fork-invariants/README.md`），CI 里由 `.github/workflows/tokeness-fork-invariants.yml` 强制；把这次核对的日期写进 `§2 生成时间/ref`。手工命令仍保留在 §2 里，用于解释门禁为什么失败。
+3. **每次生产发布前**：确认 §9 的契约两侧都在，并确认必须同批上线的条目（跨仓库、前后端、渠道标记）确实同批；确认门禁在发布提交上为绿。
+4. **删除条目必须写原因**（上游吸收了 / 主动废弃 / 被替代），不允许静默删行——静默删行正是这份清单要防的事。上游吸收的条目在 `manifest.json` 里标 `status: absorbed-upstream` 并写明 `supersededBy`（先例：每用户-模型速率限制，`v1.0.0-rc.40` 起文件与上游逐字节相同）。
+5. **locale 由上游所有**：`web/src/i18n/locales/*.json` 一律取上游字节，fork 文案只进 `web/src/i18n/overlay/`（`translation` = 上游没有的键，`overrides` = 措辞不同的键）。上游开始发同名键时，门禁会拦下并要求二选一（让位或搬进 `overrides`），不允许两个来源各写一份。
+6. 只写"secret 配置在哪里"，不写 secret 值。
+7. 条目要可验证：给出关键文件，能给出测试/脚本/文档就给出，避免"某处支持了 X"这种无法核对的说法。
