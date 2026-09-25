@@ -573,7 +573,7 @@ func refreshChannelRuntimeCache() {
 					common.SysLog(fmt.Sprintf("InitChannelCache panic: %v", r))
 				}
 			}()
-			model.InitChannelCache()
+			model.InitChannelCacheAndNotify()
 		}()
 	}
 }

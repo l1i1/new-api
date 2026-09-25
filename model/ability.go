@@ -777,6 +777,6 @@ func FixAbility() (int, int, error) {
 			}
 		}
 	}
-	InitChannelCache()
+	InitChannelCacheAndNotify()
 	return successCount, failCount, nil
 }

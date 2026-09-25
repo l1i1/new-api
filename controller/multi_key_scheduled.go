@@ -207,7 +207,7 @@ func testMultiKeyChannelCredentials(ctx context.Context, channel *model.Channel,
 		if err := applyMultiKeyScheduledStatusChanges(channel.Id, disabledIDs, reenabledIDs); err != nil {
 			return outcome, err
 		}
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 	}
 	outcome.KeysTested = len(result.Results)
 	outcome.KeysDisabled = len(disabledIDs)

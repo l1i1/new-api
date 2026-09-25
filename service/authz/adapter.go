@@ -54,7 +54,7 @@ func (a *gormAdapter) LoadPolicy(m casbinmodel.Model) error {
 }
 
 func (a *gormAdapter) SavePolicy(m casbinmodel.Model) error {
-	return a.db.Transaction(func(tx *gorm.DB) error {
+	err := a.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&model.CasbinRule{}).Error; err != nil {
 			return err
 		}
@@ -74,6 +74,11 @@ func (a *gormAdapter) SavePolicy(m casbinmodel.Model) error {
 		}
 		return tx.Create(&rules).Error
 	})
+	if err != nil {
+		return err
+	}
+	model.NotifyConfigChanged()
+	return nil
 }
 
 func (a *gormAdapter) AddPolicy(_ string, ptype string, rule []string) error {
@@ -85,11 +90,22 @@ func (a *gormAdapter) AddPolicy(_ string, ptype string, rule []string) error {
 	if count > 0 {
 		return nil
 	}
-	return a.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&casbinRule).Error
+	if err := a.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&casbinRule).Error; err != nil {
+		return err
+	}
+	model.NotifyConfigChanged()
+	return nil
 }
 
 func (a *gormAdapter) RemovePolicy(_ string, ptype string, rule []string) error {
-	return a.ruleQuery(a.db, ptype, rule).Delete(&model.CasbinRule{}).Error
+	result := a.ruleQuery(a.db, ptype, rule).Delete(&model.CasbinRule{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		model.NotifyConfigChanged()
+	}
+	return nil
 }
 
 func (a *gormAdapter) RemoveFilteredPolicy(_ string, ptype string, fieldIndex int, fieldValues ...string) error {
@@ -100,7 +116,14 @@ func (a *gormAdapter) RemoveFilteredPolicy(_ string, ptype string, fieldIndex in
 		}
 		query = query.Where("v"+string(rune('0'+fieldIndex+i))+" = ?", value)
 	}
-	return query.Delete(&model.CasbinRule{}).Error
+	result := query.Delete(&model.CasbinRule{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		model.NotifyConfigChanged()
+	}
+	return nil
 }
 
 func (a *gormAdapter) ruleQuery(query *gorm.DB, ptype string, rule []string) *gorm.DB {

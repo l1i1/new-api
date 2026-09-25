@@ -327,7 +327,11 @@ func UpdateOption(key string, value string) error {
 		return err
 	}
 	// Update OptionMap
-	return updateOptionMap(key, value)
+	if err := updateOptionMap(key, value); err != nil {
+		return err
+	}
+	NotifyConfigChanged()
+	return nil
 }
 
 // UpdateOptionsBulk persists multiple key/value pairs in a single database
@@ -394,6 +398,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if policySnapshot != nil {
 		requestPolicySnapshot.Store(policySnapshot)
 	}
+	NotifyConfigChanged()
 	return nil
 }
 

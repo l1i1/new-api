@@ -248,6 +248,7 @@ func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 			}
 		}
 	}
+	NotifyConfigChanged()
 	return change, nil
 }
 

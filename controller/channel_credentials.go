@@ -118,7 +118,7 @@ func UpdateMultiKeyStatus(c *gin.Context) {
 		writeChannelCredentialError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	c.JSON(http.StatusOK, gin.H{"success": true, "keys_revision": revision})
 }
 
@@ -152,7 +152,7 @@ func UpdateMultiKeyProxy(c *gin.Context) {
 	if newProxy != "" {
 		service.InvalidateProxyClient(newProxy)
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	response := gin.H{"success": true, "keys_revision": revision}
 	response["proxy_mode"] = model.NormalizeCredentialProxyMode(request.ProxyMode)
 	response["proxy_configured"] = newProxy != ""
@@ -283,7 +283,7 @@ func AppendMultiKeyCredentials(c *gin.Context) {
 			service.InvalidateProxyClient(proxy)
 		}
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	revision, err := model.GetChannelCredentialRevision(model.DB, channelID)
 	if err != nil {
 		common.ApiError(c, err)

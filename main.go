@@ -116,6 +116,16 @@ func main() {
 	go model.SyncOptions(common.SyncFrequency)
 	go controller.SyncTaskPlugins()
 
+	// Periodic reloads stay in place as the backstop for the case where Redis
+	// is unavailable; the epoch watcher makes a committed change visible to the
+	// other nodes in about a second instead of up to one sync interval.
+	model.RegisterConfigReloadHook(func() {
+		if err := authz.ReloadPolicy(); err != nil {
+			common.SysError("failed to reload authz policy after a config change: " + err.Error())
+		}
+	})
+	model.StartConfigEpochWatcher(model.DefaultConfigEpochWatchInterval)
+
 	// 周期性重载授权策略，保证多节点/多 master 部署下权限变更能传播到每个实例
 	go authz.StartPolicySync(common.SyncFrequency)
 

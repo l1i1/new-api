@@ -543,7 +543,7 @@ func SetTaskPluginStatus(c *gin.Context) {
 				}
 			}
 			if unboundChannels > 0 {
-				model.InitChannelCache()
+				model.InitChannelCacheAndNotify()
 			}
 		}
 	}

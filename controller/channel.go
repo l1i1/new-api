@@ -1044,7 +1044,7 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	createAudit := map[string]any{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -1078,7 +1078,7 @@ func DeleteChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	if channelLookupFailed {
 		service.ResetProxyClientCache()
 	} else {
@@ -1109,7 +1109,7 @@ func DeleteDisabledChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	if rows > 0 {
 		service.ResetProxyClientCache()
 	}
@@ -1158,7 +1158,7 @@ func DisableTagChannels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	recordManageAudit(c, "channel.tag_disable", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1185,7 +1185,7 @@ func EnableTagChannels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	recordManageAudit(c, "channel.tag_enable", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1245,7 +1245,7 @@ func EditTagChannels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	recordManageAudit(c, "channel.tag_edit", map[string]any{
 		"tag": channelTag.Tag,
 	})
@@ -1276,7 +1276,7 @@ func DeleteChannelBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
 	}
@@ -1590,7 +1590,7 @@ func UpdateChannel(c *gin.Context) {
 			service.InvalidateProxyClient(proxy)
 		}
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}
@@ -1644,7 +1644,7 @@ func UpdateChannelStatus(c *gin.Context) {
 	}
 	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
 	if changed {
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		if req.Status != common.ChannelStatusEnabled {
 			closeActiveChannelWebSockets([]int{id})
 		}
@@ -1737,7 +1737,7 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 		}
 	}
 	if changedCount > 0 {
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 	}
 	if len(disabledIDs) > 0 {
 		closeActiveChannelWebSockets(disabledIDs)
@@ -1919,7 +1919,7 @@ func BatchSetChannelTag(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	recordManageAudit(c, "channel.tag_batch_set", map[string]any{
 		"count": len(channelBatch.Ids),
 	})
@@ -2030,7 +2030,7 @@ func CopyChannel(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "复制渠道失败，请稍后重试"})
 		return
 	}
-	model.InitChannelCache()
+	model.InitChannelCacheAndNotify()
 	recordManageAudit(c, "channel.copy", map[string]any{
 		"sourceId": id,
 		"id":       clone.Id,
@@ -2222,7 +2222,7 @@ func ManageMultiKeys(c *gin.Context) {
 			writeChannelCredentialError(c, updateErr)
 			return
 		}
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "multi-key status updated", "keys_revision": revision})
 		return
 	}
@@ -2446,7 +2446,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2496,7 +2496,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已启用",
@@ -2525,7 +2525,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已启用 %d 个密钥", enabledCount),
@@ -2576,7 +2576,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2631,7 +2631,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		revision, _ := model.GetChannelCredentialRevision(model.DB, channel.Id)
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
@@ -2686,7 +2686,7 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		revision, _ := model.GetChannelCredentialRevision(model.DB, channel.Id)
 		c.JSON(http.StatusOK, gin.H{
 			"success":       true,
@@ -2760,7 +2760,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
-		model.InitChannelCache()
+		model.InitChannelCacheAndNotify()
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}

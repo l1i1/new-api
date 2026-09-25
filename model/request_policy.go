@@ -297,5 +297,6 @@ func UpdateRequestPolicyOptions(values map[string]string) error {
 		}
 	}
 	requestPolicySnapshot.Store(snapshot)
+	NotifyConfigChanged()
 	return nil
 }
