@@ -12,7 +12,9 @@ on:
   pull_request:
     branches: ['tokeness/main']
   push:
-    branches: ['sync/**', 'codex/sync-upstream-*']
+    # This fork's normal workflow is to push straight to tokeness/main, so the
+    # gate has to run there too; sync/** is where it matters most.
+    branches: ['tokeness/main', 'sync/**', 'codex/sync-upstream-*']
   workflow_dispatch:
 
 permissions:
