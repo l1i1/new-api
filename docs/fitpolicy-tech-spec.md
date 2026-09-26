@@ -20,28 +20,37 @@
 
 ### 0.1 已核实事实
 
-1. 当前 `/v1/chat/completions` 的第一次 HTTP 选路在 `middleware.Distribute`，普通重试在 `controller/relay.go:getChannel`；实际选择下沉到 `service.CacheGetRandomSatisfiedChannel` → `model.GetRandomSatisfiedChannelPinned`。affinity/preferred 快径在 `Distribute` 和 `getChannel` 各有一份，不能只改一个位置。
-2. Responses WebSocket 通过 `relay/responses_websocket.go:selectResponsesWSChannel` 复用 `service.SelectChannelForRequest`，但它是独立协议路径；当前 Phase 3 v1 **不纳入**，避免把 `/v1/chat/completions` 设计错误宣称为全局覆盖。
-3. `dto.ChannelConstraints` 当前只有 pin/filter，没有行为能力集合；fitpolicy 的 `RequiredMarks` 不能靠未定义的 `FilterKind` 偷塞，必须新增独立的请求级能力约束，并在首选、随机、重试和直接 pin 入口统一消费。
-4. `official_fit_models`、官方渠道类型和 `preferOfficialFitChannels/Abilities` 已经存在；当前 pin 是硬收窄：官方候选为空时返回空，不允许静默退回未验证聚合渠道。最终方案保留这个正确性不变量。
-5. `config_epoch` 当前由 `main.go` 显式注册 authz reload hook；`RegisterConfigReloadHook` 本身是 append 注册，没有去重。fitpolicy 不能仅依赖“包 `init()` 自注册”这一未核实假设，最终方案采用显式启动注册并提供只注册一次测试。
-6. `model.UpdateOption(s)` 对现有 request policy 已有“构造完整快照、DB transaction、更新内存、epoch 通知”路径；fitpolicy 规则必须接入同一提交前校验和快照路径，不能只在 reload hook 里异步编译。
-7. `channel.settings` 当前是 `relaykit/dto.ChannelOtherSettings` 的 JSON，通用 `UpdateChannel` 会整行更新并调用 `InitChannelCacheAndNotify`，但没有 capability 专用 CAS/provenance 语义。因此 suite 写回必须使用专用 endpoint/服务层，不得复用通用 channel patch。
-8. 当前仓库没有 `pkg/billingexpr` 目录，billing expression 代码在根模块的 `pkg/billingexpr` 包中；body/usage 规则若触及计费，必须遵守 `.agents/rules/billing.md`，使用现有 quota/usage 规则，不把 fitpolicy expr 与 billing expr 混为一个运行时环境。
+1. 第一次 HTTP 选路在 `middleware.Distribute`，普通重试在 `controller/relay.go:getChannel`；实际选择下沉到 `service.SelectChannelForRequest`/`service.SelectRandomChannelForRequest` → `service.CacheGetRandomSatisfiedChannel` → 内存 `model.GetRandomSatisfiedChannelPinned` 或 DB `model.GetChannelWithBlockedChannelsPinned`/`getChannelWithFilters`，ability 回退是 `model.GetAbilities`。affinity/preferred 快径在 `Distribute` 和 `getChannel` 各有一份，且两者检查强度不同（`Distribute` 查 filter + `officialPinAllowsAffinity`；`getChannel` 不查 `ChannelSatisfiesFilters`）。
+2. `middleware.Distribute` 是**通用**中间件：除 `/v1/chat/completions` 外还服务 `/pg/chat/completions`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini、embedding/audio/rerank 和 realtime WS。现有 `markV4OfficialPinFromDistributor` 用的是 `strings.HasSuffix(path, "/chat/completions")`，因此**也会命中 `/pg/chat/completions`**。v1 必须按精确路径 + OpenAI chat relay 判定，不能用后缀匹配。
+3. `ChannelSatisfiesFilters` 只在 `service.SelectRandomChannelForRequest` 内执行；`controller/relay.go:getChannel` 的重试直接调 `CacheGetRandomSatisfiedChannel`，该函数只接收 legacy 的 pin/video bool，**不读 `ChannelConstraints.Filters`**。因此“所有 selector 消费同一约束”在当前代码上不成立，必须显式扩接口。
+4. `lockForUpdate` 在 SQLite 会跳过 `FOR UPDATE`（`model/locking.go`），所以“事务内 `SELECT ... FOR UPDATE` + 原子递增 revision”不能作为三库统一的 CAS 方案；通用做法必须是条件 `UPDATE ... WHERE revision = ?` 并检查 `RowsAffected`，冲突返回 409。
+5. periodic `model.SyncOptions` → `loadOptionsFromDatabase` **不执行** `RegisterConfigReloadHook` 注册的 hook（hook 只在 `applyConfigReload`/epoch watcher 路径执行）。Redis 不可用时，其他节点的周期同步只更新 raw OptionMap，不会编译/安装 fitpolicy 快照；因此当前不能宣称“Redis 故障仅变慢、正确性不变”。
+6. `dto.ChannelConstraints` 当前只有 pin/filter，没有行为能力和“marked 优先、official 回退”的结构；`official_fit_models` 硬 pin 由 `preferOfficialFitChannels`/`preferOfficialFitAbilities` 在选路内部即时过滤产生，**不是可复用的集合对象**，且候选为空时直接返回 `nil`。
+7. 显式 `ChannelPin`（token/origin-task）在 `Distribute` 的 ResolvedPin 与 token-specific 分支于选路前直接取渠道，共享 selector 也先返回 pin；这与 fit 的 `pinOfficial` 候选收窄是两回事，不能混为一谈。
+8. Responses WebSocket 通过 `relay/responses_websocket.go:selectResponsesWSChannel` 复用 `service.SelectChannelForRequest` 并注入 `FilterResponsesWebSocket`；它是独立协议路径，当前 Phase 3 v1 **不纳入**。
+9. `RegisterConfigReloadHook` 是 append 注册、没有去重；`main.go` 目前用显式调用注册 authz hook。fitpolicy 采用同样的显式注册并要求只注册一次测试。
+10. `model.UpdateOption(s)` 对现有 request policy 已有“构造完整快照 → DB transaction → 更新内存 → `NotifyConfigChanged()`”路径；fitpolicy 规则必须接入同一提交前校验和快照路径。
+11. `channel.settings` 当前是 `relaykit/dto.ChannelOtherSettings` 的 JSON，通用 `UpdateChannel` 整行更新并调用 `InitChannelCacheAndNotify`，没有字段级 provenance/CAS 语义；因此能力标记不复用该写入路径。
+12. 计费表达式代码在根模块 `pkg/billingexpr`（`expr.go` 同目录 `expr.md`）；usage/计费相关变换必须遵守 `.agents/rules/billing.md`，fitpolicy expr 与 billing expr 不是同一个运行时环境。
+
 
 ### 0.2 最终冻结范围
 
-- **v1 只覆盖**已开启用户 `official_fit.profile[family].route=true` 的 `/v1/chat/completions` HTTP 文本中继：首次选路、HTTP affinity/preferred 快径、普通重试和 channel capability/ability 选择。
-- **v1 不覆盖** Responses WebSocket、异步任务轮询/任务插件专用选路、token/channel 的显式固定 pin、非 chat relay 格式和响应级运行时拟合门。
+- **v1 只覆盖**精确路径 `POST /v1/chat/completions`、且走 OpenAI chat relay 格式的请求，并且该用户 `official_fit.profile[family].route=true`：首次选路、HTTP affinity/preferred 快径、普通重试和 capability/ability 候选收窄。
+- **v1 明确排除**（这些路径即使经过 `middleware.Distribute` 也必须 no-op）：`/pg/chat/completions`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、`/v1/alpha/search`、Gemini、embedding/audio/rerank、realtime WS、Responses WebSocket、异步任务/任务插件选路、显式 `ChannelPin`（token/origin-task）、非 chat relay 格式和响应级运行时拟合门。
+- “同后缀就生效”不算精确判定：实现必须同时校验精确路径与 relay 格式，禁止沿用 `HasSuffix("/chat/completions")` 这类会命中 `/pg` 的写法。
 - 任何未覆盖入口都必须保持现有行为；文档与日志不得声称 fitpolicy 已对“全部渠道/全部协议”生效。
-- 契约面 F1–F5 是后续独立阶段，不与 v1 route 策略数据化同批上线；其中 F1/F2 的语料前置未满足时不得开工。
+- 契约面 F1–F5 是后续独立阶段，不与 v1 route 策略数据化同批上线；其中 F1/F2 的语料前置未满足时不得开工（见 §17.6）。
+
 
 ### 0.3 最终架构决定
 
-- route 仍是唯一用户侧启用条件；fitpolicy 只能在 `route=true` 且既有族谓词判定本请求需要保真行为时增加候选约束。
-- fitpolicy 不替换现有 `official_fit_models` 的官方行为判定，而是在其之上增加行为级 `RequiredMarks`；当没有可满足标记的候选时，v1 默认回到**现有硬 pin 集合**，现有硬 pin 集合为空则沿用现有选择失败语义，绝不把普通未标记渠道当官方行为渠道。
-- 决策通过现有 `dto.ChannelConstraints` 旁路字段/请求上下文传递，不增加第二套 selector；所有 selector 必须先消费同一份约束，再执行原有 priority/weight/auto-group/blocked/saturation 逻辑。
+- route 仍是唯一用户侧启用条件；`ApplyRequirement` 自身负责 gate：`route=false`、未知族、非 in-scope 路径/格式一律 no-op。
+- fitpolicy 只增加“**marked 优先**”这一层约束，不替换 `official_fit_models`：算法是 selector 内的两阶段收窄——先取 `base ∩ officialBehavior ∩ marked`，非空则只在该集合内按原 priority/weight 选路；为空则取 `base ∩ officialBehavior`（即今天硬 pin 的等价结果）；仍为空时沿用现有 `nil`/selection-error 分类。**不存在“可复用的硬 pin 集合对象”**，该两阶段必须在同一处 selector 内实现。
+- 显式 `ChannelPin`（token/origin-task）分支**永不附加也不评估** FitRequirement，保留现有 filter/policy/error/retry 行为；官方拟合的 `pinOfficial` 候选收窄与显式 `ChannelPin` 是两回事，文档与代码都不得混称“pin”。
+- 决策快照放 gin context（immutable：policy version、family、RequiredMarks、legacy fallback 标志）；`RetryParam` 只从同一 context 取引用，不各自重算。attempted/excluded/saturation 作为独立 mutable 状态，不属于快照。
 - 热策略只引用现有 `officialfit` mechanism registry；family id、官方 channel type、wire shape、exact model names 和跨模块机制仍是代码事实。新增族必须先做代码 registry/消费者适配，不能仅写 JSON。
+
 
 ## 0. 与既有设计的关系（必读，先读这三份）
 
@@ -90,11 +99,13 @@
 
 ## 4. 范围 / 非目标
 
-**范围**：已开启 `official_fit.profile[family].route=true` 用户的 `/v1/chat/completions` HTTP 文本中继：选路前候选约束、HTTP affinity/preferred 快径、普通重试，以及 DS-V4 / kimi-k3 / GLM-5.3 已注册族的规则数据化、标记实测写回与人工编辑。
+**范围**：精确 `POST /v1/chat/completions`（OpenAI chat relay）、用户 `profile[family].route=true` 的文本中继：选路前候选收窄、HTTP affinity/preferred 快径、普通重试，以及 DS-V4 / kimi-k3 / GLM-5.3 已注册族的策略数据化、标记实测写回与人工编辑。
 
 **非目标（v1）**
 - 不改 `route` / `validate` / `errors` / `shape` 的**语义**（四维归一化见 §16，属后续阶段）；
 - 不重做已上线的 pin 形状谓词，只把它们**搬家**（代码 → 等价数据，行为必须逐例一致，见 §13）；
+- 不覆盖 `/pg/chat/completions`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini/embedding/audio/rerank、realtime WS、Responses WebSocket、任务/任务插件选路；这些路径保持现状且必须有非回归测试；
+- 不覆盖显式 `ChannelPin`（token/origin-task）与 `?channel_id=` 类固定渠道；这些分支永不评估 FitRequirement；
 - 不恢复任何响应级拒绝门（2026-09-11 已因误伤删除）；
 - 不做控制台可视化编辑器（v1 用现有 API 直写）；
 - 不引入新依赖（表达式用已在依赖里的 `expr-lang/expr`，套件用既有 `tools/cdp-bench`）。
@@ -102,23 +113,28 @@
 ## 5. 架构
 
 ```
-请求 ─► explicit ApplyRequirement (middleware/distributor.go, 选路前)
-          │  pkg/fitpolicy.Current().Decide(req) → FitRequirement
-          │    ├─ snapshot: 规则 vN（expr 程序，原子替换，显式 reload hook）
-          │    ├─ marks: channel_fit_capabilities（+ 兼容 official_fit_models）
-          │    └─ shadow: 只记录不生效
-HTTP retry ─► 同一 DecisionContext（controller/relay.go）
-          │  判断是否还有未尝试且标记满足必需行为的渠道
-          └─ 有 → 允许换渠道；无 → 按原有错误/重试语义，不制造新 4xx/5xx
+POST /v1/chat/completions (OpenAI chat relay only)
+  ─► ApplyRequirement (middleware/distributor.go)
+       │  gate: route=true + 已注册族 + in-scope path/format + 无显式 ChannelPin
+       │  pkg/fitpolicy.Current().Decide(req) → FitRequirement（immutable，写 gin context）
+       │    ├─ snapshot: 规则 vN（expr 程序，原子替换，显式 reload hook）
+       │    ├─ marks: channel_fit_capabilities（official_fit_models 仍作官方行为判定）
+       │    └─ shadow: 只记录不生效
+  ─► selector 两阶段收窄（见 §8）：base∩official∩marked → base∩official → 现有 nil/error
+HTTP retry (controller/relay.go:getChannel)
+  ─► 从同一 gin context 取 FitRequirement，排除已尝试渠道后重复同一两阶段收窄
+       └─ 无候选 → 按原有错误/重试语义，不制造新 4xx/5xx
+out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy，保持现状
 ```
 
-- **接入面不是“两处就够”**：fitpolicy 的决策入口和 retry 判定只是两个主要接线面，实际约束必须接入现有 selector consumers：`middleware/distributor.go` 的首次 direct/affinity/preferred 路径、`service.CacheGetRandomSatisfiedChannel` 的 auto-group/blocked/saturation/normalized-model 路径、`controller/relay.go:getChannel` 的 retry/affinity/preferred 路径、`model.GetRandomSatisfiedChannelPinned` 与 `model.GetRandomSatisfiedChannelWithBlockedChannels` 的 memory/DB 候选过滤，以及 `model.GetAbilities` 的 ability fallback。Responses WS、显式固定 pin、任务插件选路列为非目标，只做回归保持现状。
-- **请求级约束**：在现有 `dto.ChannelConstraints` 增加独立的 `FitRequirement`（family/model、required marks、legacy-hard-pin、policy snapshot/version、empty reason），在 gin context 与 `RetryParam` 之间只传同一不可变快照引用；selector 每次选择都消费它，不能在重试中按当前热配置重新推导。
-- **现有 pin 优先级**：token/origin-task 等显式 `ChannelPin` 仍优先于 fitpolicy；fitpolicy 只影响无显式固定 pin 的 route 请求。显式 pin 不被能力标记改写。
+- **真实接线点（逐个符号，不假设现有 filter loop 覆盖 retry）**：`middleware/distributor.go` 的 direct / affinity / preferred 分支；`service.SelectChannelForRequest` 与其 pin/affinity 前置；`service.SelectRandomChannelForRequest` 的 filter 循环；`service.CacheGetRandomSatisfiedChannel`（**当前只传 `v4OfficialPin`/`videoRequestOnly` bool，必须扩展为接收 FitRequirement，否则重试路径不会被约束**）；内存 `model.GetRandomSatisfiedChannelPinned`；DB `model.GetChannelWithBlockedChannelsPinned`；ability 回退 `model.GetAbilities`；`controller/relay.go:getChannel` 的 retry / affinity / preferred 三处。
+- **两套 affinity 快径都要改**：`Distribute` 的 affinity 分支已查 `ChannelSatisfiesFilters`；`controller/relay.go:getChannel` 的 affinity/preferred 分支**不查** filter 也不查 `officialPinAllowsAffinity`。fitpolicy 的 eligibility 必须在两处都生效，或显式声明该分支不参与并补测试。
+- **请求级约束**：新增独立 `FitRequirement`（family/model、required marks、policy version、fallback 标志、empty reason），immutable，挂 gin context；`RetryParam` 只持有指向它的引用，禁止在 retry 中重算。
+- **显式 pin 短路**：ResolvedPin(token/origin-task) 与 token-specific 分支在评估 FitRequirement **之前**完成，保持现有 filter/policy/error/retry；只在非显式 pin、in-scope HTTP chat 请求上评估。
 - **显式启动注册**：`pkg/fitpolicy` 不依赖 `init()` 自动注册；由 `main.go` 在初始 options/channel cache 完成后显式调用一次 `fitpolicy.RegisterReloadHook()`，注册函数用 `sync.Once` 防重复，测试验证初始化顺序和单次注册。
-- **兜底链**：未配置、`enabled=false`、`shadow=true`、`route=false`、规则缺失、编译/求值失败或能力索引不可用 → 不附加 fitpolicy 约束，完全走今天的实现；route 请求的既有硬 pin 逻辑仍由 `official_fit_models`/官方渠道类型负责，永不因 fitpolicy 失败制造 500。
+- **兜底链**：未配置、`enabled=false`、`shadow=true`、`route=false`、非 in-scope 路径、规则缺失、编译/求值失败或能力索引不可用 → 不附加约束，完全走今天的实现；显式 pin 与 out-of-scope 路径一律不受影响。
 
-> **请求内一致性约束**：首次 HTTP 选路必须把 `RequiredMarks`、legacy-hard-pin 标志、候选/策略快照版本、已尝试渠道集合和降级等级写入本次 relay context，并把同一 `FitRequirement` 引用带入 `RetryParam`；`DecideRelayRetry` 及后续 selector 只能消费该上下文。重试时沿用同一上下文并追加已尝试渠道，禁止在错误处理路径按当前请求重新计算规则，否则配置热更新会在同一请求内改变语义。
+> **请求内一致性约束**：首次选路把 `FitRequirement`（含 policy version、RequiredMarks、fallback 标志）写入 gin context；`RetryParam`、`DecideRelayRetry` 和后续 selector 从同一 context 读取；已尝试渠道/排除集合保持 mutable 且独立于快照。禁止在错误处理路径按当前热配置重新推导。
 
 ## 6. 数据模型
 
@@ -180,10 +196,12 @@ HTTP retry ─► 同一 DecisionContext（controller/relay.go）
 }
 ```
 
-- **存储选择的理由**：用户要求“多在渠道中加标记”，标记的语义归属仍是渠道；但因为现有 `channel.settings` 是整行 JSON 更新，本设计采用独立 `channel_fit_capabilities` 表（每行 `channel_id + family/model + behavior` 唯一），并由 `InitChannelCacheAndNotify()` 在提交后刷新能力索引。`official_fit_models` 继续从渠道行读取，作为兼容的粗粒度硬 pin 来源。
+- **存储选择的理由**：用户要求“多在渠道中加标记”，标记的语义归属仍是渠道；但因为现有 `channel.settings` 是整行 JSON 更新，本设计新增独立 `channel_fit_capabilities` 表（每行 `channel_id + family/model + behavior` 唯一），并**新增**一个随 `InitChannelCacheAndNotify()` 刷新的能力索引（该索引当前不存在，属步 B 交付物）。`official_fit_models` 继续从渠道行读取，作为官方行为判定的粗粒度来源。
 - **最小物理字段**：`channel_id`、`family`、`model`、`behavior`、`supported`、`source`、`suite`、`cases`、`rounds`、`at`、`expires_at`、`policy_version`、`policy_hash`、`baseline_hash`、`report_id`、`run_id`、`force`、`revision`、`updated_at`；数据库唯一键保证同一渠道/模型/行为只有一条当前记录，历史审计另写 `AuditLog`/受控审计表，不把完整 body 或凭据落库。
-- **数据库门禁**：新增表/索引必须同时支持 SQLite、MySQL ≥5.7.8、PostgreSQL ≥9.6；fresh DB、上一版本升级和二次启动迁移都要验证，SQLite 不使用不兼容的 `ALTER COLUMN`。行锁统一用现有 `lockForUpdate(tx)`，CAS 冲突返回 409。
-- **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。请求必须携带 `expected_revision`、`report_id/run_id`，服务端在事务内锁定能力行、校验状态机并原子递增 revision；冲突不覆盖。`force` 仅 suite identity 或明确特权角色可用，人工项的覆盖、过期和恢复由服务端处理。
+- **数据库门禁**：新增表/索引必须同时支持 SQLite、MySQL ≥5.7.8、PostgreSQL ≥9.6；fresh DB、上一版本升级和二次启动迁移都要验证，SQLite 不使用不兼容的 `ALTER COLUMN`。字段长度/类型/索引/唯一键在实现前冻结。
+- **CAS 必须用条件 UPDATE，不是行锁**：`lockForUpdate` 在 SQLite 跳过 `FOR UPDATE`（`model/locking.go`），所以三库统一做法是 `UPDATE ... SET revision=revision+1, ... WHERE channel_id=? AND family=? AND model=? AND behavior=? AND revision=?`，检查 `RowsAffected==1`；为 0 即冲突/不存在，返回 409（不存在时先按唯一键插入并处理并发插入冲突）。不得把“事务内 `SELECT ... FOR UPDATE`”写成统一 CAS 方案。
+- **能力表当前不存在**：仓库目前没有 capability model、migration、cache index 或 authz action；`InitChannelCacheAndNotify()` 只做 `InitChannelCache()+epoch`（`model/config_epoch.go`），现有 cache 不读新表。这些全部是**步 B 的实现前置**，不是既有能力。
+- **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。现有 channel 路由一律先 `AdminAuth`，authz 目前只有 read/operate/write/sensitive_write/secret_view；v1 先复用 `ChannelWrite`（人工）与 `ChannelSensitiveWrite`/受控 service identity（force），只有确认粒度不足才新增 action 并同步 authz 定义与测试。请求携带 `expected_revision`、`report_id/run_id`，冲突不覆盖。
 - **审计最小字段**：channel_id、family/model、behavior、before/after 摘要、source/by、suite/run/report id、force、expires_at、expected/new revision、结果和失败原因；禁止写入请求 body、token、完整响应或凭据。
 - **冲突语义（C4）**：实测为默认来源；人工写入即 sticky，套件覆盖人工必须显式 `force`；人工项可带 `expires_at`，到期自动回退到最新实测值（防"人工遗毒"）。
 - **新鲜度**：`source=suite` 且 `at` 超过 `stale_after_days`（v1 默认 30 天）即为 `suite_stale`；conservative 策略下 stale 不满足能力。时间基准由网关服务端 UTC 判定；控制台与采样日志显示 stale。
@@ -216,42 +234,60 @@ tools/cdp-bench (Bun/TS, src/suites/{ds-v4,kimi-k3,glm-v53}.ts)
 - **持续校准**：cron 每 6h 轻探针（3-5 例）；任一失败 → 立即把对应行为标 `supported:false` + 告警；连续 2 轮通过 → 自动恢复（沿用 cost plan §1.2 的校准纪律与自动摘除/恢复）。自动恢复只能恢复到最近一次通过的 suite 结果，不能覆盖未过期人工 sticky 项。
 - **人工编辑（C4）**：同一字段可由管理员/控制台直接改写；人工项 sticky，套件需 `force` 才覆盖；带 `expires_at` 的临时覆盖到期回落到最新实测值；每次写入留 provenance + 审计。报告签名/权限/版本校验失败时保持 last-known-good，不改变线上标记。
 
-## 8. 决策流（pin 仍由 `route` 触发，标记只决定"谁有资格"）
+## 8. 决策流（route 触发，两阶段收窄在 selector 内完成）
+
+**决策（产生 FitRequirement，immutable，写 gin context）**
 
 ```
-func Decide(req) Decision:
+func Decide(req) FitRequirement:
     cfg := snapshot(); if !cfg.Enabled || cfg.Shadow: shadowRecord(); return NoOpinion
+    if req.Path != exact POST /v1/chat/completions || req.RelayFormat != OpenAI chat: return NoOpinion
+    if hasExplicitChannelPin(req): return NoOpinion          // token/origin-task 短路，永不评估
     profile := req.UserSetting.OfficialFitProfileFor(req.Model)
     if !profile.Route: return NoOpinion
-    fam := strategyFamily(req.Model) // 只引用不可热替换的 mechanism registry
+    fam := strategyFamily(req.Model)                          // 只引用 mechanism registry
     if fam == nil: return NoOpinion
-    feats := evalFeatureExprs(req, fam)                     // expr，输入有大小/深度上限
+    feats := evalFeatureExprs(req, fam)                       // expr，输入有大小/深度上限
     reqMarks := union(rule.require for rule in fam.rules if rule.when(feats))
-    if len(reqMarks) == 0: return NoOpinion                 // 既有 route predicate 未命中
-    base := buildCandidates(group, model, aliases, filters, blocked, saturation, affinity)
-    officialBase := [c for c in base if isOfficialBehaviorChannel(c, fam, req.Model)]
-    marked := [c for c in officialBase if supportsAll(marks(c), reqMarks, fam.unknown_mark_policy)]
-    if len(marked) > 0: return Decision{Constraints: allowOnly(marked), RequiredMarks: reqMarks, Snapshot: cfg.version}
-    return Decision{Constraints: allowOnly(officialBase), RequiredMarks: reqMarks, EmptyReason: "no marked channel; preserve legacy hard pin", Snapshot: cfg.version}
+    if len(reqMarks) == 0: return NoOpinion                   // 既有 route predicate 未命中
+    return FitRequirement{RequiredMarks: reqMarks, PolicyVersion: cfg.version, Family: fam}
 ```
 
-- **候选构造顺序必须固定**：先按 group/model/request filter、model alias/path、group policy、blocked、saturation 和已有 affinity/preferred 规则构造候选；fitpolicy 只增加 allow-only 能力约束，不能重新引入被禁用或已排除渠道。`base` 为该阶段的当前候选；`hardPinBase = base ∩ (official_fit_models ∪ 官方渠道类型)`。
-- **现有 pin 不变量与策略**：`route=true` 且请求命中既有族 predicate 时，若 `base ∩ capabilities(supportsAll RequiredMarks)` 非空，先只在此子集内按原 priority/weight 选路；若为空，必须使用 `hardPinBase`，不能无候选约束地退回普通池；若 `hardPinBase` 也为空，保留现有 `nil`/selection-error 结果，不能降级到普通聚合池。对于未参与该族 predicate 的请求，fitpolicy 返回无意见，完全沿用现有路由。
-- **重试状态机**：每次选择前消费同一 `DecisionContext`，先从行为约束和硬 pin 约束中排除已尝试渠道，再按既有 selector/priority 选择；仍有合格渠道才 retry。约束集合耗尽时执行既有错误语义；fitpolicy 不生成新的 4xx/5xx，也不把未标记渠道当作官方行为渠道。v1 contract tests 覆盖 HTTP 首选、HTTP affinity、归一化模型、auto-group、blocked/saturation、普通 retry；Responses WS、显式固定 pin 和任务插件路径只做“fitpolicy 不介入”的回归测试。
-- **重试判定**：只检查上下文中排除已尝试渠道后的剩余 `FitRequirement`/hard-pin 约束，不重新推导 `RequiredMarks`；有则允许换渠道，无则按原有 stop/retry 结果返回。只有“仍有能力合格渠道”时才绕过现有单一官方渠道假设，修复 D5。
+**收窄（selector-owned，每次尝试都执行同一两阶段）**
 
-## 9. 即时生效（复用既有链路，不新增传播代码）
+```
+func narrow(candidates, fit) []Channel:
+    official := base ∩ (official_fit_models ∪ 官方渠道类型)
+    if fit == NoOpinion: return existingOfficialPinBehavior(candidates, official)
+    marked := official ∩ supportsAll(marks, fit.RequiredMarks, conservative)
+    if len(marked) > 0: return marked                          // 阶段 1：marked 优先
+    return official                                            // 阶段 2：今天硬 pin 的等价结果
+    // 阶段 3：official 为空 → 沿用现有 nil / selection-error 分类，不落普通池
+```
+
+- **候选构造（selector 职责，不含并发饱和）**：`base` = group/model 候选经 request filter、model alias/path、group policy、blocked channels、compact alias 解析后的结果；这就是 `service.CacheGetRandomSatisfiedChannel` 与 `model.GetRandomSatisfiedChannelPinned`/`GetChannelWithBlockedChannelsPinned` 现在负责的部分。
+- **attempt admission（不是 selector 职责）**：并发饱和在 `controller/relay.go` 的 `AcquireChannelConcurrency` → `ExcludeSaturatedChannel`、以及 Responses WS 的对应分支处理；`narrow` 只接受 blocked/excluded 输入，不自己探测饱和。文档与实现都不得把饱和写成候选构造的一部分。
+- **显式 pin 短路**：`ResolvedPin()`（token/origin-task）与 token-specific 固定渠道分支在 `narrow` **之前**返回，不附加、不评估 FitRequirement，保留现有 filter/policy/error/retry。fit 的 `pinOfficial` 候选收窄不是显式 `ChannelPin`。
+- **重试状态机**：`RetryParam` 从同一 gin context 取 FitRequirement 引用；每次尝试先从约束集合排除已尝试渠道，再跑同一 `narrow`，仍有候选才 retry。耗尽时执行既有错误语义；fitpolicy 不生成新的 4xx/5xx。
+- **重试判定**：只检查排除已尝试渠道后的剩余约束，不重新推导 `RequiredMarks`；只有“仍有能力合格渠道”时才绕过现有单一官方渠道假设，修复 D5。
+- **in-scope contract tests**：HTTP 首选、HTTP affinity（两套快径）、归一化/compact model、auto-group、blocked/saturation、普通 retry、无 marked 时回 official、official 为空时保持原错误。**非目标回归**：Responses WS、显式固定 pin、`/pg`、`/v1/completions`、`/v1/messages`、任务/任务插件、realtime WS 必须证明 fitpolicy 不介入且行为与今天一致。
+
+
+## 9. 即时生效（复用既有链路，但必须补两个缺口）
 
 | 变更 | 传播路径 | 生效时延 |
 |---|---|---|
-| 规则集（options） | DB 提交前 schema/ref/type 编译校验通过 → `model/option.go` 写入 → `NotifyConfigChanged()` → Redis `config_epoch:v1` INCR → 各节点 watcher → `applyConfigReload` → 显式注册的 fitpolicy reload hook 重建快照 | 健康 Redis、N 节点 P99 ≤2s |
-| 渠道标记（独立表） | 专用 capability endpoint 的事务/CAS 原子合并 → 刷新 channel capability index → `InitChannelCacheAndNotify()` → 同上 | 健康 Redis、N 节点 P99 ≤2s |
-| Redis 不可用 | epoch 读不到 → 退回 `SYNC_FREQUENCY`（默认 60s）同步循环 | 数十秒（**正确性不受影响**，`config_epoch.go` 明确 fail-open） |
+| 规则集（options） | **提交前** schema/ref/type 编译校验 → `model.UpdateOption(s)` 构造并安装 fitpolicy 快照 → DB transaction → `NotifyConfigChanged()` → Redis `config_epoch:v1` INCR → 各节点 watcher → `applyConfigReload` → fitpolicy hook 重建快照 | 健康 Redis、N 节点 P99 ≤2s |
+| 渠道标记（独立表） | 专用 capability endpoint 的条件 UPDATE/CAS → 刷新能力索引 → `InitChannelCacheAndNotify()` → 同上 | 健康 Redis、N 节点 P99 ≤2s |
+| Redis 不可用 | epoch 读不到 → 只能靠 `SYNC_FREQUENCY` 周期同步 | 数十秒且**不保证跟进**（见下） |
 
-- 本实例写入后**下一个请求**即用新快照（原子指针交换）；DB 事务提交前拒绝非法规则，不允许先落库再异步发现错误。
-- 编译/求值失败 → 保留节点内 last-known-good，并记录版本与失败原因；节点重启加载同一 last-known-good/旧行为，不把半编译状态传播出去。
-- Redis 不可用时不得宣称 ≤2s：节点保持当前快照，按现有同步周期获取最新配置；验收必须分别覆盖健康与故障条件。
-- **不新增传播机制**：`config_epoch` 已由 fork 于 2026-09-25 落地，本设计复用它的 reload hook，但必须验证包 import 保活、单次注册和慢 reload 行为。
+- **缺口 1：提交前编译必须真的接进 `UpdateOption(s)`**。当前 `validateOptionValue` 只有既有 key 分支、`UpdateOption(s)` 也没有 fitpolicy 快照；实现必须让 `official_fit.policy` 的 schema/引用/expr 编译失败在 DB transaction **之前**返回错误，禁止先落库再异步发现。
+- **缺口 2：周期同步路径不执行 reload hook**。`model.SyncOptions` → `loadOptionsFromDatabase`（`model/option.go`）目前只更新 raw OptionMap 与 request policy 快照，**不运行** `RegisterConfigReloadHook` 注册的 hook；hook 只在 epoch watcher 的 `applyConfigReload`（`model/config_epoch.go`）里跑。因此 Redis 不可用时，其他节点不会安装新的 fitpolicy 快照。实现必须二选一：把 fitpolicy 的安装并入 `loadOptionsFromDatabase` 的既有快照路径，或让周期同步也调用同一个 `applyConfigReload`。否则不得宣称“Redis 故障仅变慢、正确性不变”。
+- **Redis 故障下的真实语义**：节点保持**当前已安装的 last-known-good 快照**继续服务（不会退回 legacy，也不是“无影响”）——策略变更与**紧急回滚**都可能延迟到同步周期甚至更久。这是已知残余风险，必须进 §15 Risks 与巡检指标，不能写成“正确性不受影响”。
+- **`applyConfigReload` 的 hook 失败语义**：现有实现对 hook failure 只记日志且仍推进 epoch；fitpolicy hook 必须自己保证失败时保留旧快照（原子指针交换只在新快照编译成功后发生），不得让半编译状态生效。
+- **last-known-good 与重启**：快照版本与失败原因可观测；节点启动时若 DB 中的 policy 非法/不可编译，应安装“无意见”而非崩溃，并把上一次成功快照版本记录清楚。
+- **不新增传播机制**：仍复用 `config_epoch` 与显式 `RegisterReloadHook()`；必须验证初始化顺序、单次注册和慢 reload 行为。
+
 
 ## 10. 护栏（吸收 2026-09-26 夜间三次误报的教训）
 
@@ -260,7 +296,7 @@ func Decide(req) Decision:
 3. 一键回滚：`official_fit.policy.enabled=false`（秒级回旧行为）或回滚到指定 `version`。
 4. 判定纪律（夜间教训）：**慢≠死**（无完成≠池全灭）、**请求侧≠渠道侧**（渠道文案默认可疑，先对齐官方基准）、**未知标记语义显式**（默认 conservative）。
 5. 标记新鲜度：`stale` 标记 + 6h 校准 + 人工项过期；`force` 覆盖留审计。
-6. 观测：Trace 只写规则 id、policy/mark revision、requiredMarks 哈希、候选/选择渠道 id、状态和 shadow 结果；请求 body、messages、tools、token、完整响应和凭据禁止入日志。按采样率记录并设保留期；巡检脚本增加“收窄集为空比率”、候选绕过率和 DecisionContext 缺失率指标。
+6. 观测：Trace 只写规则 id、policy/mark revision、requiredMarks 哈希、候选/选择渠道 id、状态和 shadow 结果；请求 body、messages、tools、token、完整响应和凭据禁止入日志。按采样率记录并设保留期；巡检脚本增加“收窄集为空比率”、候选绕过率和 FitRequirement 缺失率指标。
 
 ## 11. 影子、灰度与卸载
 
@@ -279,19 +315,20 @@ func Decide(req) Decision:
   ```
 - **登记**（实现时同批提交）：
   - `FORK-CHANGES.md` 新增一节；
-  - `scripts/fork-invariants/manifest.json` 新增 entry，锚点至少覆盖：`kind:file`（`pkg/fitpolicy/*.go`）、`kind:symbol`（`fitpolicy.Current` / `Decide` / `CompileRules` / `ApplyRequirement`）、显式启动注册、每个 selector consumer、能力表/endpoint 服务和测试名（`TestFitPolicyHookWired` / `TestFitPolicyFallbackToLegacy` / `TestFitPolicyMarksConflict`）。
+  - `scripts/fork-invariants/manifest.json` 新增 entry，锚点至少覆盖：`kind:file`（`pkg/fitpolicy/*.go`）、`kind:symbol`（`fitpolicy.Current` / `Decide` / `CompileRules` / `ApplyRequirement`）、显式启动注册、精确路径 gate、每个 in-scope selector consumer、`UpdateOption(s)` precommit、周期安装路径、能力表/endpoint 服务和测试名（`TestFitPolicyHookWired` / `TestFitPolicyFallbackToLegacy` / `TestFitPolicyMarksConflict` / `TestFitPolicyOutOfScopeNoop`）。
   - 门禁：`node scripts/fork-invariants/main.mjs --check manifest`，每次上游 sync 后必跑（该门禁正因 rc35 丢 5 项、rc39 丢 video-token 块而立）。
-- **语义门禁**：除 file/symbol 锚点外，必须有 contract tests 验证 active policy 确实改变已知 fixture 的候选集、shadow 写 trace、reload 后版本变化、retry 消费 `RequiredMarks`，并验证 init registration/import 只发生一次。merge CI 对真实 `upstream/main` 做 clean/conflict rehearsal 后运行这些测试；仅保留注释或符号不算通过。
+- **语义门禁**：除 file/symbol 锚点外，必须有 contract tests 验证 active policy 确实改变已知 fixture 的候选集、shadow 写 trace、reload 后版本变化、retry 消费 `RequiredMarks`、out-of-scope 路径 no-op，并验证显式注册只发生一次。merge CI 对真实 `upstream/main` 做 clean/conflict rehearsal 后运行这些测试；仅保留注释或符号不算通过。
 - **定位**：`grep -rn "tokeness-fitpolicy"` 仅用于人工导航，不是完整语义证明。
-- **数据在 DB**：规则/标记数据不随上游 merge，但所有 selector 入口、专用写回接口和注册表适配器仍需纳入 fork inventory。
+- **数据在 DB**：规则/标记数据不随上游 merge，但 in-scope selector consumers、精确路径 gate、`UpdateOption(s)` precommit、周期安装路径、专用写回接口和注册表适配器仍需纳入 fork inventory。
 
 ## 13. 迁移计划（风险递增，每步可停）
 
 | 步 | 内容 | 验收 |
 |---|---|---|
 | P0（已上线） | 四维 profile + 形状 pin + `official_fit_models` 白名单 + 亲和不对称 | `official-fit-mode.md` §验收 |
-| **A（前置）** | 冻结 v1 调用图与非目标；为已注册族建立 route predicate adapter、`FitRequirement/DecisionContext` 和所有 v1 selector consumers；`shadow=true` 跑 ≥48h，旧 Go predicate 与新策略逐例对照 | HTTP 首选/affinity、随机、auto-group、normalized model、blocked/saturation、retry 全入口覆盖；Responses WS/显式 pin/任务插件保持现状；无上下文绕过；差异为零或逐条批准 |
-| **B** | 建立 `channel_fit_capabilities` 表、迁移/索引、专用 capability DTO/endpoint、CAS/审计/状态机；接入 suite 报告校验与 6h 校准；shadow 下能力筛选只观察不改路 | SQLite/MySQL/PostgreSQL fresh+upgrade+二次启动通过；权限/force/冲突/幂等测试通过；旧人工项不被覆盖；收窄空集和重试状态机可观测 |
+| **A（前置）** | 冻结精确入口与非目标；为已注册族建立 route predicate adapter、`FitRequirement`（gin context）+ `RetryParam` 引用、`CacheGetRandomSatisfiedChannel` 的 fit-aware 接口、两阶段 `narrow`；`shadow=true` 跑 ≥48h，旧 Go predicate 与新策略逐例对照 | 精确 `POST /v1/chat/completions` 的首选/两套 affinity/随机/auto-group/normalized model/普通 retry 全覆盖；`/pg`、`/v1/completions`、`/v1/messages`、WS、任务、显式 pin 保持现状（negative tests）；无上下文绕过；差异为零或逐条批准 |
+| **B** | 建 `channel_fit_capabilities` model/migration/cache 索引/条件 UPDATE CAS/专用 endpoint/审计/状态机（当前全部不存在）；接入 suite 报告校验与 6h 校准 | SQLite/MySQL/PostgreSQL fresh+upgrade+二次启动；CAS 409/`RowsAffected`/幂等；权限与 suite 身份落到真实鉴权路径；旧人工项不被覆盖 |
+| **B2** | 把 fitpolicy 安装接入 `UpdateOption(s)` 提交前路径与周期同步路径（§9 缺口 1/2） | 非法 policy 在 DB 提交前被拒；Redis 故障下节点按周期安装/保持 last-known-good，并可实测 |
 | **C** | 先以 kimi-k3 单族启用；旧 `official_fit_models` 与官方类型继续作为硬 pin 基线；仅在 healthy Redis SLO 下逐步放量 | 24h 内拟合违约 0、可避免失败 0；故障注入时保持旧快照且不制造新错误；无标记候选时绝不落到普通聚合池 |
 | **D** | DS-V4 / GLM-5.3 迁入；明确热策略与代码 mechanism registry 边界；新增族仍需代码 registry/consumer 变更 | 逐族 shadow 等价；registry adapter、wire shape、channel type、exact model consumer 全覆盖；非目标协议无行为变化 |
 | **E** | §16 契约面数据化，顺序 = **F1 errors → F2 shape-A → F3 validate → F4 B 档 → F5 具名契约**；F1/F2 必须先完成语料前置 | 每阶段按对应等价标准、golden fixtures、脱敏回放/账务门禁通过；不以未定义的“全部逐字节”作为默认承诺 |
@@ -299,14 +336,20 @@ func Decide(req) Decision:
 ## 14. 验收
 
 **功能与等价性**
-- deterministic CI：规则编译/schema/ref/type 在 DB 提交前拒绝；fake epoch、显式注册只执行一次、last-known-good、删除配置卸载、能力表 CAS/权限/force/幂等、空集/已尝试渠道/首选/归一化/affinity/HTTP/retry contract tests 全通过；Responses WS、显式固定 pin、任务插件路径有保持现状的回归测试，不宣称由 fitpolicy 覆盖。
-- 规则/标记写入后：在明确的 N 节点、Redis healthy、节点健康条件下传播 P99 ≤2s；Redis/节点/慢 reload 故障时保持旧快照并记录可观测故障，不把 ≤2s 当作无条件承诺。
+- deterministic CI：
+  - 规则 schema/ref/type/expr 编译在 `UpdateOption(s)` 的 DB transaction **之前**拒绝；非法写入不影响线上快照。
+  - 显式注册只执行一次、初始化顺序正确；`enabled=false`/删除配置/快照缺失 → 无意见。
+  - 两阶段收窄：marked 优先；无 marked 回 official 等价结果；official 为空保持现有 nil/error 分类，永不落普通池。
+  - 能力表 CAS：条件 UPDATE 的 `RowsAffected` 语义、409 冲突、`report_id` 幂等、人工 sticky 不被 suite 覆盖；三库（SQLite/MySQL/PostgreSQL）fresh + upgrade + 二次启动。
+  - **negative contract tests（必须）**：`/pg/chat/completions`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini/embedding/audio/rerank、realtime WS、Responses WebSocket、显式 `ChannelPin`、token-specific 固定渠道 → 证明 fitpolicy 不介入且行为与今天一致。
+- 规则/标记写入后：在明确的 N 节点、Redis healthy、节点健康条件下传播 P99 ≤2s；Redis 故障时节点保持当前已安装的 last-known-good 快照（策略变更与紧急回滚都可能延迟），必须实测并记录，不把 ≤2s 当作无条件承诺。
 - `enabled=false` 或删除 `official_fit.policy` 与 `channel_fit_capabilities` 后，行为与未安装本层一致，不产生新 4xx/5xx；`official_fit_models` 仍按既有 route 逻辑工作。
-- 非法规则写入被拒，不影响线上快照；求值异常 → last-known-good → 旧行为。
+- 求值异常/编译失败 → 保留 last-known-good → 旧行为；hook 失败不得推进到半编译状态。
 - shadow 日志只含脱敏元数据、哈希和采样 trace，且有保留期限；不记录 body/凭据。
-- 卸载时删除的是 `channel_fit_capabilities` 表中当前标记；`official_fit_capabilities` 只读投影不作为独立写入数据源。
+- 卸载时删除的是 `channel_fit_capabilities` 表中当前标记与索引；`official_fit_capabilities` 若作为只读投影存在，不作为独立写入数据源。
 - 标记状态机（人工 sticky/过期、suite stale/failed/恢复、policy/baseline 变化）均有测试。
 - F1/F2 的准入前置：必须有短期双写/哈希差异捕获或经批准的 semantic baseline；报告样本量、fixture、差异分类和产物路径，缺失语料不得放行。
+- F4（usage/计费）另需 billing.md 全链路证据：validation → EstimateBilling/OtherRatios → `Quota*Checked` 转换 → pre-consume → settle/refund，含溢出/饱和/NaN 与前后账单差异。
 
 **CDP 双轨（既有的唯一验收口径）**
 - A 轨：`tools/cdp-bench` 严格跑通过（全部执行用例 PASS、无未声明跳过、SEVERE/WORDING/SHAPE/PROTOCOL/INTEGRITY 全零）；基线对比是门禁的一部分。
@@ -326,7 +369,9 @@ func Decide(req) Decision:
 - **未知标记歧义**：v1 conservative 可能让更多流量落官方集（成本上升）；用 shadow 数据评估后再决定是否对特定行为放开 permissive。
 - **钩子与上游冲突**：路由决策有 2 处主要 fork hook，但 selector 入口、专用写回接口和 registry adapter 也属于存活面；所有入口由调用图、fork inventory 和 contract tests 覆盖。上游重写 hook 所在函数时按 `FORK-CHANGES.md` 重挂。
 - **等价迁移风险**：谓词从 Go 搬到 expr 若有偏差，会改变 pin 判定 → A 步必须逐例一致，且 shadow 观察期内不得启用。
-- **依赖既有机制**：`config_epoch` 需 Redis；不可用时退化为数十秒同步（正确性不变，仅传播变慢）。
+- **依赖既有机制（已修正）**：`config_epoch` 需 Redis；不可用时节点只会保持**当前已安装的 last-known-good 快照**，策略变更与紧急回滚都可能延迟到同步周期甚至更久（`SyncOptions` 当前不跑 reload hook）。这不是“仅传播变慢”，必须作为残余风险监控，并在步 A/B 补上周期安装路径。
+- **显式 pin 与 out-of-scope 路径的回归风险**：`FitRequirement` 若被放进通用 selector 而不做 transport/path/显式 pin 判定，会改变 `/pg`、`/v1/completions`、`/v1/messages`、WS、任务和固定渠道的错误与重试行为 → 必须用 negative contract tests 锁住“不介入”。
+- **SQLite CAS**：`lockForUpdate` 在 SQLite 不生效；能力表写入必须用条件 UPDATE + `RowsAffected` + 唯一键竞态处理，否则并发写回会静默覆盖。
 
 ## 16. 演进：把 validate / errors / shape / route 归一为契约面（F1–F5，即 §13 的步 E）
 
@@ -339,7 +384,7 @@ func Decide(req) Decision:
 | errors | 文案策略：是否附 request id、按来源/错误类分流 | 错误提取与拼装点 |
 | shape | 变换选择：哪些变换对哪族/哪渠道生效 | 变换器本体（SSE 拼接、usage 映射、字段剥离） |
 
-**阶段（按 §16.1 的三档重排，风险递增）**：**F1 errors**（几乎纯 A 档：`error_text` / `media_type` / 是否附网关 request id 全部数据化；先做 **shadow 原型**，与 `IsStrictFitValidationMessage` + `controller/relay.go` 门控逐字节对照，差异必须为 0 或逐条列明批准）→ **F2 shape 的 A 档键操作**（键集与映射外提为数据，raw-byte 外壳留代码）→ **F3 validate 规则表**（Go 校验器降级为执行器，旧表保留一键回退；tool 链可解析性等语义检查留代码）→ **F4 B 档**（`usage` 数值推导：键名映射可数据，数值来源留代码，规则须打 `affects_billing: true` 并与计费回归同批验证）→ **F5 具名契约**（四布尔 → `fit_contract: "official-k3-v3"`，旧数据零迁移）；**C 档（跨消息状态与时序）永不数据化**，只登记为命名变换器。准入标准按操作类型分别采用有限字节级 golden 或 canonical semantic JSON；差异逐条列明，基线用 CDP 双轨与脱敏回放。四维属客户可感知契约，比路由更危险：路由层与契约层开关必须互相独立。
+**阶段（按 §16.1 的三档重排，风险递增）**：**F1 errors**（几乎纯 A 档：`error_text` / `media_type` / 是否附网关 request id 全部数据化；先做 **shadow 原型**，与 `IsStrictFitValidationMessage` + `controller/relay.go` 门控逐字节对照，差异必须为 0 或逐条列明批准）→ **F2 shape 的 A 档键操作**（键集与映射外提为数据，raw-byte 外壳留代码；**F2 禁止触碰 `usage` 的任何键或数值**，否则必须升到 F4）→ **F3 validate 规则表**（Go 校验器降级为执行器，旧表保留一键回退；tool 链可解析性等语义检查留代码）→ **F4 B 档 usage/计费**（见下方完整门禁）→ **F5 具名契约**（四布尔 → `fit_contract: "official-k3-v3"`，旧数据零迁移）；**C 档（跨消息状态与时序）永不数据化**，只登记为命名变换器。准入标准按操作类型分别采用有限字节级 golden 或 canonical semantic JSON；差异逐条列明，基线用 CDP 双轨与脱敏回放。四维属客户可感知契约，比路由更危险：路由层与契约层开关必须互相独立。
 
 ### 16.1 体变换契约：哪些请求体 / 响应体改动能接住
 
@@ -360,16 +405,34 @@ func Decide(req) Decision:
 
 **对 §16 阶段顺序的调整**：errors（几乎纯 A 档、风险最低，直接对应 CDP 的 WORDING / SHAPE 失败）→ shape 的 A 档键操作 → validate 的规则表 → B 档带计费门禁 → **C 档永不数据化**。route 仍是第一步（§13 的 A 步）。
 
-**B 档的额外门禁**：任何触及 `usage` 的规则必须打 `affects_billing: true`，并与计费回归同批验证——拟合形状改了，账不能跟着变。
+**F4（B 档 usage/计费）的强制门禁**（`.agents/rules/billing.md` 是硬要求，不是提示）：
 
-## 17. Implementation Preconditions (Not Open Design Choices)
+- 触及 `usage` 数值/键的规则**必须**按 billing.md 追踪完整链路：请求校验 → `EstimateBilling`/`OtherRatios` → quota 转换（只用 `common.Quota*`/`*Checked`，禁止裸 `int(...)` 转换）→ 预扣费 → 结算/退款；并覆盖饱和/溢出/NaN 与 `relayInfo.QuotaClamp` 审计。
+- `affects_billing: true` 必须是**服务端准入校验**：缺该标记却引用 usage 数值的规则在写入时被拒，而不是只在报告里声明。
+- 验收证据必须包含真实计费回归（pre-consume/settle/refund/overflow/saturation）与前后账单差异，不接受“形状看起来一致”。
+- 动态/阶梯计费表达式另读 `pkg/billingexpr/expr.md`，并遵守其归一化与配额规则。
 
-1. **套件写回协议（已确定）**：报告 + 受控 applier + 专用 capability endpoint；实现前冻结 DTO、权限、CAS、幂等和审计字段；不允许直接复用通用 `PUT /api/channel/`。
-2. **标记存储（已确定）**：逻辑归属渠道，物理存储 `channel_fit_capabilities` 独立表；`official_fit_models` 继续保留为粗粒度硬 pin。不得隐式改回 options 或把新字段写进通用 settings patch。
-3. **v1 选路入口（已确定）**：只覆盖 HTTP chat 的 direct/affinity/preferred/random/auto-group/normalized-model/blocked/saturation/retry；Responses WS、显式 fixed pin、任务插件选路保持现状，并在实现前提交调用图与非回归测试清单。
-4. **机制注册表边界（已确定）**：`pkg/fitpolicy/` 只热加载已注册族的策略；family id、channel type、wire shape、exact model names 和跨模块机制仍由代码 registry 提供。新增族仍需代码变更。
-5. **`unknown_mark_policy`（已确定）**：v1 固定 `conservative`；`legacy_hard_pin_then_existing_error` 是唯一空集策略，未经独立验收不得切换。
-6. **F1/F2 语料前置（未满足即不得开工）**：现有 logs 不留 body，必须先选择并记录批准证据：短期双写仅落哈希/差异且脱敏，或批准 semantic baseline + golden fixtures；CDP 官方语料不能替代旧网关输出语料。
-7. **热生效 SLO（实现前冻结）**：冻结 N 节点、Redis healthy/fault、慢 reload、重启恢复的测量方案；≤2s 仅适用于健康条件，故障条件验收旧快照与告警。
-8. **日志与隐私（实现前冻结）**：冻结 shadow/审计字段、采样率、哈希方式和保留期；禁止记录 body、工具内容、token、完整响应和凭据。
-9. **权限命名（实现前冻结）**：优先复用现有 `authz.ChannelWrite` 作为人工 capability.write、`authz.ChannelSensitiveWrite` 或受控 service identity 作为 force 写入；只有在确认现有权限粒度不足时才新增 capability 专用 action，并同步 authz 资源定义与测试。
+
+## 17. Closed Decisions and Remaining Delivery Gates
+
+**已关闭（不再讨论，改动需重新评审）**
+
+| # | 决定 |
+|---|---|
+| 1 | 标记存储 = 独立物理表 `channel_fit_capabilities`；`official_fit_models` 保留为官方行为判定来源；不写进通用 settings patch |
+| 2 | v1 只覆盖精确 `POST /v1/chat/completions` + OpenAI chat relay；`/pg`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini/embedding/audio/rerank、realtime WS、任务插件一律 no-op |
+| 3 | Responses WebSocket 不在 v1 范围，只做“不介入”非回归测试 |
+| 4 | 显式 `ChannelPin`（token/origin-task）与 token-specific 固定渠道短路 FitRequirement，保持现有 filter/policy/error/retry |
+| 5 | 空集策略 = `legacy_hard_pin_then_existing_error`：marked 优先 → official 等价结果 → 现有 nil/error；永不落普通聚合池 |
+| 6 | `unknown_mark_policy = conservative`（v1 固定） |
+| 7 | 机制注册表边界：family id / channel type / wire shape / exact model names 仍是代码事实；新增族必须改代码 |
+| 8 | 显式启动注册（`main.go`）+ `sync.Once`，不依赖 `init()` 自注册 |
+
+**必须在开工前冻结的交付门禁**
+
+1. **能力表落地细节**：model/字段类型/长度/索引/唯一键、migration（fresh + upgrade + 二次启动幂等，三库实测）、cache 索引重建、条件 UPDATE 形式与 409 语义、审计字段；当前仓库完全没有这些。
+2. **权限与 suite 身份**：先复用 `ChannelWrite`/`ChannelSensitiveWrite`，或定义受限 service identity；给出真实鉴权路径与测试，不能只写“service identity”。
+3. **提交前编译 + 周期安装路径**：`UpdateOption(s)` 的 precommit 编译接线，以及 Redis 故障下 `SyncOptions` 如何安装 fitpolicy（§9 缺口 1/2）。
+4. **F1/F2 语料**（未满足即不得开工）：短期双写仅落哈希/差异且脱敏，或批准 semantic baseline + golden fixtures；CDP 官方语料不能替代旧网关输出语料。
+5. **热生效 SLO 测量**：N 节点、Redis healthy/fault、慢 reload、重启恢复的测量方案与产物路径；≤2s 只在健康条件成立。
+6. **日志与隐私**：shadow/审计字段、采样率、哈希方式、保留期；禁止 body/tools/token/完整响应/凭据。
