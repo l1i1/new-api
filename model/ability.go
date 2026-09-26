@@ -674,8 +674,15 @@ func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 	return nil
 }
 
-func (channel *Channel) DeleteAbilities() error {
-	return DB.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
+// DeleteAbilities removes every ability of this channel. A nil tx uses the
+// global handle, mirroring UpdateAbilities below; passing a transaction lets the
+// channel delete remove the channel, its abilities and its fit-capability marks
+// atomically instead of leaving orphans behind on a partial failure.
+func (channel *Channel) DeleteAbilities(tx *gorm.DB) error {
+	if tx == nil {
+		tx = DB
+	}
+	return tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
 }
 
 // UpdateAbilities updates abilities of this channel.

@@ -769,7 +769,7 @@ func (channel *Channel) Delete() error {
 		if err := tx.Delete(channel).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+		if err := channel.DeleteAbilities(tx); err != nil {
 			return err
 		}
 		return DeleteChannelFitCapabilities(tx, []int{channel.Id})
