@@ -48,6 +48,12 @@ var (
 	fitCapabilityIndexBuilt bool
 )
 
+// Lock ordering: selection holds channelSyncLock (read) and then takes
+// fitCapabilityIndexLock (read) for each mark lookup, so the only nesting is
+// channel → index. Nothing may take fitCapabilityIndexLock and then reach for
+// channelSyncLock, and this function must stay outside channelSyncLock — it is
+// called after the channel cache releases it for exactly that reason.
+//
 // InitFitCapabilityIndex rebuilds the capability index from the database.
 //
 // A failure is logged and leaves the previous index in place rather than

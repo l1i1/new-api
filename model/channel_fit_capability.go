@@ -260,7 +260,12 @@ func ApplyChannelFitCapability(write FitCapabilityWrite, now int64) (*ChannelFit
 		"run_id":         write.RunId,
 		"force":          write.Force,
 		"updated_at":     now,
-		"revision":       gorm.Expr("revision + 1"),
+		// The revision increment is what makes RowsAffected a reliable CAS signal
+		// on every dialect: MySQL reports zero affected rows when an UPDATE writes
+		// the values a row already holds, so a conditional update that changed
+		// nothing but matched a row would be indistinguishable from a lost race.
+		// Incrementing the revision guarantees the row always differs.
+		"revision": gorm.Expr("revision + 1"),
 	}
 	result := DB.Model(&ChannelFitCapability{}).
 		Where(

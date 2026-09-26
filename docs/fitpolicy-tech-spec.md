@@ -237,6 +237,7 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 
 ### 6.3 表达式契约（`expr-lang/expr`，**已在 go.mod 依赖中**）
 
+- **v1 实际 env 是此处描述的子集**：已实现字段仅 `model`、`logprobs`、`reasoning_effort`、`thinking`、`tool_choice`、`response_format`、`messages`（对应的谓词函数见 `pkg/fitpolicy/request.go`）。`stream`/`max_tokens`/`temperature`/`top_p`/`n`/`top_logprobs`/`user_agent`/`body`(gjson) **尚未接入**——`middleware` 目前只把 `v4OfficialPinRequest` 已有的字段传进 `RequestView`。写这类规则的策略会在**编译期**被拒（未知变量），所以失败是安全且显式的，不会静默不生效；要使用它们必须先扩展 `RequestView` 与 distributor 的请求结构。
 - env（只读、无 I/O、无时间函数）：`model`、`messages`、`tools`、`tool_choice`、`response_format`、`stream`、`max_tokens`、`temperature`、`top_p`、`n`、`logprobs`、`top_logprobs`、`thinking`、`reasoning_effort`、`user_agent`、以及 gjson 视图 `body`。实现必须限制 body 字节数、JSON 深度、数组/消息/工具数量和字符串长度；畸形 JSON、超限输入和未知字段按确定性的求值失败处理，不把原始 body 写入 trace。
 - 注册函数（`pkg/fitpolicy/registry.go`，**fork 独有，唯一需要发版的扩展点**）：`thinkingDisabled()`、`reasoningEffortIs(s)`、`historyBeginsWithUserTurn()`、`messagesCarryDynamicTools()`、`responseFormatNotText()`、`toolChainResolvable()`、`promptTokenEstimate()`、`hasImagePart()`。**这些就是今天 `kimiK3RequestNeedsOfficial` / DS 三类谓词的原样搬迁**（先等价搬家，后改数据）。
 - 编译：按 `version` 整集编译（形态参考现有 `pkg/billingexpr/compile.go`，但使用独立的 fitpolicy env、函数白名单和资源上限）；编译失败 → **拒绝写入**。fitpolicy 表达式不得调用 billing expr 的 usage/quota 环境。

@@ -111,7 +111,7 @@ func PutChannelFitCapability(c *gin.Context) {
 	// up through the path already proven for channel changes.
 	model.InitChannelCacheAndNotify()
 
-	recordFitCapabilityAudit(c, before, row, request.Force)
+	recordFitCapabilityAudit(c, before, row, request.Force, *request.ExpectedRevision)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": row})
 }
 
@@ -150,7 +150,7 @@ func GetChannelFitCapabilities(c *gin.Context) {
 // best-effort and its failure is logged by RecordAuditLog, never allowed to roll
 // back or fail the capability write. Only identifiers and behaviour names are
 // recorded — never a request body, credential or upstream response.
-func recordFitCapabilityAudit(c *gin.Context, before, after *model.ChannelFitCapability, force bool) {
+func recordFitCapabilityAudit(c *gin.Context, before, after *model.ChannelFitCapability, force bool, expectedRevision int64) {
 	if after == nil {
 		return
 	}
@@ -168,10 +168,14 @@ func recordFitCapabilityAudit(c *gin.Context, before, after *model.ChannelFitCap
 		"expires_at":   after.ExpiresAt,
 		"new_revision": after.Revision,
 	}
+	// The revision the caller claimed is part of the record: it is what makes a
+	// later "was this an overwrite or a race?" question answerable from the audit
+	// alone, and it is available even when no row existed yet.
+	params["expected_revision"] = expectedRevision
 	if before != nil {
 		params["before_supported"] = before.Supported
 		params["before_source"] = before.Source
-		params["expected_revision"] = before.Revision
+		params["before_revision"] = before.Revision
 	}
 	model.RecordAuditLog(c, model.AuditLog{
 		Category: "channel",
