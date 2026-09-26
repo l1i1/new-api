@@ -136,7 +136,7 @@ POST /v1/chat/completions (OpenAI chat relay only)
   ─► ApplyRequirement (middleware/distributor.go)
        │  gate: route=true + 已注册族 + in-scope path/format + 无显式 ChannelPin
        │  pkg/fitpolicy.Current().Decide(req) → FitRequirement（immutable，写 gin context）
-       │    ├─ snapshot: 规则 vN（expr 程序，原子替换，显式 reload hook）
+       │    ├─ snapshot: 规则 vN（expr 程序，原子替换）
        │    ├─ marks: channel_fit_capabilities（official_fit_models 仍作官方行为判定）
        │    └─ shadow: 只记录不生效
   ─► selector 两阶段收窄（见 §8）：base∩official∩marked → base∩official → 现有 nil/error
@@ -154,7 +154,7 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 
 - **请求级约束**：新增独立 `FitRequirement`（family/model、required marks、policy version、fallback 标志、empty reason），immutable，挂 gin context；`RetryParam` 只持有指向它的引用，禁止在 retry 中重算。
 - **显式 pin 短路**：ResolvedPin(token/origin-task) 与 token-specific 分支在评估 FitRequirement **之前**完成，保持现有 filter/policy/error/retry；只在非显式 pin、in-scope HTTP chat 请求上评估。
-- **显式启动注册**：`pkg/fitpolicy` 不依赖 `init()` 自动注册；由 `main.go` 在初始 options/channel cache 完成后显式调用一次 `fitpolicy.RegisterReloadHook()`，注册函数用 `sync.Once` 防重复，测试验证初始化顺序和单次注册。
+- **快照安装点（已实现，见 §9）**：不注册 config-epoch reload hook，而是在 `model.loadOptionsFromDatabase` 的既有快照路径里安装（与 `refreshRequestPolicySnapshot` 并列）。该函数同时服务**启动、epoch 重载与周期 `SYNC_FREQUENCY` 同步**，因此一次接线覆盖三条路径；若只用 reload hook，Redis 不可用的节点会永远停在旧策略。`pkg/fitpolicy` 不依赖 `init()` 自注册。
 - **兜底链**：未配置、`enabled=false`、`shadow=true`、`route=false`、非 in-scope 路径、规则缺失、编译/求值失败或能力索引不可用 → 不附加约束，完全走今天的实现；显式 pin 与 out-of-scope 路径一律不受影响。
 
 > **请求内一致性约束**：首次选路把 `FitRequirement`（含 policy version、RequiredMarks、fallback 标志）写入 gin context；`RetryParam`、`DecideRelayRetry` 和后续 selector 从同一 context 读取；已尝试渠道/排除集合保持 mutable 且独立于快照。禁止在错误处理路径按当前热配置重新推导。
@@ -305,12 +305,12 @@ func narrow(candidates, fit) []Channel:
 
 | 变更 | 传播路径 | 生效时延 |
 |---|---|---|
-| 规则集（options） | **提交前** schema/ref/type 编译校验 → `model.UpdateOption(s)` 构造并安装 fitpolicy 快照 → DB transaction → `NotifyConfigChanged()` → Redis `config_epoch:v1` INCR → 各节点 watcher → `applyConfigReload` → fitpolicy hook 重建快照 | 健康 Redis、N 节点 P99 ≤2s |
+| 规则集（options） | **提交前** schema/ref/type/expr 编译校验（`model.ValidateFitPolicyOption`，由 `validateOptionValue` 调用 → 未通过则在 DB transaction 之前返回错误）→ `model.UpdateOption(s)` 写入 → `NotifyConfigChanged()` → Redis `config_epoch:v1` INCR → 各节点 watcher → `applyConfigReload` → `loadOptionsFromDatabase` → `refreshFitPolicySnapshot` 重建快照 | 健康 Redis、N 节点 P99 ≤2s |
 | 渠道标记（独立表） | 专用 capability endpoint 的条件 UPDATE/CAS → 刷新能力索引 → `InitChannelCacheAndNotify()` → 同上 | 健康 Redis、N 节点 P99 ≤2s |
-| Redis 不可用 | epoch 读不到 → 只能靠 `SYNC_FREQUENCY` 周期同步 | 数十秒且**不保证跟进**（见下） |
+| Redis 不可用 | epoch 读不到 → 周期的 `SyncOptions` → `loadOptionsFromDatabase` → `refreshFitPolicySnapshot` | 数十秒（**会跟进**，因为快照安装点在周期路径上） |
 
-- **缺口 1：提交前编译必须真的接进 `UpdateOption(s)`**。当前 `validateOptionValue` 只有既有 key 分支、`UpdateOption(s)` 也没有 fitpolicy 快照；实现必须让 `official_fit.policy` 的 schema/引用/expr 编译失败在 DB transaction **之前**返回错误，禁止先落库再异步发现。
-- **缺口 2：周期同步路径不执行 reload hook**。`model.SyncOptions` → `loadOptionsFromDatabase`（`model/option.go`）目前只更新 raw OptionMap 与 request policy 快照，**不运行** `RegisterConfigReloadHook` 注册的 hook；hook 只在 epoch watcher 的 `applyConfigReload`（`model/config_epoch.go`）里跑。因此 Redis 不可用时，其他节点不会安装新的 fitpolicy 快照。实现必须二选一：把 fitpolicy 的安装并入 `loadOptionsFromDatabase` 的既有快照路径，或让周期同步也调用同一个 `applyConfigReload`。否则不得宣称“Redis 故障仅变慢、正确性不变”。
+- **缺口 1（已接线）**：`validateOptionValue` 已新增 `fitpolicy.OptionKey` 分支调用 `ValidateFitPolicyOption`，schema/引用/expr 编译失败在 DB transaction **之前**返回错误，不会先落库再异步发现。
+- **缺口 2（已接线）**：fitpolicy 的安装并入 `loadOptionsFromDatabase` 的既有快照路径（与 `refreshRequestPolicySnapshot` 并列），而不是注册 reload hook。该函数同时服务启动、epoch 重载与周期 `SYNC_FREQUENCY` 同步，所以 Redis 不可用时节点仍会按周期跟进新策略并保留 last-known-good。**不要**再引入单独的 reload-hook 注册：那只会覆盖 epoch 路径，让失去 Redis 的节点永远停在旧策略。
 - **Redis 故障下的真实语义**：节点保持**当前已安装的 last-known-good 快照**继续服务（不会退回 legacy，也不是“无影响”）——策略变更与**紧急回滚**都可能延迟到同步周期甚至更久。这是已知残余风险，必须进 §15 Risks 与巡检指标，不能写成“正确性不受影响”。
 - **`applyConfigReload` 的 hook 失败语义（现状，不是保证）**：现有实现对 hook failure 只记日志、**不重试**，并仍然推进 epoch；`RegisterConfigReloadHook` 是 append 注册、没有去重（现有测试甚至故意注册多个 hook）。因此文档只承诺：fitpolicy hook 自己在**编译成功后才原子替换**快照，失败保留 LKG 并暴露失败指标；**不声称** `config_epoch` 会为重试失败 hook 或保证单次注册。
 - **last-known-good 与重启**：快照版本与失败原因可观测；节点启动时若 DB 中的 policy 非法/不可编译，应安装“无意见”而非崩溃，并把上一次成功快照版本记录清楚。

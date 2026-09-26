@@ -10,6 +10,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
+	// tokeness-fitpolicy:end
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -238,6 +241,16 @@ func loadOptionsFromDatabase() {
 			common.SysError("invalid request policy: " + err.Error())
 		}
 	}()
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// The fit-policy snapshot is installed here, not from a config-epoch reload
+	// hook: this function also backs the periodic SYNC_FREQUENCY sync, which is
+	// the only refresh a node gets while Redis is unavailable.
+	defer func() {
+		if err := refreshFitPolicySnapshot(); err != nil {
+			common.SysError("invalid fit policy: " + err.Error())
+		}
+	}()
+	// tokeness-fitpolicy:end
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
@@ -291,6 +304,13 @@ func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ChannelTestConcurrencyOptionKey {
 		return operation_setting.ValidateChannelTestConcurrency(value)
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// A policy that cannot compile is rejected here, before the database commit,
+	// so an author never leaves the fleet with a half-broken rule set.
+	if key == fitpolicy.OptionKey {
+		return ValidateFitPolicyOption(value)
+	}
+	// tokeness-fitpolicy:end
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	}

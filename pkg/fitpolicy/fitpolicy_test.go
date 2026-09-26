@@ -259,16 +259,6 @@ func TestReloadPropagatesLoadError(t *testing.T) {
 	}
 }
 
-func TestRegisterReloadHookRunsOnlyOnce(t *testing.T) {
-	calls := 0
-	register := func(hook func()) { calls++ }
-	RegisterReloadHook(register, nil)
-	RegisterReloadHook(register, nil)
-	if calls != 1 {
-		t.Fatalf("hook registration calls = %d, want 1", calls)
-	}
-}
-
 func TestPrimitivesMatchShippedSemantics(t *testing.T) {
 	cases := []struct {
 		name          string

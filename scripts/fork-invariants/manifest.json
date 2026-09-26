@@ -1739,7 +1739,7 @@
     },
     {
       "id": "fitpolicy-行为级渠道标记与热生效拟合规则-1",
-      "title": "Fit Policy（Phase 3）：pkg/fitpolicy 把族级 pin 谓词组合外提为可热加载规则（规则 JSON → expr 程序 → 原子替换快照）；当前为纯逻辑层 + 与既有 Go 谓词的逐例等价对照，尚未接线选路",
+      "title": "Fit Policy（Phase 3）：pkg/fitpolicy 把族级 pin 谓词组合外提为可热加载规则（规则 JSON → expr 程序 → 原子替换快照）；当前处于 shadow 阶段，策略只观测不改路，安装点在 model.loadOptionsFromDatabase（同时覆盖启动/epoch/周期同步）",
       "risk": "high",
       "source": "FORK-CHANGES.md › 5. 路由与可靠性",
       "files": [
@@ -1748,17 +1748,16 @@
         "pkg/fitpolicy/compile.go",
         "pkg/fitpolicy/decide.go",
         "pkg/fitpolicy/registry.go",
-        "pkg/fitpolicy/builtin.go"
+        "pkg/fitpolicy/builtin.go",
+        "model/fitpolicy_option.go",
+        "middleware/fitpolicy_shadow.go",
+        "model/option.go",
+        "middleware/distributor.go"
       ],
       "anchors": [
         {
           "kind": "file",
           "file": "pkg/fitpolicy/request.go"
-        },
-        {
-          "kind": "symbol",
-          "file": "pkg/fitpolicy/registry.go",
-          "name": "func RegisterReloadHook("
         },
         {
           "kind": "symbol",
@@ -1779,6 +1778,36 @@
           "kind": "symbol",
           "file": "pkg/fitpolicy/policy.go",
           "name": "func ParsePolicy("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_option.go",
+          "name": "func ValidateFitPolicyOption("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_option.go",
+          "name": "func refreshFitPolicySnapshot("
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/fitpolicy_shadow.go",
+          "name": "func observeFitPolicyShadow("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/option.go",
+          "name": "tokeness-fitpolicy:begin"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/option.go",
+          "name": "refreshFitPolicySnapshot()"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/distributor.go",
+          "name": "observeFitPolicyShadow(c, pinRequest"
         }
       ],
       "tests": [
@@ -1792,7 +1821,6 @@
             "TestPolicyValidationRejects",
             "TestCompileRejectsUnknownFunctionAndNonBooleanRule",
             "TestReloadKeepsLastKnownGood",
-            "TestRegisterReloadHookRunsOnlyOnce",
             "TestPrimitivesMatchShippedSemantics"
           ]
         },
@@ -1802,6 +1830,20 @@
             "TestFitPolicyBuiltinMatchesShippedPredicates",
             "TestFitPolicyBuiltinPinsGlmWholeFamily",
             "TestFitPolicyBuiltinPinsNothingWhenRouteDisabled"
+          ]
+        },
+        {
+          "file": "middleware/fitpolicy_shadow_test.go",
+          "names": [
+            "TestFitPolicyShadowDoesNotChangePin",
+            "TestFitPolicyShadowReportsDivergenceWithoutRerouting"
+          ]
+        },
+        {
+          "file": "model/fitpolicy_option_test.go",
+          "names": [
+            "TestValidateFitPolicyOption",
+            "TestRefreshFitPolicySnapshotFollowsOptionMap"
           ]
         }
       ]

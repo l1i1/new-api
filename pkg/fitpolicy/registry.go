@@ -2,11 +2,14 @@ package fitpolicy
 
 import (
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/officialfit"
 )
+
+// OptionKey is the option row holding the policy document. It lives here so the
+// host's write path and this package cannot disagree about the key.
+const OptionKey = "official_fit.policy"
 
 // current is the atomically-swapped compiled policy. A request loads it once,
 // so a concurrent reload never changes the rules mid-request.
@@ -26,15 +29,22 @@ func Install(snapshot *Snapshot) {
 	current.Store(snapshot)
 }
 
-// InstallJSON parses and compiles a policy document and, on success, installs
-// it. A parse or compile error leaves the live snapshot untouched and returns
-// the error so the write path can reject it before the database commit.
-func InstallJSON(raw []byte) (*Snapshot, error) {
+// CompileJSON parses and compiles a policy document without installing it. The
+// write path uses this before the database commit so an invalid policy is
+// rejected by its author instead of becoming the live snapshot.
+func CompileJSON(raw []byte) (*Snapshot, error) {
 	policy, err := ParsePolicy(raw)
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := Compile(policy)
+	return Compile(policy)
+}
+
+// InstallJSON parses and compiles a policy document and, on success, installs
+// it. A parse or compile error leaves the live snapshot untouched and returns
+// the error so the write path can reject it before the database commit.
+func InstallJSON(raw []byte) (*Snapshot, error) {
+	snapshot, err := CompileJSON(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -76,27 +86,19 @@ func RegisteredFamilyIDs() []string {
 type Loader func() (raw []byte, present bool, err error)
 
 var (
-	reloadOnce sync.Once
 	// lastError holds the most recent load/compile failure so the reload path
 	// can expose why the snapshot is stale instead of silently freezing.
 	lastError atomic.Pointer[string]
 )
 
-// RegisterReloadHook installs the snapshot rebuild into the config-epoch reload
-// path exactly once.
-//
-// register is the host's hook registry (model.RegisterConfigReloadHook). It is
-// passed in rather than imported so this package stays free of the model
-// package and cannot create an import cycle.
-func RegisterReloadHook(register func(hook func()), load Loader) {
-	reloadOnce.Do(func() {
-		register(func() { Reload(load) })
-	})
-}
-
 // Reload re-reads the policy and installs it. Any failure keeps the previous
 // snapshot (last-known-good): a broken policy degrades to the last good one,
 // never to a partially compiled state.
+//
+// The host calls this from its option-apply path, which is shared by startup,
+// the config-epoch reload and the periodic SYNC_FREQUENCY sync. That is
+// deliberate: a reload-hook registration would only cover the epoch path, so a
+// node that lost Redis would keep serving a stale policy indefinitely.
 func Reload(load Loader) error {
 	if load == nil {
 		return nil

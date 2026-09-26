@@ -749,6 +749,11 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 		}
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Shadow only: evaluates the hot-reloadable policy beside the predicate above
+	// and reports divergences. It never changes the pin.
+	observeFitPolicyShadow(c, pinRequest, profile.Route, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	// tokeness-fitpolicy:end
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's
 	// model_not_configured wording differs from the official "supported API
