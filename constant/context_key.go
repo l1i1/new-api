@@ -24,6 +24,14 @@ const (
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
 	ContextKeyTokenSpecificChannelId ContextKey = "specific_channel_id"
 
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// ContextKeyFitRequirement carries the immutable fit-policy requirement for
+	// one in-scope request (see pkg/fitpolicy). It is absent for every request
+	// the policy has no opinion about, which is how selection keeps today's
+	// behaviour for route-disabled users, other protocols and explicit pins.
+	ContextKeyFitRequirement ContextKey = "fit_requirement"
+	// tokeness-fitpolicy:end
+
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
 	ContextKeyChannelName              ContextKey = "channel_name"

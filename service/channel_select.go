@@ -295,7 +295,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, err = model.GetRandomSatisfiedChannelPinned(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param))
+			// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+			// Fit-aware selection: the two-phase narrowing replaces the plain
+			// official pin, and is identical to it while no channel capability
+			// data exists. The filter comes from the same request context, so a
+			// retry reuses the requirement decided at the first attempt instead
+			// of re-deriving it from hot config.
+			channel, err = model.GetRandomSatisfiedChannelPinnedWithFit(autoGroup, routingModel, priorityRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param), model.FitChannelFilterForRequest(param.Ctx))
+			// tokeness-fitpolicy:end
 			if err != nil {
 				lastAutoGroupSelectionErr = err
 				lastAutoGroupSelectionErrGroup = autoGroup
@@ -360,7 +367,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if len(param.excludedChannelIDs) > 0 {
 			selectionRetry = 0
 		}
-		channel, err = model.GetRandomSatisfiedChannelPinned(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param))
+		// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+		channel, err = model.GetRandomSatisfiedChannelPinnedWithFit(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param), model.FitChannelFilterForRequest(param.Ctx))
+		// tokeness-fitpolicy:end
 		if err != nil {
 			return nil, param.TokenGroup, &ChannelSelectionError{
 				Kind:  ChannelSelectionInternalError,

@@ -417,6 +417,14 @@ func GetChannelWithBlockedChannels(group string, model string, retry int, reques
 // channel when pinOfficial is set for the request, and to video-declaring
 // channels when videoOnly is set.
 func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool) (*Channel, error) {
+	return GetChannelWithBlockedChannelsPinnedWithFit(group, model, retry, requestPath, blockedChannels, pinOfficial, videoOnly, nil)
+}
+
+// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+// GetChannelWithBlockedChannelsPinnedWithFit is the DB-path counterpart of
+// GetRandomSatisfiedChannelPinnedWithFit. The legacy entry point above passes a
+// nil filter so existing callers keep their exact behaviour.
+func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool, fit *FitChannelFilter) (*Channel, error) {
 	var abilities []Ability
 
 	if videoOnly || pinOfficial {
@@ -446,7 +454,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
-	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial)
+	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial, fit)
 	abilities = filterAbilitiesByVideoCapability(abilities, videoOnly)
 	if videoOnly || pinOfficial {
 		abilities = abilitiesAtRetryTier(abilities, retry)
@@ -475,6 +483,8 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 	return &channel, err
 }
 
+// tokeness-fitpolicy:end
+
 // preferOfficialFitAbilities narrows official-fit candidates to the channels
 // that are official-behaving for the model when the request is marked for the
 // official pin, mirroring the memory-cache path. A channel qualifies when it
@@ -485,7 +495,7 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 // An aggregator fallback would silently violate byte-level fit — the
 // aggregator pool nondeterministically drops reasoning_content and never
 // reproduces official dual-path logprobs.
-func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool) []Ability {
+func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool, fit *FitChannelFilter) []Ability {
 	if !pinOfficial || OfficialFitChannelType(model) == 0 || len(abilities) == 0 {
 		return abilities
 	}
@@ -506,6 +516,33 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 	if len(officialIDs) == 0 {
 		return nil
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Two-phase narrowing on the DB path. Every candidate here is already
+	// official, so the official predicate is constant. With no mark data (step A)
+	// the result is the official set, i.e. today's behaviour.
+	if fit != nil {
+		candidates := make([]int, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, ok := officialIDs[ability.ChannelId]; ok {
+				candidates = append(candidates, ability.ChannelId)
+			}
+		}
+		result := fit.Requirement.Narrow(candidates, func(int) bool { return true }, fit.MarkSatisfied)
+		if result.Applied {
+			permitted := make(map[int]struct{}, len(result.Channels))
+			for _, channelID := range result.Channels {
+				permitted[channelID] = struct{}{}
+			}
+			narrowed := make([]Ability, 0, len(result.Channels))
+			for _, ability := range abilities {
+				if _, ok := permitted[ability.ChannelId]; ok {
+					narrowed = append(narrowed, ability)
+				}
+			}
+			return narrowed
+		}
+	}
+	// tokeness-fitpolicy:end
 	official := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
 		if _, ok := officialIDs[ability.ChannelId]; ok {

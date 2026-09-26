@@ -369,11 +369,23 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 // The pin is HARD: when no official candidate remains (including retries where
 // the failed official channel is excluded), the set is emptied so the request
 // fails honestly instead of silently degrading to a fit-violating aggregator.
+//
+// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+// When fit carries a policy opinion, the two-phase narrowing replaces the plain
+// official filter; with no mark data (step A) it returns exactly the same set.
+// When fit has no opinion the legacy filter below still runs, so a pinned
+// request is never left unconstrained.
+// tokeness-fitpolicy:end
 // Caller must hold channelSyncLock (read lock).
-func preferOfficialFitChannels(channels []int, model string, pinOfficial bool) []int {
+func preferOfficialFitChannels(channels []int, model string, pinOfficial bool, fit *FitChannelFilter) []int {
 	if len(channels) == 0 || !pinOfficial || OfficialFitChannelType(model) == 0 {
 		return channels
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	if narrowed, applied := fit.narrowChannels(channels, model); applied {
+		return narrowed
+	}
+	// tokeness-fitpolicy:end
 	official := make([]int, 0, len(channels))
 	for _, channelID := range channels {
 		if officialFitChannelMatchesLocked(channelID, model) {
@@ -410,9 +422,23 @@ func officialFitPreferenceApplied(channels []int, model string, pinOfficial bool
 // and to video-capable channels when videoOnly is set (a request carrying a
 // video part must not reach an upstream that answers from text alone).
 func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool) (*Channel, error) {
+	return GetRandomSatisfiedChannelPinnedWithFit(group, model, retry, requestPath, blockedChannels, pinOfficial, videoOnly, nil)
+}
+
+// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+// GetRandomSatisfiedChannelPinnedWithFit is GetRandomSatisfiedChannelPinned plus
+// the fit-policy narrowing carried by fit. The filter is additive on purpose:
+// the legacy entry point above passes nil, so every existing caller and test
+// keeps its exact behaviour, and a request the policy has no opinion about
+// takes the legacy official filter untouched.
+//
+// The two-phase order lives in pkg/fitpolicy.Narrow: candidates that satisfy
+// every required behaviour win; otherwise the official set is used unchanged;
+// otherwise the set stays empty so the caller reports its existing error.
+func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool, fit *FitChannelFilter) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelWithBlockedChannelsPinned(group, model, retry, requestPath, blockedChannels, pinOfficial, videoOnly)
+		return GetChannelWithBlockedChannelsPinnedWithFit(group, model, retry, requestPath, blockedChannels, pinOfficial, videoOnly, fit)
 	}
 
 	channelSyncLock.RLock()
@@ -424,7 +450,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-	channels = preferOfficialFitChannels(channels, model, pinOfficial)
+	channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
 	channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 
 	// If no channels found, try to find channels with the normalized model name.
@@ -432,7 +458,7 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 		normalizedModel := ratio_setting.RoutingMatchModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-		channels = preferOfficialFitChannels(channels, model, pinOfficial)
+		channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
 		channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 	}
 
@@ -529,6 +555,8 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
 }
+
+// tokeness-fitpolicy:end
 
 func buildChannelSelectionMetadata(channelIDs []int, channelsByID map[int]*Channel) *channelSelectionMetadata {
 	metadata := &channelSelectionMetadata{}

@@ -371,3 +371,126 @@ func TestPrimitivesMatchShippedSemantics(t *testing.T) {
 type errFake string
 
 func (e errFake) Error() string { return string(e) }
+
+func TestNarrowTwoPhase(t *testing.T) {
+	opinion := Requirement{Marks: []string{"m"}}
+	even := func(id int) bool { return id%2 == 0 }
+	lowIDs := func(id int) bool { return id < 10 }
+
+	cases := []struct {
+		name        string
+		requirement Requirement
+		candidates  []int
+		satisfies   func(int) bool
+		wantApplied bool
+		want        []int
+		wantMatched bool
+	}{
+		{
+			name:        "no opinion leaves the caller alone",
+			requirement: Requirement{},
+			candidates:  []int{1, 2, 3},
+			satisfies:   lowIDs,
+			wantApplied: false,
+		},
+		{
+			name:        "shadow never narrows",
+			requirement: Requirement{Marks: []string{"m"}, Shadow: true},
+			candidates:  []int{1, 2, 3},
+			satisfies:   lowIDs,
+			wantApplied: false,
+		},
+		{
+			name:        "no capability data keeps today's official set",
+			requirement: opinion,
+			candidates:  []int{1, 2, 3, 4, 5, 6, 7, 8},
+			satisfies:   nil,
+			wantApplied: true,
+			want:        []int{2, 4, 6, 8},
+		},
+		{
+			name:        "marked subset wins over the official set",
+			requirement: opinion,
+			candidates:  []int{1, 2, 3, 4, 5, 6, 7, 8},
+			satisfies:   func(id int) bool { return id%3 == 0 },
+			wantApplied: true,
+			want:        []int{6},
+			wantMatched: true,
+		},
+		{
+			name:        "empty marked subset falls back to the official set",
+			requirement: opinion,
+			candidates:  []int{1, 2, 3, 4},
+			satisfies:   func(int) bool { return false },
+			wantApplied: true,
+			want:        []int{2, 4},
+		},
+		{
+			name:        "no official candidate yields an empty applied set",
+			requirement: opinion,
+			candidates:  []int{1, 3, 5},
+			satisfies:   lowIDs,
+			wantApplied: true,
+			want:        nil,
+		},
+		{
+			name:        "empty candidate list yields an empty applied set",
+			requirement: opinion,
+			candidates:  nil,
+			satisfies:   lowIDs,
+			wantApplied: true,
+			want:        nil,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := testCase.requirement.Narrow(testCase.candidates, even, testCase.satisfies)
+			if got.Applied != testCase.wantApplied {
+				t.Fatalf("Applied = %v, want %v", got.Applied, testCase.wantApplied)
+			}
+			if !testCase.wantApplied {
+				return
+			}
+			if len(got.Channels) != len(testCase.want) {
+				t.Fatalf("Channels = %v, want %v", got.Channels, testCase.want)
+			}
+			for i := range testCase.want {
+				if got.Channels[i] != testCase.want[i] {
+					t.Fatalf("Channels = %v, want %v", got.Channels, testCase.want)
+				}
+			}
+			if got.MatchedMarks != testCase.wantMatched {
+				t.Fatalf("MatchedMarks = %v, want %v", got.MatchedMarks, testCase.wantMatched)
+			}
+		})
+	}
+}
+
+// TestNarrowMatchesLegacyOfficialPin proves the wiring cannot change routing
+// before the capability table exists: with no mark data the narrowed set is
+// exactly the official subset the legacy pin already selects.
+func TestNarrowMatchesLegacyOfficialPin(t *testing.T) {
+	opinion := Requirement{Marks: []string{"m"}}
+	candidates := []int{1, 2, 3, 4, 5, 6}
+	isOfficial := func(id int) bool { return id%2 == 0 }
+
+	legacy := make([]int, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isOfficial(candidate) {
+			legacy = append(legacy, candidate)
+		}
+	}
+	got := opinion.Narrow(candidates, isOfficial, nil)
+	if len(got.Channels) != len(legacy) {
+		t.Fatalf("narrow = %v, legacy official = %v", got.Channels, legacy)
+	}
+	for i := range legacy {
+		if got.Channels[i] != legacy[i] {
+			t.Fatalf("narrow = %v, legacy official = %v", got.Channels, legacy)
+		}
+	}
+	if got.MatchedMarks {
+		t.Fatal("without mark data the result must not claim a verified match")
+	}
+}

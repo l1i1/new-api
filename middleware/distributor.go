@@ -295,6 +295,14 @@ func Distribute() func(c *gin.Context) {
 						// fresh selection would return, so it must clear the same
 						// filters first; otherwise fall through to selection.
 						affinitySatisfied, _ := model.ChannelSatisfiesFilters(preferred, modelRequest.Model, constraints.Filters)
+						// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+						// This branch picks its channel directly, so it must also
+						// clear the fit requirement; otherwise fall through to
+						// selection, which applies the two-phase narrowing.
+						if affinitySatisfied && !fitPolicyAllowsAffinity(c, preferred.Id, modelRequest.Model) {
+							affinitySatisfied = false
+						}
+						// tokeness-fitpolicy:end
 						if affinitySatisfied {
 							if usingGroup == "auto" {
 								userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -750,9 +758,10 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		}
 	}
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
-	// Shadow only: evaluates the hot-reloadable policy beside the predicate above
-	// and reports divergences. It never changes the pin.
-	observeFitPolicyShadow(c, pinRequest, profile.Route, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	// Applies the hot-reloadable policy for in-scope requests: it observes
+	// divergences from the predicate above, and (outside shadow only) attaches
+	// the immutable requirement for channel selection to consume.
+	applyFitPolicy(c, pinRequest, profile.Route, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	// tokeness-fitpolicy:end
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's

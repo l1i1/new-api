@@ -1739,7 +1739,7 @@
     },
     {
       "id": "fitpolicy-行为级渠道标记与热生效拟合规则-1",
-      "title": "Fit Policy（Phase 3）：pkg/fitpolicy 把族级 pin 谓词组合外提为可热加载规则（规则 JSON → expr 程序 → 原子替换快照）；当前处于 shadow 阶段，策略只观测不改路，安装点在 model.loadOptionsFromDatabase（同时覆盖启动/epoch/周期同步）",
+      "title": "Fit Policy（Phase 3）：pkg/fitpolicy 把族级 pin 谓词组合外提为可热加载规则（规则 JSON → expr 程序 → 原子替换快照）；已接线 in-scope gate、显式 pin 短路、gin context 传递与两阶段收窄（base∩official∩marked → base∩official → 现有 nil/error），当前 shadow 阶段策略只观测不改路，安装点在 model.loadOptionsFromDatabase",
       "risk": "high",
       "source": "FORK-CHANGES.md › 5. 路由与可靠性",
       "files": [
@@ -1749,10 +1749,16 @@
         "pkg/fitpolicy/decide.go",
         "pkg/fitpolicy/registry.go",
         "pkg/fitpolicy/builtin.go",
+        "pkg/fitpolicy/narrow.go",
         "model/fitpolicy_option.go",
+        "model/fitpolicy_filter.go",
         "middleware/fitpolicy_shadow.go",
         "model/option.go",
-        "middleware/distributor.go"
+        "model/channel_cache.go",
+        "model/ability.go",
+        "middleware/distributor.go",
+        "service/channel_select.go",
+        "constant/context_key.go"
       ],
       "anchors": [
         {
@@ -1768,6 +1774,11 @@
           "kind": "symbol",
           "file": "pkg/fitpolicy/decide.go",
           "name": "func (s *Snapshot) Decide("
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/narrow.go",
+          "name": "func (r Requirement) Narrow("
         },
         {
           "kind": "symbol",
@@ -1791,8 +1802,23 @@
         },
         {
           "kind": "symbol",
+          "file": "model/fitpolicy_filter.go",
+          "name": "func FitChannelFilterForRequest("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_filter.go",
+          "name": "func (f *FitChannelFilter) narrowChannels("
+        },
+        {
+          "kind": "symbol",
           "file": "middleware/fitpolicy_shadow.go",
-          "name": "func observeFitPolicyShadow("
+          "name": "func applyFitPolicy("
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/fitpolicy_shadow.go",
+          "name": "func fitPolicyAllowsAffinity("
         },
         {
           "kind": "symbol",
@@ -1801,13 +1827,33 @@
         },
         {
           "kind": "symbol",
-          "file": "model/option.go",
-          "name": "refreshFitPolicySnapshot()"
+          "file": "model/channel_cache.go",
+          "name": "tokeness-fitpolicy:begin"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "GetRandomSatisfiedChannelPinnedWithFit"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/ability.go",
+          "name": "GetChannelWithBlockedChannelsPinnedWithFit"
         },
         {
           "kind": "symbol",
           "file": "middleware/distributor.go",
-          "name": "observeFitPolicyShadow(c, pinRequest"
+          "name": "fitPolicyAllowsAffinity(c, preferred.Id"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "GetRandomSatisfiedChannelPinnedWithFit"
+        },
+        {
+          "kind": "symbol",
+          "file": "constant/context_key.go",
+          "name": "ContextKeyFitRequirement"
         }
       ],
       "tests": [
@@ -1821,7 +1867,9 @@
             "TestPolicyValidationRejects",
             "TestCompileRejectsUnknownFunctionAndNonBooleanRule",
             "TestReloadKeepsLastKnownGood",
-            "TestPrimitivesMatchShippedSemantics"
+            "TestPrimitivesMatchShippedSemantics",
+            "TestNarrowTwoPhase",
+            "TestNarrowMatchesLegacyOfficialPin"
           ]
         },
         {
@@ -1836,7 +1884,10 @@
           "file": "middleware/fitpolicy_shadow_test.go",
           "names": [
             "TestFitPolicyShadowDoesNotChangePin",
-            "TestFitPolicyShadowReportsDivergenceWithoutRerouting"
+            "TestFitPolicyShadowReportsDivergenceWithoutRerouting",
+            "TestFitPolicyAttachesRequirementOnlyOutsideShadow",
+            "TestFitPolicyScopeAndPinGating",
+            "TestFitPolicyAllowsAffinityNarrowsTheDirectBranch"
           ]
         },
         {
@@ -1844,6 +1895,15 @@
           "names": [
             "TestValidateFitPolicyOption",
             "TestRefreshFitPolicySnapshotFollowsOptionMap"
+          ]
+        },
+        {
+          "file": "model/fitpolicy_filter_test.go",
+          "names": [
+            "TestFitAwareSelectionNarrowsToMarkedChannels",
+            "TestFitAwareSelectionWithoutMarksMatchesLegacyPin",
+            "TestFitAwareSelectionFailsClosedWhenNoMarkedChannel",
+            "TestFitChannelFilterForRequest"
           ]
         }
       ]

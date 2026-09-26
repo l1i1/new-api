@@ -1,29 +1,43 @@
 package middleware
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
-// Shadow observation for the hot-reloadable fit policy.
+// Fit-policy application: scope gating, explicit-pin short circuit and shadow
+// observation.
 //
-// Shadow mode answers one question: does the data layer reproduce the shipped
-// Go predicate? It therefore never touches routing — it evaluates the policy
-// next to the predicate and reports only divergences. The built-in policy is
-// proven equivalent by middleware/fitpolicy_equivalence_test.go, so in a healthy
-// deployment this counter stays at zero and the log stays quiet; a non-zero
-// count means a policy edit changed behaviour and must be investigated before
-// the layer is allowed to make routing decisions.
+// Two rules shape this file:
+//
+//  1. Scope is decided here, once, and it is exact. The distributor middleware
+//     serves many protocols, and the shipped pin predicate matches any path
+//     ending in "/chat/completions" — which includes the playground route
+//     "/pg/chat/completions". The policy must not leak there, so this file
+//     gates on the exact path instead of reusing that suffix test.
+//  2. In shadow the requirement is never attached to the request context. That
+//     makes shadow inert by construction: a selector cannot act on a requirement
+//     it cannot read, so no future consumer can accidentally narrow routing
+//     before the equivalence window is over.
 //
 // The trace carries identifiers and behaviour names only. Request bodies,
 // messages, tools and credentials must never reach the log.
 
 const (
+	// fitPolicyScopedPath is the only path the policy applies to: OpenAI chat
+	// completions on the versioned API. The relay format is implied by the route
+	// (relay-router.go maps exactly this path to RelayFormatOpenAI).
+	fitPolicyScopedPath = "/v1/chat/completions"
+
 	// fitPolicyDivergenceLogLimit bounds how many individual divergences are
 	// logged, so a systematically wrong policy costs a bounded number of lines
 	// instead of one per request.
@@ -33,18 +47,49 @@ const (
 	fitPolicyDivergenceSampleEvery = 1000
 )
 
-var (
-	fitPolicyDivergenceCount    atomic.Int64
-	fitPolicyLastRequirementLog atomic.Int64
-)
+var fitPolicyDivergenceCount atomic.Int64
 
-// observeFitPolicyShadow evaluates the policy beside the legacy pin decision.
-// legacyPinned is the decision the request will actually use, so a mismatch is
-// exactly the set of requests whose routing would change if the policy were
-// promoted out of shadow.
-func observeFitPolicyShadow(c *gin.Context, req v4OfficialPinRequest, routeEnabled, legacyPinned bool) {
+// fitPolicyInScope reports whether this request may be governed by the policy.
+// Everything else — the playground path, /v1/completions, /v1/messages,
+// /v1/responses/compact, Gemini/embedding/audio/rerank, realtime WS, the
+// Responses WebSocket, task and task-plugin selection — keeps today's
+// behaviour.
+func fitPolicyInScope(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	if c.Request.Method != http.MethodPost {
+		return false
+	}
+	return c.Request.URL.Path == fitPolicyScopedPath
+}
+
+// fitPolicyExplicitPinActive reports whether the request is already bound to one
+// channel by an explicit pin (token/origin-task) or a specific-channel id. Those
+// branches select the channel before any fit evaluation and must keep their
+// existing filter/policy/error/retry behaviour, so the policy stays out of them.
+func fitPolicyExplicitPinActive(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if _, pinned := c.Get("specific_channel_id"); pinned {
+		return true
+	}
+	if _, found, _ := service.GetChannelConstraints(c).ResolvedPin(); found {
+		return true
+	}
+	return false
+}
+
+// applyFitPolicy evaluates the policy for one request, records a shadow
+// divergence when the policy disagrees with the shipped predicate, and — only
+// outside shadow — attaches the requirement for the selection path to consume.
+func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled, legacyPinned bool) {
 	snapshot := fitpolicy.Current()
 	if snapshot == nil || !snapshot.Enabled() {
+		return
+	}
+	if !fitPolicyInScope(c) || fitPolicyExplicitPinActive(c) {
 		return
 	}
 	requirement := snapshot.Decide(req.Model, routeEnabled, fitpolicy.RequestView{
@@ -56,13 +101,43 @@ func observeFitPolicyShadow(c *gin.Context, req v4OfficialPinRequest, routeEnabl
 		ResponseFormat:  req.ResponseFormat,
 		Messages:        req.Messages,
 	})
-	if requirement.HasOpinion() == legacyPinned {
+	if !requirement.HasOpinion() {
 		return
 	}
-	reportFitPolicyDivergence(c, req.Model, requirement, legacyPinned, snapshot)
+	if requirement.Shadow {
+		if requirement.HasOpinion() != legacyPinned {
+			reportFitPolicyDivergence(c, req.Model, requirement, legacyPinned)
+		}
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyFitRequirement, requirement)
 }
 
-func reportFitPolicyDivergence(c *gin.Context, model string, requirement fitpolicy.Requirement, legacyPinned bool, snapshot *fitpolicy.Snapshot) {
+// fitPolicyAllowsAffinity reports whether an affinity-bound channel may be
+// reused for this request.
+//
+// The affinity branch selects its channel directly instead of going through the
+// selector, so it is the one fast path that could hand the request a channel the
+// fit narrowing would have rejected. A binding is only meant to be a shortcut to
+// the same candidate a fresh selection would return, so it has to clear the same
+// fit requirement: official behaviour when the request needs it, plus every
+// required mark once capability data exists. When it fails, the caller drops the
+// binding and falls through to selection.
+func fitPolicyAllowsAffinity(c *gin.Context, channelID int, modelName string) bool {
+	filter := model.FitChannelFilterForRequest(c)
+	if filter == nil || model.OfficialFitChannelType(modelName) == 0 {
+		return true
+	}
+	if !model.ChannelIsOfficialFitForModel(channelID, modelName) {
+		return false
+	}
+	if filter.MarkSatisfied != nil && !filter.MarkSatisfied(channelID) {
+		return false
+	}
+	return true
+}
+
+func reportFitPolicyDivergence(c *gin.Context, model string, requirement fitpolicy.Requirement, legacyPinned bool) {
 	total := fitPolicyDivergenceCount.Add(1)
 	if total > fitPolicyDivergenceLogLimit && total%fitPolicyDivergenceSampleEvery != 0 {
 		return
@@ -77,12 +152,11 @@ func reportFitPolicyDivergence(c *gin.Context, model string, requirement fitpoli
 		"model=" + model,
 		"family=" + requirement.Family,
 		"legacy_pinned=" + boolText(legacyPinned),
-		"policy_requires=" + boolText(requirement.HasOpinion()),
+		"policy_requires=true",
 		"required_marks=" + strings.Join(requirement.Marks, ","),
 		"policy_version=" + itoa(requirement.PolicyVersion),
 		"policy_hash=" + requirement.PolicyHash,
 		"total=" + itoa64(total),
-		"shadow=" + boolText(snapshot.Shadow()),
 	}, " "))
 }
 
