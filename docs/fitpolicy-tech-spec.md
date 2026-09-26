@@ -18,6 +18,19 @@
 
 本节是本次最终审查后的冻结结论；后文与本节冲突时，以本节为准。核实依据为当前 `tokeness/main` 的代码，而不是历史提交：`middleware/distributor.go`、`service/channel_select.go`、`controller/relay.go`、`relay/responses_websocket.go`、`model/channel_cache.go`、`model/channel_constraint.go`、`model/config_epoch.go`、`model/option.go`、`dto/channel_constraints.go`、`relaykit/dto/channel_settings.go`。
 
+### 0.0 当前代码基线（先读：区分“已存在”与“计划新增”）
+
+截至本文件当前提交，**已经存在**的只有：
+
+- legacy 渠道级 per-model allowlist `official_fit_models`（`channels.settings` JSON 里的 `[]string`，`relaykit/dto/channel_settings.go`）；
+- 官方拟合的硬 pin 收窄（`model/channel_cache.go` 的 `preferOfficialFitChannels`、`model/ability.go` 的 `preferOfficialFitAbilities`，legacy model-level baseline）；
+- `config_epoch` 与 `RegisterConfigReloadHook`（`main.go` 目前**只**显式注册 authz hook）；
+- 现有多键凭据 revision/CAS（只覆盖 credential 行）与 Casbin authz（只有 channel read/operate/write/sensitive_write/secret_view）。
+
+**完全不存在、属于本文件计划新增**的：`channel_fit_capabilities` model/migration/cache 索引、`FitRequirement`、`pkg/fitpolicy`、`ApplyRequirement`、capability endpoint/applier/CAS/provenance/state machine、`capability.write`/`capability.force` 权限或受限 service principal、channel 行级 revision、periodic 安装路径、行为级 capability 标记本身。
+
+因此：**§6–§14 是实现目标与门禁，不是当前保证**；除 §0.1 明确标注“已核实”的 legacy 事实外，全篇出现“新增/必须/目标”语义的条目都不得被读成“复用既有基础设施”。文档中凡“复用”仅指复用 `config_epoch` 传播机制、`expr-lang/expr` 依赖、`recordManageAudit`/`AuditLog` 审计入口和 CDP 套件，不指复用尚未存在的 capability 设施。
+
 ### 0.1 已核实事实
 
 1. 第一次 HTTP 选路在 `middleware.Distribute`，普通重试在 `controller/relay.go:getChannel`；实际选择下沉到 `service.SelectChannelForRequest`/`service.SelectRandomChannelForRequest` → `service.CacheGetRandomSatisfiedChannel` → 内存 `model.GetRandomSatisfiedChannelPinned` 或 DB `model.GetChannelWithBlockedChannelsPinned`/`getChannelWithFilters`，ability 回退是 `model.GetAbilities`。affinity/preferred 快径在 `Distribute` 和 `getChannel` 各有一份，且两者检查强度不同（`Distribute` 查 filter + `officialPinAllowsAffinity`；`getChannel` 不查 `ChannelSatisfiesFilters`）。
@@ -80,7 +93,7 @@
 
 | # | 缺陷 | 证据 |
 |---|---|---|
-| D1 | 标记只有"是/否"、且按模型不按行为 | `official_fit_models`：逗号分隔模型 id 白名单，声明即视为该模型的官方行为上游 |
+| D1 | 标记只有"是/否"、且按模型不按行为 | `official_fit_models` 是 `channels.settings`(即 `Channel.OtherSettings`) JSON 里的 per-model 字符串数组（`[]string`，`relaykit/dto/channel_settings.go`），声明即视为该模型的官方行为上游 |
 | D2 | 标记无溯源、无时效、无自动校准 | `official-fit-mode.md` §已知限制："人工信任标记，不做运行时校验……上游行为变化后重新验证"（谁、何时、测了几例、几轮——都无处记录） |
 | D3 | 族谓词是代码 | kimi-k3 五类形状、DS 三类、GLM 整族 pin，全在 Go 谓词里；加一类形状要发版 |
 | D4 | 表达不了"部分合格" | ch41 实测 CDP 51 例仅 3 例通过；ch46 仅对 tool 链严格、其余形状可用——同一张二值表两者都表达不了 |
@@ -199,9 +212,12 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 - **存储选择的理由**：用户要求“多在渠道中加标记”，标记的语义归属仍是渠道；但因为现有 `channel.settings` 是整行 JSON 更新，本设计新增独立 `channel_fit_capabilities` 表（每行 `channel_id + family/model + behavior` 唯一），并**新增**一个随 `InitChannelCacheAndNotify()` 刷新的能力索引（该索引当前不存在，属步 B 交付物）。`official_fit_models` 继续从渠道行读取，作为官方行为判定的粗粒度来源。
 - **最小物理字段**：`channel_id`、`family`、`model`、`behavior`、`supported`、`source`、`suite`、`cases`、`rounds`、`at`、`expires_at`、`policy_version`、`policy_hash`、`baseline_hash`、`report_id`、`run_id`、`force`、`revision`、`updated_at`；数据库唯一键保证同一渠道/模型/行为只有一条当前记录，历史审计另写 `AuditLog`/受控审计表，不把完整 body 或凭据落库。
 - **数据库门禁**：新增表/索引必须同时支持 SQLite、MySQL ≥5.7.8、PostgreSQL ≥9.6；fresh DB、上一版本升级和二次启动迁移都要验证，SQLite 不使用不兼容的 `ALTER COLUMN`。字段长度/类型/索引/唯一键在实现前冻结。
-- **CAS 必须用条件 UPDATE，不是行锁**：`lockForUpdate` 在 SQLite 跳过 `FOR UPDATE`（`model/locking.go`），所以三库统一做法是 `UPDATE ... SET revision=revision+1, ... WHERE channel_id=? AND family=? AND model=? AND behavior=? AND revision=?`，检查 `RowsAffected==1`；为 0 即冲突/不存在，返回 409（不存在时先按唯一键插入并处理并发插入冲突）。不得把“事务内 `SELECT ... FOR UPDATE`”写成统一 CAS 方案。
-- **能力表当前不存在**：仓库目前没有 capability model、migration、cache index 或 authz action；`InitChannelCacheAndNotify()` 只做 `InitChannelCache()+epoch`（`model/config_epoch.go`），现有 cache 不读新表。这些全部是**步 B 的实现前置**，不是既有能力。
-- **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。现有 channel 路由一律先 `AdminAuth`，authz 目前只有 read/operate/write/sensitive_write/secret_view；v1 先复用 `ChannelWrite`（人工）与 `ChannelSensitiveWrite`/受控 service identity（force），只有确认粒度不足才新增 action 并同步 authz 定义与测试。请求携带 `expected_revision`、`report_id/run_id`，冲突不覆盖。
+- **CAS 必须用条件 UPDATE，不是行锁**：`lockForUpdate` 在 SQLite 跳过 `FOR UPDATE`（`model/locking.go`），且 `channel` 行**没有** revision/UpdatedAt 字段（现有多键 credential revision 不覆盖它）。三库统一做法是：能力表自带 `revision`，`expected_revision` 必填；`UPDATE ... SET revision=revision+1, ... WHERE channel_id=? AND family=? AND model=? AND behavior=? AND revision=?` 并检查 `RowsAffected==1`；为 0 即冲突，返回 409。首次写入先按唯一键 INSERT，并处理并发 INSERT 的唯一键冲突（冲突后重读并返回 409/重试）。不得把“事务内 `SELECT ... FOR UPDATE`”或复用 credential revision 当成方案。
+- **能力表当前不存在**：仓库目前没有 capability model、migration、cache index 或 authz action；`InitChannelCacheAndNotify()` 只做 `InitChannelCache()+epoch`（`model/config_epoch.go`），现有 cache 只读 Channel/Ability、不读新表。这些全部是**步 B 的实现前置**，不是既有能力。
+- **删除与孤儿行**：现有 `BatchDeleteChannels`/`Channel.Delete` 只清理 Channel/Ability（`model/channel.go`），不会删新表 → 步 B 必须加外键/级联或显式按 channel_id 清理，并补删除测试。
+- **审计跨库不是原子的**：`AuditLog` 写 `LOG_DB`（可配置为独立日志库/ClickHouse，`model/audit_log.go`），与主库的能力表不在同一事务；不得声称“标记写入与审计原子”。做法是主库先提交能力变更，再 best-effort 写审计，失败可观测、可重放，不能让审计失败回滚业务写入。
+- **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。**当前不存在受限 applier principal**：`RequirePermission` 只认 dashboard 用户/PAT，authz 只有 read/operate/write/sensitive_write/secret_view，channel 路由一律先 `AdminAuth`；generic `ChannelWrite` 还允许改任意非敏感字段，不能代替 capability action。步 B 必须在“dashboard 用户 + 专用 action”“HMAC/service principal”或“专用 Casbin subject”中选定一种并给出真实鉴权路径与测试。请求携带**必填** `expected_revision`、`report_id/run_id`，冲突不覆盖。
+
 - **审计最小字段**：channel_id、family/model、behavior、before/after 摘要、source/by、suite/run/report id、force、expires_at、expected/new revision、结果和失败原因；禁止写入请求 body、token、完整响应或凭据。
 - **冲突语义（C4）**：实测为默认来源；人工写入即 sticky，套件覆盖人工必须显式 `force`；人工项可带 `expires_at`，到期自动回退到最新实测值（防"人工遗毒"）。
 - **新鲜度**：`source=suite` 且 `at` 超过 `stale_after_days`（v1 默认 30 天）即为 `suite_stale`；conservative 策略下 stale 不满足能力。时间基准由网关服务端 UTC 判定；控制台与采样日志显示 stale。
@@ -284,7 +300,7 @@ func narrow(candidates, fit) []Channel:
 - **缺口 1：提交前编译必须真的接进 `UpdateOption(s)`**。当前 `validateOptionValue` 只有既有 key 分支、`UpdateOption(s)` 也没有 fitpolicy 快照；实现必须让 `official_fit.policy` 的 schema/引用/expr 编译失败在 DB transaction **之前**返回错误，禁止先落库再异步发现。
 - **缺口 2：周期同步路径不执行 reload hook**。`model.SyncOptions` → `loadOptionsFromDatabase`（`model/option.go`）目前只更新 raw OptionMap 与 request policy 快照，**不运行** `RegisterConfigReloadHook` 注册的 hook；hook 只在 epoch watcher 的 `applyConfigReload`（`model/config_epoch.go`）里跑。因此 Redis 不可用时，其他节点不会安装新的 fitpolicy 快照。实现必须二选一：把 fitpolicy 的安装并入 `loadOptionsFromDatabase` 的既有快照路径，或让周期同步也调用同一个 `applyConfigReload`。否则不得宣称“Redis 故障仅变慢、正确性不变”。
 - **Redis 故障下的真实语义**：节点保持**当前已安装的 last-known-good 快照**继续服务（不会退回 legacy，也不是“无影响”）——策略变更与**紧急回滚**都可能延迟到同步周期甚至更久。这是已知残余风险，必须进 §15 Risks 与巡检指标，不能写成“正确性不受影响”。
-- **`applyConfigReload` 的 hook 失败语义**：现有实现对 hook failure 只记日志且仍推进 epoch；fitpolicy hook 必须自己保证失败时保留旧快照（原子指针交换只在新快照编译成功后发生），不得让半编译状态生效。
+- **`applyConfigReload` 的 hook 失败语义（现状，不是保证）**：现有实现对 hook failure 只记日志、**不重试**，并仍然推进 epoch；`RegisterConfigReloadHook` 是 append 注册、没有去重（现有测试甚至故意注册多个 hook）。因此文档只承诺：fitpolicy hook 自己在**编译成功后才原子替换**快照，失败保留 LKG 并暴露失败指标；**不声称** `config_epoch` 会为重试失败 hook 或保证单次注册。
 - **last-known-good 与重启**：快照版本与失败原因可观测；节点启动时若 DB 中的 policy 非法/不可编译，应安装“无意见”而非崩溃，并把上一次成功快照版本记录清楚。
 - **不新增传播机制**：仍复用 `config_epoch` 与显式 `RegisterReloadHook()`；必须验证初始化顺序、单次注册和慢 reload 行为。
 
@@ -327,7 +343,7 @@ func narrow(candidates, fit) []Channel:
 |---|---|---|
 | P0（已上线） | 四维 profile + 形状 pin + `official_fit_models` 白名单 + 亲和不对称 | `official-fit-mode.md` §验收 |
 | **A（前置）** | 冻结精确入口与非目标；为已注册族建立 route predicate adapter、`FitRequirement`（gin context）+ `RetryParam` 引用、`CacheGetRandomSatisfiedChannel` 的 fit-aware 接口、两阶段 `narrow`；`shadow=true` 跑 ≥48h，旧 Go predicate 与新策略逐例对照 | 精确 `POST /v1/chat/completions` 的首选/两套 affinity/随机/auto-group/normalized model/普通 retry 全覆盖；`/pg`、`/v1/completions`、`/v1/messages`、WS、任务、显式 pin 保持现状（negative tests）；无上下文绕过；差异为零或逐条批准 |
-| **B** | 建 `channel_fit_capabilities` model/migration/cache 索引/条件 UPDATE CAS/专用 endpoint/审计/状态机（当前全部不存在）；接入 suite 报告校验与 6h 校准 | SQLite/MySQL/PostgreSQL fresh+upgrade+二次启动；CAS 409/`RowsAffected`/幂等；权限与 suite 身份落到真实鉴权路径；旧人工项不被覆盖 |
+| **B** | 建 `channel_fit_capabilities` model/migration（含删除级联或显式清理）/cache 索引/条件 UPDATE CAS/专用 endpoint/审计/状态机（当前全部不存在）；接入 suite 报告校验与 6h 校准 | SQLite/MySQL/PostgreSQL fresh+upgrade+二次启动；CAS 409/`RowsAffected`/幂等；`expected_revision` 必填；权限与受限 suite principal 落到真实鉴权路径；删除渠道无孤儿行；旧人工项不被覆盖；审计跨库失败可观测且不回滚业务写入 |
 | **B2** | 把 fitpolicy 安装接入 `UpdateOption(s)` 提交前路径与周期同步路径（§9 缺口 1/2） | 非法 policy 在 DB 提交前被拒；Redis 故障下节点按周期安装/保持 last-known-good，并可实测 |
 | **C** | 先以 kimi-k3 单族启用；旧 `official_fit_models` 与官方类型继续作为硬 pin 基线；仅在 healthy Redis SLO 下逐步放量 | 24h 内拟合违约 0、可避免失败 0；故障注入时保持旧快照且不制造新错误；无标记候选时绝不落到普通聚合池 |
 | **D** | DS-V4 / GLM-5.3 迁入；明确热策略与代码 mechanism registry 边界；新增族仍需代码 registry/consumer 变更 | 逐族 shadow 等价；registry adapter、wire shape、channel type、exact model consumer 全覆盖；非目标协议无行为变化 |
@@ -340,7 +356,8 @@ func narrow(candidates, fit) []Channel:
   - 规则 schema/ref/type/expr 编译在 `UpdateOption(s)` 的 DB transaction **之前**拒绝；非法写入不影响线上快照。
   - 显式注册只执行一次、初始化顺序正确；`enabled=false`/删除配置/快照缺失 → 无意见。
   - 两阶段收窄：marked 优先；无 marked 回 official 等价结果；official 为空保持现有 nil/error 分类，永不落普通池。
-  - 能力表 CAS：条件 UPDATE 的 `RowsAffected` 语义、409 冲突、`report_id` 幂等、人工 sticky 不被 suite 覆盖；三库（SQLite/MySQL/PostgreSQL）fresh + upgrade + 二次启动。
+  - 能力表 CAS：条件 UPDATE 的 `RowsAffected` 语义、409 冲突、`expected_revision` 必填、`report_id` 幂等、人工 sticky 不被 suite 覆盖；三库（SQLite/MySQL/PostgreSQL）fresh + upgrade + 二次启动。
+  - 删除渠道（单条/批量）后能力行无孤儿；`AuditLog` 写独立日志库时能力写入仍提交、审计失败可观测且不被误报为业务失败。
   - **negative contract tests（必须）**：`/pg/chat/completions`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini/embedding/audio/rerank、realtime WS、Responses WebSocket、显式 `ChannelPin`、token-specific 固定渠道 → 证明 fitpolicy 不介入且行为与今天一致。
 - 规则/标记写入后：在明确的 N 节点、Redis healthy、节点健康条件下传播 P99 ≤2s；Redis 故障时节点保持当前已安装的 last-known-good 快照（策略变更与紧急回滚都可能延迟），必须实测并记录，不把 ≤2s 当作无条件承诺。
 - `enabled=false` 或删除 `official_fit.policy` 与 `channel_fit_capabilities` 后，行为与未安装本层一致，不产生新 4xx/5xx；`official_fit_models` 仍按既有 route 逻辑工作。
@@ -430,8 +447,8 @@ func narrow(candidates, fit) []Channel:
 
 **必须在开工前冻结的交付门禁**
 
-1. **能力表落地细节**：model/字段类型/长度/索引/唯一键、migration（fresh + upgrade + 二次启动幂等，三库实测）、cache 索引重建、条件 UPDATE 形式与 409 语义、审计字段；当前仓库完全没有这些。
-2. **权限与 suite 身份**：先复用 `ChannelWrite`/`ChannelSensitiveWrite`，或定义受限 service identity；给出真实鉴权路径与测试，不能只写“service identity”。
+1. **能力表落地细节**：model/字段类型/长度/索引/唯一键（含 `revision`）、migration（fresh + upgrade + 二次启动幂等，三库实测）、cache 索引重建、条件 UPDATE 形式与 409 语义、`expected_revision` 必填、删除渠道的级联/显式清理、审计字段与跨库失败语义；当前仓库完全没有这些。
+2. **权限与 suite 身份**：必须选定 dashboard 用户 + 专用 action、HMAC/service principal 或专用 Casbin subject 之一，并给出真实鉴权路径与测试；现有 `ChannelWrite` 粒度过宽且不能代替 capability action，当前也没有受限 applier principal。
 3. **提交前编译 + 周期安装路径**：`UpdateOption(s)` 的 precommit 编译接线，以及 Redis 故障下 `SyncOptions` 如何安装 fitpolicy（§9 缺口 1/2）。
 4. **F1/F2 语料**（未满足即不得开工）：短期双写仅落哈希/差异且脱敏，或批准 semantic baseline + golden fixtures；CDP 官方语料不能替代旧网关输出语料。
 5. **热生效 SLO 测量**：N 节点、Redis healthy/fault、慢 reload、重启恢复的测量方案与产物路径；≤2s 只在健康条件成立。
