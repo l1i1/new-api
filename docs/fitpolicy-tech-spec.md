@@ -147,7 +147,11 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 ```
 
 - **真实接线点（逐个符号，不假设现有 filter loop 覆盖 retry）**：`middleware/distributor.go` 的 direct / affinity / preferred 分支；`service.SelectChannelForRequest` 与其 pin/affinity 前置；`service.SelectRandomChannelForRequest` 的 filter 循环；`service.CacheGetRandomSatisfiedChannel`（**当前只传 `v4OfficialPin`/`videoRequestOnly` bool，必须扩展为接收 FitRequirement，否则重试路径不会被约束**）；内存 `model.GetRandomSatisfiedChannelPinned`；DB `model.GetChannelWithBlockedChannelsPinned`；ability 回退 `model.GetAbilities`；`controller/relay.go:getChannel` 的 retry / affinity / preferred 三处。
-- **两套 affinity 快径都要改**：`Distribute` 的 affinity 分支已查 `ChannelSatisfiesFilters`；`controller/relay.go:getChannel` 的 affinity/preferred 分支**不查** filter 也不查 `officialPinAllowsAffinity`。fitpolicy 的 eligibility 必须在两处都生效，或显式声明该分支不参与并补测试。
+- **两套 affinity 快径的裁决（已定，不再开放）**：
+  - `middleware/distributor.go` 的 affinity/preferred 分支**自己选路**（`channel = preferred`，不经过 `CacheGetRandomSatisfiedChannel`），会绕过 selector 内的两阶段收窄 → **必须纳入** fit eligibility（在该分支同样执行 `base∩official∩marked → base∩official → 现有错误`）。这是唯一会引入未受约束渠道的 fast path。
+  - `controller/relay.go:getChannel` 的 affinity/preferred 分支只在 `retryParam.GetRetry()==0` 且无 preferred 时**复用 distributor 已选中的渠道**（`RetryParam.ContextKeyChannelId`/已选 channel），重试时因 `GetRetry()!=0` 直接跳过 → 它不引入新渠道。**v1 不改该分支**，但必须加回归测试证明：该分支只能返回 distributor 已做 fit 判定的同一渠道，任何情况下都不会把未满足 `RequiredMarks` 的渠道带进来；若测试证伪，则升级为必改项。
+  - 真正的重试缺口是 `getChannel` 落空时直达 `service.CacheGetRandomSatisfiedChannel`，而该函数当前不读 `ChannelConstraints.Filters` → 已要求把它扩展为 fit-aware（§5、§13）。
+
 - **请求级约束**：新增独立 `FitRequirement`（family/model、required marks、policy version、fallback 标志、empty reason），immutable，挂 gin context；`RetryParam` 只持有指向它的引用，禁止在 retry 中重算。
 - **显式 pin 短路**：ResolvedPin(token/origin-task) 与 token-specific 分支在评估 FitRequirement **之前**完成，保持现有 filter/policy/error/retry；只在非显式 pin、in-scope HTTP chat 请求上评估。
 - **显式启动注册**：`pkg/fitpolicy` 不依赖 `init()` 自动注册；由 `main.go` 在初始 options/channel cache 完成后显式调用一次 `fitpolicy.RegisterReloadHook()`，注册函数用 `sync.Once` 防重复，测试验证初始化顺序和单次注册。
@@ -294,7 +298,7 @@ func narrow(candidates, fit) []Channel:
 - **重试状态机**：`RetryParam` 从同一 gin context 取 FitRequirement 引用；每次尝试先从约束集合排除已尝试渠道，再跑同一 `narrow`，仍有候选才 retry。耗尽时执行既有错误语义；fitpolicy 不生成新的 4xx/5xx。
 - **重试判定（必须改代码，不是只改候选集）**：现有 `officialFitPinKeepsVerdict`（`service/relay_error.go`）在 pin 命中自动重试关键字时直接 `stop`，只放行多键凭据轮换；因此 D5 不能靠候选过滤修。实现必须扩展/替换该函数，让它消费 immutable `FitRequirement`，并且**仅在约束候选集里仍有未尝试的 marked official 渠道时**放行 retry；约束集耗尽（或没有 second candidate）时保持 `stop`。测试必须覆盖：存在第二个 marked official 渠道 → retry；约束集耗尽 → 仍 stop；多键轮换例外不被破坏。
 - **`ApiError` 不是 409**：现有 `common.ApiError`/`ApiErrorI18n` 一律返回 HTTP 200（`common/gin.go`）；capability endpoint 的 CAS 冲突必须显式 `c.JSON(http.StatusConflict, ...)`，不得暗示复用现有错误 helper 就能得到 409。
-- **in-scope contract tests**：HTTP 首选、HTTP affinity（两套快径）、归一化/compact model、auto-group、blocked/saturation、普通 retry、无 marked 时回 official、official 为空时保持原错误。**非目标回归**：Responses WS、显式固定 pin、`/pg`、`/v1/completions`、`/v1/messages`、任务/任务插件、realtime WS 必须证明 fitpolicy 不介入且行为与今天一致。
+- **in-scope contract tests**：HTTP 首选、`Distribute` affinity/preferred 选路（含 marked 命中和 official 回退）、归一化/compact model、auto-group、blocked/saturation、普通 retry、无 marked 时回 official、official 为空时保持原错误。**负面/边界测试**：`getChannel` 复用分支不得引入未受约束渠道；Responses WS、显式固定 pin、`/pg`、`/v1/completions`、`/v1/messages`、任务/任务插件、realtime WS 必须证明 fitpolicy 不介入且行为与今天一致。
 
 
 ## 9. 即时生效（复用既有链路，但必须补两个缺口）
@@ -350,7 +354,7 @@ func narrow(candidates, fit) []Channel:
 | 步 | 内容 | 验收 |
 |---|---|---|
 | P0（已上线） | 四维 profile + 形状 pin + `official_fit_models` 白名单 + 亲和不对称 | `official-fit-mode.md` §验收 |
-| **A（前置）** | 冻结精确入口与非目标；为已注册族建立 route predicate adapter、`FitRequirement`（gin context）+ `RetryParam` 引用、`CacheGetRandomSatisfiedChannel` 的 fit-aware 接口、两阶段 `narrow`；`shadow=true` 跑 ≥48h，旧 Go predicate 与新策略逐例对照 | 精确 `POST /v1/chat/completions` 的首选/两套 affinity/随机/auto-group/normalized model/普通 retry 全覆盖；`/pg`、`/v1/completions`、`/v1/messages`、WS、任务、显式 pin 保持现状（negative tests）；无上下文绕过；差异为零或逐条批准 |
+| **A（前置）** | 冻结精确入口与非目标；为已注册族建立 route predicate adapter、`FitRequirement`（gin context）+ `RetryParam` 引用、`CacheGetRandomSatisfiedChannel` 的 fit-aware 接口、两阶段 `narrow`、`Distribute` affinity 分支的 fit eligibility；`shadow=true` 跑 ≥48h，旧 Go predicate 与新策略逐例对照 | 精确 `POST /v1/chat/completions` 的首选/`Distribute` affinity/随机/auto-group/normalized model/普通 retry 全覆盖；`getChannel` 复用分支有“不引入未受约束渠道”回归；`/pg`、`/v1/completions`、`/v1/messages`、WS、任务、显式 pin 保持现状（negative tests）；无上下文绕过；差异为零或逐条批准 |
 | **B** | 建 `channel_fit_capabilities` model/migration（含删除级联或显式清理）/cache 索引/条件 UPDATE CAS/专用 endpoint/审计/状态机（当前全部不存在）；接入 suite 报告校验与 6h 校准 | SQLite/MySQL/PostgreSQL fresh+upgrade+二次启动；CAS 409/`RowsAffected`/幂等；`expected_revision` 必填；权限与受限 suite principal 落到真实鉴权路径；删除渠道无孤儿行；旧人工项不被覆盖；审计跨库失败可观测且不回滚业务写入 |
 | **B2** | 把 fitpolicy 安装接入 `UpdateOption(s)` 提交前路径与周期同步路径（§9 缺口 1/2） | 非法 policy 在 DB 提交前被拒；Redis 故障下节点按周期安装/保持 last-known-good，并可实测 |
 | **C** | 先以 kimi-k3 单族启用；旧 `official_fit_models` 与官方类型继续作为硬 pin 基线；仅在 healthy Redis SLO 下逐步放量 | 24h 内拟合违约 0、可避免失败 0；故障注入时保持旧快照且不制造新错误；无标记候选时绝不落到普通聚合池 |
