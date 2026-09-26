@@ -21,12 +21,21 @@ import (
 // identical to the world before this table existed, which is what the spec
 // requires when capability data is absent.
 
+// fitCapabilityMark is the raw stored state, not a precomputed verdict.
+//
+// Freezing the verdict at build time would be wrong in two ways: freshness and
+// expiry move with the clock, and the policy hash they are bound to changes when
+// the rules change — neither of which triggers a channel-cache rebuild. The
+// lookup therefore re-derives the state from these fields using the current time
+// and the binding in force for the request.
 type fitCapabilityMark struct {
-	Supported bool
-	State     string
-	At        int64
-	ExpiresAt int64
-	Revision  int64
+	Supported    bool
+	Source       string
+	At           int64
+	ExpiresAt    int64
+	PolicyHash   string
+	BaselineHash string
+	Revision     int64
 }
 
 var (
@@ -50,11 +59,9 @@ func InitFitCapabilityIndex() {
 		common.SysLog("failed to load channel fit capabilities: " + err.Error())
 		return
 	}
-	now := common.GetTimestamp()
 	index := make(map[int]map[string]map[string]fitCapabilityMark, len(rows))
 	for i := range rows {
 		row := &rows[i]
-		state := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, "", "")
 		byModel, ok := index[row.ChannelId]
 		if !ok {
 			byModel = make(map[string]map[string]fitCapabilityMark)
@@ -66,11 +73,13 @@ func InitFitCapabilityIndex() {
 			byModel[row.Model] = byBehavior
 		}
 		byBehavior[row.Behavior] = fitCapabilityMark{
-			Supported: row.Supported,
-			State:     state,
-			At:        row.At,
-			ExpiresAt: row.ExpiresAt,
-			Revision:  row.Revision,
+			Supported:    row.Supported,
+			Source:       row.Source,
+			At:           row.At,
+			ExpiresAt:    row.ExpiresAt,
+			PolicyHash:   row.PolicyHash,
+			BaselineHash: row.BaselineHash,
+			Revision:     row.Revision,
 		}
 	}
 	fitCapabilityIndexLock.Lock()
@@ -103,6 +112,20 @@ func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMa
 	return mark, ok
 }
 
+// FitMarkRequirement is what one request needs a channel's marks to prove.
+type FitMarkRequirement struct {
+	Model string
+	Marks []string
+	// PermissiveUnknown treats an absent mark as "not disproven" instead of
+	// "not verified". It is the policy's UnknownMarkPolicy turn.
+	PermissiveUnknown bool
+	// PolicyHash and BaselineHash are the bindings in force for this request. A
+	// suite result measured against anything else is stale, which is what keeps a
+	// rule change from silently validating old measurements.
+	PolicyHash   string
+	BaselineHash string
+}
+
 // ChannelSatisfiesFitMarks reports whether a channel currently verifies every
 // required behaviour for a model.
 //
@@ -112,19 +135,36 @@ func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMa
 // A mark that is known but not in a satisfying state (stale, failed, expired)
 // never satisfies, under either policy: those are explicit negative or stale
 // results, not absence of information.
-func ChannelSatisfiesFitMarks(channelID int, model string, marks []string, permissiveUnknown bool) bool {
-	if len(marks) == 0 {
+//
+// The state is derived here, from the current clock and the request's policy
+// binding, rather than read from a value computed when the index was built.
+func ChannelSatisfiesFitMarks(channelID int, requirement FitMarkRequirement) bool {
+	if len(requirement.Marks) == 0 {
 		return true
 	}
-	for _, behavior := range marks {
-		mark, found := LookupFitCapability(channelID, model, behavior)
+	now := common.GetTimestamp()
+	for _, behavior := range requirement.Marks {
+		mark, found := LookupFitCapability(channelID, requirement.Model, behavior)
 		if !found {
-			if permissiveUnknown {
+			if requirement.PermissiveUnknown {
 				continue
 			}
 			return false
 		}
-		if !FitCapabilityStateSatisfies(mark.State) {
+		row := &ChannelFitCapability{
+			ChannelId:    channelID,
+			Model:        requirement.Model,
+			Behavior:     behavior,
+			Supported:    mark.Supported,
+			Source:       mark.Source,
+			At:           mark.At,
+			ExpiresAt:    mark.ExpiresAt,
+			PolicyHash:   mark.PolicyHash,
+			BaselineHash: mark.BaselineHash,
+			Revision:     mark.Revision,
+		}
+		state := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, requirement.PolicyHash, requirement.BaselineHash)
+		if !FitCapabilityStateSatisfies(state) {
 			return false
 		}
 		if !mark.Supported {

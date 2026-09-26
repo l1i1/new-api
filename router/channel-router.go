@@ -55,7 +55,12 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	// wildcard-vs-static conflict with the group's /:id routes.
 	fitCapabilityRoute := apiRouter.Group("/fit-capability")
 	fitCapabilityRoute.Use(middleware.UserAuth())
+	// Reading marks stays an administrative view, exactly like every other
+	// channel read. Only the write path is meant to be reachable by a
+	// non-administrator principal; the applier learns the current revision from
+	// the 409 body of its own write rather than by reading.
 	fitCapabilityRoute.GET("",
+		middleware.AdminAuth(),
 		middleware.RequirePermission(authz.ChannelRead),
 		controller.GetChannelFitCapabilities,
 	)

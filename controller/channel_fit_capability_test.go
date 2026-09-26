@@ -27,6 +27,10 @@ func setupFitCapabilityEndpoint(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.ChannelFitCapability{}))
+	// A mark must belong to an existing channel.
+	require.NoError(t, db.Create(&model.Channel{
+		Id: 7, Name: "ch-7", Status: common.ChannelStatusEnabled, Group: "default", Models: "kimi-k3", Key: "sk",
+	}).Error)
 	model.DB = db
 	model.LOG_DB = nil
 	common.MemoryCacheEnabled = true
@@ -325,7 +329,10 @@ func TestPostFitCapabilityReportAppliesAndRefreshesTheIndex(t *testing.T) {
 
 	// The endpoint refreshes the index with the channel cache, so the mark is
 	// immediately usable by selection on this node.
-	assert.True(t, model.ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names"}, false))
+	assert.True(t, model.ChannelSatisfiesFitMarks(7, model.FitMarkRequirement{
+		Model: "kimi-k3",
+		Marks: []string{"tools.dynamic_names"},
+	}))
 }
 
 // TestPostFitCapabilityReportKeepsOperatorMarks is the sticky rule seen from the
@@ -379,4 +386,43 @@ func TestPostFitCapabilityReportRejectsMalformedShape(t *testing.T) {
 			require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
 		})
 	}
+}
+
+// TestPostFitCapabilityReportBindsTheBaseline covers the baseline half of the
+// report binding, which is a policy field: a report measured against a different
+// official reference must not mark channels.
+func TestPostFitCapabilityReportBindsTheBaseline(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+
+	policy := fitpolicy.BuiltinPolicy()
+	policy.Baseline = "baseline-a"
+	encoded, err := common.Marshal(policy)
+	require.NoError(t, err)
+	snapshot, err := fitpolicy.CompileJSON(encoded)
+	require.NoError(t, err)
+	fitpolicy.Install(snapshot)
+	t.Cleanup(func() { fitpolicy.Install(nil) })
+
+	now := common.GetTimestamp()
+	body := fmt.Sprintf(`{
+		"report_id": "report-1", "run_id": "run-1", "suite": "cdp-k3",
+		"policy_version": %d, "policy_hash": %q, "baseline_hash": "baseline-b",
+		"generated_at": %d, "rounds": 3,
+		"results": [{"channel_id": 7, "family": "kimi-k3", "model": "kimi-k3",
+			"behavior": "tools.dynamic_names", "supported": true, "cases": "30/30"}]
+	}`, snapshot.Version(), snapshot.Hash(), now)
+
+	recorder, payload := postReport(t, body)
+	require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
+	assert.Contains(t, payload["message"], "baseline")
+
+	rows, err := model.ListChannelFitCapabilities(7)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+
+	// The matching baseline is accepted, so the check is a binding rather than a
+	// blanket refusal.
+	matching := strings.Replace(body, `"baseline_hash": "baseline-b"`, `"baseline_hash": "baseline-a"`, 1)
+	recorder, _ = postReport(t, matching)
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
 }

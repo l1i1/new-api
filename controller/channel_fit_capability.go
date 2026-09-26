@@ -214,6 +214,7 @@ func PostFitCapabilityReport(c *gin.Context) {
 	binding := fitpolicy.ReportBinding{
 		PolicyVersion: snapshot.Version(),
 		PolicyHash:    snapshot.Hash(),
+		BaselineHash:  snapshot.Baseline(),
 	}
 	if err := fitpolicy.ValidateSuiteReport(&report, binding); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})

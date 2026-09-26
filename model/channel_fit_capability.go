@@ -210,6 +210,13 @@ func ApplyChannelFitCapability(write FitCapabilityWrite, now int64) (*ChannelFit
 	if err := write.normalize(); err != nil {
 		return nil, err
 	}
+	// A mark must belong to a channel that exists. Without this check a writer
+	// could create exactly the orphan row the delete path works to prevent — and
+	// it would be invisible, because nothing lists marks by channel id except the
+	// channel that no longer exists.
+	if err := ensureFitCapabilityChannelExists(write.ChannelId); err != nil {
+		return nil, err
+	}
 
 	if write.ExpectedRevision == 0 {
 		row := buildFitCapabilityRow(write, now, 1)
@@ -272,6 +279,19 @@ func ApplyChannelFitCapability(write FitCapabilityWrite, now int64) (*ChannelFit
 	}
 	updated, _, err := GetChannelFitCapability(write.ChannelId, write.Family, write.Model, write.Behavior)
 	return updated, err
+}
+
+// ensureFitCapabilityChannelExists rejects a write aimed at a channel that is
+// not present. Channel rows are hard-deleted, so a plain count is authoritative.
+func ensureFitCapabilityChannelExists(channelID int) error {
+	var count int64
+	if err := DB.Model(&Channel{}).Where("id = ?", channelID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("fit capability: channel %d does not exist", channelID)
+	}
+	return nil
 }
 
 // guardFitCapabilitySticky enforces the conflict semantics: a measured result
@@ -345,6 +365,11 @@ func FitCapabilityState(row *ChannelFitCapability, now int64, staleAfterDays int
 	case FitCapabilitySourceSuite:
 		if !row.Supported {
 			return FitCapabilitySuiteFailed
+		}
+		// An explicit expiry applies to a measured result too. Ignoring it would
+		// let a suite row that asked to expire keep vouching for a channel.
+		if FitCapabilityExpired(row, now) {
+			return FitCapabilitySuiteStale
 		}
 		if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
 			return FitCapabilitySuiteStale

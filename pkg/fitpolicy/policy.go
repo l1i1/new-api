@@ -14,9 +14,15 @@ import (
 // those behaviours is a separate concern (the channel capability marks), so the
 // policy never mentions channels.
 type Policy struct {
-	Version  int            `json:"version"`
-	Enabled  bool           `json:"enabled"`
-	Shadow   bool           `json:"shadow"`
+	Version int  `json:"version"`
+	Enabled bool `json:"enabled"`
+	Shadow  bool `json:"shadow"`
+	// Baseline identifies the official behaviour reference the measurements were
+	// taken against. Bumping it invalidates every suite result bound to the old
+	// value, which is how a change in the official upstream stops old
+	// measurements from continuing to vouch for a channel. It is free-form and
+	// optional: an empty value simply skips the check.
+	Baseline string         `json:"baseline,omitempty"`
 	Families []FamilyPolicy `json:"families"`
 }
 

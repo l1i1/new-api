@@ -1,7 +1,9 @@
 package model
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -23,6 +25,15 @@ func setupFitCapabilityDB(t *testing.T) {
 		DB = previousDB
 		ResetFitCapabilityIndexForTest()
 	})
+	// A mark must belong to an existing channel, so the fixtures create the
+	// channels they write about. Channels used only by the delete test are
+	// deliberately absent here.
+	for _, id := range []int{1, 2, 3, 7, 8, 9, 99} {
+		require.NoError(t, db.Create(&Channel{
+			Id: id, Name: fmt.Sprintf("ch-%d", id), Status: common.ChannelStatusEnabled,
+			Group: "default", Models: "kimi-k3", Key: "sk",
+		}).Error)
+	}
 }
 
 func suiteWrite(revision int64) FitCapabilityWrite {
@@ -258,12 +269,12 @@ func TestFitCapabilityIndexIsConservativeAndFailsOpen(t *testing.T) {
 	// An unbuilt index verifies nothing.
 	ResetFitCapabilityIndexForTest()
 	require.False(t, FitCapabilityIndexReady())
-	require.False(t, ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names"}, false))
-	require.True(t, ChannelSatisfiesFitMarks(7, "kimi-k3", nil, false), "an empty requirement is satisfied by definition")
+	require.False(t, ChannelSatisfiesFitMarks(7, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}}))
+	require.True(t, ChannelSatisfiesFitMarks(7, FitMarkRequirement{Model: "kimi-k3", Marks: nil}), "an empty requirement is satisfied by definition")
 
 	// A permissive policy does not treat absence as a failure, but it also does
 	// not invent a positive result.
-	require.True(t, ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names"}, true))
+	require.True(t, ChannelSatisfiesFitMarks(7, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}, PermissiveUnknown: true}))
 
 	now := common.GetTimestamp()
 	_, err := ApplyChannelFitCapability(FitCapabilityWrite{
@@ -274,10 +285,10 @@ func TestFitCapabilityIndexIsConservativeAndFailsOpen(t *testing.T) {
 
 	InitFitCapabilityIndex()
 	require.True(t, FitCapabilityIndexReady())
-	require.True(t, ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names"}, false))
-	require.False(t, ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names", "history.assistant_first"}, false),
+	require.True(t, ChannelSatisfiesFitMarks(7, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}}))
+	require.False(t, ChannelSatisfiesFitMarks(7, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names", "history.assistant_first"}}),
 		"every required behaviour must be verified, not just one")
-	require.False(t, ChannelSatisfiesFitMarks(8, "kimi-k3", []string{"tools.dynamic_names"}, false),
+	require.False(t, ChannelSatisfiesFitMarks(8, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}}),
 		"a mark belongs to exactly one channel")
 
 	// A stored failure never satisfies, under either policy.
@@ -287,15 +298,15 @@ func TestFitCapabilityIndexIsConservativeAndFailsOpen(t *testing.T) {
 	}, now)
 	require.NoError(t, err)
 	InitFitCapabilityIndex()
-	require.False(t, ChannelSatisfiesFitMarks(9, "kimi-k3", []string{"tools.choice_semantics"}, false))
-	require.False(t, ChannelSatisfiesFitMarks(9, "kimi-k3", []string{"tools.choice_semantics"}, true),
+	require.False(t, ChannelSatisfiesFitMarks(9, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.choice_semantics"}}))
+	require.False(t, ChannelSatisfiesFitMarks(9, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.choice_semantics"}, PermissiveUnknown: true}),
 		"an explicit negative result is not the same as an unknown one")
 }
 
 func TestChannelDeletesRemoveCapabilities(t *testing.T) {
 	setupFitCapabilityDB(t)
 
-	for _, id := range []int{1, 2, 3} {
+	for _, id := range []int{101, 102, 103} {
 		require.NoError(t, DB.Create(&Channel{
 			Id: id, Name: "ch", Status: common.ChannelStatusEnabled, Group: "default", Models: "kimi-k3", Key: "sk",
 		}).Error)
@@ -306,15 +317,145 @@ func TestChannelDeletesRemoveCapabilities(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, (&Channel{Id: 1}).Delete())
-	rows, err := ListChannelFitCapabilities(1)
+	require.NoError(t, (&Channel{Id: 101}).Delete())
+	rows, err := ListChannelFitCapabilities(101)
 	require.NoError(t, err)
 	require.Empty(t, rows, "deleting a channel must not leave orphan capability marks")
 
-	if _, err := BatchDeleteChannels([]int{2, 3}); err != nil {
+	if _, err := BatchDeleteChannels([]int{102, 103}); err != nil {
 		t.Fatalf("batch delete: %v", err)
 	}
 	all, err := ListAllChannelFitCapabilities()
 	require.NoError(t, err)
 	require.Empty(t, all, "batch delete must clean capability marks for every removed channel")
+}
+
+// TestFitCapabilityWriteRejectsUnknownChannel closes the orphan-row hole: a mark
+// must belong to a channel that exists, or it would be exactly the orphan the
+// delete path works to prevent — and invisible, because nothing lists marks for
+// a channel that is not there.
+func TestFitCapabilityWriteRejectsUnknownChannel(t *testing.T) {
+	setupFitCapabilityDB(t)
+
+	write := suiteWrite(0)
+	write.ChannelId = 4242
+	_, err := ApplyChannelFitCapability(write, 1_700_000_100)
+	require.Error(t, err)
+	require.False(t, IsFitCapabilityConflict(err), "a missing channel is a bad request, not a CAS conflict")
+	require.Contains(t, err.Error(), "does not exist")
+
+	rows, err := ListAllChannelFitCapabilities()
+	require.NoError(t, err)
+	require.Empty(t, rows, "a rejected write must leave no row behind")
+}
+
+// TestFitMarksGoStaleWhenThePolicyBindingChanges covers a defect found in review:
+// the index used to freeze each mark's verdict at build time with an empty policy
+// binding, so changing the policy left old measurements vouching for channels
+// until the next channel-cache rebuild — which a policy change does not trigger.
+func TestFitMarksGoStaleWhenThePolicyBindingChanges(t *testing.T) {
+	setupFitCapabilityDB(t)
+
+	now := common.GetTimestamp()
+	_, err := ApplyChannelFitCapability(FitCapabilityWrite{
+		ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "tools.dynamic_names",
+		Supported: true, Source: FitCapabilitySourceSuite, At: now,
+		PolicyHash: "policy-a", BaselineHash: "baseline-a", ExpectedRevision: 0,
+	}, now)
+	require.NoError(t, err)
+	InitFitCapabilityIndex()
+
+	if !ChannelSatisfiesFitMarks(7, FitMarkRequirement{
+		Model: "kimi-k3", Marks: []string{"tools.dynamic_names"},
+		PolicyHash: "policy-a", BaselineHash: "baseline-a",
+	}) {
+		t.Fatal("a mark measured under the live policy must satisfy")
+	}
+
+	// The policy moved on. No index rebuild happens here — that is the point.
+	if ChannelSatisfiesFitMarks(7, FitMarkRequirement{
+		Model: "kimi-k3", Marks: []string{"tools.dynamic_names"},
+		PolicyHash: "policy-b", BaselineHash: "baseline-a",
+	}) {
+		t.Fatal("a rule change must invalidate a measurement taken under the old rules")
+	}
+
+	if ChannelSatisfiesFitMarks(7, FitMarkRequirement{
+		Model: "kimi-k3", Marks: []string{"tools.dynamic_names"},
+		PolicyHash: "policy-a", BaselineHash: "baseline-b",
+	}) {
+		t.Fatal("a baseline change must invalidate a measurement taken against the old baseline")
+	}
+
+	// An unbound check still passes, so a deployment without a baseline registry
+	// keeps working.
+	if !ChannelSatisfiesFitMarks(7, FitMarkRequirement{
+		Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}, PolicyHash: "policy-a",
+	}) {
+		t.Fatal("an unchecked baseline must not invalidate the mark")
+	}
+}
+
+// TestFitMarkExpiryIsHonoredWithoutARebuild is the clock half of the same defect:
+// freshness and expiry used to be computed when the index was built, so a mark
+// could keep satisfying a requirement for up to one sync interval after it
+// expired.
+func TestFitMarkExpiryIsHonoredWithoutARebuild(t *testing.T) {
+	setupFitCapabilityDB(t)
+
+	now := common.GetTimestamp()
+	_, err := ApplyChannelFitCapability(FitCapabilityWrite{
+		ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "usage.thinking_counting",
+		Supported: true, Source: FitCapabilitySourceManual, At: now, ExpiresAt: now + 1,
+		ExpectedRevision: 0,
+	}, now)
+	require.NoError(t, err)
+	InitFitCapabilityIndex()
+
+	requirement := FitMarkRequirement{Model: "kimi-k3", Marks: []string{"usage.thinking_counting"}}
+	if !ChannelSatisfiesFitMarks(7, requirement) {
+		t.Fatal("an unexpired manual mark must satisfy")
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+
+	if ChannelSatisfiesFitMarks(7, requirement) {
+		t.Fatal("an expired manual mark must stop satisfying without waiting for a cache rebuild")
+	}
+}
+
+// TestSuiteResultHonorsItsOwnExpiry: an explicit expiry on a measured result
+// used to be ignored, letting a row that asked to expire keep vouching.
+func TestSuiteResultHonorsItsOwnExpiry(t *testing.T) {
+	now := int64(1_700_000_000)
+	row := &ChannelFitCapability{
+		Source: FitCapabilitySourceSuite, Supported: true, At: now - 60, ExpiresAt: now - 1,
+	}
+	if got := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, "", ""); got != FitCapabilitySuiteStale {
+		t.Fatalf("an expired suite result must be stale, got %s", got)
+	}
+	row.ExpiresAt = now + 60
+	if got := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, "", ""); got != FitCapabilitySuiteFresh {
+		t.Fatalf("an unexpired suite result must stay fresh, got %s", got)
+	}
+}
+
+// TestInitChannelCacheToleratesChannelWithoutAbilities covers a latent crash
+// found while reviewing: the group map was seeded from Ability rows, so an
+// enabled channel whose group had no abilities made the rebuild assign into a
+// nil map. That state is reachable from the admin UI (a channel with an empty
+// model list keeps its row and group), and the panic happens inside the request
+// that triggered the rebuild.
+func TestInitChannelCacheToleratesChannelWithoutAbilities(t *testing.T) {
+	setupFitCapabilityDB(t)
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCache })
+
+	require.NoError(t, DB.Create(&Channel{
+		Id: 900, Name: "no-abilities", Status: common.ChannelStatusEnabled,
+		Group: "orphan-group", Models: "", Key: "sk",
+	}).Error)
+
+	require.NotPanics(t, func() { InitChannelCache() })
 }

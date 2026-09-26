@@ -44,11 +44,21 @@ func FitChannelFilterForRequest(c *gin.Context) *FitChannelFilter {
 	// lookup misses, so phase 1 stays empty and selection falls back to the
 	// official set — today's behaviour, which is what the spec requires when
 	// capability data is absent.
-	permissiveUnknown := requirement.UnknownMarkPolicy == fitpolicy.UnknownMarkPermissive
+	//
+	// The bindings come from the requirement, which carries the policy identity
+	// of the snapshot that produced it. Evaluating them per request is what makes
+	// a rule change invalidate old measurements without waiting for a cache
+	// rebuild, and what keeps a retry bound to the policy it started under.
 	return &FitChannelFilter{
 		Requirement: requirement,
 		MarkSatisfied: func(channelID int) bool {
-			return ChannelSatisfiesFitMarks(channelID, requirement.Model, requirement.Marks, permissiveUnknown)
+			return ChannelSatisfiesFitMarks(channelID, FitMarkRequirement{
+				Model:             requirement.Model,
+				Marks:             requirement.Marks,
+				PermissiveUnknown: requirement.UnknownMarkPolicy == fitpolicy.UnknownMarkPermissive,
+				PolicyHash:        requirement.PolicyHash,
+				BaselineHash:      requirement.BaselineHash,
+			})
 		},
 	}
 	// tokeness-fitpolicy:end

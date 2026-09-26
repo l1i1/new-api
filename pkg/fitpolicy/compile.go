@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
@@ -53,6 +54,7 @@ type Snapshot struct {
 	version  int
 	enabled  bool
 	shadow   bool
+	baseline string
 	families map[string]*compiledFamily
 	hash     string
 }
@@ -85,6 +87,16 @@ func (s *Snapshot) Hash() string {
 	return s.hash
 }
 
+// Baseline reports the official behaviour reference this snapshot's
+// measurements must have been taken against. An empty value means the check is
+// not applied.
+func (s *Snapshot) Baseline() string {
+	if s == nil {
+		return ""
+	}
+	return s.baseline
+}
+
 // Compile validates a policy and builds its expression programs. It is the same
 // call the write path uses before the database commit, so an uncompilable rule
 // is rejected by the author rather than at request time.
@@ -96,6 +108,7 @@ func Compile(policy Policy) (*Snapshot, error) {
 		version:  policy.Version,
 		enabled:  policy.Enabled,
 		shadow:   policy.Shadow,
+		baseline: strings.TrimSpace(policy.Baseline),
 		families: make(map[string]*compiledFamily, len(policy.Families)),
 	}
 	for _, family := range policy.Families {

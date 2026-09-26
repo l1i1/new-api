@@ -24,6 +24,10 @@ type Requirement struct {
 	// decision, so a shadow trace or capability report can be tied back to it.
 	PolicyVersion int
 	PolicyHash    string
+	// BaselineHash is the official behaviour reference the measurements must have
+	// been taken against. It travels with the decision so the comparison uses the
+	// binding the request actually started under.
+	BaselineHash string
 	// EmptyMatchPolicy and UnknownMarkPolicy are carried so the consumer does
 	// not have to re-read the snapshot (which may have been replaced).
 	EmptyMatchPolicy  string
@@ -75,6 +79,7 @@ func (s *Snapshot) Decide(model string, routeEnabled bool, view RequestView) Req
 		Behaviors:         behaviors,
 		PolicyVersion:     s.version,
 		PolicyHash:        s.hash,
+		BaselineHash:      s.baseline,
 		EmptyMatchPolicy:  family.emptyMatchPolicy,
 		UnknownMarkPolicy: family.unknownMarkPolicy,
 		Shadow:            s.shadow,

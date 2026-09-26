@@ -124,6 +124,6 @@ func TestApplyFitCapabilityReportFallsBackToNowForAMissingMeasurementTime(t *tes
 	assert.Equal(t, now, stored.At)
 
 	InitFitCapabilityIndex()
-	assert.True(t, ChannelSatisfiesFitMarks(3, "kimi-k3", []string{"tools.dynamic_names"}, false),
+	assert.True(t, ChannelSatisfiesFitMarks(3, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}}),
 		"a report without a measurement time must still land as fresh")
 }

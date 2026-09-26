@@ -51,6 +51,12 @@ func ApplyFitCapabilityReport(report fitpolicy.SuiteReport, now int64) FitCapabi
 	if measuredAt <= 0 {
 		measuredAt = now
 	}
+	// Clamp a future timestamp. Freshness is computed as now - At, so a report
+	// dated in the future would produce marks that never age out — a single bad
+	// clock or a hand-edited report could make a measurement permanent.
+	if measuredAt > now {
+		measuredAt = now
+	}
 	summary := FitCapabilityReportSummary{Outcomes: make([]FitCapabilityApplyOutcome, 0, len(report.Results))}
 	for i := range report.Results {
 		result := &report.Results[i]

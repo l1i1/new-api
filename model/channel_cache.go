@@ -210,6 +210,17 @@ func InitChannelCache() {
 		}
 		groups := strings.SplitSeq(channel.Group, ",")
 		for group := range groups {
+			// tokeness-fix:begin （上游 merge 后请保留；见 FORK-CHANGES.md）
+			// The outer map is seeded from Ability rows, so a channel whose group
+			// has no abilities yet leaves newGroup2model2channels[group] nil and
+			// the assignment below panics. That state is reachable from the admin
+			// UI: a channel with an empty model list keeps its row and its group
+			// but gets no abilities, and the next cache rebuild would take the
+			// request path down with it.
+			if _, ok := newGroup2model2channels[group]; !ok {
+				newGroup2model2channels[group] = make(map[string][]int)
+			}
+			// tokeness-fix:end
 			models := channel.GetModels()
 			for _, model := range models {
 				if _, ok := newGroup2model2channels[group][model]; !ok {

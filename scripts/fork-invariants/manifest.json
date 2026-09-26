@@ -1981,7 +1981,8 @@
         {
           "kind": "symbol",
           "file": "model/fitpolicy_filter.go",
-          "name": "ChannelSatisfiesFitMarks(channelID, requirement.Model"
+          "name": "ChannelSatisfiesFitMarks(channelID, FitMarkRequirement{",
+          "note": "call shape changed when the mark lookup moved to lookup-time state derivation"
         },
         {
           "kind": "symbol",
@@ -2027,6 +2028,26 @@
           "kind": "symbol",
           "file": "model/option.go",
           "name": "refreshFitPolicySnapshot()"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability.go",
+          "name": "func ensureFitCapabilityChannelExists("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability_index.go",
+          "name": "type FitMarkRequirement struct"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/compile.go",
+          "name": "func (s *Snapshot) Baseline()"
+        },
+        {
+          "kind": "symbol",
+          "file": "router/channel-router.go",
+          "name": "fitCapabilityRoute.GET("
         }
       ],
       "tests": [
@@ -2039,7 +2060,11 @@
             "TestFitCapabilityManualIsStickyAgainstSuite",
             "TestFitCapabilityStateMachine",
             "TestFitCapabilityIndexIsConservativeAndFailsOpen",
-            "TestChannelDeletesRemoveCapabilities"
+            "TestChannelDeletesRemoveCapabilities",
+            "TestFitCapabilityWriteRejectsUnknownChannel",
+            "TestFitMarksGoStaleWhenThePolicyBindingChanges",
+            "TestFitMarkExpiryIsHonoredWithoutARebuild",
+            "TestSuiteResultHonorsItsOwnExpiry"
           ]
         },
         {
@@ -2061,7 +2086,8 @@
             "TestPostFitCapabilityReportRejectsStaleBinding",
             "TestPostFitCapabilityReportAppliesAndRefreshesTheIndex",
             "TestPostFitCapabilityReportKeepsOperatorMarks",
-            "TestPostFitCapabilityReportRejectsMalformedShape"
+            "TestPostFitCapabilityReportRejectsMalformedShape",
+            "TestPostFitCapabilityReportBindsTheBaseline"
           ]
         },
         {
@@ -2070,7 +2096,8 @@
             "TestValidateSuiteReportAcceptsWellFormedReport",
             "TestValidateSuiteReportRejectsShapeProblems",
             "TestValidateSuiteReportRejectsStaleBinding",
-            "TestNormalizeSuiteReportMatchesStoredForm"
+            "TestNormalizeSuiteReportMatchesStoredForm",
+            "TestBaselineFlowsFromThePolicyIntoTheDecision"
           ]
         },
         {
@@ -2079,6 +2106,35 @@
             "TestApplyFitCapabilityReportInsertsThenAdvancesRevisions",
             "TestApplyFitCapabilityReportReportsConflictsPerItem",
             "TestApplyFitCapabilityReportFallsBackToNowForAMissingMeasurementTime"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "channel-cache-nil-map-crash-3",
+      "title": "InitChannelCache 在「已启用渠道的 group 尚无 ability」时对 nil map 赋值 panic（上游缺陷，审查中发现并修复）",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "model/channel_cache.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "tokeness-fix:begin"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "newGroup2model2channels[group] = make(map[string][]int)"
+        }
+      ],
+      "tests": [
+        {
+          "file": "model/channel_fit_capability_test.go",
+          "names": [
+            "TestInitChannelCacheToleratesChannelWithoutAbilities"
           ]
         }
       ]

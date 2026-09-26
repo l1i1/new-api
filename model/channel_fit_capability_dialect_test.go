@@ -109,7 +109,7 @@ func TestFitCapabilityDatabaseMatrix(t *testing.T) {
 			// The index query and the cleanup delete must be portable too.
 			InitFitCapabilityIndex()
 			require.True(t, FitCapabilityIndexReady())
-			require.True(t, ChannelSatisfiesFitMarks(11, "kimi-k3", []string{"tools.dynamic_names"}, false))
+			require.True(t, ChannelSatisfiesFitMarks(11, FitMarkRequirement{Model: "kimi-k3", Marks: []string{"tools.dynamic_names"}}))
 
 			require.NoError(t, (&Channel{Id: 11}).Delete())
 			rows, err := ListChannelFitCapabilities(11)

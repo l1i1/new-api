@@ -588,3 +588,42 @@ func TestNormalizeSuiteReportMatchesStoredForm(t *testing.T) {
 		t.Fatalf("a normalized report must validate: %v", err)
 	}
 }
+
+// TestBaselineFlowsFromThePolicyIntoTheDecision keeps the binding honest: the
+// baseline is a policy field, and the decision must carry it so capability marks
+// measured against a different official reference stop satisfying.
+func TestBaselineFlowsFromThePolicyIntoTheDecision(t *testing.T) {
+	policy := BuiltinPolicy()
+	policy.Shadow = false
+	policy.Baseline = "  baseline-2026-09  "
+	snapshot, err := Compile(policy)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if snapshot.Baseline() != "baseline-2026-09" {
+		t.Fatalf("baseline = %q, want the trimmed value", snapshot.Baseline())
+	}
+
+	requirement := snapshot.Decide("kimi-k3", true, RequestView{
+		Model:    "kimi-k3",
+		Thinking: json.RawMessage(`{"type":"disabled"}`),
+	})
+	if !requirement.HasOpinion() {
+		t.Fatal("the fixture must produce an opinion")
+	}
+	if requirement.BaselineHash != "baseline-2026-09" {
+		t.Fatalf("requirement baseline = %q", requirement.BaselineHash)
+	}
+
+	// A baseline change must change the policy hash too, or a report bound to the
+	// old document would still look current.
+	other := policy
+	other.Baseline = "baseline-2026-10"
+	otherSnapshot, err := Compile(other)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if otherSnapshot.Hash() == snapshot.Hash() {
+		t.Fatal("changing the baseline must change the policy hash")
+	}
+}
