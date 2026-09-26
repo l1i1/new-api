@@ -44,6 +44,26 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 			route.handler,
 		)
 	}
+
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// The capability surface deliberately does NOT live under /api/channel: that
+	// group applies AdminAuth to every route in it, and a controlled suite
+	// applier must be able to hold capability.write without general
+	// administrator rights. It carries UserAuth plus its own permission only, so
+	// the allowed caller is defined by the granted action rather than by a role.
+	// The path is static rather than /channel/fit-capability to avoid any
+	// wildcard-vs-static conflict with the group's /:id routes.
+	fitCapabilityRoute := apiRouter.Group("/fit-capability")
+	fitCapabilityRoute.Use(middleware.UserAuth())
+	fitCapabilityRoute.GET("",
+		middleware.RequirePermission(authz.ChannelRead),
+		controller.GetChannelFitCapabilities,
+	)
+	fitCapabilityRoute.PUT("",
+		middleware.RequirePermission(authz.ChannelCapabilityWrite),
+		controller.PutChannelFitCapability,
+	)
+	// tokeness-fitpolicy:end
 }
 
 var channelPermissionRoutes = []permissionRoute{

@@ -615,6 +615,12 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 			tx.Rollback()
 			return 0, err
 		}
+		// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+		if err := DeleteChannelFitCapabilities(tx, chunk); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+		// tokeness-fitpolicy:end
 	}
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
@@ -754,13 +760,21 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	var err error
-	err = DB.Delete(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.DeleteAbilities()
-	return err
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Capability marks belong to the channel row, so they must go with it in the
+	// same transaction; otherwise a later channel that reuses the id inherits
+	// measurements it never earned. The three deletes use tx rather than the
+	// global DB so the whole removal really is atomic.
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(channel).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		return DeleteChannelFitCapabilities(tx, []int{channel.Id})
+	})
+	// tokeness-fitpolicy:end
 }
 
 var channelStatusLock sync.Mutex

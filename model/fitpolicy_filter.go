@@ -39,7 +39,19 @@ func FitChannelFilterForRequest(c *gin.Context) *FitChannelFilter {
 	if !ok || !requirement.HasOpinion() {
 		return nil
 	}
-	return &FitChannelFilter{Requirement: requirement}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// The mark lookup is the capability index. With no capability rows every
+	// lookup misses, so phase 1 stays empty and selection falls back to the
+	// official set — today's behaviour, which is what the spec requires when
+	// capability data is absent.
+	permissiveUnknown := requirement.UnknownMarkPolicy == fitpolicy.UnknownMarkPermissive
+	return &FitChannelFilter{
+		Requirement: requirement,
+		MarkSatisfied: func(channelID int) bool {
+			return ChannelSatisfiesFitMarks(channelID, requirement.Model, requirement.Marks, permissiveUnknown)
+		},
+	}
+	// tokeness-fitpolicy:end
 }
 
 // hasOpinion reports whether the policy constrains this request. It is what

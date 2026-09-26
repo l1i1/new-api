@@ -1930,6 +1930,114 @@
           ]
         }
       ]
+    },
+    {
+      "id": "fitpolicy-渠道能力表与写回链路-2",
+      "title": "Fit Policy（Phase 3）步 B：channel_fit_capabilities 独立表承载行为级渠道标记——CAS 条件 UPDATE（expected_revision 必填、RowsAffected==1、冲突 409）、首插唯一键竞态、manual sticky 与 force、状态机（suite_fresh/stale/failed、manual_active/expired，policy/baseline hash 绑定）、能力索引（fail-open，随 InitChannelCache 重建）、专用 endpoint（刻意放在 AdminAuth 组之外）与 capability.write/capability.force 权限、跨库审计 best-effort 不回滚业务写入、渠道删除/批量删除无孤儿行",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "model/channel_fit_capability.go",
+        "model/channel_fit_capability_index.go",
+        "controller/channel_fit_capability.go",
+        "model/fitpolicy_filter.go",
+        "model/channel_cache.go",
+        "model/channel.go",
+        "model/main.go",
+        "service/authz/resources_channel.go",
+        "router/channel-router.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "model/channel_fit_capability.go"
+        },
+        {
+          "kind": "file",
+          "file": "model/channel_fit_capability_index.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability.go",
+          "name": "func ApplyChannelFitCapability("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability.go",
+          "name": "func FitCapabilityState("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability_index.go",
+          "name": "func ChannelSatisfiesFitMarks("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_fit_capability.go",
+          "name": "func PutChannelFitCapability("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_filter.go",
+          "name": "ChannelSatisfiesFitMarks(channelID, requirement.Model"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "InitFitCapabilityIndex()"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel.go",
+          "name": "DeleteChannelFitCapabilities(tx, "
+        },
+        {
+          "kind": "symbol",
+          "file": "model/main.go",
+          "name": "&ChannelFitCapability{}"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/authz/resources_channel.go",
+          "name": "ActionCapabilityWrite"
+        },
+        {
+          "kind": "symbol",
+          "file": "router/channel-router.go",
+          "name": "fitCapabilityRoute"
+        }
+      ],
+      "tests": [
+        {
+          "file": "model/channel_fit_capability_test.go",
+          "names": [
+            "TestFitCapabilityWriteValidatesInput",
+            "TestFitCapabilityCASLifecycle",
+            "TestFitCapabilityInsertRaceReportsConflict",
+            "TestFitCapabilityManualIsStickyAgainstSuite",
+            "TestFitCapabilityStateMachine",
+            "TestFitCapabilityIndexIsConservativeAndFailsOpen",
+            "TestChannelDeletesRemoveCapabilities"
+          ]
+        },
+        {
+          "file": "model/channel_fit_capability_dialect_test.go",
+          "names": [
+            "TestFitCapabilityDatabaseMatrix"
+          ]
+        },
+        {
+          "file": "controller/channel_fit_capability_test.go",
+          "names": [
+            "TestPutFitCapabilityRequiresExpectedRevision",
+            "TestPutFitCapabilityCASLifecycle",
+            "TestPutFitCapabilityForceNeedsTheForcePermission",
+            "TestPutFitCapabilityAuditFailureDoesNotFailTheWrite",
+            "TestPutFitCapabilityRejectsInvalidInput",
+            "TestGetChannelFitCapabilitiesReportsState"
+          ]
+        }
+      ]
     }
   ]
 }

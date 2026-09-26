@@ -166,6 +166,11 @@ var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
+		// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+		// The capability index is independent of the channel memory cache, so it
+		// is rebuilt on this path too.
+		InitFitCapabilityIndex()
+		// tokeness-fitpolicy:end
 		InvalidatePricingCache()
 		rebuildTaskAliasView()
 		return
@@ -260,6 +265,12 @@ func InitChannelCache() {
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
 	// loadPricingAdvancedCustomConfigs. channelSyncLock MUST be released before
 	// invalidating the pricing cache, otherwise the reversed order deadlocks.
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// The capability index is rebuilt with the channel cache, so it rides the
+	// existing config-epoch notification instead of needing a second
+	// invalidation path. It fails open and keeps the previous index on error.
+	InitFitCapabilityIndex()
+	// tokeness-fitpolicy:end
 	InvalidatePricingCache()
 	rebuildTaskAliasView()
 	common.SysLog("channels synced from database")

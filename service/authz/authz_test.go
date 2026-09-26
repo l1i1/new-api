@@ -137,7 +137,13 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionWrite:          false,
 			ActionSensitiveWrite: true,
 			ActionSecretView:     false,
-			"unknown":            true,
+			// tokeness-fitpolicy:begin （上游 merge 后请保留）
+			// Spelled out so the expectation below is intentional rather than a
+			// side effect of the capability actions' default roles.
+			ActionCapabilityWrite: false,
+			ActionCapabilityForce: true,
+			// tokeness-fitpolicy:end
+			"unknown": true,
 		},
 		"unknown": {
 			ActionRead: true,
@@ -153,6 +159,10 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionWrite:          false,
 			ActionSensitiveWrite: true,
 			ActionSecretView:     false,
+			// tokeness-fitpolicy:begin （上游 merge 后请保留）
+			ActionCapabilityWrite: false,
+			ActionCapabilityForce: true,
+			// tokeness-fitpolicy:end
 		},
 		ResourceTaskPlugin: {
 			ActionBind: false,
@@ -176,6 +186,10 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 		ActionWrite:          true,
 		ActionSensitiveWrite: false,
 		ActionSecretView:     false,
+		// tokeness-fitpolicy:begin （上游 merge 后请保留）
+		ActionCapabilityWrite: false,
+		ActionCapabilityForce: true,
+		// tokeness-fitpolicy:end
 	}}))
 	assert.False(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
 	assert.Equal(t, PermissionsMap{
@@ -185,6 +199,10 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionWrite:          true,
 			ActionSensitiveWrite: false,
 			ActionSecretView:     false,
+			// tokeness-fitpolicy:begin （上游 merge 后请保留）
+			ActionCapabilityWrite: false,
+			ActionCapabilityForce: true,
+			// tokeness-fitpolicy:end
 		},
 		ResourceTaskPlugin: {
 			ActionBind: false,

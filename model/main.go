@@ -401,6 +401,9 @@ func migrateDB() error {
 		&PaymentGatewayProviderEvent{},
 		&ContentModerationLog{},
 		&ContentModerationUserState{},
+		// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+		&ChannelFitCapability{},
+		// tokeness-fitpolicy:end
 	)
 	if err != nil {
 		return err
