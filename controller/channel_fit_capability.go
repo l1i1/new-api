@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
 )
@@ -181,6 +182,78 @@ func recordFitCapabilityAudit(c *gin.Context, before, after *model.ChannelFitCap
 			Op: &model.AuditOperation{
 				Action: "channel.fit_capability.write",
 				Params: params,
+			},
+		},
+	})
+}
+
+// PostFitCapabilityReport accepts one suite run's results.
+//
+// The report is validated before anything is written: its shape is bounded and
+// it must be bound to the policy and baseline currently in force. A report
+// measured against older rules describes behaviour under requirements that no
+// longer exist, so it is rejected as a whole (409) rather than applied with a
+// warning -- silently marking channels against a stale rule set is exactly the
+// failure the binding exists to prevent.
+func PostFitCapabilityReport(c *gin.Context) {
+	var report fitpolicy.SuiteReport
+	if err := c.ShouldBindJSON(&report); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid report body"})
+		return
+	}
+	fitpolicy.NormalizeSuiteReport(&report)
+
+	snapshot := fitpolicy.Current()
+	if snapshot == nil {
+		// Nothing to bind to: with no policy installed a mark has no defined
+		// meaning, and accepting it would leave the fleet with marks that no
+		// rule can interpret.
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "no fit policy is installed; the report cannot be bound"})
+		return
+	}
+	binding := fitpolicy.ReportBinding{
+		PolicyVersion: snapshot.Version(),
+		PolicyHash:    snapshot.Hash(),
+	}
+	if err := fitpolicy.ValidateSuiteReport(&report, binding); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	now := common.GetTimestamp()
+	summary := model.ApplyFitCapabilityReport(report, now)
+	if summary.Applied > 0 {
+		model.InitChannelCacheAndNotify()
+	}
+	recordFitCapabilityReportAudit(c, &report, summary)
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": summary})
+}
+
+// recordFitCapabilityReportAudit records the run, not the individual rows: the
+// per-row trail is written by the single-mark endpoint, and a report can carry
+// thousands of results. Counts and identifiers only.
+func recordFitCapabilityReportAudit(c *gin.Context, report *fitpolicy.SuiteReport, summary model.FitCapabilityReportSummary) {
+	if report == nil {
+		return
+	}
+	model.RecordAuditLog(c, model.AuditLog{
+		Category: "channel",
+		Action:   "channel.fit_capability.report",
+		Success:  summary.Failed == 0,
+		Content:  "channel fit capability report applied",
+		Other: model.AuditOther{
+			Op: &model.AuditOperation{
+				Action: "channel.fit_capability.report",
+				Params: model.AuditFields{
+					"report_id":      report.ReportID,
+					"run_id":         report.RunID,
+					"suite":          report.Suite,
+					"policy_version": report.PolicyVersion,
+					"results":        len(report.Results),
+					"applied":        summary.Applied,
+					"conflicts":      summary.Conflicts,
+					"failed":         summary.Failed,
+				},
 			},
 		},
 	})

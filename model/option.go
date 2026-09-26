@@ -350,6 +350,17 @@ func UpdateOption(key string, value string) error {
 	if err := updateOptionMap(key, value); err != nil {
 		return err
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Install the snapshot on the writer immediately. NotifyConfigChanged below
+	// only reaches other nodes through Redis; without this the node that
+	// performed the write would keep running the previous policy until the epoch
+	// round-trip, or until the periodic sync if Redis is unavailable.
+	if key == fitpolicy.OptionKey {
+		if err := refreshFitPolicySnapshot(); err != nil {
+			common.SysError("invalid fit policy: " + err.Error())
+		}
+	}
+	// tokeness-fitpolicy:end
 	NotifyConfigChanged()
 	return nil
 }
@@ -415,6 +426,13 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	if _, ok := values[fitpolicy.OptionKey]; ok {
+		if err := refreshFitPolicySnapshot(); err != nil {
+			common.SysError("invalid fit policy: " + err.Error())
+		}
+	}
+	// tokeness-fitpolicy:end
 	if policySnapshot != nil {
 		requestPolicySnapshot.Store(policySnapshot)
 	}

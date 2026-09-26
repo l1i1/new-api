@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -226,4 +227,156 @@ func TestGetChannelFitCapabilitiesReportsState(t *testing.T) {
 	c2.Request = httptest.NewRequest(http.MethodGet, "/api/fit-capability", nil)
 	GetChannelFitCapabilities(c2)
 	assert.Equal(t, http.StatusBadRequest, missing.Code)
+}
+
+func postReport(t *testing.T, body string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/fit-capability/report", bytes.NewBufferString(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("id", 1)
+	c.Set("role", common.RoleRootUser)
+
+	PostFitCapabilityReport(c)
+
+	payload := map[string]any{}
+	if recorder.Body.Len() > 0 {
+		_ = common.Unmarshal(recorder.Body.Bytes(), &payload)
+	}
+	return recorder, payload
+}
+
+// installLivePolicy puts a real policy snapshot in place and returns the report
+// binding a suite would have measured against.
+func installLivePolicy(t *testing.T) (version int, hash string) {
+	t.Helper()
+	snapshot, err := fitpolicy.CompileJSON(mustBuiltinPolicyJSONForController(t))
+	require.NoError(t, err)
+	fitpolicy.Install(snapshot)
+	t.Cleanup(func() { fitpolicy.Install(nil) })
+	return snapshot.Version(), snapshot.Hash()
+}
+
+func mustBuiltinPolicyJSONForController(t *testing.T) []byte {
+	t.Helper()
+	encoded, err := common.Marshal(fitpolicy.BuiltinPolicy())
+	require.NoError(t, err)
+	return encoded
+}
+
+func reportBody(version int, hash, behavior string, channelID int, supported bool) string {
+	return fmt.Sprintf(`{
+		"report_id": "report-1", "run_id": "run-1", "suite": "cdp-k3",
+		"policy_version": %d, "policy_hash": %q, "baseline_hash": "",
+		"generated_at": %d, "rounds": 3,
+		"results": [
+			{"channel_id": %d, "family": "kimi-k3", "model": "kimi-k3",
+			 "behavior": %q, "supported": %v, "cases": "30/30"}
+		]
+	}`, version, hash, common.GetTimestamp(), channelID, behavior, supported)
+}
+
+// TestPostFitCapabilityReportRequiresALivePolicy covers the binding requirement:
+// with no policy installed a mark has no defined meaning, so the report is
+// refused instead of recorded.
+func TestPostFitCapabilityReportRequiresALivePolicy(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	fitpolicy.Install(nil)
+
+	recorder, payload := postReport(t, reportBody(1, "whatever", "tools.dynamic_names", 7, true))
+	require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
+	assert.Contains(t, payload["message"], "no fit policy is installed")
+}
+
+// TestPostFitCapabilityReportRejectsStaleBinding is the whole-report gate: a run
+// measured against older rules must not mark channels against the current ones.
+func TestPostFitCapabilityReportRejectsStaleBinding(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	version, hash := installLivePolicy(t)
+
+	recorder, payload := postReport(t, reportBody(version, hash+"-stale", "tools.dynamic_names", 7, true))
+	require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
+	assert.Contains(t, payload["message"], "policy hash")
+
+	rows, err := model.ListChannelFitCapabilities(7)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a rejected report must write nothing")
+}
+
+func TestPostFitCapabilityReportAppliesAndRefreshesTheIndex(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	version, hash := installLivePolicy(t)
+
+	recorder, payload := postReport(t, reportBody(version, hash, "tools.dynamic_names", 7, true))
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
+	assert.Equal(t, true, payload["success"])
+
+	summary, ok := payload["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(1), summary["applied"])
+
+	stored, found, err := model.GetChannelFitCapability(7, "kimi-k3", "kimi-k3", "tools.dynamic_names")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, int64(1), stored.Revision)
+	assert.Equal(t, "cdp-k3", stored.Suite)
+	assert.Equal(t, "report-1", stored.ReportId)
+
+	// The endpoint refreshes the index with the channel cache, so the mark is
+	// immediately usable by selection on this node.
+	assert.True(t, model.ChannelSatisfiesFitMarks(7, "kimi-k3", []string{"tools.dynamic_names"}, false))
+}
+
+// TestPostFitCapabilityReportKeepsOperatorMarks is the sticky rule seen from the
+// endpoint: the applier holds only capability.write, so a report cannot replace a
+// live manual mark, and the run is still reported as partially applied.
+func TestPostFitCapabilityReportKeepsOperatorMarks(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+
+	manual := `{
+		"channel_id": 7, "family": "kimi-k3", "model": "kimi-k3",
+		"behavior": "usage.thinking_counting", "supported": true,
+		"source": "manual", "at": 1700000000, "expected_revision": 0
+	}`
+	recorder, _ := putCapability(t, manual, common.RoleRootUser)
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	version, hash := installLivePolicy(t)
+	recorder, payload := postReport(t, reportBody(version, hash, "usage.thinking_counting", 7, false))
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
+
+	summary, ok := payload["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(0), summary["applied"])
+	assert.Equal(t, float64(1), summary["conflicts"])
+
+	stored, _, err := model.GetChannelFitCapability(7, "kimi-k3", "kimi-k3", "usage.thinking_counting")
+	require.NoError(t, err)
+	assert.Equal(t, "manual", stored.Source)
+	assert.True(t, stored.Supported, "the operator's value must survive a report that disagrees")
+	assert.False(t, stored.Force)
+}
+
+func TestPostFitCapabilityReportRejectsMalformedShape(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	version, hash := installLivePolicy(t)
+
+	// An unparseable body is a bad request; a well-formed report whose contents
+	// or binding are wrong is a conflict.
+	t.Run("malformed json", func(t *testing.T) {
+		recorder, _ := postReport(t, `{"report_id":`)
+		require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
+	})
+
+	for name, body := range map[string]string{
+		"unregistered family": strings.Replace(reportBody(version, hash, "tools.dynamic_names", 7, true), `"family": "kimi-k3"`, `"family": "nope"`, 1),
+		"malformed behavior":  reportBody(version, hash, "tools dynamic names", 7, true),
+		"missing channel":     reportBody(version, hash, "tools.dynamic_names", 0, true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder, _ := postReport(t, body)
+			require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
+		})
+	}
 }

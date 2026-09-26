@@ -63,6 +63,13 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		middleware.RequirePermission(authz.ChannelCapabilityWrite),
 		controller.PutChannelFitCapability,
 	)
+	// The controlled suite applier posts a whole run here. It holds
+	// capability.write and nothing else, so it can record measurements but
+	// cannot force its way past a live operator mark.
+	fitCapabilityRoute.POST("/report",
+		middleware.RequirePermission(authz.ChannelCapabilityWrite),
+		controller.PostFitCapabilityReport,
+	)
 	// tokeness-fitpolicy:end
 }
 

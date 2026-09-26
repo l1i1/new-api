@@ -1945,7 +1945,9 @@
         "model/channel.go",
         "model/main.go",
         "service/authz/resources_channel.go",
-        "router/channel-router.go"
+        "router/channel-router.go",
+        "pkg/fitpolicy/report.go",
+        "model/channel_fit_capability_report.go"
       ],
       "anchors": [
         {
@@ -2005,6 +2007,26 @@
           "kind": "symbol",
           "file": "router/channel-router.go",
           "name": "fitCapabilityRoute"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/report.go",
+          "name": "func ValidateSuiteReport("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability_report.go",
+          "name": "func ApplyFitCapabilityReport("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_fit_capability.go",
+          "name": "func PostFitCapabilityReport("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/option.go",
+          "name": "refreshFitPolicySnapshot()"
         }
       ],
       "tests": [
@@ -2034,7 +2056,29 @@
             "TestPutFitCapabilityForceNeedsTheForcePermission",
             "TestPutFitCapabilityAuditFailureDoesNotFailTheWrite",
             "TestPutFitCapabilityRejectsInvalidInput",
-            "TestGetChannelFitCapabilitiesReportsState"
+            "TestGetChannelFitCapabilitiesReportsState",
+            "TestPostFitCapabilityReportRequiresALivePolicy",
+            "TestPostFitCapabilityReportRejectsStaleBinding",
+            "TestPostFitCapabilityReportAppliesAndRefreshesTheIndex",
+            "TestPostFitCapabilityReportKeepsOperatorMarks",
+            "TestPostFitCapabilityReportRejectsMalformedShape"
+          ]
+        },
+        {
+          "file": "pkg/fitpolicy/fitpolicy_test.go",
+          "names": [
+            "TestValidateSuiteReportAcceptsWellFormedReport",
+            "TestValidateSuiteReportRejectsShapeProblems",
+            "TestValidateSuiteReportRejectsStaleBinding",
+            "TestNormalizeSuiteReportMatchesStoredForm"
+          ]
+        },
+        {
+          "file": "model/channel_fit_capability_report_test.go",
+          "names": [
+            "TestApplyFitCapabilityReportInsertsThenAdvancesRevisions",
+            "TestApplyFitCapabilityReportReportsConflictsPerItem",
+            "TestApplyFitCapabilityReportFallsBackToNowForAMissingMeasurementTime"
           ]
         }
       ]

@@ -2,6 +2,7 @@ package fitpolicy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -492,5 +493,98 @@ func TestNarrowMatchesLegacyOfficialPin(t *testing.T) {
 	}
 	if got.MatchedMarks {
 		t.Fatal("without mark data the result must not claim a verified match")
+	}
+}
+
+func validSuiteReport() SuiteReport {
+	return SuiteReport{
+		ReportID:      "report-1",
+		RunID:         "run-1",
+		Suite:         "cdp-k3",
+		PolicyVersion: 1,
+		PolicyHash:    "policy-a",
+		BaselineHash:  "baseline-a",
+		GeneratedAt:   1_700_000_000,
+		Rounds:        3,
+		Results: []SuiteResult{
+			{ChannelID: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "tools.dynamic_names", Supported: true, Cases: "30/30"},
+		},
+	}
+}
+
+func TestValidateSuiteReportAcceptsWellFormedReport(t *testing.T) {
+	report := validSuiteReport()
+	binding := ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-a"}
+	if err := ValidateSuiteReport(&report, binding); err != nil {
+		t.Fatalf("a well-formed report must validate: %v", err)
+	}
+}
+
+func TestValidateSuiteReportRejectsShapeProblems(t *testing.T) {
+	binding := ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-a"}
+	cases := map[string]func(*SuiteReport){
+		"no report id":        func(r *SuiteReport) { r.ReportID = "" },
+		"no run id":           func(r *SuiteReport) { r.RunID = " " },
+		"no suite":            func(r *SuiteReport) { r.Suite = "" },
+		"zero rounds":         func(r *SuiteReport) { r.Rounds = 0 },
+		"absurd rounds":       func(r *SuiteReport) { r.Rounds = MaxSuiteReportRounds + 1 },
+		"no results":          func(r *SuiteReport) { r.Results = nil },
+		"too many results":    func(r *SuiteReport) { r.Results = make([]SuiteResult, MaxSuiteReportResults+1) },
+		"missing channel":     func(r *SuiteReport) { r.Results[0].ChannelID = 0 },
+		"unregistered family": func(r *SuiteReport) { r.Results[0].Family = "not-a-family" },
+		"malformed behavior":  func(r *SuiteReport) { r.Results[0].Behavior = "tools dynamic names" },
+		"empty behavior":      func(r *SuiteReport) { r.Results[0].Behavior = "" },
+		"over-long cases":     func(r *SuiteReport) { r.Results[0].Cases = strings.Repeat("x", 33) },
+		"duplicate result":    func(r *SuiteReport) { r.Results = append(r.Results, r.Results[0]) },
+		"over-long model":     func(r *SuiteReport) { r.Results[0].Model = strings.Repeat("m", 129) },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			report := validSuiteReport()
+			mutate(&report)
+			if err := ValidateSuiteReport(&report, binding); err == nil {
+				t.Fatal("this report must be rejected")
+			}
+		})
+	}
+}
+
+// TestValidateSuiteReportRejectsStaleBinding is the gate that stops a report
+// measured under different rules from marking channels as verified: the rules
+// may have changed the meaning of the behaviour in question.
+func TestValidateSuiteReportRejectsStaleBinding(t *testing.T) {
+	for name, binding := range map[string]ReportBinding{
+		"policy version moved on": {PolicyVersion: 2, PolicyHash: "policy-a"},
+		"policy hash changed":     {PolicyVersion: 1, PolicyHash: "policy-b"},
+		"baseline changed":        {PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			report := validSuiteReport()
+			if err := ValidateSuiteReport(&report, binding); err == nil {
+				t.Fatal("a report bound to an older policy or baseline must be rejected")
+			}
+		})
+	}
+
+	// An unbound check (empty hash) deliberately accepts: a node that has no
+	// baseline registry yet must not reject every report.
+	report := validSuiteReport()
+	if err := ValidateSuiteReport(&report, ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a"}); err != nil {
+		t.Fatalf("an unchecked baseline must not reject the report: %v", err)
+	}
+}
+
+func TestNormalizeSuiteReportMatchesStoredForm(t *testing.T) {
+	report := validSuiteReport()
+	report.Results = []SuiteResult{
+		{ChannelID: 1, Family: " KIMI-K3 ", Model: " Kimi-K3 ", Behavior: "Tools.Dynamic_Names"},
+	}
+	NormalizeSuiteReport(&report)
+	result := report.Results[0]
+	if result.Family != "kimi-k3" || result.Model != "kimi-k3" || result.Behavior != "tools.dynamic_names" {
+		t.Fatalf("normalized result = %+v", result)
+	}
+	if err := ValidateSuiteReport(&report, ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-a"}); err != nil {
+		t.Fatalf("a normalized report must validate: %v", err)
 	}
 }
