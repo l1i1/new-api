@@ -42,6 +42,14 @@ func FitChannelFilterForRequest(c *gin.Context) *FitChannelFilter {
 	return &FitChannelFilter{Requirement: requirement}
 }
 
+// hasOpinion reports whether the policy constrains this request. It is what
+// keeps the selection metadata fast path disabled: that shortcut picks from the
+// whole model's candidate set, so using it after the narrowing removed
+// candidates would silently undo the narrowing.
+func (f *FitChannelFilter) hasOpinion() bool {
+	return f != nil && f.Requirement.HasOpinion() && !f.Requirement.Shadow
+}
+
 // narrowChannels applies the two-phase narrowing and reports whether the policy
 // had an opinion. Caller must hold channelSyncLock (read lock).
 //

@@ -141,3 +141,33 @@ func TestFitChannelFilterForRequest(t *testing.T) {
 	common.SetContextKey(noOpinion, constant.ContextKeyFitRequirement, fitpolicy.Requirement{Family: "deepseek-v4"})
 	assert.Nil(t, FitChannelFilterForRequest(noOpinion), "a requirement with no marks must not constrain selection")
 }
+
+// TestFitNarrowingAppliesWithoutTheLegacyPin is a regression gate for a bug the
+// controller-level reuse test caught: the official-pin helpers used to return
+// early when pinOfficial was false, which skipped the fit narrowing in exactly
+// the case it exists for — a policy that demands official behaviour for a shape
+// the shipped predicate does not pin. Legacy callers pass a nil filter, so that
+// early return is only safe once the fit check has run.
+func TestFitNarrowingAppliesWithoutTheLegacyPin(t *testing.T) {
+	installFitSelectionCache(t)
+
+	fit := &FitChannelFilter{
+		Requirement: fitpolicy.Requirement{Marks: []string{"usage.thinking_counting"}},
+	}
+	for range 30 {
+		selected, err := GetRandomSatisfiedChannelPinnedWithFit("default", "deepseek-v4-flash", 0, "", nil, false, false, fit)
+		require.NoError(t, err)
+		require.NotEqual(t, 3, selected.Id,
+			"with the legacy pin off the policy opinion is the only constraint, so it must still exclude the aggregator")
+	}
+
+	// The legacy call with no filter must keep its exact previous behaviour: an
+	// unpinned request still selects freely across both channel types.
+	seen := map[int]bool{}
+	for range 40 {
+		selected, err := GetRandomSatisfiedChannelPinnedWithFit("default", "deepseek-v4-flash", 0, "", nil, false, false, nil)
+		require.NoError(t, err)
+		seen[selected.Id] = true
+	}
+	require.True(t, seen[3], "a request with no pin and no policy opinion keeps the ordinary weighted pool")
+}

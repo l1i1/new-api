@@ -1758,7 +1758,8 @@
         "model/ability.go",
         "middleware/distributor.go",
         "service/channel_select.go",
-        "constant/context_key.go"
+        "constant/context_key.go",
+        "controller/relay.go"
       ],
       "anchors": [
         {
@@ -1854,6 +1855,21 @@
           "kind": "symbol",
           "file": "constant/context_key.go",
           "name": "ContextKeyFitRequirement"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_filter.go",
+          "name": "func (f *FitChannelFilter) hasOpinion("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "!fit.hasOpinion()"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/ability.go",
+          "name": "if !pinOfficial && fit == nil {"
         }
       ],
       "tests": [
@@ -1903,7 +1919,14 @@
             "TestFitAwareSelectionNarrowsToMarkedChannels",
             "TestFitAwareSelectionWithoutMarksMatchesLegacyPin",
             "TestFitAwareSelectionFailsClosedWhenNoMarkedChannel",
-            "TestFitChannelFilterForRequest"
+            "TestFitChannelFilterForRequest",
+            "TestFitNarrowingAppliesWithoutTheLegacyPin"
+          ]
+        },
+        {
+          "file": "controller/relay_fitpolicy_reuse_test.go",
+          "names": [
+            "TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel"
           ]
         }
       ]

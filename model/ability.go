@@ -496,9 +496,16 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 // aggregator pool nondeterministically drops reasoning_content and never
 // reproduces official dual-path logprobs.
 func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool, fit *FitChannelFilter) []Ability {
-	if !pinOfficial || OfficialFitChannelType(model) == 0 || len(abilities) == 0 {
+	if OfficialFitChannelType(model) == 0 || len(abilities) == 0 {
 		return abilities
 	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Nothing constrains the set when neither the legacy pin nor the policy has
+	// an opinion: skip the channel lookup entirely, exactly as before.
+	if !pinOfficial && fit == nil {
+		return abilities
+	}
+	// tokeness-fitpolicy:end
 	channelIDs := make([]int, 0, len(abilities))
 	for _, ability := range abilities {
 		channelIDs = append(channelIDs, ability.ChannelId)
@@ -513,13 +520,12 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 			officialIDs[officialChannels[i].Id] = struct{}{}
 		}
 	}
-	if len(officialIDs) == 0 {
-		return nil
-	}
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
-	// Two-phase narrowing on the DB path. Every candidate here is already
-	// official, so the official predicate is constant. With no mark data (step A)
-	// the result is the official set, i.e. today's behaviour.
+	// Two-phase narrowing on the DB path, evaluated before the pin check for the
+	// same reason as the memory path: the policy may demand official behaviour
+	// for a shape the shipped predicate leaves unpinned. Every candidate here is
+	// already official, so the official predicate is constant. With no mark data
+	// (step A) the result is the official set, i.e. today's behaviour.
 	if fit != nil {
 		candidates := make([]int, 0, len(abilities))
 		for _, ability := range abilities {
@@ -543,6 +549,12 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 		}
 	}
 	// tokeness-fitpolicy:end
+	if !pinOfficial {
+		return abilities
+	}
+	if len(officialIDs) == 0 {
+		return nil
+	}
 	official := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
 		if _, ok := officialIDs[ability.ChannelId]; ok {

@@ -378,14 +378,22 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 // tokeness-fitpolicy:end
 // Caller must hold channelSyncLock (read lock).
 func preferOfficialFitChannels(channels []int, model string, pinOfficial bool, fit *FitChannelFilter) []int {
-	if len(channels) == 0 || !pinOfficial || OfficialFitChannelType(model) == 0 {
+	if len(channels) == 0 || OfficialFitChannelType(model) == 0 {
 		return channels
 	}
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// The fit narrowing is evaluated BEFORE the pin check on purpose: the policy
+	// may require official behaviour for a shape the shipped predicate does not
+	// pin, so gating it on pinOfficial would disable the layer in exactly the
+	// case it exists for. Legacy callers pass fit == nil and still reach the
+	// early return below with the candidate set untouched.
 	if narrowed, applied := fit.narrowChannels(channels, model); applied {
 		return narrowed
 	}
 	// tokeness-fitpolicy:end
+	if !pinOfficial {
+		return channels
+	}
 	official := make([]int, 0, len(channels))
 	for _, channelID := range channels {
 		if officialFitChannelMatchesLocked(channelID, model) {
@@ -475,7 +483,13 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 
 	// The metadata fast path picks from the whole model's candidate set, so it
 	// must not be used when video narrowing may have removed candidates above.
-	if !videoOnly && requestPath == "" && len(blockedChannels) == 0 && !officialFitPreferenceApplied(channels, model, pinOfficial) {
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// Same reason applies to the fit narrowing: it runs whether or not the legacy
+	// pin is on, so the shortcut is disabled whenever the policy has an opinion —
+	// officialFitPreferenceApplied alone would miss the policy-only case and let
+	// the metadata path pick a candidate the narrowing had removed.
+	if !videoOnly && requestPath == "" && len(blockedChannels) == 0 && !fit.hasOpinion() && !officialFitPreferenceApplied(channels, model, pinOfficial) {
+		// tokeness-fitpolicy:end
 		if model2selection, ok := group2model2channelSelection[group]; ok {
 			if selection := model2selection[model]; selection != nil {
 				return selectChannelFromMetadata(group, model, retry, selection)
