@@ -45,6 +45,12 @@
 10. `model.UpdateOption(s)` 对现有 request policy 已有“构造完整快照 → DB transaction → 更新内存 → `NotifyConfigChanged()`”路径；fitpolicy 规则必须接入同一提交前校验和快照路径。
 11. `channel.settings` 当前是 `relaykit/dto.ChannelOtherSettings` 的 JSON，通用 `UpdateChannel` 整行更新并调用 `InitChannelCacheAndNotify`，没有字段级 provenance/CAS 语义；因此能力标记不复用该写入路径。
 12. 计费表达式代码在根模块 `pkg/billingexpr`（`expr.go` 同目录 `expr.md`）；usage/计费相关变换必须遵守 `.agents/rules/billing.md`，fitpolicy expr 与 billing expr 不是同一个运行时环境。
+13. 现有 `GET/PUT /api/user/official-fit` 与 `/api/user/official-fit/families`（`router/api-router.go`、`controller/user.go`）只读写**用户** `official_fit` 四维 profile，与渠道 capability marks 无关，不能当作 capability API。
+14. `officialFitPinKeepsVerdict`（`service/relay_error.go`）在 pin + 自动重试关键字命中时直接 stop（仅多键轮换例外）；`DecideRelayRetry` 才是决策点，重试准备在 `controller/relay.go` 之后。D5 必须改这个函数，不能只改候选集。
+15. `common.ApiError`/`ApiErrorI18n`（`common/gin.go`）一律返回 HTTP 200；新 endpoint 的 409 必须显式 `c.JSON(http.StatusConflict, ...)`。
+16. `migrateDB` 只在 `common.IsMasterNode` 时执行（`model/main.go`），当前 AutoMigrate 列表没有 capability model；现有迁移测试在缺 DSN 时会跳过，不能作为三库证据。
+17. `Channel.Insert/Update/Delete`/`BatchDeleteChannels`（`model/channel.go`）都不处理 capability 行，也没有外键级联；能力表生命周期必须显式设计。
+
 
 
 ### 0.2 最终冻结范围
@@ -97,7 +103,7 @@
 | D2 | 标记无溯源、无时效、无自动校准 | `official-fit-mode.md` §已知限制："人工信任标记，不做运行时校验……上游行为变化后重新验证"（谁、何时、测了几例、几轮——都无处记录） |
 | D3 | 族谓词是代码 | kimi-k3 五类形状、DS 三类、GLM 整族 pin，全在 Go 谓词里；加一类形状要发版 |
 | D4 | 表达不了"部分合格" | ch41 实测 CDP 51 例仅 3 例通过；ch46 仅对 tool 链严格、其余形状可用——同一张二值表两者都表达不了 |
-| D5 | 守卫假设"本族只有一条官方渠道" | `officialFitPinKeepsVerdict`（`service/relay_error.go`）→ 2026-09-26 夜间把本可成功的换渠道拦成客户端 429 |
+| D5 | 守卫假设"本族只有一条官方渠道" | `officialFitPinKeepsVerdict`（`service/relay_error.go`）在 `ContextKeyV4OfficialPin` 下对自动重试关键字直接 stop（只放行多键凭据轮换）→ 2026-09-26 夜间把本可成功的换渠道拦成客户端 429。**仅靠候选过滤修不掉它**：决策点在 `DecideRelayRetry`，而重试准备在 `controller/relay.go` 之后发生，必须扩展/替换该判定函数 |
 | D6 | 家族注册表是代码 | `officialfit` 包：新增家族要改 Go（清单见 `official-fit-mode.md` §家族注册表） |
 
 ## 3. 硬约束（用户逐条提出）
@@ -214,7 +220,8 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 - **数据库门禁**：新增表/索引必须同时支持 SQLite、MySQL ≥5.7.8、PostgreSQL ≥9.6；fresh DB、上一版本升级和二次启动迁移都要验证，SQLite 不使用不兼容的 `ALTER COLUMN`。字段长度/类型/索引/唯一键在实现前冻结。
 - **CAS 必须用条件 UPDATE，不是行锁**：`lockForUpdate` 在 SQLite 跳过 `FOR UPDATE`（`model/locking.go`），且 `channel` 行**没有** revision/UpdatedAt 字段（现有多键 credential revision 不覆盖它）。三库统一做法是：能力表自带 `revision`，`expected_revision` 必填；`UPDATE ... SET revision=revision+1, ... WHERE channel_id=? AND family=? AND model=? AND behavior=? AND revision=?` 并检查 `RowsAffected==1`；为 0 即冲突，返回 409。首次写入先按唯一键 INSERT，并处理并发 INSERT 的唯一键冲突（冲突后重读并返回 409/重试）。不得把“事务内 `SELECT ... FOR UPDATE`”或复用 credential revision 当成方案。
 - **能力表当前不存在**：仓库目前没有 capability model、migration、cache index 或 authz action；`InitChannelCacheAndNotify()` 只做 `InitChannelCache()+epoch`（`model/config_epoch.go`），现有 cache 只读 Channel/Ability、不读新表。这些全部是**步 B 的实现前置**，不是既有能力。
-- **删除与孤儿行**：现有 `BatchDeleteChannels`/`Channel.Delete` 只清理 Channel/Ability（`model/channel.go`），不会删新表 → 步 B 必须加外键/级联或显式按 channel_id 清理，并补删除测试。
+- **删除/新建/更新全覆盖**：现有 `Channel.Insert`、`Channel.Update`、`Channel.Delete`、`BatchDeleteChannels`（`model/channel.go`）只处理 Channel/Ability 与凭据，不碰新表；步 B 必须决定外键级联或显式按 `channel_id` 清理，并在 create/update/delete/batch-delete 四条路径都有清理与测试，且 update 不得因整行保存而重置 capability revision。
+- **迁移只在 master 执行**：`migrateDB` 仅在 `common.IsMasterNode` 时运行（`model/main.go`），且当前 AutoMigrate 列表里没有 capability model → 步 B 必须把它注册进迁移路径，并验证非 master 节点不建表/不报错。
 - **审计跨库不是原子的**：`AuditLog` 写 `LOG_DB`（可配置为独立日志库/ClickHouse，`model/audit_log.go`），与主库的能力表不在同一事务；不得声称“标记写入与审计原子”。做法是主库先提交能力变更，再 best-effort 写审计，失败可观测、可重放，不能让审计失败回滚业务写入。
 - **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。**当前不存在受限 applier principal**：`RequirePermission` 只认 dashboard 用户/PAT，authz 只有 read/operate/write/sensitive_write/secret_view，channel 路由一律先 `AdminAuth`；generic `ChannelWrite` 还允许改任意非敏感字段，不能代替 capability action。步 B 必须在“dashboard 用户 + 专用 action”“HMAC/service principal”或“专用 Casbin subject”中选定一种并给出真实鉴权路径与测试。请求携带**必填** `expected_revision`、`report_id/run_id`，冲突不覆盖。
 
@@ -285,7 +292,8 @@ func narrow(candidates, fit) []Channel:
 - **attempt admission（不是 selector 职责）**：并发饱和在 `controller/relay.go` 的 `AcquireChannelConcurrency` → `ExcludeSaturatedChannel`、以及 Responses WS 的对应分支处理；`narrow` 只接受 blocked/excluded 输入，不自己探测饱和。文档与实现都不得把饱和写成候选构造的一部分。
 - **显式 pin 短路**：`ResolvedPin()`（token/origin-task）与 token-specific 固定渠道分支在 `narrow` **之前**返回，不附加、不评估 FitRequirement，保留现有 filter/policy/error/retry。fit 的 `pinOfficial` 候选收窄不是显式 `ChannelPin`。
 - **重试状态机**：`RetryParam` 从同一 gin context 取 FitRequirement 引用；每次尝试先从约束集合排除已尝试渠道，再跑同一 `narrow`，仍有候选才 retry。耗尽时执行既有错误语义；fitpolicy 不生成新的 4xx/5xx。
-- **重试判定**：只检查排除已尝试渠道后的剩余约束，不重新推导 `RequiredMarks`；只有“仍有能力合格渠道”时才绕过现有单一官方渠道假设，修复 D5。
+- **重试判定（必须改代码，不是只改候选集）**：现有 `officialFitPinKeepsVerdict`（`service/relay_error.go`）在 pin 命中自动重试关键字时直接 `stop`，只放行多键凭据轮换；因此 D5 不能靠候选过滤修。实现必须扩展/替换该函数，让它消费 immutable `FitRequirement`，并且**仅在约束候选集里仍有未尝试的 marked official 渠道时**放行 retry；约束集耗尽（或没有 second candidate）时保持 `stop`。测试必须覆盖：存在第二个 marked official 渠道 → retry；约束集耗尽 → 仍 stop；多键轮换例外不被破坏。
+- **`ApiError` 不是 409**：现有 `common.ApiError`/`ApiErrorI18n` 一律返回 HTTP 200（`common/gin.go`）；capability endpoint 的 CAS 冲突必须显式 `c.JSON(http.StatusConflict, ...)`，不得暗示复用现有错误 helper 就能得到 409。
 - **in-scope contract tests**：HTTP 首选、HTTP affinity（两套快径）、归一化/compact model、auto-group、blocked/saturation、普通 retry、无 marked 时回 official、official 为空时保持原错误。**非目标回归**：Responses WS、显式固定 pin、`/pg`、`/v1/completions`、`/v1/messages`、任务/任务插件、realtime WS 必须证明 fitpolicy 不介入且行为与今天一致。
 
 
@@ -374,7 +382,7 @@ func narrow(candidates, fit) []Channel:
 
 **工程与 fork**
 - `go test ./pkg/fitpolicy/...`、selector/constraint/capability endpoint 聚焦测试、根目录全量 `go test ./...`、`go vet ./...`、`git diff --check`、web `bun run typecheck`。
-- 涉及 `relaykit/` DTO 时另跑 `cd relaykit && GOWORK=off go build ./...`；新增 capability 表/事务时必须跑真实 SQLite、MySQL 和 PostgreSQL fresh/upgrade/idempotency 矩阵，并记录版本/命令/结果。
+- 涉及 `relaykit/` DTO 时另跑 `cd relaykit && GOWORK=off go build ./...`；新增 capability 表/事务时必须跑真实 SQLite、MySQL 和 PostgreSQL fresh/upgrade/idempotency 矩阵，并记录版本/命令/结果。**当前仓库没有可援引的三库证据**：现有迁移测试主要是 synthetic/DSN-optional（例如 migration dialector 测试在缺 DSN 时跳过），所以这是**步 B 必须现场产出的 gate**，不能写成“已满足”。
 - `node scripts/fork-invariants/main.mjs --check manifest` 通过；对 `upstream/main` 做一次真实 merge rehearsal 后门禁和 contract tests 仍绿。
 - 决策延迟：先以编译期表达式复杂度/输入大小上限约束，再用固定 fixture benchmark 验收 P50/P95/P99；2ms 是目标而非可依赖的强制中断机制，超预算按失败安全路径处理并有测试证据。
 
@@ -447,7 +455,7 @@ func narrow(candidates, fit) []Channel:
 
 **必须在开工前冻结的交付门禁**
 
-1. **能力表落地细节**：model/字段类型/长度/索引/唯一键（含 `revision`）、migration（fresh + upgrade + 二次启动幂等，三库实测）、cache 索引重建、条件 UPDATE 形式与 409 语义、`expected_revision` 必填、删除渠道的级联/显式清理、审计字段与跨库失败语义；当前仓库完全没有这些。
+1. **能力表落地细节**：model/字段类型/长度/索引/唯一键（含 `revision`）、migration（fresh + upgrade + 二次启动幂等，三库实测**并记录真实版本/命令/结果**）、注册进 `migrateDB`/master 迁移路径、cache 索引重建、条件 UPDATE 形式与显式 409、`expected_revision` 必填、create/update/delete/batch-delete 四条路径的级联或显式清理、审计字段与跨库失败语义；当前仓库完全没有这些，也没有可援引的三库证据。
 2. **权限与 suite 身份**：必须选定 dashboard 用户 + 专用 action、HMAC/service principal 或专用 Casbin subject 之一，并给出真实鉴权路径与测试；现有 `ChannelWrite` 粒度过宽且不能代替 capability action，当前也没有受限 applier principal。
 3. **提交前编译 + 周期安装路径**：`UpdateOption(s)` 的 precommit 编译接线，以及 Redis 故障下 `SyncOptions` 如何安装 fitpolicy（§9 缺口 1/2）。
 4. **F1/F2 语料**（未满足即不得开工）：短期双写仅落哈希/差异且脱敏，或批准 semantic baseline + golden fixtures；CDP 官方语料不能替代旧网关输出语料。
