@@ -244,7 +244,7 @@ func Decide(req) Decision:
 | **B** | 引入 `official_fit_capabilities`；套件写回 + 6h 校准；hook#2 守卫改为标记判定 | shadow 下"收窄集为空比率"、换渠道成功率可观测 |
 | **C** | 按族启用（kimi-k3 先行），旧 `official_fit_models` 仍作并集参与 | 24h 内拟合违约 0、可避免失败 0 |
 | **D** | DS-V4 / GLM-5.3 迁入；GLM 整族 pin 拆分为形状谓词 | 逐族 shadow 等价 |
-| **E（另议）** | §16 四维归一（validate/errors/shape 数据化 → 具名契约） | 各阶段字节级等价 |
+| **E** | §16 契约面数据化，顺序 = **F1 errors → F2 shape-A → F3 validate → F4 B 档 → F5 具名契约**（F1 可先行做 shadow 原型） | 每阶段与现有 Go 实现**逐字节等价**；差异逐条列明并经批准 |
 
 ## 14. 验收
 
@@ -274,7 +274,7 @@ func Decide(req) Decision:
 - **等价迁移风险**：谓词从 Go 搬到 expr 若有偏差，会改变 pin 判定 → A 步必须逐例一致，且 shadow 观察期内不得启用。
 - **依赖既有机制**：`config_epoch` 需 Redis；不可用时退化为数十秒同步（正确性不变，仅传播变慢）。
 
-## 16. 演进（另议，不在本文件范围）：把 validate / errors / shape / route 归一为契约面
+## 16. 演进：把 validate / errors / shape / route 归一为契约面（F1–F5，即 §13 的步 E）
 
 四维是同一份保真契约的四个面，可统一为 **需求侧（用户契约）× 供给侧（渠道标记）→ 决策**。边界必须如实：**策略可数据化，机制仍需注册表**。
 
@@ -285,7 +285,7 @@ func Decide(req) Decision:
 | errors | 文案策略：是否附 request id、按来源/错误类分流 | 错误提取与拼装点 |
 | shape | 变换选择：哪些变换对哪族/哪渠道生效 | 变换器本体（SSE 拼接、usage 映射、字段剥离） |
 
-阶段：P1 validate 数据化（Go 校验器降级为执行器，旧表保留一键回退）→ P2 errors → P3 shape 拆策略/变换器 → P4 四布尔收敛为**具名契约**（如 `fit_contract: "official-k3-v3"`，旧数据零迁移）。准入一律"字节级等价 + 逐条列明差异"。四维属客户可感知契约，比路由更危险：路由层与契约层开关必须互相独立。
+**阶段（按 §16.1 的三档重排，风险递增）**：**F1 errors**（几乎纯 A 档：`error_text` / `media_type` / 是否附网关 request id 全部数据化；先做 **shadow 原型**，与 `IsStrictFitValidationMessage` + `controller/relay.go` 门控逐字节对照，差异必须为 0 或逐条列明批准）→ **F2 shape 的 A 档键操作**（键集与映射外提为数据，raw-byte 外壳留代码）→ **F3 validate 规则表**（Go 校验器降级为执行器，旧表保留一键回退；tool 链可解析性等语义检查留代码）→ **F4 B 档**（`usage` 数值推导：键名映射可数据，数值来源留代码，规则须打 `affects_billing: true` 并与计费回归同批验证）→ **F5 具名契约**（四布尔 → `fit_contract: "official-k3-v3"`，旧数据零迁移）；**C 档（跨消息状态与时序）永不数据化**，只登记为命名变换器。准入一律"字节级等价 + 差异逐条列明"，基线用 CDP 双轨 + 生产响应回放。四维属客户可感知契约，比路由更危险：路由层与契约层开关必须互相独立。
 
 ### 16.1 体变换契约：哪些请求体 / 响应体改动能接住
 
@@ -315,3 +315,4 @@ func Decide(req) Decision:
 3. **钩子位置**：`middleware/distributor.go` + `service/relay_error.go` 两处是否认可。
 4. **包名** `pkg/fitpolicy/`、文档名 `docs/fitpolicy-tech-spec.md`（既有文档同名会冲突吗：`official-fit-mode.md` 是现状 spec，本文件是 Phase 3，建议保留并列）。
 5. **`unknown_mark_policy` 默认值**：v1 conservative 会让未标记渠道退出拟合收窄（更安全、更贵），是否接受先用 shadow 数据决定。
+6. **F1/F2 字节级对照的语料来源**：要求"与现有 Go 实现逐字节对照"，CDP 套件提供的是**官方基准**语料，而"改造前的网关输出"需要**原始响应字节**——现有 `logs` 只留 usage 与错误文案，不留 body。是否需要一段短期的**双写捕获**（旧实现与新 op 集同时产出，只落哈希与差异，不落全文），还是先用 CDP 语料 + 合成样本对照？
