@@ -287,6 +287,27 @@ func Decide(req) Decision:
 
 阶段：P1 validate 数据化（Go 校验器降级为执行器，旧表保留一键回退）→ P2 errors → P3 shape 拆策略/变换器 → P4 四布尔收敛为**具名契约**（如 `fit_contract: "official-k3-v3"`，旧数据零迁移）。准入一律"字节级等价 + 逐条列明差异"。四维属客户可感知契约，比路由更危险：路由层与契约层开关必须互相独立。
 
+### 16.1 体变换契约：哪些请求体 / 响应体改动能接住
+
+判据只有一条：**该改动是否只依赖单条消息自身的结构**。
+
+| 档 | 判据 | 能否数据化 | 现网对应实现（已在此抽象层级） |
+|---|---|---|---|
+| **A 单条消息内结构操作** | 只读一条 message / event 的键集与值 | ✅ **纯数据** | `deleteNonAllowedTopLevelKeys(data, allowed)`、`stripOfficialChoiceKeysInPlace`、`ensureOfficialChoiceKeys`、`stripNonOfficialStreamKeys`、`deepSeekV4OfficialTopLevelKeys` / `deepSeekV4OfficialMessageKeys`（**本来就是白名单表**） |
+| **B 数值推导与计费口径** | 需要计算 / 聚合数值 | ⚠️ **半数据**（键名映射=数据，数值来源=代码） | `deepSeekV4UsageJSON`、`normalizeDeepSeekV4Usage`、`kimiK3UsageJSON(usage, cacheWrite)`、`cacheWriteFromRows` |
+| **C 跨消息状态与时序** | 依赖前序消息 / 终止 / 时序 | ❌ **必须代码**（注册为命名变换器） | `FitDeepSeekV4StreamEventForAdapters`、`fitKimiK3StreamEvent(..., final)`、`FitKimiK3StreamUsageOnlyChunk`、`kimiK3FirstChoiceUsage`、流式首事件判决与 `[DONE]`/EOF 终止 |
+
+**op 集（数据，仅 A 档，全部作用在原始字节上）**：`strip_keys`（白名单/黑名单）、`rename_key`、`ensure_keys`（按模板补齐）、`set_value`（常量）、`coerce_type`、`key_order`（显式键序模板）、`media_type`、`error_text`（来源或错误类 → 官方原文 + 是否附网关 request id + Content-Type）。每条 op 带 `scope`（顶层 / `choices[]` / `message` / `delta` / per-event）与顺序号；**不接受任意脚本、正则替换或模板求值**。
+
+**两条硬性约束**
+
+1. **必须保持原始字节外科手术**：不得 decode → `map[string]any` → encode（Go 对 map 键排序，会破坏官方键序，而"逐字一致"验收对键序敏感——serde 位置后缀被有意剥离也是同一原因）。工具用已在依赖里的 `gjson`/`sjson`，与现有 `json.RawMessage` 风格一致。
+2. **不新增上游侵入点**：体变换发生在 relay/adaptor 层，不在这两处路由钩子里。为守住 C5，**不新增钩子**，而是复用既有 fork 变换文件（`relay/channel/openai/deepseek_v4_fit.go`、`kimi_k3_fit.go`——均为 fork 文件），把其中的**表**（键集、映射、文案策略）外提为数据，代码壳留在原处。
+
+**对 §16 阶段顺序的调整**：errors（几乎纯 A 档、风险最低，直接对应 CDP 的 WORDING / SHAPE 失败）→ shape 的 A 档键操作 → validate 的规则表 → B 档带计费门禁 → **C 档永不数据化**。route 仍是第一步（§13 的 A 步）。
+
+**B 档的额外门禁**：任何触及 `usage` 的规则必须打 `affects_billing: true`，并与计费回归同批验证——拟合形状改了，账不能跟着变。
+
 ## 17. Open Questions
 
 1. **套件写回的落点**：由 `tools/cdp-bench` 直接 `PUT /api/channel/`（需要 admin 凭证），还是输出 JSON 由网关闭环消费？后者更隔离，前者更省事。
