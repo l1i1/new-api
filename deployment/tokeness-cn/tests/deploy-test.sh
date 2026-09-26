@@ -92,15 +92,31 @@ run_deploy() {
     shift
   done
   mkdir -p "$case_dir/state"
+  local rc=0
+  # The relay tier is pinned through a marker file that the fake ssh creates
+  # locally, so every case needs its own path; and the drain hold is set to 0
+  # because a test cannot usefully wait the production 600s. Cases that assert
+  # the real timing override these (they come later in env, so they win).
   env \
     PATH="$bin_dir:$PATH" \
     NGINX_CONF="$case_dir/nginx.conf" \
     SWAS_SSH_KEY_PATH="$test_root/key" \
     HOST_BOOTSTRAP_SCRIPT="$host_bootstrap" \
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
+    DRAIN_MARKER_PATH="$case_dir/state/drain-target" \
+    TOKENESS_TEST_MLSYNC=1 \
+    ML_DRAIN_SECONDS=0 \
+    ML_DRAIN_CONVERGE_ATTEMPTS=2 \
+    ML_DRAIN_CONVERGE_DELAY_SECONDS=0 \
     CNB_REGISTRY_TOKEN=dummy-test-token \
     "${env_args[@]}" \
-    bash "$DEPLOY_SCRIPT" "$@" 2> "$case_dir/state/output.log"
+    bash "$DEPLOY_SCRIPT" "$@" \
+    > "$case_dir/state/stdout.log" 2> "$case_dir/state/output.log" || rc=$?
+  # Replay stdout to the caller. It is part of this helper contract: image-ref
+  # prints the immutable reference and a test captures it. Keeping it in a file
+  # as well lets a case assert on log() lines without racing a tee.
+  cat "$case_dir/state/stdout.log"
+  return "$rc"
 }
 
 invalid_ip_case="$test_root/invalid-ip"
@@ -381,6 +397,54 @@ run_deploy "$release_case" \
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$TEST_ML_DIGEST"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.LivenessProbe.TcpSocket.Port 3000"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Path /health/ready"
+# The shutdown budget is managed declaratively, so it must be present in the
+# actual API call - the readback check compares against the same desired
+# document, which is what makes a silent revert to the platform default fail
+# verification instead of passing unnoticed.
+assert_contains "$release_case/state/modify-args.txt" "--TerminationGracePeriodSeconds 240"
+# The env Value is redacted in this log by design, so presence of the KEY is
+# what proves injection here; the value itself is covered by the readback
+# verification, which compares the live configuration against the same desired
+# document and aborts the release on any drift.
+grep -Eq -- '--Container\.1\.EnvironmentVar\.[0-9]+\.Key SHUTDOWN_TIMEOUT_SECONDS' \
+  "$release_case/state/modify-args.txt" \
+  || fail "the application drain budget did not reach the scaling configuration"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.8.Value [REDACTED]"
+# Rollback stays byte-faithful. Restore mode returns a snapshot exactly as it
+# was: a grace period the snapshot carried survives, and one it never carried is
+# NOT injected - otherwise a rollback would quietly re-apply hardening it was
+# supposed to undo. Target mode is the only place the managed value appears.
+python3 - "$TEST_DIR/../config_args.py" <<'PYEOF' || fail "restore mode is not lossless for the managed fields"
+import json, subprocess, sys
+
+serializer = sys.argv[1]
+
+def emit(mode, document, extra=()):
+    result = subprocess.run(
+        [sys.executable, serializer, "--mode", mode, *extra, "--emit"],
+        input=json.dumps(document), capture_output=True, text=True, check=True,
+    )
+    return result.stdout.split("\0")
+
+def document(grace=None):
+    config = {"ScalingConfigurationId": "asc-test",
+              "Containers": [{"Name": "newapi", "Image": "x"}]}
+    if grace is not None:
+        config["TerminationGracePeriodSeconds"] = grace
+    return {"ScalingConfigurations": [config]}
+
+restored = emit("restore", document(30))
+if "--TerminationGracePeriodSeconds" not in restored or "30" not in restored:
+    sys.exit("restore dropped a grace period the snapshot carried")
+if "--TerminationGracePeriodSeconds" in emit("restore", document()):
+    sys.exit("restore injected a managed field the snapshot did not carry")
+targeted = emit("target", document(), (
+    "--digest", "sha256:" + "a" * 64, "--target-name", "newapi",
+    "--termination-grace-seconds", "240",
+))
+if "240" not in targeted:
+    sys.exit("target mode did not apply the managed grace period")
+PYEOF
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Port 3000"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.3.Key NODE_NAME"
@@ -604,6 +668,94 @@ grep -q "could not add EIP .* to shared bandwidth package" "$vpc_fail_case/state
   || fail "release did not report the failed EIP convergence"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' "$vpc_fail_case/state/state.json" > /dev/null \
   || fail "EIP convergence failure disturbed the rollout result"
+
+# ---- drain-first rollout ------------------------------------------------------
+# The retiring instance must stop receiving new requests BEFORE the group scales
+# down, and the pin must outlive the scale-down: clearing it first would let
+# ml-sync re-add the old member on its next 30s pass and send traffic back to an
+# instance that is about to be deleted.
+
+drain_case="$test_root/drain"
+mkdir -p "$drain_case"
+make_conf "$drain_case/nginx.conf"
+mkdir -p "$drain_case/state"
+init_ess_state "$drain_case/state"
+if ! run_deploy "$drain_case" \
+  TOKENESS_TEST_MLSYNC=1 \
+  ML_DRAIN_SECONDS=1 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "drain-first rollout did not converge"
+fi
+
+drain_log="$drain_case/state/aliyun-calls.log"
+write_line="$(grep -n '^ssh 8.133.172.195 marker-write$' "$drain_log" | head -n1 | cut -d: -f1)"
+write2_line="$(grep -n '^ssh 101.133.234.135 marker-write$' "$drain_log" | head -n1 | cut -d: -f1)"
+scaledown_line="$(grep -n 'ess ModifyScalingGroup .*--DesiredCapacity 1' "$drain_log" | head -n1 | cut -d: -f1)"
+remove_line="$(grep -n '^ssh 8.133.172.195 marker-remove$' "$drain_log" | head -n1 | cut -d: -f1)"
+[[ -n "$write_line" && -n "$write2_line" ]] \
+  || fail "the drain marker was not written to both lightweight hosts"
+[[ -n "$scaledown_line" ]] || fail "drain-first rollout never scaled the group back to 1"
+[[ -n "$remove_line" ]] || fail "the drain marker was not cleared after the rollout"
+(( write_line < scaledown_line && write2_line < scaledown_line )) \
+  || fail "the relay tier was pinned only after the scale-down (write=$write_line/$write2_line scaledown=$scaledown_line)"
+(( remove_line > scaledown_line )) \
+  || fail "the drain marker was cleared before the scale-down, so ml-sync could put the retiring instance back in rotation"
+grep -q 'drain-first: holding' "$drain_case/state/stdout.log" \
+  || fail "the rollout did not hold the relay tier while in-flight streams finished"
+jq -e '.instances | length == 1' "$drain_case/state/state.json" > /dev/null \
+  || fail "drain-first rollout did not settle on a single instance"
+jq -e '.instances[0].InstanceId == "eci-new-1"' "$drain_case/state/state.json" > /dev/null \
+  || fail "drain-first rollout removed the NEW instance instead of the retiring one"
+[[ ! -e "$drain_case/state/drain-target" ]] \
+  || fail "the drain marker survived a successful rollout"
+
+# Fail closed: a host that refuses the pin must abort the rollout rather than
+# scale down, because half the EdgeOne origins would still be sending new
+# requests to the instance about to be deleted.
+drain_fail_case="$test_root/drain-fail"
+mkdir -p "$drain_fail_case"
+make_conf "$drain_fail_case/nginx.conf"
+mkdir -p "$drain_fail_case/state"
+init_ess_state "$drain_fail_case/state"
+if run_deploy "$drain_fail_case" \
+  TOKENESS_TEST_MLSYNC=1 \
+  ML_DRAIN_SECONDS=1 \
+  TOKENESS_TEST_SSH_FAIL_HOST=101.133.234.135 \
+  TOKENESS_TEST_SSH_FAIL_ON='dirname "$marker"' \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "a refused drain pin must fail the rollout"
+fi
+grep -q 'could not write the drain marker on 101.133.234.135' "$drain_fail_case/state/output.log" \
+  || fail "the refused drain pin was not reported"
+# warn() writes to stdout, error()/die() to stderr, so each assertion reads the
+# stream the message actually lands on.
+grep -q 'rolling back to previous digest' "$drain_fail_case/state/stdout.log" \
+  || fail "a refused drain pin did not trigger the rollback path"
+jq -e --arg prev "docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST" '.image == $prev' \
+  "$drain_fail_case/state/state.json" > /dev/null \
+  || fail "a refused drain pin did not restore the previous image"
+[[ ! -e "$drain_fail_case/state/drain-target" ]] \
+  || fail "rollback left the drain marker in place, pinning the relay tier to a deleted instance"
+
+# The shutdown budget must be refused when the platform grace period cannot
+# contain the application drain plus its background flush.
+budget_case="$test_root/drain-budget"
+mkdir -p "$budget_case"
+make_conf "$budget_case/nginx.conf"
+mkdir -p "$budget_case/state"
+init_ess_state "$budget_case/state"
+if run_deploy "$budget_case" ECI_TERMINATION_GRACE_SECONDS=150 \
+  APP_SHUTDOWN_TIMEOUT_SECONDS=180 ML_DRAIN_SECONDS=1 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "a grace period shorter than the drain plus background flush must be refused"
+fi
+grep -q 'must be at least' "$budget_case/state/output.log" \
+  || fail "the refused shutdown budget was not explained"
+jq -e '.desired == 1' "$budget_case/state/state.json" > /dev/null \
+  || fail "a refused shutdown budget still mutated the scaling group"
 
 # The default host bootstrap must resolve inside the repository: the CNB
 # release pipeline has no private/ checkout, so a private/ default makes

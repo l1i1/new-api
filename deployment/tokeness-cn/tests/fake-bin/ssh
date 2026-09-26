@@ -5,16 +5,99 @@ set -Eeuo pipefail
 # then run the remote command locally with our inherited stdin as the remote
 # process stdin. This mirrors real OpenSSH, which starts the remote command
 # with the heredoc on its stdin.
+#
+# Two additions exist for the drain-first rollout, which writes a marker to a
+# NAMED host and must fail closed when a host refuses it:
+#   - the target host is recovered and logged, so a test can assert which hosts
+#     were pinned;
+#   - TOKENESS_TEST_SSH_FAIL_HOST + TOKENESS_TEST_SSH_FAIL_ON refuse a matching
+#     remote script, so the abort path is exercisable without a second host.
+# Stdin is buffered to a file only when one of those knobs is active; otherwise
+# it is streamed straight through as before.
+
+args=("$@")
+host=''
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[i]}" == -- ]]; then
+    if ((i > 0)); then
+      host="${args[i - 1]}"
+    fi
+    break
+  fi
+done
+host="${host#root@}"
+
 while [[ $# -gt 0 && "$1" != -- ]]; do
   shift
 done
 [[ "${1:-}" == -- ]] || exit 2
 shift
 
-if [[ "${1:-}" == bash ]]; then
-  shift
-  exec bash "$@"
+stdin_file=''
+if [[ -n "${TOKENESS_TEST_STATE_DIR:-}" || -n "${TOKENESS_TEST_SSH_FAIL_ON:-}" ]]; then
+  stdin_file="$(mktemp)"
+  cat > "$stdin_file"
 fi
 
-# Fallback for simple one-string commands.
-exec bash -c "$1"
+tag='other'
+if [[ -n "$stdin_file" ]]; then
+  if grep -qF 'dirname "$marker"' "$stdin_file"; then
+    tag='marker-write'
+  elif grep -qF 'rm -f -- "$1"' "$stdin_file"; then
+    tag='marker-remove'
+  elif grep -qF 'upstream[[:space:]]' "$stdin_file"; then
+    tag='read-upstream'
+  fi
+fi
+
+if [[ -n "${TOKENESS_TEST_STATE_DIR:-}" ]]; then
+  mkdir -p "$TOKENESS_TEST_STATE_DIR"
+  # One shared ordering log with the ESS calls (aliyun-calls.log), so a test can
+  # compare line numbers instead of correlating two files.
+  printf 'ssh %s %s\n' "$host" "$tag" >> "$TOKENESS_TEST_STATE_DIR/aliyun-calls.log"
+fi
+
+if [[ -n "${TOKENESS_TEST_SSH_FAIL_ON:-}" && -n "$stdin_file" ]]; then
+  if [[ -z "${TOKENESS_TEST_SSH_FAIL_HOST:-}" || "$host" == "${TOKENESS_TEST_SSH_FAIL_HOST}" ]]; then
+    if grep -qF "$TOKENESS_TEST_SSH_FAIL_ON" "$stdin_file"; then
+      rm -f "$stdin_file"
+      echo "simulated ssh failure to $host" >&2
+      exit 255
+    fi
+  fi
+fi
+
+if [[ "${1:-}" == bash ]]; then
+  shift
+  if [[ -n "$stdin_file" ]]; then
+    bash "$@" < "$stdin_file" || exit $?
+  else
+    bash "$@" || exit $?
+  fi
+elif [[ -n "$stdin_file" ]]; then
+  bash -c "$1" < "$stdin_file" || exit $?
+else
+  bash -c "$1" || exit $?
+fi
+
+# Simulated ml-sync convergence. In production ml-sync (a 30s cron on each
+# lightweight host) rewrites its own upstream copy from $DRAIN_MARKER_PATH; the
+# harness has no cron, so with TOKENESS_TEST_MLSYNC=1 the same rewrite happens
+# here, on the write, exactly as the real convergent loop would do it. Left off
+# by default so every pre-existing case keeps its previous behaviour.
+if [[ "$tag" == marker-write && "${TOKENESS_TEST_MLSYNC:-0}" == 1 \
+   && -n "${DRAIN_MARKER_PATH:-}" && -n "${NGINX_CONF:-}" && -f "${NGINX_CONF:-}" ]]; then
+  marker_ip="$(awk 'NR==1{print $1}' "$DRAIN_MARKER_PATH" 2>/dev/null)"
+  if [[ -n "$marker_ip" ]]; then
+    awk -v ip="$marker_ip" '
+      /^[[:space:]]*upstream[[:space:]]+newapi_ml[[:space:]]*\{/ { inside = 1; print; next }
+      inside && /^[[:space:]]*}/ { inside = 0 }
+      inside && /^[[:space:]]*server[[:space:]]+[0-9.]+:/ {
+        sub(/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/, ip); print; next
+      }
+      { print }
+    ' "$NGINX_CONF" > "$NGINX_CONF.mlsync-tmp" && mv "$NGINX_CONF.mlsync-tmp" "$NGINX_CONF"
+  fi
+fi
+
+exit 0

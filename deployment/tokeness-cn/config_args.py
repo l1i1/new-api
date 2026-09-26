@@ -604,13 +604,30 @@ def set_probe(container: dict[str, Any], key: str, tcp: bool) -> None:
     container[key] = probe
 
 
-def desired_document(document: Any, mode: str, digest: str | None, target_name: str | None) -> dict[str, Any]:
+def desired_document(
+    document: Any,
+    mode: str,
+    digest: str | None,
+    target_name: str | None,
+    termination_grace_seconds: str | None = None,
+) -> dict[str, Any]:
     normalized = normalize_document(document)
     result = copy.deepcopy(normalized)
     containers = result.get("Containers")
     if not isinstance(containers, list) or not containers:
         fail("ScalingConfigurations[0].Containers: missing")
     if mode == "target":
+        # Managed declaratively, like the probes below: a readback that lost the
+        # field fails verification instead of silently reverting to the platform
+        # default. Restore mode never sets it, so a rollback returns the previous
+        # snapshot verbatim, including the absence of a field that snapshot did
+        # not carry.
+        if termination_grace_seconds:
+            if not re.fullmatch(r"[0-9]+", termination_grace_seconds):
+                fail("termination grace period: must be a positive integer number of seconds")
+            if int(termination_grace_seconds) <= 0:
+                fail("termination grace period: must be greater than zero")
+            result["TerminationGracePeriodSeconds"] = int(termination_grace_seconds)
         if not digest or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             fail("target image digest: invalid")
         target_index = 0
@@ -831,6 +848,7 @@ def main() -> int:
     parser.add_argument("--mode", choices=("target", "restore"), required=True)
     parser.add_argument("--digest")
     parser.add_argument("--target-name", default="")
+    parser.add_argument("--termination-grace-seconds", default="")
     parser.add_argument("--expected-id", default="")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--emit", action="store_true")
@@ -840,14 +858,20 @@ def main() -> int:
         if args.verify:
             if len(documents) != 2:
                 fail("verify: expected two JSON documents")
-            expected = desired_document(documents[0], args.mode, args.digest, args.target_name or None)
+            expected = desired_document(
+                documents[0], args.mode, args.digest, args.target_name or None,
+                args.termination_grace_seconds or None,
+            )
             actual = normalize_document(documents[1], args.expected_id or None)
             contains_subset(expected, actual)
             return 0
 
         if len(documents) != 1:
             fail("input: expected one JSON document")
-        expected = desired_document(documents[0], args.mode, args.digest, args.target_name or None)
+        expected = desired_document(
+            documents[0], args.mode, args.digest, args.target_name or None,
+            args.termination_grace_seconds or None,
+        )
         if args.emit:
             emit_args(serialize_root(expected))
         return 0

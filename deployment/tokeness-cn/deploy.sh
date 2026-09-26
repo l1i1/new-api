@@ -37,6 +37,30 @@ readonly VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-45}"
 readonly ROLLOUT_VERIFY_ATTEMPTS="${ROLLOUT_VERIFY_ATTEMPTS:-6}"
 readonly ROLLOUT_VERIFY_DELAY_SECONDS="${ROLLOUT_VERIFY_DELAY_SECONDS:-10}"
 
+# Drain-first rollout. Before the group scales back to 1, both lightweight hosts
+# are told to serve the NEW instance only, and the rollout then waits longer
+# than the slowest stream measured in production (p95 181s, max 461s on
+# 2026-09-26) so the retiring instance has no in-flight SSE stream left when
+# ESS removes it. Without this the platform SIGKILLs those streams mid-answer.
+readonly DRAIN_MARKER_PATH="${DRAIN_MARKER_PATH:-/etc/ml-sync/drain-target}"
+readonly ML_DRAIN_SECONDS="${ML_DRAIN_SECONDS:-600}"
+readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
+readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
+# Must outlive convergence plus the drain wait, or ml-sync would drop the pin
+# mid-rollout. The margin also covers a rollout that dies before clearing it.
+readonly ML_DRAIN_MARKER_TTL_SECONDS="${ML_DRAIN_MARKER_TTL_SECONDS:-1800}"
+
+# Container shutdown budget. The application drains in-flight requests for
+# SHUTDOWN_TIMEOUT_SECONDS and then flushes background batches (log, quota,
+# observability), whose own default timeout is 30s. The platform grace period
+# must therefore exceed the sum, or the SIGKILL lands in the middle of the
+# flush and the last log/quota window is lost. TerminationGracePeriodSeconds is
+# applied by config_args.py in target mode only, so a rollback restores the
+# previous snapshot verbatim, exactly as it does for probes.
+readonly ECI_TERMINATION_GRACE_SECONDS="${ECI_TERMINATION_GRACE_SECONDS:-240}"
+readonly APP_SHUTDOWN_TIMEOUT_SECONDS="${APP_SHUTDOWN_TIMEOUT_SECONDS:-180}"
+readonly APP_BACKGROUND_DRAIN_ALLOWANCE_SECONDS="${APP_BACKGROUND_DRAIN_ALLOWANCE_SECONDS:-30}"
+
 readonly REMOTE_RUN_DIR='/run/lock'
 readonly REMOTE_LOCK_NAME='tokeness-cn-deploy.lock'
 
@@ -109,8 +133,18 @@ remote_cmd() {
 }
 
 get_upstream_ip() {
+  get_upstream_ip_on "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS"
+}
+
+# get_upstream_ip_on <host> <key> <known-hosts> - the active member of the
+# managed upstream as seen by ONE lightweight host. Drain-first needs both
+# hosts individually: they are equal-weight EdgeOne origins, so a pin that
+# reached only one of them would still send half the traffic to the retiring
+# instance.
+get_upstream_ip_on() {
+  local host="$1" key="$2" known="$3"
   local output addresses=()
-  output="$(remote_cmd "$NGINX_CONF" "$NGINX_UPSTREAM_NAME" "$NGINX_UPSTREAM_PORT" <<'REMOTE_AWK'
+  output="$(remote_cmd_on "$host" "$key" "$known" "$NGINX_CONF" "$NGINX_UPSTREAM_NAME" "$NGINX_UPSTREAM_PORT" <<'REMOTE_AWK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 conf="$1"
@@ -511,6 +545,11 @@ wait_verify_converged() {
 rollback_failed_rollout() {
   local failed_id="$1" previous_digest="$2" previous_snapshot="${3:-}"
   warn "rolling back to previous digest: ${previous_digest:-<unchanged>}"
+  # Release the drain pin first: a rollback deletes the very instance the pin
+  # names, and leaving it in place would keep the restored instance out of
+  # rotation until the marker expired.
+  ml_drain_end || warn "drain marker could not be cleared on every host during rollback"
+
   if [[ -n "$previous_snapshot" ]]; then
     if ! restore_scaling_config "$previous_snapshot"; then
       error "rollback stopped before deleting the failed container: configuration restore failed"
@@ -602,9 +641,12 @@ scaling_config_args() {
   local mode="$1" digest="${2:-}" snapshot="$3"
   require_command python3
   [[ -r "$CONFIG_SERIALIZER" ]] || die "missing scaling configuration serializer: $CONFIG_SERIALIZER"
+  local -a grace=()
+  # restore mode must stay byte-faithful to the snapshot it was given.
+  [[ "$mode" == target ]] && grace=(--termination-grace-seconds "$ECI_TERMINATION_GRACE_SECONDS")
   local -a emitted=()
   if ! printf '%s' "$snapshot" | python3 "$CONFIG_SERIALIZER" \
-    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" --emit \
+    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" "${grace[@]}" --emit \
     >/dev/null; then
     return 1
   fi
@@ -612,7 +654,7 @@ scaling_config_args() {
   # its output stays inside Bash and is never written to deploy logs.
   mapfile -d '' -t emitted < <(
     printf '%s' "$snapshot" | python3 "$CONFIG_SERIALIZER" \
-      --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" --emit
+      --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" "${grace[@]}" --emit
   )
   (( ${#emitted[@]} > 0 )) || return 1
   SCALING_CONFIG_ARGS=(ess ModifyEciScalingConfiguration
@@ -625,8 +667,10 @@ scaling_config_args() {
 verify_scaling_config_readback() {
   local mode="$1" digest="${2:-}" expected="$3" actual="$4"
   require_command python3
+  local -a grace=()
+  [[ "$mode" == target ]] && grace=(--termination-grace-seconds "$ECI_TERMINATION_GRACE_SECONDS")
   printf '%s\n%s\n' "$expected" "$actual" | python3 "$CONFIG_SERIALIZER" \
-    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" \
+    --mode "$mode" --digest "$digest" --target-name "$APP_CONTAINER_NAME" "${grace[@]}" \
     --expected-id "$SCALING_CONFIG_ID" --verify
 }
 
@@ -682,14 +726,18 @@ inject_node_identity_envs() {
   local snapshot="$1"
   require_command python3
   printf '%s' "$snapshot" | ECI_NODE_NAME="${ECI_NODE_NAME:-new-api-ml000}" \
-    ECI_NODE_TYPE="${ECI_NODE_TYPE:-slave}" python3 -c '
+    ECI_NODE_TYPE="${ECI_NODE_TYPE:-slave}" \
+    ECI_SHUTDOWN_TIMEOUT_SECONDS="${ECI_SHUTDOWN_TIMEOUT_SECONDS:-$APP_SHUTDOWN_TIMEOUT_SECONDS}" python3 -c '
 import json, os, sys
 
 snapshot = json.loads(sys.stdin.read())
 name = os.environ["ECI_NODE_NAME"]
 node_type = os.environ["ECI_NODE_TYPE"]
+shutdown = os.environ["ECI_SHUTDOWN_TIMEOUT_SECONDS"]
 if node_type not in ("master", "slave"):
     sys.exit("ECI_NODE_TYPE must be master or slave")
+if not shutdown.isdigit() or int(shutdown) <= 0:
+    sys.exit("ECI_SHUTDOWN_TIMEOUT_SECONDS must be a positive integer")
 
 # The Describe output wraps the configuration in ScalingConfigurations; the
 # serializer also accepts a bare configuration object. Handle both.
@@ -706,12 +754,20 @@ def inject(envs):
             out.append({"Key": "NODE_NAME", "Value": name}); seen.add("NODE_NAME")
         elif key == "NODE_TYPE":
             out.append({"Key": "NODE_TYPE", "Value": node_type}); seen.add("NODE_TYPE")
+        elif key == "SHUTDOWN_TIMEOUT_SECONDS":
+            # Drain budget of the application container. It must stay strictly
+            # inside the platform grace period; validate_shutdown_budget
+            # enforces that, and the readback check then proves the value
+            # reached the configuration.
+            out.append({"Key": "SHUTDOWN_TIMEOUT_SECONDS", "Value": shutdown}); seen.add("SHUTDOWN_TIMEOUT_SECONDS")
         else:
             out.append(entry)
     if "NODE_NAME" not in seen:
         out.append({"Key": "NODE_NAME", "Value": name})
     if "NODE_TYPE" not in seen:
         out.append({"Key": "NODE_TYPE", "Value": node_type})
+    if "SHUTDOWN_TIMEOUT_SECONDS" not in seen:
+        out.append({"Key": "SHUTDOWN_TIMEOUT_SECONDS", "Value": shutdown})
     return out
 
 for container in config.get("Containers") or []:
@@ -774,6 +830,84 @@ wait_healthy_instances() {
   return 1
 }
 
+# --- drain-first rollout helpers ----------------------------------------------
+# Both lightweight hosts run ml-sync on a 30s cron and each rewrites its own
+# copy of the upstream, so a pin must be delivered to both. The marker is
+# written atomically (tmp + rename) because ml-sync may read it at any moment.
+ml_drain_write_marker() {
+  local host="$1" key="$2" known="$3" target_ip="$4" expires="$5"
+  remote_cmd_on "$host" "$key" "$known" "$DRAIN_MARKER_PATH" "$target_ip" "$expires" <<'REMOTE_SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+marker="$1"
+target_ip="$2"
+expires="$3"
+install -d -m 0755 "$(dirname "$marker")"
+tmp="$marker.tmp.$$"
+printf '%s %s\n' "$target_ip" "$expires" > "$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$marker"
+REMOTE_SCRIPT
+}
+
+ml_drain_remove_marker() {
+  local host="$1" key="$2" known="$3"
+  remote_cmd_on "$host" "$key" "$known" "$DRAIN_MARKER_PATH" <<'REMOTE_SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+rm -f -- "$1"
+REMOTE_SCRIPT
+}
+
+# ml_drain_begin <target_ip> - pin both relay tiers to the new instance.
+# Fails closed: if either host cannot be pinned, the caller must abort rather
+# than scale down, because the guarantee is only as good as the host that did
+# not get the message.
+ml_drain_begin() {
+  local target_ip="$1" expires
+  is_valid_ipv4 "$target_ip" || { error "drain target is not an IPv4 address: $target_ip"; return 1; }
+  expires=$(( $(date +%s) + ML_DRAIN_MARKER_TTL_SECONDS ))
+  log "drain-first: pinning relay tier to $target_ip on both lightweight hosts"
+  ml_drain_write_marker "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$target_ip" "$expires" \
+    || { error "could not write the drain marker on $SWAS_HOST"; return 1; }
+  ml_drain_write_marker "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$target_ip" "$expires" \
+    || { error "could not write the drain marker on $SWAS2_HOST"; return 1; }
+  return 0
+}
+
+# ml_drain_end - release the pin. Best effort by design: an unreachable host
+# keeps a marker that expires on its own, and ml-sync ignores a marker whose
+# target is no longer a healthy InService instance, so the failure mode is a
+# delay, never a black-holed tier.
+ml_drain_end() {
+  local rc=0
+  ml_drain_remove_marker "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" \
+    || { warn "could not remove the drain marker on $SWAS_HOST; it expires on its own"; rc=1; }
+  ml_drain_remove_marker "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
+    || { warn "could not remove the drain marker on $SWAS2_HOST; it expires on its own"; rc=1; }
+  return "$rc"
+}
+
+# wait_drain_converged <target_ip> - block until BOTH hosts serve the target.
+# The drain timer must not start before this: ml-sync converges on a 30s cron,
+# so sleeping first would leave new requests flowing to the retiring instance
+# for part of the wait and understate how long it has actually been idle.
+wait_drain_converged() {
+  local target_ip="$1" i=0 seen1='' seen2=''
+  while [ "$i" -lt "$ML_DRAIN_CONVERGE_ATTEMPTS" ]; do
+    seen1="$(get_upstream_ip_on "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" 2>/dev/null || true)"
+    seen2="$(get_upstream_ip_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" 2>/dev/null || true)"
+    if [ "$seen1" = "$target_ip" ] && [ "$seen2" = "$target_ip" ]; then
+      log "drain-first: both lightweight hosts now serve $target_ip only"
+      return 0
+    fi
+    sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+    i=$((i + 1))
+  done
+  error "drain-first: upstream did not converge to $target_ip within $((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS))s (swas1=${seen1:-?} swas2=${seen2:-?})"
+  return 1
+}
+
 # ess_rollout <sha256:digest> <previous_digest> <previous_snapshot> - scale out to 2, gate the NEW
 # instance on the application itself (probe + container log), and only then
 # scale back to 1. While both instances are healthy ml-sync lists both upstream
@@ -810,19 +944,38 @@ ess_rollout() {
     fi
     return 1
   fi
-  log "new instance $new_id at $new_ip; gating on application health before scale-down"
+  log "new instance $new_id at $new_ip; gating on application health before cutover"
   if ! wait_app_ready "$new_id" "$new_ip"; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "rollout aborted and rollback could not be verified"
     fi
     return 1
   fi
+  # Drain-first. Stop sending NEW requests to the retiring instance and let its
+  # in-flight SSE streams finish before ESS removes it; otherwise the platform
+  # grace period SIGKILLs them mid-answer (the grace period only applies to the
+  # config an instance was created with, so this is what protects the very
+  # first release that raises it). Fail closed: if either host cannot be pinned,
+  # or ml-sync does not converge, the rollout aborts while the old instance is
+  # still serving, which is exactly the state rollback restores anyway.
+  if ! ml_drain_begin "$new_ip" || ! wait_drain_converged "$new_ip"; then
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "drain-first could not pin the relay tier and rollback could not be verified"
+    fi
+    return 1
+  fi
+  log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams (p95 181s, max 461s) finish on the retiring instance"
+  sleep "$ML_DRAIN_SECONDS"
+  # The pin must outlive the scale-down. Clearing it first would let ml-sync
+  # re-add the still-InService old instance on its next 30s pass, sending new
+  # requests back to an instance that is about to be deleted.
   if ! scale_group 1 || ! wait_healthy_instances 1; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "scale-down gate failed and rollback could not be verified"
     fi
     return 1
   fi
+  ml_drain_end || warn "drain marker left behind; ml-sync expires it on its own"
   if wait_verify_converged; then
     log "ess rollout to $digest complete"
     # EIP → shared-bandwidth convergence is advisory (a binding failure does
@@ -877,8 +1030,26 @@ Usage:
 USAGE
 }
 
+# validate_shutdown_budget - refuse a configuration whose platform grace period
+# cannot contain the application's own drain. The application serves in-flight
+# requests for APP_SHUTDOWN_TIMEOUT_SECONDS and THEN flushes background batches
+# (log, quota, observability) on their own timeout. Setting the two numbers
+# equal - the obvious reading of "set both to 180" - puts the SIGKILL in the
+# middle of that flush, losing the last log and quota window on every release.
+validate_shutdown_budget() {
+  local need=$((APP_SHUTDOWN_TIMEOUT_SECONDS + APP_BACKGROUND_DRAIN_ALLOWANCE_SECONDS))
+  if (( ECI_TERMINATION_GRACE_SECONDS < need )); then
+    die "ECI_TERMINATION_GRACE_SECONDS ($ECI_TERMINATION_GRACE_SECONDS) must be at least APP_SHUTDOWN_TIMEOUT_SECONDS + ${APP_BACKGROUND_DRAIN_ALLOWANCE_SECONDS}s background flush ($need); raise the grace period or lower the drain"
+  fi
+  local drain_need=$((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS + ML_DRAIN_SECONDS + 120))
+  if (( ML_DRAIN_MARKER_TTL_SECONDS < drain_need )); then
+    die "ML_DRAIN_MARKER_TTL_SECONDS ($ML_DRAIN_MARKER_TTL_SECONDS) must exceed convergence + drain ($drain_need) or the pin expires mid-rollout"
+  fi
+}
+
 main() {
   local operation="${1:-verify}"
+  validate_shutdown_budget
   case "$operation" in
     verify)
       [[ $# -eq 1 ]] || die "verify does not accept arguments"

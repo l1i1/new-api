@@ -82,6 +82,49 @@ The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokenes
 
 The fourth one is the subtle one: EIP convergence is advisory, so the release reported success while the new EIP stayed outside the bandwidth package (egress capped at the standalone 200 Mbps peak). If egress looks throttled after a release, run `deploy.sh eip-sync` and confirm `BandwidthPackageId` on the instance EIP.
 
+## Drain-first cutover (2026-09-26)
+
+Every request on this site is a streaming one (measured p50 26s, p95 181s, max 461s
+over 500 requests on 2026-09-26), and the scaling configuration did not set
+`TerminationGracePeriodSeconds`, so the platform default applied. The old
+sequence - scale out to 2, gate the new instance, then scale straight back to 1 -
+retired an instance that was still serving, and the SIGKILL cut its in-flight
+streams mid-answer.
+
+`ess_rollout` now drains first:
+
+1. scale out to 2 and gate the new instance on the application itself;
+2. write `/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both**
+   lightweight hosts;
+3. wait until both nginx copies serve the new instance only;
+4. hold `ML_DRAIN_SECONDS` (default 600, above the slowest stream measured);
+5. scale back to 1 - the pin must outlive this step, or ml-sync would re-add the
+   still-InService old instance on its next 30s pass;
+6. clear the pin.
+
+ml-sync honours the pin only while its target is healthy, and the marker expires
+on its own, so the worst failure mode is a fall back to the previous behaviour
+rather than a black-holed `/v1`. A host that refuses the pin aborts the rollout
+before the scale-down, and the rollback path clears the pin too.
+
+The shutdown budget is now declarative: `ECI_TERMINATION_GRACE_SECONDS`
+(default 240) is written by `config_args.py` in target mode and covered by the
+readback check, and `SHUTDOWN_TIMEOUT_SECONDS` (default 180) travels in the
+container env. `validate_shutdown_budget` refuses any pair that does not leave
+the application's 30s background flush inside the platform window - setting both
+to 180, the obvious reading, would put the SIGKILL in the middle of that flush.
+Restore mode injects neither field, so a rollback stays byte-faithful.
+
+Note the ordering consequence: a scaling configuration only applies to instances
+created after it changes, so raising the grace period cannot protect the instance
+being retired by the very release that raises it. **Drain-first is what takes
+effect immediately; the grace period is the second layer, from the next release
+onward.**
+
+Tuning: `ML_DRAIN_SECONDS`, `ML_DRAIN_CONVERGE_ATTEMPTS` (default 12),
+`ML_DRAIN_CONVERGE_DELAY_SECONDS` (default 15), `ML_DRAIN_MARKER_TTL_SECONDS`
+(default 1800, must exceed convergence plus drain).
+
 ## Cutover
 
 `deploy-release` covers cutover automatically through `ml-sync` (both upstream members while two instances are healthy). The manual form remains for exceptional cases — e.g. recovering from console-side drift:
