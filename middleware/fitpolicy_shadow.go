@@ -85,11 +85,25 @@ func fitPolicyExplicitPinActive(c *gin.Context) bool {
 // divergence when the policy disagrees with the shipped predicate, and — only
 // outside shadow — attaches the requirement for the selection path to consume.
 func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled, legacyPinned bool) {
+	// The observer is started here rather than at startup so a build that never
+	// reaches this path does not run a timer, and so the very first request
+	// already counts. Its counters are what make the returns below legible.
+	startFitPolicyObserver()
 	snapshot := fitpolicy.Current()
-	if snapshot == nil || !snapshot.Enabled() {
+	if snapshot == nil {
+		fitPolicyStats.noSnapshot.Add(1)
 		return
 	}
-	if !fitPolicyInScope(c) || fitPolicyExplicitPinActive(c) {
+	if !snapshot.Enabled() {
+		fitPolicyStats.disabled.Add(1)
+		return
+	}
+	if !fitPolicyInScope(c) {
+		fitPolicyStats.outOfScope.Add(1)
+		return
+	}
+	if fitPolicyExplicitPinActive(c) {
+		fitPolicyStats.explicitPin.Add(1)
 		return
 	}
 	requirement := snapshot.Decide(req.Model, routeEnabled, fitpolicy.RequestView{
@@ -102,10 +116,13 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled, lega
 		Messages:        req.Messages,
 	})
 	if !requirement.HasOpinion() {
+		fitPolicyStats.noOpinion.Add(1)
 		return
 	}
+	fitPolicyStats.evaluated.Add(1)
 	if requirement.Shadow {
 		if requirement.HasOpinion() != legacyPinned {
+			fitPolicyStats.diverged.Add(1)
 			reportFitPolicyDivergence(c, req.Model, requirement, legacyPinned)
 		}
 		return
