@@ -543,6 +543,7 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 			}
 		}
 		result := fit.Requirement.Narrow(candidates, func(int) bool { return true }, fit.MarkSatisfied)
+		reportFitNarrowing(model, candidates, result, fit.MarkSatisfied)
 		if result.Applied {
 			permitted := make(map[int]struct{}, len(result.Channels))
 			for _, channelID := range result.Channels {

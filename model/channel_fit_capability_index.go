@@ -1,8 +1,10 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
 )
@@ -38,8 +40,11 @@ type fitCapabilityMark struct {
 	Revision     int64
 }
 
+const fitCapabilityIndexLogLimit = 6
+
 var (
-	fitCapabilityIndexLock sync.RWMutex
+	fitCapabilityIndexLogCount atomic.Int64
+	fitCapabilityIndexLock     sync.RWMutex
 	// fitCapabilityIndex: channelID → model → behaviour → mark
 	fitCapabilityIndex map[int]map[string]map[string]fitCapabilityMark
 	// fitCapabilityIndexBuilt records whether a successful build has happened.
@@ -64,6 +69,12 @@ func InitFitCapabilityIndex() {
 	if err != nil {
 		common.SysLog("failed to load channel fit capabilities: " + err.Error())
 		return
+	}
+	// Bounded, counts only: an index built from the wrong rows is
+	// indistinguishable at request time from one whose rows do not match, and both
+	// look like "no capability data" in the narrowing result.
+	if fitCapabilityIndexLogCount.Add(1) <= fitCapabilityIndexLogLimit {
+		common.SysLog(fmt.Sprintf("fitpolicy capability index: rows=%d", len(rows)))
 	}
 	index := make(map[int]map[string]map[string]fitCapabilityMark, len(rows))
 	for i := range rows {
@@ -104,6 +115,7 @@ func FitCapabilityIndexReady() bool {
 
 // LookupFitCapability returns the indexed mark for a channel/model/behaviour.
 func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMark, bool) {
+	ensureFitCapabilityIndexBuilt()
 	fitCapabilityIndexLock.RLock()
 	defer fitCapabilityIndexLock.RUnlock()
 	byModel, ok := fitCapabilityIndex[channelID]
@@ -116,6 +128,32 @@ func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMa
 	}
 	mark, ok := byBehavior[strings.ToLower(strings.TrimSpace(behavior))]
 	return mark, ok
+}
+
+// ensureFitCapabilityIndexBuilt builds the index on first use.
+//
+// The startup path builds it too, but the two call sites that did so both sit
+// behind the memory-cache switch, so on the database path — which is the path
+// both sites actually run — nothing ever built it. A restart therefore left the
+// index empty, every mark look-up missed, and the whole capability layer went
+// silently inert while the table looked correct; the narrowest phase could never
+// match, so every requirement quietly degraded to the plain official set.
+//
+// Building on first use removes the class of failure rather than the instance:
+// the wiring cannot be forgotten again, and a restart cannot leave a node
+// vouching for nothing while claiming to consult measurements.
+//
+// Two goroutines may build concurrently at worst. The build is idempotent and
+// replaces the index under the write lock, so the result is the same either way
+// and no look-up observes a partial index.
+func ensureFitCapabilityIndexBuilt() {
+	fitCapabilityIndexLock.RLock()
+	built := fitCapabilityIndexBuilt
+	fitCapabilityIndexLock.RUnlock()
+	if built {
+		return
+	}
+	InitFitCapabilityIndex()
 }
 
 // FitMarkRequirement is what one request needs a channel's marks to prove.

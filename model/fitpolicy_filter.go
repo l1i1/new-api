@@ -96,7 +96,7 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 		func(channelID int) bool { return officialFitChannelMatchesLocked(channelID, model) },
 		f.MarkSatisfied,
 	)
-	reportFitNarrowing(model, channels, result)
+	reportFitNarrowing(model, channels, result, f.MarkSatisfied)
 	if !result.Applied {
 		return channels, false
 	}
@@ -105,14 +105,33 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 
 // reportFitNarrowing records how one narrowing decision came out. An empty result
 // is indistinguishable from "the pool was empty" in the selection error, and the
-// three inputs (how many candidates, how many of them official, whether any
-// carried the marks) are what tell the two apart. The line carries identifiers
-// and counts only — never request bodies, messages, tools or credentials.
-func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing) {
+// inputs below are what tell the two apart: whether the policy narrowed at all,
+// which candidates it was offered, which of them carried the marks, and what it
+// kept. The candidate ids are what distinguish "the marked channel was never a
+// candidate" from "it was a candidate and still failed", which have completely
+// different causes.
+//
+// The line carries identifiers and counts only — never request bodies, messages,
+// tools or credentials — and is bounded so a systematic fault costs a fixed
+// number of lines rather than one per request.
+func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing, satisfies func(int) bool) {
 	if fitNarrowingCount.Add(1) > fitNarrowingLogLimit {
 		return
 	}
+	// Which candidates carried the marks is the one input that separates "the
+	// marked channel was never offered" from "it was offered and still failed",
+	// and those have nothing in common as causes.
+	verdicts := make([]string, 0, len(channels))
+	for _, channelID := range channels {
+		mark := "no-marks"
+		if satisfies != nil && satisfies(channelID) {
+			mark = "ok"
+		} else if satisfies != nil {
+			mark = "failed"
+		}
+		verdicts = append(verdicts, fmt.Sprintf("%d:%s", channelID, mark))
+	}
 	common.SysLog(fmt.Sprintf(
-		"fitpolicy narrow: model=%s candidates=%d applied=%t official_and_marked=%t kept=%d",
-		model, len(channels), result.Applied, result.MatchedMarks, len(result.Channels)))
+		"fitpolicy narrow: model=%s candidates=%v applied=%t official_and_marked=%t kept=%v marks=%v",
+		model, channels, result.Applied, result.MatchedMarks, result.Channels, verdicts))
 }

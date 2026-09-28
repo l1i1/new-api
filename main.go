@@ -105,6 +105,12 @@ func main() {
 		}()
 
 		go model.SyncChannelCache(common.SyncFrequency)
+	} else {
+		// The capability index is independent of the channel memory cache, and the
+		// selection path reads it on both. Without this the database path starts with
+		// an empty index, every mark look-up misses, and the fit layer silently
+		// degrades to the plain official set until something happens to write a mark.
+		model.InitFitCapabilityIndex()
 	}
 	wsmanager.StartSubscriber(context.Background())
 
