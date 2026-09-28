@@ -1426,6 +1426,19 @@
   - **实测通过**：渠道 2 写回 4 条 `supported=false` 并回读成功，失败案例 id 一并记录。applier 在 `~/fitpolicy-lab/apply_marks.py`。
   - **口径**：某渠道「支持」某行为 = **该行为涉及的所有案例全部 PASS**；一条失败即扣留标记。标记的含义是「在这个形状上与官方参考实测一致」，不是「大体能用」。
 
+- **我自己的渠道导入器把一次测量全带偏了（2026-09-28，值得记的隐蔽 bug）**：本地实验室逐渠道测 kimi-k3 时，官方渠道 `DEF_Kimi`(id=8, type=25) 拿到 **0/51**、错误全是 `upstream error: do request failed`。差点据此得出「官方渠道最差」的错误结论。**根因在导入器**：我把 CSV 的空值统一转成 `NULL`，而 `model.Channel.GetBaseURL()` 是
+  ```go
+  if channel.BaseURL == nil { return "" }          // NULL → 直接返回空，不走默认值
+  url := *channel.BaseURL
+  if url == "" { url = constant.GetChannelBaseURL(channel.Type) }  // 只有空字符串才走类型默认
+  ```
+  —— 于是空 base_url 的渠道拼出 `Post "/v1/chat/completions"`，**没有 scheme 也没有 host**（应用日志原文 `unsupported protocol scheme ""`，241 次）。**生产存的是空字符串 `''`，所以走类型默认值、一切正常**；CSV 分不清 NULL 与 `''`，而应用只认后者。改 `base_url=''` 后渠道 8 立刻 **200**，返回真实 Moonshot 响应。**教训：把生产数据搬到另一个库时，「空值」的两种表示在有 fallback 分支的代码里行为不同——导入后要对着应用代码核对判空语义，而不是假设空就是空。**
+- **逐渠道测量的三条口径（同批确立）**：
+  - **候选只取 `status=1`**：`status=3` 的渠道（如 id=2）生产根本不会选，测它是浪费；修正后候选从 20 降为 **18**。
+  - **连不上 ≠ 不合格**：`detail` 里出现 `do request failed` 的案例若过半，说明测的是**本机到上游的路由**而不是渠道本身，此时**不写标记**（写 `supported=false` 会把一个好渠道永久排除）。注意该短语在 `detail` 字段，`errorText` 是空的——我第一版检测器因此 0 命中。
+  - **实验室依赖生产代理**：多数渠道的 `setting.proxy` 是 `socks5h://…@cn-hk-oproxy.tokeness.cn:43171`（随渠道导出一起落到本地）。走该代理的渠道（如 id=4）测通了；不走代理的渠道在本机的可达性需要单独核实。
+- **本地判定「官方渠道」直连可用**：本机直测 `api.moonshot.cn` —— key#1 **429 账号已停用**（0.3s），key#2/key#3 **200**（2.1s / 1.7s）。所以 `DEF_Kimi` 三密钥中有一个是死的，生产靠轮换活着，**建议摘掉它**（每次轮到都白打一发 429；且任何钉向官方渠道的策略都会被它拖累）。
+
 - **2026-09-27 国内站发版 `v1.0.0-rc.40-tokeness-mainland.11`（commit `e22d31165`，digest `sha256:58ccd4eec47e3d2f9bf8e402ab6853d5932857deeb8c4105ae941d8213467b62`）**：内网 origin 推 tag（`2d0aa0203`）→ 镜像同步到 CNB → `tag_push` 构建 → 链式 `api_trigger` 发布，**全自动、无需按钮**；构建产物 15:34:04 出现在 registry，15:34:54 开始发布，15:46 完成。**这是 drain-first 首次实跑**：两台轻量主机均出现 `DRAIN: relay tier pinned to 10.0.0.222`（旧实例 `10.0.0.220` → 新实例 `10.0.0.222`），pin 在缩容前建立、活过缩容、SWAS-1 侧已清除。**伸缩配置核验通过**：`TerminationGracePeriodSeconds=240`、`SHUTDOWN_TIMEOUT_SECONDS=180`、`NODE_TYPE=slave` 保留、image digest 已换新。**遗留（无害）**：SWAS-2 的 `/etc/ml-sync/drain-target` 未被 `ml_drain_end` 清掉（SWAS-1 已清），因 ESS 仅剩 `.222` 该 pin 指向的就是唯一成员，且 1800s TTL 到期自愈——按设计的最坏情况退化为旧行为；下次发布若复现需查 pipeline 日志确认第二次 SSH 为何失败。**回滚目标**：`mainland.10` = `sha256:15d6d632a4f72c3dd6ba63b68cf4f6fe183c7a6a6b67c1c89fcb77346e9acfd0`（已对 registry digest 与运行时 digest 双向核验一致）。**本次发布内容**：自 `.9` 构建点起 32 个提交 / 113 文件，除 fitpolicy 12 个 + drain-first 1 个外还含 config epoch 传播、i18n overlay 拆分、relaykit cache_control 透传、控制台/邮箱登录修复。**另注**：发布前实测公网链路健康（`/api/status` 200、`/v1/models` 401），用户 `cdp` 的基准负载于 12:00 停止导致总请求量从 ~50/min 降到 ~2/min——**不是事故**，真实用户流量正常。
 
 - **上线（两站同源 `5a9e8e591`）**：国际 `v1.0.0-rc.40-tokeness-intl.8`（digest `sha256:1b04cdbaccea95931344ac264334a2930cadb6c14f894f6243722549d7013384`，publish run `35866469666` → deploy run `35867840848` 四节点全绿）；国内 `v1.0.0-rc.40-tokeness-mainland.9`（tag_push `cnb-8l5-1k376s5vv` → 链式 `api_trigger` `cnb-7dt-1k3771p0l` 全绿，线上 `/api/status` 回报 `.9`）。**产物级验证**：两站 `static/js/async/82306.af20256f30.js` 各含 **1 处 `Fidelity routing` / 0 处 `Official route`**；`/v1/models` 两站 401。**回滚目标**：国际 `intl.7` = `sha256:998d87ae…`、国内 `mainland.8`（tag 即回滚标识）。
