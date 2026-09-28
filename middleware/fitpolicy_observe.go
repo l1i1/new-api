@@ -41,8 +41,10 @@ type fitPolicyObs struct {
 	// Reached a decision the policy has an opinion about: the only counter that
 	// proves the policy is actually evaluating.
 	evaluated atomic.Int64
-	// Evaluated and in shadow with a disagreement against the shipped predicate.
-	diverged atomic.Int64
+	// Evaluated in shadow, so the decision was recorded and not acted on. This
+	// counted disagreements with the shipped predicate until those were retired;
+	// it now counts dry-run decisions, which is what shadow means on its own.
+	shadowed atomic.Int64
 }
 
 var (
@@ -71,7 +73,7 @@ func reportFitPolicyStats() {
 			s.Version(), s.Enabled(), s.Shadow(), s.Hash())
 	}
 	common.SysLog(fmt.Sprintf(
-		"fitpolicy obs: snapshot=%s no_snapshot=%d disabled=%d out_of_scope=%d explicit_pin=%d no_opinion=%d evaluated=%d diverged=%d",
+		"fitpolicy obs: snapshot=%s no_snapshot=%d disabled=%d out_of_scope=%d explicit_pin=%d no_opinion=%d evaluated=%d shadowed=%d",
 		snapshot,
 		fitPolicyStats.noSnapshot.Load(),
 		fitPolicyStats.disabled.Load(),
@@ -79,6 +81,6 @@ func reportFitPolicyStats() {
 		fitPolicyStats.explicitPin.Load(),
 		fitPolicyStats.noOpinion.Load(),
 		fitPolicyStats.evaluated.Load(),
-		fitPolicyStats.diverged.Load(),
+		fitPolicyStats.shadowed.Load(),
 	))
 }

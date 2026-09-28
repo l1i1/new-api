@@ -38,16 +38,16 @@ const (
 	// (relay-router.go maps exactly this path to RelayFormatOpenAI).
 	fitPolicyScopedPath = "/v1/chat/completions"
 
-	// fitPolicyDivergenceLogLimit bounds how many individual divergences are
-	// logged, so a systematically wrong policy costs a bounded number of lines
-	// instead of one per request.
-	fitPolicyDivergenceLogLimit = 20
-	// fitPolicyDivergenceSampleEvery logs every Nth divergence after the limit
-	// so a long-running bad policy is still visible.
-	fitPolicyDivergenceSampleEvery = 1000
+	// fitPolicyShadowLogLimit bounds how many individual shadow decisions are
+	// logged, so a dry run costs a bounded number of lines instead of one per
+	// request.
+	fitPolicyShadowLogLimit = 20
+	// fitPolicyShadowSampleEvery logs every Nth decision after the limit so a
+	// long-running dry run is still visible.
+	fitPolicyShadowSampleEvery = 1000
 )
 
-var fitPolicyDivergenceCount atomic.Int64
+var fitPolicyShadowCount atomic.Int64
 
 // fitPolicyInScope reports whether this request may be governed by the policy.
 // Everything else — the playground path, /v1/completions, /v1/messages,
@@ -81,10 +81,14 @@ func fitPolicyExplicitPinActive(c *gin.Context) bool {
 	return false
 }
 
-// applyFitPolicy evaluates the policy for one request, records a shadow
-// divergence when the policy disagrees with the shipped predicate, and — only
-// outside shadow — attaches the requirement for the selection path to consume.
-func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled, legacyPinned bool) {
+// applyFitPolicy evaluates the policy for one request and — only outside shadow —
+// attaches the requirement for the selection path to consume.
+//
+// Shadow no longer means "compare against the shipped predicate": those
+// predicates are retired from the request path, so there is no second opinion to
+// disagree with. It now means "decide, record the decision, act on nothing",
+// which is what makes a policy edit reviewable before it is allowed to route.
+func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled bool) {
 	// The observer is started here rather than at startup so a build that never
 	// reaches this path does not run a timer, and so the very first request
 	// already counts. Its counters are what make the returns below legible.
@@ -121,10 +125,8 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled, lega
 	}
 	fitPolicyStats.evaluated.Add(1)
 	if requirement.Shadow {
-		if requirement.HasOpinion() != legacyPinned {
-			fitPolicyStats.diverged.Add(1)
-			reportFitPolicyDivergence(c, req.Model, requirement, legacyPinned)
-		}
+		fitPolicyStats.shadowed.Add(1)
+		reportFitPolicyShadow(c, req.Model, requirement)
 		return
 	}
 	common.SetContextKey(c, constant.ContextKeyFitRequirement, requirement)
@@ -154,9 +156,12 @@ func fitPolicyAllowsAffinity(c *gin.Context, channelID int, modelName string) bo
 	return true
 }
 
-func reportFitPolicyDivergence(c *gin.Context, model string, requirement fitpolicy.Requirement, legacyPinned bool) {
-	total := fitPolicyDivergenceCount.Add(1)
-	if total > fitPolicyDivergenceLogLimit && total%fitPolicyDivergenceSampleEvery != 0 {
+// reportFitPolicyShadow records one shadow-mode decision. It carries identifiers,
+// behaviour names and the mark set only — never request bodies, messages, tools
+// or credentials.
+func reportFitPolicyShadow(c *gin.Context, model string, requirement fitpolicy.Requirement) {
+	total := fitPolicyShadowCount.Add(1)
+	if total > fitPolicyShadowLogLimit && total%fitPolicyShadowSampleEvery != 0 {
 		return
 	}
 	requestID := ""
@@ -164,24 +169,15 @@ func reportFitPolicyDivergence(c *gin.Context, model string, requirement fitpoli
 		requestID = c.GetString(common.RequestIdKey)
 	}
 	common.SysLog(strings.Join([]string{
-		"fitpolicy shadow divergence:",
+		"fitpolicy shadow decision:",
 		"request_id=" + requestID,
 		"model=" + model,
 		"family=" + requirement.Family,
-		"legacy_pinned=" + boolText(legacyPinned),
-		"policy_requires=true",
 		"required_marks=" + strings.Join(requirement.Marks, ","),
 		"policy_version=" + itoa(requirement.PolicyVersion),
 		"policy_hash=" + requirement.PolicyHash,
 		"total=" + itoa64(total),
 	}, " "))
-}
-
-func boolText(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
 }
 
 func itoa(value int) string {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
@@ -58,50 +59,65 @@ func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
 	})
 }
 
+// requireLiveBuiltinPolicy installs the shipped policy in live mode. Which shapes
+// pin is decided by that document now that the compiled-in predicates are
+// retired, so a test about pinning has to install it: with no policy every shape
+// would look unpinned and the assertions would pass vacuously.
+func requireLiveBuiltinPolicy(t *testing.T) {
+	t.Helper()
+	fitpolicy.Install(nil)
+	t.Cleanup(func() { fitpolicy.Install(nil) })
+	mustInstallPolicy(t, string(mustBuiltinPolicyJSON(t)), false)
+}
+
 func TestMarkV4OfficialPinFromDistributorRouteOnlySource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	requireLiveBuiltinPolicy(t)
 
 	newContext := func(body string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
-		// Validate-only profile: the Route dimension is the only pin source,
-		// so thinking/logprobs/extreme sampling must not pin here.
+		// Validate-only profile: the Route dimension is the only switch, so
+		// thinking/logprobs/extreme sampling must not pin here.
 		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
 			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
 				"deepseek-v4-": {Validate: true},
 			}},
 		})
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
 		return c
 	}
 
 	t.Run("explicit thinking object does not pin", func(t *testing.T) {
 		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.False(t, fitRequirementAttached(c))
 	})
 
 	t.Run("logprobs true does not pin", func(t *testing.T) {
 		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"logprobs":true,"top_logprobs":5}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.False(t, fitRequirementAttached(c))
 	})
 
 	t.Run("extreme sampling does not pin", func(t *testing.T) {
 		c := newContext(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"temperature":2,"top_p":0.1}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.False(t, fitRequirementAttached(c))
 	})
 }
 
 func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	requireLiveBuiltinPolicy(t)
 
-	// Route-enabled DeepSeek V4 profile: the pin becomes selective and only
-	// features the aggregator mix cannot reproduce land on the official
-	// channel (live evidence 2026-09-06: reasoning_content drops and missing
-	// dual-path logprobs on aggregators; image parts unverified there).
+	// Route-enabled DeepSeek V4 profile: which shapes pin is now read out of the
+	// shipped policy document rather than out of compiled-in predicates, so this
+	// test is the document's contract. The table below is unchanged — it is the
+	// behaviour contract, not an implementation detail: only features the
+	// aggregator mix cannot reproduce land on the official channel (live evidence
+	// 2026-09-06: reasoning_content drops and missing dual-path logprobs on
+	// aggregators; image parts unverified there).
 	newContext := func(body string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
@@ -112,19 +128,18 @@ func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 				"kimi-k3":      {Validate: true, Errors: true, Shape: true, Route: true},
 			}},
 		})
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
 		return c
 	}
 
 	pinned := func(t *testing.T, body string) {
 		c := newContext(body)
 		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), body)
+		assert.True(t, fitRequirementAttached(c), body)
 	}
 	unpinned := func(t *testing.T, body string) {
 		c := newContext(body)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), body)
+		assert.False(t, fitRequirementAttached(c), body)
 	}
 
 	t.Run("default thinking pins (official reasoning output)", func(t *testing.T) {
@@ -226,6 +241,7 @@ func TestDeepSeekV4SelectiveOfficialPin(t *testing.T) {
 // stored pre-v4.1 profile covers the dotted names too.
 func TestDeepSeekV41SharesTheOfficialFitFamily(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	requireLiveBuiltinPolicy(t)
 
 	newContext := func(profileKey, body string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -236,31 +252,30 @@ func TestDeepSeekV41SharesTheOfficialFitFamily(t *testing.T) {
 				profileKey: {Validate: true, Route: true},
 			}},
 		})
-		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, false)
 		return c
 	}
 
 	t.Run("deepseek-v4 key pins the v4.1 line", func(t *testing.T) {
 		c := newContext("deepseek-v4", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.True(t, fitRequirementAttached(c))
 	})
 
 	t.Run("deepseek-v4 key still pins the v4 line", func(t *testing.T) {
 		c := newContext("deepseek-v4", `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.True(t, fitRequirementAttached(c))
 	})
 
 	t.Run("legacy deepseek-v4- key covers the dotted v4.1 name", func(t *testing.T) {
 		c := newContext("deepseek-v4-", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.True(t, fitRequirementAttached(c))
 	})
 
 	t.Run("disabled thinking still escapes the pin for v4.1", func(t *testing.T) {
 		c := newContext("deepseek-v4", `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+		assert.False(t, fitRequirementAttached(c))
 	})
 }

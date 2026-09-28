@@ -215,8 +215,14 @@ func TestMarkV4OfficialPinFromDistributorNoSamplingAutoPin(t *testing.T) {
 }
 
 func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// The Route dimension still gates everything, but it now gates the policy:
+	// with Route off the document is never consulted and no requirement is
+	// attached, and with Route on the document decides which shapes carry one.
+	// The old assertions read a context flag the distributor no longer writes.
+	requireLiveBuiltinPolicy(t)
+
 	newCtx := func(body, path string) *gin.Context {
-		gin.SetMode(gin.TestMode)
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
@@ -231,7 +237,7 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 		}},
 	})
 	markV4OfficialPinFromDistributor(routeOn)
-	assert.True(t, common.GetContextKeyBool(routeOn, constant.ContextKeyV4OfficialPin))
+	assert.True(t, fitRequirementAttached(routeOn))
 
 	// Profile present but Route off: mild sampling stays unpinned.
 	routeOff := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
@@ -241,7 +247,7 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 		}},
 	})
 	markV4OfficialPinFromDistributor(routeOff)
-	assert.False(t, common.GetContextKeyBool(routeOff, constant.ContextKeyV4OfficialPin))
+	assert.False(t, fitRequirementAttached(routeOff))
 
 	// kimi-k3 with the Route profile pins only a forced tool call, the one
 	// shape the aggregator pool was measured to degrade; a plain request stays
@@ -253,7 +259,7 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 		}},
 	})
 	markV4OfficialPinFromDistributor(k3Route)
-	assert.True(t, common.GetContextKeyBool(k3Route, constant.ContextKeyV4OfficialPin))
+	assert.True(t, fitRequirementAttached(k3Route))
 
 	k3PlainRoute := newCtx(`{"model":"kimi-k3","temperature":0.7}`, "/v1/chat/completions")
 	common.SetContextKey(k3PlainRoute, constant.ContextKeyUserSetting, dto.UserSetting{
@@ -262,11 +268,11 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 		}},
 	})
 	markV4OfficialPinFromDistributor(k3PlainRoute)
-	assert.False(t, common.GetContextKeyBool(k3PlainRoute, constant.ContextKeyV4OfficialPin))
+	assert.False(t, fitRequirementAttached(k3PlainRoute))
 
 	k3Plain := newCtx(`{"model":"kimi-k3","temperature":2}`, "/v1/chat/completions")
 	markV4OfficialPinFromDistributor(k3Plain)
-	assert.False(t, common.GetContextKeyBool(k3Plain, constant.ContextKeyV4OfficialPin))
+	assert.False(t, fitRequirementAttached(k3Plain))
 }
 
 func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {

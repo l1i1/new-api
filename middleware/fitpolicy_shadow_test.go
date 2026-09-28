@@ -38,11 +38,15 @@ func newFitPolicyContext(t *testing.T, body string) *gin.Context {
 	return newFitPolicyRequest(t, http.MethodPost, fitPolicyScopedPath, body)
 }
 
-func pinFor(t *testing.T, body string) bool {
+// requirementAttachedFor reports whether one request body ends up carrying a fit
+// requirement. It replaces the pin probe the shadow tests used before the
+// compiled-in predicates were retired: the requirement is now the thing that
+// changes routing, so it is the thing a shadow safety gate has to watch.
+func requirementAttachedFor(t *testing.T, body string) bool {
 	t.Helper()
 	c := newFitPolicyContext(t, body)
 	markV4OfficialPinFromDistributor(c)
-	return common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+	return fitRequirementAttached(c)
 }
 
 func fitRequirementAttached(c *gin.Context) bool {
@@ -50,10 +54,22 @@ func fitRequirementAttached(c *gin.Context) bool {
 	return attached
 }
 
-// TestFitPolicyShadowDoesNotChangePin is the shadow-mode safety gate: installing
-// a policy — even the built-in one proven equivalent — must not move a single
-// pin. If this ever fails, shadow has become a behaviour change.
-func TestFitPolicyShadowDoesNotChangePin(t *testing.T) {
+// fitRequirementFor returns the requirement one request body carries, failing the
+// test when the policy expressed no opinion about it.
+func fitRequirementFor(t *testing.T, body string) fitpolicy.Requirement {
+	t.Helper()
+	c := newFitPolicyContext(t, body)
+	markV4OfficialPinFromDistributor(c)
+	requirement, attached := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement)
+	require.Truef(t, attached, "expected a requirement for %s", body)
+	return requirement
+}
+
+// TestFitPolicyShadowAttachesNothing is the shadow-mode safety gate: installing a
+// policy — even the built-in one proven equivalent — must not attach a
+// requirement to a single request. If this ever fails, shadow has become a
+// behaviour change.
+func TestFitPolicyShadowAttachesNothing(t *testing.T) {
 	bodies := []string{
 		`{"model":"kimi-k3","temperature":0.7}`,
 		`{"model":"kimi-k3","tool_choice":"required"}`,
@@ -71,7 +87,7 @@ func TestFitPolicyShadowDoesNotChangePin(t *testing.T) {
 
 	before := make(map[string]bool, len(bodies))
 	for _, body := range bodies {
-		before[body] = pinFor(t, body)
+		before[body] = requirementAttachedFor(t, body)
 	}
 
 	builtin, err := fitpolicy.CompileJSON(mustBuiltinPolicyJSON(t))
@@ -79,33 +95,43 @@ func TestFitPolicyShadowDoesNotChangePin(t *testing.T) {
 	fitpolicy.Install(builtin)
 
 	for _, body := range bodies {
-		assert.Equalf(t, before[body], pinFor(t, body), "pin changed for %s", body)
+		assert.Equalf(t, before[body], requirementAttachedFor(t, body), "attachment changed for %s", body)
 	}
 }
 
-// TestFitPolicyShadowReportsDivergenceWithoutRerouting proves the other half of
-// shadow: a policy that disagrees with the shipped predicate is observed and
-// counted, but the request still routes on the legacy decision.
-func TestFitPolicyShadowReportsDivergenceWithoutRerouting(t *testing.T) {
+// TestFitPolicyLiveAttachesTheMarksTheShapeNeeds covers what the migration moves
+// into data. With the compiled-in predicates retired the policy document alone
+// decides which shapes pin, so the mark set it attaches is the entire contract:
+// if a rule loses its behaviour, or a declaration goes missing, nothing else
+// would catch it.
+func TestFitPolicyLiveAttachesTheMarksTheShapeNeeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fitpolicy.Install(nil)
-	t.Cleanup(func() { fitpolicy.Install(nil); fitPolicyDivergenceCount.Store(0) })
+	t.Cleanup(func() { fitpolicy.Install(nil) })
 
-	// A policy that demands the whole kimi-k3 family for every shape, while the
-	// shipped predicate leaves a plain request unpinned.
-	snapshot := mustInstallPolicy(t, divergentKimiPolicy, true)
+	mustInstallPolicy(t, string(mustBuiltinPolicyJSON(t)), false)
 
-	before := fitPolicyDivergenceCount.Load()
-	body := `{"model":"kimi-k3","temperature":0.7}`
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"model":"kimi-k3","tool_choice":"required"}`, fitpolicy.BehaviorToolsChoiceSemantics},
+		{`{"model":"kimi-k3","tool_choice":{"type":"function","function":{"name":"f"}}}`, fitpolicy.BehaviorToolsChoiceSemantics},
+		{`{"model":"kimi-k3","response_format":{"type":"json_object"}}`, fitpolicy.BehaviorResponseFormatJSON},
+		{`{"model":"kimi-k3","thinking":{"type":"disabled"}}`, fitpolicy.BehaviorThinkingCounting},
+		{`{"model":"deepseek-v4-flash","logprobs":true}`, fitpolicy.BehaviorLogprobsDualPath},
+		{`{"model":"glm-5.3","temperature":1}`, fitpolicy.BehaviorFamilyWhole},
+	}
+	for _, tc := range cases {
+		requirement := fitRequirementFor(t, tc.body)
+		assert.Containsf(t, requirement.Marks, tc.want, "marks attached for %s", tc.body)
+	}
 
-	// The legacy predicate leaves this servable shape unpinned, and shadow must
-	// not promote the policy's opinion into a pin.
-	assert.False(t, pinFor(t, body), "shadow must not narrow routing")
-	assert.Greater(t, fitPolicyDivergenceCount.Load(), before, "shadow must count the divergence")
-
-	// Sanity: the divergence is real, not a fixture artefact.
-	requirement := snapshot.Decide("kimi-k3", true, fitpolicy.RequestView{Model: "kimi-k3"})
-	assert.True(t, requirement.HasOpinion(), "the divergent policy is expected to have an opinion here")
+	// The counterpart: a shape the document says nothing about must keep the
+	// normal routing it always had, or the migration would pin traffic the old
+	// predicates left alone.
+	assert.False(t, requirementAttachedFor(t, `{"model":"kimi-k3","temperature":0.7}`),
+		"an unopinionated shape must keep normal routing")
 }
 
 // TestFitPolicyAttachesRequirementOnlyOutsideShadow is the structural half of

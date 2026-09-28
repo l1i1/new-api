@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -95,11 +97,40 @@ func TestFitPolicyObserverSeparatesEveryExitPath(t *testing.T) {
 			"a request the policy has an opinion about must be counted as evaluated")
 	})
 
-	t.Run("diverged", func(t *testing.T) {
-		mustInstallPolicy(t, divergentKimiPolicy, true)
-		before := fitPolicyStats.diverged.Load()
-		markV4OfficialPinFromDistributor(newFitPolicyContext(t, `{"model":"kimi-k3","temperature":0.7}`))
-		assert.Greater(t, fitPolicyStats.diverged.Load(), before,
-			"a shadow disagreement must reach the divergence counter")
+	t.Run("shadowed", func(t *testing.T) {
+		// Shadow decides and records but acts on nothing. With the compiled-in
+		// predicates retired there is no second opinion left to disagree with, so
+		// what matters is that a dry run reaches the counter and that the request
+		// context stays untouched — that is what makes a policy edit reviewable
+		// before it is allowed to route.
+		installFitPolicyJSON(t, builtin)
+		before := fitPolicyStats.shadowed.Load()
+		c := newFitPolicyContext(t, `{"model":"kimi-k3","tool_choice":"required"}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.Greater(t, fitPolicyStats.shadowed.Load(), before,
+			"a shadow decision must be counted")
+		_, attached := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement)
+		assert.False(t, attached, "shadow must not attach a requirement to the request")
+	})
+
+	t.Run("live attaches the requirement", func(t *testing.T) {
+		// The counterpart to the shadow case: outside shadow the very same request
+		// must reach the selector, or the migration would leave nothing pinning.
+		var liveDoc map[string]any
+		require.NoError(t, json.Unmarshal([]byte(builtin), &liveDoc))
+		liveDoc["shadow"] = false
+		liveJSON, err := json.Marshal(liveDoc)
+		require.NoError(t, err)
+		installFitPolicyJSON(t, string(liveJSON))
+
+		before := fitPolicyStats.evaluated.Load()
+		c := newFitPolicyContext(t, `{"model":"kimi-k3","tool_choice":"required"}`)
+		markV4OfficialPinFromDistributor(c)
+
+		requirement, attached := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement)
+		assert.Greater(t, fitPolicyStats.evaluated.Load(), before)
+		require.True(t, attached, "a live policy must attach the requirement")
+		assert.Contains(t, requirement.Marks, fitpolicy.BehaviorToolsChoiceSemantics,
+			"the tool_choice rule must require its behaviour mark")
 	})
 }

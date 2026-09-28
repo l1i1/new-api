@@ -730,38 +730,27 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
 	}
-	// The official-fit Route dimension is the only pin source. "Official
-	// channel" here means an official-BEHAVING channel, not the vendor's own
-	// endpoint: candidates are the family's official channel type UNION any
-	// channel that declared the model in official_fit_models, and priority then
-	// picks among them — so a marked reseller normally takes the traffic and the
-	// vendor endpoint can sit at zero requests. The pin is selective per family,
-	// derived from measured divergence against the official endpoint (see each
-	// predicate): DeepSeek V4 pins logprobs, image parts and thinking output;
-	// kimi-k3 pins five measured shape classes; glm-5.3 still pins the whole
-	// family because no selective predicate has been measured for it. Everything
-	// else keeps normal priority routing, which keeps prompt-cache affinity and
-	// official-endpoint spend down. The pin narrows per family via the
-	// registry's channel type (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
-	if profile.Route {
-		switch {
-		case isDeepSeekV4:
-			if deepSeekV4RequestNeedsOfficial(pinRequest) {
-				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-			}
-		case isKimiK3:
-			if kimiK3RequestNeedsOfficial(pinRequest) {
-				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-			}
-		default:
-			common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-		}
-	}
+	// The official-fit Route dimension is the only switch. "Official channel"
+	// here means an official-BEHAVING channel, not the vendor's own endpoint:
+	// candidates are the family's official channel type UNION any channel that
+	// declared the model in official_fit_models, and priority then picks among
+	// them — so a marked reseller normally takes the traffic and the vendor
+	// endpoint can sit at zero requests. Everything the policy does not pin keeps
+	// normal priority routing, which keeps prompt-cache affinity and
+	// official-endpoint spend down. The family's channel type still comes from the
+	// registry (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
+	//
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
-	// Applies the hot-reloadable policy for in-scope requests: it observes
-	// divergences from the predicate above, and (outside shadow only) attaches
-	// the immutable requirement for channel selection to consume.
-	applyFitPolicy(c, pinRequest, profile.Route, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	// Which *shapes* pin used to be decided here by compiled-in predicates, with
+	// the hot-reloadable policy running alongside them only to report how often it
+	// disagreed. That equivalence window is closed: the policy is now the only pin
+	// source, and the predicates below survive solely as the reference
+	// fitpolicy_equivalence_test.go measures the shipped policy document against.
+	//
+	// Nothing is written to the request context here. applyFitPolicy attaches the
+	// requirement and the selector reads it; a request the policy has no opinion
+	// about keeps the normal routing it always had.
+	applyFitPolicy(c, pinRequest, profile.Route)
 	// tokeness-fitpolicy:end
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's

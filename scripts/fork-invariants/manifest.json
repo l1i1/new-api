@@ -1899,8 +1899,8 @@
         {
           "file": "middleware/fitpolicy_shadow_test.go",
           "names": [
-            "TestFitPolicyShadowDoesNotChangePin",
-            "TestFitPolicyShadowReportsDivergenceWithoutRerouting",
+            "TestFitPolicyShadowAttachesNothing",
+            "TestFitPolicyLiveAttachesTheMarksTheShapeNeeds",
             "TestFitPolicyAttachesRequirementOnlyOutsideShadow",
             "TestFitPolicyScopeAndPinGating",
             "TestFitPolicyAllowsAffinityNarrowsTheDirectBranch"
