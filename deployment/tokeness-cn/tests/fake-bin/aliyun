@@ -328,6 +328,18 @@ case "$cmd" in
     state_update --argjson d "$desired" '.desired = $d'
     printf '%s\n' '{"RequestId":"fake"}'
     ;;
+  "ess DescribeScalingGroups")
+    # DesiredCapacity drives how far a rollout grows the tier and what it
+    # returns to; before any ModifyScalingGroup call it is the live instance
+    # count, which is what a real group reports for its steady state.
+    jq '{ScalingGroups: {ScalingGroup: [{
+      ScalingGroupId: "asg-test",
+      MinSize: 1,
+      MaxSize: 4,
+      DesiredCapacity: (.desired // (.instances | length)),
+      LifecycleState: "Active"
+    }]}}' "$state"
+    ;;
   "ess DescribeScalingInstances")
     jq '{ScalingInstances: {ScalingInstance: [.instances[] | {
       InstanceId, PrivateIpAddress,

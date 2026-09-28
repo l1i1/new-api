@@ -566,11 +566,15 @@ rollback_failed_rollout() {
       warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
     fi
   fi
-  if ! scale_group 1; then
+  # Restore the capacity the site actually runs with: a rollout that grew the
+  # tier must hand it back, and a rollback outside a rollout keeps the floor of
+  # one instance it has always used.
+  local stable="${ROLLOUT_STABLE_CAPACITY:-1}"
+  if ! scale_group "$stable"; then
     error "rollback could not restore desired capacity"
     return 1
   fi
-  if ! wait_healthy_instances 1; then
+  if ! wait_healthy_instances "$stable"; then
     error "rollback could not restore a healthy instance"
     return 1
   fi
@@ -813,6 +817,25 @@ scale_group() {
   log "scaling group desired capacity set to $desired"
 }
 
+# current_desired_capacity - the group's DesiredCapacity right now.
+#
+# A rollout grows the tier by one and returns to exactly this number, so a site
+# running two steady-state instances keeps two after a release. The capacity used
+# to be hardcoded 2/1, which was correct only while the steady state was one
+# instance: once the floor was raised (2026-09-28, after a single 4C4G ECI was
+# saturated by an acceptance load test) a release would have scaled the tier
+# back to one instance - and with MinSize=2 the scale-down call would have been
+# rejected outright, failing the release after the drain window.
+current_desired_capacity() {
+  local desired
+  desired="$(aliyun_cmd ess DescribeScalingGroups --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    | jq -r '.ScalingGroups.ScalingGroup[0].DesiredCapacity // empty' | tr -d '\r')" || return 1
+  case "$desired" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$desired"
+}
+
 wait_healthy_instances() {
   local want="$1" tries="${2:-40}" i=0 got
   while [ "$i" -lt "$tries" ]; do
@@ -908,24 +931,33 @@ wait_drain_converged() {
   return 1
 }
 
-# ess_rollout <sha256:digest> <previous_digest> <previous_snapshot> - scale out to 2, gate the NEW
+# ess_rollout <sha256:digest> <previous_digest> <previous_snapshot> - scale out by one, gate the NEW
 # instance on the application itself (probe + container log), and only then
-# scale back to 1. While both instances are healthy ml-sync lists both upstream
-# members, and nginx passive checks (max_fails=2 fail_timeout=5s) bridge the
-# ~30s window in which the old member disappears after the scale-down. Any
-# failure before convergence rolls back to the previous digest automatically.
+# scale back to the steady-state capacity read at the start. While both
+# instances are healthy ml-sync lists both upstream members, and nginx passive
+# checks (max_fails=2 fail_timeout=5s) bridge the ~30s window in which the old
+# member disappears after the scale-down. Any failure before convergence rolls
+# back to the previous digest automatically.
 ess_rollout() {
   local digest="$1" previous_digest="${2:-}" previous_snapshot="${3:-}" attempt
-  local before_ids new_id new_ip
+  local before_ids new_id new_ip stable
   if ! before_ids="$(in_service_instance_ids)"; then
     error "could not read the current in-service instance set"
     return 1
   fi
-  if ! scale_group 2; then
+  if ! stable="$(current_desired_capacity)"; then
+    error "could not read the scaling group's desired capacity"
+    return 1
+  fi
+  # Read by rollback_failed_rollout so every failure path restores the capacity
+  # the site actually runs with, not a hardcoded one.
+  ROLLOUT_STABLE_CAPACITY="$stable"
+  log "steady-state capacity is $stable; rolling out through $((stable + 1)) instances"
+  if ! scale_group $((stable + 1)); then
     rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || true
     return 1
   fi
-  if ! wait_healthy_instances 2; then
+  if ! wait_healthy_instances $((stable + 1)); then
     if ! rollback_failed_rollout "" "$previous_digest" "$previous_snapshot"; then
       error "rollout gate failed and rollback could not be verified"
     fi
@@ -969,7 +1001,7 @@ ess_rollout() {
   # The pin must outlive the scale-down. Clearing it first would let ml-sync
   # re-add the still-InService old instance on its next 30s pass, sending new
   # requests back to an instance that is about to be deleted.
-  if ! scale_group 1 || ! wait_healthy_instances 1; then
+  if ! scale_group "$stable" || ! wait_healthy_instances "$stable"; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "scale-down gate failed and rollback could not be verified"
     fi
