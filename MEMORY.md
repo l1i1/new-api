@@ -1439,6 +1439,22 @@
   - **实验室依赖生产代理**：多数渠道的 `setting.proxy` 是 `socks5h://…@cn-hk-oproxy.tokeness.cn:43171`（随渠道导出一起落到本地）。走该代理的渠道（如 id=4）测通了；不走代理的渠道在本机的可达性需要单独核实。
 - **本地判定「官方渠道」直连可用**：本机直测 `api.moonshot.cn` —— key#1 **429 账号已停用**（0.3s），key#2/key#3 **200**（2.1s / 1.7s）。所以 `DEF_Kimi` 三密钥中有一个是死的，生产靠轮换活着，**建议摘掉它**（每次轮到都白打一发 429；且任何钉向官方渠道的策略都会被它拖累）。
 
+- **逐渠道实测闭环在生产前跑通并给出干净结论（2026-09-28，本地实验室）**：完整四臂对照，全部实测：
+  | 臂 | 配置 | pass/51 | severe | shape | wording |
+  |---|---|---|---|---|---|
+  | A | 不收窄（`route=off`） | **26** | 13 | 9 | 3 |
+  | C | 收窄但**标记绑定失效**（退回官方集合） | 21 | 12 | 15 | 3 |
+  | C2 | 同上 + 摘掉死密钥 | 20 | 12 | 16 | 3 |
+  | **D** | **收窄 + 正确绑定的标记** | **33** | **1** | 12 | 5 |
+  **臂 D 的 18 个失败与「网关级案例集」完全重合**（失败∩网关级=18、非网关级失败=0、通过的网关级=0）——即**开了收窄后，凡是网关自身能做到的案例全部做到，渠道级分歧归零**。
+- **三个必须记住的机制事实**：
+  1. **标记绑定到 `policy_hash`，而翻转 `shadow` 或改规则都会重编译出新哈希**。臂 C 之所以「越收窄越差」，是因为我在 `shadow:true` 下写标记、在 `shadow:false` 下实测——哈希不匹配，标记**全被忽略**，相 1 为空 → 退回官方集合。**正确顺序：先把策略定稿（含 `shadow`），取活哈希，再写标记。**（设计如此，不是 bug：规则一变，旧测量立即失效。）
+  2. **行为级标记是必要条件，不是充分条件**。渠道可以满足 `response_format.json` 却仍在其他形状上不保真（实测：官方集合里的转售渠道会给 choice 加官方没有的 `logprobs` 字段）——收窄到它就亏。解法用**设计里已有的 `family.whole`**：只有**全部非网关级案例都通过**的渠道才拿这个标记，并让每条 k3 规则同时要求 `family.whole` + 各自行为。实测 18 个渠道里**只有渠道 8（官方 Moonshot）拿到**。这一步**只改数据、不改代码**，正是「拟合策略 = 热生效数据」的证明。
+  3. **`family.whole` 要在该族的 `behaviors` 里声明**，否则提交前编译门禁拒绝（`requires undeclared behavior`）——门禁又一次拦住了一个坏策略。
+- **网关级 ≠ 渠道级（两本账）**：18 个案例在**全部 18 个渠道**上都失败，与渠道无关，属于网关缺陷，必须改代码而非改标记。清单：`K3-014,021,022,024,025,026,027,029,042,043,050,063,065,066,070,091,092,140`。臂 A 的分歧里相当一部分其实是这些。
+- **本地实验室操作坑**：反复登录会撞 **`AUTH_SESSION_LIMIT`**（`user_sessions` 攒到 50 行后登录返回 409 Conflict）——批量脚本每次登录前清 `user_sessions`。另：`pkill -f "cli.ts consistency"` 会**匹配到自己的命令行**而自杀，用 `[c]li.ts` 这种不自匹配写法。
+- **渠道 8 的 key 编辑有反效果（未深究）**：删掉已停用的 key#1（保留 key#2/#3）后，该渠道反而开始报 `unsupported protocol scheme ""`；恢复原 3 密钥值即恢复 200。**所以「摘掉死密钥」这个建议在本地未验证成功**，生产上要动它需先单独验证清楚。
+
 - **2026-09-27 国内站发版 `v1.0.0-rc.40-tokeness-mainland.11`（commit `e22d31165`，digest `sha256:58ccd4eec47e3d2f9bf8e402ab6853d5932857deeb8c4105ae941d8213467b62`）**：内网 origin 推 tag（`2d0aa0203`）→ 镜像同步到 CNB → `tag_push` 构建 → 链式 `api_trigger` 发布，**全自动、无需按钮**；构建产物 15:34:04 出现在 registry，15:34:54 开始发布，15:46 完成。**这是 drain-first 首次实跑**：两台轻量主机均出现 `DRAIN: relay tier pinned to 10.0.0.222`（旧实例 `10.0.0.220` → 新实例 `10.0.0.222`），pin 在缩容前建立、活过缩容、SWAS-1 侧已清除。**伸缩配置核验通过**：`TerminationGracePeriodSeconds=240`、`SHUTDOWN_TIMEOUT_SECONDS=180`、`NODE_TYPE=slave` 保留、image digest 已换新。**遗留（无害）**：SWAS-2 的 `/etc/ml-sync/drain-target` 未被 `ml_drain_end` 清掉（SWAS-1 已清），因 ESS 仅剩 `.222` 该 pin 指向的就是唯一成员，且 1800s TTL 到期自愈——按设计的最坏情况退化为旧行为；下次发布若复现需查 pipeline 日志确认第二次 SSH 为何失败。**回滚目标**：`mainland.10` = `sha256:15d6d632a4f72c3dd6ba63b68cf4f6fe183c7a6a6b67c1c89fcb77346e9acfd0`（已对 registry digest 与运行时 digest 双向核验一致）。**本次发布内容**：自 `.9` 构建点起 32 个提交 / 113 文件，除 fitpolicy 12 个 + drain-first 1 个外还含 config epoch 传播、i18n overlay 拆分、relaykit cache_control 透传、控制台/邮箱登录修复。**另注**：发布前实测公网链路健康（`/api/status` 200、`/v1/models` 401），用户 `cdp` 的基准负载于 12:00 停止导致总请求量从 ~50/min 降到 ~2/min——**不是事故**，真实用户流量正常。
 
 - **上线（两站同源 `5a9e8e591`）**：国际 `v1.0.0-rc.40-tokeness-intl.8`（digest `sha256:1b04cdbaccea95931344ac264334a2930cadb6c14f894f6243722549d7013384`，publish run `35866469666` → deploy run `35867840848` 四节点全绿）；国内 `v1.0.0-rc.40-tokeness-mainland.9`（tag_push `cnb-8l5-1k376s5vv` → 链式 `api_trigger` `cnb-7dt-1k3771p0l` 全绿，线上 `/api/status` 回报 `.9`）。**产物级验证**：两站 `static/js/async/82306.af20256f30.js` 各含 **1 处 `Fidelity routing` / 0 处 `Official route`**；`/v1/models` 两站 401。**回滚目标**：国际 `intl.7` = `sha256:998d87ae…`、国内 `mainland.8`（tag 即回滚标识）。
