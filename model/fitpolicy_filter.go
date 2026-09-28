@@ -1,11 +1,21 @@
 package model
 
 import (
+	"fmt"
+	"sync/atomic"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/gin-gonic/gin"
 )
+
+// fitNarrowingLogLimit bounds how many narrowing decisions are logged. The first
+// few are what a diagnosis needs; a systematic fault should cost a bounded
+// number of lines rather than one per request.
+const fitNarrowingLogLimit = 40
+
+var fitNarrowingCount atomic.Int64
 
 // Fit-policy narrowing for the channel selector.
 //
@@ -86,8 +96,23 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 		func(channelID int) bool { return officialFitChannelMatchesLocked(channelID, model) },
 		f.MarkSatisfied,
 	)
+	reportFitNarrowing(model, channels, result)
 	if !result.Applied {
 		return channels, false
 	}
 	return result.Channels, true
+}
+
+// reportFitNarrowing records how one narrowing decision came out. An empty result
+// is indistinguishable from "the pool was empty" in the selection error, and the
+// three inputs (how many candidates, how many of them official, whether any
+// carried the marks) are what tell the two apart. The line carries identifiers
+// and counts only — never request bodies, messages, tools or credentials.
+func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing) {
+	if fitNarrowingCount.Add(1) > fitNarrowingLogLimit {
+		return
+	}
+	common.SysLog(fmt.Sprintf(
+		"fitpolicy narrow: model=%s candidates=%d applied=%t official_and_marked=%t kept=%d",
+		model, len(channels), result.Applied, result.MatchedMarks, len(result.Channels)))
 }

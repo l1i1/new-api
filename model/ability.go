@@ -427,7 +427,16 @@ func GetChannelWithBlockedChannelsPinned(group string, model string, retry int, 
 func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool, fit *FitChannelFilter) (*Channel, error) {
 	var abilities []Ability
 
-	if videoOnly || pinOfficial {
+	// The fit narrowing has to be treated exactly like the pin here, not only
+	// where it is applied. It removes candidates for the same reason a pin does —
+	// the official channel is routinely the lowest-priority row — so filtering
+	// after the query has already reduced the set to one tier finds nothing and
+	// fails the request. With the compiled-in predicates retired the pin is never
+	// set, so without this the order would silently revert to tier-first and every
+	// shape the policy pins would 503 instead of falling through to the official
+	// channel.
+	narrowBeforeTiering := videoOnly || pinOfficial || fit.hasOpinion()
+	if narrowBeforeTiering {
 		// Both narrowings must run before the priority tier is chosen, not
 		// after: the channel a filter keeps can sit below the top tier, and
 		// dropping it after getChannelQueryWithBlockedChannels already reduced
@@ -456,7 +465,7 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 	}
 	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial, fit)
 	abilities = filterAbilitiesByVideoCapability(abilities, videoOnly)
-	if videoOnly || pinOfficial {
+	if narrowBeforeTiering {
 		abilities = abilitiesAtRetryTier(abilities, retry)
 	}
 	channel := Channel{}
