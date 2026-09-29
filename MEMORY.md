@@ -1615,3 +1615,22 @@
 **两处按现场修正的实现细节**：ECS 的 nginx 配置是 `/etc/nginx/sites-enabled/tokeness-ml.conf`（**不在本仓库**，host 自维护）；它是**符号链接**，必须 `sed -i --follow-symlinks`；该文件里有**两个** upstream 指向 master（`newapi_ml` 的 `:80` /v1 兜底 + `newapi_web` 本机面板路由），锚定 `10.1.0.43` 的替换正好两个都翻。
 
 **未完成（诚实记录）**：**真机彩排未做**。原因是执行窗口撞上另一会话的 P0 事故处理（它正在同两台轻量上做 relay 的 N+1 滚动替换，用 `/etc/ml-sync/drain-target` 钉存活实例，3 分钟内 187 个子进程事件），两个会话同时改同一批 nginx 配置必须避免。代码路径已被单测覆盖（含"pin 被拒 → 不得 commit、不得动 ESS、必须 abort 回收"），但**首次实战即真发版**。彩排步骤已备好：source `deploy.sh` 后直接调 `sync_master_container "" <当前 digest>`（本地无 aliyun CLI，不需要它），跑两轮验证 3000→3001→3000 双向 + 一次 start/abort。
+
+### 非流式响应保活：破解中间层 600s「空档」超时（2026-09-30，`93b3af494`）
+
+**问题（有数据）**：客户报非流式请求 600s 超时（EdgeOne 524）。同一时间窗查 `logs` 表：**流式 14322 条最长 1807s 全 200**，**非流式 95 条在 599s 处有硬墙**，其中 6 条正好落在 590–599s 且 `completion_tokens=0`（什么都没生成就被掐）。机制：EdgeOne 的"回源超时"是**两次数据之间的空档**上限（约 600s），不是总时长上限 —— 流式一直在吐字所以永远不触发（且流式本来就有 ping 保活），**非流式整段生成期间一个字节都不写**，空档必然超限。
+
+**做法**：把已有的流式 ping 保活**对称**扩展到非流式 —— 等待上游期间按间隔往响应体写 **JSON 合法空白**（单空格，RFC 8259 `ws`），空档被打断、客户端解析结果不变；停掉保活 goroutine 之后才写真正的响应体（`doRequest` 的 defer 先 `stop()`+`<-done` 再返回，故无并发写，`-race` 干净）。
+
+**必须是白名单**：`nonStreamKeepAliveApplies` 只放文本补全类（chat/completions、completions、embeddings、moderations、rerank、responses、responses/compact、gemini、alpha/search）；**音频（二进制 TTS/转写）、图片、realtime、任务型（Midjourney/Suno/video）绝不写** —— 前置空格会污染二进制正文。
+
+**一个容易漏的坑（已在实现里处理）**：空白必须同样计入 `ginKeyKeepAliveBytes`。否则 `ResponseCommitStateOf` 会把"只写了空白的响应"当成**已交付正文**，从而拒绝换渠道重试；反过来，若不计入而实际写了空白，也会让重试判断失真。因此 `PingData` 与 `WhitespaceData` 共用 `writeKeepAliveProbe`。
+
+**开关**：`general_setting` 新增 `non_stream_keep_alive_enabled`（**默认 false**）与 `non_stream_keep_alive_seconds`（默认 60），与既有 `ping_interval_*` 同一注册路径（`config.GlobalConfig.Register`），**面板/配置接口可开关，关闭无需发版**。
+
+**前提已核实**：两台轻量的 api server 块里已 `proxy_buffering off` + `proxy_cache off`（否则探针会被 nginx 缓冲、完全失效）；另发 `X-Accel-Buffering: no` 双保险。
+
+**仍未做/残余风险（诚实记录）**：
+1. **代码尚未部署到生产**（提交≠发版）；开关默认关闭，所以在旧镜像上跑不出任何行为变化，也需要发版后才能打开。
+2. **首次探针之后 HTTP 状态即被提交为 200** —— 若上游在第一个间隔（默认 60s）之后才失败，客户会拿到 `200 + 错误 JSON` 而不是 502/429（第一个间隔内失败则状态照旧）。这是相对"EdgeOne 524 直接断连"的刻意取舍，间隔可调。
+3. 端到端真机验证（真实长非流式请求穿过 EdgeOne 超过 600s 仍成功）只能在部署 + 打开开关后做。
