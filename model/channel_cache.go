@@ -181,7 +181,14 @@ func InitChannelCache() {
 	newChannel2concurrencyLimits := make(map[int]int)
 	newChannel2supportsVideo := make(map[int]struct{})
 	var channels []*Channel
-	DB.Find(&channels)
+	if err := DB.Find(&channels).Error; err != nil {
+		// Publishing the empty maps this read would produce means "this node has
+		// no channels at all", which stops every relay request on it. A failed
+		// read is not an empty configuration: keep the previous cache and let the
+		// next reload (or the periodic sync) try again.
+		common.SysError("failed to load channels for the cache, keeping the previous cache: " + err.Error())
+		return
+	}
 	for _, channel := range channels {
 		loadChannelCredentials(channel)
 		newChannelId2channel[channel.Id] = channel
@@ -195,7 +202,12 @@ func InitChannelCache() {
 		setSupportsVideoIn(newChannel2supportsVideo, channel)
 	}
 	var abilities []*Ability
-	DB.Find(&abilities)
+	if err := DB.Find(&abilities).Error; err != nil {
+		// Same reasoning as the channel read above: an unreadable ability table
+		// must not be published as "no group serves any model".
+		common.SysError("failed to load abilities for the cache, keeping the previous cache: " + err.Error())
+		return
+	}
 	groups := make(map[string]bool)
 	for _, ability := range abilities {
 		groups[ability.Group] = true

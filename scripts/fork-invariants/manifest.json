@@ -2254,6 +2254,74 @@
           ]
         }
       ]
-    }
+    }  ,
+  {
+      "id": "config-epoch-write-publishes-reload-1",
+      "title": "配置纪元：写节点提交后 INCR config_epoch:v1，各节点 2s 轮询整体重载；60s 循环兜底；写节点仅在恰好下一号时认领；重载失败退避、日志限额；读失败保留旧缓存",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+          "model/config_epoch.go",
+          "model/channel_cache.go",
+          "model/option.go",
+          "model/channel.go",
+          "service/authz/adapter.go",
+          "main.go"
+      ],
+      "anchors": [
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "NotifyConfigChanged"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "InitChannelCacheAndNotify"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "StartConfigEpochWatcher"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "reloadConfigFromEpoch"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "configEpochReloadRetryBackoff"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/config_epoch.go",
+              "name": "configEpochKey"
+          },
+          {
+              "kind": "symbol",
+              "file": "model/channel_cache.go",
+              "name": "func InitChannelCache()"
+          },
+          {
+              "kind": "file",
+              "file": "model/config_epoch_test.go"
+          }
+      ],
+      "tests": [
+          {
+              "file": "model/config_epoch_test.go",
+              "names": [
+                  "TestConfigEpochWatcherAppliesPeerChange",
+                  "TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied",
+                  "TestReloadConfigFromEpochAppliesCommittedChanges",
+                  "TestInitChannelCacheAndNotifyPublishesWhenTheLocalRefreshPanics",
+                  "TestUpdateChannelStatusPublishesTheChange",
+                  "TestConfigEpochReloadRetryBackoffGrowsAndIsCapped"
+              ]
+          }
+      ]
+  }
   ]
 }

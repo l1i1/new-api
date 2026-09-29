@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +50,13 @@ const (
 
 	// Kept tight so Redis latency cannot delay the watcher or a write path.
 	configEpochRedisTimeout = 100 * time.Millisecond
+
+	// maxConfigEpochReloadBackoff caps the wait between retries of a reload that
+	// keeps failing. A failed attempt is cheap when the cause is a transient
+	// read error, but a deterministic panic would otherwise re-run the whole
+	// options + channels + pricing + policy reload on every tick, on every node,
+	// for as long as the fault lasts.
+	maxConfigEpochReloadBackoff = 10 * time.Second
 )
 
 var (
@@ -94,6 +103,14 @@ func RegisterConfigReloadHook(hook func()) {
 // It is a no-op without Redis, and it never returns an error: a failed publish
 // only means peers fall back to the SYNC_FREQUENCY loops.
 func NotifyConfigChanged() {
+	bumpConfigEpoch(true)
+}
+
+// bumpConfigEpoch advances the shared epoch. claim says whether this node has
+// already applied the change locally and may therefore skip its own watcher's
+// reload; it must be false when the local refresh failed, so the writer node
+// reloads like everybody else instead of staying the only stale node.
+func bumpConfigEpoch(claim bool) {
 	if !common.RedisAvailable() {
 		return
 	}
@@ -105,6 +122,9 @@ func NotifyConfigChanged() {
 		return
 	}
 	configEpochRedisDownLatched.Store(false)
+	if !claim {
+		return
+	}
 	// This process already applied the change it just committed, so it does not
 	// need to reload its own bump. Only claim that when this bump is the very
 	// next value after the one this process has observed: if a peer published in
@@ -124,10 +144,13 @@ func NotifyConfigChanged() {
 // The publish is deferred so it still happens when the local refresh panics
 // (InitChannelCache has a known panic path, which is why its startup caller
 // recovers and retries): the database row is committed either way, so the other
-// nodes must learn about it even if this process failed to apply it.
+// nodes must learn about it. On that path the claim is refused, because this
+// process did not apply the change and must reload like any other node.
 func InitChannelCacheAndNotify() {
-	defer NotifyConfigChanged()
+	applied := false
+	defer func() { bumpConfigEpoch(applied) }()
 	InitChannelCache()
+	applied = true
 }
 
 // StartConfigEpochWatcher runs the reload watcher for the lifetime of the
@@ -141,6 +164,11 @@ func StartConfigEpochWatcher(interval time.Duration) {
 	if interval < minConfigEpochWatchInterval {
 		interval = minConfigEpochWatchInterval
 	}
+	if !common.RedisAvailable() {
+		// Say it once at startup: without Redis this watcher can never fire, and
+		// silently doing nothing is indistinguishable from "no changes happened".
+		common.SysLog("config epoch: Redis is unavailable; configuration changes propagate only through the periodic sync")
+	}
 	go runConfigEpochWatcher(nil, interval, reloadConfigFromEpoch)
 }
 
@@ -150,6 +178,7 @@ func StartConfigEpochWatcher(interval time.Duration) {
 func runConfigEpochWatcher(stop <-chan struct{}, interval time.Duration, reload func()) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	failures := 0
 	for {
 		select {
 		case <-stop:
@@ -180,11 +209,24 @@ func runConfigEpochWatcher(stop <-chan struct{}, interval time.Duration, reload 
 		started := time.Now()
 		if err := applyConfigReloadExclusively(reload); err != nil {
 			logConfigEpochReloadFailure(err)
-			// Leave the applied value untouched so the next tick retries.
+			failures++
+			// Bound the work a permanently failing reload can do. A transient read
+			// error should be retried immediately, but a deterministic panic would
+			// otherwise re-run the whole reload on every tick, on every node, for
+			// as long as the fault lasts.
+			if backoff := configEpochReloadRetryBackoff(failures); backoff > 0 {
+				select {
+				case <-stop:
+					return
+				case <-time.After(backoff):
+				}
+			}
+			// Leave the applied value untouched so the next attempt retries.
 			continue
 		}
+		failures = 0
 		configEpochLastSeen.Store(value)
-		common.SysLog(fmt.Sprintf("config epoch %d applied in %s", value, time.Since(started)))
+		common.SysLog(fmt.Sprintf("config epoch %d applied in %s on node %s", value, time.Since(started), configEpochNodeLabel()))
 	}
 }
 
@@ -239,6 +281,39 @@ func runConfigReloadStep(step func()) (err error) {
 func reloadConfigFromEpoch() {
 	loadOptionsFromDatabase()
 	InitChannelCache()
+}
+
+// configEpochReloadRetryBackoff returns how long to wait before retrying a reload
+// that has failed `failures` times in a row; zero when nothing has failed.
+func configEpochReloadRetryBackoff(failures int) time.Duration {
+	switch {
+	case failures <= 0:
+		return 0
+	case failures == 1:
+		return time.Second
+	case failures == 2:
+		return 2 * time.Second
+	case failures == 3:
+		return 4 * time.Second
+	case failures == 4:
+		return 8 * time.Second
+	default:
+		return maxConfigEpochReloadBackoff
+	}
+}
+
+// configEpochNodeLabel identifies this process in the epoch log lines. The
+// configuration-epoch lines are the only evidence that a change reached a given
+// replica, and several replicas can share a NODE_NAME, so the label carries the
+// configured name and falls back to the hostname when it is empty.
+func configEpochNodeLabel() string {
+	if name := strings.TrimSpace(common.GetNodeIdentity().Name); name != "" {
+		return name
+	}
+	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		return hostname
+	}
+	return "unknown"
 }
 
 // logConfigEpochReloadFailure reports a reload failure within a log budget. A

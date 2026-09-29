@@ -291,6 +291,145 @@ func TestInitChannelCacheAndNotifyPublishesWhenTheLocalRefreshPanics(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), stored,
 		"a committed channel change must still be published when the local refresh panics")
+	assert.Equal(t, int64(0), configEpochLastSeen.Load(),
+		"the node whose refresh failed must not claim the epoch, or it stays stale while the fleet moves on")
+}
+
+// Nothing else in this suite fails if reloadConfigFromEpoch stops reloading
+// anything (verified by mutation), so this pins the two pieces of state a relay
+// node actually decides with: the option map and the channel cache.
+func TestReloadConfigFromEpochAppliesCommittedChanges(t *testing.T) {
+	setupConfigEpochRedis(t)
+
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCache })
+
+	channelSyncLock.Lock()
+	previousChannels := channelsIDM
+	previousGroup2Model2Channels := group2model2channels
+	channelSyncLock.Unlock()
+	const channelID = 9002
+	// The shared test fixture migrates neither the options table nor an option
+	// map (the production sync loops ignore that read error), so this test brings
+	// its own and restores the previous map wholesale afterwards.
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	t.Cleanup(func() { DB.Migrator().DropTable(&Option{}) })
+	common.OptionMapRWMutex.Lock()
+	previousOptionMap := common.OptionMap
+	common.OptionMap = map[string]string{}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		channelSyncLock.Lock()
+		channelsIDM = previousChannels
+		group2model2channels = previousGroup2Model2Channels
+		channelSyncLock.Unlock()
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptionMap
+		common.OptionMapRWMutex.Unlock()
+		DB.Exec("DELETE FROM channels WHERE id = ?", channelID)
+		// The reload rebuilds the fit-capability index against the fixture
+		// database; leaving it built would hide rows that a later test writes and
+		// expects the lazy build to pick up.
+		ResetFitCapabilityIndexForTest()
+	})
+
+	// What a peer's committed write looks like from this node's side: rows in the
+	// shared database and nothing in memory yet.
+	require.NoError(t, DB.Create(&Channel{
+		Id:     channelID,
+		Name:   "config-epoch-reload",
+		Key:    "sk-config-epoch-reload",
+		Status: common.ChannelStatusEnabled,
+		Group:  "default",
+		Models: "config-epoch-reload-model",
+	}).Error)
+	require.NoError(t, DB.Save(&Option{Key: "HeaderNavModules", Value: `{"marker":"reloaded"}`}).Error)
+
+	reloadConfigFromEpoch()
+
+	common.OptionMapRWMutex.RLock()
+	optionValue := common.OptionMap["HeaderNavModules"]
+	common.OptionMapRWMutex.RUnlock()
+	assert.Equal(t, `{"marker":"reloaded"}`, optionValue,
+		"the epoch reload must apply an option row committed by another node")
+	channelSyncLock.RLock()
+	_, cached := channelsIDM[channelID]
+	channelSyncLock.RUnlock()
+	assert.True(t, cached, "the epoch reload must rebuild the channel cache from the database")
+}
+
+// The happy path of the publish helper: a successful local refresh publishes, and
+// the node may claim its own bump because it really did apply the change.
+func TestInitChannelCacheAndNotifyPublishesAfterARefresh(t *testing.T) {
+	setupConfigEpochRedis(t)
+
+	previousMemoryCache := common.MemoryCacheEnabled
+	// The database-only path keeps this test to the publish itself; the cache
+	// rebuild is covered by the reload test above.
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = previousMemoryCache
+		ResetFitCapabilityIndexForTest()
+	})
+
+	InitChannelCacheAndNotify()
+
+	stored, err := common.RDB.Get(t.Context(), configEpochKey).Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), stored, "a committed channel change must be published")
+	assert.Equal(t, int64(1), configEpochLastSeen.Load(),
+		"the node applied the refresh locally, so it may claim its own bump")
+}
+
+func TestConfigEpochReloadRetryBackoffGrowsAndIsCapped(t *testing.T) {
+	assert.Equal(t, time.Duration(0), configEpochReloadRetryBackoff(0))
+	assert.Equal(t, time.Second, configEpochReloadRetryBackoff(1))
+	assert.Equal(t, 2*time.Second, configEpochReloadRetryBackoff(2))
+	assert.Equal(t, 4*time.Second, configEpochReloadRetryBackoff(3))
+	assert.Equal(t, 8*time.Second, configEpochReloadRetryBackoff(4))
+	assert.Equal(t, maxConfigEpochReloadBackoff, configEpochReloadRetryBackoff(5))
+	assert.Equal(t, maxConfigEpochReloadBackoff, configEpochReloadRetryBackoff(50))
+}
+
+func TestConfigEpochNodeLabelIsNeverEmpty(t *testing.T) {
+	assert.NotEmpty(t, configEpochNodeLabel())
+}
+
+// A failed channel read must not be published as "this node has no channels":
+// the epoch reload runs this path on every configuration change on every node,
+// so a transient read error would take a replica out of rotation until the next
+// periodic sync, while the epoch was recorded as applied.
+func TestInitChannelCacheKeepsThePreviousCacheWhenTheReadFails(t *testing.T) {
+	const channelID = 9003
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	channelSyncLock.Lock()
+	previousChannels := channelsIDM
+	previousGroup2Model2Channels := group2model2channels
+	channelsIDM = map[int]*Channel{channelID: {Id: channelID, Status: common.ChannelStatusEnabled}}
+	group2model2channels = map[string]map[string][]int{"default": {"m": {channelID}}}
+	channelSyncLock.Unlock()
+
+	require.NoError(t, DB.Migrator().DropTable(&Channel{}))
+	t.Cleanup(func() {
+		channelSyncLock.Lock()
+		channelsIDM = previousChannels
+		group2model2channels = previousGroup2Model2Channels
+		channelSyncLock.Unlock()
+		common.MemoryCacheEnabled = previousMemoryCache
+		require.NoError(t, DB.AutoMigrate(&Channel{}))
+	})
+
+	InitChannelCache()
+
+	channelSyncLock.RLock()
+	_, stillCached := channelsIDM[channelID]
+	cachedModels := group2model2channels["default"]["m"]
+	channelSyncLock.RUnlock()
+	assert.True(t, stillCached, "a failed channel read must keep the previous channels in the cache")
+	assert.Equal(t, []int{channelID}, cachedModels,
+		"a failed channel read must keep the previous model routing table")
 }
 
 // A failing reload is retried at full rate on purpose, so its error line has to
@@ -314,4 +453,52 @@ func TestConfigEpochReloadFailureLogIsBudgeted(t *testing.T) {
 	}
 	assert.Equal(t, 2, strings.Count(logs.String(), "config epoch reload failed"),
 		"the failure line must be budgeted, not written once per retry")
+}
+
+// A channel that the relay auto-disables (dead key, exhausted balance) must stop
+// receiving traffic on every replica, not only on the one that saw the error —
+// and the same holds for the automatic recovery afterwards.
+//
+// The cache is seeded and restored directly rather than through InitChannelCache:
+// that call rebuilds the process-wide selection maps and the fit-capability
+// index, which other tests in this package read, so using it here would make
+// their results depend on this test having run first.
+func TestUpdateChannelStatusPublishesTheChange(t *testing.T) {
+	setupConfigEpochRedis(t)
+
+	const channelID = 9001
+	channel := Channel{
+		Id:     channelID,
+		Name:   "config-epoch-test",
+		Key:    "sk-config-epoch-test",
+		Status: common.ChannelStatusEnabled,
+		Group:  "default",
+		Models: "config-epoch-test-model",
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+
+	previousMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	channelSyncLock.Lock()
+	previousChannels := channelsIDM
+	previousGroup2Model2Channels := group2model2channels
+	channelsIDM = map[int]*Channel{channelID: {Id: channelID, Status: common.ChannelStatusEnabled}}
+	group2model2channels = map[string]map[string][]int{}
+	channelSyncLock.Unlock()
+	t.Cleanup(func() {
+		channelSyncLock.Lock()
+		channelsIDM = previousChannels
+		group2model2channels = previousGroup2Model2Channels
+		channelSyncLock.Unlock()
+		common.MemoryCacheEnabled = previousMemoryCache
+		DB.Exec("DELETE FROM channels WHERE id = ?", channelID)
+		DB.Exec("DELETE FROM abilities WHERE channel_id = ?", channelID)
+	})
+
+	require.True(t, UpdateChannelStatus(channelID, "", common.ChannelStatusAutoDisabled, "config epoch test"))
+
+	stored, err := common.RDB.Get(t.Context(), configEpochKey).Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), stored,
+		"an auto-disable must be published so the other replicas stop using the channel now")
 }

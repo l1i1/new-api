@@ -1563,6 +1563,30 @@
 
 **未在本轮独立测量的部分（如实报告）**：纪元在生产里的**端到端时延**没有实测——master 容器已迁到 ECS，SWAS 上读不到它的日志；要拿到线上数字需要 ECS 侧通道（Cloud Assistant）或 admin API + 受控探针。当前生产证据是"代码已发布"（tag contains + 线上版本 `.12`）而非"线上时延已量到"。
 
+## 2026-09-30 配置纪元对抗审查（第二轮）：两个独立审查代理 + 复核，修 5 处、补 2 个测试盲区、登记门禁
+
+**方法**：两个 fresh-context 审查代理（一个查并发/健壮性，一个查覆盖面/一致性）只读复核，逐条给证据；我复核每条结论后才动手（两份报告都点名了"仓库正在被另一个会话改"的快照哈希）。**没有任何一条严重缺陷来自纪元算法本身**：无数据竞争、无死锁、无丢失的 epoch 通知；两条代理都独立确认"level-triggered + 认领规则"是自洽的（其中一位用 claim 算术证明：重载在飞行中时本地写入的 bump 必然 ≥ 观测值+2，因此 `next == lastSeen+1` 不可能触发，踩写最多晚一个 tick）。
+
+**本轮修掉的 5 处（都带判别性测试，去掉修复即 FAIL）**：
+1. **重载失败的日志没有限额**：失败会每 2s 重试，于是每 2s 写一行 error，和 Redis 那行的处理不一致。改用 `common.LogBudget(3, 1min)`；判别性核对：去掉限额后 20 次失败写出 16 行 → FAIL。
+2. **重载读失败会把空选路表发布给 relay**（F1，最严重的一条）：`InitChannelCache` 的 `DB.Find(&channels)` / `DB.Find(&abilities)` 忽略错误，读失败时 `channels` 为空 → 在锁内把空的 `group2model2channels`/`channelsIDM` 换上，**该节点此后对所有 relay 请求都"没有可用渠道"**，而我的纪元还会把它记为"已应用"（不重试），只能等 60s 兜底。这是既有漏洞（60s 循环同样中招），但纪元把它变成主传播路径。修法：两处读失败就保留上一份缓存并返回。测试 `TestInitChannelCacheKeepsThePreviousCacheWhenTheReadFails`（drop 表 → 断言旧缓存还在）。
+3. **写节点在本地刷新 panic 时会把自己留在旧配置上**（F2）：我上一轮为"提交后必须发布"加的 `defer NotifyConfigChanged()` 有个反作用——panic 时发布照做，但 bump 仍按 `next == lastSeen+1` 被本节点认领，于是对端都重载了、**写节点自己不重载**，直到 60s 兜底，正好制造了它要消灭的不一致。修法：`bumpConfigEpoch(claim bool)`，只有 `InitChannelCache` 正常返回才 claim。测试同时断言"发布了"和"没有认领"。
+4. **relay 自动禁用/恢复不通知对端**（m1 + M5 + 代理 1 的 R10，三个来源独立指向同一处）：`model.UpdateChannelStatus` 是 relay 自动禁用（`service/channel.go:38/56`）、mjproxy 禁用（`relay/mjproxy_handler.go:645`）、任务插件级联禁用（`controller/task_plugin.go:538`）唯一的落库路径，它只更新本进程缓存、从不发布 → 对端最多 60s 仍在往已知坏渠道发流量。修法：在 `UpdateChannelStatus` 里发布；**发布放在锁外**（持进程级 `channelStatusLock` + 每渠道 polling 锁做 100ms Redis 往返会阻塞进程内其他状态更新）。
+5. **确定性 panic 会变成每节点 30 次/分钟的全量重载**（F3）：失败即重试是对的（瞬时读错误应当立刻恢复），但对"每次必炸"的步骤就是无限重载且只有限额日志。加退避 1/2/4/8/10s（`configEpochReloadRetryBackoff`，纯函数有测试）；顺带 `StartConfigEpochWatcher` 的 interval 语义改为"≤0 取默认、低于下限夹到下限"，并在无 Redis 启动时记一行说明（此前 watcher 静默什么都不做，与"没有变更"无法区分）；epoch 日志行带上节点标识（多副本共用 NODE_NAME，否则日志无法归因）。
+
+**补掉的两个测试盲区（代理用 mutation 证明的）**：把 `reloadConfigFromEpoch` 改成空函数、或把 `InitChannelCacheAndNotify` 的发布删掉，**原来整套测试仍然全绿**——测试只证明了 ticker 和守卫，没有证明"重载真的重载了什么"。新增 `TestReloadConfigFromEpochAppliesCommittedChanges`（写 option 行 + 渠道行 → 调重载 → 断言 option map 与 `channelsIDM` 都变了）和 `TestInitChannelCacheAndNotifyPublishesAfterARefresh`（正常路径发布且允许认领）；两个 mutation 现在都会 FAIL。**测试自身污染共享状态的教训（实测踩到）**：调用 `InitChannelCache()` 的测试会把 fit-capability 索引标记为「已构建」，而 `model/fit_capability_mark_test.go` 依赖首次查询时的惰性构建来看到它自己写的行 → 我的两个新测试让它 FAIL（单独跑或成对跑都能复现）；修法是这类测试在 cleanup 里调 `ResetFitCapabilityIndexForTest()`，并把新测试的缓存注入改成直接改 `channelsIDM`/`group2model2channels` 而不是 `InitChannelCache()`。全量 `./model/` 与 `-race` 重新全绿。测试文件共 18 例。
+
+**登记（代理指出的仓库约定）**：机制此前只写在 MEMORY.md，`FORK-CHANGES.md` §10.1 要求同批登记到文档 + `scripts/fork-invariants/manifest.json` 锚点。已补 §5 一行（三条不变量、失败退避、日志限额、读失败保留旧缓存）+ manifest 条目（7 个 symbol/file 锚点 + 6 个测试名），`node scripts/fork-invariants/main.mjs` **5/5**。
+
+**审查代理明确排除的（不是缺陷，有代码级论证）**：生产路径上 `common.RDB`/`RedisEnabled` 的竞争（只在 `InitRedisClient` 写，且在 watcher 启动前）、并发 `loadOptionsFromDatabase`（`requestPolicyOptionMutex` 全程串行）、并发 `authz.ReloadPolicy`（`enforcerMu` 串行 + casbin 载入副本后原子替换）、锁序死锁（`configEpochReloading` 是叶子；`channelSyncLock`→`updatePricingLock` 顺序处处遵守）、bump 风暴（`FixAbility` 只有 2 个调用点、凭证刷新每任务一次）、"提交前发布"（~25 个调用点全部在提交之后）、以及我删掉 `reloadConfigFromEpoch` 里那句 `InvalidatePricingCache`（`InitChannelCache` 两条路径都已失效定价缓存，注释准确）。
+
+**报告但未动（需要用户决定，都属既有问题、非本机制引入）**：
+- **S1（严重）自定义 OAuth 供应商配置根本没有传播路径**：`oauth/registry.go` 的 `ReloadCustomProviders` **零调用者**，`controller/custom_oauth.go` 的增删改只改处理该请求的那个进程的内存；登录只认这份内存（`controller/oauth.go:169`）。后果：在 master 上新建的供应商在 ECI 副本上是 "unknown provider"；**停用/删除后副本仍继续用它登录，直到进程重启**。现被 nginx 把 `/api/*` 固定到 master 掩盖。修法很小（把它注册成纪元重载钩子），但属登录路径，等批准。
+- **M1（安全相关）按用户的 Casbin 写入绕过纪元**：`service/authz/override.go` 的三个 InTx 函数（`controller/user.go` 建号/降权调用）直接写 `casbin_rule`，随后只在本进程 `authz.ReloadPolicy()`；**对端最多 60s 仍认这台已撤销的管理员授权**。修法同 S1（这些路径也发布）。
+- M4 任务插件内容变更不发布（等 30s 循环，仅时延）；m2 旧式 ratio 选项（`ModelRatio` 等六个键）写入方自己不失效定价缓存、又认领了自己的 bump → **写入方**定价展示最长 60s 旧（对端 ~2s），仅展示层、计费不受影响；m4 60s 的 `SyncOptions`/`SyncChannelCache` 与纪元重载未互相串行（既有竞争，后果一个 tick 内自愈）；m5 三副本共用 `NODE_NAME`（上一轮已记录）；F7 watcher 无停止通道、进程退出前不与 `CloseDB` 汇合（与既有 60s 循环同形）。
+
+**另一处如实记录**：`go test -race ./model/` 在本轮有一次未复现的失败，来自 `model/user_update_test.go` / `user_cache_auth_version_test.go` 泄漏的 `assert.Never` goroutine 与下一个测试替换 `common.RDB`（**与本机制无关的既有 flaky**）；我随后连跑 4 次（含 `-count=3`）全绿，并把 epoch 测试的等待上限从 1s 放宽到 3s 降低 flake 概率。
+
 ## 2026-09-30 master 蓝绿滚动（用户授权「允许暂时多路 master」，去面板秒级窗口）
 
 **问题**：master 是单容器（`rm -f` → 重建 → ready），面板在每次发版时有数秒 5xx；nginx 的 `max_fails=2 fail_timeout=10s` 还会把这窗口拉长。`/v1` 不受影响（走 relay），所以影响面是"正在操作面板的用户可能撞一次加载失败"。

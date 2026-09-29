@@ -921,7 +921,22 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 	return false
 }
 
+// UpdateChannelStatus persists a channel status change and publishes it, so a
+// channel the relay auto-disabled (or recovered) stops or resumes receiving
+// traffic on every replica instead of only on the node that saw the error.
+//
+// The publish runs after the locked body: it is a Redis round trip (bounded at
+// 100ms) and the relay auto-disable path must not hold the process-wide channel
+// status lock across it.
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	changed := updateChannelStatus(channelId, usingKey, status, reason)
+	if changed {
+		NotifyConfigChanged()
+	}
+	return changed
+}
+
+func updateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
 		defer channelStatusLock.Unlock()
