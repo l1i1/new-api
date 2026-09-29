@@ -51,8 +51,9 @@ CONF
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
-# Stand-in for private/scripts/bootstrap-newapi-host.sh: the real script pulls
-# env/image/creds from the scaling config and runs docker (unavailable here).
+# Stand-in for deployment/tokeness-cn/bootstrap-master-ecs.sh: the real script
+# copies the env off the running master container, pulls the pinned image and
+# recreates the container (docker is unavailable here).
 # The fake counts syncs (host-sync-count, logged in host-bootstrap.log) and
 # drops a marker line into aliyun-calls.log so its ordering vs ESS API calls
 # is assertable. TOKENESS_TEST_HOST_FAIL_TIMES makes the first N syncs fail
@@ -472,7 +473,7 @@ grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
 # instance's auto-created EIP must be bound to the shared bandwidth package.
 grep -q "vpc AddCommonBandwidthPackageIp .*--IpInstanceId eip-eci-new-1" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never bound the instance EIP to the shared bandwidth package"
-# The deploy pipeline must converge the SWAS-2 host container to the same
+# The deploy pipeline must converge the master container to the same
 # release: bootstrap runs on the host and the reported version must match.
 assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1"
 [[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 1 ]] \
@@ -481,7 +482,7 @@ assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocat
 first_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
 first_scaleout="$(grep -n 'ess ModifyScalingGroup .*--DesiredCapacity 2' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
 [[ -n "$first_bootstrap" && -n "$first_scaleout" && "$first_bootstrap" -lt "$first_scaleout" ]] \
-  || fail "master (SWAS-2 host) sync did not run before the ESS scale-out"
+  || fail "master container roll did not run before the ESS scale-out"
 
 # CI-certified digest: passing the digest explicitly must pin exactly that
 # digest even though the registry would resolve a different one for the tag.
@@ -513,15 +514,15 @@ if run_deploy "$host_mismatch_case" \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "host version mismatch unexpectedly passed the release"
 fi
-grep -q "SWAS-2 host version" "$host_mismatch_case/state/output.log" 2>/dev/null \
-  || fail "mismatch case did not report the host version problem"
+grep -q "master version" "$host_mismatch_case/state/output.log" 2>/dev/null \
+  || fail "mismatch case did not report the master version problem"
 if grep -q "ess ModifyScalingGroup" "$host_mismatch_case/state/aliyun-calls.log"; then
   fail "ESS rollout started even though the master never matched the release"
 fi
 [[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 2 ]] \
   || fail "host was not restored after the version mismatch"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_mismatch_case/state/state.json" > /dev/null \
-  || fail "scaling configuration was not restored after the host version mismatch"
+  || fail "scaling configuration was not restored after the master version mismatch"
 
 # Master-first abort: a failing host bootstrap aborts the release before the
 # ESS group is touched, restores the previous scaling configuration, and

@@ -1499,3 +1499,15 @@
 - **验证（全部实测）**：① 单测 12 例绿（miniredis）：跨节点触发、50 次抖动合并成 1 次、Redis 不可达不重载且只记一条日志、恢复后继续、flush 后多一次即稳定、核心 reload panic 重试、钩子 panic 隔离；`go test ./model/... ./service/...` 全绿（本机新装 `~/sdk/go1.25.1` 工具链）。② 隔离验证（`/tmp/epoch-iso/`：两进程 + miniredis + 共享 SQLite，node B `SYNC_FREQUENCY=300` 以排除轮询解释）：发布在 B 的 bus → **B 1.03s 应用**（日志 `config epoch 1 applied in 1.1ms`）；只发布在 db1 → C 1.04s 应用而 **B 20s 不动**（因果隔离）；发布在 db2（不在任一节点 bus）→ **C 2.96s 经 5s 轮询兜底应用**、B 不动。
 - **并发门首次启用**：`settings.concurrency_limit=24` 写给 **ch8 DEF_Kimi**（type 25 官方直连；`PUT /api/channel/` 的 `{id, settings}` 读改写，7→8 键、其余键逐项未变并已复核）。取值依据=日志实测在飞并发（`created_at` 与 `created_at+use_time` 区间重叠，经 `/api/log/` 分页取数）：ch8 正常时段峰值 **5–6**（10 分钟仅 9–12 次尝试）、事故窗口 23:01–23:08 峰值 **64**（596 次尝试，Moonshot 正是在此期间开始返 429）、事后 01:20–01:35 峰值 **22**（152 次）→ 24 = 正常峰值的 4 倍、且低于触发上游 429 的水位。参考：ch19 峰值 33（含 2622s=44 分钟长流）、ch37 峰值 97–130、ch41 仅 14。
 - **边界/未做**：① 门计"在飞尝试数"，不管 TPM/QPS；② `channelConcurrencyLeaseTTL=30min` 而 ch19/ch37 实测有 30–44 分钟长流 → 给这类渠道设限时租约会在流未结束前提前释放槽位（代码已声明为 fail-open 取舍）；③ Redis 故障时门与纪元都退回旧行为；④ ch19 是当前唯一有效 pin 候选且上游限额未知、ch41 一致性仅 3/51 → **均未设限**；⑤ 纪元代码未发版，线上生效延迟仍是 60s 上限，发布（`v1.0.0-rc.40-tokeness-mainland.<N>` 标签）等用户点头。
+
+## 2026-09-29 深夜：发版主线的 master-first 改为滚 ECS 上的 master 容器
+
+**触发**：用户问「所有入口都同步了吗」，分四层普查入口时发现**发版/回滚主线没跟上架构迁移**。
+
+**缺陷**：`deploy-release` 无条件调用 `sync_host_container()`，它用 `bootstrap-newapi-host.sh` 在 SWAS-2 上重建容器（脚本把 `NODE_TYPE` 钉成 master），再探已删除的 `172.24.63.126:8300` 验版本。后果：① 下次发版**凭空造出第二个 master**（抢 migrations 与系统任务）或中止；② **没有任何步骤更新 ECS 上 master 容器的镜像** → 发版后 master 永远停在旧版本。这是当天早些时候「master 搬 ECI、删 SWAS-2 容器」那次迁移留下的，不是缩容引入的。
+
+**修法**：`sync_host_container` → `sync_master_container`，目标是 `MASTER_HOST`（备用 ECS）；新增 `bootstrap-master-ecs.sh`：**从运行中的容器读回 env / 端口绑定 / restart 策略 / 日志选项**再原样重建，拉镜像（CNB 仓库匿名可拉）→ 重建 → 等 `/health/ready`，起不来就自动回滚旧镜像。**不携带密钥、不需要 ECS 上有 AK** —— 保住了「ECS 不持有云凭证」这条改进。版本探针改指 `http://10.1.0.43:3000/api/status`（**不能写 127.0.0.1**：容器只发布了 10.1.0.43）。旧脚本加 RETIRED 说明并移出发版路径。
+
+**验证**：`deploy-test.sh` + `ml-sync-test.sh` 全绿；**并在真机用同一 digest 彩排**（等价于发版的 master-first，版本不变）：容器正确重建、13 个 env 键全在无缺失（唯一额外项是 docker 自带的 `PATH`）、端口与 restart 一致、健康 200、版本正确、看门狗正常。彩排只影响面板数秒，`/v1` 走 relay 不受影响。
+
+**⚠️ 未闭环（需用户操作 CNB 密钥仓）**：流水线导入的 `CNB_SWAS_KNOWN_HOSTS_B64` 只含**两台轻量**的 host key，而 master-first 现在要连备用 ECS。`StrictHostKeyChecking=yes` 下会**连不上而中止发版**。失败模式是安全的（在 ESS 滚动前中止，relay 继续服务旧镜像，客户无影响，也不会造出第二个 master），但必须修：把备用 ECS 的 host key 加进密钥仓，或新增 `CNB_MASTER_KNOWN_HOSTS_B64` 并在 README 里声明。

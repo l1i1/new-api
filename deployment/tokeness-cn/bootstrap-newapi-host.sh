@@ -1,4 +1,17 @@
 #!/bin/bash
+#
+# ⚠️ RETIRED 2026-09-29 — DO NOT RUN.
+#
+# This script builds the SWAS-2 host New API container. That container no longer
+# exists: the master moved to the backup entry ECS (docker container
+# `new-api-master`) and the lightweight hosts only run nginx + ml-sync. Running
+# this now would create a SECOND master (it pins NODE_TYPE=master) competing for
+# migrations and the system tasks.
+#
+# The release pipeline no longer calls it. The master-first step of
+# deploy.sh deploy-release / rollback / sync-host now runs
+# bootstrap-master-ecs.sh against the ECS instead. Kept only as a record of how
+# the lightweight-tier container used to be built.
 # Bootstrap a New API host instance on CN-SH-SWAS-2 (mainland panel origin).
 # Env + image digest + registry creds are pulled live from the ECI scaling
 # configuration so the host always matches the ECI release exactly.

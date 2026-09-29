@@ -34,7 +34,7 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
 
    All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
 
-   Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the SWAS-2 host container is re-synced from the restored configuration so node versions never drift.
+   Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the master container is re-rolled from the restored configuration so node versions never drift.
 
    The local path remains available as a break-glass fallback (WSL or Linux only; Windows Git Bash is refused):
 
@@ -57,7 +57,7 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
    ```
 
-   `rollback` follows the same gated master-first path as `deploy-release` (host container rebuilt and gated before the ESS rollout).
+   `rollback` follows the same gated master-first path as `deploy-release` (the master container is re-rolled and gated before the ESS rollout).
 
 6. Keep the egress EIP in the shared bandwidth package:
 
@@ -77,7 +77,7 @@ The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokenes
 | --- | --- | --- |
 | Chained/button build fails in `Prepare` with no log | `cnb:apply` runs the pipeline in the tag context, where `CNB_BRANCH` is the tag name, so the key repo's `allow_branches: tokeness/main` refuses the import | trigger with `cnb:trigger` on `tokeness/main`, pass the version via `RELEASE_TAG`, pin `sha` to the tagged commit |
 | `curl: (22) ... error: 404` in the release stage | the pinned aliyun CLI asset `aliyun-cli-linux-latest.tgz` no longer exists | use `aliyun-cli-linux-latest-amd64.tgz` |
-| `SWAS-2 host sync impossible: bootstrap script not readable at //private/scripts/...` | the host bootstrap lived under gitignored `private/`, absent from the CI checkout | moved to `deployment/tokeness-cn/bootstrap-newapi-host.sh` (no secrets; reads env/image/creds from the scaling config) and made it the default, `HOST_BOOTSTRAP_SCRIPT` still overrides |
+| `master sync impossible: bootstrap script not readable at ...` | the bootstrap lived under gitignored `private/`, absent from the CI checkout | it now lives in the repository as `deployment/tokeness-cn/bootstrap-master-ecs.sh` (no secrets: it copies the env off the running master container, and the CNB registry serves the image anonymously) and is the default; `HOST_BOOTSTRAP_SCRIPT` still overrides |
 | `ERROR: region can't be empty` → `WARN: EIP shared-bandwidth convergence failed` | aliyun CLI 3.x silently ignores camelCase `--RegionId` on eci/vpc/ess | pass lowercase `--region` (regression-checked in `tests/deploy-test.sh`) |
 
 The fourth one is the subtle one: EIP convergence is advisory, so the release reported success while the new EIP stayed outside the bandwidth package (egress capped at the standalone 200 Mbps peak). If egress looks throttled after a release, run `deploy.sh eip-sync` and confirm `BandwidthPackageId` on the instance EIP.

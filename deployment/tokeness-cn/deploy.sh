@@ -13,21 +13,30 @@ readonly CNB_IMAGE_REPOSITORY="${CNB_IMAGE_REPOSITORY:-docker.cnb.cool/imvhb/new
 readonly SWAS_HOST="${SWAS_HOST:-8.133.172.195}"
 readonly SWAS_SSH_KEY_PATH="${SWAS_SSH_KEY_PATH:-$WORKSPACE_ROOT/private/access/keys/swas-ml}"
 readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
-# SWAS-2 hosts the panel-tier New API container (also the /v1 last-resort
-# fallback). The deploy pipeline keeps it on the deployed digest: before every
-# ESS rollout/rollback, deploy.sh reruns the bootstrap there (master-first),
-# which pulls env + image + registry creds live from the (already updated)
-# scaling config. The ESS rollout only starts once the master is verified
-# healthy on the new image.
+# The master (NODE_TYPE=master: the panel source, the only node running DB
+# migrations and the system tasks, and the /v1 last resort) is the
+# new-api-master docker container on the backup entry ECS since 2026-09-29. The
+# deploy pipeline keeps it on the deployed digest: before every ESS
+# rollout/rollback, deploy.sh re-rolls that container (master-first) and the
+# ESS rollout only starts once the master is verified healthy on the new image.
+# It replaced the SWAS-2 host container, which no longer exists.
+# SWAS-2 still runs ml-sync and nginx, so the drain marker must be written
+# there too; it no longer carries any New API container.
 readonly SWAS2_HOST="${SWAS2_HOST:-101.133.234.135}"
 readonly SWAS2_SSH_KEY_PATH="${SWAS2_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
-# The host bootstrap lives in the repository (not private/) so the CNB release
+# The master bootstrap lives in the repository (not private/) so the CNB release
 # pipeline can run master-first sync without a local checkout; it carries no
-# secrets and reads env/image/registry creds from the scaling config at runtime.
+# secrets (it copies the env off the running container) and needs no registry
+# credential (the CNB registry serves this image anonymously).
 # HOST_BOOTSTRAP_SCRIPT still overrides it for local experiments.
-readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-newapi-host.sh}"
-readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://172.24.63.126:8300/api/status}"
+readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-master-ecs.sh}"
+readonly MASTER_HOST="${MASTER_HOST:-47.101.40.104}"
+readonly MASTER_SSH_KEY_PATH="${MASTER_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
+readonly MASTER_SSH_KNOWN_HOSTS="${MASTER_SSH_KNOWN_HOSTS:-}"
+# Read from the master host itself. 127.0.0.1 would not do: the container
+# publishes only 10.1.0.43:3000, so the private address is the one that answers.
+readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://10.1.0.43:3000/api/status}"
 readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 # Direct probe defaults to the plaintext upstream for a Host-pinned request.
 # Override DIRECT_PROBE_URL / DIRECT_PROBE_INSECURE when the upstream serves HTTPS.
@@ -723,8 +732,9 @@ restore_scaling_config() {
 # the app container env of a scaling-configuration snapshot. Without them every
 # instance self-reports as master (new-api defaults NODE_TYPE!=slave), so a
 # scale-out to 2 ECI instances ran every background/system task twice (2026-09-06).
-# The ECI tier is a slave (migrations + system tasks belong to the stable SWAS-2
-# host container, which bootstrap-newapi-host.sh pins to NODE_TYPE=master).
+# The ECI tier is a slave: migrations + system tasks belong to the master, which
+# is the new-api-master container on the backup entry ECS (NODE_TYPE=master) and
+# is rolled by sync_master_container / bootstrap-master-ecs.sh.
 # Values overridable via ECI_NODE_NAME / ECI_NODE_TYPE.
 inject_node_identity_envs() {
   local snapshot="$1"
@@ -781,33 +791,42 @@ print(json.dumps(snapshot, ensure_ascii=False))
 '
 }
 
-# sync_host_container <expected_version> - rebuild the SWAS-2 host container
-# from the current scaling configuration (bootstrap pulls env + digest +
-# registry creds live). Runs BEFORE the ESS rollout/rollback (master-first):
-# the master takes the new image, runs its DB migrations, and must pass the
-# bootstrap readiness gate + version check before the ECI tier moves. Also
-# used as the recovery path when a rollout fails (the config has already been
-# re-pinned to the previous digest by then). expected_version pins the
-# /api/status identity when the release tag is known (deploy-release); other
-# callers pass an empty string and rely on the bootstrap's own readiness gate.
-sync_host_container() {
-  local expected_version="$1" host_version
-  [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
-    || die "SWAS-2 host sync impossible: bootstrap script not readable at $HOST_BOOTSTRAP_SCRIPT"
-  log "syncing SWAS-2 host container ($SWAS2_HOST) to the deployed digest"
-  remote_cmd_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
-    < "$HOST_BOOTSTRAP_SCRIPT" \
-    || { error "SWAS-2 host bootstrap failed; rerun $HOST_BOOTSTRAP_SCRIPT against $SWAS2_HOST"; return 1; }
-  host_version="$(remote_cmd_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
-    <<REMOTE_HOST_VER
-curl -fsS --max-time 10 "$HOST_STATUS_URL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["version"])'
-REMOTE_HOST_VER
-  )" || { error "could not read the SWAS-2 host version from $HOST_STATUS_URL"; return 1; }
-  if [[ -n "$expected_version" && "$host_version" != "$expected_version" ]]; then
-    error "SWAS-2 host version ($host_version) does not match the deployed release ($expected_version)"
+# sync_master_container <expected_version> [digest] - re-roll the master
+# container (new-api-master on the backup entry ECS) onto the deployed digest.
+# Runs BEFORE the ESS rollout/rollback (master-first): the master takes the new
+# image, runs its DB migrations, and must pass its readiness gate + version
+# check before the ECI tier moves. It is also the recovery path when a rollout
+# fails — the scaling config has already been re-pinned to the previous digest
+# by then, and an empty digest argument means "whatever the config now says".
+# The bootstrap preserves the container's env, port bindings, restart policy and
+# log options by reading them off the running container.
+sync_master_container() {
+  local expected_version="$1" digest="${2:-}" image_ref master_version
+  if [[ -z "$digest" ]]; then
+    digest="$(snapshot_config_digest "$(oss_scaling_config_json)")" \
+      || { error "could not read the current image digest from the scaling configuration"; return 1; }
+  fi
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    error "master sync needs a sha256:<64 hex> digest, got '$digest'"
     return 1
   fi
-  log "SWAS-2 host container synced (version $host_version)"
+  image_ref="$CNB_IMAGE_REPOSITORY@$digest"
+  [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
+    || die "master sync impossible: bootstrap script not readable at $HOST_BOOTSTRAP_SCRIPT"
+  log "re-rolling master container ($MASTER_HOST) onto $image_ref"
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" \
+    < "$HOST_BOOTSTRAP_SCRIPT" \
+    || { error "master container roll failed; rerun $HOST_BOOTSTRAP_SCRIPT against $MASTER_HOST"; return 1; }
+  master_version="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    <<REMOTE_MASTER_VER
+curl -fsS --max-time 10 "$HOST_STATUS_URL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["version"])'
+REMOTE_MASTER_VER
+  )" || { error "could not read the master version from $HOST_STATUS_URL"; return 1; }
+  if [[ -n "$expected_version" && "$master_version" != "$expected_version" ]]; then
+    error "master version ($master_version) does not match the deployed release ($expected_version)"
+    return 1
+  fi
+  log "master container synced (version $master_version)"
 }
 
 scale_group() {
@@ -1057,7 +1076,7 @@ Usage:
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag> [sha256:DIGEST]
   deploy.sh rollback <sha256:DIGEST>
-  deploy.sh sync-host
+  deploy.sh sync-host          # re-roll the master container (alias: sync-master)
   deploy.sh eip-sync
 USAGE
 }
@@ -1120,33 +1139,34 @@ main() {
         fi
         die "release update failed; the previous scaling configuration was restored"
       fi
-      # Master-first: the SWAS-2 host container (sole master, runs migrations)
-      # takes the new image before the ECI tier rolls. Its bootstrap readiness
-      # gate + version check double as the canary; a failure here aborts while
-      # the ECI tier is still serving the previous image untouched.
-      if ! sync_host_container "$release_tag"; then
+      # Master-first: the master container (panel + the only node that runs
+      # migrations and system tasks) takes the new image before the ECI tier
+      # rolls. Its bootstrap readiness gate + version check double as the
+      # canary; a failure here aborts while the ECI tier is still serving the
+      # previous image untouched.
+      if ! sync_master_container "$release_tag" "$release_digest"; then
         if ! restore_scaling_config "$previous_snapshot"; then
-          error "host sync failed and the scaling configuration could not be restored"
+          error "master roll failed and the scaling configuration could not be restored"
         fi
-        if ! sync_host_container ""; then
-          error "host container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
+        if ! sync_master_container ""; then
+          error "master container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
         fi
-        die "release aborted: SWAS-2 host container failed to converge to $release_tag"
+        die "release aborted: master container failed to converge to $release_tag"
       fi
       if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
         # rollback_failed_rollout re-pinned the scaling configuration + ECI to
         # the previous digest; bring the master back in line so node versions
         # never drift after an aborted release.
-        if ! sync_host_container ""; then
-          error "host container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+        if ! sync_master_container ""; then
+          error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
         fi
         die "release rollout failed; rollback was attempted and must be verified before retrying"
       fi
       log "release $release_tag -> $release_digest deployed"
       ;;
-    sync-host)
+    sync-host|sync-master)
       [[ $# -eq 1 ]] || die "sync-host does not accept arguments"
-      sync_host_container ""
+      sync_master_container ""
       ;;
     eip-sync)
       [[ $# -eq 1 ]] || die "eip-sync does not accept arguments"
@@ -1165,20 +1185,20 @@ main() {
         die "rollback update failed; the previous scaling configuration was restored"
       fi
       # Master-first (same rationale as deploy-release).
-      if ! sync_host_container ""; then
+      if ! sync_master_container "" "$rollback_digest"; then
         if ! restore_scaling_config "$rollback_snapshot"; then
-          error "host sync failed and the scaling configuration could not be restored"
+          error "master roll failed and the scaling configuration could not be restored"
         fi
-        if ! sync_host_container ""; then
-          error "host container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
+        if ! sync_master_container ""; then
+          error "master container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
         fi
-        die "rollback aborted: SWAS-2 host container failed to converge to $rollback_digest"
+        die "rollback aborted: master container failed to converge to $rollback_digest"
       fi
       if ! ess_rollout "$rollback_digest" "$rollback_previous" "$rollback_snapshot"; then
         # rollback_failed_rollout re-pinned the scaling configuration + ECI to
         # the pre-rollback digest; keep the master on it too.
-        if ! sync_host_container ""; then
-          error "host container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+        if ! sync_master_container ""; then
+          error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
         fi
         die "rollback rollout failed; rollback was attempted and must be verified before retrying"
       fi
