@@ -1562,3 +1562,17 @@
 **复核发现的两个遗留风险（未改，待用户决定）**：① **并发门没有可观测性**——饱和拒绝的错误用 `ErrOptionWithNoRecordErrorLog()` 构造（`controller/relay.go:720`），非 pinned 分支只 `LogDebug`，所以 ch8 的 24 一旦开始拒流，logs 表与看板都没有记录；建议加预算内 warn 行或 perf 计数（属 relay 路径行为变更，未经批准不动）。② **三台 ECI 共用同一 `NODE_NAME=new-api-ml000`**，而 `system_instances` 以 node_name 为主键 → 三副本互相覆盖成一行，名册无法分辨副本；这与本机制要回答的"哪个节点还是旧配置"直接冲突，建议每副本独立 `NODE_NAME`（部署侧改动，非本轮范围）。
 
 **未在本轮独立测量的部分（如实报告）**：纪元在生产里的**端到端时延**没有实测——master 容器已迁到 ECS，SWAS 上读不到它的日志；要拿到线上数字需要 ECS 侧通道（Cloud Assistant）或 admin API + 受控探针。当前生产证据是"代码已发布"（tag contains + 线上版本 `.12`）而非"线上时延已量到"。
+
+## 2026-09-30 master 蓝绿滚动（用户授权「允许暂时多路 master」，去面板秒级窗口）
+
+**问题**：master 是单容器（`rm -f` → 重建 → ready），面板在每次发版时有数秒 5xx；nginx 的 `max_fails=2 fail_timeout=10s` 还会把这窗口拉长。`/v1` 不受影响（走 relay），所以影响面是"正在操作面板的用户可能撞一次加载失败"。
+
+**方案（已提交 `1f848a87d`，测试 `tests/deploy-test.sh` 全绿）**：蓝绿。`bootstrap-master-ecs.sh` 变成 start/gate/commit/abort/probe 四个幂等阶段——green 在 3000/3001 端口对的**另一个**端口起来并过 `/health/ready`，`deploy.sh` 用版本门复核后写 `/etc/ml-sync/web-primary-port` 把面板 tier 切过去（等两台轻量的 nginx 真正收敛），最后才在 ECS 上翻 `:80` 兜底上行、静默 15s、`stop`/`rm` blue、把 green 改名回规范名。`abort` 按 **docker 实际状态**决策：blue 还活着就恢复 `:80` 并删 green；blue 已不在就**收尾** green —— 任何路径都不会指向已死的容器。
+
+**多 master 的代价（已授权，且比看上去小）**：migrations 在容器**启动**时跑 → 重叠期只有 green 迁移一次，不存在两个迁移者；blue 用旧代码服务新 schema，这与每次 master-first 发版时 relay 从机经历的状态完全相同。真正的代价是**系统任务在重叠的几分钟内双跑**（重复记账）。
+
+**必须配套的一半在另一个仓库**：`~/tokeness/mainland/config/ml-sync.sh`（`bad43df`）新增按 marker 托管 `newapi_web` **主**上行端口；**无 marker 时行为与改造前完全一致**。没有它，deploy 写了 pin 也没人执行。已在两台轻量部署（md5 `5a27b59c296b581cd0f722ffdb912e13`，备份 `ml-sync.sh.pre-bluegreen-20260930-0035*`），实测无 marker 时手动跑一次 **conf md5 不变**。
+
+**两处按现场修正的实现细节**：ECS 的 nginx 配置是 `/etc/nginx/sites-enabled/tokeness-ml.conf`（**不在本仓库**，host 自维护）；它是**符号链接**，必须 `sed -i --follow-symlinks`；该文件里有**两个** upstream 指向 master（`newapi_ml` 的 `:80` /v1 兜底 + `newapi_web` 本机面板路由），锚定 `10.1.0.43` 的替换正好两个都翻。
+
+**未完成（诚实记录）**：**真机彩排未做**。原因是执行窗口撞上另一会话的 P0 事故处理（它正在同两台轻量上做 relay 的 N+1 滚动替换，用 `/etc/ml-sync/drain-target` 钉存活实例，3 分钟内 187 个子进程事件），两个会话同时改同一批 nginx 配置必须避免。代码路径已被单测覆盖（含"pin 被拒 → 不得 commit、不得动 ESS、必须 abort 回收"），但**首次实战即真发版**。彩排步骤已备好：source `deploy.sh` 后直接调 `sync_master_container "" <当前 digest>`（本地无 aliyun CLI，不需要它），跑两轮验证 3000→3001→3000 双向 + 一次 start/abort。
