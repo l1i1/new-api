@@ -135,31 +135,49 @@ func TestConfigEpochWatcherCoalescesPeerBurst(t *testing.T) {
 }
 
 func TestConfigEpochWatcherToleratesRedisOutageAndRecovers(t *testing.T) {
-	setupConfigEpochRedis(t)
+	server := setupConfigEpochRedis(t)
 	stop := make(chan struct{})
 	defer close(stop)
 
 	var reloads atomic.Int64
 	go runConfigEpochWatcher(stop, 10*time.Millisecond, func() { reloads.Add(1) })
 
-	// Point the client at a closed port: Redis is configured but unreachable,
-	// which is the state the fallback path exists for.
-	deadClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond, ReadTimeout: 20 * time.Millisecond})
-	liveClient := common.RDB
-	common.RDB = deadClient
-
-	time.Sleep(60 * time.Millisecond)
-	assert.Equal(t, int64(0), reloads.Load(), "an unreachable Redis must not trigger reloads")
+	// Take the server down rather than swapping common.RDB: the watcher reads
+	// that global from its own goroutine, so a test that reassigns it races with
+	// the production code (the race detector flags exactly that). Closing the
+	// server leaves the client pointed at a dead endpoint — the same unreachable
+	// path, with no shared state touched by the test.
+	server.Close()
 	require.True(t, waitForCondition(t, time.Second, func() bool { return configEpochRedisDownLatched.Load() }),
 		"the outage should be logged exactly once")
+	assert.Equal(t, int64(0), reloads.Load(), "an unreachable Redis must not trigger reloads")
 
 	// Recovery: the next successful read of a newer epoch must be applied.
-	common.RDB = liveClient
-	require.NoError(t, liveClient.Incr(t.Context(), configEpochKey).Err())
+	require.NoError(t, server.Restart())
+	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
 	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() == 1 }),
 		"the watcher must resume after Redis comes back")
 	assert.False(t, configEpochRedisDownLatched.Load(), "recovery clears the log latch")
-	assert.NoError(t, deadClient.Close())
+}
+
+func TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied(t *testing.T) {
+	setupConfigEpochRedis(t)
+
+	NotifyConfigChanged() // epoch 1: this node's own change, applied locally
+	require.Equal(t, int64(1), configEpochLastSeen.Load())
+
+	// A peer commits a change, but this node has not watched the tick yet.
+	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
+
+	// This node now commits its own change. The bump must not claim the peer's
+	// value as applied, or the watcher would skip it and the peer's change would
+	// sit unapplied until the periodic sync.
+	NotifyConfigChanged()
+	assert.Equal(t, int64(1), configEpochLastSeen.Load(),
+		"a peer change published since the last observation must stay pending")
+	stored, err := common.RDB.Get(t.Context(), configEpochKey).Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), stored, "both bumps must still reach the other nodes")
 }
 
 func TestConfigEpochWatcherRetriesFailedReload(t *testing.T) {

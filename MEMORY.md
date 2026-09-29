@@ -1544,3 +1544,21 @@
 **验证**：`gofmt -l` 在改动目录全干净（仓库里 `e2e/doc_parse_test.go` 的 import 顺序欠账是**改动前既有**、与本轮无关，未动）、`go build ./...` 通过、`go test ./... -count=1` **54 包 ok / exit 0**、`node scripts/fork-invariants/main.mjs` **5/5**、待提交内容密钥扫描干净。`-race` 下 `model` 报 12 处 DATA RACE，**全部**落在 `TestConfigEpochWatcherToleratesRedisOutageAndRecovers`（`common.RedisAvailable()` 读全局 vs 该测试写全局）；在 HEAD 上单独跑同一测试同样报 7 处 → **既有问题，与本轮改动无关**，未动。
 
 **⚠️ 提交被同仓的另一个会话裹走**：我的整批改动以未提交状态在 23:05 被另一个 dsh 会话的 `git commit -a`（`de813d419 docs(memory): 记录 known_hosts 补齐与密钥仓网页编辑的两条经验`）一起提交并推到了 `origin/tokeness/main`，连先前就存在的 `go.mod` 改动也被卷入。**没有回滚任何人的改动**（不做历史重写）；本条目就是补齐那笔提交无法承载的"为什么"，代码本身已在 `de813d419` 里。下次在这个仓库里做长时间改动时注意：**同一工作副本有多个会话在写，提交前先看 `git log` 与 `git status`**。
+
+## 2026-09-30 配置纪元复核（用户「审查」）：修两处缺陷，并更正三处失实记录
+
+**缺陷 1（测试 race，已修，`-race` 验证通过）**：`TestConfigEpochWatcherToleratesRedisOutageAndRecovers` 用改写全局 `common.RDB` 来模拟 Redis 不可达，而 watcher goroutine 正在读同一全局 → `go test -race ./model/` 报 DATA RACE 且 FAIL。**09-29 另一会话在同仓记录里把这 12 处 race 判为"既有问题，与本轮改动无关"，该判断不成立**：该测试文件由本机制引入，race 也在其中（他们观察到的"HEAD 上单跑同一测试也报 7 处"就是同一个文件）。修法：不再动全局，改 `server.Close()` / `server.Restart()`（客户端指向死端口，走同一条不可达分支，测试不碰共享状态）。修后 race 干净。
+
+**缺陷 2（逻辑漏洞，已修 + 判别性测试）**：`NotifyConfigChanged` 原来无条件把"自己 bump 到的值"记为已应用。若对端在我上次观测之后、我这次写入之前 bump 过一次（窗口 ≤2s），我会把对端那次变更一起"认领为已应用" → watcher 不再重载它，**对端变更被压到 60s 兜底**。修法：仅当 `next == configEpochLastSeen+1` 才认领；有对端 bump 介入则保持未应用，交给 watcher。新增 `TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied`，**实测去掉该判断即 FAIL（lastSeen=3 而非 1），加回即通过**。
+
+**更正 1（计数失实，我的错）**：09-26 汇报与本文件都写"单测 12 例绿"，**实际是 9 例**（本轮加 1 例后 10 例）。当时是凭印象写的数字，没有实际计数；本轮用 `go test -v | grep -c '^--- PASS'` 逐条核对。
+
+**更正 2（发版状态失实）**：09-26 说"纪元代码未发版、线上生效延迟仍是 60s"只对当时成立。**本机制已随 `mainland.11/.12/.13` 发布并在生产运行**：`git tag --contains 66a17dab1` 列出这三个 tag，线上 `/api/status` 实测 `v1.0.0-rc.40-tokeness-mainland.12`（10 次采样同一实例 `578454efd780`）。
+
+**更正 3（拓扑失实，09-29 迁移后已变）**：SWAS-2 上**已无任何容器**；`newapi_ml`（relay `/v1/`）= 三台 ECI（`10.0.0.232/241/242:3000`，ml-sync 从 ESS 运行态改写该行）+ `10.1.0.43:80`（ECS master，nginx :80，最后兜底）作 backup；`newapi_web` 现以三台 ECI 为 backup；SWAS-1 仍是 nginx + Redis（`172.24.18.12:6379`）。`system_instances` 名册现为 `new-api-master` + `new-api-ml000` 两行。**本条目上半部分描述的"SWAS-2 = master 容器 `newapi-host`（172.24.63.126:8300）、两节点"只代表 09-26 当时**。另：nginx 于 09-28 新增 `log_format tokeness_ml ... up=$upstream_addr`，理由正是"一次事故后 serving tier 无法从配置推断"——与本机制要解决的是同一类问题。
+
+**复核确认无问题的部分**：`ch8 settings.concurrency_limit=24` 四天后仍在（`GET /api/channel/8` 实测，其余 7 键未变，status=1/type=25）；埋点在后续约 40 个提交（含 fitpolicy 重构与上游同步）中未丢——当前 HEAD 实测 11 处 `NotifyConfigChanged()`、34 处 `InitChannelCacheAndNotify()`，`main.go` 仍启动 watcher 并注册 `authz.ReloadPolicy` 钩子；`node scripts/fork-invariants/main.mjs` **5/5**；`go test ./model/... ./service/...` 全绿（修后重跑）。fitpolicy 的快照安装走 option 路径（`model/option.go` 三处 `refreshFitPolicySnapshot()`），因此**拟合策略变更同样经本纪元通道即时传播**，两套机制不冲突。
+
+**复核发现的两个遗留风险（未改，待用户决定）**：① **并发门没有可观测性**——饱和拒绝的错误用 `ErrOptionWithNoRecordErrorLog()` 构造（`controller/relay.go:720`），非 pinned 分支只 `LogDebug`，所以 ch8 的 24 一旦开始拒流，logs 表与看板都没有记录；建议加预算内 warn 行或 perf 计数（属 relay 路径行为变更，未经批准不动）。② **三台 ECI 共用同一 `NODE_NAME=new-api-ml000`**，而 `system_instances` 以 node_name 为主键 → 三副本互相覆盖成一行，名册无法分辨副本；这与本机制要回答的"哪个节点还是旧配置"直接冲突，建议每副本独立 `NODE_NAME`（部署侧改动，非本轮范围）。
+
+**未在本轮独立测量的部分（如实报告）**：纪元在生产里的**端到端时延**没有实测——master 容器已迁到 ECS，SWAS 上读不到它的日志；要拿到线上数字需要 ECS 侧通道（Cloud Assistant）或 admin API + 受控探针。当前生产证据是"代码已发布"（tag contains + 线上版本 `.12`）而非"线上时延已量到"。

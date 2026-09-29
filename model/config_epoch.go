@@ -100,9 +100,15 @@ func NotifyConfigChanged() {
 		return
 	}
 	configEpochRedisDownLatched.Store(false)
-	// This process already applied the change it just committed; recording the
-	// value here keeps the watcher from reloading the same state again.
-	configEpochLastSeen.Store(next)
+	// This process already applied the change it just committed, so it does not
+	// need to reload its own bump. Only claim that when this bump is the very
+	// next value after the one this process has observed: if a peer published in
+	// between (its bump is not applied here yet), leaving the observed value
+	// untouched keeps that peer change pending, so the watcher reloads it
+	// instead of silently absorbing it until the periodic sync.
+	if next == configEpochLastSeen.Load()+1 {
+		configEpochLastSeen.Store(next)
+	}
 }
 
 // InitChannelCacheAndNotify refreshes the local channel cache for a committed
