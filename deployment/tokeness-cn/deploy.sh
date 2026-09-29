@@ -33,7 +33,12 @@ readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
 readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-master-ecs.sh}"
 readonly MASTER_HOST="${MASTER_HOST:-47.101.40.104}"
 readonly MASTER_SSH_KEY_PATH="${MASTER_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
-readonly MASTER_SSH_KNOWN_HOSTS="${MASTER_SSH_KNOWN_HOSTS:-}"
+# Inherits the SWAS known-hosts file on purpose: the pipeline materializes one
+# pinned file (CNB_SWAS_KNOWN_HOSTS_B64) and remote_cmd_on hardcodes
+# StrictHostKeyChecking=yes, so an empty default here would silently fall back
+# to the CI user's own known_hosts and abort the master roll. That one file
+# therefore has to cover the backup ECS as well as both lightweight hosts.
+readonly MASTER_SSH_KNOWN_HOSTS="${MASTER_SSH_KNOWN_HOSTS:-$SWAS_SSH_KNOWN_HOSTS}"
 # Read from the master host itself. 127.0.0.1 would not do: the container
 # publishes only 10.1.0.43:3000, so the private address is the one that answers.
 readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://10.1.0.43:3000/api/status}"

@@ -30,7 +30,7 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    | --- | --- | --- |
    | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only the ESS/ECI/VPC Describe/Modify actions `deploy.sh` actually calls on `cn-shanghai` — never the main-account AK |
    | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key | Key is limited to the two lightweight hosts |
-   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for both SWAS hosts | Pins both hosts (`StrictHostKeyChecking=yes`) |
+   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the two SWAS hosts **and the backup entry ECS** (`47.101.40.104`) | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step now rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
 
    All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
 
