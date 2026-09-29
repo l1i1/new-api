@@ -30,11 +30,41 @@ type Narrowing struct {
 	// surface through its existing selection error — never by widening the
 	// candidate set.
 	Channels []int
-	// MatchedMarks reports whether phase 1 produced the result (at least one
-	// candidate satisfied every required behaviour). It distinguishes "narrowed
-	// to verified channels" from "fell back to the official set" for
+	// PermittedByMarks reports whether phase 1 produced the result (at least one
+	// candidate was not ruled out by the required behaviours). It distinguishes
+	// "narrowed by the marks" from "fell back to the official set" for
 	// observability.
-	MatchedMarks bool
+	//
+	// The name avoids claiming verification on purpose. A conservative policy
+	// reads an absent mark as "not supported", so phase 1 then means "every
+	// mark was found and is in a satisfying state"; a permissive policy reads it
+	// as "unknown", so phase 1 can keep a channel for which no measurement
+	// exists at all. The boolean cannot tell those two apart and must not be
+	// reported as if it could.
+	PermittedByMarks bool
+	// Satisfied carries the candidates that satisfied every required behaviour,
+	// which is the work phase 1 already did. It travels in the result so the
+	// caller can report which candidate carried the marks without asking the
+	// same question — and running the same lookups — a second time.
+	//
+	// nil means the marks were never evaluated (no marks, or no predicate);
+	// non-nil means they were, and an empty non-nil slice means every candidate
+	// was ruled out. That distinction is how a caller tells "no measurement
+	// exists" apart from "the measurement exists and failed".
+	Satisfied []int
+}
+
+// Matched reports whether one candidate was among those that satisfied every
+// required behaviour in this narrowing. It answers from the outcome instead of
+// re-running the lookup, so a caller can attribute a result without paying for
+// the marks a second time.
+func (n Narrowing) Matched(channelID int) bool {
+	for _, candidate := range n.Satisfied {
+		if candidate == channelID {
+			return true
+		}
+	}
+	return false
 }
 
 // Narrow applies the two-phase narrowing.
@@ -68,8 +98,13 @@ func (r Requirement) Narrow(candidates []int, isOfficial func(int) bool, satisfi
 			}
 		}
 		if len(marked) > 0 {
-			return Narrowing{Applied: true, Channels: marked, MatchedMarks: true}
+			return Narrowing{Applied: true, Channels: marked, PermittedByMarks: true, Satisfied: marked}
 		}
+		// Phase 2: no verified candidate, so use the official set unchanged. This
+		// is where step A always lands. The empty Satisfied set is carried on
+		// purpose: it says "the marks were evaluated and none carried them",
+		// which is what separates a failed mark from data that never existed.
+		return Narrowing{Applied: true, Channels: official, Satisfied: marked}
 	}
 	// Phase 2: no verified candidate, so use the official set unchanged. This is
 	// where step A always lands.

@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,4 +83,41 @@ func TestFitNarrowingFiltersBeforeTieringOnTheDBPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, plain)
 	assert.Equal(t, 9001, plain.Id, "an unpinned request still takes the top tier")
+
+	// That assertion cannot tell the two orders apart on its own: with no filter
+	// both orders land on the top tier, so a `narrowBeforeTiering := true` that
+	// ignored the opinion entirely would still pass it.
+	//
+	// This fixture is the discriminating one. A top-tier channel that the
+	// request-path filter removes is invisible to the tier-first query, which has
+	// already reduced the set to that tier, and visible to the other order, which
+	// tiers after filtering and therefore lands on the next tier that qualifies —
+	// so the two orders return different channels, and nil is the legacy one.
+	// It sits alone in the top tier: the tier-first query then reduces the set to
+	// exactly this channel, which the path filter removes.
+	highest := int64(60)
+	unsupported := Channel{
+		Id: 9003, Type: constant.ChannelTypeAdvancedCustom, Name: "fit-tier-other-path",
+		Status: 1, Models: "kimi-k3", Group: group, Priority: &highest,
+	}
+	unsupported.SetOtherSettings(kitdto.ChannelOtherSettings{
+		AdvancedCustom: &kitdto.AdvancedCustomConfig{
+			Routes: []kitdto.AdvancedCustomRoute{{IncomingPath: "/v1/responses", Models: []string{"kimi-k3"}}},
+		},
+	})
+	require.NoError(t, DB.Create(&unsupported).Error)
+	require.NoError(t, DB.Create(&Ability{Group: group, Model: "kimi-k3", ChannelId: 9003, Enabled: true, Priority: &highest}).Error)
+
+	tiered, err := GetChannelWithBlockedChannelsPinnedWithFit(group, "kimi-k3", 0, "/v1/chat/completions", nil, false, false, nil)
+	require.NoError(t, err)
+	assert.Nil(t, tiered,
+		"with no opinion the legacy order tiers first, so a top-tier channel the path filter removes leaves nothing; "+
+			"fetching every tier before filtering would have returned the lower-priority official channel instead")
+
+	// …and with an opinion the lower tier is reachable again, which is what
+	// narrowing before tiering is for.
+	withOpinion, err := GetChannelWithBlockedChannelsPinnedWithFit(group, "kimi-k3", 0, "/v1/chat/completions", nil, false, false, filter)
+	require.NoError(t, err)
+	require.NotNil(t, withOpinion)
+	assert.Equal(t, 9002, withOpinion.Id)
 }

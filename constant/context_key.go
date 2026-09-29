@@ -88,11 +88,22 @@ const (
 	// checks must consult it because the written status code stays 200.
 	ContextKeyRelayFailed ContextKey = "relay_failed"
 
-	// ContextKeyV4OfficialPin marks a deepseek-v4 or kimi-k3 request whose
-	// user Official Fit profile enables the route dimension, so channel
-	// selection pins the whole family to the official channel. Users without
-	// the profile keep normal aggregator routing — sampling parameters alone
-	// (extreme values, thinking toggles, logprobs) never trigger the pin.
+	// ContextKeyV4OfficialPin marks a request that must be served by an
+	// official-behaving channel.
+	//
+	// It is written by the official-fit policy layer (middleware.applyFitPolicy)
+	// together with ContextKeyFitRequirement, and only when the live policy has an
+	// opinion about this request's shape and the user's Official Fit Route
+	// dimension is on — sampling parameters alone never set it. An explicit token
+	// or origin-task pin does not set it either: those requests are already bound
+	// to one channel and are answered by their own retry and selection rules.
+	//
+	// Readers: channel selection (the legacy official narrowing, which the policy
+	// narrowing now supersedes when it has an opinion), the affinity gate and the
+	// affinity recording rule in middleware/distributor.go, and the retry guard in
+	// service.officialFitPinKeepsVerdict. Every one of them means "official
+	// behaviour is required for this request", so the flag and the requirement are
+	// written and cleared together.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
 
 	// ContextKeyVideoRequest marks a request whose payload carries a video part.

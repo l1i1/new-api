@@ -195,9 +195,10 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 
 - `match`：策略族归属；只允许匹配现有 mechanism registry 已注册的 family id。新增族仍需代码 registry 与消费者适配，不能仅新增 JSON。
 - `rules[*].when`：expr 表达式，命中即表示"本请求需要 `require` 里的行为"（§6.3）。
-- `behaviors[*].class`：`verdict`（判决类：宁失败不失真）/ `capability`（能力类：换渠道即可）/ `courtesy`（体感类：可降级并标注）。
-- `unknown_mark_policy`：无标记的渠道如何处理——`conservative`（视为不支持，**标记当承诺用**）/ `permissive`。v1 默认 conservative；该默认值在 shadow 阶段冻结，未经单独验收不得改。
-- `empty_match_policy`：收窄后为空时的口径。v1 固定 `legacy_hard_pin_then_existing_error`：先沿用现有 `official_fit_models ∪ 官方渠道类型` 硬 pin 集合；该集合为空时保留现有选择失败/官方错误语义，禁止回到普通未标记优先级池，禁止 fitpolicy 自造 4xx/5xx。`fail_verbatim` / `fallthrough_priority` 不属于 v1，未来若启用必须另立指标、回滚演练和用户确认。
+- `behaviors[*].class`：`verdict`（判决类：宁失败不失真）/ `capability`（能力类：换渠道即可）/ `courtesy`（体感类：可降级并标注）。**v1 三个值都接受、都校验、都随决策传递，但没有任何消费者按 class 分支**：写 `capability` 或 `courtesy` 不会改变失败处理方式，收窄对所有 require 一视同仁。当前文档里每个行为都是 `verdict`。写策略的人不要把 class 当成开关。
+- `unknown_mark_policy`：无标记的渠道如何处理——`conservative`（视为不支持，**标记当承诺用**）/ `permissive`（视为未知，即"未被证伪"）。v1 默认 conservative；该默认值在 shadow 阶段冻结，未经单独验收不得改。注意 `permissive` 下"未被证伪"不等于"已验证"：没有任何实测数据的渠道也会进入阶段 1，因此观测字段叫 `PermittedByMarks`（不是 MatchedMarks）。
+- `empty_match_policy`：收窄后为空时的口径。v1 只允许也**只实现** `legacy_hard_pin_then_existing_error`：先沿用现有 `official_fit_models ∪ 官方渠道类型` 硬 pin 集合；该集合为空时保留现有选择失败/官方错误语义，禁止回到普通未标记优先级池，禁止 fitpolicy 自造 4xx/5xx。因为只有一个合法值，决策期不读该字段（读它没有可分支的语义）；`fail_verbatim` / `fallthrough_priority` 不属于 v1，未来若启用必须另立指标、回滚演练和用户确认，并在 `pkg/fitpolicy/narrow.go` 里真正接上。
+- **文档缺省 vs 显式清空**：选项从未写过时，节点装载**内置默认文档**（`fitpolicy.DefaultPolicy()`：内置规则 + `shadow:false`），使"没人配置过"的部署也走等价性测试证明过的那套规则；选项被显式清空（值为空串）时才是"无意见"的卸载杠杆。两者的区别由 `model/fitpolicy_option.go` 的 loader 保留，装载后由一行日志说明当前是哪一种；管理员文档与内置默认的差异每次装载都会记一条 `fitpolicy: the live document differs from the shipped default`（允许偏离，但不允许无声）。
 - **未验证与过期标记**：`unknown`、`stale`、`supported:false` 必须是可区分状态；过期或撤销不能被当作 `supported:true`，也不能静默转成官方集合。
 - 写时 schema 校验 + 引用完整性 + policy version 单调递增 + capability-row CAS/revision + 审计（谁、何时、变更摘要）。
 
@@ -293,11 +294,20 @@ func narrow(candidates, fit) []Channel:
     // 阶段 3：official 为空 → 沿用现有 nil / selection-error 分类，不落普通池
 ```
 
+**运营语义（写给用这套规则的人，必须与实现一致）：mark 是偏好，不是约束。**
+
+- 阶段 1 只有在**至少一个官方候选满足全部 mark** 时才生效。此时请求的候选集收窄到这些"被证明过"的官方渠道。
+- 只要有任何一个 mark 没有任何官方候选满足（包括"全部 mark 都没有实测数据"这一常见状态），就回落到阶段 2：**仍然使用未经验证的官方候选**。也就是说，标记不会让请求失败——它只在能被满足时改变**选哪个官方渠道**。
+- 唯一会拒绝请求的是阶段 3：候选集里**完全没有官方行为渠道**（`official_fit_models ∪ 官方渠道类型` 为空，或重试已把它们全部排除）。这是"没有官方渠道可走"的诚实失败，不是"标记没满足"的失败。
+- 因此日常可观测的现象是："有实测标记的渠道优先拿到流量；没有标记时行为与内置默认完全一致"。若掉期到阶段 2，日志里 `official_and_permitted=false`，而不是报错。
+
 - **候选构造（selector 职责，不含并发饱和）**：`base` = group/model 候选经 request filter、model alias/path、group policy、blocked channels、compact alias 解析后的结果；这就是 `service.CacheGetRandomSatisfiedChannel` 与 `model.GetRandomSatisfiedChannelPinned`/`GetChannelWithBlockedChannelsPinned` 现在负责的部分。
 - **attempt admission（不是 selector 职责）**：并发饱和在 `controller/relay.go` 的 `AcquireChannelConcurrency` → `ExcludeSaturatedChannel`、以及 Responses WS 的对应分支处理；`narrow` 只接受 blocked/excluded 输入，不自己探测饱和。文档与实现都不得把饱和写成候选构造的一部分。
 - **显式 pin 短路**：`ResolvedPin()`（token/origin-task）与 token-specific 固定渠道分支在 `narrow` **之前**返回，不附加、不评估 FitRequirement，保留现有 filter/policy/error/retry。fit 的 `pinOfficial` 候选收窄不是显式 `ChannelPin`。
 - **重试状态机**：`RetryParam` 从同一 gin context 取 FitRequirement 引用；每次尝试先从约束集合排除已尝试渠道，再跑同一 `narrow`，仍有候选才 retry。耗尽时执行既有错误语义；fitpolicy 不生成新的 4xx/5xx。
-- **重试判定（必须改代码，不是只改候选集）**：现有 `officialFitPinKeepsVerdict`（`service/relay_error.go`）在 pin 命中自动重试关键字时直接 `stop`，只放行多键凭据轮换；因此 D5 不能靠候选过滤修。实现必须扩展/替换该函数，让它消费 immutable `FitRequirement`，并且**仅在约束候选集里仍有未尝试的 marked official 渠道时**放行 retry；约束集耗尽（或没有 second candidate）时保持 `stop`。测试必须覆盖：存在第二个 marked official 渠道 → retry；约束集耗尽 → 仍 stop；多键轮换例外不被破坏。
+- **重试判定（必须改代码，不是只改候选集）**：`officialFitPinKeepsVerdict`（`service/relay_error.go`）在运营重试关键词命中时直接 `stop`，只放行多键凭据轮换；因此 D5 不能靠候选过滤修。
+  - **实现现状（2026-09-29）**：guard 读 `ContextKeyV4OfficialPin`，而 `middleware.applyFitPolicy` 在附加 `FitRequirement` 的**同一处**写这个 flag——两者是同一次决策的两种读法（flag = "本请求必须走官方行为"，requirement = "为什么+收窄到哪些官方渠道"）。二者必须同生同灭：只退役谓词而漏掉这个写点，会让 guard 恒假，运营关键词就会换渠道、排除唯一的官方渠道，把官方原文换成 503 路由错误（`TestOfficialFitPinKeepsTheUpstreamVerdictThroughTheProductionEntryPoint` 覆盖的就是这条端到端链路）。多 Key 轮换是唯一例外，且必须确认还有未用过的启用凭据。
+  - **尚未实现的部分**：本节的"约束候选集里仍有未尝试的 marked official 渠道 → 放行 retry"比现状更精细，当前一律 `stop`（只有同渠道多 Key 轮换例外）。若将来实现，必须同时覆盖：存在第二个 marked official 渠道 → retry；约束集耗尽 → 仍 stop；多键轮换例外不被破坏。
 - **`ApiError` 不是 409**：现有 `common.ApiError`/`ApiErrorI18n` 一律返回 HTTP 200（`common/gin.go`）；capability endpoint 的 CAS 冲突必须显式 `c.JSON(http.StatusConflict, ...)`，不得暗示复用现有错误 helper 就能得到 409。
 - **in-scope contract tests**：HTTP 首选、`Distribute` affinity/preferred 选路（含 marked 命中和 official 回退）、归一化/compact model、auto-group、blocked/saturation、普通 retry、无 marked 时回 official、official 为空时保持原错误。**负面/边界测试**：`getChannel` 复用分支不得引入未受约束渠道；Responses WS、显式固定 pin、`/pg`、`/v1/completions`、`/v1/messages`、任务/任务插件、realtime WS 必须证明 fitpolicy 不介入且行为与今天一致。
 
@@ -331,8 +341,9 @@ func narrow(candidates, fit) []Channel:
 
 - **影子**：`shadow=true` → 全量评估并记录，**绝不改路由**；用于用真实流量校准规则与标记。
 - **灰度**：按族启用 → 按渠道补标记 → 全量；每步独立回退。
-- **旧机制共存**：`official_fit_models` 与能力标记并存；`route` 与 `validate/errors/shape` 完全不动。规则集缺失或 fitpolicy 失败时返回无意见，行为 = 今天；`official_fit_models ∪ 官方渠道类型` 的硬 pin 基线不被移除。
-- **卸载**：先将 `official_fit.policy.enabled=false` 并确认所有节点使用旧快照，再删除 policy 和 `channel_fit_capabilities` 数据；最后移除显式启动注册、selector consumers 和 `pkg/fitpolicy/`。`official_fit_models` 与既有 route 逻辑不能被卸载步骤删除。
+- **旧机制共存**：`official_fit_models` 与能力标记并存；`route` 与 `validate/errors/shape` 完全不动。`official_fit_models ∪ 官方渠道类型` 的硬 pin 基线不被移除。
+- **默认文档（2026-09-29 更正）**：选项**从未写过**时节点装载内置默认（`fitpolicy.DefaultPolicy()`）并且它是 **live** 的——否则编译期 pin 谓词退役后，"没有策略"就等于"任何形状都不 pin"，而这一点在外部看起来和"策略健康但恰好无意见"完全一样。选项被**显式清空**（值为空串）才是"无意见"，`enabled=false` 是秒级回滚；这两条是现在唯一的卸载杠杆。
+- **卸载**：先把 `official_fit.policy` 写成 `enabled=false`（秒级回滚，验证所有节点都用旧快照），再把选项**清空**（写空串，而不是删除键——删除键会重新装载内置默认）并确认各节点日志出现 `is empty; the official-fit policy layer is installed with no opinion`；然后清 `channel_fit_capabilities` 数据；最后移除显式启动注册、selector consumers 和 `pkg/fitpolicy/`。`official_fit_models` 与既有 route 逻辑不能被卸载步骤删除。
 
 ## 12. Fork 存活与可见（C5）
 

@@ -18,7 +18,9 @@ type Requirement struct {
 	Model string
 	// Marks are the required behaviours, in rule order and deduplicated.
 	Marks []string
-	// Behaviors maps each required mark to its class.
+	// Behaviors maps each required mark to its class. It is carried for
+	// consumers that will need the classification; no code branches on it yet,
+	// and every behaviour the shipped document declares is ClassVerdict.
 	Behaviors map[string]string
 	// PolicyVersion and PolicyHash identify the snapshot that produced this
 	// decision, so a shadow trace or capability report can be tied back to it.
@@ -30,6 +32,10 @@ type Requirement struct {
 	BaselineHash string
 	// EmptyMatchPolicy and UnknownMarkPolicy are carried so the consumer does
 	// not have to re-read the snapshot (which may have been replaced).
+	//
+	// UnknownMarkPolicy is read: it turns an absent mark into "not disproven"
+	// instead of "not supported". EmptyMatchPolicy is not read, because v1 has a
+	// single legal value and the narrowing implements exactly that behaviour.
 	EmptyMatchPolicy  string
 	UnknownMarkPolicy string
 	// Shadow records that the producing policy was observe-only. The consumer

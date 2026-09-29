@@ -37,13 +37,30 @@ type FamilyPolicy struct {
 	Rules []Rule `json:"rules"`
 	// Behaviors declares the class of every behaviour a rule may require.
 	// A rule referencing an undeclared behaviour is rejected at write time.
+	//
+	// The map is required by the schema and carried into the decision, but v1
+	// reads only its keys: a class is accepted, validated and reported, and no
+	// consumer acts on it yet. It exists so the classification is authored and
+	// reviewed now rather than invented later, and so a future consumer can read
+	// it out of a document that already carries it.
 	Behaviors map[string]Behavior `json:"behaviors"`
 	// UnknownMarkPolicy decides how a channel with no mark for a required
 	// behaviour is treated: "conservative" treats the missing mark as
 	// "unsupported" (a mark is a promise), "permissive" treats it as unknown.
+	//
+	// Both values are in force. Under "permissive" a channel with no measurement
+	// at all is not ruled out, so the narrowing's PermittedByMarks must not be
+	// read as "verified" for that policy.
 	UnknownMarkPolicy string `json:"unknown_mark_policy"`
 	// EmptyMatchPolicy decides what happens when requirement narrowing leaves no
-	// candidate. v1 only allows legacy_hard_pin_then_existing_error.
+	// candidate.
+	//
+	// v1 only allows legacy_hard_pin_then_existing_error, which is also the only
+	// behaviour implemented (see pkg/fitpolicy/narrow.go): phase 2 falls back to
+	// the official set and an empty official set keeps the caller's existing
+	// selection error. The field is validated so a document cannot ask for a
+	// fallback the code does not have; it is not yet read at decision time
+	// because there is exactly one legal value.
 	EmptyMatchPolicy string `json:"empty_match_policy"`
 }
 
@@ -60,6 +77,12 @@ type Behavior struct {
 	//   verdict    - correctness: failing it is worse than failing the request;
 	//   capability - another channel can satisfy it, so switching is right;
 	//   courtesy   - degradable, annotate instead of failing.
+	//
+	// All three are accepted and validated; every behaviour the shipped document
+	// declares is verdict. Be aware that no consumer branches on the class yet:
+	// writing "capability" or "courtesy" into a document does not, by itself,
+	// change how a failure is handled — the narrowing treats every required
+	// behaviour the same way. See docs/fitpolicy-tech-spec.md §6.1.
 	Class string `json:"class"`
 }
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 )
@@ -40,17 +40,47 @@ type fitCapabilityMark struct {
 	Revision     int64
 }
 
-const fitCapabilityIndexLogLimit = 6
+const (
+	// fitCapabilityIndexLogBurst is how many index lines are written up front,
+	// and fitCapabilityIndexLogInterval is how often the site refills after that.
+	// A build runs on startup, on every channel-cache rebuild and on every config
+	// epoch, and the failure it reports — the table is missing on a node that has
+	// not migrated yet — is an expected state that can last for a deployment, so
+	// the site has to stay both bounded and alive.
+	fitCapabilityIndexLogBurst    = 6
+	fitCapabilityIndexLogInterval = time.Minute
+
+	// fitCapabilityIndexRetryCooldown is how long a failed build is left alone
+	// before the next first-use attempt.
+	//
+	// Without it a failure is not a one-off: built stays false, so every mark of
+	// every candidate of every request retries the full table scan. With a
+	// missing table that is not a degraded node, it is a query storm on the
+	// database that is already the reason the build failed. The cooldown keeps
+	// the fail-open answer ("not verified") while making the retry rate bounded;
+	// the explicit rebuilds on the channel-cache path ignore it on purpose,
+	// because those are deliberate refreshes rather than first-use guesses.
+	fitCapabilityIndexRetryCooldown = 30 * time.Second
+)
 
 var (
-	fitCapabilityIndexLogCount atomic.Int64
-	fitCapabilityIndexLock     sync.RWMutex
+	fitCapabilityIndexLog  = common.NewLogBudget(fitCapabilityIndexLogBurst, fitCapabilityIndexLogInterval)
+	fitCapabilityIndexLock sync.RWMutex
 	// fitCapabilityIndex: channelID → model → behaviour → mark
 	fitCapabilityIndex map[int]map[string]map[string]fitCapabilityMark
 	// fitCapabilityIndexBuilt records whether a successful build has happened.
 	// It distinguishes "no marks exist" from "the index is unavailable"; both
 	// answer conservatively, but only the latter should be logged.
 	fitCapabilityIndexBuilt bool
+
+	// fitCapabilityIndexBuildLock makes the build single-flight: one builder at a
+	// time, and concurrent first-use callers that arrive while a build is running
+	// wait for it instead of starting a second scan of the same table.
+	fitCapabilityIndexBuildLock sync.Mutex
+	// fitCapabilityIndexRetryAfter is the earliest time a first-use build may be
+	// attempted again after a failure. It is read and written under
+	// fitCapabilityIndexBuildLock.
+	fitCapabilityIndexRetryAfter time.Time
 )
 
 // Lock ordering: selection holds channelSyncLock (read) and then takes
@@ -65,16 +95,35 @@ var (
 // clearing it: a transient database error must not make verified channels look
 // unverified and push traffic off them.
 func InitFitCapabilityIndex() {
+	fitCapabilityIndexBuildLock.Lock()
+	defer fitCapabilityIndexBuildLock.Unlock()
+	buildFitCapabilityIndexLocked()
+}
+
+// buildFitCapabilityIndexLocked performs one build. The caller holds
+// fitCapabilityIndexBuildLock, which is what makes the two callers below —
+// one deliberate, one first-use — collapse into a single scan instead of racing.
+func buildFitCapabilityIndexLocked() bool {
+	if DB == nil {
+		// No handle yet. This is reachable before InitDB finishes and in tests
+		// that never open one; answering "unavailable" is the documented
+		// fail-open behaviour and is far better than dereferencing a nil handle
+		// on the request path. No cooldown is armed here: this branch touches no
+		// database, so retrying costs nothing, and arming one would delay the
+		// first real build behind a wiring state that says nothing about the
+		// table.
+		if fitCapabilityIndexLog.Allow() {
+			common.SysLog("channel fit capability index: database handle is not initialised yet")
+		}
+		return false
+	}
 	rows, err := ListAllChannelFitCapabilities()
 	if err != nil {
-		common.SysLog("failed to load channel fit capabilities: " + err.Error())
-		return
-	}
-	// Bounded, counts only: an index built from the wrong rows is
-	// indistinguishable at request time from one whose rows do not match, and both
-	// look like "no capability data" in the narrowing result.
-	if fitCapabilityIndexLogCount.Add(1) <= fitCapabilityIndexLogLimit {
-		common.SysLog(fmt.Sprintf("fitpolicy capability index: rows=%d", len(rows)))
+		fitCapabilityIndexRetryAfter = time.Now().Add(fitCapabilityIndexRetryCooldown)
+		if fitCapabilityIndexLog.Allow() {
+			common.SysLog("failed to load channel fit capabilities: " + err.Error())
+		}
+		return false
 	}
 	index := make(map[int]map[string]map[string]fitCapabilityMark, len(rows))
 	for i := range rows {
@@ -103,6 +152,16 @@ func InitFitCapabilityIndex() {
 	fitCapabilityIndex = index
 	fitCapabilityIndexBuilt = true
 	fitCapabilityIndexLock.Unlock()
+	// A successful build clears the cooldown: the next first-use call has nothing
+	// to wait for, and a later failure starts its own window.
+	fitCapabilityIndexRetryAfter = time.Time{}
+	// Counts only: an index built from the wrong rows is indistinguishable at
+	// request time from one whose rows do not match, and both look like "no
+	// capability data" in the narrowing result.
+	if fitCapabilityIndexLog.Allow() {
+		common.SysLog(fmt.Sprintf("fitpolicy capability index: rows=%d", len(rows)))
+	}
+	return true
 }
 
 // FitCapabilityIndexReady reports whether a successful build has happened. It is
@@ -113,9 +172,27 @@ func FitCapabilityIndexReady() bool {
 	return fitCapabilityIndexBuilt
 }
 
-// LookupFitCapability returns the indexed mark for a channel/model/behaviour.
+// LookupFitCapability returns the indexed mark for a channel/model/behaviour,
+// building the index on first use.
+//
+// It must not be called while channelSyncLock is held: a first-use build runs a
+// full table scan, and doing that with the channel cache held blocks every
+// channel write for its duration. The selection path does not go through here —
+// it uses channelFitCapabilityMark, which never builds — and the out-of-lock
+// trigger is FitChannelFilterForRequest. This entry point exists for the
+// management surface and for callers that are not on the selection path.
 func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMark, bool) {
 	ensureFitCapabilityIndexBuilt()
+	return channelFitCapabilityMark(channelID, model, behavior)
+}
+
+// channelFitCapabilityMark reads the index without building it.
+//
+// This is the selection path's lookup. When the index has never been built the
+// answer is "not verified", which is the conservative answer and the documented
+// fail-open behaviour; the build itself is triggered outside the lock by
+// FitChannelFilterForRequest and on the channel-cache path.
+func channelFitCapabilityMark(channelID int, model, behavior string) (fitCapabilityMark, bool) {
 	fitCapabilityIndexLock.RLock()
 	defer fitCapabilityIndexLock.RUnlock()
 	byModel, ok := fitCapabilityIndex[channelID]
@@ -143,17 +220,26 @@ func LookupFitCapability(channelID int, model, behavior string) (fitCapabilityMa
 // the wiring cannot be forgotten again, and a restart cannot leave a node
 // vouching for nothing while claiming to consult measurements.
 //
-// Two goroutines may build concurrently at worst. The build is idempotent and
-// replaces the index under the write lock, so the result is the same either way
-// and no look-up observes a partial index.
+// The build is single-flight, and a failed build is not retried until
+// fitCapabilityIndexRetryCooldown has passed. Both matter on the hot path: the
+// callers are per-request, so without them a node whose table is missing (the
+// expected state before a migration reaches it) would run one full scan per mark
+// of every candidate of every request.
 func ensureFitCapabilityIndexBuilt() {
-	fitCapabilityIndexLock.RLock()
-	built := fitCapabilityIndexBuilt
-	fitCapabilityIndexLock.RUnlock()
-	if built {
+	if FitCapabilityIndexReady() {
 		return
 	}
-	InitFitCapabilityIndex()
+	fitCapabilityIndexBuildLock.Lock()
+	defer fitCapabilityIndexBuildLock.Unlock()
+	// Re-check under the lock: this is what makes concurrent first-use callers
+	// collapse into the single build the winner performs.
+	if FitCapabilityIndexReady() {
+		return
+	}
+	if time.Now().Before(fitCapabilityIndexRetryAfter) {
+		return
+	}
+	buildFitCapabilityIndexLocked()
 }
 
 // FitMarkRequirement is what one request needs a channel's marks to prove.
@@ -188,7 +274,11 @@ func ChannelSatisfiesFitMarks(channelID int, requirement FitMarkRequirement) boo
 	}
 	now := common.GetTimestamp()
 	for _, behavior := range requirement.Marks {
-		mark, found := LookupFitCapability(channelID, requirement.Model, behavior)
+		// channelFitCapabilityMark, not LookupFitCapability: this runs under
+		// channelSyncLock during selection, and a first-use build here would run a
+		// full table scan with the channel cache held. An unbuilt index answers
+		// "not verified", which is the same answer an empty one gives.
+		mark, found := channelFitCapabilityMark(channelID, requirement.Model, behavior)
 		if !found {
 			if requirement.PermissiveUnknown {
 				continue
@@ -220,7 +310,14 @@ func ChannelSatisfiesFitMarks(channelID int, requirement FitMarkRequirement) boo
 
 // ResetFitCapabilityIndexForTest clears the index so a test can observe the
 // unavailable-index behaviour. It is not used by production code.
+//
+// The retry cooldown is cleared with it: a test that observed a failed build
+// would otherwise leave the next test's first-use build suppressed for the rest
+// of the cooldown, which makes results depend on test order.
 func ResetFitCapabilityIndexForTest() {
+	fitCapabilityIndexBuildLock.Lock()
+	fitCapabilityIndexRetryAfter = time.Time{}
+	fitCapabilityIndexBuildLock.Unlock()
 	fitCapabilityIndexLock.Lock()
 	fitCapabilityIndex = nil
 	fitCapabilityIndexBuilt = false

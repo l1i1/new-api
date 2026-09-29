@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -38,16 +39,30 @@ const (
 	// (relay-router.go maps exactly this path to RelayFormatOpenAI).
 	fitPolicyScopedPath = "/v1/chat/completions"
 
-	// fitPolicyShadowLogLimit bounds how many individual shadow decisions are
-	// logged, so a dry run costs a bounded number of lines instead of one per
-	// request.
-	fitPolicyShadowLogLimit = 20
-	// fitPolicyShadowSampleEvery logs every Nth decision after the limit so a
-	// long-running dry run is still visible.
-	fitPolicyShadowSampleEvery = 1000
+	// fitPolicyShadowLogBurst is how many individual shadow decisions are logged
+	// up front, so a dry run costs a bounded number of lines instead of one per
+	// request. After the burst the site refills at fitPolicyShadowLogInterval, so
+	// a long-running dry run stays visible instead of going permanently silent
+	// once the quota is spent.
+	fitPolicyShadowLogBurst    = 20
+	fitPolicyShadowLogInterval = time.Minute
+
+	// fitPolicyInertLogBurst/fitPolicyInertLogInterval bound the "Route is on but
+	// nothing can act" alert. One line immediately, then at most one per
+	// interval: a misconfiguration has to be loud, but not once per request, and
+	// a state that is still broken an hour later must not have gone silent.
+	fitPolicyInertLogBurst    = 1
+	fitPolicyInertLogInterval = 5 * time.Minute
 )
 
-var fitPolicyShadowCount atomic.Int64
+var (
+	// fitPolicyShadowCount is the lifetime total of dry-run decisions. It is
+	// reported alongside the sampled lines so a rate-limited line still says how
+	// much traffic it stands for.
+	fitPolicyShadowCount atomic.Int64
+	fitPolicyShadowLog   = common.NewLogBudget(fitPolicyShadowLogBurst, fitPolicyShadowLogInterval)
+	fitPolicyInertLog    = common.NewLogBudget(fitPolicyInertLogBurst, fitPolicyInertLogInterval)
+)
 
 // fitPolicyInScope reports whether this request may be governed by the policy.
 // Everything else — the playground path, /v1/completions, /v1/messages,
@@ -96,10 +111,12 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled bool)
 	snapshot := fitpolicy.Current()
 	if snapshot == nil {
 		fitPolicyStats.noSnapshot.Add(1)
+		alertFitPolicyInert(c, req.Model, routeEnabled, "no_snapshot")
 		return
 	}
 	if !snapshot.Enabled() {
 		fitPolicyStats.disabled.Add(1)
+		alertFitPolicyInert(c, req.Model, routeEnabled, "disabled")
 		return
 	}
 	if !fitPolicyInScope(c) {
@@ -126,10 +143,56 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled bool)
 	fitPolicyStats.evaluated.Add(1)
 	if requirement.Shadow {
 		fitPolicyStats.shadowed.Add(1)
+		alertFitPolicyInert(c, req.Model, routeEnabled, "shadow")
 		reportFitPolicyShadow(c, req.Model, requirement)
 		return
 	}
 	common.SetContextKey(c, constant.ContextKeyFitRequirement, requirement)
+	// The pin flag is the same decision in the second shape the selection path
+	// already reads, not a second decision.
+	//
+	// Four sites ask "is this request pinned to official behaviour?": the legacy
+	// official narrowing in channel selection, the affinity gate and the affinity
+	// recording rule in the distributor, and officialFitPinKeepsVerdict in
+	// service/relay_error.go — the one that must keep the official verdict
+	// instead of failing the request over to another channel. Since the
+	// compiled-in predicates were retired nothing wrote this flag, so all four
+	// took the unpinned branch: the retry guard stopped protecting the official
+	// text (an operator retry keyword re-pinned the request, excluded the only
+	// official channel, and answered 503 instead of the official body), and a
+	// pinned request could reuse or leave behind an aggregator affinity binding.
+	// Writing it here — where the requirement is decided — is what keeps those
+	// read sites meaning what they say.
+	//
+	// The two are written together on purpose: the flag says "official behaviour
+	// is required", and the requirement is the only producer of that statement
+	// on this path. The one path that produces an explicit pin instead
+	// (token/origin task or a specific channel id) returns above; it never
+	// reaches selection with the official-fit pin as its meaning, and the retry
+	// guard already answers it through the pin and constraint checks in
+	// DecideRelayRetry.
+	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+}
+
+// alertFitPolicyInert reports the one state where the layer is installed but can
+// act on nothing while the user asked for it: the Route dimension is on for this
+// model, so the request is supposed to be pinned to official behaviour, and yet
+// no requirement can be attached. Every consequence of that state is silent —
+// the request quietly routes like ordinary traffic and the retry guard is off —
+// so a counter is not enough to notice it.
+//
+// The budget keeps one line immediate and the rest rare; the detailed counters
+// stay available in the periodic observer summary for volume.
+func alertFitPolicyInert(c *gin.Context, modelName string, routeEnabled bool, reason string) {
+	if !routeEnabled || !fitPolicyInScope(c) {
+		return
+	}
+	if !fitPolicyInertLog.Allow() {
+		return
+	}
+	common.SysError("fitpolicy: official-fit Route is enabled but no requirement can be attached " +
+		"(reason=" + reason + ", model=" + strconv.Quote(modelName) + "); the official-fit pin is off for these requests. " +
+		"Write a live policy document to option " + fitpolicy.OptionKey + " (or remove the Route dimension until one exists).")
 }
 
 // fitPolicyAllowsAffinity reports whether an affinity-bound channel may be
@@ -161,7 +224,7 @@ func fitPolicyAllowsAffinity(c *gin.Context, channelID int, modelName string) bo
 // or credentials.
 func reportFitPolicyShadow(c *gin.Context, model string, requirement fitpolicy.Requirement) {
 	total := fitPolicyShadowCount.Add(1)
-	if total > fitPolicyShadowLogLimit && total%fitPolicyShadowSampleEvery != 0 {
+	if !fitPolicyShadowLog.Allow() {
 		return
 	}
 	requestID := ""
@@ -171,7 +234,9 @@ func reportFitPolicyShadow(c *gin.Context, model string, requirement fitpolicy.R
 	common.SysLog(strings.Join([]string{
 		"fitpolicy shadow decision:",
 		"request_id=" + requestID,
-		"model=" + model,
+		// %q rather than a bare value: the model id comes from the request body,
+		// so a newline in it would forge a second log line.
+		"model=" + strconv.Quote(model),
 		"family=" + requirement.Family,
 		"required_marks=" + strings.Join(requirement.Marks, ","),
 		"policy_version=" + itoa(requirement.PolicyVersion),

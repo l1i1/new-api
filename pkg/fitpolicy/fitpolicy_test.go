@@ -461,8 +461,8 @@ func TestNarrowTwoPhase(t *testing.T) {
 					t.Fatalf("Channels = %v, want %v", got.Channels, testCase.want)
 				}
 			}
-			if got.MatchedMarks != testCase.wantMatched {
-				t.Fatalf("MatchedMarks = %v, want %v", got.MatchedMarks, testCase.wantMatched)
+			if got.PermittedByMarks != testCase.wantMatched {
+				t.Fatalf("PermittedByMarks = %v, want %v", got.PermittedByMarks, testCase.wantMatched)
 			}
 		})
 	}
@@ -491,7 +491,7 @@ func TestNarrowMatchesLegacyOfficialPin(t *testing.T) {
 			t.Fatalf("narrow = %v, legacy official = %v", got.Channels, legacy)
 		}
 	}
-	if got.MatchedMarks {
+	if got.PermittedByMarks {
 		t.Fatal("without mark data the result must not claim a verified match")
 	}
 }

@@ -2,7 +2,8 @@ package model
 
 import (
 	"fmt"
-	"sync/atomic"
+	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -10,12 +11,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// fitNarrowingLogLimit bounds how many narrowing decisions are logged. The first
-// few are what a diagnosis needs; a systematic fault should cost a bounded
-// number of lines rather than one per request.
-const fitNarrowingLogLimit = 40
+// fitNarrowingLogBurst bounds how many narrowing decisions are logged up front.
+// The first few are what a diagnosis needs; a systematic fault should cost a
+// bounded number of lines rather than one per request. After the burst the site
+// refills at fitNarrowingLogInterval, so a node that starts failing later — or a
+// fault that comes back after being fixed — is still reported instead of finding
+// the quota spent for the life of the process.
+const (
+	fitNarrowingLogBurst    = 40
+	fitNarrowingLogInterval = 30 * time.Second
+)
 
-var fitNarrowingCount atomic.Int64
+var fitNarrowingLog = common.NewLogBudget(fitNarrowingLogBurst, fitNarrowingLogInterval)
 
 // Fit-policy narrowing for the channel selector.
 //
@@ -24,18 +31,20 @@ var fitNarrowingCount atomic.Int64
 // no opinion — leaves the legacy official pin untouched, so a request the policy
 // says nothing about behaves exactly as it did before this layer existed.
 //
-// Step A note: MarkSatisfied is nil because the channel capability table does
-// not exist yet. Phase 1 (verified channels) is therefore always empty and the
-// result is phase 2, today's official set. That is what makes landing this
-// wiring safe before the capability data does.
+// MarkSatisfied is built from the capability index, which fails open: with no
+// capability rows every lookup misses, so phase 1 stays empty and the result is
+// phase 2 — the official set, which is the legacy pin's answer. That is what
+// keeps the layer safe before any measurement exists, and it is why the index is
+// built in FitChannelFilterForRequest rather than lazily from inside the selector.
 
 // FitChannelFilter carries one request's fit-policy narrowing into the selector.
 type FitChannelFilter struct {
 	// Requirement is the immutable policy opinion for this request.
 	Requirement fitpolicy.Requirement
-	// MarkSatisfied reports whether a channel currently satisfies every required
-	// behaviour. Nil means no capability data exists; phase 1 stays empty and the
-	// result equals the official pin.
+	// MarkSatisfied reports whether a channel is not ruled out by every required
+	// behaviour. It is nil only for a hand-built filter: the one
+	// FitChannelFilterForRequest produces always reads the capability index, which
+	// answers "not verified" while it is empty or unavailable.
 	MarkSatisfied func(channelID int) bool
 }
 
@@ -49,6 +58,16 @@ func FitChannelFilterForRequest(c *gin.Context) *FitChannelFilter {
 	if !ok || !requirement.HasOpinion() {
 		return nil
 	}
+	// Build the capability index here, while the request is being prepared.
+	//
+	// This is the only place on the request path that may build it: the selector
+	// reads marks while holding channelSyncLock, and a first-use build there is a
+	// full table scan with the channel cache held — which does not deadlock, but
+	// takes every channel write down for its duration, and would be repeated for
+	// every mark of every candidate whenever the build fails. The construction
+	// happens outside the lock (the selector is called with the filter already
+	// built), so the scan is paid here and selection only ever reads.
+	ensureFitCapabilityIndexBuilt()
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
 	// The mark lookup is the capability index. With no capability rows every
 	// lookup misses, so phase 1 stays empty and selection falls back to the
@@ -96,7 +115,7 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 		func(channelID int) bool { return officialFitChannelMatchesLocked(channelID, model) },
 		f.MarkSatisfied,
 	)
-	reportFitNarrowing(model, channels, result, f.MarkSatisfied)
+	reportFitNarrowing(model, channels, result)
 	if !result.Applied {
 		return channels, false
 	}
@@ -111,27 +130,36 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 // candidate" from "it was a candidate and still failed", which have completely
 // different causes.
 //
+// Which candidates carried the marks is read out of result.Satisfied rather than
+// asked again: that is the same question phase 1 already answered, and running
+// the mark look-ups a second time on the request path — for a line that is
+// usually not even written — is work the narrowing already paid for.
+//
 // The line carries identifiers and counts only — never request bodies, messages,
-// tools or credentials — and is bounded so a systematic fault costs a fixed
-// number of lines rather than one per request.
-func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing, satisfies func(int) bool) {
-	if fitNarrowingCount.Add(1) > fitNarrowingLogLimit {
+// tools or credentials — and goes through a budget so a systematic fault costs a
+// bounded number of lines rather than one per request.
+func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing) {
+	if !fitNarrowingLog.Allow() {
 		return
 	}
-	// Which candidates carried the marks is the one input that separates "the
-	// marked channel was never offered" from "it was offered and still failed",
-	// and those have nothing in common as causes.
+	// A non-nil Satisfied set is exactly the "the marks were evaluated" marker
+	// the narrowing itself uses, so no second copy of that condition can drift
+	// from it.
+	marksEvaluated := result.Satisfied != nil
 	verdicts := make([]string, 0, len(channels))
 	for _, channelID := range channels {
 		mark := "no-marks"
-		if satisfies != nil && satisfies(channelID) {
-			mark = "ok"
-		} else if satisfies != nil {
+		if marksEvaluated {
 			mark = "failed"
+			if result.Matched(channelID) {
+				mark = "ok"
+			}
 		}
-		verdicts = append(verdicts, fmt.Sprintf("%d:%s", channelID, mark))
+		verdicts = append(verdicts, strconv.Itoa(channelID)+":"+mark)
 	}
 	common.SysLog(fmt.Sprintf(
-		"fitpolicy narrow: model=%s candidates=%v applied=%t official_and_marked=%t kept=%v marks=%v",
-		model, channels, result.Applied, result.MatchedMarks, result.Channels, verdicts))
+		// %q for the model id: it comes from the request body, so a newline in it
+		// would otherwise forge a second log line.
+		"fitpolicy narrow: model=%q candidates=%v applied=%t official_and_permitted=%t kept=%v marks=%v",
+		model, channels, result.Applied, result.PermittedByMarks, result.Channels, verdicts))
 }

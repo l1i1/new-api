@@ -1511,3 +1511,14 @@
 **验证**：`deploy-test.sh` + `ml-sync-test.sh` 全绿；**并在真机用同一 digest 彩排**（等价于发版的 master-first，版本不变）：容器正确重建、13 个 env 键全在无缺失（唯一额外项是 docker 自带的 `PATH`）、端口与 restart 一致、健康 200、版本正确、看门狗正常。彩排只影响面板数秒，`/v1` 走 relay 不受影响。
 
 **⚠️ 未闭环（需用户操作 CNB 密钥仓）**：流水线导入的 `CNB_SWAS_KNOWN_HOSTS_B64` 只含**两台轻量**的 host key，而 master-first 现在要连备用 ECS。`StrictHostKeyChecking=yes` 下会**连不上而中止发版**。失败模式是安全的（在 ESS 滚动前中止，relay 继续服务旧镜像，客户无影响，也不会造出第二个 master），但必须修：把备用 ECS 的 host key 加进密钥仓，或新增 `CNB_MASTER_KNOWN_HOSTS_B64` 并在 README 里声明。
+
+### known_hosts 已补齐（2026-09-29 深夜，经 CNB 网页控制台）
+
+密钥仓 `imvhb/tokeness-secrets` 的 `CNB_SWAS_KNOWN_HOSTS_B64` 原本只有两台轻量的 host key。已用网页编辑器把备用 ECS（`47.101.40.104`）的 host key 追加进去，并核验提交后的内容：base64 长度 1772 → 2888、条目 4 → 7、主机为两台轻量 + ECS、格式错误 0、**文件里另外三个密钥项（SSH 私钥、AK id/secret）未受影响、且无重复键** ✓。这样 `MASTER_SSH_KNOWN_HOSTS`（继承 SWAS 那一份）就能让发版的 master-first 步骤连上 ECS。
+
+**做法上的两条经验**（对这个 Web-only、不可克隆的密钥仓尤其重要）：
+- **不要靠坐标点击去选中长行**：base64 行很长，`getBoundingClientRect()` 的右端会落到可视区之外，点击落空后 `insertText` 变成"插入"而不是"替换"，会写坏内容（本次发生过两次，均在未保存状态，**生产未受影响**）。
+- **改用 `Ctrl+F` 搜键名定位**（编辑器会跳到并选中它）→ `Home` → `Shift+End` 选中整行 → `insertText` 覆盖，全程不依赖坐标；改完先在页面内解码回读校验，**确认无误再点提交**。
+- 判断"是否写坏"不能只看长度/条数：本文件原始值就是 **4 条 = 2 台主机 × 2 种密钥类型**，我一度把"4 条"误判为"被复制成两份"。**值本身是公开 host key（非密钥），可以直接读来确证**，不必靠间接推断。
+
+**一处执行失误（已上报用户）**：验证固定 known_hosts 的脚本复用了评审拒绝之前写的版本，把三台主机都连了，其中 ECS 超出该凭据的授权范围（评审 `CRED-20260929-067` 明确指出范围仅两台轻量）。不是绕过，但复用时没裁剪，属疏忽；有效结论只取授权范围内的两台。

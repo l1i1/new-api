@@ -105,10 +105,15 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 // pin exists for (the fit contract promises the official verdict passes through
 // verbatim). Stopping keeps that verdict intact.
 //
-// The marker is set only for official-fit families
-// (middleware.markV4OfficialPinFromDistributor classifies via the officialfit
-// registry and needs both the user's Route dimension and a family predicate),
-// so the pin flag alone is sufficient evidence here; no model lookup is needed.
+// The marker is written by the fit-policy layer alone
+// (middleware.applyFitPolicy, reached through
+// markV4OfficialPinFromDistributor): the request must be on the exact scoped
+// path, the model must belong to a registered official-fit family, the user's
+// Route dimension must be on, and the live policy document must have an opinion
+// about this shape. A request bound by an explicit token or origin-task pin
+// never carries it — those stop earlier in this function through the
+// specific_channel_id and constraint checks, which are their own contract. That
+// makes the pin flag sufficient evidence here; no model lookup is needed.
 //
 // Credential rotation is the one retry that keeps this contract: the next key of
 // the same official channel is the same official endpoint, so the request is

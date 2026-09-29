@@ -185,31 +185,58 @@ func TestSetupContextForSelectedChannelUsesCredentialProxyOverride(t *testing.T)
 	require.Empty(t, settings.Proxy)
 }
 
+// The pin is the policy's decision, and the policy keys on the measured shape
+// classes — logprobs, thinking, images, tool_choice, response_format, history —
+// never on sampling parameters. This test asserts both halves through the
+// production entry point, because the negative half alone cannot tell "sampling
+// does not pin" apart from "nothing ever pins".
 func TestMarkV4OfficialPinFromDistributorNoSamplingAutoPin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	requireLiveBuiltinPolicy(t)
+
 	newCtx := func(body, path string) *gin.Context {
-		gin.SetMode(gin.TestMode)
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		return c
 	}
+	withRoute := func(c *gin.Context) *gin.Context {
+		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+				"deepseek-v4-": {Route: true},
+			}},
+		})
+		return c
+	}
 
-	// Extreme sampling, thinking toggles, and logprobs no longer auto-pin:
-	// the official pin is controlled solely by the user's Official Fit
-	// route dimension, so non-Route traffic keeps aggregator affinity.
-	extreme := newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5,"thinking":{"type":"disabled"},"logprobs":true}`, "/v1/chat/completions")
-	markV4OfficialPinFromDistributor(extreme)
-	assert.False(t, common.GetContextKeyBool(extreme, constant.ContextKeyV4OfficialPin))
-
-	mild := newCtx(`{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`, "/v1/chat/completions")
+	// Extreme sampling values with a servable thinking shape: not pinned. The
+	// route dimension is on, so the only reason this stays unpinned is that the
+	// policy has no rule about temperature, top_p or the penalties.
+	mild := withRoute(newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5,"thinking":{"type":"disabled"}}`, "/v1/chat/completions"))
 	markV4OfficialPinFromDistributor(mild)
 	assert.False(t, common.GetContextKeyBool(mild, constant.ContextKeyV4OfficialPin))
+	assert.False(t, fitRequirementAttached(mild), "sampling parameters alone must not attach a requirement")
 
-	nonV4 := newCtx(`{"model":"gpt-test","temperature":2}`, "/v1/chat/completions")
+	// The discriminating case: the same Route-enabled user, an extreme sampling
+	// body that also carries logprobs — a measured divergence — must be pinned.
+	// Without this the assertions above would also hold on a build where the pin
+	// is never written at all, which is exactly the defect this file's tests were
+	// blind to.
+	extreme := withRoute(newCtx(`{"model":"deepseek-v4-flash","temperature":2,"top_p":0.1,"presence_penalty":1.5,"frequency_penalty":1.5,"thinking":{"type":"disabled"},"logprobs":true}`, "/v1/chat/completions"))
+	markV4OfficialPinFromDistributor(extreme)
+	assert.True(t, common.GetContextKeyBool(extreme, constant.ContextKeyV4OfficialPin),
+		"logprobs is a measured divergence, so this shape is pinned even though its sampling parameters are not the reason")
+	assert.True(t, fitRequirementAttached(extreme))
+
+	// A model outside every official-fit family is never marked, however extreme
+	// the body.
+	nonV4 := withRoute(newCtx(`{"model":"gpt-test","temperature":2}`, "/v1/chat/completions"))
 	markV4OfficialPinFromDistributor(nonV4)
 	assert.False(t, common.GetContextKeyBool(nonV4, constant.ContextKeyV4OfficialPin))
 
-	other := newCtx(`{"model":"deepseek-v4-flash","temperature":2}`, "/v1/embeddings")
+	// The policy governs the exact versioned path only, so the same pinned shape
+	// on another protocol keeps today's behaviour.
+	other := withRoute(newCtx(`{"model":"deepseek-v4-flash","logprobs":true}`, "/v1/embeddings"))
 	markV4OfficialPinFromDistributor(other)
 	assert.False(t, common.GetContextKeyBool(other, constant.ContextKeyV4OfficialPin))
 }
@@ -275,20 +302,25 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 	assert.False(t, fitRequirementAttached(k3Plain))
 }
 
+// A pinned deepseek-v4 request with affinity cached to an aggregator channel
+// must not reuse the sticky channel.
+//
+// The pin comes from the production entry point rather than from the test: this
+// test used to set the flag itself and then assert the flag, so it would have
+// passed on a build where nothing wrote the flag and every pinned request was
+// free to reuse a stale aggregator binding.
 func TestV4OfficialPinBypassesAggregatorAffinity(t *testing.T) {
-	// A pinned deepseek-v4 request with affinity cached to an aggregator
-	// channel must not reuse the sticky channel.
 	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash","temperature":2}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	requireLiveBuiltinPolicy(t)
 
+	c := newFitPolicyContext(t, `{"model":"deepseek-v4-flash","logprobs":true}`)
 	markV4OfficialPinFromDistributor(c)
-	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+
+	pinned := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+	require.True(t, pinned, "the marking function must pin a measured-divergence shape for a Route user")
 
 	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
-	pinned := common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin)
+	require.NotZero(t, officialType)
 	assert.False(t, officialPinAllowsAffinity(pinned, officialType, constant.ChannelTypeOpenAI, false),
 		"aggregator affinity must be bypassed for pinned requests")
 	assert.True(t, officialPinAllowsAffinity(pinned, officialType, constant.ChannelTypeDeepSeek, true),
@@ -388,19 +420,34 @@ func TestOfficialFitChannelAllowlistIsPerModel(t *testing.T) {
 // The exclusion is driven by the current request's pin, not by whether the
 // user still has Route enabled: unpinned requests drop official affinity even
 // when no official-fit profile is present at all (the stale-binding case).
+//
+// The pinned half is asserted alongside on purpose. Asserting only the unpinned
+// case cannot tell "this request is unpinned because its profile is gone" apart
+// from "the pin is never written for anything", and it was the second reading
+// that was true.
 func TestUnpinnedRequestDropsOfficialAffinityWithoutRouteProfile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"deepseek-v4-flash"}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-	// No UserSetting / Route profile on the context, as in the production
-	// incident: the pin is off because the profile no longer enables Route.
-	markV4OfficialPinFromDistributor(c)
-	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
+	requireLiveBuiltinPolicy(t)
 
 	officialType := model.OfficialFitChannelType("deepseek-v4-flash")
-	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin), officialType, officialType, false),
+	require.NotZero(t, officialType)
+
+	// No UserSetting / Route profile on the context, as in the production
+	// incident: the pin is off because the profile no longer enables Route.
+	stale := officialFitRouteRequest(t, `{"model":"deepseek-v4-flash","logprobs":true}`, false)
+	markV4OfficialPinFromDistributor(stale)
+	require.False(t, common.GetContextKeyBool(stale, constant.ContextKeyV4OfficialPin))
+	assert.False(t, officialPinAllowsAffinity(common.GetContextKeyBool(stale, constant.ContextKeyV4OfficialPin), officialType, officialType, false),
 		"a stale official binding must be dropped for an unpinned request")
+
+	// The same shape with Route on is pinned, which is what makes the assertion
+	// above a statement about this request's profile rather than about a flag
+	// nothing writes.
+	pinned := officialFitRouteRequest(t, `{"model":"deepseek-v4-flash","logprobs":true}`, true)
+	markV4OfficialPinFromDistributor(pinned)
+	require.True(t, common.GetContextKeyBool(pinned, constant.ContextKeyV4OfficialPin))
+	assert.False(t, officialPinAllowsAffinity(true, officialType, officialType, false),
+		"a pinned request must drop an affinity binding that is not official-behaving")
 }
 
 // Writing an affinity binding is a promise that the channel is the right answer

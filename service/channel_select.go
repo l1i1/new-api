@@ -207,9 +207,18 @@ func (p *RetryParam) HasSaturatedChannel() bool {
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 //
-// v4OfficialPin reports whether the request context marks this deepseek-v4
-// request for the official-channel pin (extreme sampling parameters that
-// aggregators cannot fit).
+// v4OfficialPin reports whether the request context marks this request for the
+// official-behaving channel set.
+//
+// The marking is the official-fit policy's decision, written by
+// middleware.applyFitPolicy for the shapes the live policy document requires
+// official behaviour for (see constant.ContextKeyV4OfficialPin). It is not
+// derived from sampling parameters here or anywhere else: extreme values,
+// thinking toggles and logprobs pin only through a rule in that document.
+//
+// When the policy attached a requirement the fit narrowing has already run, so
+// this flag is not what constrains the candidate set; it remains meaningful for
+// the requests that reach the selector with a pin but no requirement.
 func v4OfficialPin(param *RetryParam) bool {
 	return param != nil && param.Ctx != nil &&
 		common.GetContextKeyBool(param.Ctx, constant.ContextKeyV4OfficialPin)

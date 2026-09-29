@@ -171,3 +171,54 @@ func TestFitNarrowingAppliesWithoutTheLegacyPin(t *testing.T) {
 	}
 	require.True(t, seen[3], "a request with no pin and no policy opinion keeps the ordinary weighted pool")
 }
+
+// TestPermissiveUnknownMarkIsNotAVerification pins the one semantic the
+// narrowing's observability field must not be read as claiming.
+//
+// A conservative policy treats an absent mark as "not supported", so phase 1
+// only keeps channels whose every required behaviour was measured and is in a
+// satisfying state. A permissive policy treats absence as "unknown", so phase 1
+// keeps channels for which nothing was measured at all. Both land in the same
+// boolean, which is why it is named PermittedByMarks and not MatchedMarks: the
+// log line must not report "verified" for a channel nobody ever measured.
+func TestPermissiveUnknownMarkIsNotAVerification(t *testing.T) {
+	setupFitCapabilityDB(t)
+	gin.SetMode(gin.TestMode)
+
+	// The channel has no capability row at all, which is the state every channel
+	// is in before the first suite report.
+	ResetFitCapabilityIndexForTest()
+	InitFitCapabilityIndex()
+	require.True(t, FitCapabilityIndexReady())
+
+	build := func(policy string) *FitChannelFilter {
+		t.Helper()
+		c, _ := gin.CreateTestContext(nil)
+		common.SetContextKey(c, constant.ContextKeyFitRequirement, fitpolicy.Requirement{
+			Family: "deepseek-v4", Model: "deepseek-v4-flash",
+			Marks:             []string{fitpolicy.BehaviorThinkingCounting},
+			UnknownMarkPolicy: policy,
+		})
+		filter := FitChannelFilterForRequest(c)
+		require.NotNil(t, filter)
+		return filter
+	}
+
+	permissive := build(fitpolicy.UnknownMarkPermissive)
+	conservative := build(fitpolicy.UnknownMarkConservative)
+
+	require.True(t, permissive.MarkSatisfied(1),
+		"a permissive policy does not treat an absent mark as a failure")
+	require.False(t, conservative.MarkSatisfied(1),
+		"a conservative policy does: a mark is a promise")
+
+	official := func(int) bool { return true }
+	permitted := permissive.Requirement.Narrow([]int{1, 2}, official, permissive.MarkSatisfied)
+	assert.True(t, permitted.PermittedByMarks,
+		"phase 1 kept both channels — but on the strength of unknown data, which is what the field's name says")
+	assert.Equal(t, []int{1, 2}, permitted.Channels)
+
+	blocked := conservative.Requirement.Narrow([]int{1, 2}, official, conservative.MarkSatisfied)
+	assert.False(t, blocked.PermittedByMarks)
+	assert.Equal(t, []int{1, 2}, blocked.Channels, "phase 2 is the same official set, which is why the field is only observability")
+}

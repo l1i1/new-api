@@ -8,6 +8,15 @@ package fitpolicy
 // only if the shipped Go predicate pins the request. The composition lives here
 // as data; the primitives it calls stay in Go (see request.go).
 //
+// Shadow is on in this document because that is what the equivalence window
+// installed, and the shadow safety gate measures exactly this value. Production
+// does not run it as-is: DefaultPolicy below is the same rules with shadow off,
+// which is the document a node installs when the option has never been written.
+// The distinction matters because since the compiled-in predicates were retired
+// a shadow document decides and acts on nothing — installing it by default would
+// leave the whole official-fit pin inert. The rules, not the flag, are what the
+// equivalence test measures.
+//
 // Family-specific notes, all carried over from middleware/distributor.go:
 //   - DeepSeek V4 pins logprobs, image parts and thinking-output requests; the
 //     one class the pool serves faithfully is explicit thinking-off.
@@ -69,6 +78,26 @@ func BuiltinPolicy() Policy {
 			},
 		},
 	}
+}
+
+// DefaultPolicy is the document a node runs when the policy option has never
+// been written: the shipped rules, live.
+//
+// The option-used-to-be-absent path used to install nothing at all, which since
+// the compiled-in predicates were retired means "no opinion for every request" —
+// no shape is pinned, and the four consumers of the pin (channel selection,
+// affinity admission, affinity recording, and the retry guard in
+// service.officialFitPinKeepsVerdict) all take the unpinned branch. Seeding the
+// shipped document is what keeps the release no worse than the predicate era,
+// and it is the reason the equivalence test still describes production rather
+// than a document nobody installs.
+//
+// This is a default, not a lock: a written document — including one with
+// enabled=false, which is the documented rollback — always wins.
+func DefaultPolicy() Policy {
+	policy := BuiltinPolicy()
+	policy.Shadow = false
+	return policy
 }
 
 // Canonical family ids, mirrored from officialfit so this package's built-in
