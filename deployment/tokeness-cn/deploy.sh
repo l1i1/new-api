@@ -19,6 +19,11 @@ readonly SWAS_SSH_KNOWN_HOSTS="${SWAS_SSH_KNOWN_HOSTS:-}"
 # deploy pipeline keeps it on the deployed digest: before every ESS
 # rollout/rollback, deploy.sh re-rolls that container (master-first) and the
 # ESS rollout only starts once the master is verified healthy on the new image.
+# Since 2026-09-29 the re-roll is BLUE-GREEN (start green on the other port of
+# the 3000/3001 pair, gate it, pin both lightweight hosts' nginx onto it, then
+# retire blue): the panel no longer sees the old recreate window, at the cost
+# of a minutes-long double-master overlap the user explicitly authorized
+# (migrations still never run twice at once - they fire at container start).
 # It replaced the SWAS-2 host container, which no longer exists.
 # SWAS-2 still runs ml-sync and nginx, so the drain marker must be written
 # there too; it no longer carries any New API container.
@@ -39,9 +44,10 @@ readonly MASTER_SSH_KEY_PATH="${MASTER_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 # to the CI user's own known_hosts and abort the master roll. That one file
 # therefore has to cover the backup ECS as well as both lightweight hosts.
 readonly MASTER_SSH_KNOWN_HOSTS="${MASTER_SSH_KNOWN_HOSTS:-$SWAS_SSH_KNOWN_HOSTS}"
-# Read from the master host itself. 127.0.0.1 would not do: the container
-# publishes only 10.1.0.43:3000, so the private address is the one that answers.
-readonly HOST_STATUS_URL="${HOST_STATUS_URL:-http://10.1.0.43:3000/api/status}"
+# Master status probes run on the master host itself, against the currently
+# serving port of the 3000/3001 pair (WEB_PRIMARY_HOST:PORT; see the blue-green
+# section below). 127.0.0.1 would not do: the container publishes on the
+# private address only, and nginx on that host owns :80.
 readonly EDGEONE_TEST_URL="${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}"
 # Direct probe defaults to the plaintext upstream for a Host-pinned request.
 # Override DIRECT_PROBE_URL / DIRECT_PROBE_INSECURE when the upstream serves HTTPS.
@@ -63,6 +69,20 @@ readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}
 # Must outlive convergence plus the drain wait, or ml-sync would drop the pin
 # mid-rollout. The margin also covers a rollout that dies before clearing it.
 readonly ML_DRAIN_MARKER_TTL_SECONDS="${ML_DRAIN_MARKER_TTL_SECONDS:-1800}"
+
+# Blue-green master (2026-09-29, authorized multi-master overlap): the master
+# container is re-rolled by starting a replacement on the OTHER port of the
+# 3000/3001 pair and only then pointing the panel tier at it, so the panel
+# never sees the old container's recreate window. This marker tells ml-sync
+# which port currently serves the panel primary; it is persistent state (not
+# a TTL pin) and ml-sync adopts it only while the pinned port answers
+# /health/ready, so a dead pin can never be written into nginx.
+readonly WEB_PRIMARY_MARKER_PATH="${WEB_PRIMARY_MARKER_PATH:-/etc/ml-sync/web-primary-port}"
+# Private address the panel tier uses for the master (the ECS is reached over
+# the VPC peering; MASTER_HOST is its public IP for SSH).
+readonly WEB_PRIMARY_HOST="${WEB_PRIMARY_HOST:-10.1.0.43}"
+readonly WEB_PRIMARY_CONVERGE_ATTEMPTS="${WEB_PRIMARY_CONVERGE_ATTEMPTS:-12}"
+readonly WEB_PRIMARY_CONVERGE_DELAY_SECONDS="${WEB_PRIMARY_CONVERGE_DELAY_SECONDS:-15}"
 
 # Container shutdown budget. The application drains in-flight requests for
 # SHUTDOWN_TIMEOUT_SECONDS and then flushes background batches (log, quota,
@@ -796,17 +816,31 @@ print(json.dumps(snapshot, ensure_ascii=False))
 '
 }
 
-# sync_master_container <expected_version> [digest] - re-roll the master
-# container (new-api-master on the backup entry ECS) onto the deployed digest.
-# Runs BEFORE the ESS rollout/rollback (master-first): the master takes the new
-# image, runs its DB migrations, and must pass its readiness gate + version
-# check before the ECI tier moves. It is also the recovery path when a rollout
-# fails — the scaling config has already been re-pinned to the previous digest
-# by then, and an empty digest argument means "whatever the config now says".
-# The bootstrap preserves the container's env, port bindings, restart policy and
-# log options by reading them off the running container.
+# sync_master_container <expected_version> [digest] - blue-green re-roll of the
+# master container (new-api-master on the backup entry ECS) onto the deployed
+# digest, so the panel never sees the old container's recreate window.
+#
+# Sequence (all phases idempotent, every failure path fails closed):
+#   1. start   - green container comes up on the free port of the 3000/3001
+#                pair, health-gated. Blue keeps serving; nothing off-ECS moves.
+#   2. gate    - green's /api/status version must match the release (canary).
+#   3. pin     - both lightweight hosts get the web-primary marker for the
+#                green port; ml-sync (30s cron, health-gated) rewrites their
+#                nginx primary. Only when BOTH confs carry the green port is
+#                the panel considered switched.
+#   4. commit  - the ECS flips its own :80 last-resort upstream + serving-port
+#                marker to green, drains blue briefly, retires and renames.
+#
+# Any failure before commit: master_sync_abort() reconciles (blue kept, green
+# removed, pins restored). A failure DURING/AFTER commit never points anything
+# at a retired blue: abort finalizes green instead (the bootstrap decides from
+# live docker state, not from how far we think we got).
+#
+# master-first ordering vs the ESS rollout is unchanged: this whole function
+# completes before the ECI tier moves. An empty digest argument means
+# "whatever the scaling configuration now says" (recovery paths).
 sync_master_container() {
-  local expected_version="$1" digest="${2:-}" image_ref master_version
+  local expected_version="$1" digest="${2:-}" image_ref out green_port old_port master_version
   if [[ -z "$digest" ]]; then
     digest="$(snapshot_config_digest "$(oss_scaling_config_json)")" \
       || { error "could not read the current image digest from the scaling configuration"; return 1; }
@@ -818,20 +852,104 @@ sync_master_container() {
   image_ref="$CNB_IMAGE_REPOSITORY@$digest"
   [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
     || die "master sync impossible: bootstrap script not readable at $HOST_BOOTSTRAP_SCRIPT"
-  log "re-rolling master container ($MASTER_HOST) onto $image_ref"
-  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" \
-    < "$HOST_BOOTSTRAP_SCRIPT" \
-    || { error "master container roll failed; rerun $HOST_BOOTSTRAP_SCRIPT against $MASTER_HOST"; return 1; }
-  master_version="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
-    <<REMOTE_MASTER_VER
-curl -fsS --max-time 10 "$HOST_STATUS_URL" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["version"])'
-REMOTE_MASTER_VER
-  )" || { error "could not read the master version from $HOST_STATUS_URL"; return 1; }
-  if [[ -n "$expected_version" && "$master_version" != "$expected_version" ]]; then
-    error "master version ($master_version) does not match the deployed release ($expected_version)"
+
+  log "blue-green master roll ($MASTER_HOST): starting green onto $image_ref"
+  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" start \
+      < "$HOST_BOOTSTRAP_SCRIPT")"; then
+    error "green master failed to start or pass readiness; the serving master was never touched"
     return 1
   fi
-  log "master container synced (version $master_version)"
+  green_port="$(sed -n 's/^SERVING_PORT=//p' <<<"$out" | tail -n1)"
+  old_port="$(sed -n 's/^PREVIOUS_PORT=//p' <<<"$out" | tail -n1)"
+  if [[ ! "$green_port" =~ ^[0-9]+$ || ! "$old_port" =~ ^[0-9]+$ || "$green_port" == "$old_port" ]]; then
+    error "green bootstrap reported invalid ports (green='$green_port' previous='$old_port'); reconciling"
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+  log "green master ready on :$green_port (blue still serving the panel on :$old_port)"
+
+  # Version gate on the green port, before any traffic moves (release canary).
+  master_version="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    <<REMOTE_MASTER_VER
+curl -fsS --max-time 10 "http://$WEB_PRIMARY_HOST:${green_port}/api/status" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["version"])'
+REMOTE_MASTER_VER
+  )" || { error "could not read the green master version on :$green_port"; master_sync_abort "$image_ref" || true; return 1; }
+  if [[ -n "$expected_version" && "$master_version" != "$expected_version" ]]; then
+    error "green master version ($master_version) does not match the deployed release ($expected_version)"
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+  log "green master version verified: $master_version"
+
+  # Pin the panel tier onto the green port and wait for BOTH lightweight hosts
+  # to actually carry it. Green already passed readiness + version, so the flip
+  # is lossless; a host that cannot be pinned aborts while blue still serves.
+  web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$green_port" \
+    || { error "could not pin the panel primary on $SWAS_HOST"; master_sync_abort "$image_ref" || true; return 1; }
+  web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$green_port" \
+    || { error "could not pin the panel primary on $SWAS2_HOST"; master_sync_abort "$image_ref" || true; return 1; }
+  if ! wait_web_primary_converged "$green_port"; then
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+
+  # Both entry points now serve green. Commit on the ECS: :80 last-resort
+  # follows, blue drains briefly and is retired, green takes the canonical name.
+  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
+      < "$HOST_BOOTSTRAP_SCRIPT")"; then
+    error "blue-green commit failed; reconciling via abort"
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+  log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); panel saw no recreate window"
+}
+
+# master_sync_abort <image-ref> - reconcile after a failed master roll.
+# The bootstrap's abort phase looks at live docker state: blue still alive
+# means pre-commit, so it restores :80 and removes green; blue already gone
+# means the commit passed the point of no return, so it finalizes green. The
+# panel pin is then set to whichever port actually serves. Best effort: the
+# caller has already failed - this leaves a consistent state, and any remnant
+# damage is spelled out in the log for manual follow-up.
+master_sync_abort() {
+  local image_ref="$1" out probe_out serving blue_ok
+  probe_out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" probe \
+      < "$HOST_BOOTSTRAP_SCRIPT" 2>/dev/null)" || {
+    warn "abort: could not even probe $MASTER_HOST; leaving pins untouched (green was healthy when pinned)"
+    return 1
+  }
+  serving="$(sed -n 's/^SERVING_PORT=//p' <<<"$probe_out" | tail -n1)"
+  blue_ok="$(sed -n 's/^BLUE_OK=//p' <<<"$probe_out" | tail -n1)"
+  if [[ "$blue_ok" == "1" && "$serving" =~ ^[0-9]+$ ]]; then
+    # Blue can serve: move the panel back to it FIRST (green is still up, so
+    # nothing breaks during the re-pin), then let the ECS clean up green.
+    log "abort: blue is alive on :$serving; re-pinning the panel tier before cleanup"
+    web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$serving" \
+      || warn "abort: could not re-pin $SWAS_HOST to :$serving"
+    web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$serving" \
+      || warn "abort: could not re-pin $SWAS2_HOST to :$serving"
+    wait_web_primary_converged "$serving" \
+      || warn "abort: panel tier did not re-converge to :$serving (green remains up meanwhile)"
+  fi
+  out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" abort \
+      < "$HOST_BOOTSTRAP_SCRIPT" 2>&1)" || {
+    warn "abort phase failed on $MASTER_HOST; manual check required: $out"
+    return 1
+  }
+  while IFS= read -r line; do log "abort| $line"; done <<<"$out"
+  # If the abort had to finalize green (blue was already gone), make sure the
+  # panel pin follows it - the normal pin already names the green port, so this
+  # is only belt-and-braces for a pin that failed mid-flight.
+  serving="$(sed -n 's/^SERVING_PORT=//p' <<<"$out" | tail -n1)"
+  if [[ "$serving" =~ ^[0-9]+$ && "$blue_ok" != "1" ]]; then
+    web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$serving" \
+      || warn "abort: could not pin $SWAS_HOST to finalized :$serving"
+    web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$serving" \
+      || warn "abort: could not pin $SWAS2_HOST to finalized :$serving"
+    wait_web_primary_converged "$serving" \
+      || warn "abort: panel tier did not converge to finalized :$serving"
+  fi
+  return 0
 }
 
 scale_group() {
@@ -933,6 +1051,70 @@ ml_drain_end() {
   ml_drain_remove_marker "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" \
     || { warn "could not remove the drain marker on $SWAS2_HOST; it expires on its own"; rc=1; }
   return "$rc"
+}
+
+# --- blue-green master helpers -------------------------------------------------
+# The panel tier's nginx primary on each lightweight host follows
+# $WEB_PRIMARY_MARKER_PATH (ml-sync rewrites the conf from it, health-gated).
+# deploy.sh writes the pin AFTER the green master passed its readiness and
+# version gates, waits until BOTH hosts' nginx carry the port, and only then
+# asks the ECS bootstrap to commit (retire blue). Fails closed: if a host
+# cannot be pinned, or ml-sync does not converge, the master switch aborts
+# while blue is still serving.
+
+web_primary_pin() { # <host> <key> <known-hosts> <port>
+  local host="$1" key="$2" known="$3" port="$4"
+  [[ "$port" =~ ^[0-9]+$ ]] || { error "web-primary pin is not a port number: $port"; return 1; }
+  log "blue-green: pinning panel primary to $port on $host"
+  remote_cmd_on "$host" "$key" "$known" "$WEB_PRIMARY_MARKER_PATH" "$port" <<'REMOTE_SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+web_port_marker="$1"
+port="$2"
+install -d -m 0755 "$(dirname "$web_port_marker")"
+tmp="$web_port_marker.tmp.$$"
+printf '%s\n' "$port" > "$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$web_port_marker"
+REMOTE_SCRIPT
+}
+
+# get_web_primary_port_on <host> <key> <known-hosts> - the host:port the
+# panel-tier primary names in that host's nginx conf (empty when unreadable).
+get_web_primary_port_on() {
+  local host="$1" key="$2" known="$3"
+  remote_cmd_on "$host" "$key" "$known" "$NGINX_CONF" <<'REMOTE_AWK' 2>/dev/null | tail -n1 || true
+#!/usr/bin/env bash
+set -Eeuo pipefail
+conf="$1"
+awk '
+  $0 ~ "^[[:space:]]*upstream[[:space:]]+newapi_web[[:space:]]*\\{[[:space:]]*$" { inside = 1; next }
+  inside && $0 ~ "^[[:space:]]*}" { inside = 0 }
+  inside && $0 ~ "^[[:space:]]*server[[:space:]]+[0-9.]+:[0-9]+" && $0 !~ /backup/ {
+    line = $0
+    sub(/^[[:space:]]*server[[:space:]]+/, "", line)
+    sub(/[[:space:]].*/, "", line)
+    print line
+    exit
+  }
+' "$conf"
+REMOTE_AWK
+}
+
+wait_web_primary_converged() { # <port> - both lightweight hosts' nginx carry it
+  local target_port="$1" i=0 p1='' p2=''
+  while [ "$i" -lt "$WEB_PRIMARY_CONVERGE_ATTEMPTS" ]; do
+    p1="$(get_web_primary_port_on "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS")"
+    p2="$(get_web_primary_port_on "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS")"
+    if [ "$p1" = "$WEB_PRIMARY_HOST:$target_port" ] && [ "$p2" = "$WEB_PRIMARY_HOST:$target_port" ]; then
+      log "blue-green: both lightweight hosts serve the panel primary at $WEB_PRIMARY_HOST:$target_port"
+      return 0
+    fi
+    sleep "$WEB_PRIMARY_CONVERGE_DELAY_SECONDS"
+    i=$((i + 1))
+  done
+  error "blue-green: panel primary did not converge to $WEB_PRIMARY_HOST:$target_port within $((WEB_PRIMARY_CONVERGE_ATTEMPTS * WEB_PRIMARY_CONVERGE_DELAY_SECONDS))s (swas1=${p1:-?} swas2=${p2:-?})"
+  return 1
 }
 
 # wait_drain_converged <target_ip> - block until BOTH hosts serve the target.

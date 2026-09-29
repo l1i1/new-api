@@ -19,10 +19,10 @@ elif [[ "$url" == *"/manifests/"* ]]; then
 elif [[ "$url" == "${EDGEONE_TEST_URL:-https://tokeness.cn/api/status}" ]]; then
   [[ "${TOKENESS_TEST_PUBLIC_FAIL:-0}" -eq 0 ]] || exit 22
   printf '%s\n' "${TOKENESS_TEST_PUBLIC_BODY:-{\"success\":true}}"
-elif [[ "$url" == *":3000/api/status" ]]; then
-  # Master container version probe (sync_master_container). The master now lives
-  # on the backup entry ECS, so its /api/status is reached on the app port
-  # directly rather than through the old SWAS-2 host container on :8300.
+elif [[ "$url" == *":3000/api/status" || "$url" == *":3001/api/status" ]]; then
+  # Master container version probe (sync_master_container). The master lives on
+  # the backup entry ECS and is rolled blue-green across the 3000/3001 port
+  # pair, so the probe lands on whichever port the green container serves.
   printf '{"data":{"version":"%s"}}\n' "${TOKENESS_TEST_HOST_VERSION:-}"
 else
   [[ "${TOKENESS_TEST_DIRECT_FAIL:-0}" -eq 0 ]] || exit 22

@@ -41,7 +41,9 @@ fi
 
 tag='other'
 if [[ -n "$stdin_file" ]]; then
-  if grep -qF 'dirname "$marker"' "$stdin_file"; then
+  if grep -qF 'dirname "$web_port_marker"' "$stdin_file"; then
+    tag='web-port-pin'
+  elif grep -qF 'dirname "$marker"' "$stdin_file"; then
     tag='marker-write'
   elif grep -qF 'rm -f -- "$1"' "$stdin_file"; then
     tag='marker-remove'
@@ -94,6 +96,24 @@ if [[ "$tag" == marker-write && "${TOKENESS_TEST_MLSYNC:-0}" == 1 \
       inside && /^[[:space:]]*}/ { inside = 0 }
       inside && /^[[:space:]]*server[[:space:]]+[0-9.]+:/ {
         sub(/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/, ip); print; next
+      }
+      { print }
+    ' "$NGINX_CONF" > "$NGINX_CONF.mlsync-tmp" && mv "$NGINX_CONF.mlsync-tmp" "$NGINX_CONF"
+  fi
+fi
+
+# Simulated web-primary convergence for the blue-green master: production
+# ml-sync adopts the pinned port (health-gated) on its 30s cron; here the
+# rewrite happens on the pin write itself.
+if [[ "$tag" == web-port-pin && "${TOKENESS_TEST_MLSYNC:-0}" == 1 \
+   && -n "${WEB_PRIMARY_MARKER_PATH:-}" && -n "${NGINX_CONF:-}" && -f "${NGINX_CONF:-}" ]]; then
+  pin_port="$(awk 'NR==1{print $1}' "$WEB_PRIMARY_MARKER_PATH" 2>/dev/null)"
+  if [[ "$pin_port" =~ ^[0-9]+$ ]]; then
+    awk -v port="$pin_port" '
+      /^[[:space:]]*upstream[[:space:]]+newapi_web[[:space:]]*\{/ { inside = 1; print; next }
+      inside && /^[[:space:]]*}/ { inside = 0 }
+      inside && /^[[:space:]]*server[[:space:]]+[0-9.]+:[0-9]+/ && !/backup/ {
+        sub(/:[0-9]+/, ":" port); print; next
       }
       { print }
     ' "$NGINX_CONF" > "$NGINX_CONF.mlsync-tmp" && mv "$NGINX_CONF.mlsync-tmp" "$NGINX_CONF"

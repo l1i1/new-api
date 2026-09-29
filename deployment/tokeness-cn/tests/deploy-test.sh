@@ -45,6 +45,11 @@ upstream unrelated {
 upstream newapi_ml {
     server 10.0.0.207:3000;
 }
+upstream newapi_web {
+    server 10.1.0.43:3000 max_fails=2 fail_timeout=10s;
+    server 10.0.0.207:3000 backup max_fails=2 fail_timeout=5s;
+    keepalive 8;
+}
 CONF
 }
 
@@ -52,28 +57,43 @@ test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
 # Stand-in for deployment/tokeness-cn/bootstrap-master-ecs.sh: the real script
-# copies the env off the running master container, pulls the pinned image and
-# recreates the container (docker is unavailable here).
-# The fake counts syncs (host-sync-count, logged in host-bootstrap.log) and
-# drops a marker line into aliyun-calls.log so its ordering vs ESS API calls
-# is assertable. TOKENESS_TEST_HOST_FAIL_TIMES makes the first N syncs fail
-# (master-first abort/recovery paths).
+# copies the env off the serving master container, pulls the pinned image and
+# starts a green container on the other port of the 3000/3001 pair (docker is
+# unavailable here). The fake emulates the blue-green phases with a state file
+# ("serving-port", default 3000): start swaps to the other port, probe reports
+# it, commit keeps it, abort rolls it back. TOKENESS_TEST_HOST_FAIL_TIMES makes
+# the first N starts fail (master-first abort/recovery paths).
 host_bootstrap="$test_root/fake-bootstrap.sh"
 cat > "$host_bootstrap" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 state_dir="${TOKENESS_TEST_STATE_DIR:?}"
 mkdir -p "$state_dir"
+phase="${2:-start}"
 count_file="$state_dir/host-sync-count"
 count="$(cat "$count_file" 2>/dev/null || echo 0)"
 count=$((count + 1))
 printf '%s\n' "$count" > "$count_file"
 printf 'host-bootstrap\n' >> "$state_dir/aliyun-calls.log"
-printf 'host-bootstrap invocation %s\n' "$count" >> "$state_dir/host-bootstrap.log"
-if [[ "$count" -le "${TOKENESS_TEST_HOST_FAIL_TIMES:-0}" ]]; then
-  echo "simulated host bootstrap failure" >&2
-  exit 1
-fi
+printf 'host-bootstrap invocation %s phase=%s\n' "$count" "$phase" >> "$state_dir/host-bootstrap.log"
+port_file="$state_dir/serving-port"
+serving="$(cat "$port_file" 2>/dev/null || echo 3000)"
+case "$serving" in 3000) green=3001 ;; 3001) green=3000 ;; *) green=3001 ;; esac
+case "$phase" in
+  probe)
+    printf 'SERVING_PORT=%s\nBLUE_OK=1\nGREEN_PORT=%s\nGREEN_OK=0\n' "$serving" "$green" ;;
+  commit)
+    printf '%s\n' "$green" > "$port_file"
+    printf 'SERVING_PORT=%s\n' "$green" ;;
+  abort)
+    printf 'SERVING_PORT=%s\n' "$serving" ;;
+  start)
+    if [[ "$count" -le "${TOKENESS_TEST_HOST_FAIL_TIMES:-0}" ]]; then
+      echo "simulated host bootstrap failure" >&2
+      exit 1
+    fi
+    printf 'SERVING_PORT=%s\nPREVIOUS_PORT=%s\n' "$green" "$serving" ;;
+esac
 FAKE
 chmod +x "$host_bootstrap"
 
@@ -105,6 +125,9 @@ run_deploy() {
     HOST_BOOTSTRAP_SCRIPT="$host_bootstrap" \
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
     DRAIN_MARKER_PATH="$case_dir/state/drain-target" \
+    WEB_PRIMARY_MARKER_PATH="$case_dir/state/web-primary-port" \
+    WEB_PRIMARY_CONVERGE_ATTEMPTS=3 \
+    WEB_PRIMARY_CONVERGE_DELAY_SECONDS=0 \
     TOKENESS_TEST_MLSYNC=1 \
     ML_DRAIN_SECONDS=0 \
     ML_DRAIN_CONVERGE_ATTEMPTS=2 \
@@ -473,16 +496,30 @@ grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
 # instance's auto-created EIP must be bound to the shared bandwidth package.
 grep -q "vpc AddCommonBandwidthPackageIp .*--IpInstanceId eip-eci-new-1" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never bound the instance EIP to the shared bandwidth package"
-# The deploy pipeline must converge the master container to the same
-# release: bootstrap runs on the host and the reported version must match.
-assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1"
-[[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 1 ]] \
-  || fail "host bootstrap ran more than once"
-# Master-first: the host sync must complete before the ESS group scales out.
+# The deploy pipeline must converge the master container to the same release,
+# blue-green: start gates the green container, the panel tier is pinned onto
+# the green port and converges, and commit retires blue - all before the ESS
+# group scales out.
+assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1 phase=start"
+assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 2 phase=commit"
+[[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 2 ]] \
+  || fail "blue-green master roll did not run exactly start+commit"
+# Both lightweight hosts were pinned to the green port (3001), and only after
+# the pin did the commit retire blue.
+[[ "$(cat "$release_case/state/web-primary-port")" == "3001" ]] \
+  || fail "web-primary marker does not name the green port (3001)"
+[[ "$(grep -c 'web-port-pin' "$release_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "both lightweight hosts were not pinned to the green port"
+assert_contains "$release_case/nginx.conf" "server 10.1.0.43:3001 max_fails=2 fail_timeout=10s;"
+# Master-first: the whole blue-green cycle (start..commit) must complete
+# before the ESS group scales out.
 first_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
+last_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | tail -n1 | cut -d: -f1)"
 first_scaleout="$(grep -n 'ess ModifyScalingGroup .*--DesiredCapacity 2' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
 [[ -n "$first_bootstrap" && -n "$first_scaleout" && "$first_bootstrap" -lt "$first_scaleout" ]] \
   || fail "master container roll did not run before the ESS scale-out"
+[[ -n "$last_bootstrap" && "$last_bootstrap" -lt "$first_scaleout" ]] \
+  || fail "blue-green commit did not complete before the ESS scale-out"
 
 # CI-certified digest: passing the digest explicitly must pin exactly that
 # digest even though the registry would resolve a different one for the tag.
@@ -519,10 +556,40 @@ grep -q "master version" "$host_mismatch_case/state/output.log" 2>/dev/null \
 if grep -q "ess ModifyScalingGroup" "$host_mismatch_case/state/aliyun-calls.log"; then
   fail "ESS rollout started even though the master never matched the release"
 fi
-[[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 2 ]] \
-  || fail "host was not restored after the version mismatch"
+# The failed green roll reconciles (abort), then the recovery path re-rolls
+# blue-green from the restored digest: start+abort, then start+commit.
+grep -q "phase=abort" "$host_mismatch_case/state/host-bootstrap.log" \
+  || fail "master roll did not reconcile via abort after the version mismatch"
+[[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 5 ]] \
+  || fail "unexpected bootstrap invocation count after the version mismatch"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_mismatch_case/state/state.json" > /dev/null \
   || fail "scaling configuration was not restored after the master version mismatch"
+
+# Blue-green panel flip fails closed: when the web-primary pin cannot be
+# written on a lightweight host, the release aborts before commit and before
+# the ESS rollout - blue keeps serving, the abort reconciles green away.
+web_flip_fail_case="$test_root/web-flip-fail"
+mkdir -p "$web_flip_fail_case"
+make_conf "$web_flip_fail_case/nginx.conf"
+mkdir -p "$web_flip_fail_case/state"
+init_ess_state "$web_flip_fail_case/state"
+if run_deploy "$web_flip_fail_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  TOKENESS_TEST_SSH_FAIL_ON='web_port_marker' \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "release unexpectedly succeeded while the web-primary pin was refused"
+fi
+if grep -q "ess ModifyScalingGroup" "$web_flip_fail_case/state/aliyun-calls.log"; then
+  fail "ESS rollout started even though the panel tier was never switched"
+fi
+if grep -q "phase=commit" "$web_flip_fail_case/state/host-bootstrap.log"; then
+  fail "blue was retired even though the panel tier never moved to green"
+fi
+grep -q "phase=abort" "$web_flip_fail_case/state/host-bootstrap.log" \
+  || fail "the failed panel switch was not reconciled via abort"
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$web_flip_fail_case/state/state.json" > /dev/null \
+  || fail "scaling configuration was not restored after the failed panel switch"
 
 # Master-first abort: a failing host bootstrap aborts the release before the
 # ESS group is touched, restores the previous scaling configuration, and
@@ -544,8 +611,12 @@ fi
 assert_contains "$host_fail_case/state/modify-args.txt" "--Container.1.Image docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_fail_case/state/state.json" > /dev/null \
   || fail "scaling configuration was not restored after the failed master sync"
-[[ "$(wc -l < "$host_fail_case/state/host-bootstrap.log")" -eq 2 ]] \
-  || fail "host was not re-bootstrapped from the restored configuration"
+# The green start failed (blue untouched, so no abort), then the recovery path
+# re-rolls blue-green from the restored digest: failed start, then start+commit.
+[[ "$(wc -l < "$host_fail_case/state/host-bootstrap.log")" -eq 3 ]] \
+  || fail "host was not re-rolled blue-green from the restored configuration"
+grep -q "phase=commit" "$host_fail_case/state/host-bootstrap.log" \
+  || fail "recovery roll did not complete with a commit"
 
 # App never becomes ready: the rollout must fail BEFORE scaling down (the old
 # instance keeps serving), re-pin the previous digest, and delete the failed
@@ -568,10 +639,13 @@ grep -q "eci DeleteContainerGroup" "$app_failure_case/state/aliyun-calls.log" \
 jq -e '.desired == 1 and ([.instances[].InstanceId] | index("eci-old") != null)' \
   "$app_failure_case/state/state.json" > /dev/null \
   || fail "rollback did not converge back to a single old instance"
-# Master-first: the host took the release before the rollout; after the failed
-# rollout the master must be re-synced to the restored previous digest.
-[[ "$(wc -l < "$app_failure_case/state/host-bootstrap.log")" -eq 2 ]] \
+# Master-first: the host took the release before the rollout (start+commit);
+# after the failed rollout the master must be re-synced to the restored
+# previous digest (another start+commit, so four bootstrap invocations).
+[[ "$(wc -l < "$app_failure_case/state/host-bootstrap.log")" -eq 4 ]] \
   || fail "master was not re-synced after the failed rollout"
+grep -q "phase=commit" "$app_failure_case/state/host-bootstrap.log" \
+  || fail "master re-sync after the failed rollout did not commit"
 
 # A FATAL line in the container log must abort the rollout fast (fail-fast
 # instead of waiting out the whole readiness timeout).
@@ -587,7 +661,9 @@ if run_deploy "$fatal_case" \
 fi
 grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
   || fail "FATAL log did not trigger container cleanup"
-[[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 2 ]] \
+# Same accounting as the app-failure case: the release roll (start+commit) plus
+# the post-failure re-sync (start+commit).
+[[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 4 ]] \
   || fail "master was not re-synced after the FATAL-aborted rollout"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows

@@ -36,6 +36,8 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
 
    Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the master container is re-rolled from the restored configuration so node versions never drift.
 
+   The master re-roll is **blue-green** (2026-09-29): the replacement container starts on the other port of the `3000`/`3001` pair and passes its own readiness + version gates before the panel tier is moved onto it, so the panel no longer sees the old container's recreate window (previously a few seconds, stretched by nginx's `fail_timeout=10s` failover). During the gate window two master containers coexist — explicitly authorized; migrations still never run twice at once because they fire at container *start*, so only the green container migrates, and the old container keeps serving against the migrated schema exactly as the relay tier already does during every master-first rollout.
+
    The local path remains available as a break-glass fallback (WSL or Linux only; Windows Git Bash is refused):
 
    ```bash
@@ -57,7 +59,7 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
    ```
 
-   `rollback` follows the same gated master-first path as `deploy-release` (the master container is re-rolled and gated before the ESS rollout).
+   `rollback` follows the same gated master-first path as `deploy-release` (the master container is blue-green re-rolled and gated before the ESS rollout).
 
 6. Keep the egress EIP in the shared bandwidth package:
 
@@ -68,6 +70,19 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    The scaling configuration uses `AutoCreateEip`, so every ESS-replaced instance gets a brand-new EIP that does not join the shared bandwidth package (`cbwp-2g`, 2 Gbps peak, PayByDominantTraffic) on its own. `deploy-release`/`rollback` run this convergence automatically after the rollout (advisory: a bind failure warns and egress keeps serving on the standalone EIP peak); `eip-sync` re-runs it manually — e.g. after fixing RAM permissions (`AliyunEIPFullAccess`) or console-side drift.
 
 `ml-latest` is a non-production convenience tag only; never deploy it to a new production instance.
+
+## Blue-green master (2026-09-29)
+
+The master container (`new-api-master` on the backup ECS) serves the panel and is the only node running migrations/system tasks, so a release must update it first. It used to be recreated in place, which blacked the panel out for the container's start time plus nginx's `fail_timeout` failover. It is now rolled blue-green:
+
+1. `start` — a green container comes up on the **other** port of the `3000`/`3001` pair (`docker pull` first; blue is never touched) and must answer `/health/ready`.
+2. `gate` — green's `/api/status` version must equal the release.
+3. `pin` — `deploy.sh` writes `/etc/ml-sync/web-primary-port` on both lightweight hosts; ml-sync (30s cron) rewrites the `newapi_web` primary line **only while the pinned port answers `/health/ready`**, then reloads nginx. The deploy waits until both hosts carry the port.
+4. `commit` — on the ECS: the local `:80` last-resort upstream and `/etc/tokeness-cn/master-serving-port` follow green, blue gets a short quiet window, then `docker stop` → `rm` → green is renamed to `new-api-master`.
+
+The serving port therefore alternates per release (`:3000` → `:3001` → `:3000` …). That is expected: `deploy.sh` discovers it from the ECS marker, so never hand-edit the port in either nginx conf. A failed roll reconciles itself: `abort` keeps blue (removing green and restoring `:80`) when blue is still alive, and *finalizes* green when the commit already retired blue — nothing ever points at a dead container.
+
+`deploy.sh sync-host` (alias `sync-master`) re-runs the whole cycle against the digest the scaling configuration currently pins, and is the healing path for a half-finished roll (a leftover green is adopted when it is healthy on the right image, otherwise it is cleared and recreated).
 
 ## Troubleshooting the pipeline
 
