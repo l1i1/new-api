@@ -466,8 +466,28 @@ func toWebSocketURL(raw string) string {
 	}
 }
 
+// keepAliveWriter commits one keep-alive probe to the client.
+type keepAliveWriter func(*gin.Context) error
+
 func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.CancelFunc, <-chan struct{}) {
-	pingerCtx, stopPinger := context.WithCancel(context.Background())
+	return startKeepAlive(c, pingInterval, helper.PingData, "SSE ping")
+}
+
+// startNonStreamKeepAlive keeps a non-stream response from going silent while the
+// upstream generates. A non-stream relay writes nothing until the generation
+// finishes, so an intermediary that times out on the gap between bytes cuts it:
+// EdgeOne answers 524 after ~600s of silence, which is what a customer saw on
+// non-stream requests that legitimately run for many minutes. The probes are
+// insignificant JSON whitespace, so the client's parsed result is unchanged.
+func startNonStreamKeepAlive(c *gin.Context, interval time.Duration) (context.CancelFunc, <-chan struct{}) {
+	return startKeepAlive(c, interval, helper.WhitespaceData, "non-stream keep-alive")
+}
+
+// startKeepAlive runs write on a ticker until stopKeepAlive is called, the client
+// goes away, or the safety timeout fires. Streams use it for SSE pings; non-stream
+// responses use it for JSON whitespace (see startNonStreamKeepAlive).
+func startKeepAlive(c *gin.Context, interval time.Duration, write keepAliveWriter, label string) (context.CancelFunc, <-chan struct{}) {
+	keepAliveCtx, stopKeepAlive := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
 	gopool.Go(func() {
@@ -475,70 +495,100 @@ func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.Can
 		defer func() {
 			// 增加panic恢复处理
 			if r := recover(); r != nil {
-				logger.LogDebug(c, "SSE ping goroutine panic recovered: %v", r)
+				logger.LogDebug(c, "%s goroutine panic recovered: %v", label, r)
 			}
-			logger.LogDebug(c, "SSE ping goroutine stopped")
+			logger.LogDebug(c, "%s goroutine stopped", label)
 		}()
 
-		if pingInterval <= 0 {
-			pingInterval = helper.DefaultPingInterval
+		if interval <= 0 {
+			interval = helper.DefaultPingInterval
 		}
 
-		ticker := time.NewTicker(pingInterval)
+		ticker := time.NewTicker(interval)
 		// 确保在任何情况下都清理ticker
 		defer func() {
 			ticker.Stop()
-			logger.LogDebug(c, "SSE ping ticker stopped")
+			logger.LogDebug(c, "%s ticker stopped", label)
 		}()
 
-		var pingMutex sync.Mutex
-		logger.LogDebug(c, "SSE ping goroutine started")
+		var probeMutex sync.Mutex
+		logger.LogDebug(c, "%s goroutine started", label)
 
 		// 增加超时控制，防止goroutine长时间运行
-		maxPingDuration := 120 * time.Minute // 最大ping持续时间
-		pingTimeout := time.NewTimer(maxPingDuration)
-		defer pingTimeout.Stop()
+		maxKeepAliveDuration := 120 * time.Minute // 最大保活持续时间
+		keepAliveTimeout := time.NewTimer(maxKeepAliveDuration)
+		defer keepAliveTimeout.Stop()
 
 		for {
 			select {
-			// 发送 ping 数据
+			// 发送保活数据
 			case <-ticker.C:
-				if err := sendPingData(c, &pingMutex); err != nil {
-					logger.LogDebug(c, "SSE ping error, stopping goroutine: %s", err.Error())
+				if err := sendKeepAliveProbe(c, &probeMutex, write, label); err != nil {
+					logger.LogDebug(c, "%s error, stopping goroutine: %s", label, err.Error())
 					return
 				}
 			// 收到退出信号
-			case <-pingerCtx.Done():
+			case <-keepAliveCtx.Done():
 				return
 			// request 结束
 			case <-c.Request.Context().Done():
 				return
 			// 超时保护，防止goroutine无限运行
-			case <-pingTimeout.C:
-				logger.LogDebug(c, "SSE ping goroutine timeout, stopping")
+			case <-keepAliveTimeout.C:
+				logger.LogDebug(c, "%s goroutine timeout, stopping", label)
 				return
 			}
 		}
 	})
 
-	return stopPinger, done
+	return stopKeepAlive, done
 }
 
-func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
+func sendKeepAliveProbe(c *gin.Context, mutex *sync.Mutex, write keepAliveWriter, label string) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	// Bound the write so a slow client cannot block this goroutine forever;
-	// doRequest's defer waits for the pinger to exit before returning.
+	// doRequest's defer waits for the keep-alive goroutine to exit before returning.
 	helper.ExtendWriteDeadline(c)
-	err := helper.PingData(c)
+	err := write(c)
 	if err != nil {
-		logger.LogError(c, "SSE ping error: "+err.Error())
+		logger.LogError(c, label+" error: "+err.Error())
 		return err
 	}
 
-	logger.LogDebug(c, "SSE ping data sent")
+	logger.LogDebug(c, label+" data sent")
 	return nil
+}
+
+// nonStreamKeepAliveApplies decides whether a non-stream response may be prefixed
+// with insignificant JSON whitespace while the upstream generates.
+//
+// It is deliberately an allow-list of text completion modes: the probe is only
+// harmless when the body is a JSON document that the client parses to the same
+// value. Audio (binary TTS/transcription/translation), images, realtime and
+// task-style modes (Midjourney/Suno/video) are excluded outright, because a
+// leading space would corrupt a binary body or change a payload whose shape we do
+// not control. `info.IsStream` is checked here as well so the caller can use this
+// as the single condition.
+func nonStreamKeepAliveApplies(info *common.RelayInfo, settings *operation_setting.GeneralSetting) bool {
+	if info == nil || settings == nil || !settings.NonStreamKeepAliveEnabled || info.IsStream {
+		return false
+	}
+	switch info.RelayMode {
+	case constant.RelayModeChatCompletions,
+		constant.RelayModeCompletions,
+		constant.RelayModeEmbeddings,
+		constant.RelayModeModerations,
+		constant.RelayModeRerank,
+		constant.RelayModeResponses,
+		constant.RelayModeResponsesCompact,
+		constant.RelayModeGemini,
+		constant.RelayModeAlphaSearch:
+		return true
+	default:
+		return false
+	}
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
@@ -575,10 +625,10 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	var stopPinger context.CancelFunc
 	var pingerDone <-chan struct{}
+	generalSettings := operation_setting.GetGeneralSetting()
 	if info.IsStream {
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
-		generalSettings := operation_setting.GetGeneralSetting()
 		if generalSettings.PingIntervalEnabled && !info.DisablePing {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 			stopPinger, pingerDone = startPingKeepAlive(c, pingInterval)
@@ -591,6 +641,20 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 				}
 			}()
 		}
+	} else if nonStreamKeepAliveApplies(info, generalSettings) {
+		// 非流式请求在整段生成期间一个字节都不写，按「字节之间的空档」计时的中间层
+		// 会在生成完成前断开（EdgeOne 约 600s 回 524）。这里先写 JSON 合法空白把
+		// 空档打断；defer 保证在真正写响应体之前停掉，避免与响应体并发写。
+		helper.SetNonStreamKeepAliveHeaders(c)
+		keepAliveInterval := time.Duration(generalSettings.NonStreamKeepAliveSeconds) * time.Second
+		stopPinger, pingerDone = startNonStreamKeepAlive(c, keepAliveInterval)
+		defer func() {
+			if stopPinger != nil {
+				stopPinger()
+				<-pingerDone
+				logger.LogDebug(c, "non-stream keep-alive goroutine stopped by defer")
+			}
+		}()
 	}
 
 	resp, err := relayClient.Do(req)

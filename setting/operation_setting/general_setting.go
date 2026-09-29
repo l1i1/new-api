@@ -14,6 +14,14 @@ type GeneralSetting struct {
 	DocsLink            string `json:"docs_link"`
 	PingIntervalEnabled bool   `json:"ping_interval_enabled"`
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
+	// 非流式响应的保活（2026-09-30）。非流式请求在整段生成期间不写任何字节，
+	// 而按「两次数据之间的空档」计时的中间层会在生成完成前断开：EdgeOne 约 600s
+	// 没有字节就回 524，客户看到「非流请求 600s 超时」。开启后，等待上游生成期间
+	// 按间隔往响应体写入 JSON 合法空白（一个空格），客户端解析结果逐字节等价，
+	// 而空档被打断。只作用于文本补全类非流式请求；音频/图片/任务型响应绝不写入
+	// （见 relay/channel.nonStreamKeepAliveApplies）。默认关闭。
+	NonStreamKeepAliveEnabled bool `json:"non_stream_keep_alive_enabled"`
+	NonStreamKeepAliveSeconds int  `json:"non_stream_keep_alive_seconds"`
 	// 当前站点额度展示类型：USD / CNY / TOKENS
 	QuotaDisplayType string `json:"quota_display_type"`
 	// 自定义货币符号，用于 CUSTOM 展示类型
@@ -27,6 +35,8 @@ var generalSetting = GeneralSetting{
 	DocsLink:                   "https://docs.newapi.pro",
 	PingIntervalEnabled:        false,
 	PingIntervalSeconds:        60,
+	NonStreamKeepAliveEnabled:  false,
+	NonStreamKeepAliveSeconds:  60,
 	QuotaDisplayType:           QuotaDisplayTypeUSD,
 	CustomCurrencySymbol:       "¤",
 	CustomCurrencyExchangeRate: 1.0,
