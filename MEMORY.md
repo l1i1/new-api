@@ -1652,3 +1652,24 @@
 3. **面板字段未加**：`web/src/features/system-settings/{types.ts,models/*}` 需要加 `non_stream_keep_alive_*`，但**另一个会话正在同仓改动前端与 `web/src/i18n/overlay/*.json`**，此时改这些文件会把对方未提交的改动卷进我的提交 → 故意推迟。**开关本身通过配置接口 (`/api/option/`) 可用，不依赖面板字段。**
 4. **两条绕过路径未加保活**：AWS Bedrock client 模式（`aws/adaptor.go:156-161` → `relay-aws.go:96`）与 Coze 非流式轮询（`relay-coze.go:281-289`）。改动小但本机无法测该通道，故只记录不擅改（需要时可用 `helper.StartNonStreamKeepAlive` 直接接上）。
 5. `ExtendWriteDeadline` 在真实链路仍是 no-op（`relayObservationWriter` 不 promote `Unwrap`）—— 流式 ping 早就如此，新代码继承；1 字节/间隔，影响低。
+
+**「失败被埋进 200」的答案：只有 1xx 中间响应能不提交状态（2026-09-30 第二轮）**
+
+**先钉死前提（官方文档）**：EdgeOne 的「回源超时」——"The timeout can be set to an integer **from 5 to 600**, with a default value of 15 … if the origin server does not respond with any data within [the timeout] … the node will … respond to the client with a **524**"（<https://www.tencentcloud.com/document/product/1145/63618>）。**600s 是硬上限，调不上去** → 长非流式请求**必须**让连接上有数据，否则一定 524。这一条决定了"改 EdgeOne 配置"这条路不存在。
+
+**再实测我们那一跳**：从 v1.0 起我以为"nginx 不转发上游 1xx"，因此在 SWAS-2（当时 weight=0、零流量）上用**临时 nginx 实例（高端口，不碰生产配置）+ 一个先发 103 再发 200 的临时源**做了对照实验：对照组直连源站看到 `HTTP/1.1 103 Early Hints`，实验组**经 nginx 同样看到了 103**（`starttransfer≈0.001s`，即对客户端而言 1xx 就是"有数据"）。**结论：nginx 1.22.1 + `proxy_buffering off` 会把上游 103 转发给客户端** —— 我之前记的相反结论是错的，已更正。
+
+**于是给出模式开关** `non_stream_keep_alive_mode`：
+- `whitespace`（**默认**）：往正文写 JSON 合法空白。并发上无害（提交后 `Write` 不再读响应头 map），但首个字节即提交状态 → 之后失败只能 `200 + 错误 JSON`。
+- `interim`：发 **103 中间响应**，**完全不提交最终状态** → 迟到失败照旧写它自己的 4xx/5xx，成功路径正文一字不变（测试里两条都验证了）。代价见下。
+
+**interim 模式踩到的真坑（`-race` 抓出来的，不是测试问题）**：`WriteHeader(1xx)` 会让 net/http **读取当前响应头 map**（`net/http.(*response).WriteHeader` → `Header.WriteSubset` → `sortedKeyValues`），而 handler 可能正在写同一个 map → **Go 的 map 并发读写是 fatal error（直接打死进程，不只是 race）**。因此不能裸发 1xx。已补两道防护：
+1. 写守卫覆盖 `WriteHeader` —— gin 的 `Context.Render` 先 `c.Status(code)` 再设 Content-Type，于是在渲染前就停掉探针，覆盖了最主要的窗口；
+2. 守卫的 `Header()` 记录访问时间，探针在**最近 1s 内有人碰过响应头**时跳过本次探测（`atomic.Int64`，避免再用 gin 的 Keys map 引入新竞态）。
+这两道把窗口压到"在 `Header()` 之后隔 >1s 才发生、且恰好与探针同刻的头 map 写入"——与既有 SSE ping 首次写入的同类窄窗口相当。**正因如此 interim 仍是可选（默认 whitespace）**：它的安全性依赖一个比 whitespace 更窄但并不为零的并发假设。
+
+**另外**：`Seconds` 默认由 60 改为 **300**（= 首次探针延迟 = "多久之后失败会失去真实状态码"的窗口，比 60s 缩小 5 倍，距 600s 上限留 2 倍余量；nginx 侧 `proxy_read_timeout 86400s` 已核实，不构成限制）。`main.go` 的服务入口包了一层 `helper.CaptureRawResponseWriter`（把原始 `http.ResponseWriter` 放进请求上下文，1xx 必须绕过 gin 状态机才发得出去）。
+
+**仍未闭环（诚实记录）**：① 代码未部署；② **EdgeOne 是否把 103 算作"有数据响应"、以及它会不会把 103 透传给终端客户端，只能在生产验证一次**（打开开关 → 发一条长的非流式请求 → 看是照旧 524 还是顺利跨过 600s；若 524 说明 EdgeOne 不认 1xx，几秒内把 mode 改回 whitespace 即可，无需发版）；③ interim 的并发假设如上，未做压力验证；④ 面板仍无这些字段（另一会话正在改同批前端/i18n 文件）；⑤ Bedrock client 模式与 Coze 非流式轮询仍绕过 `doRequest`。
+
+**顺带发现的既有问题（与本次改动无关，未修）**：`relay/channel/gemini` 的若干测试带 `t.Parallel()` 又各自调 `gin.SetMode`，导致 `go test -race ./relay/channel/gemini/` **稳定报 6 处 DATA RACE**（栈顶就是那些测试自己的 `gin.SetMode`）。该文件未被本次改动触碰。

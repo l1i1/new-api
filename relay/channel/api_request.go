@@ -673,7 +673,11 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		// doRequest 在上游响应头到达时就返回，而真正耗时的响应体是之后由 handler 读的，
 		// 在这里停掉等于整个等待期仍然静默。停由 helper 的 writer guard 负责 ——
 		// 首个真实字节写出前才停，并同步等待 goroutine 退出（不会与正文并发写）。
-		helper.StartNonStreamKeepAlive(c, time.Duration(generalSettings.NonStreamKeepAliveSeconds)*time.Second)
+		helper.StartNonStreamKeepAlive(
+			c,
+			time.Duration(generalSettings.NonStreamKeepAliveSeconds)*time.Second,
+			helper.ParseNonStreamKeepAliveMode(generalSettings.NonStreamKeepAliveMode),
+		)
 	}
 
 	resp, err := relayClient.Do(req)

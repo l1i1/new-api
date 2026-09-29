@@ -28,6 +28,7 @@ import (
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/pkg/wsmanager"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/helper"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
@@ -245,8 +246,11 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: server,
+		Addr: ":" + port,
+		// The non-stream keep-alive may need to send 103 interim responses around
+		// gin (gin's own writer would mark the response as written and put the
+		// final status out of reach), so keep the raw ResponseWriter reachable.
+		Handler: helper.CaptureRawResponseWriter(server),
 	}
 
 	go func() {

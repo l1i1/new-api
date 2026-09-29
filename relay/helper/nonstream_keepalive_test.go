@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,7 +125,7 @@ func TestWhitespaceDataRefusesAfterContextDone(t *testing.T) {
 func TestWriteGuardStopsProbesAtFirstRealWrite(t *testing.T) {
 	c, recorder := newProbeContext(t)
 
-	StartNonStreamKeepAlive(c, 20*time.Millisecond)
+	StartNonStreamKeepAlive(c, 20*time.Millisecond, KeepAliveModeWhitespace)
 	require.Eventually(t, func() bool { return recorder.Len() > 0 }, time.Second, 5*time.Millisecond,
 		"probes must start while the body is still pending")
 
@@ -151,7 +152,7 @@ func TestWriteGuardStopsProbesAtFirstRealWrite(t *testing.T) {
 func TestProbeDoesNotBreakAnSSEBody(t *testing.T) {
 	c, recorder := newProbeContext(t)
 
-	StartNonStreamKeepAlive(c, 15*time.Millisecond)
+	StartNonStreamKeepAlive(c, 15*time.Millisecond, KeepAliveModeWhitespace)
 	require.Eventually(t, func() bool { return recorder.Len() > 0 }, time.Second, 5*time.Millisecond)
 
 	// The upstream answered text/event-stream and the handler streams it.
@@ -164,4 +165,128 @@ func TestProbeDoesNotBreakAnSSEBody(t *testing.T) {
 		require.False(t, strings.HasPrefix(line, " "), "no SSE line may gain a leading space: %q", line)
 	}
 	require.True(t, strings.HasSuffix(stream, "data: {\"delta\":\"hi\"}\n\n"))
+}
+
+// countingRawWriter counts interim responses so a test can prove the probes
+// really went out on the wire (Go's client hides 1xx from the caller).
+type countingRawWriter struct {
+	http.ResponseWriter
+	mu       sync.Mutex
+	interims int
+}
+
+func (w *countingRawWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	if code >= 100 && code < 200 {
+		w.interims++
+	}
+	w.mu.Unlock()
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *countingRawWriter) interimCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.interims
+}
+
+// countingMiddleware sits OUTSIDE CaptureRawResponseWriter so that the writer the
+// keep-alive captures is the counting one.
+type countingMiddleware struct {
+	next    http.Handler
+	mu      sync.Mutex
+	counter *countingRawWriter
+}
+
+func (m *countingMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	counter := &countingRawWriter{ResponseWriter: w}
+	m.mu.Lock()
+	m.counter = counter
+	m.mu.Unlock()
+	m.next.ServeHTTP(counter, r)
+}
+
+func (m *countingMiddleware) interimCount() int {
+	m.mu.Lock()
+	counter := m.counter
+	m.mu.Unlock()
+	if counter == nil {
+		return 0
+	}
+	return counter.interimCount()
+}
+
+// startInterimHarness serves a gin handler behind the same raw-writer capture the
+// production server installs, so probes and the final response travel a real
+// connection.
+func startInterimHarness(t *testing.T, interval time.Duration, respond func(c *gin.Context)) (*countingMiddleware, string, func()) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.GET("/probe", func(c *gin.Context) {
+		StartNonStreamKeepAlive(c, interval, KeepAliveModeInterim)
+		// Stand in for the upstream generation: nothing is written while it runs.
+		time.Sleep(3 * interval)
+		respond(c)
+	})
+	middleware := &countingMiddleware{next: CaptureRawResponseWriter(engine)}
+	server := httptest.NewServer(middleware)
+	return middleware, server.URL, server.Close
+}
+
+// The whole point of the interim mode: an intermediary sees traffic while the
+// upstream generates, yet the final status is still ours to choose. A late
+// failure must therefore reach the client as a real error, not as a fake 200.
+func TestInterimKeepAlivePreservesLateFailureStatus(t *testing.T) {
+	counter, url, closeServer := startInterimHarness(t, 40*time.Millisecond, func(c *gin.Context) {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "upstream failed late"}})
+	})
+	defer closeServer()
+
+	resp, err := http.Get(url + "/probe")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode, "the failure must not be buried in a 200")
+	assert.Contains(t, string(body), "upstream failed late")
+	assert.GreaterOrEqual(t, counter.interimCount(), 2, "probes must keep flowing while the upstream works")
+}
+
+// And a successful long generation still delivers an untouched body.
+func TestInterimKeepAliveLeavesBodyIntact(t *testing.T) {
+	payload := `{"id":"chatcmpl-1","choices":[{"message":{"content":"ok"}}]}`
+	counter, url, closeServer := startInterimHarness(t, 40*time.Millisecond, func(c *gin.Context) {
+		c.Data(http.StatusOK, "application/json", []byte(payload))
+	})
+	defer closeServer()
+
+	resp, err := http.Get(url + "/probe")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, payload, string(body), "interim responses must not appear in the body")
+	assert.GreaterOrEqual(t, counter.interimCount(), 2)
+}
+
+func TestParseNonStreamKeepAliveMode(t *testing.T) {
+	assert.Equal(t, KeepAliveModeWhitespace, ParseNonStreamKeepAliveMode("whitespace"))
+	assert.Equal(t, KeepAliveModeWhitespace, ParseNonStreamKeepAliveMode(" WHITESPACE "))
+	assert.Equal(t, KeepAliveModeInterim, ParseNonStreamKeepAliveMode("interim"))
+	assert.Equal(t, KeepAliveModeWhitespace, ParseNonStreamKeepAliveMode(""))
+	assert.Equal(t, KeepAliveModeWhitespace, ParseNonStreamKeepAliveMode("nonsense"))
+}
+
+// Without the captured raw writer the interim probe cannot work; Start must fall
+// back to whitespace instead of silently doing nothing.
+func TestStartFallsBackToWhitespaceWithoutRawWriter(t *testing.T) {
+	c, recorder := newProbeContext(t)
+
+	StartNonStreamKeepAlive(c, 20*time.Millisecond, KeepAliveModeInterim)
+	require.Eventually(t, func() bool { return recorder.Len() > 0 }, time.Second, 5*time.Millisecond)
+	assert.Contains(t, recorder.String(), whitespaceProbe)
 }
