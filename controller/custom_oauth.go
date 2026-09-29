@@ -258,8 +258,11 @@ func CreateCustomOAuthProvider(c *gin.Context) {
 		return
 	}
 
-	// Register the provider in the OAuth registry
+	// Register the provider in the OAuth registry, and publish it: the registry
+	// is per-process memory, so without this a provider created here answers
+	// "unknown provider" on every other node until that process restarts.
 	oauth.RegisterOrUpdateCustomProvider(provider)
+	model.NotifyConfigChanged()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -388,11 +391,14 @@ func UpdateCustomOAuthProvider(c *gin.Context) {
 		return
 	}
 
-	// Update the provider in the OAuth registry
+	// Update the provider in the OAuth registry, and publish it: a renamed slug
+	// must stop working, and a changed client secret must start working, on every
+	// node — not only on the one that handled this request.
 	if oldSlug != provider.Slug {
 		oauth.UnregisterCustomProvider(oldSlug)
 	}
 	oauth.RegisterOrUpdateCustomProvider(provider)
+	model.NotifyConfigChanged()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -434,8 +440,11 @@ func DeleteCustomOAuthProvider(c *gin.Context) {
 		return
 	}
 
-	// Unregister the provider from the OAuth registry
+	// Unregister the provider from the OAuth registry, and publish it: a deleted
+	// provider must stop authenticating users on every node, and the registry
+	// entry survives in memory, so the peers would keep accepting logins with it.
 	oauth.UnregisterCustomProvider(provider.Slug)
+	model.NotifyConfigChanged()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

@@ -130,6 +130,14 @@ func main() {
 			common.SysError("failed to reload authz policy after a config change: " + err.Error())
 		}
 	})
+	// Custom OAuth providers live in this process's memory only, so this hook is
+	// what makes a provider created, changed or deleted elsewhere reachable here —
+	// and what stops a deleted one from still accepting logins.
+	model.RegisterConfigReloadHook(func() {
+		if err := oauth.ReloadCustomProviders(); err != nil {
+			common.SysError("failed to reload custom OAuth providers after a config change: " + err.Error())
+		}
+	})
 	model.StartConfigEpochWatcher(model.DefaultConfigEpochWatchInterval)
 
 	// 周期性重载授权策略，保证多节点/多 master 部署下权限变更能传播到每个实例

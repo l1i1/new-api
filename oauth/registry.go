@@ -28,6 +28,11 @@ func Register(name string, provider Provider) {
 func RegisterCustom(name string, provider Provider) error {
 	mu.Lock()
 	defer mu.Unlock()
+	return registerCustomLocked(name, provider)
+}
+
+// registerCustomLocked is RegisterCustom for callers that already hold mu.
+func registerCustomLocked(name string, provider Provider) error {
 	if providers[name] != nil && !customProviderSlugs[name] {
 		customProviderConflicts[name] = true
 		return fmt.Errorf("custom OAuth provider %q conflicts with a built-in provider; rename the custom provider", name)
@@ -97,29 +102,35 @@ func IsCustomProvider(name string) bool {
 	return customProviderSlugs[name]
 }
 
-// LoadCustomProviders loads all custom OAuth providers from the database
+// LoadCustomProviders loads all custom OAuth providers from the database.
+//
+// The read happens before anything is unregistered. The previous order cleared
+// the registry first, so a failed read — a transient database error, or a table
+// that has not been migrated yet — left this node with no custom provider at
+// all, and every login through one of them failed until the next successful
+// load. A failed load now keeps the previous registry.
 func LoadCustomProviders() error {
-	// First, unregister all existing custom providers
-	mu.Lock()
-	for name := range customProviderSlugs {
-		delete(providers, name)
-	}
-	customProviderSlugs = make(map[string]bool)
-	customProviderConflicts = make(map[string]bool)
-	mu.Unlock()
-
-	// Load all custom providers from database
 	customProviders, err := model.GetAllCustomOAuthProviders()
 	if err != nil {
 		common.SysError("Failed to load custom OAuth providers: " + err.Error())
 		return err
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
+
+	// First, unregister all existing custom providers
+	for name := range customProviderSlugs {
+		delete(providers, name)
+	}
+	customProviderSlugs = make(map[string]bool)
+	customProviderConflicts = make(map[string]bool)
+
 	// Register each custom provider
 	var conflict error
 	for _, config := range customProviders {
 		provider := NewGenericOAuthProvider(config)
-		if err := RegisterCustom(config.Slug, provider); err != nil {
+		if err := registerCustomLocked(config.Slug, provider); err != nil {
 			common.SysError(err.Error())
 			conflict = err
 			continue

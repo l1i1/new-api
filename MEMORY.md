@@ -1587,6 +1587,21 @@
 
 **另一处如实记录**：`go test -race ./model/` 在本轮有一次未复现的失败，来自 `model/user_update_test.go` / `user_cache_auth_version_test.go` 泄漏的 `assert.Never` goroutine 与下一个测试替换 `common.RDB`（**与本机制无关的既有 flaky**）；我随后连跑 4 次（含 `-count=3`）全绿，并把 epoch 测试的等待上限从 1s 放宽到 3s 降低 flake 概率。
 
+## 2026-09-30 配置纪元：修掉两个「该发布而没发布」的写入方（用户「修」）
+
+第二轮审查报告里没动的那两条，本轮按用户指示修了；两条都是既有缺陷（不是纪元引入），但都属"提交了却没人告诉对端"这一类，正是本机制要消灭的东西。
+
+**S1 自定义 OAuth 供应商：此前根本没有传播路径**。`oauth.ReloadCustomProviders()` **零调用者**（只有启动时 `main.go:414` 调 `LoadCustomProviders`），`controller/custom_oauth.go` 的创建/更新/删除只改**处理该请求的进程**的内存注册表，而登录只认这份内存（`controller/oauth.go:169`）。后果：master 上新建的供应商在 ECI 副本上是 "unknown provider"；**停用/删除后副本仍继续用它登录，直到进程重启**。现被 nginx 把 `/api/*` 钉在 master 掩盖着，master 蓝绿/ECI 兜底时就会暴露。修法两半：① `main.go` 把 `oauth.ReloadCustomProviders` 注册成纪元重载钩子（与 `authz.ReloadPolicy` 并列）——这是对端的接收端；② 三个写入端点在**提交之后**调 `model.NotifyConfigChanged()`（本地已有的 `RegisterOrUpdateCustomProvider`/`UnregisterCustomProvider` 保持即时生效）。
+**顺带修掉同一函数里的一个真隐患**：`LoadCustomProviders` 原先**先清空注册表再读库**，读失败（瞬时 DB 错误、表未迁移）就把该节点所有自定义供应商清光——变成纪元钩子后这会变成"每次配置变更都可能触发"的故障。现改为**先读库、成功后才替换注册表**，读失败保留上一份。判别性核对：把顺序改回"先清空"，`TestLoadCustomProvidersKeepsTheRegistryWhenTheReadFails` 立刻 FAIL。
+
+**M1 按用户的 Casbin 权限写入绕过纪元**。`service/authz/override.go` 的三个 InTx 函数（`SetUserPermissionsInTx`/`ClearUserPermissionsInTx`/`ClearUserAuthorizationInTx`）直接写 `casbin_rule`，调用方（`controller/user.go` 建号 :1055、改管理员 :738、降权 :1194）随后只在本进程 `authz.ReloadPolicy()`。第二轮审查把它列为**安全相关**：**对端最多 60s 仍认这台机器上已撤销的管理员授权**（enforcer 自带的注释就写着 60s 循环是为这件事存在的）。修法：新增 `authz.ReloadPolicyAndNotify()`（本地重载 + `model.NotifyConfigChanged()`），三处调用点全部换过去；**发布必须在事务提交之后**——提交前发布会让对端读到旧策略却把该变更记为"已应用"，反而把撤销拖到 60s（这一条写进了函数注释）。判别性核对：把发布改成 `_ = model.NotifyConfigChanged`（保持可编译），测试立即 FAIL。
+
+**登记（一半，故意留一半）**：`FORK-CHANGES.md` §5 那一行按约定扩了两个写入方与新测试；`manifest.json` 的 4 个锚点（`ReloadCustomProviders`/`LoadCustomProviders`/`ReloadPolicyAndNotify`/`controller/custom_oauth.go` 的发布点）与 4 个测试名**没有随本次提交**——该文件此刻带着另一个会话**未提交**的改动（他们把锚点从 `fitCapabilityRoute.GET(` 改成 `fitCapabilityAdminRoute.GET(`，而仓库里 `router/channel-router.go` 的改名还没提交），把这份 manifest 提交上去会让门禁在提交点上变红（锚点指向尚不存在的符号）。等他们的改名落地后补这几行即可，已在工作树里备好。
+
+**验证**：`go build ./...` ok；`-race` 下 `./model/`、`./service/authz/`、`./oauth/` 全绿；`oauth/registry_test.go` 新增 3 例、`service/authz` 新增 1 例；**在"HEAD + 仅我的改动"的干净 worktree 里 `./controller/ ./model/... ./service/... ./oauth/` 全绿**（工作树里 `TestModelManagementDatabaseMatrix`、`TestGetChannelFitCapabilitiesRefuses*` 的失败已逐条定位为**另一个会话未提交的** `controller/`、`router/` 改动所致：同一条测试在干净 worktree 里单独跑与全量跑都通过；`router/channel-router.go` 被他们改后门禁的 fitpolicy 锚点暂时缺失，也与本轮无关）。
+
+**仍未动（诚实记录）**：m2 旧式 ratio 选项（`ModelRatio` 等六个键）写入方自己不失效定价缓存、又认领了 bump → **写入方**定价展示最长 60s 旧（对端 ~2s），仅展示层、计费不受影响；M4 任务插件内容变更等 30s 循环；m4 60s 的 `SyncOptions`/`SyncChannelCache` 与纪元重载未互相串行（既有竞争，一个 tick 内自愈）；F7 watcher 无停止通道、退出前不与 `CloseDB` 汇合；m5 三副本共用 `NODE_NAME`。**发版仍未做**：这些修复都不在任何 tag 里，生产仍是 `mainland.12`。
+
 ## 2026-09-30 master 蓝绿滚动（用户授权「允许暂时多路 master」，去面板秒级窗口）
 
 **问题**：master 是单容器（`rm -f` → 重建 → ready），面板在每次发版时有数秒 5xx；nginx 的 `max_fails=2 fail_timeout=10s` 还会把这窗口拉长。`/v1` 不受影响（走 relay），所以影响面是"正在操作面板的用户可能撞一次加载失败"。

@@ -1,11 +1,14 @@
 package authz
 
 import (
+	"context"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -337,4 +340,32 @@ func TestTaskPluginBindIsRootOnlyUntilGranted(t *testing.T) {
 	_, err = enforcer.RemovePolicy(RoleSubject(BuiltInRoleAdmin), ResourceTaskPlugin, ActionBind, EffectAllow)
 	require.NoError(t, err)
 	assert.False(t, Can(2, common.RoleAdminUser, TaskPluginBind))
+}
+
+// A per-user permission change is written straight to the casbin_rule table and
+// the node that handled the request reloads its own snapshot. Without the publish
+// the peers keep serving the old snapshot — a revoked admin grant stays in force
+// there — until the periodic policy sync runs.
+func TestReloadPolicyAndNotifyPublishesTheChange(t *testing.T) {
+	db := newAuthzTestDB(t)
+	require.NoError(t, Init(db))
+
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	previousRDB := common.RDB
+	previousRedisEnabled := common.RedisEnabled
+	common.RDB = client
+	common.RedisEnabled = true
+	t.Cleanup(func() {
+		common.RDB = previousRDB
+		common.RedisEnabled = previousRedisEnabled
+		_ = client.Close()
+	})
+
+	require.NoError(t, ReloadPolicyAndNotify())
+
+	stored, err := client.Get(context.Background(), "config_epoch:v1").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), stored,
+		"a policy change must be published so the other nodes reload their snapshot")
 }

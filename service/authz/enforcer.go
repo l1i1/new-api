@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/casbin/casbin/v2"
 	casbinmodel "github.com/casbin/casbin/v2/model"
 	"gorm.io/gorm"
@@ -73,6 +74,21 @@ func ReloadPolicy() error {
 		return fmt.Errorf("authz enforcer is not initialized")
 	}
 	return enforcer.LoadPolicy()
+}
+
+// ReloadPolicyAndNotify refreshes this node's snapshot and publishes the change
+// so every peer reloads on its next watch tick.
+//
+// Call it after the transaction that wrote the policy rows has committed, never
+// inside it: a peer that reloads before the rows are visible reads the old policy
+// and then records the change as applied, so the revoked grant survives there
+// until the periodic sync — the exact failure this pair exists to remove.
+func ReloadPolicyAndNotify() error {
+	if err := ReloadPolicy(); err != nil {
+		return err
+	}
+	model.NotifyConfigChanged()
+	return nil
 }
 
 // StartPolicySync periodically reloads the authorization policy from the database.
