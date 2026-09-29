@@ -91,6 +91,9 @@ STOP_TIMEOUT="${MASTER_STOP_TIMEOUT:-60}"
 # newapi_web (this host's own panel route) - both follow the port.
 ECS_NGINX_CONF="${ECS_NGINX_CONF:-/etc/nginx/sites-enabled/tokeness-ml.conf}"
 ECS_NGINX_HOST_HEADER="${ECS_NGINX_HOST_HEADER:-tokeness.cn}"
+# Backups must live OUTSIDE the directory nginx includes, or the copy itself
+# becomes a second loaded config (see ecs_nginx_point_at).
+ECS_NGINX_BAK_DIR="${ECS_NGINX_BAK_DIR:-/root/nginx-bg-bak}"
 
 log() { printf 'bootstrap-master-ecs: %s\n' "$*"; }
 err() { printf 'bootstrap-master-ecs: %s\n' "$*" >&2; }
@@ -134,40 +137,58 @@ write_serving_marker() { # <port> - atomic (tmp + rename): ml-sync/deploy never 
   mv -f -- "$tmp" "$SERVING_PORT_FILE"
 }
 
-# ecs_nginx_point_at <port> - move this host's :80 last-resort upstream to the
-# given master port. Verified (nginx -t + reload + Host-pinned probe) and
-# reverted on failure, exactly like ml-sync treats the lightweight hosts.
+# ecs_nginx_point_at <port> <old_port> - move this host's :80 last-resort
+# upstream to the given master port. Verified (nginx -t + reload + Host-pinned
+# probe) and reverted on failure, exactly like ml-sync treats the lightweight
+# hosts.
+#
+# Two traps this function exists to avoid (both hit on 2026-09-30's first
+# rehearsal):
+#   1. $ECS_NGINX_CONF lives in sites-enabled/, which nginx includes with a
+#      wildcard - a backup written next to it becomes a SECOND loaded config
+#      (duplicate log_format/upstream) and breaks every later `nginx -t`.
+#      Backups therefore go to $ECS_NGINX_BAK_DIR, outside the include path.
+#   2. It is a symlink into sites-available/, and `cp -a` on a symlink copies
+#      the LINK, not the file - a "backup" that changes whenever the live file
+#      does. So: resolve the target once, edit the target, back up a regular
+#      copy of it.
 ecs_nginx_point_at() {
-  local port="$1" old_port="$2" bak
-  [ -f "$ECS_NGINX_CONF" ] || { err "ECS nginx conf not found at $ECS_NGINX_CONF"; return 1; }
-  if ! grep -q "$SERVE_IP:$old_port" "$ECS_NGINX_CONF"; then
-    if grep -q "$SERVE_IP:$port" "$ECS_NGINX_CONF"; then
+  local port="$1" old_port="$2" bak target
+  target="$(readlink -f "$ECS_NGINX_CONF" 2>/dev/null || printf '%s' "$ECS_NGINX_CONF")"
+  [ -f "$target" ] || { err "ECS nginx conf not found (resolved: $target)"; return 1; }
+  if ! grep -q "$SERVE_IP:$old_port" "$target"; then
+    if grep -q "$SERVE_IP:$port" "$target"; then
       log "ECS nginx already points at :$port (idempotent)"
       return 0
     fi
     err "ECS nginx conf references neither :$old_port nor :$port; refusing to guess"
     return 1
   fi
-  bak="$ECS_NGINX_CONF.bg-bak-$(date +%s)"
-  cp -a "$ECS_NGINX_CONF" "$bak"
-  # Only upstream/proxy lines are rewritten; a comment mentioning the port is
-  # cosmetic and harmless, but the substitution is anchored to the serving
-  # address to keep the blast radius at exactly the master pointers.
-  sed -i --follow-symlinks "s/${SERVE_IP//./\\.}:${old_port}\b/${SERVE_IP}:${port}/g" "$ECS_NGINX_CONF"
+  install -d -m 0700 "$ECS_NGINX_BAK_DIR"
+  bak="$ECS_NGINX_BAK_DIR/$(basename "$target").$(date +%s)"
+  cp -a "$target" "$bak" || { err "could not back up $target"; return 1; }
+  # Only master pointers are rewritten (anchored to the serving address); a
+  # comment mentioning the port is cosmetic and harmless.
+  sed -i "s/${SERVE_IP//./\\.}:${old_port}\b/${SERVE_IP}:${port}/g" "$target"
+  if grep -q "$SERVE_IP:$old_port" "$target"; then
+    err "port substitution had no effect on $target; restoring from $bak"
+    cp -a "$bak" "$target"
+    return 1
+  fi
   if ! nginx -t >/dev/null 2>&1; then
     err "nginx -t failed after :80 upstream flip; restoring $bak"
-    cp -a "$bak" "$ECS_NGINX_CONF"
+    cp -a "$bak" "$target"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     return 1
   fi
-  systemctl reload nginx || { err "nginx reload failed; restoring $bak"; cp -a "$bak" "$ECS_NGINX_CONF"; systemctl reload nginx >/dev/null 2>&1 || true; return 1; }
+  systemctl reload nginx || { err "nginx reload failed; restoring $bak"; cp -a "$bak" "$target"; systemctl reload nginx >/dev/null 2>&1 || true; return 1; }
   if ! curl -fsS --max-time 5 -H "Host: $ECS_NGINX_HOST_HEADER" "http://$SERVE_IP:80/health/ready" >/dev/null 2>&1; then
     err ":80 post-flip probe failed; restoring $bak"
-    cp -a "$bak" "$ECS_NGINX_CONF"
+    cp -a "$bak" "$target"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     return 1
   fi
-  log "ECS nginx :80 last-resort now upstreams $SERVE_IP:$port (probe 200 via :80)"
+  log "ECS nginx :80 last-resort now upstreams $SERVE_IP:$port (probe 200 via :80; backup $bak)"
 }
 
 # ---- phase: probe ----------------------------------------------------------
