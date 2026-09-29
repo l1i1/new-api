@@ -61,13 +61,23 @@ describe('sidebar module configuration ordering', () => {
     assert.equal(parsed.admin.system_info, true)
   })
 
-  test('registers Task Plugins as an administrator module appended last', () => {
+  test('registers Task Plugins as an administrator module', () => {
     const parsed = parseSidebarModulesAdmin('')
 
     assert.equal(parsed.admin.task_plugins, true)
+  })
+
+  // The registry appends a newly registered module after the existing ones, so
+  // the newest administrator module is always the last default key. Fit
+  // Capability was registered after Task Plugins and is therefore last today;
+  // this assertion is expected to move again when the next module is added.
+  test('appends the newest administrator module last', () => {
+    const parsed = parseSidebarModulesAdmin('')
+
+    assert.equal(parsed.admin.fit_capability, true)
     const moduleKeys = Object.keys(parsed.admin).filter(
       (key) => key !== 'enabled'
     )
-    assert.equal(moduleKeys.at(-1), 'task_plugins')
+    assert.equal(moduleKeys.at(-1), 'fit_capability')
   })
 })

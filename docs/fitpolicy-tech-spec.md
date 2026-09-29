@@ -479,3 +479,56 @@ func narrow(candidates, fit) []Channel:
 4. **F1/F2 语料**（未满足即不得开工）：短期双写仅落哈希/差异且脱敏，或批准 semantic baseline + golden fixtures；CDP 官方语料不能替代旧网关输出语料。
 5. **热生效 SLO 测量**：N 节点、Redis healthy/fault、慢 reload、重启恢复的测量方案与产物路径；≤2s 只在健康条件成立。
 6. **日志与隐私**：shadow/审计字段、采样率、哈希方式、保留期；禁止 body/tools/token/完整响应/凭据。
+
+## 18. 管理界面与权限前置（2026-09-29）
+
+本节记录 fitpolicy 第一版管理界面的实际形状、它为什么这样切权限，以及**上线时必须人工完成的事**。
+代码：`controller/fit_policy.go`、`controller/channel_fit_capability.go`（分页总览）、`router/channel-router.go`、
+前端 `web/src/features/fit-policy/*` 与路由 `/fit-capability`。
+
+### 18.1 端点与鉴权
+
+| 端点 | 鉴权 | 读/写 | 说明 |
+|---|---|---|---|
+| `GET /api/fit-capability?channel_id=N` | `AdminAuth` + `channel.read` | 读 | **既有契约不变**（仍必须带 `channel_id`，`state` 仍按空绑定计算） |
+| `GET /api/fit-capability/all` | `AdminAuth` + `channel.read` | 读 | 新增。分页（`p`/`page_size`，上限 100），可按 `channel_id`/`family`/`model`/`behavior`/`source`/`supported` 过滤；`state` 按**当前生效**的 policy/baseline 重算，附 `binding_current` 与 `channel_name`（只 select `id,name`） |
+| `GET /api/fit-policy` | `AdminAuth` + `channel.read` | 读 | 新增。当前生效文档的三态（`default`/`cleared`/`document`）、存储文档能否编译、与 `DefaultPolicy()` 的差异、已安装快照（version/enabled/shadow/baseline/hash/last_error）、内置默认文档全文 |
+| `POST /api/fit-policy/validate` | `AdminAuth` + `channel.read` | 读（不落库） | 新增。对候选文档跑 `ParsePolicy` + `Compile`，返回 `valid`/`error`/与默认的差异/**关层告警码**/解析摘要/目标 hash |
+| `PUT /api/option/` | `RootAuth` | 写 | **唯一写入路径**，沿用既有 `validateOptionValue` → `ValidateFitPolicyOption`（提交前编译） |
+| `PUT /api/fit-capability`、`POST /api/fit-capability/report` | `capability.write` | 写 | 不变，仍只给受控 applier；**管理界面不调用** |
+
+- 读面用 `channel.read` 而不是 `RootAuth`：策略文档是路由配置（family/规则/开关），不是凭据，且看标记的人与看规则的人应当是同一批；
+  写入仍是 root-only，与所有其它 `options` 写入一致。若要收紧，把 `fitPolicyRoute` 的两行 `RequirePermission(authz.ChannelRead)` 换成 `RootAuth()` 即可。
+- 界面**不提供**标记写入（含 `force`）：标记是「实测证据」，写入端点是 CAS + 人工 sticky 语义；让管理员在表格里手改会同时破坏「证据」与「CAS」两件事。
+  需要人工覆盖时走既有 `PUT /api/fit-capability`（`source: manual`，带 `expected_revision`）。
+
+### 18.2 保存前的三道闸门（防「静默关层」）
+
+畸形或停用的文档不会让任何请求报错——选路只是对每个请求回答「无意见」，这与健康策略在外部完全同形。
+因此保存路径上有三道独立闸门：
+
+1. **前端 `evaluatePolicySave`**：非超级管理员 / 文本未变化 / 未通过校验 / 校验后又编辑过 → 保存按钮禁用并给出原因；
+2. **前端确认框**：会关掉该层的文档（空串、`enabled:false`、无 family、无 rule）必须显式确认，确认框重复该后果的原文；
+3. **后端 `validateOptionValue`**：`PUT /api/option/` 在数据库提交前编译文档，编译失败即拒绝，且不影响已安装快照（last-known-good）。
+
+`GET /api/fit-policy` 另外把「当前生效」与「已安装快照」分开显示：文档装载失败时快照保留上一份可用文档，这两者不一致本身就是要看到的信号。
+
+### 18.3 上线前置条件（**需要人工执行，代码里刻意不做**）
+
+1. **`capability.write` 的归属必须由人显式授予，且刻意不写进任何默认角色**。
+   `service/authz/resources_channel.go` 里该 action 没有 `DefaultRoles`——这是设计意图（suite applier 由「被授予的动作」定义，而不是由管理员身份继承）。
+   授予路径二选一：
+   - dashboard 用户：**用户 → 编辑 → 管理员权限覆盖**里勾选 `channel / capability.write`（catalog 会自动列出新 action，覆盖能表达「基线没有的 allow」）；
+   - 非 dashboard principal：往 `casbin_rule` 插 `('p', 'user:<id>', 'channel', 'capability.write', 'allow')`（`UserSubject(id)` 产生的正是 `user:<id>`）。
+   **在完成这一步之前，任何套件报告都会 403，且 `POST /api/fit-capability/report` 还要求已安装策略（否则 409）。**
+2. **发布后按顺序做一次**：① `GET /api/fit-policy` 确认 `source` 与 `live` 符合预期（生产滚动期间旧节点可能是 last-known-good）；
+   ② 在界面里对当前文档点一次「校验」，确认与内置默认的差异是已知的那几条；
+   ③ 记下当前 `live.hash`，它是后续 suite 报告绑定的对象。
+3. **回滚演练**：`enabled=false` 与「写空串」是两条不同的回滚杠杆（前者保留文档、后者清空选项），
+   界面都支持但都要过确认框；演练确认 `GET /api/fit-policy` 的 `source` 变为 `cleared`、`live.installed` 为 false 或 `enabled` 为 false。
+
+### 18.4 已知局限
+
+- 标记总览的 `state` 用**当前**绑定重算，而单渠道端点 `GET /api/fit-capability` 仍按空绑定冻结（旧契约）；两者对同一条 stale 绑定行可能给出不同字符串，这是有意保留的差异，不是 bug。
+- 界面不显示 6h 校准任务、suite 报告签名（尚未实现）与每通道 mark 的历史轨迹；审计仍在 `AuditLog`（`channel.fit_capability.*`）。
+- 与默认文档的差异来自 `fitpolicy.DivergenceFromBuiltin`，是字段/族/规则 id 级别的粗粒度描述，不是逐字符 diff。

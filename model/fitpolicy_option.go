@@ -130,3 +130,35 @@ func fitPolicyOptionValue() (string, bool) {
 	common.OptionMapRWMutex.RUnlock()
 	return raw, present
 }
+
+// FitPolicyOptionValue reports the stored policy document and whether the option
+// row exists.
+//
+// Exported for the administration read surface, which has to show the operator
+// the same three states the loader distinguishes: never written (the shipped
+// default is in force), written blank (the layer was deliberately taken out) and
+// written with a document. Collapsing the first two is exactly the confusion
+// that made a silently inert layer look healthy.
+func FitPolicyOptionValue() (string, bool) {
+	return fitPolicyOptionValue()
+}
+
+// FitPolicyDefaultDocument returns the shipped default policy document, indented
+// for display and for the "restore the shipped default" action.
+//
+// It is the same document the loader installs when the option has never been
+// written, so restoring it produces a stored document whose divergence from the
+// built-in rules is empty. Returning "" means the document could not be encoded,
+// which is a programming error and must not be presented as an empty document —
+// an empty value is the *disable* lever, not the default.
+func FitPolicyDefaultDocument() string {
+	document := defaultFitPolicyDocument()
+	if len(document) == 0 {
+		return ""
+	}
+	indented, err := common.IndentJson(document)
+	if err != nil {
+		return string(document)
+	}
+	return string(indented)
+}

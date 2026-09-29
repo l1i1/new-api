@@ -233,6 +233,14 @@ const SIDEBAR_MODULE_REGISTRY: SidebarModuleDefinition[] = [
     title: 'Task Plugins',
     description: 'Manage installed task plugins and the marketplace.',
   },
+  {
+    section: 'admin',
+    key: 'fit_capability',
+    urls: ['/fit-capability'],
+    title: 'Fit Capability',
+    description:
+      'Inspect behaviour-level channel capability marks and the official-fit policy document.',
+  },
 ]
 
 /**

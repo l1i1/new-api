@@ -43,6 +43,7 @@ const PAGE_TITLE_RULES: ReadonlyArray<{ prefix: string; key: string }> = [
   { prefix: '/subscriptions', key: 'Subscriptions' },
   { prefix: '/system-info', key: 'System Info' },
   { prefix: '/task-plugins', key: 'Task Plugins' },
+  { prefix: '/fit-capability', key: 'Fit Capability' },
   { prefix: '/system-settings', key: 'System Settings' },
   { prefix: '/chat2link', key: 'Chat' },
   { prefix: '/chat', key: 'Chat' },

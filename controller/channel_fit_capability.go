@@ -142,6 +142,125 @@ func GetChannelFitCapabilities(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": views})
 }
 
+// GetChannelFitCapabilitiesPage lists capability marks across channels.
+//
+// The per-channel endpoint above answers "what does this channel claim"; this
+// one answers "what does the fleet claim", which is what an operator needs
+// before trusting the marks: a behaviour marked on only one channel, a mark
+// bound to a policy that no longer exists, or a mark left behind by a deleted
+// channel are only visible in the aggregate. Reading stays an administrative
+// view (AdminAuth + channel.read), exactly like the single-channel listing.
+//
+// The response is a page: the table grows with every suite run, so an
+// unpaginated listing would eventually time out rather than inform.
+func GetChannelFitCapabilitiesPage(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	query := model.FitCapabilityQuery{
+		Family:   c.Query("family"),
+		Model:    c.Query("model"),
+		Behavior: c.Query("behavior"),
+		Source:   c.Query("source"),
+	}
+	if channelID, err := strconv.Atoi(c.Query("channel_id")); err == nil && channelID > 0 {
+		query.ChannelId = channelID
+	}
+	// supported is a tri-state: absent means "both", and false is a real filter
+	// (an explicit negative result is not the same as no result).
+	if raw, present := c.GetQuery("supported"); present {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "supported must be true or false"})
+			return
+		}
+		query.Supported = &value
+	}
+
+	total, err := model.CountChannelFitCapabilities(query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to count capabilities"})
+		return
+	}
+	rows, err := model.ListChannelFitCapabilitiesPage(query, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to list capabilities"})
+		return
+	}
+
+	// The state is resolved against the bindings currently in force, not against
+	// the empty binding the single-channel endpoint passes: the point of this
+	// view is to show which marks a live request can still rely on. A mark bound
+	// to a superseded policy is reported as suite_stale by the same state machine
+	// the selection path uses, so the two cannot disagree about freshness.
+	var policyHash, baselineHash string
+	if snapshot := fitpolicy.Current(); snapshot != nil {
+		policyHash, baselineHash = snapshot.Hash(), snapshot.Baseline()
+	}
+
+	ids := make([]int, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].ChannelId)
+	}
+	// A missing channel name must not fail the listing: marks outliving their
+	// channel are exactly the kind of drift this page exists to show, so the id
+	// is rendered on its own instead.
+	names, err := model.FitCapabilityChannelNames(ids)
+	if err != nil {
+		common.SysError("failed to resolve channel names for the fit capability page: " + err.Error())
+		names = map[int]string{}
+	}
+
+	now := common.GetTimestamp()
+	views := make([]fitCapabilityPageItem, 0, len(rows))
+	for i := range rows {
+		row := rows[i]
+		views = append(views, fitCapabilityPageItem{
+			ChannelFitCapability: row,
+			ChannelName:          names[row.ChannelId],
+			State:                model.FitCapabilityState(&row, now, model.DefaultFitCapabilityStaleAfterDays, policyHash, baselineHash),
+			BindingCurrent:       fitCapabilityBindingCurrent(&row, policyHash, baselineHash),
+		})
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"items":         views,
+		"total":         total,
+		"page":          pageInfo.GetPage(),
+		"page_size":     pageInfo.GetPageSize(),
+		"policy_hash":   policyHash,
+		"baseline_hash": baselineHash,
+	})
+}
+
+// fitCapabilityPageItem is one row of the overview. It carries the stored row
+// plus the two facts an operator cannot read off the row itself: which channel
+// it belongs to, and whether its provenance still matches what is in force.
+type fitCapabilityPageItem struct {
+	model.ChannelFitCapability
+	ChannelName string `json:"channel_name"`
+	// State is the state machine's verdict for the bindings currently installed.
+	State string `json:"state"`
+	// BindingCurrent is false when the row was measured against a different
+	// policy or baseline than the one in force. The row is kept rather than
+	// hidden: a stale binding is a fact worth showing.
+	BindingCurrent bool `json:"binding_current"`
+}
+
+// fitCapabilityBindingCurrent mirrors the binding half of FitCapabilityState.
+// An empty value on either side means the check does not apply, so the row is
+// reported as current — the same rule the state machine applies.
+func fitCapabilityBindingCurrent(row *model.ChannelFitCapability, policyHash, baselineHash string) bool {
+	if row == nil {
+		return false
+	}
+	if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
+		return false
+	}
+	if baselineHash != "" && row.BaselineHash != "" && row.BaselineHash != baselineHash {
+		return false
+	}
+	return true
+}
+
 // recordFitCapabilityAudit writes the audit trail for a capability change.
 //
 // The capability row is already committed by the time this runs, and the audit

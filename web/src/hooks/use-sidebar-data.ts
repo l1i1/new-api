@@ -179,6 +179,12 @@ export function useSidebarData(): SidebarData {
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
+            title: t('Fit Capability'),
+            url: '/fit-capability',
+            icon: ShieldCheck,
+            requiredRole: ROLE.ADMIN,
+          },
+          {
             title: t('System Settings'),
             url: '/system-settings/site',
             activeUrls: ['/system-settings'],

@@ -2111,6 +2111,122 @@
       ]
     },
     {
+      "id": "fit-policy-管理界面-标记总览分页端点-策略三态-编译校验-1",
+      "title": "Fit Policy 管理界面：GET /api/fit-capability/all 分页标记总览（既有按 channel_id 的 GET 契约不变）、GET /api/fit-policy 三态视图（内置默认/被清空/管理员文档 + 编译状态 + 与 DefaultPolicy 的差异 + 安装快照）与 POST /api/fit-policy/validate 只编译不落库；写入仍走 root-only 的 PUT /api/option/，前端保存闸门拒绝未校验/已改动/无变化/非 root，且会把该层关掉的文档必须显式确认",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "controller/fit_policy.go",
+        "controller/channel_fit_capability.go",
+        "model/channel_fit_capability.go",
+        "model/fitpolicy_option.go",
+        "router/channel-router.go",
+        "web/src/features/fit-policy/api.ts",
+        "web/src/features/fit-policy/components/capability-marks-panel.tsx",
+        "web/src/features/fit-policy/components/policy-panel.tsx",
+        "web/src/features/fit-policy/lib/policy-format.ts",
+        "web/src/routes/_authenticated/fit-capability/index.tsx",
+        "router/fit_policy_router_test.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/fit_policy.go",
+          "name": "func GetFitPolicy("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/fit_policy.go",
+          "name": "func ValidateFitPolicyDocument("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/fit_policy.go",
+          "name": "FitPolicySourceCleared"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/fit_policy.go",
+          "name": "FitPolicyWarningDisabled"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_fit_capability.go",
+          "name": "func GetChannelFitCapabilitiesPage("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_fit_capability.go",
+          "name": "func ListChannelFitCapabilitiesPage("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_option.go",
+          "name": "func FitPolicyDefaultDocument("
+        },
+        {
+          "kind": "symbol",
+          "file": "router/channel-router.go",
+          "name": "controller.GetChannelFitCapabilitiesPage"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/fit-policy/lib/policy-format.ts",
+          "name": "export function evaluatePolicySave"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/fit-policy/lib/policy-format.ts",
+          "name": "export function policySaveImpact"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/fit-policy/api.ts",
+          "name": "FIT_POLICY_OPTION_KEY"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/routes/_authenticated/fit-capability/index.tsx",
+          "name": "createFileRoute('/_authenticated/fit-capability/')"
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/fit_policy_admin_test.go",
+          "names": [
+            "TestFitPolicyViewSeparatesUnwrittenFromCleared",
+            "TestFitPolicyViewReportsALayerThatPinsNothing",
+            "TestFitPolicyViewReportsTheLiveSnapshotApartFromTheDocument",
+            "TestValidateFitPolicyDocumentRejectsUncompilableRules",
+            "TestValidateFitPolicyDocumentAcceptsTheShippedDefault",
+            "TestGetChannelFitCapabilitiesPagesAcrossChannels",
+            "TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput"
+          ]
+        },
+        {
+          "file": "web/src/features/fit-policy/__tests__/policy-format.test.ts",
+          "names": [
+            "evaluatePolicySave",
+            "policySaveImpact",
+            "fit policy presentation helpers"
+          ]
+        },
+        {
+          "file": "web/src/features/fit-policy/__tests__/i18n-keys.test.ts",
+          "names": [
+            "fit-policy i18n coverage"
+          ]
+        },
+        {
+          "file": "router/fit_policy_router_test.go",
+          "names": [
+            "TestFitPolicyRoutesRegisterWithoutConflict",
+            "TestFitPolicyRoutesRequireAuthentication"
+          ]
+        }
+      ]
+    },
+    {
       "id": "channel-cache-nil-map-crash-3",
       "title": "InitChannelCache 在「已启用渠道的 group 尚无 ability」时对 nil map 赋值 panic（上游缺陷，审查中发现并修复）",
       "risk": "high",

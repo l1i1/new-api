@@ -198,6 +198,88 @@ func ListAllChannelFitCapabilities() ([]ChannelFitCapability, error) {
 	return rows, err
 }
 
+// FitCapabilityQuery narrows a paged capability listing. A zero value means "no
+// filter". Supported is a pointer because `false` is a meaningful filter — an
+// unsupported mark is an explicit negative result, not the absence of one.
+type FitCapabilityQuery struct {
+	ChannelId int
+	Family    string
+	Model     string
+	Behavior  string
+	Source    string
+	Supported *bool
+}
+
+func (q FitCapabilityQuery) apply(db *gorm.DB) *gorm.DB {
+	if q.ChannelId > 0 {
+		db = db.Where("channel_id = ?", q.ChannelId)
+	}
+	if value := normalizeFitCapabilityToken(q.Family); value != "" {
+		db = db.Where("family = ?", value)
+	}
+	if value := normalizeFitCapabilityToken(q.Model); value != "" {
+		db = db.Where("model = ?", value)
+	}
+	if value := normalizeFitCapabilityToken(q.Behavior); value != "" {
+		db = db.Where("behavior = ?", value)
+	}
+	if value := normalizeFitCapabilityToken(q.Source); value != "" {
+		db = db.Where("source = ?", value)
+	}
+	if q.Supported != nil {
+		db = db.Where("supported = ?", *q.Supported)
+	}
+	return db
+}
+
+// CountChannelFitCapabilities counts the marks matching a query.
+func CountChannelFitCapabilities(query FitCapabilityQuery) (int64, error) {
+	var total int64
+	err := query.apply(DB.Model(&ChannelFitCapability{})).Count(&total).Error
+	return total, err
+}
+
+// ListChannelFitCapabilitiesPage returns one page of marks.
+//
+// The order is total (all four key columns), so a row cannot move between pages
+// while an operator pages through the listing. The existing per-channel listing
+// keeps its own order: this is a separate entry point rather than a rewrite of
+// the one the single-channel endpoint already ships.
+func ListChannelFitCapabilitiesPage(query FitCapabilityQuery, offset, limit int) ([]ChannelFitCapability, error) {
+	rows := make([]ChannelFitCapability, 0)
+	err := query.apply(DB.Model(&ChannelFitCapability{})).
+		Order("channel_id, family, model, behavior").
+		Offset(offset).
+		Limit(limit).
+		Find(&rows).Error
+	return rows, err
+}
+
+// FitCapabilityChannelNames resolves the display names of the channels a
+// listing page references. Only id and name are selected: the overview is a
+// read surface and must never pull key material into the response.
+//
+// A missing channel is simply absent from the map (the caller renders the bare
+// id) rather than an error: marks outliving their channel is a state worth
+// seeing, not a reason to fail the whole page.
+func FitCapabilityChannelNames(ids []int) (map[int]string, error) {
+	names := make(map[int]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	var rows []struct {
+		Id   int
+		Name string
+	}
+	if err := DB.Model(&Channel{}).Select("id, name").Where("id in ?", ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		names[row.Id] = row.Name
+	}
+	return names, nil
+}
+
 // ApplyChannelFitCapability performs one capability write under compare-and-swap.
 //
 // The CAS is a conditional UPDATE on the row's own revision, not a row lock:

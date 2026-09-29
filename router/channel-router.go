@@ -75,6 +75,30 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		middleware.RequirePermission(authz.ChannelCapabilityWrite),
 		controller.PostFitCapabilityReport,
 	)
+	// The fleet-wide listing the administration page reads. It is a separate
+	// path rather than a change to GET "" above so the per-channel contract
+	// keeps its exact shape and its channel_id requirement: a caller that
+	// already uses it is unaffected.
+	fitCapabilityRoute.GET("/all",
+		middleware.AdminAuth(),
+		middleware.RequirePermission(authz.ChannelRead),
+		controller.GetChannelFitCapabilitiesPage,
+	)
+
+	// The policy administration read surface. Reading the document is an
+	// administrative view like any other channel read; writing it stays on
+	// PUT /api/option/, which is root-only and already compiles the document
+	// before the commit. Nothing registered here can change the live policy.
+	fitPolicyRoute := apiRouter.Group("/fit-policy")
+	fitPolicyRoute.Use(middleware.AdminAuth())
+	fitPolicyRoute.Use(middleware.RequirePermission(authz.ChannelRead))
+	{
+		fitPolicyRoute.GET("", controller.GetFitPolicy)
+		// Compile-and-describe one candidate document without storing it. The
+		// /option write path validates again, so this is the pre-flight that
+		// makes a rejection visible before the save instead of after it.
+		fitPolicyRoute.POST("/validate", controller.ValidateFitPolicyDocument)
+	}
 	// tokeness-fitpolicy:end
 }
 
