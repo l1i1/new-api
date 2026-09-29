@@ -278,6 +278,39 @@ while IFS= read -r kv; do
   envs+=(-e "$kv")
 done < <(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER")
 
+# Optional env overrides, applied ON TOP of the env captured from the running
+# container. The captured env is the master's source of truth (this script
+# re-passes it verbatim), which made a value change require hand-editing the
+# live container - impossible without a recreate. With this file a change is
+# declarative and survives every later re-roll, because each roll copies the
+# (already updated) running container.
+# Absent file => behaviour is identical to before this hook existed.
+ENV_OVERRIDES_FILE="${MASTER_ENV_OVERRIDES:-/etc/tokeness-cn/master-env-overrides}"
+if [ -r "$ENV_OVERRIDES_FILE" ]; then
+  overrides_applied=0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*) continue ;; esac
+    key="${line%%=*}"
+    if [ -z "$key" ] || [ "$key" = "$line" ] || printf '%s' "$key" | grep -qE '[^A-Za-z0-9_]'; then
+      log "WARN: ignoring malformed env override '$line' in $ENV_OVERRIDES_FILE"
+      continue
+    fi
+    val="${line#*=}"
+    replaced=0
+    for i in "${!envs[@]}"; do
+      if [ "${envs[$i]}" = "-e" ] && [ "${envs[$((i + 1))]%%=*}" = "$key" ]; then
+        envs[$((i + 1))]="$key=$val"
+        replaced=1
+        break
+      fi
+    done
+    [ "$replaced" = "1" ] || envs+=(-e "$key=$val")
+    overrides_applied=$((overrides_applied + 1))
+  done < "$ENV_OVERRIDES_FILE"
+  log "applied $overrides_applied env override(s) from $ENV_OVERRIDES_FILE"
+fi
+
 ports=()
 while IFS=' ' read -r host_ip host_port proto_port; do
   [ -n "$host_port" ] || continue
