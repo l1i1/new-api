@@ -57,18 +57,26 @@ readonly VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-45}"
 readonly ROLLOUT_VERIFY_ATTEMPTS="${ROLLOUT_VERIFY_ATTEMPTS:-6}"
 readonly ROLLOUT_VERIFY_DELAY_SECONDS="${ROLLOUT_VERIFY_DELAY_SECONDS:-10}"
 
-# Drain-first rollout. Before the group scales back to 1, both lightweight hosts
+# Drain-first rollout. Before the group scales back, both lightweight hosts
 # are told to serve the NEW instance only, and the rollout then waits longer
-# than the slowest stream measured in production (p95 181s, max 461s on
-# 2026-09-26) so the retiring instance has no in-flight SSE stream left when
-# ESS removes it. Without this the platform SIGKILLs those streams mid-answer.
+# than the slowest request measured in production, so the retiring instance has
+# nothing in flight when ESS removes it. Without this the platform SIGKILLs
+# those requests mid-answer.
+#
+# The wait was 600s, sized against 2026-09-26 measurements (p95 181s, max 461s).
+# 2026-09-30 measurements make that obsolete: the non-stream path has a hard
+# wall at 599s (EdgeOne's inter-byte idle timeout) and streams reached 1807s.
+# 600s would therefore cut in-flight customer requests on every release, so the
+# default is now 1900s (> 1807s + margin) and the marker TTL outlives it.
+# NOTE: this makes every release's relay rollout ~35 minutes longer by design -
+# that is the price of not cutting a 30-minute request, not an oversight.
 readonly DRAIN_MARKER_PATH="${DRAIN_MARKER_PATH:-/etc/ml-sync/drain-target}"
-readonly ML_DRAIN_SECONDS="${ML_DRAIN_SECONDS:-600}"
+readonly ML_DRAIN_SECONDS="${ML_DRAIN_SECONDS:-1900}"
 readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
 readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
 # Must outlive convergence plus the drain wait, or ml-sync would drop the pin
 # mid-rollout. The margin also covers a rollout that dies before clearing it.
-readonly ML_DRAIN_MARKER_TTL_SECONDS="${ML_DRAIN_MARKER_TTL_SECONDS:-1800}"
+readonly ML_DRAIN_MARKER_TTL_SECONDS="${ML_DRAIN_MARKER_TTL_SECONDS:-3600}"
 
 # Blue-green master (2026-09-29, authorized multi-master overlap): the master
 # container is re-rolled by starting a replacement on the OTHER port of the
