@@ -473,15 +473,10 @@ func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.Can
 	return startKeepAlive(c, pingInterval, helper.PingData, "SSE ping")
 }
 
-// startNonStreamKeepAlive keeps a non-stream response from going silent while the
-// upstream generates. A non-stream relay writes nothing until the generation
-// finishes, so an intermediary that times out on the gap between bytes cuts it:
-// EdgeOne answers 524 after ~600s of silence, which is what a customer saw on
-// non-stream requests that legitimately run for many minutes. The probes are
-// insignificant JSON whitespace, so the client's parsed result is unchanged.
-func startNonStreamKeepAlive(c *gin.Context, interval time.Duration) (context.CancelFunc, <-chan struct{}) {
-	return startKeepAlive(c, interval, helper.WhitespaceData, "non-stream keep-alive")
-}
+// startNonStreamKeepAlive used to live here. It moved to relay/helper because the
+// keep-alive must outlive doRequest (the body is read by the handler afterwards)
+// and is therefore stopped by a write guard on the response writer, which needs
+// to own both the goroutine and the writer it writes through.
 
 // startKeepAlive runs write on a ticker until stopKeepAlive is called, the client
 // goes away, or the safety timeout fires. Streams use it for SSE pings; non-stream
@@ -564,31 +559,62 @@ func sendKeepAliveProbe(c *gin.Context, mutex *sync.Mutex, write keepAliveWriter
 // nonStreamKeepAliveApplies decides whether a non-stream response may be prefixed
 // with insignificant JSON whitespace while the upstream generates.
 //
-// It is deliberately an allow-list of text completion modes: the probe is only
-// harmless when the body is a JSON document that the client parses to the same
-// value. Audio (binary TTS/transcription/translation), images, realtime and
-// task-style modes (Midjourney/Suno/video) are excluded outright, because a
-// leading space would corrupt a binary body or change a payload whose shape we do
-// not control. `info.IsStream` is checked here as well so the caller can use this
-// as the single condition.
+// The decision is made on RelayFormat plus a DENY-list of binary/task modes,
+// rather than an allow-list of RelayModes: the first version enumerated modes,
+// which silently missed every endpoint Path2RelayMode does not know about — most
+// importantly `/v1/messages` (Claude), which leaves RelayMode at
+// RelayModeUnknown and is the longest text path of all. Formats we do not
+// recognise are refused, and within a text format the modes that can answer with
+// binary or opaque bodies (audio, images, realtime websockets, task-style
+// Midjourney/Suno/video, the alpha/search passthrough) are refused explicitly,
+// because a leading newline would corrupt or alter those bodies.
 func nonStreamKeepAliveApplies(info *common.RelayInfo, settings *operation_setting.GeneralSetting) bool {
 	if info == nil || settings == nil || !settings.NonStreamKeepAliveEnabled || info.IsStream {
 		return false
 	}
-	switch info.RelayMode {
-	case constant.RelayModeChatCompletions,
-		constant.RelayModeCompletions,
-		constant.RelayModeEmbeddings,
-		constant.RelayModeModerations,
-		constant.RelayModeRerank,
-		constant.RelayModeResponses,
-		constant.RelayModeResponsesCompact,
-		constant.RelayModeGemini,
-		constant.RelayModeAlphaSearch:
-		return true
+	// A zero or negative interval is an operator asking for no keep-alive, not for
+	// an implicit default: treat it as off instead of probing every second.
+	if settings.NonStreamKeepAliveSeconds <= 0 {
+		return false
+	}
+	switch info.RelayFormat {
+	case types.RelayFormatOpenAI, types.RelayFormatClaude, types.RelayFormatGemini, types.RelayFormatOpenAIResponses:
 	default:
 		return false
 	}
+	switch info.RelayMode {
+	case constant.RelayModeAudioSpeech,
+		constant.RelayModeAudioTranscription,
+		constant.RelayModeAudioTranslation,
+		constant.RelayModeImagesGenerations,
+		constant.RelayModeImagesEdits,
+		constant.RelayModeEdits,
+		constant.RelayModeRealtime,
+		constant.RelayModeAlphaSearch,
+		constant.RelayModeMidjourneyImagine,
+		constant.RelayModeMidjourneyDescribe,
+		constant.RelayModeMidjourneyBlend,
+		constant.RelayModeMidjourneyChange,
+		constant.RelayModeMidjourneySimpleChange,
+		constant.RelayModeMidjourneyNotify,
+		constant.RelayModeMidjourneyTaskFetch,
+		constant.RelayModeMidjourneyTaskImageSeed,
+		constant.RelayModeMidjourneyTaskFetchByCondition,
+		constant.RelayModeMidjourneyAction,
+		constant.RelayModeMidjourneyModal,
+		constant.RelayModeMidjourneyShorten,
+		constant.RelayModeSwapFace,
+		constant.RelayModeMidjourneyUpload,
+		constant.RelayModeMidjourneyVideo,
+		constant.RelayModeMidjourneyEdits,
+		constant.RelayModeSunoFetch,
+		constant.RelayModeSunoFetchByID,
+		constant.RelayModeSunoSubmit,
+		constant.RelayModeVideoFetchByID,
+		constant.RelayModeVideoSubmit:
+		return false
+	}
+	return true
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
@@ -643,18 +669,11 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	} else if nonStreamKeepAliveApplies(info, generalSettings) {
 		// 非流式请求在整段生成期间一个字节都不写，按「字节之间的空档」计时的中间层
-		// 会在生成完成前断开（EdgeOne 约 600s 回 524）。这里先写 JSON 合法空白把
-		// 空档打断；defer 保证在真正写响应体之前停掉，避免与响应体并发写。
-		helper.SetNonStreamKeepAliveHeaders(c)
-		keepAliveInterval := time.Duration(generalSettings.NonStreamKeepAliveSeconds) * time.Second
-		stopPinger, pingerDone = startNonStreamKeepAlive(c, keepAliveInterval)
-		defer func() {
-			if stopPinger != nil {
-				stopPinger()
-				<-pingerDone
-				logger.LogDebug(c, "non-stream keep-alive goroutine stopped by defer")
-			}
-		}()
+		// 会在生成完成前断开（EdgeOne 约 600s 回 524）。保活**故意不用 defer 停**：
+		// doRequest 在上游响应头到达时就返回，而真正耗时的响应体是之后由 handler 读的，
+		// 在这里停掉等于整个等待期仍然静默。停由 helper 的 writer guard 负责 ——
+		// 首个真实字节写出前才停，并同步等待 goroutine 退出（不会与正文并发写）。
+		helper.StartNonStreamKeepAlive(c, time.Duration(generalSettings.NonStreamKeepAliveSeconds)*time.Second)
 	}
 
 	resp, err := relayClient.Do(req)

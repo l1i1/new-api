@@ -1638,13 +1638,17 @@
 
 **审查结论（2026-09-30，独立子代理对抗性审查 + 自审；发现已按严重度记在下面）**：**默认关闭下可安全部署**（真 no-op，已机械确认：无头、无 goroutine、无字节）；**在修掉第 2、3、4、5 条之前不要打开开关**。
 
-**仍未做/残余风险（诚实记录，已按审查修订）**：
-1. **代码尚未部署到生产**（提交≠发版）；开关默认关闭，旧镜像上跑不出任何行为变化，也必须发版后才有这个字段。
-2. **【审查发现，比初版严重得多】首个探针之后错误体被完全丢弃**：探针的 `c.Writer.Write` 把状态提交为 200，而 `controller/relay.go:118` 的 `if c.Writer != nil && c.Writer.Written() { return }` 会让**通用错误体一个字都不写** → 客户端拿到 `200 application/json` + body 只有空格（**不是** 5xx，**也不是**错误 JSON）。**初版本条写的"200 + 错误 JSON"是错的，据此更正**（只有 cyber-policy 错误路径仍写体，且同样落在已提交的 200 上）。触发：开关打开 + 上游在首个间隔（默认 60s）之后失败 + 重试全失败。
-3. **【自审发现，可能让功能完全失效】保活生命周期止于响应头**：`doRequest` 在 `relayClient.Do()` 返回（**响应头**到达）时就返回（`api_request.go:660-686`），**响应体是之后由 handler/adaptor 读的**（`compatible_handler.go:152` → `DoResponse`）。若上游先回头再慢慢吐 body（常见），保活随 `doRequest` 的 defer 一起停 → 客户在整个 body 等待期仍收不到字节 → **600s 照旧触发**。修法：保活必须活到"首次真实写正文之前"，用 writer guard 在首个 `Write/WriteString` 处 stop+wait（并把上一次尝试遗留的保活先停掉，避免两个 goroutine 并发写）。
-4. **【审查发现】SSE 翻转可致首事件丢失**：`compatible_handler.go:161`、`gemini_handler.go:140` 在 `doRequest` 返回后按上游 `Content-Type: text/event-stream` 把 `info.IsStream` 翻成 true 并转而输出 SSE（`relay-openai.go:592-600` 明确预期上游会忽略 `stream:false`）。探针是**不带换行的空格** → 首个 SSE 行变成 ` data: {...}`，字段名成了 ` data` → 规范解析器（如 openai-python 的 `line.startswith("data:")`）**丢掉第一个事件**。修法：探针改用 `"\n"`（JSON 合法空白；SSE 里空行不 dispatch 任何事件）。
-5. **【审查发现】白名单缺口与错误放行**：`/v1/messages`（Claude 原生）在 `Path2RelayMode` 无分支 → `RelayMode = RelayModeUnknown`（实测打印 `RelayMode=0`）→ **不在白名单、完全无保护**；更稳的做法是按 `info.RelayFormat` 判定。另外白名单里的 **`alpha/search` 是 `io.Copy` 原样透传**（`alpha_search_handler.go:95-101`），上游回 SSE/二进制时探针会污染它 → 应移出白名单。
-6. **【审查发现】其余小问题**：`SetNonStreamKeepAliveHeaders` 在不知道上游类型时就钉死 `Content-Type: application/json`（gin 只在缺失时设置 → `controller/relay.go:167/180/195/207` 的既定类型被吞掉，**即使一个探针都没写**）；AWS Bedrock client 模式（`aws/adaptor.go:156-161`）与 Coze 非流式（`relay-coze.go:281-289` 轮询用自家 client）**绕过** `channel.doRequest` → 无保活；`ExtendWriteDeadline` 在真实链路上是 **no-op**（`controller/relay.go:525-535` 的 `relayObservationWriter` 不 promote `Unwrap`，已复现）；`NonStreamKeepAliveSeconds <= 0` 会**变成 10s**（`helper.DefaultPingInterval`）而不是关闭；开关打开后 `relayObservationWriter.Write` 会把首个**探针**记为下游首字节 → **TTFT 观测指标失真**。
-7. **事故路径已核实落在白名单内**（方向没错）：全量 nginx 日志里 **279 条 524 全是 `POST /v1/chat/completions`**，**15 条 rt≥580s 的 499 也全是 `/v1/chat/completions`**；`/v1/messages` 被使用（1150 次）但都是 9–25 秒的快请求。
-8. **测试缺口（blocker 逃过测试的原因）**：`relay/channel` 的测试只单测 `nonStreamKeepAliveApplies` 与直接调 `startNonStreamKeepAlive`，**没有一条走真实 `doRequest`** → 起停接线、`Do` 报错时的 goroutine 生命周期、SSE 翻转、探针后错误体抑制、`<=0` 间隔、Content-Type 优先级全无覆盖。
-9. 端到端真机验证（真实长非流式请求穿 EdgeOne 超过 600s 仍成功）只能在部署 + 打开开关后做。
+**审查后的修复（2026-09-30，第二轮；用户要求「都处理」）**：
+- **修 3（保活生命周期，原 blocker）**：非流式保活整体搬到 `relay/helper/nonstream_keepalive.go`，**不再用 defer 停**。改为在 `c.Writer` 上装 **writer guard**：探针 goroutine 活到「首个真实字节写出前」，`Write/WriteString` 先 `StopNonStreamKeepAlive`（幂等 `sync.Once` + `<-done` 同步等待）再落正文 → 既不与正文并发写，也覆盖了「上游先回头、body 慢」的真正等待期。探针经「未加 guard 的 writer」写出（否则会把自己停掉）。重试时 `Start` 先停掉上次遗留的保活，保证同请求最多一个探针 goroutine。
+- **修 4（SSE 翻转）**：探针由 `" "` 改为 **`"\n"`** —— JSON 里同样是无意义空白，而 SSE 里空行不会 dispatch 任何事件，所以「上游无视 `stream:false` 回 SSE」时首行仍是 `data: ...`，**首事件不再丢失**。
+- **修 5（白名单缺口）**：判定改为 **按 `info.RelayFormat`（openai/claude/gemini/openai_responses）+ 二进制/任务型 mode 黑名单**，不再枚举 RelayMode → **`/v1/messages`（RelayMode=Unknown）现在被覆盖**；未识别 format 一律拒绝；**`alpha/search`（`io.Copy` 透传）移入黑名单**。
+- **修 2（错误体被丢弃）**：`controller/relay.go` 的错误路径现在放行「**只有保活字节**」的情形（`helper.NonStreamKeepAliveActive(c) && helper.KeepAliveOnlyCommitted(c)`）→ 客户端至少拿到**可解析的错误 JSON**，不再是只有空白的 body。**残余**：状态在首个探针时已提交为 200，所以这类错误对外仍是 `200 + 错误 JSON`（拿不回 5xx）。
+- **修 6 的一部分**：`Content-Type` 改为**懒设置**（只在真要写探针时设置，且仅在缺失时）→ 快速请求**头与正文都与关闭时逐字节一致**；`NonStreamKeepAliveSeconds <= 0` 现在**等于关闭**（不再默默变成 10s）；`relayObservationWriter` 增加 `KeepAliveWriteInProgress` 判定 → **探针不再计入下游首字节（TTFT）指标**。
+- **修 8（测试）**：新增/重写 8 例，含**真实 `doRequest` 回归**（上游先送响应头、2.5s 后才给 body → 断言 doRequest 在头就返回、探针在 body 等待期持续出现、正文写出后不再有探针）、writer guard 在首个真实字节处停止探针、SSE 首行不被加空格、开关与黑名单表、`<=0` 视为关闭。`go test -race` 通过。
+
+**仍未闭环（诚实记录）**：
+1. **代码尚未部署到生产**（提交≠发版）；开关默认关闭，旧镜像上无任何行为变化，也必须发版后才有这两个字段。**端到端真机验证（真实长非流式请求穿 EdgeOne 超 600s 仍成功）只能在部署 + 开开关后做。**
+2. **探针发出后错误无法再是 5xx**（状态已提交 200）：现在是 `200 + 错误 JSON`。**没有改用 HTTP 1xx** 的原因：gin 的 `WriteHeaderNow()` 会把内部 `Written()` 置真，从而仍会吞掉后续错误体与状态，除非改 gin 自身状态机；留给后续（若 EdgeOne 证明认 1xx 算活动，可再评估）。
+3. **面板字段未加**：`web/src/features/system-settings/{types.ts,models/*}` 需要加 `non_stream_keep_alive_*`，但**另一个会话正在同仓改动前端与 `web/src/i18n/overlay/*.json`**，此时改这些文件会把对方未提交的改动卷进我的提交 → 故意推迟。**开关本身通过配置接口 (`/api/option/`) 可用，不依赖面板字段。**
+4. **两条绕过路径未加保活**：AWS Bedrock client 模式（`aws/adaptor.go:156-161` → `relay-aws.go:96`）与 Coze 非流式轮询（`relay-coze.go:281-289`）。改动小但本机无法测该通道，故只记录不擅改（需要时可用 `helper.StartNonStreamKeepAlive` 直接接上）。
+5. `ExtendWriteDeadline` 在真实链路仍是 no-op（`relayObservationWriter` 不 promote `Unwrap`）—— 流式 ping 早就如此，新代码继承；1 字节/间隔，影响低。

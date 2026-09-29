@@ -116,7 +116,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			if c.Writer != nil && c.Writer.Written() {
-				return
+				// The status is committed, so nothing can be written at the HTTP
+				// level — except when the ONLY thing on the wire is non-stream
+				// keep-alive whitespace. Without this exception a request that
+				// fails after the first probe would answer `200` with a body of
+				// whitespace and no error at all, which is worse than the 524 the
+				// keep-alive exists to prevent. Reporting the error as a body at
+				// the already-committed 200 is imperfect, but it is parseable and
+				// it is honest; see MEMORY.md for the remaining trade-off.
+				if !(helper.NonStreamKeepAliveActive(c) && helper.KeepAliveOnlyCommitted(c)) {
+					return
+				}
 			}
 			if mark := service.GetOpsCyberPolicy(c); mark != nil && mark.Body != "" {
 				statusCode := mark.UpstreamStatus
@@ -249,7 +259,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	if relayFormat != types.RelayFormatOpenAIRealtime {
 		originalWriter := c.Writer
-		c.Writer = &relayObservationWriter{ResponseWriter: originalWriter, info: relayInfo}
+		c.Writer = &relayObservationWriter{ResponseWriter: originalWriter, info: relayInfo, ctx: c}
 		defer func() { c.Writer = originalWriter }()
 	}
 	defer func() {
@@ -525,17 +535,29 @@ func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) stri
 type relayObservationWriter struct {
 	gin.ResponseWriter
 	info *relaycommon.RelayInfo
+	ctx  *gin.Context
+}
+
+// shouldRecordFirstWrite keeps keep-alive probes out of the downstream-first-byte
+// metric. A non-stream keep-alive writes JSON whitespace while the upstream
+// generates; counting that as content would report time-to-first-byte as the
+// probe interval instead of the real first byte.
+func (w *relayObservationWriter) shouldRecordFirstWrite(data []byte) bool {
+	if len(data) == 0 || w.info == nil {
+		return false
+	}
+	return !helper.KeepAliveWriteInProgress(w.ctx)
 }
 
 func (w *relayObservationWriter) Write(data []byte) (int, error) {
-	if len(data) > 0 && w.info != nil {
+	if w.shouldRecordFirstWrite(data) {
 		w.info.SetDownstreamFirstWriteTime()
 	}
 	return w.ResponseWriter.Write(data)
 }
 
 func (w *relayObservationWriter) WriteString(data string) (int, error) {
-	if len(data) > 0 && w.info != nil {
+	if w.shouldRecordFirstWrite([]byte(data)) {
 		w.info.SetDownstreamFirstWriteTime()
 	}
 	return w.ResponseWriter.WriteString(data)

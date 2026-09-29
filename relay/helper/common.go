@@ -35,17 +35,6 @@ func isDeepSeekV4StreamModel(info *relaycommon.RelayInfo) bool {
 // it does not count as delivered response content.
 const pingProbe = ": PING\n\n"
 
-// whitespaceProbe is the non-stream keep-alive probe written by WhitespaceData:
-// a single space. It exists because a non-stream relay writes nothing at all
-// until the upstream generation finishes, and an intermediary that times out on
-// the gap between bytes (EdgeOne answers 524 after ~600s of silence) therefore
-// cuts long generations. Whitespace is insignificant in JSON (RFC 8259 `ws`), so
-// a client that parses the body sees the same value whether or not these spaces
-// were written — which is why this probe is safe to prepend, unlike anything
-// that would change the document. It is also counted as keep-alive output, so a
-// retry can still tell "only probes were committed" from "real content is out".
-const whitespaceProbe = " "
-
 // ginKeyKeepAliveBytes tracks how many bytes of the committed response are pure
 // keep-alive output, so a retry decision can tell a ping-only commit apart from
 // one that already delivered real data.
@@ -287,47 +276,15 @@ func StringData(c *gin.Context, str string) error {
 // non-content output. Both the SSE ping and the non-stream whitespace probe go
 // through here so the retry decision cannot treat one of them as real content.
 func writeKeepAliveProbe(c *gin.Context, probe, label string) error {
-	if c == nil || c.Writer == nil {
+	writer, ok := c.Writer.(gin.ResponseWriter)
+	if !ok {
 		return errors.New("context or writer is nil")
 	}
-
-	if requestContextDone(c) {
-		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
-	}
-
-	if _, err := c.Writer.Write([]byte(probe)); err != nil {
-		return fmt.Errorf("write %s probe failed: %w", label, err)
-	}
-	// Track keep-alive bytes so a retry decision can tell a keep-alive-only
-	// commit apart from one that already delivered real response content.
-	c.Set(ginKeyKeepAliveBytes, c.GetInt(ginKeyKeepAliveBytes)+len(probe))
-	return FlushWriter(c)
+	return writeKeepAliveProbeTo(c, writer, probe, label)
 }
 
 func PingData(c *gin.Context) error {
 	return writeKeepAliveProbe(c, pingProbe, "ping")
-}
-
-// WhitespaceData keeps a NON-STREAM response's connection busy while the
-// upstream is still generating. The bytes are insignificant JSON whitespace, so
-// the body stays parseable and byte-equivalent for the client; only an
-// intermediary measuring the gap between bytes can tell they were sent.
-//
-// It must be called before the real body is written: the probes are a prefix, and
-// JSON only tolerates whitespace there.
-func WhitespaceData(c *gin.Context) error {
-	return writeKeepAliveProbe(c, whitespaceProbe, "non-stream keep-alive")
-}
-
-// SetNonStreamKeepAliveHeaders prepares a non-stream response that will emit
-// whitespace probes while it waits. Content-Type is set here rather than by the
-// later JSON write because the first probe commits the headers, and the proxy
-// hint stops nginx-style buffering from holding the probes until the body ends
-// (which would defeat the whole point).
-func SetNonStreamKeepAliveHeaders(c *gin.Context) {
-	c.Writer.Header().Set("Content-Type", "application/json")
-	c.Writer.Header().Set("Cache-Control", "no-store")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
 }
 
 func ObjectData(c *gin.Context, object any) error {
