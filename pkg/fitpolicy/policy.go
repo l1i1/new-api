@@ -1,6 +1,7 @@
 package fitpolicy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -117,6 +118,23 @@ const MaxPolicyFamilies = 16
 // MaxRulesPerFamily bounds the rule count per family.
 const MaxRulesPerFamily = 64
 
+// MaxPolicyDocumentBytes bounds a policy document at the one entry every path
+// shares.
+//
+// The structural limits above are checked *after* the document has been decoded,
+// so on their own they do not bound the work a write can cause: a body with a
+// million families is fully decoded — and, on the validation endpoint, compiled
+// into expr programs — before the first family is counted. A byte bound in front
+// of the decoder is what actually caps that, and it belongs here rather than in
+// the HTTP handler, so that the root-only option write, the loader and any later
+// caller inherit it instead of only the one endpoint that was audited.
+//
+// 1 MiB is not a practical restriction on the content: the shipped default is a
+// few kilobytes, and the structural limits can express at most 16 families of 64
+// hand-written rules, which is two orders of magnitude below this. It only stops
+// a body that is not a rule set at all.
+const MaxPolicyDocumentBytes = 1 << 20
+
 // ErrPolicyInvalid wraps every write-time rejection so callers can return it to
 // the author without leaking internals.
 var ErrPolicyInvalid = errors.New("fitpolicy: invalid policy")
@@ -125,8 +143,15 @@ var ErrPolicyInvalid = errors.New("fitpolicy: invalid policy")
 // compile expressions; call Compile for that. Both run before the database
 // commit, so a rejected policy never reaches the in-memory snapshot.
 func ParsePolicy(raw []byte) (Policy, error) {
+	if len(raw) > MaxPolicyDocumentBytes {
+		return Policy{}, fmt.Errorf("%w: the document is %d bytes, over the %d byte limit",
+			ErrPolicyInvalid, len(raw), MaxPolicyDocumentBytes)
+	}
 	var policy Policy
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	// bytes.NewReader over the caller's slice: strings.NewReader(string(raw))
+	// copied the whole document a second time before the decoder saw it, which is
+	// exactly the amplification a size bound is meant to keep small.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&policy); err != nil {
 		return Policy{}, fmt.Errorf("%w: %v", ErrPolicyInvalid, err)

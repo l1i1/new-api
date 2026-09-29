@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -150,6 +152,19 @@ type fitPolicyValidation struct {
 	LiveHash string `json:"live_hash"`
 }
 
+// fitPolicyValidateBodyLimit bounds the request body of the validation endpoint
+// before the JSON decoder buffers it.
+//
+// /api has never had a body limit: middleware.DecompressRequestMiddleware, which
+// enforces MAX_REQUEST_BODY_MB, is mounted on the relay router only, so nothing
+// under /api was bounded at all. The document bound itself lives in
+// fitpolicy.ParsePolicy — it is the precise contract and it applies to every
+// path, including the root-only option write — while this is the coarse
+// transport guard in front of it, set at twice the document bound so that a
+// legitimate document can never be refused by the transport instead of being
+// judged by the validator.
+const fitPolicyValidateBodyLimit = 2 * fitpolicy.MaxPolicyDocumentBytes
+
 // ValidateFitPolicyDocument compiles a candidate policy document without
 // storing or installing it.
 //
@@ -161,10 +176,21 @@ type fitPolicyValidation struct {
 // to the live layer.
 //
 // An invalid document is a successful validation request, so the response is
-// 200 with valid=false rather than an error status.
+// 200 with valid=false rather than an error status. A body over the transport
+// limit is not a validation result — it is never handed to the validator — so it
+// answers 413.
 func ValidateFitPolicyDocument(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, fitPolicyValidateBodyLimit)
 	var request fitPolicyValidateRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("the request body exceeds the %d byte limit", int64(fitPolicyValidateBodyLimit)),
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid request body"})
 		return
 	}
@@ -289,12 +315,12 @@ func fitPolicyDocumentWarnings(policy fitpolicy.Policy) []fitPolicyWarning {
 // fitPolicySummaryOf describes a compiled document.
 func fitPolicySummaryOf(policy fitpolicy.Policy, hash string) *fitPolicySummary {
 	summary := &fitPolicySummary{
-		Version:   policy.Version,
-		Enabled:   policy.Enabled,
-		Shadow:    policy.Shadow,
-		Baseline:  strings.TrimSpace(policy.Baseline),
-		Families:  make([]string, 0, len(policy.Families)),
-		Hash:      hash,
+		Version:  policy.Version,
+		Enabled:  policy.Enabled,
+		Shadow:   policy.Shadow,
+		Baseline: strings.TrimSpace(policy.Baseline),
+		Families: make([]string, 0, len(policy.Families)),
+		Hash:     hash,
 	}
 	for _, family := range policy.Families {
 		summary.Families = append(summary.Families, family.ID)

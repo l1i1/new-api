@@ -20,6 +20,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CircleCheck,
   CircleX,
+  RefreshCw,
   RotateCcw,
   PowerOff,
   ShieldAlert,
@@ -47,9 +48,10 @@ import {
 } from '../api'
 import {
   FIT_POLICY_SOURCE_LABEL_KEYS,
-  FIT_POLICY_WARNING_LEVELS,
-  FIT_POLICY_WARNING_MESSAGE_KEYS,
+  POLICY_SAVE_IMPACT_MESSAGES,
   evaluatePolicySave,
+  fitPolicyWarningLevel,
+  fitPolicyWarningMessageKey,
   policySaveImpact,
   truncateFitHash,
 } from '../lib/policy-format'
@@ -88,6 +90,10 @@ export function PolicyPanel() {
     null
   )
   const [confirmDisableOpen, setConfirmDisableOpen] = useState(false)
+  // A deliberate re-write of the stored bytes. It is the only way to make a node
+  // that kept its last-known-good snapshot install the stored document again,
+  // and it is armed by an explicit button, never by typing.
+  const [reinstallIntent, setReinstallIntent] = useState(false)
 
   // Load the editor from the server, and reload it after a save. The document
   // shown is what is stored; when the option has never been written the shipped
@@ -107,6 +113,7 @@ export function PolicyPanel() {
     setBaselineDocument(storedDocument)
     setValidation(null)
     setValidatedDocument(null)
+    setReinstallIntent(false)
   }, [policyQuery.data, defaultDocument, storedDocument])
 
   const validateMutation = useMutation({
@@ -139,6 +146,7 @@ export function PolicyPanel() {
     validatedDocument,
     validation,
     isRoot,
+    reinstall: reinstallIntent,
   })
   const impact = useMemo(() => policySaveImpact(validation), [validation])
 
@@ -163,7 +171,7 @@ export function PolicyPanel() {
 
   const submitSave = () => {
     if (!gate.allowed) return
-    if (impact.disablesLayer) {
+    if (impact !== 'none') {
       setConfirmDisableOpen(true)
       return
     }
@@ -174,8 +182,31 @@ export function PolicyPanel() {
     setDocument(next)
     setValidation(null)
     setValidatedDocument(null)
+    setReinstallIntent(false)
     if (validate) validateMutation.mutate(next)
   }
+
+  // A node whose load failed keeps the previous snapshot, and the stored bytes
+  // are then the only thing that can bring it back: re-writing them is a no-op
+  // on every healthy node and a recovery on the one that fell back.
+  const loadStoredDocumentForReinstall = () => {
+    setDocument(storedDocument)
+    setValidation(null)
+    setValidatedDocument(null)
+    setReinstallIntent(true)
+    validateMutation.mutate(storedDocument)
+  }
+  const reinstallAvailable =
+    storedDocument.trim() !== '' &&
+    (view.live.last_error !== '' ||
+      !view.live.installed ||
+      view.live.hash === '')
+
+  // The dialog only ever opens for an impact that is not 'none'. The fallback
+  // exists so that a document edited behind an already-open dialog cannot index
+  // the message map with a value it does not have — the confirm handler refuses
+  // that save anyway, because it re-runs the gate.
+  const confirmImpact = impact === 'none' ? 'unpinning' : impact
 
   return (
     <div className='space-y-4'>
@@ -274,7 +305,9 @@ export function PolicyPanel() {
             <Button
               variant='outline'
               size='sm'
-              disabled={!isRoot || saveMutation.isPending}
+              disabled={
+                !isRoot || saveMutation.isPending || defaultDocument === ''
+              }
               onClick={() => loadDocument(defaultDocument, true)}
             >
               <RotateCcw />
@@ -289,14 +322,32 @@ export function PolicyPanel() {
               <PowerOff />
               {t('Disable the layer')}
             </Button>
+            {reinstallAvailable ? (
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={!isRoot || saveMutation.isPending}
+                onClick={loadStoredDocumentForReinstall}
+              >
+                <RefreshCw />
+                {t('Reinstall the stored document')}
+              </Button>
+            ) : null}
           </div>
         </CardHeader>
         <CardContent className='space-y-3'>
           <p className='text-muted-foreground text-xs'>
             {t(
-              'Both buttons only load text into the editor. Nothing is written until Validate has accepted the exact text and Save is pressed.'
+              'These buttons only load text into the editor. Nothing is written until Validate has accepted the exact text and Save is pressed.'
             )}
           </p>
+          {reinstallAvailable ? (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'The stored document is not the one this process is running. Reinstalling writes the same bytes again, which is what makes a node that kept its last working snapshot load it.'
+              )}
+            </p>
+          ) : null}
           <JsonCodeEditor
             value={document}
             onChange={setDocument}
@@ -370,14 +421,17 @@ export function PolicyPanel() {
       <ConfirmDialog
         open={confirmDisableOpen}
         onOpenChange={setConfirmDisableOpen}
-        title={t('Switch the official-fit policy layer off?')}
-        desc={t(
-          'Saving this document switches the official-fit policy layer off: no request is pinned to a channel that reproduces the official behaviour.'
-        )}
+        title={t(POLICY_SAVE_IMPACT_MESSAGES[confirmImpact].title)}
+        desc={t(POLICY_SAVE_IMPACT_MESSAGES[confirmImpact].description)}
         confirmText={t('Save anyway')}
         destructive
         isLoading={saveMutation.isPending}
         handleConfirm={() => {
+          // The confirmation must not become a second, weaker way in: the same
+          // gate that guards the Save button guards this path, so a document
+          // edited (or a role revoked) while the dialog is open cannot be
+          // written by confirming a decision that was made about other bytes.
+          if (!gate.allowed) return
           setConfirmDisableOpen(false)
           saveMutation.mutate(document)
         }}
@@ -396,7 +450,7 @@ function WarningList({ warnings }: { warnings: FitPolicyWarning[] }) {
   const { t } = useTranslation()
   if (warnings.length === 0) return null
   const critical = warnings.filter(
-    (warning) => FIT_POLICY_WARNING_LEVELS[warning.code] === 'critical'
+    (warning) => fitPolicyWarningLevel(warning.code) === 'critical'
   )
   if (critical.length > 0) {
     return (
@@ -407,7 +461,7 @@ function WarningList({ warnings }: { warnings: FitPolicyWarning[] }) {
           <ul className='list-disc space-y-0.5 ps-4'>
             {warnings.map((warning) => (
               <li key={warning.code}>
-                {t(FIT_POLICY_WARNING_MESSAGE_KEYS[warning.code])}
+                {t(fitPolicyWarningMessageKey(warning.code))}
               </li>
             ))}
           </ul>
@@ -418,11 +472,14 @@ function WarningList({ warnings }: { warnings: FitPolicyWarning[] }) {
   return (
     <div className='text-muted-foreground space-y-1 text-xs'>
       {warnings.map((warning) => {
-        const Icon = WARNING_ICONS[FIT_POLICY_WARNING_LEVELS[warning.code]]
+        // A closed union: fitPolicyWarningLevel answers 'info' for a code this
+        // bundle does not know, so WARNING_ICONS can never be indexed with
+        // undefined and never yields `<Icon />` for a missing component.
+        const Icon = WARNING_ICONS[fitPolicyWarningLevel(warning.code)]
         return (
           <div key={warning.code} className='flex items-center gap-1.5'>
             <Icon className='size-3.5' />
-            {t(FIT_POLICY_WARNING_MESSAGE_KEYS[warning.code])}
+            {t(fitPolicyWarningMessageKey(warning.code))}
           </div>
         )
       })}

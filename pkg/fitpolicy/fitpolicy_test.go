@@ -1,7 +1,9 @@
 package fitpolicy
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -211,6 +213,44 @@ func TestParsePolicyRejectsUnknownFields(t *testing.T) {
 	raw := []byte(`{"version":1,"enabled":true,"families":[],"typo":true}`)
 	if _, err := ParsePolicy(raw); err == nil {
 		t.Fatal("an unknown top-level field must be rejected so typos are not silently ignored")
+	}
+}
+
+// TestParsePolicyBoundsTheDocumentBeforeDecoding pins the byte bound in front of
+// the decoder.
+//
+// The structural limits (MaxPolicyFamilies, MaxRulesPerFamily) are checked after
+// decoding, so a document with a million families is fully materialised — and on
+// the validation endpoint compiled into expr programs — before the first family
+// is counted. This test proves the bound rejects first, and that it rejects on
+// size alone: the oversized payload below is not even valid JSON.
+func TestParsePolicyBoundsTheDocumentBeforeDecoding(t *testing.T) {
+	oversized := bytes.Repeat([]byte(" "), MaxPolicyDocumentBytes+1)
+	_, err := ParsePolicy(oversized)
+	if err == nil {
+		t.Fatal("a document over MaxPolicyDocumentBytes must be rejected")
+	}
+	if !errors.Is(err, ErrPolicyInvalid) {
+		t.Fatalf("the rejection must be a policy error the write path can report, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("the rejection must name the limit so the author can act on it, got %v", err)
+	}
+
+	// Exactly at the limit is acceptable: the bound is on what may not be
+	// exceeded. Trailing whitespace is legal JSON, so this pads a document that
+	// parses to the bound without changing what it says.
+	encoded, err := json.Marshal(DefaultPolicy())
+	if err != nil {
+		t.Fatalf("marshal the shipped default: %v", err)
+	}
+	atLimit := make([]byte, MaxPolicyDocumentBytes)
+	copy(atLimit, encoded)
+	for i := len(encoded); i < len(atLimit); i++ {
+		atLimit[i] = ' '
+	}
+	if _, err := ParsePolicy(atLimit); err != nil {
+		t.Fatalf("a document exactly at the limit must still parse: %v", err)
 	}
 }
 

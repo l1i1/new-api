@@ -25,9 +25,11 @@ import { describe, expect, it } from 'vitest'
 import { FORK_BUNDLES_BY_FILE } from '@/i18n/fork-bundles'
 
 import {
+  FIT_CAPABILITY_SOURCE_LABEL_KEYS,
   FIT_CAPABILITY_STATE_LABEL_KEYS,
   FIT_POLICY_SOURCE_LABEL_KEYS,
   FIT_POLICY_WARNING_MESSAGE_KEYS,
+  POLICY_SAVE_IMPACT_MESSAGES,
   evaluatePolicySave,
 } from '../lib/policy-format'
 
@@ -38,9 +40,34 @@ import {
  * set; this test proves the page does not depend on a key that was never
  * added, which would render as a raw English sentence in every other locale.
  * The navigation keys live outside this directory and are listed explicitly.
+ *
+ * Strings reached through a function rather than a literal are the dangerous
+ * ones, because no `t('…')` in the sources mentions them: they are collected
+ * from the maps those functions read, which is why
+ * `fitCapabilitySourceLabelKey` is a map lookup and not a ternary. While it was
+ * a ternary, deleting both of its keys from a bundle left this file green.
  */
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FEATURE_DIR = path.resolve(HERE, '..')
+
+/** Every map whose values are i18n keys this feature renders. */
+const MESSAGE_MAPS: readonly unknown[] = [
+  FIT_POLICY_SOURCE_LABEL_KEYS,
+  FIT_POLICY_WARNING_MESSAGE_KEYS,
+  FIT_CAPABILITY_STATE_LABEL_KEYS,
+  FIT_CAPABILITY_SOURCE_LABEL_KEYS,
+  POLICY_SAVE_IMPACT_MESSAGES,
+]
+
+function collectKeys(value: unknown, keys: Set<string>) {
+  if (typeof value === 'string') {
+    keys.add(value)
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const nested of Object.values(value)) collectKeys(nested, keys)
+  }
+}
 
 function featureSources(): string[] {
   const files: string[] = []
@@ -67,13 +94,7 @@ function literalKeys(): string[] {
       keys.add(match[1])
     }
   }
-  for (const map of [
-    FIT_POLICY_SOURCE_LABEL_KEYS,
-    FIT_POLICY_WARNING_MESSAGE_KEYS,
-    FIT_CAPABILITY_STATE_LABEL_KEYS,
-  ]) {
-    for (const value of Object.values(map)) keys.add(value)
-  }
+  for (const map of MESSAGE_MAPS) collectKeys(map, keys)
   return [...keys].sort()
 }
 
@@ -126,6 +147,37 @@ describe('fit-policy i18n coverage', () => {
 
   it('collects every reason the save gate can block a save with', () => {
     expect(gateReasonKeys()).toHaveLength(4)
+  })
+
+  // A deliberate reinstall relaxes the unchanged check and adds no new reason,
+  // so it must not introduce a key this file does not collect.
+  it('adds no uncollected reason for a deliberate reinstall', () => {
+    const reinstalled = {
+      document: '{"version":0}',
+      baselineDocument: '{"version":0}',
+      validatedDocument: '{"version":0}',
+      validation: {
+        valid: true,
+        error: '',
+        divergence: '',
+        warnings: [],
+        summary: null,
+        live_hash: '',
+      },
+      isRoot: true,
+      reinstall: true,
+    }
+    expect(evaluatePolicySave(reinstalled)).toEqual({
+      allowed: true,
+      reasonKey: null,
+    })
+  })
+
+  // These two are rendered through a function, so no `t('…')` in the sources
+  // mentions them. They are the exact keys the collection used to miss.
+  it('collects the keys the source label function returns', () => {
+    expect(literalKeys()).toContain('Operator override')
+    expect(literalKeys()).toContain('Measured by a suite')
   })
 
   it.each(Object.keys(FORK_BUNDLES_BY_FILE))(

@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -167,8 +169,8 @@ func TestFitPolicyViewReportsTheLiveSnapshotApartFromTheDocument(t *testing.T) {
 // parses cleanly, so only the compiler catches it.
 func TestValidateFitPolicyDocumentRejectsUncompilableRules(t *testing.T) {
 	for name, document := range map[string]string{
-		"malformed json": `{"version":1,`,
-		"unknown family": `{"version":1,"enabled":true,"families":[{"id":"no-such-family","rules":[],"behaviors":{},"unknown_mark_policy":"conservative","empty_match_policy":"legacy_hard_pin_then_existing_error"}]}`,
+		"malformed json":     `{"version":1,`,
+		"unknown family":     `{"version":1,"enabled":true,"families":[{"id":"no-such-family","rules":[],"behaviors":{},"unknown_mark_policy":"conservative","empty_match_policy":"legacy_hard_pin_then_existing_error"}]}`,
 		"unknown expression": `{"version":1,"enabled":true,"families":[{"id":"kimi-k3","rules":[{"id":"r","when":"NoSuchPredicate()","require":["tools.dynamic_names"]}],"behaviors":{"tools.dynamic_names":{"class":"verdict"}},"unknown_mark_policy":"conservative","empty_match_policy":"legacy_hard_pin_then_existing_error"}]}`,
 		"unknown field":      `{"version":1,"enabled":true,"families":[],"extra":true}`,
 	} {
@@ -240,6 +242,100 @@ func getFitCapabilityPage(t *testing.T, target string) (int, map[string]any) {
 	return recorder.Code, payload
 }
 
+func postFitPolicyValidate(t *testing.T, body string) (int, map[string]any) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/fit-policy/validate", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	ValidateFitPolicyDocument(c)
+
+	payload := map[string]any{}
+	if recorder.Body.Len() > 0 {
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	}
+	return recorder.Code, payload
+}
+
+func putOption(t *testing.T, body string) (int, map[string]any) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/option/", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateOption(c)
+
+	payload := map[string]any{}
+	if recorder.Body.Len() > 0 {
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	}
+	return recorder.Code, payload
+}
+
+// oversizedPolicyDocument is a document just past fitpolicy's byte bound. It is
+// not valid JSON on purpose: the bound has to reject on size alone, before the
+// decoder turns a huge payload into a huge allocation. The leading brace keeps
+// it non-blank, because a blank document is the documented disable lever and is
+// accepted without ever being parsed.
+func oversizedPolicyDocument() string {
+	return "{" + strings.Repeat(" ", fitpolicy.MaxPolicyDocumentBytes) + "}"
+}
+
+// jsonString escapes a value the way the wire body carries it, so a document
+// full of quotes and braces is still a valid request body.
+func jsonString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+// TestValidateFitPolicyDocumentRefusesAnOversizedBody is the transport half of
+// the size bound: /api has no body limit at all (MAX_REQUEST_BODY_MB is mounted
+// on the relay router only), so without this the endpoint would buffer — and
+// then compile — whatever it was sent.
+func TestValidateFitPolicyDocumentRefusesAnOversizedBody(t *testing.T) {
+	overBody := `{"document":"` + strings.Repeat("a", fitPolicyValidateBodyLimit) + `"}`
+	status, payload := postFitPolicyValidate(t, overBody)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, status, "a body over the transport limit is not a validation result")
+	assert.Equal(t, false, payload["success"])
+
+	// Under the transport limit but over the document limit the request is a
+	// normal validation failure: the endpoint's contract is 200 with valid=false,
+	// and the message has to name the limit so the author can shrink the rule set.
+	document := oversizedPolicyDocument()
+	status, payload = postFitPolicyValidate(t, `{"document":`+jsonString(t, document)+`}`)
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, ok := payload["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, false, data["valid"])
+	assert.Contains(t, data["error"], "byte limit")
+}
+
+// TestUpdateOptionBoundsTheSameKeyOnItsOwnWritePath closes the bypass: the
+// policy document is written through the root-only generic option endpoint, so
+// bounding only /api/fit-policy/validate would leave the same key reachable with
+// any body at all.
+func TestUpdateOptionBoundsTheSameKeyOnItsOwnWritePath(t *testing.T) {
+	overBody := `{"key":"` + fitpolicy.OptionKey + `","value":"` + strings.Repeat("a", maxOptionUpdateBodyBytes) + `"}`
+	status, payload := putOption(t, overBody)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, status, "the option write path must bound its body too")
+	assert.Equal(t, false, payload["success"])
+
+	// Inside the transport bound the document's own limit answers instead, on the
+	// endpoint's existing convention for a rejected value (200 with success=false,
+	// the same shape an uncompilable document already produced).
+	document := oversizedPolicyDocument()
+	status, payload = putOption(t, `{"key":"`+fitpolicy.OptionKey+`","value":`+jsonString(t, document)+`}`)
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	assert.Equal(t, false, payload["success"])
+	assert.Contains(t, payload["message"], "byte limit")
+}
+
 // TestGetChannelFitCapabilitiesPagesAcrossChannels covers the reason the
 // endpoint exists: the per-channel listing cannot show a mark whose channel is
 // gone, nor one bound to a policy that was replaced.
@@ -301,7 +397,7 @@ func TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput(t *testing.T) {
 	for _, supported := range []bool{true, false} {
 		_, err := model.ApplyChannelFitCapability(model.FitCapabilityWrite{
 			ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3",
-			Behavior: map[bool]string{true: "tools.dynamic_names", false: "usage.thinking_counting"}[supported],
+			Behavior:  map[bool]string{true: "tools.dynamic_names", false: "usage.thinking_counting"}[supported],
 			Supported: supported, Source: model.FitCapabilitySourceSuite, At: now, ExpectedRevision: 0,
 		}, now)
 		require.NoError(t, err)
@@ -323,4 +419,154 @@ func TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput(t *testing.T) {
 
 	status, _ = getFitCapabilityPage(t, "/api/fit-capability/all?supported=maybe")
 	assert.Equal(t, http.StatusBadRequest, status)
+}
+
+// TestGetChannelFitCapabilitiesDoesNotFlagAnOperatorMarkAsSuperseded keeps the
+// listing's binding verdict identical to the state machine's.
+//
+// The state machine compares the policy/baseline hash only for a suite
+// measurement that is supported and unexpired; an operator mark is a human
+// decision and no hash invalidates it. Comparing every row made a stored
+// operator mark answer binding_current=false beside state=manual_active, so the
+// table showed "Operator mark" and "Measured against a superseded policy" in the
+// same row.
+func TestGetChannelFitCapabilitiesDoesNotFlagAnOperatorMarkAsSuperseded(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	installFitPolicySnapshot(t, model.FitPolicyDefaultDocument())
+	now := common.GetTimestamp()
+	for _, mark := range []struct {
+		behavior string
+		source   string
+	}{
+		{behavior: "tools.dynamic_names", source: model.FitCapabilitySourceManual},
+		{behavior: "usage.thinking_counting", source: model.FitCapabilitySourceSuite},
+	} {
+		_, err := model.ApplyChannelFitCapability(model.FitCapabilityWrite{
+			ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: mark.behavior,
+			Supported: true, Source: mark.source, At: now,
+			PolicyHash: "superseded-hash", ExpectedRevision: 0,
+		}, now)
+		require.NoError(t, err)
+	}
+
+	status, payload := getFitCapabilityPage(t, "/api/fit-capability/all")
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, _ := payload["data"].(map[string]any)
+	items, _ := data["items"].([]any)
+	require.Len(t, items, 2)
+
+	byBehavior := map[string]map[string]any{}
+	for _, item := range items {
+		row, ok := item.(map[string]any)
+		require.True(t, ok)
+		behavior, _ := row["behavior"].(string)
+		byBehavior[behavior] = row
+	}
+
+	operator := byBehavior["tools.dynamic_names"]
+	require.NotNil(t, operator)
+	assert.Equal(t, model.FitCapabilityManualActive, operator["state"])
+	assert.Equal(t, true, operator["binding_current"],
+		"an operator mark is never invalidated by a hash, so it must not carry the superseded badge")
+
+	measured := byBehavior["usage.thinking_counting"]
+	require.NotNil(t, measured)
+	assert.Equal(t, model.FitCapabilitySuiteStale, measured["state"])
+	assert.Equal(t, false, measured["binding_current"],
+		"a suite measurement under a replaced policy is exactly the case the verdict exists for")
+}
+
+// TestGetChannelFitCapabilitiesRefusesACancelledPageContract pins the paging
+//
+// A negative page size used to pass through common.GetPageQuery into
+// db.Limit(-1). GORM writes a LIMIT clause only for a value >= 0, so the clause
+// disappeared and the "page" became the whole table — one query parameter
+// cancelling the contract, on a table that grows with every suite run. The two
+// fixes are pinned separately: the shared helper is bounded so no endpoint can
+// reach GORM with it (common/page_info_test.go), and this endpoint — which is
+// new and has exactly one caller — refuses the request instead of guessing.
+func TestGetChannelFitCapabilitiesRefusesACancelledPageContract(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	now := common.GetTimestamp()
+	for index := range 25 {
+		_, err := model.ApplyChannelFitCapability(model.FitCapabilityWrite{
+			ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3",
+			Behavior:  fmt.Sprintf("pin.%02d", index),
+			Supported: true, Source: model.FitCapabilitySourceSuite, At: now, ExpectedRevision: 0,
+		}, now)
+		require.NoError(t, err)
+	}
+
+	// Every one of these used to answer 200 with all 25 rows.
+	for _, target := range []string{
+		"/api/fit-capability/all?page_size=-1",
+		"/api/fit-capability/all?page_size=0",
+		"/api/fit-capability/all?page_size=abc",
+		"/api/fit-capability/all?ps=-1",
+		"/api/fit-capability/all?size=-1",
+		"/api/fit-capability/all?p=-1",
+		"/api/fit-capability/all?p=0",
+		"/api/fit-capability/all?p=abc",
+	} {
+		status, _ := getFitCapabilityPage(t, target)
+		assert.Equal(t, http.StatusBadRequest, status, "%s must be refused", target)
+	}
+
+	// The documented upper bound is a clamp, not an error, and the response
+	// reports the size actually used rather than the one that was asked for.
+	status, payload := getFitCapabilityPage(t, "/api/fit-capability/all?page_size=100000")
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, _ := payload["data"].(map[string]any)
+	assert.Equal(t, float64(100), data["page_size"])
+	assert.Equal(t, float64(25), data["total"])
+
+	// An empty value means "not supplied", not "no rows" and not a client error.
+	status, payload = getFitCapabilityPage(t, "/api/fit-capability/all?page_size=")
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, _ = payload["data"].(map[string]any)
+	assert.Equal(t, float64(25), data["total"], "an empty page_size must not filter anything out")
+	assert.GreaterOrEqual(t, data["page_size"], float64(1))
+	assert.LessOrEqual(t, data["page_size"], float64(100))
+}
+
+// TestGetChannelFitCapabilitiesRefusesAMalformedChannelFilter is the other half
+// of "invalid input is reported, not ignored": channel_id was parsed with the
+// error discarded, so a typed letter silently widened the listing to every
+// channel instead of narrowing it — the opposite of what the operator asked for.
+func TestGetChannelFitCapabilitiesRefusesAMalformedChannelFilter(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	require.NoError(t, model.DB.Create(&model.Channel{
+		Id: 8, Name: "ch-8", Status: common.ChannelStatusEnabled, Group: "default", Models: "kimi-k3", Key: "sk",
+	}).Error)
+	now := common.GetTimestamp()
+	for _, channelId := range []int{7, 8} {
+		_, err := model.ApplyChannelFitCapability(model.FitCapabilityWrite{
+			ChannelId: channelId, Family: "kimi-k3", Model: "kimi-k3",
+			Behavior:  fmt.Sprintf("pin.%d", channelId),
+			Supported: true, Source: model.FitCapabilitySourceSuite, At: now, ExpectedRevision: 0,
+		}, now)
+		require.NoError(t, err)
+	}
+
+	for _, target := range []string{
+		"/api/fit-capability/all?channel_id=abc",
+		"/api/fit-capability/all?channel_id=0",
+		"/api/fit-capability/all?channel_id=-3",
+		"/api/fit-capability/all?channel_id=7.5",
+	} {
+		status, _ := getFitCapabilityPage(t, target)
+		assert.Equal(t, http.StatusBadRequest, status, "%s must be refused", target)
+	}
+
+	// An empty channel_id is an absent filter, exactly like an empty supported:
+	// one rule for every parameter on this endpoint.
+	status, payload := getFitCapabilityPage(t, "/api/fit-capability/all?channel_id=&supported=")
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, _ := payload["data"].(map[string]any)
+	assert.Equal(t, float64(2), data["total"], "empty values must not narrow the listing")
+
+	status, payload = getFitCapabilityPage(t, "/api/fit-capability/all?channel_id=7")
+	require.Equal(t, http.StatusOK, status, "body: %v", payload)
+	data, _ = payload["data"].(map[string]any)
+	assert.Equal(t, float64(1), data["total"], "a valid channel_id keeps narrowing")
 }

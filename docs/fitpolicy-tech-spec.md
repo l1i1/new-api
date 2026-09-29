@@ -491,14 +491,22 @@ func narrow(candidates, fit) []Channel:
 | 端点 | 鉴权 | 读/写 | 说明 |
 |---|---|---|---|
 | `GET /api/fit-capability?channel_id=N` | `AdminAuth` + `channel.read` | 读 | **既有契约不变**（仍必须带 `channel_id`，`state` 仍按空绑定计算） |
-| `GET /api/fit-capability/all` | `AdminAuth` + `channel.read` | 读 | 新增。分页（`p`/`page_size`，上限 100），可按 `channel_id`/`family`/`model`/`behavior`/`source`/`supported` 过滤；`state` 按**当前生效**的 policy/baseline 重算，附 `binding_current` 与 `channel_name`（只 select `id,name`） |
+| `GET /api/fit-capability/all` | `AdminAuth` + `channel.read` | 读 | 新增。分页（`p`/`page_size`，上限 100），可按 `channel_id`/`family`/`model`/`behavior`/`source`/`supported` 过滤；`state` 按**当前生效**的 policy/baseline 重算，附 `binding_current` 与 `channel_name`（只 select `id,name`）。分页/过滤参数**严格校验**：非空但非正整数（`p<1`、`page_size<1`、`channel_id` 非法）一律 400，空值等同未提供（见 §18.5） |
 | `GET /api/fit-policy` | `AdminAuth` + `channel.read` | 读 | 新增。当前生效文档的三态（`default`/`cleared`/`document`）、存储文档能否编译、与 `DefaultPolicy()` 的差异、已安装快照（version/enabled/shadow/baseline/hash/last_error）、内置默认文档全文 |
-| `POST /api/fit-policy/validate` | `AdminAuth` + `channel.read` | 读（不落库） | 新增。对候选文档跑 `ParsePolicy` + `Compile`，返回 `valid`/`error`/与默认的差异/**关层告警码**/解析摘要/目标 hash |
+| `POST /api/fit-policy/validate` | `AdminAuth` + `channel.read` | 读（不落库） | 新增。对候选文档跑 `ParsePolicy` + `Compile`，返回 `valid`/`error`/与默认的差异/**关层告警码**/解析摘要/目标 hash；请求体超过 2 MiB 直接 413，文档本身超过 1 MiB 由 `valid=false` 报出（见 §18.5） |
 | `PUT /api/option/` | `RootAuth` | 写 | **唯一写入路径**，沿用既有 `validateOptionValue` → `ValidateFitPolicyOption`（提交前编译） |
 | `PUT /api/fit-capability`、`POST /api/fit-capability/report` | `capability.write` | 写 | 不变，仍只给受控 applier；**管理界面不调用** |
 
 - 读面用 `channel.read` 而不是 `RootAuth`：策略文档是路由配置（family/规则/开关），不是凭据，且看标记的人与看规则的人应当是同一批；
   写入仍是 root-only，与所有其它 `options` 写入一致。若要收紧，把 `fitPolicyRoute` 的两行 `RequirePermission(authz.ChannelRead)` 换成 `RootAuth()` 即可。
+- **权限面变化（供日后审计）：本提交对权限面的唯一扩大，是把「策略文档的读取」从 root-only 下放到
+  `AdminAuth` + `channel.read`。** f503e2610 之前，文档只能经 root-only 的 `PUT/GET /api/option/` 接触；
+  现在持有 `channel.read` 的管理员可以从 `GET /api/fit-policy` 读到文档全文（`document` / `effective_document` /
+  `default_document`）。这是**有意的披露决定**，不是疏漏：文档是路由配置（family、规则、开关、baseline），
+  不含凭据，且「看标记的人」与「看规则的人」应当是同一批。除此之外没有任何**既有**端点的权限被放宽：
+  `/api/fit-capability/all` 与 `GET /api/fit-policy` 都是新增端点，`PUT /api/fit-capability`、
+  `POST /api/fit-capability/report` 仍只认 `capability.write`，`PUT /api/option/` 仍是 root-only。
+  回退方式：把 `fitPolicyRoute` 的两行 `RequirePermission(authz.ChannelRead)` 换成 `RootAuth()`（会一并收紧这两个新端点）。
 - 界面**不提供**标记写入（含 `force`）：标记是「实测证据」，写入端点是 CAS + 人工 sticky 语义；让管理员在表格里手改会同时破坏「证据」与「CAS」两件事。
   需要人工覆盖时走既有 `PUT /api/fit-capability`（`source: manual`，带 `expected_revision`）。
 
@@ -532,3 +540,35 @@ func narrow(candidates, fit) []Channel:
 - 标记总览的 `state` 用**当前**绑定重算，而单渠道端点 `GET /api/fit-capability` 仍按空绑定冻结（旧契约）；两者对同一条 stale 绑定行可能给出不同字符串，这是有意保留的差异，不是 bug。
 - 界面不显示 6h 校准任务、suite 报告签名（尚未实现）与每通道 mark 的历史轨迹；审计仍在 `AuditLog`（`channel.fit_capability.*`）。
 - 与默认文档的差异来自 `fitpolicy.DivergenceFromBuiltin`，是字段/族/规则 id 级别的粗粒度描述，不是逐字符 diff。
+
+### 18.5 契约收紧（2026-09-30 复审）
+
+第一版管理界面复审后补的边界，均为**收紧**，不改变任何合法调用的结果：
+
+- **分页下界**：`common.GetPageQuery` 过去只夹上界，`?page_size=-1` 原样透传到 `db.Limit(-1)`——
+  GORM 只在值 `>= 0` 时写 LIMIT 子句，于是「翻页」变成全表导出（该 helper 是全仓共享的，`/api/channel/` 等
+  端点同样受影响，所以下界夹在 helper 里而不是某一个调用点）。现在 `page < 1 → 1`、`page_size < 1 → 默认值`、
+  `> 100 → 100`。新增的 `/api/fit-capability/all` 另有一层严格校验：**present 但非正整数一律 400**，空值 = 未提供。
+  夹住下界会掩盖一个既有信号：`/api/models/search` 带 `square_state` 过滤时，过去靠
+  `pageInfo.GetPage() < 1 || GetPageSize() < 1` 把负分页判为 400，夹住之后该比较恒为假。现在这个事实从
+  helper 里以 `PageInfo.Substituted`（`json:"-"`，仅当请求显式给了负数、0 或不可解析值不算）传出，
+  该端点的 400 契约不变，`controller/model_management_test.go` 的既有断言原样通过。
+- **请求体与文档上限**：`/api` 路由组此前完全不受 `MAX_REQUEST_BODY_MB` 约束（该中间件只挂在 relay 链路）。
+  `pkg/fitpolicy.MaxPolicyDocumentBytes = 1 MiB` 在 `ParsePolicy` 入口检查，是**所有**路径（校验端点、root-only
+  的 option 写入、加载器）共同的上限；`POST /api/fit-policy/validate` 另加 2 MiB 传输层上限并返回 413，
+  `PUT /api/option/` 另加 8 MiB 传输层上限（key 在 body 里，无法只对单一 key 设限，因此该 key 的真正上限来自
+  `ParsePolicy`）。1 MiB 的依据：内置默认文档是 KB 级，结构上限（16 family × 64 rule）也远低于它。
+- **`binding_current` 与状态机同源**：该字段只对 suite 实测行做 hash 比较（与状态机一致：`source==suite &&
+  supported && 未过期` 之后才比），`source=manual` 行返回 true；前端也只在 suite 行渲染
+  「Bound to the live policy / Measured against a superseded policy」徽标。此前人工标记会同时显示绿
+  「Operator mark」与红「Measured against a superseded policy」，两条互相矛盾且选路只会认其中一条。
+- **未知 code/state 不再白屏**：后端比前端新时，未知 warning code 或未知 capability state 以前会索引出
+  `undefined` 并渲染 `<Icon />`（React "Element type is invalid"，整个页签白屏）。现在未知 code 取 `info`
+  级别、未知 state 取 `secondary`，并把原始 code 当文本显示。
+- **确认路径不绕过闸门**：确认框的 `handleConfirm` 重新跑一遍 `evaluatePolicySave`，与保存按钮同一道闸门。
+- **「停用」与「清空」文案分开**：`policySaveImpact` 由布尔改为枚举（`none`/`disabled`/`cleared`/`unpinning`）。
+  `enabled=false` 仍会安装快照，套件报告继续被接受并记录；写空串则 `Current()==nil`，所有报告开始 409。
+  清空那条确认文案必须写明这一点。
+- **强制重装**：存储文档与运行快照不一致（`live.last_error` 非空 / 未安装）时，界面提供 root-only 的
+  「Reinstall the stored document」，把**同样的字节**再写一次。这是节点装载失败保留 last-known-good 之后、
+  故障原因消失时唯一的手动恢复手段；闸门仅在「文本未变化」一项上放行，校验、角色与后果确认照旧。

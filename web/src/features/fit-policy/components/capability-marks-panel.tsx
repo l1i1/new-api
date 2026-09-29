@@ -42,9 +42,10 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { listFitCapabilityMarks } from '../api'
 import {
-  FIT_CAPABILITY_STATE_LABEL_KEYS,
-  FIT_CAPABILITY_STATE_VARIANTS,
+  fitCapabilityBindingVerdict,
   fitCapabilitySourceLabelKey,
+  fitCapabilityStateLabelKey,
+  fitCapabilityStateVariant,
   truncateFitHash,
 } from '../lib/policy-format'
 import type { FitCapabilityMark, FitCapabilityQuery } from '../types'
@@ -307,8 +308,8 @@ function MarksTable(props: {
                   {t(fitCapabilitySourceLabelKey(mark.source))}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={FIT_CAPABILITY_STATE_VARIANTS[mark.state]}>
-                    {t(FIT_CAPABILITY_STATE_LABEL_KEYS[mark.state])}
+                  <Badge variant={fitCapabilityStateVariant(mark.state)}>
+                    {t(fitCapabilityStateLabelKey(mark.state))}
                   </Badge>
                 </TableCell>
                 <TableCell>
@@ -360,11 +361,18 @@ function MarksTable(props: {
  * The provenance hashes. They are shown because the whole point of the binding
  * is that a mark measured against a replaced policy is stale rather than
  * silently still valid — and that is only checkable if both values are visible.
+ *
+ * The verdict badge is only rendered where a hash can invalidate anything. The
+ * state machine applies the binding rule to a suite measurement alone, so a
+ * stored operator mark used to read "Operator mark" and "Measured against a
+ * superseded policy" in the same row — two badges that contradict each other and
+ * only one of which the selection path would ever act on.
  */
 function BindingCell({ mark }: { mark: FitCapabilityMark }) {
   const { t } = useTranslation()
   const policy = truncateFitHash(mark.policy_hash)
   const baseline = truncateFitHash(mark.baseline_hash)
+  const verdict = fitCapabilityBindingVerdict(mark)
   return (
     <div className='space-y-1'>
       <div className='font-mono text-xs'>
@@ -375,11 +383,13 @@ function BindingCell({ mark }: { mark: FitCapabilityMark }) {
         <span className='text-muted-foreground'>b </span>
         {baseline || '-'}
       </div>
-      <Badge variant={mark.binding_current ? 'outline' : 'warning'}>
-        {mark.binding_current
-          ? t('Bound to the live policy')
-          : t('Measured against a superseded policy')}
-      </Badge>
+      {verdict === 'not_applicable' ? null : (
+        <Badge variant={verdict === 'current' ? 'outline' : 'warning'}>
+          {verdict === 'current'
+            ? t('Bound to the live policy')
+            : t('Measured against a superseded policy')}
+        </Badge>
+      )}
     </div>
   )
 }

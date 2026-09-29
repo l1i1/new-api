@@ -35,6 +35,19 @@ var completionRatioMetaOptionKeys = []string{
 	"AudioCompletionRatio",
 }
 
+// maxOptionUpdateBodyBytes bounds one generic option write before the decoder
+// buffers it.
+//
+// Nothing under /api had a body limit: middleware.DecompressRequestMiddleware,
+// which enforces MAX_REQUEST_BODY_MB, is mounted on the relay router only. This
+// is the coarse transport guard for the option write path, deliberately far
+// above anything this API stores — the policy document, at
+// fitpolicy.MaxPolicyDocumentBytes, is the largest value any of these keys takes
+// and is itself bounded in fitpolicy.ParsePolicy, so the policy key cannot use
+// this endpoint to escape the document limit that /api/fit-policy/validate
+// enforces. A request over this size answers 413 instead of being buffered.
+const maxOptionUpdateBodyBytes = 8 << 20
+
 func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
@@ -183,8 +196,22 @@ func writePasskeyDomainSettingsError(c *gin.Context, err error) {
 
 func UpdateOption(c *gin.Context) {
 	var option OptionUpdateRequest
+	// Bound the body before the decoder buffers it. The key is inside the body,
+	// so the limit cannot be made specific to one option here; the policy
+	// document's own bound is enforced in fitpolicy.ParsePolicy, which every
+	// write of that key goes through (model.UpdateOption →
+	// validateOptionValue → ValidateFitPolicyOption).
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOptionUpdateBodyBytes)
 	err := common.DecodeJson(c.Request.Body, &option)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("请求体超过 %d 字节上限", int64(maxOptionUpdateBodyBytes)),
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "无效的参数",

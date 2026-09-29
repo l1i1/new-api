@@ -59,6 +59,19 @@ func TestSuiteMarkSatisfiesWhenEveryBindingMatches(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
+	// Clear the index and the failure cooldown before the assertion, so the test
+	// proves the lazy build rather than the order it happened to run in.
+	//
+	// Both are package state that other tests legitimately leave behind: a build
+	// started against another fixture database leaves fitCapabilityIndexBuilt
+	// true, and a build that failed (the table a node has not migrated yet) arms
+	// a 30s retry cooldown in ensureFitCapabilityIndexBuilt. Either one suppresses
+	// the first-use build below, the look-up then misses, and this test fails for
+	// a reason that has nothing to do with what it checks. Resetting keeps the
+	// deliberate "no manual index build" property intact — the look-up still has
+	// to reach the row by itself.
+	ResetFitCapabilityIndexForTest()
+
 	// Deliberately no explicit index build: the look-up has to reach the row by
 	// itself. Requiring the caller to have built the index first is exactly the
 	// wiring that was missing, and it fails silently — the table looks right while

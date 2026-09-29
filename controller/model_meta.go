@@ -32,7 +32,13 @@ func listModelsMeta(c *gin.Context, keyword, vendor string) {
 	}
 
 	pageInfo := common.GetPageQuery(c)
-	if squareState != "" && (pageInfo.GetPage() < 1 || pageInfo.GetPageSize() < 1) {
+	// The square-state listing filters in memory after the search, so it cannot
+	// let the helper substitute a page it was not asked for: a request that
+	// explicitly asked for `p=-1` or `page_size=-1` is a client error here, and it
+	// must stay one. The comparison used to be against Page/PageSize themselves,
+	// which stopped meaning anything once the helper began enforcing the lower
+	// bound; Substituted carries the same fact out of the helper.
+	if squareState != "" && pageInfo.Substituted {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination"})
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -154,19 +155,33 @@ func GetChannelFitCapabilities(c *gin.Context) {
 // The response is a page: the table grows with every suite run, so an
 // unpaginated listing would eventually time out rather than inform.
 func GetChannelFitCapabilitiesPage(c *gin.Context) {
-	pageInfo := common.GetPageQuery(c)
+	pageInfo, pageError := fitCapabilityPageQuery(c)
+	if pageError != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": pageError})
+		return
+	}
 	query := model.FitCapabilityQuery{
 		Family:   c.Query("family"),
 		Model:    c.Query("model"),
 		Behavior: c.Query("behavior"),
 		Source:   c.Query("source"),
 	}
-	if channelID, err := strconv.Atoi(c.Query("channel_id")); err == nil && channelID > 0 {
+	// channel_id is a filter, so an unusable value must fail loudly: the previous
+	// `if err == nil && channelID > 0` discarded the error, and a typed letter
+	// therefore widened the listing to the whole fleet — the exact opposite of
+	// what the operator asked for, and indistinguishable from a listing that
+	// simply has no matches. An empty value is an absent filter, not an error.
+	if raw := strings.TrimSpace(c.Query("channel_id")); raw != "" {
+		channelID, err := strconv.Atoi(raw)
+		if err != nil || channelID < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "channel_id must be a positive integer"})
+			return
+		}
 		query.ChannelId = channelID
 	}
-	// supported is a tri-state: absent means "both", and false is a real filter
-	// (an explicit negative result is not the same as no result).
-	if raw, present := c.GetQuery("supported"); present {
+	// supported is a tri-state: absent (or empty) means "both", and false is a
+	// real filter (an explicit negative result is not the same as no result).
+	if raw := strings.TrimSpace(c.Query("supported")); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "supported must be true or false"})
@@ -217,7 +232,7 @@ func GetChannelFitCapabilitiesPage(c *gin.Context) {
 			ChannelFitCapability: row,
 			ChannelName:          names[row.ChannelId],
 			State:                model.FitCapabilityState(&row, now, model.DefaultFitCapabilityStaleAfterDays, policyHash, baselineHash),
-			BindingCurrent:       fitCapabilityBindingCurrent(&row, policyHash, baselineHash),
+			BindingCurrent:       fitCapabilityBindingCurrent(&row, now, policyHash, baselineHash),
 		})
 	}
 
@@ -231,6 +246,37 @@ func GetChannelFitCapabilitiesPage(c *gin.Context) {
 	})
 }
 
+// fitCapabilityPageQuery parses the pagination parameters of the fleet-wide
+// listing strictly, returning a message instead of a page when one is present
+// but unusable.
+//
+// common.GetPageQuery clamps rather than fails, and that is the right call
+// there: it is the entry point of two dozen endpoints whose contract predates
+// this one, and clamping is the only fix that does not change their signatures.
+// Clamping is not enough here, because "it silently did something else" is the
+// class of failure this listing exists to expose. `?page_size=-1` used to reach
+// GORM as Limit(-1), which writes no LIMIT clause at all, so the page became the
+// whole table; the clamped helper now stops that everywhere, and this endpoint —
+// new, with exactly one caller, the bundled administration UI — additionally
+// refuses the request instead of substituting a value the caller did not ask
+// for.
+//
+// An empty value counts as absent for every parameter on this endpoint:
+// `?page_size=` must mean the same as omitting it, and so must `?channel_id=`
+// and `?supported=`.
+func fitCapabilityPageQuery(c *gin.Context) (*common.PageInfo, string) {
+	for _, name := range []string{"p", "page_size", "ps", "size"} {
+		raw := strings.TrimSpace(c.Query(name))
+		if raw == "" {
+			continue
+		}
+		if value, err := strconv.Atoi(raw); err != nil || value < 1 {
+			return nil, name + " must be a positive integer"
+		}
+	}
+	return common.GetPageQuery(c), ""
+}
+
 // fitCapabilityPageItem is one row of the overview. It carries the stored row
 // plus the two facts an operator cannot read off the row itself: which channel
 // it belongs to, and whether its provenance still matches what is in force.
@@ -239,18 +285,35 @@ type fitCapabilityPageItem struct {
 	ChannelName string `json:"channel_name"`
 	// State is the state machine's verdict for the bindings currently installed.
 	State string `json:"state"`
-	// BindingCurrent is false when the row was measured against a different
-	// policy or baseline than the one in force. The row is kept rather than
-	// hidden: a stale binding is a fact worth showing.
+	// BindingCurrent is the state machine's own binding verdict: false when a
+	// suite measurement is bound to a different policy or baseline than the one
+	// in force. It is true for a row the rule does not apply to, so a reader must
+	// not turn it into "this row is measured against the live policy" without
+	// checking source first. The row is kept rather than hidden: a stale binding
+	// is a fact worth showing.
 	BindingCurrent bool `json:"binding_current"`
 }
 
-// fitCapabilityBindingCurrent mirrors the binding half of FitCapabilityState.
-// An empty value on either side means the check does not apply, so the row is
-// reported as current — the same rule the state machine applies.
-func fitCapabilityBindingCurrent(row *model.ChannelFitCapability, policyHash, baselineHash string) bool {
+// fitCapabilityBindingCurrent mirrors the binding half of FitCapabilityState,
+// and the mirror has to be exact or the two disagree in the same response.
+//
+// The state machine only reaches its hash comparison for a suite measurement
+// that is otherwise eligible: source == suite, supported, and not expired. An
+// operator mark is a human decision, not a measurement, and no hash invalidates
+// it; a failed or expired suite row is already reported as failed or stale, and
+// comparing its hashes would only add a second reason for the same verdict.
+// Applying the comparison to every row made a stored operator mark report "not
+// bound" beside a green "Operator mark" state — a contradiction the selection
+// path does not recognise, because it never looks at a manual row's hash.
+//
+// An empty value on either side means the check does not apply, exactly as in
+// the state machine.
+func fitCapabilityBindingCurrent(row *model.ChannelFitCapability, now int64, policyHash, baselineHash string) bool {
 	if row == nil {
 		return false
+	}
+	if row.Source != model.FitCapabilitySourceSuite || !row.Supported || model.FitCapabilityExpired(row, now) {
+		return true
 	}
 	if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
 		return false

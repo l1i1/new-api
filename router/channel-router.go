@@ -53,37 +53,47 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	// the allowed caller is defined by the granted action rather than by a role.
 	// The path is static rather than /channel/fit-capability to avoid any
 	// wildcard-vs-static conflict with the group's /:id routes.
+	//
+	// Reads and writes are two groups rather than one group with route-level
+	// extras. Gin runs the group middleware before the route middleware, so a
+	// read registered inside the UserAuth group and then given AdminAuth would
+	// authenticate the same credential twice per request — the session lookup,
+	// the token audit and the user read all happen again — for no guarantee
+	// AdminAuth does not already give: it requires everything UserAuth requires
+	// and a role above it, and it answers 401 to an anonymous caller exactly as
+	// UserAuth does. The permission a route actually needs is therefore attached
+	// to one group, and no route carries two.
+	fitCapabilityAdminRoute := apiRouter.Group("/fit-capability")
+	fitCapabilityAdminRoute.Use(middleware.AdminAuth())
+	fitCapabilityAdminRoute.Use(middleware.RequirePermission(authz.ChannelRead))
+	{
+		// Reading marks stays an administrative view, exactly like every other
+		// channel read. Only the write path is meant to be reachable by a
+		// non-administrator principal; the applier learns the current revision from
+		// the 409 body of its own write rather than by reading.
+		fitCapabilityAdminRoute.GET("", controller.GetChannelFitCapabilities)
+		// The fleet-wide listing the administration page reads. It is a separate
+		// path rather than a change to GET "" above so the per-channel contract
+		// keeps its exact shape and its channel_id requirement: a caller that
+		// already uses it is unaffected.
+		fitCapabilityAdminRoute.GET("/all", controller.GetChannelFitCapabilitiesPage)
+	}
+
 	fitCapabilityRoute := apiRouter.Group("/fit-capability")
 	fitCapabilityRoute.Use(middleware.UserAuth())
-	// Reading marks stays an administrative view, exactly like every other
-	// channel read. Only the write path is meant to be reachable by a
-	// non-administrator principal; the applier learns the current revision from
-	// the 409 body of its own write rather than by reading.
-	fitCapabilityRoute.GET("",
-		middleware.AdminAuth(),
-		middleware.RequirePermission(authz.ChannelRead),
-		controller.GetChannelFitCapabilities,
-	)
-	fitCapabilityRoute.PUT("",
-		middleware.RequirePermission(authz.ChannelCapabilityWrite),
-		controller.PutChannelFitCapability,
-	)
-	// The controlled suite applier posts a whole run here. It holds
-	// capability.write and nothing else, so it can record measurements but
-	// cannot force its way past a live operator mark.
-	fitCapabilityRoute.POST("/report",
-		middleware.RequirePermission(authz.ChannelCapabilityWrite),
-		controller.PostFitCapabilityReport,
-	)
-	// The fleet-wide listing the administration page reads. It is a separate
-	// path rather than a change to GET "" above so the per-channel contract
-	// keeps its exact shape and its channel_id requirement: a caller that
-	// already uses it is unaffected.
-	fitCapabilityRoute.GET("/all",
-		middleware.AdminAuth(),
-		middleware.RequirePermission(authz.ChannelRead),
-		controller.GetChannelFitCapabilitiesPage,
-	)
+	{
+		fitCapabilityRoute.PUT("",
+			middleware.RequirePermission(authz.ChannelCapabilityWrite),
+			controller.PutChannelFitCapability,
+		)
+		// The controlled suite applier posts a whole run here. It holds
+		// capability.write and nothing else, so it can record measurements but
+		// cannot force its way past a live operator mark.
+		fitCapabilityRoute.POST("/report",
+			middleware.RequirePermission(authz.ChannelCapabilityWrite),
+			controller.PostFitCapabilityReport,
+		)
+	}
 
 	// The policy administration read surface. Reading the document is an
 	// administrative view like any other channel read; writing it stays on

@@ -1793,6 +1793,11 @@
         },
         {
           "kind": "symbol",
+          "file": "pkg/fitpolicy/policy.go",
+          "name": "MaxPolicyDocumentBytes"
+        },
+        {
+          "kind": "symbol",
           "file": "model/fitpolicy_option.go",
           "name": "func ValidateFitPolicyOption("
         },
@@ -1882,6 +1887,7 @@
             "TestDecideReportsPolicyIdentity",
             "TestPolicyValidationRejects",
             "TestCompileRejectsUnknownFunctionAndNonBooleanRule",
+            "TestParsePolicyBoundsTheDocumentBeforeDecoding",
             "TestReloadKeepsLastKnownGood",
             "TestPrimitivesMatchShippedSemantics",
             "TestNarrowTwoPhase",
@@ -2047,7 +2053,8 @@
         {
           "kind": "symbol",
           "file": "router/channel-router.go",
-          "name": "fitCapabilityRoute.GET("
+          "name": "fitCapabilityAdminRoute.GET(",
+          "note": "reads moved to their own AdminAuth group so no route carries UserAuth and AdminAuth at once"
         }
       ],
       "tests": [
@@ -2118,8 +2125,12 @@
       "files": [
         "controller/fit_policy.go",
         "controller/channel_fit_capability.go",
+        "controller/option.go",
+        "controller/model_meta.go",
         "model/channel_fit_capability.go",
         "model/fitpolicy_option.go",
+        "common/page_info.go",
+        "pkg/fitpolicy/policy.go",
         "router/channel-router.go",
         "web/src/features/fit-policy/api.ts",
         "web/src/features/fit-policy/components/capability-marks-panel.tsx",
@@ -2142,6 +2153,11 @@
         {
           "kind": "symbol",
           "file": "controller/fit_policy.go",
+          "name": "const fitPolicyValidateBodyLimit"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/fit_policy.go",
           "name": "FitPolicySourceCleared"
         },
         {
@@ -2153,6 +2169,32 @@
           "kind": "symbol",
           "file": "controller/channel_fit_capability.go",
           "name": "func GetChannelFitCapabilitiesPage("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/channel_fit_capability.go",
+          "name": "func fitCapabilityPageQuery("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/option.go",
+          "name": "const maxOptionUpdateBodyBytes"
+        },
+        {
+          "kind": "symbol",
+          "file": "common/page_info.go",
+          "name": "func GetPageQuery("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/model_meta.go",
+          "name": "pageInfo.Substituted",
+          "note": "上游写的是 pageInfo.GetPage() < 1 || pageInfo.GetPageSize() < 1；common.GetPageQuery 补上下界夹住之后那个比较恒为假，这里改读显式负数的标记"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/policy.go",
+          "name": "MaxPolicyDocumentBytes"
         },
         {
           "kind": "symbol",
@@ -2181,6 +2223,21 @@
         },
         {
           "kind": "symbol",
+          "file": "web/src/features/fit-policy/lib/policy-format.ts",
+          "name": "export function fitCapabilityBindingVerdict"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/fit-policy/lib/policy-format.ts",
+          "name": "export function fitPolicyWarningLevel"
+        },
+        {
+          "kind": "symbol",
+          "file": "web/src/features/fit-policy/lib/policy-format.ts",
+          "name": "POLICY_SAVE_IMPACT_MESSAGES"
+        },
+        {
+          "kind": "symbol",
           "file": "web/src/features/fit-policy/api.ts",
           "name": "FIT_POLICY_OPTION_KEY"
         },
@@ -2199,8 +2256,21 @@
             "TestFitPolicyViewReportsTheLiveSnapshotApartFromTheDocument",
             "TestValidateFitPolicyDocumentRejectsUncompilableRules",
             "TestValidateFitPolicyDocumentAcceptsTheShippedDefault",
+            "TestValidateFitPolicyDocumentWarnsAboutAShadowOrEmptyDocument",
+            "TestValidateFitPolicyDocumentRefusesAnOversizedBody",
+            "TestUpdateOptionBoundsTheSameKeyOnItsOwnWritePath",
             "TestGetChannelFitCapabilitiesPagesAcrossChannels",
-            "TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput"
+            "TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput",
+            "TestGetChannelFitCapabilitiesDoesNotFlagAnOperatorMarkAsSuperseded",
+            "TestGetChannelFitCapabilitiesRefusesACancelledPageContract",
+            "TestGetChannelFitCapabilitiesRefusesAMalformedChannelFilter"
+          ]
+        },
+        {
+          "file": "common/page_info_test.go",
+          "names": [
+            "TestGetPageQueryBoundsPageSizeBelowAsWellAsAbove",
+            "TestGetPageQueryReportsAnExplicitlyNegativeValue"
           ]
         },
         {
@@ -2208,7 +2278,10 @@
           "names": [
             "evaluatePolicySave",
             "policySaveImpact",
-            "fit policy presentation helpers"
+            "POLICY_SAVE_IMPACT_MESSAGES",
+            "fit policy presentation helpers",
+            "unknown backend values degrade instead of crashing",
+            "fitCapabilityBindingVerdict"
           ]
         },
         {
@@ -2221,7 +2294,8 @@
           "file": "router/fit_policy_router_test.go",
           "names": [
             "TestFitPolicyRoutesRegisterWithoutConflict",
-            "TestFitPolicyRoutesRequireAuthentication"
+            "TestFitPolicyRoutesRequireAuthentication",
+            "TestFitPolicyRoutesRejectALoggedInNonAdministrator"
           ]
         }
       ]
@@ -2254,74 +2328,112 @@
           ]
         }
       ]
-    }  ,
-  {
+    },
+    {
       "id": "config-epoch-write-publishes-reload-1",
       "title": "配置纪元：写节点提交后 INCR config_epoch:v1，各节点 2s 轮询整体重载；60s 循环兜底；写节点仅在恰好下一号时认领；重载失败退避、日志限额；读失败保留旧缓存",
       "risk": "high",
       "source": "FORK-CHANGES.md › 5. 路由与可靠性",
       "files": [
-          "model/config_epoch.go",
-          "model/channel_cache.go",
-          "model/option.go",
-          "model/channel.go",
-          "service/authz/adapter.go",
-          "main.go"
+        "model/config_epoch.go",
+        "model/channel_cache.go",
+        "model/option.go",
+        "model/channel.go",
+        "service/authz/adapter.go",
+        "main.go",
+        "oauth/registry.go",
+        "service/authz/enforcer.go",
+        "controller/custom_oauth.go",
+        "controller/user.go"
       ],
       "anchors": [
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "NotifyConfigChanged"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "InitChannelCacheAndNotify"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "StartConfigEpochWatcher"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "reloadConfigFromEpoch"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "configEpochReloadRetryBackoff"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/config_epoch.go",
-              "name": "configEpochKey"
-          },
-          {
-              "kind": "symbol",
-              "file": "model/channel_cache.go",
-              "name": "func InitChannelCache()"
-          },
-          {
-              "kind": "file",
-              "file": "model/config_epoch_test.go"
-          }
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "NotifyConfigChanged"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "InitChannelCacheAndNotify"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "StartConfigEpochWatcher"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "reloadConfigFromEpoch"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "configEpochReloadRetryBackoff"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/config_epoch.go",
+          "name": "configEpochKey"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "func InitChannelCache()"
+        },
+        {
+          "kind": "file",
+          "file": "model/config_epoch_test.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "oauth/registry.go",
+          "name": "ReloadCustomProviders"
+        },
+        {
+          "kind": "symbol",
+          "file": "oauth/registry.go",
+          "name": "LoadCustomProviders"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/authz/enforcer.go",
+          "name": "ReloadPolicyAndNotify"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/custom_oauth.go",
+          "name": "model.NotifyConfigChanged()"
+        }
       ],
       "tests": [
-          {
-              "file": "model/config_epoch_test.go",
-              "names": [
-                  "TestConfigEpochWatcherAppliesPeerChange",
-                  "TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied",
-                  "TestReloadConfigFromEpochAppliesCommittedChanges",
-                  "TestInitChannelCacheAndNotifyPublishesWhenTheLocalRefreshPanics",
-                  "TestUpdateChannelStatusPublishesTheChange",
-                  "TestConfigEpochReloadRetryBackoffGrowsAndIsCapped"
-              ]
-          }
+        {
+          "file": "model/config_epoch_test.go",
+          "names": [
+            "TestConfigEpochWatcherAppliesPeerChange",
+            "TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied",
+            "TestReloadConfigFromEpochAppliesCommittedChanges",
+            "TestInitChannelCacheAndNotifyPublishesWhenTheLocalRefreshPanics",
+            "TestUpdateChannelStatusPublishesTheChange",
+            "TestConfigEpochReloadRetryBackoffGrowsAndIsCapped"
+          ]
+        },
+        {
+          "file": "oauth/registry_test.go",
+          "names": [
+            "TestLoadCustomProvidersRegistersCommittedProviders",
+            "TestLoadCustomProvidersDropsDeletedProviders",
+            "TestLoadCustomProvidersKeepsTheRegistryWhenTheReadFails"
+          ]
+        },
+        {
+          "file": "service/authz/authz_test.go",
+          "names": [
+            "TestReloadPolicyAndNotifyPublishesTheChange"
+          ]
+        }
       ]
-  }
+    }
   ]
 }

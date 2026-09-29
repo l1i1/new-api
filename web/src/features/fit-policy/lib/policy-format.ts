@@ -96,9 +96,81 @@ export const FIT_CAPABILITY_STATE_VARIANTS: Record<
   manual_expired: 'warning',
 }
 
-/** Label for the origin of a stored mark. */
+/**
+ * Message keys for the origin of a mark, as a map for the same reason the other
+ * three are: the i18n coverage test can then collect them by reading the module
+ * instead of by guessing what the function returns.
+ */
+export const FIT_CAPABILITY_SOURCE_LABEL_KEYS = {
+  manual: 'Operator override',
+  suite: 'Measured by a suite',
+} as const
+
+/** Label for the origin of a stored mark; an unknown source is shown verbatim. */
 export function fitCapabilitySourceLabelKey(source: string): string {
-  return source === 'manual' ? 'Operator override' : 'Measured by a suite'
+  return (
+    FIT_CAPABILITY_SOURCE_LABEL_KEYS[
+      source as keyof typeof FIT_CAPABILITY_SOURCE_LABEL_KEYS
+    ] ?? source
+  )
+}
+
+/**
+ * The severity of a warning the backend sent.
+ *
+ * The backend may ship a code this bundle has never heard of (the two are
+ * deployed independently), and the previous direct map lookup returned
+ * `undefined`, which reached `WARNING_ICONS[undefined]` and rendered
+ * `<Icon />` — React's "Element type is invalid", which blanks the whole tab.
+ * An unknown warning is not a crash and not silence: it is informational, and
+ * `fitPolicyWarningMessageKey` below shows the code itself.
+ */
+export function fitPolicyWarningLevel(
+  code: string
+): 'critical' | 'warning' | 'info' {
+  return FIT_POLICY_WARNING_LEVELS[code as FitPolicyWarningCode] ?? 'info'
+}
+
+/** The message key for a warning; an unknown code is rendered verbatim. */
+export function fitPolicyWarningMessageKey(code: string): string {
+  return FIT_POLICY_WARNING_MESSAGE_KEYS[code as FitPolicyWarningCode] ?? code
+}
+
+/** The badge variant for a capability state; an unknown state is neutral. */
+export function fitCapabilityStateVariant(
+  state: string
+): 'default' | 'secondary' | 'destructive' | 'warning' | 'outline' {
+  return (
+    FIT_CAPABILITY_STATE_VARIANTS[state as FitCapabilityState] ?? 'secondary'
+  )
+}
+
+/** The label key for a capability state; an unknown state is shown verbatim. */
+export function fitCapabilityStateLabelKey(state: string): string {
+  return FIT_CAPABILITY_STATE_LABEL_KEYS[state as FitCapabilityState] ?? state
+}
+
+export type FitCapabilityBindingVerdict =
+  | 'current'
+  | 'superseded'
+  | 'not_applicable'
+
+/**
+ * Whether a mark's provenance can be stale at all, and if so, whether it is.
+ *
+ * Only a suite measurement is invalidated by the policy/baseline hash — the
+ * state machine compares hashes after `source == suite && supported && not
+ * expired`, and an operator mark is a human decision that no hash invalidates.
+ * Judging every row by hash made a stored operator mark carry "Operator mark"
+ * and "Measured against a superseded policy" at the same time, which reads as a
+ * contradiction and is not one the state machine recognises.
+ */
+export function fitCapabilityBindingVerdict(mark: {
+  source: string
+  binding_current: boolean
+}): FitCapabilityBindingVerdict {
+  if (mark.source !== 'suite') return 'not_applicable'
+  return mark.binding_current ? 'current' : 'superseded'
 }
 
 /**
@@ -128,6 +200,17 @@ export type PolicySaveInput = {
   validatedDocument: string | null
   validation: FitPolicyValidation | null
   isRoot: boolean
+  /**
+   * A deliberate re-write of bytes that are already stored.
+   *
+   * It exists because a node can fail to load a document and keep its
+   * last-known-good snapshot. When the cause was transient and the stored bytes
+   * are already correct, writing the identical value is the only way to make the
+   * fleet install it again — and that is exactly the write the unchanged check
+   * refuses. It relaxes that check and nothing else: role, validation and the
+   * impact confirmation all still apply.
+   */
+  reinstall?: boolean
 }
 
 /**
@@ -148,7 +231,7 @@ export function evaluatePolicySave(input: PolicySaveInput): PolicySaveGate {
         'The policy document is stored in the root-only option API, so changing it requires the super administrator role.',
     }
   }
-  if (input.document === input.baselineDocument) {
+  if (!input.reinstall && input.document === input.baselineDocument) {
     return { allowed: false, reasonKey: 'The document is unchanged.' }
   }
   if (input.validation === null || input.validatedDocument !== input.document) {
@@ -166,29 +249,74 @@ export function evaluatePolicySave(input: PolicySaveInput): PolicySaveGate {
   return { allowed: true, reasonKey: null }
 }
 
-export type PolicySaveImpact = {
-  /**
-   * True when saving would leave the layer pinning nothing — an empty
-   * document, a disabled one, or one whose families carry no rule. These are
-   * legal states and one of them is the documented rollback, so they are
-   * confirmed rather than blocked.
-   */
-  disablesLayer: boolean
-}
+/**
+ * What saving a validated document would do to the layer.
+ *
+ * These are not interchangeable, which is why this is an enum and not the
+ * boolean it used to be. The two ways of taking the layer out differ in what
+ * still works afterwards:
+ *
+ *  - `disabled` — `enabled=false`. The document compiles and a snapshot is
+ *    installed, so `POST /api/fit-capability/report` still accepts and records
+ *    suite reports; nothing is pinned to a channel.
+ *  - `cleared` — an empty document. No snapshot is installed at all, so every
+ *    suite report is refused with 409 until a document is written back.
+ *  - `unpinning` — a document that is installed but declares nothing a request
+ *    can require: no family, or families with no rule.
+ *
+ * The old boolean answered "the layer is off" for all three, so the operator
+ * confirming the save could not tell which of them they were about to cause.
+ */
+export type PolicySaveImpact = 'none' | 'disabled' | 'cleared' | 'unpinning'
 
 /** Classify what saving a validated document would do to the live layer. */
 export function policySaveImpact(
   validation: FitPolicyValidation | null
 ): PolicySaveImpact {
   if (validation === null || !validation.valid) {
-    return { disablesLayer: false }
+    return 'none'
   }
   const codes = new Set(validation.warnings.map((warning) => warning.code))
-  const disablesLayer =
+  if (codes.has('cleared')) {
+    return 'cleared'
+  }
+  if (codes.has('disabled')) {
+    return 'disabled'
+  }
+  if (
     validation.summary === null ||
-    codes.has('disabled') ||
-    codes.has('cleared') ||
     codes.has('no_family') ||
     codes.has('no_rules')
-  return { disablesLayer }
+  ) {
+    return 'unpinning'
+  }
+  return 'none'
+}
+
+/**
+ * Title and body of the confirmation a save needs, per impact.
+ *
+ * The cleared body has to name the consequence the operator cannot see from the
+ * editor: an empty document is not "a disabled policy", it is no policy at all,
+ * and the suite applier starts getting 409s the moment it lands.
+ */
+export const POLICY_SAVE_IMPACT_MESSAGES: Record<
+  Exclude<PolicySaveImpact, 'none'>,
+  { title: string; description: string }
+> = {
+  disabled: {
+    title: 'Switch the official-fit policy layer off?',
+    description:
+      'Saving this document installs a disabled policy: the snapshot stays in place, so suite reports are still accepted and recorded, but no request is pinned to a channel that reproduces the official behaviour.',
+  },
+  cleared: {
+    title: 'Clear the official-fit policy document?',
+    description:
+      'Saving the empty document clears the option, so no policy is installed at all: suite reports are refused with 409 until a document is written back, and no request is pinned meanwhile.',
+  },
+  unpinning: {
+    title: 'Switch the official-fit policy layer off?',
+    description:
+      'Saving this document switches the official-fit policy layer off: no request is pinned to a channel that reproduces the official behaviour.',
+  },
 }
