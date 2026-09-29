@@ -84,8 +84,12 @@ READY_TIMEOUT="${MASTER_READY_TIMEOUT:-180}"
 QUIET_SECONDS="${MASTER_QUIET_SECONDS:-15}"
 STOP_TIMEOUT="${MASTER_STOP_TIMEOUT:-60}"
 # This host's own nginx terminates :80 (the /v1 last resort) and proxies to
-# the master container. Its upstream port must follow the serving one.
-ECS_NGINX_CONF="${ECS_NGINX_CONF:-/etc/nginx/sites-enabled/tokeness-cn.conf}"
+# the master container. Its upstream port must follow the serving one. The
+# file is a symlink into sites-available, so the edit must follow it rather
+# than replace it (plain `sed -i` would turn sites-enabled into a regular file).
+# Two upstreams in it point at the master: newapi_ml (the /v1 last resort) and
+# newapi_web (this host's own panel route) - both follow the port.
+ECS_NGINX_CONF="${ECS_NGINX_CONF:-/etc/nginx/sites-enabled/tokeness-ml.conf}"
 ECS_NGINX_HOST_HEADER="${ECS_NGINX_HOST_HEADER:-tokeness.cn}"
 
 log() { printf 'bootstrap-master-ecs: %s\n' "$*"; }
@@ -148,8 +152,8 @@ ecs_nginx_point_at() {
   cp -a "$ECS_NGINX_CONF" "$bak"
   # Only upstream/proxy lines are rewritten; a comment mentioning the port is
   # cosmetic and harmless, but the substitution is anchored to the serving
-  # address to keep the blast radius at exactly the last-resort pointer.
-  sed -i "s/${SERVE_IP//./\\.}:${old_port}\b/${SERVE_IP}:${port}/g" "$ECS_NGINX_CONF"
+  # address to keep the blast radius at exactly the master pointers.
+  sed -i --follow-symlinks "s/${SERVE_IP//./\\.}:${old_port}\b/${SERVE_IP}:${port}/g" "$ECS_NGINX_CONF"
   if ! nginx -t >/dev/null 2>&1; then
     err "nginx -t failed after :80 upstream flip; restoring $bak"
     cp -a "$bak" "$ECS_NGINX_CONF"

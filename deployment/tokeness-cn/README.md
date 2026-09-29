@@ -82,6 +82,8 @@ The master container (`new-api-master` on the backup ECS) serves the panel and i
 
 The serving port therefore alternates per release (`:3000` → `:3001` → `:3000` …). That is expected: `deploy.sh` discovers it from the ECS marker, so never hand-edit the port in either nginx conf. A failed roll reconciles itself: `abort` keeps blue (removing green and restoring `:80`) when blue is still alive, and *finalizes* green when the commit already retired blue — nothing ever points at a dead container.
 
+On the ECS itself the bootstrap edits `/etc/nginx/sites-enabled/tokeness-ml.conf` (host-maintained, not in this repository — it is a symlink into `sites-available`, so the edit follows the link). Both of its master-pointing upstreams move together: `newapi_ml` (the `/v1` last resort) and `newapi_web` (that host's own panel route). The edit is guarded by `nginx -t`, a Host-pinned `:80` probe, and an automatic restore from a timestamped `.bg-bak-*` copy.
+
 `deploy.sh sync-host` (alias `sync-master`) re-runs the whole cycle against the digest the scaling configuration currently pins, and is the healing path for a half-finished roll (a leftover green is adopted when it is healthy on the right image, otherwise it is cleared and recreated).
 
 ## Troubleshooting the pipeline
