@@ -1614,7 +1614,13 @@
 
 **两处按现场修正的实现细节**：ECS 的 nginx 配置是 `/etc/nginx/sites-enabled/tokeness-ml.conf`（**不在本仓库**，host 自维护）；它是**符号链接**，必须 `sed -i --follow-symlinks`；该文件里有**两个** upstream 指向 master（`newapi_ml` 的 `:80` /v1 兜底 + `newapi_web` 本机面板路由），锚定 `10.1.0.43` 的替换正好两个都翻。
 
-**未完成（诚实记录）**：**真机彩排未做**。原因是执行窗口撞上另一会话的 P0 事故处理（它正在同两台轻量上做 relay 的 N+1 滚动替换，用 `/etc/ml-sync/drain-target` 钉存活实例，3 分钟内 187 个子进程事件），两个会话同时改同一批 nginx 配置必须避免。代码路径已被单测覆盖（含"pin 被拒 → 不得 commit、不得动 ESS、必须 abort 回收"），但**首次实战即真发版**。彩排步骤已备好：source `deploy.sh` 后直接调 `sync_master_container "" <当前 digest>`（本地无 aliyun CLI，不需要它），跑两轮验证 3000→3001→3000 双向 + 一次 start/abort。
+**真机彩排（2026-09-30 01:05–01:20，用户指示「跑」）——两轮，最终全绿**：第一轮**失败**，暴露两个真实缺陷，都很值得记：
+
+1. **备份写进了 nginx 的 include 目录**：`cp -a` 把 `sites-enabled/tokeness-ml.conf.bg-bak-*` 放在源文件旁边，而 nginx 用 `include sites-enabled/*` 通配加载 → 备份成了第二份配置，`nginx -t` 报 `duplicate "log_format" name "tokeness_ml"` → commit 失败。**失败安全生效**（abort 保住 blue、公网 162 个探针样本 0 不健康），但残留文件会让**之后任何一次** nginx reload/重启失败——我当时引入的生产隐患，已立刻清到 `/root/nginx-bg-bak/`。修法：备份写到 include 路径之外（`$ECS_NGINX_BAK_DIR`）。
+2. **`cp -a` 对符号链接复制的是链接本身**：`sites-enabled/tokeness-ml.conf` 是软链，所谓"备份"只是同一文件的第二个链接，"还原"根本不成立。改为 `readlink -f` 解析真实文件后编辑，并对真实文件做常规备份；另加断言"sed 后旧端口必须消失"，让静默失效立刻失败——第一轮就是难以区分"sed 没生效"还是"备份文件作乱"。
+3. **非代码缺口**：ECS 安全组只放行 3000，**3001 从两台轻量不可达**（`curl -> 000`）。于是 ml-sync 的健康门正确地拒绝切换、deploy 正确地不收敛并 abort——防线都在，只是路没通。加 `TCP 3001/3001 ← 172.16.0.0/12`（与既有 3000 规则同源同优先级，描述 "new-api master blue-green green port"）后正常。
+
+**第二轮结果**：`3000→3001→3000` 双向切换各约 41s（green 就绪 ~4s、两台轻量收敛 ~20s、commit 静默 15s + 退 blue + 改名回规范名）；abort 演练（起 green → 从两台轻量探 200 → abort）全 PASS；公网 39 个探针样本 **0 不健康**（面板全程 200、`/v1` 全程 401），`postcheck` OK；终态单容器 `:3000`、`nginx -t` 通过、`sites-enabled` 只剩正式配置。ml-sync 日志里两次 `OK: web-primary switched to 10.1.0.43:3001/3000 (post-reload probe 200)` 是这条链路端到端可用的直接证据。修复提交 `773c1317a`。
 
 ### 非流式响应保活：破解中间层 600s「空档」超时（2026-09-30，`93b3af494`）
 
