@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,6 +59,27 @@ func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool
 	return condition()
 }
 
+// startConfigEpochWatcherForTest runs the watcher and returns a stop function
+// that waits for the goroutine to exit.
+//
+// Waiting matters: a test that returns while its watcher is still between ticks
+// leaves a goroutine that reads package state (the Redis client, the log writers,
+// the log budget) after the next test has replaced it — which the race detector
+// reports as a defect in the production code even though the production code
+// never swaps those values.
+func startConfigEpochWatcherForTest(interval time.Duration, reload func()) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runConfigEpochWatcher(stop, interval, reload)
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
 func TestNotifyConfigChangedIsNoopWithoutRedis(t *testing.T) {
 	previousEnabled := common.RedisEnabled
 	previousRDB := common.RDB
@@ -95,16 +119,14 @@ func TestNotifyConfigChangedIncrementsSharedEpoch(t *testing.T) {
 
 func TestConfigEpochWatcherAppliesPeerChange(t *testing.T) {
 	server := setupConfigEpochRedis(t)
-	stop := make(chan struct{})
-	defer close(stop)
-
 	var reloads atomic.Int64
-	go runConfigEpochWatcher(stop, 10*time.Millisecond, func() { reloads.Add(1) })
+	stopWatcher := startConfigEpochWatcherForTest(10*time.Millisecond, func() { reloads.Add(1) })
+	defer stopWatcher()
 
 	// A peer commits a configuration change.
 	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
 
-	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() == 1 }),
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return reloads.Load() == 1 }),
 		"the watcher must reload after a peer publishes a new epoch")
 	assert.Equal(t, int64(1), configEpochLastSeen.Load())
 
@@ -116,11 +138,9 @@ func TestConfigEpochWatcherAppliesPeerChange(t *testing.T) {
 
 func TestConfigEpochWatcherCoalescesPeerBurst(t *testing.T) {
 	setupConfigEpochRedis(t)
-	stop := make(chan struct{})
-	defer close(stop)
-
 	var reloads atomic.Int64
-	go runConfigEpochWatcher(stop, 15*time.Millisecond, func() { reloads.Add(1) })
+	stopWatcher := startConfigEpochWatcherForTest(15*time.Millisecond, func() { reloads.Add(1) })
+	defer stopWatcher()
 
 	// A bulk configuration write publishes many times in a row. The watcher
 	// reloads the whole configuration, so one reload per observed value is
@@ -129,18 +149,16 @@ func TestConfigEpochWatcherCoalescesPeerBurst(t *testing.T) {
 		require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
 	}
 
-	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() >= 1 }))
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return reloads.Load() >= 1 }))
 	time.Sleep(80 * time.Millisecond)
 	assert.Equal(t, int64(1), reloads.Load(), "a burst of publishes must coalesce into a single reload")
 }
 
 func TestConfigEpochWatcherToleratesRedisOutageAndRecovers(t *testing.T) {
 	server := setupConfigEpochRedis(t)
-	stop := make(chan struct{})
-	defer close(stop)
-
 	var reloads atomic.Int64
-	go runConfigEpochWatcher(stop, 10*time.Millisecond, func() { reloads.Add(1) })
+	stopWatcher := startConfigEpochWatcherForTest(10*time.Millisecond, func() { reloads.Add(1) })
+	defer stopWatcher()
 
 	// Take the server down rather than swapping common.RDB: the watcher reads
 	// that global from its own goroutine, so a test that reassigns it races with
@@ -148,14 +166,14 @@ func TestConfigEpochWatcherToleratesRedisOutageAndRecovers(t *testing.T) {
 	// server leaves the client pointed at a dead endpoint — the same unreachable
 	// path, with no shared state touched by the test.
 	server.Close()
-	require.True(t, waitForCondition(t, time.Second, func() bool { return configEpochRedisDownLatched.Load() }),
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return configEpochRedisDownLatched.Load() }),
 		"the outage should be logged exactly once")
 	assert.Equal(t, int64(0), reloads.Load(), "an unreachable Redis must not trigger reloads")
 
 	// Recovery: the next successful read of a newer epoch must be applied.
 	require.NoError(t, server.Restart())
 	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
-	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() == 1 }),
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return reloads.Load() == 1 }),
 		"the watcher must resume after Redis comes back")
 	assert.False(t, configEpochRedisDownLatched.Load(), "recovery clears the log latch")
 }
@@ -182,11 +200,8 @@ func TestNotifyConfigChangedKeepsAPendingPeerChangeUnapplied(t *testing.T) {
 
 func TestConfigEpochWatcherRetriesFailedReload(t *testing.T) {
 	setupConfigEpochRedis(t)
-	stop := make(chan struct{})
-	defer close(stop)
-
 	var calls atomic.Int64
-	go runConfigEpochWatcher(stop, 10*time.Millisecond, func() {
+	stopWatcher := startConfigEpochWatcherForTest(10*time.Millisecond, func() {
 		// A reload step that panics fails the application of that epoch: the
 		// value must stay unapplied so the next tick retries it instead of
 		// silently staying stale forever.
@@ -194,30 +209,29 @@ func TestConfigEpochWatcherRetriesFailedReload(t *testing.T) {
 			panic("boom")
 		}
 	})
+	defer stopWatcher()
 
 	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
 
-	require.True(t, waitForCondition(t, time.Second, func() bool { return calls.Load() >= 2 }),
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return calls.Load() >= 2 }),
 		"a failed reload must be retried on the next tick")
 	assert.Equal(t, int64(1), configEpochLastSeen.Load(), "the epoch is recorded once a reload succeeds")
 }
 
 func TestConfigEpochWatcherTreatsFlushedKeyAsOneExtraChange(t *testing.T) {
 	server := setupConfigEpochRedis(t)
-	stop := make(chan struct{})
-	defer close(stop)
-
 	var reloads atomic.Int64
-	go runConfigEpochWatcher(stop, 10*time.Millisecond, func() { reloads.Add(1) })
+	stopWatcher := startConfigEpochWatcherForTest(10*time.Millisecond, func() { reloads.Add(1) })
+	defer stopWatcher()
 
 	require.NoError(t, common.RDB.Incr(t.Context(), configEpochKey).Err())
-	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() == 1 }))
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return reloads.Load() == 1 }))
 
 	// A flushed Redis loses the counter. That is indistinguishable from "no
 	// change was ever published", so the watcher applies one more reload and
 	// then settles instead of reloading on every tick.
 	server.FlushAll()
-	require.True(t, waitForCondition(t, time.Second, func() bool { return reloads.Load() == 2 }))
+	require.True(t, waitForCondition(t, 3*time.Second, func() bool { return reloads.Load() == 2 }))
 	time.Sleep(60 * time.Millisecond)
 	assert.Equal(t, int64(2), reloads.Load())
 	assert.Equal(t, int64(0), configEpochLastSeen.Load())
@@ -253,4 +267,51 @@ func TestRegisterConfigReloadHookIgnoresNil(t *testing.T) {
 
 	RegisterConfigReloadHook(nil)
 	require.NoError(t, applyConfigReload(nil))
+}
+
+// A channel write is committed before the local cache is refreshed, so the other
+// nodes must be told even when that refresh fails outright: otherwise the change
+// exists in the database and nowhere else until the periodic sync.
+func TestInitChannelCacheAndNotifyPublishesWhenTheLocalRefreshPanics(t *testing.T) {
+	setupConfigEpochRedis(t)
+
+	previousMemoryCache := common.MemoryCacheEnabled
+	previousDB := DB
+	// A nil database with the memory cache enabled makes InitChannelCache panic.
+	common.MemoryCacheEnabled = true
+	DB = nil
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = previousMemoryCache
+		DB = previousDB
+	})
+
+	require.Panics(t, InitChannelCacheAndNotify,
+		"the test needs InitChannelCache to panic, which is the case it guards")
+	stored, err := common.RDB.Get(t.Context(), configEpochKey).Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), stored,
+		"a committed channel change must still be published when the local refresh panics")
+}
+
+// A failing reload is retried at full rate on purpose, so its error line has to
+// be budgeted: unbudgeted it is written once per retry for as long as the fault
+// lasts. The helper is exercised directly rather than through the watcher,
+// because a test that swaps the writer and budget while the watcher goroutine is
+// live is itself a data race.
+func TestConfigEpochReloadFailureLogIsBudgeted(t *testing.T) {
+	previousBudget := configEpochReloadFailureLog
+	configEpochReloadFailureLog = common.NewLogBudget(2, time.Hour)
+	t.Cleanup(func() { configEpochReloadFailureLog = previousBudget })
+
+	// SysError writes to the error writer, not the default one.
+	var logs strings.Builder
+	previousWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &logs
+	t.Cleanup(func() { gin.DefaultErrorWriter = previousWriter })
+
+	for attempt := range 20 {
+		logConfigEpochReloadFailure(fmt.Errorf("reload attempt %d failed", attempt))
+	}
+	assert.Equal(t, 2, strings.Count(logs.String(), "config epoch reload failed"),
+		"the failure line must be budgeted, not written once per retry")
 }

@@ -66,6 +66,11 @@ var (
 	// configEpochRedisDownLatched keeps a Redis outage to one log line instead
 	// of one per interval.
 	configEpochRedisDownLatched atomic.Bool
+
+	// configEpochReloadFailureLog bounds the reload-failure line for the same
+	// reason: a persistent reload failure is retried every tick, and unbudgeted
+	// it would write an error line every couple of seconds forever.
+	configEpochReloadFailureLog = common.NewLogBudget(3, time.Minute)
 )
 
 // RegisterConfigReloadHook adds a reload step that runs after the core
@@ -115,16 +120,26 @@ func NotifyConfigChanged() {
 // channel change and publishes it to the other nodes. Controllers call this in
 // place of InitChannelCache after a mutation; the periodic sync keeps calling
 // InitChannelCache so it never publishes a change it merely observed.
+//
+// The publish is deferred so it still happens when the local refresh panics
+// (InitChannelCache has a known panic path, which is why its startup caller
+// recovers and retries): the database row is committed either way, so the other
+// nodes must learn about it even if this process failed to apply it.
 func InitChannelCacheAndNotify() {
+	defer NotifyConfigChanged()
 	InitChannelCache()
-	NotifyConfigChanged()
 }
 
 // StartConfigEpochWatcher runs the reload watcher for the lifetime of the
-// process. Call it once, after the initial configuration load.
+// process. Call it once, after the initial configuration load. A non-positive
+// interval takes the default; anything faster than the floor is clamped to it so
+// a caller cannot turn the watcher into a hot loop against Redis.
 func StartConfigEpochWatcher(interval time.Duration) {
-	if interval < minConfigEpochWatchInterval {
+	if interval <= 0 {
 		interval = DefaultConfigEpochWatchInterval
+	}
+	if interval < minConfigEpochWatchInterval {
+		interval = minConfigEpochWatchInterval
 	}
 	go runConfigEpochWatcher(nil, interval, reloadConfigFromEpoch)
 }
@@ -163,17 +178,22 @@ func runConfigEpochWatcher(stop <-chan struct{}, interval time.Duration, reload 
 			continue
 		}
 		started := time.Now()
-		configEpochReloading.Lock()
-		if err := applyConfigReload(reload); err != nil {
-			configEpochReloading.Unlock()
-			common.SysError("config epoch reload failed: " + err.Error())
+		if err := applyConfigReloadExclusively(reload); err != nil {
+			logConfigEpochReloadFailure(err)
 			// Leave the applied value untouched so the next tick retries.
 			continue
 		}
 		configEpochLastSeen.Store(value)
-		configEpochReloading.Unlock()
 		common.SysLog(fmt.Sprintf("config epoch %d applied in %s", value, time.Since(started)))
 	}
+}
+
+// applyConfigReloadExclusively serialises reloads so a slow one cannot overlap
+// with the next tick.
+func applyConfigReloadExclusively(reload func()) error {
+	configEpochReloading.Lock()
+	defer configEpochReloading.Unlock()
+	return applyConfigReload(reload)
 }
 
 // applyConfigReload runs the core reload and then the registered hooks. Only a
@@ -212,10 +232,24 @@ func runConfigReloadStep(step func()) (err error) {
 // reloadConfigFromEpoch refreshes every in-memory configuration this package
 // owns. Kept identical to the SYNC_FREQUENCY reload path on purpose: the epoch
 // only changes *when* the reload happens, never what it does.
+//
+// Pricing is not invalidated here: InitChannelCache already does it on both of
+// its paths (memory-cache and database-only), and it does so after releasing
+// channelSyncLock — the ordering that avoids a deadlock with GetPricing.
 func reloadConfigFromEpoch() {
 	loadOptionsFromDatabase()
 	InitChannelCache()
-	InvalidatePricingCache()
+}
+
+// logConfigEpochReloadFailure reports a reload failure within a log budget. A
+// failing reload is deliberately retried at full rate (a transient database
+// error should recover on the next tick, and a failed attempt is cheap), so
+// unbudgeted this line would be written every couple of seconds for as long as
+// the fault lasts.
+func logConfigEpochReloadFailure(err error) {
+	if configEpochReloadFailureLog.Allow() {
+		common.SysError("config epoch reload failed: " + err.Error())
+	}
 }
 
 // logConfigEpochRedisIssue logs the first failure of an outage at error level
