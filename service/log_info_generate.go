@@ -115,6 +115,25 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.ReasoningEffort != "" {
 		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}
+	// Reasoning observability (2026-10-02 kimi-k3 investigation): the caller's
+	// disable-thinking intent, whether the response path ever carried reasoning
+	// content, and the upstream-reported reasoning token count. Without these
+	// three the "reasoning_tokens > 0 but no reasoning_content" reports could
+	// only be reproduced by hand.
+	if req, ok := relayInfo.Request.(*dto.GeneralOpenAIRequest); ok && len(req.THINKING) > 0 {
+		var thinking struct {
+			Type string `json:"type"`
+		}
+		if err := common.Unmarshal(req.THINKING, &thinking); err == nil && thinking.Type != "" {
+			other.SetPublic("thinking_type", thinking.Type)
+		}
+	}
+	if relayInfo.ReasoningContentSeen {
+		other.SetPublic("reasoning_content_seen", true)
+	}
+	if relayInfo.UpstreamReasoningTokens > 0 {
+		other.SetPublic("upstream_reasoning_tokens", relayInfo.UpstreamReasoningTokens)
+	}
 	if relayInfo.IsModelMapped {
 		other.SetPublic("is_model_mapped", true)
 		other.SetPublic("upstream_model_name", relayInfo.UpstreamModelName)

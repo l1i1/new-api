@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -16,15 +17,43 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/streammerge"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
 
+// sendStreamData writes one SSE event to the client. When the channel enables
+// stream coalescing (StreamCoalesceMs) consecutive same-kind text deltas are
+// merged first: Kimi-family upstreams emit ~2 characters per event with a
+// ~200-byte JSON envelope, so an uncoalesced stream costs roughly 100x the
+// payload in framing (measured 2026-10-02: 494 KB for 4.5 KB of text).
 func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	if data == "" {
 		return nil
+	}
+	if info != nil && info.StreamCoalescer.Enabled() {
+		for _, merged := range info.StreamCoalescer.Add(data) {
+			if err := writeStreamData(c, info, merged, forceFormat, thinkToContent); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return writeStreamData(c, info, data, forceFormat, thinkToContent)
+}
+
+// writeStreamData is the uncoalesced event writer.
+func writeStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
+	if data == "" {
+		return nil
+	}
+	// Observability: whether the response path ever carried reasoning content.
+	// Recorded before any transformation so the request log can distinguish
+	// "upstream produced no reasoning" from "the gateway stripped it".
+	if info != nil && !info.ReasoningContentSeen && strings.Contains(data, `"reasoning_content"`) {
+		info.ReasoningContentSeen = true
 	}
 
 	// Global mask: when a channel maps the request model to a different
@@ -157,6 +186,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
 	isK3OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info)
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
+	if ms := info.ChannelSetting.StreamCoalesceMs; ms > 0 {
+		info.StreamCoalescer = streammerge.New(streammerge.Config{MaxDelay: time.Duration(ms) * time.Millisecond})
+	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if streamErr != nil {
@@ -505,6 +537,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	if info.StreamCoalescer.Enabled() {
+		for _, merged := range info.StreamCoalescer.Close() {
+			_ = writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+		}
+	}
+	if usage != nil {
+		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
+		if shouldSuppressReasoningContent(info) && info.UpstreamReasoningTokens > 0 {
+			suppressReasoningUsage(usage)
+		}
+	}
+
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
@@ -652,6 +696,10 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	suppressReasoningContent := shouldSuppressReasoningContent(info)
 	if suppressReasoningContent {
 		stripReasoningContentFromTextResponse(&simpleResponse)
+		if simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens > 0 {
+			info.UpstreamReasoningTokens = simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens
+			suppressReasoningUsage(&simpleResponse.Usage)
+		}
 	}
 
 	usageModified := false

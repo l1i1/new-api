@@ -439,6 +439,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	}
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
+	applyKimiK3DisabledThinkingDialect(info, request)
 
 	return request, nil
 }
@@ -897,4 +898,71 @@ func recordReasoningDiagnostics(c *gin.Context, info *relaycommon.RelayInfo, dia
 		diagnostics[i].From = info.RelayFormat
 	}
 	info.RecordConversionDiagnostics(c, diagnostics)
+}
+
+// kimiK3AggregatorDisabledEffort is the effort value non-official Kimi K3
+// aggregators honour as "do not think". Live-probed 2026-10-02 against the
+// NeurVibe upstream: reasoning_effort:"minimal" collapses the reasoning token
+// count from ~1000-2000 to ~5, while thinking.type=disabled,
+// reasoning.enabled=false, enable_thinking=false, chat_template_kwargs and
+// thinking.budget_tokens=0 are all ignored (thinking keeps running and keeps
+// being billed).
+const kimiK3AggregatorDisabledEffort = "minimal"
+
+// kimiK3DisabledThinkingRequest reports whether the CALLER asked for thinking to
+// be disabled, using the same two control axes the official Moonshot endpoint
+// accepts (reasoning_effort "none" and thinking.type "disabled").
+func kimiK3DisabledThinkingRequest(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) bool {
+	if info != nil && strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
+		return true
+	}
+	if request == nil || len(request.THINKING) == 0 {
+		return false
+	}
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(request.THINKING, &thinking); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
+}
+
+// applyKimiK3DisabledThinkingDialect makes a caller's disable-thinking intent
+// real on aggregator channels.
+//
+// Why: the official Moonshot endpoint treats a disabled-thinking request as
+// "produce no reasoning at all" — no reasoning_content and no reasoning tokens
+// (live-probed 2026-10-02). Aggregators reselling K3 ignore that control axis:
+// they keep thinking and keep reporting reasoning tokens while the gateway,
+// honouring the official contract, strips the reasoning content, so the caller
+// is billed for tokens it never sees. Translating the intent into the dialect
+// the aggregator does honour removes the middle state instead of papering over
+// it. The official Moonshot channel is exempt: it implements the official
+// dialect itself.
+func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
+	if info == nil || request == nil {
+		return
+	}
+	if info.ApiType != constant.APITypeOpenAI {
+		return
+	}
+	if info.ChannelType == constant.ChannelTypeMoonshot {
+		return
+	}
+	model := request.Model
+	if upstream := info.GetUpstreamModelName(); upstream != "" {
+		model = upstream
+	}
+	if officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
+		return
+	}
+	if !kimiK3DisabledThinkingRequest(info, request) {
+		return
+	}
+	// Remember the caller's intent: the response path must still follow the
+	// official contract (strip reasoning content, report no reasoning tokens)
+	// even though the wire dialect below is the aggregator's.
+	info.ReasoningDisabledByClient = true
+	request.ReasoningEffort = kimiK3AggregatorDisabledEffort
 }

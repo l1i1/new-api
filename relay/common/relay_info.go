@@ -1,6 +1,7 @@
 package common
 
 import (
+	"github.com/QuantumNous/new-api/relaykit/streammerge"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,6 +137,19 @@ type RelayInfo struct {
 	IsFirstRequest     bool
 	AudioUsage         bool
 	ReasoningEffort    string
+	// StreamCoalescer merges consecutive SSE text deltas before they reach the
+	// client (see relaykit/streammerge). Nil disables coalescing.
+	StreamCoalescer *streammerge.Coalescer
+	// ReasoningContentSeen records whether any reasoning_content was observed on
+	// the response path; UpstreamReasoningTokens is the upstream-reported
+	// reasoning token count. Both feed the request log so "billed but invisible"
+	// reasoning can be measured instead of inferred.
+	ReasoningContentSeen    bool
+	UpstreamReasoningTokens int
+	// ReasoningDisabledByClient records the CALLER's disable-thinking intent
+	// (reasoning_effort none, or thinking.type disabled) independently of any
+	// dialect the request is later translated into for the upstream.
+	ReasoningDisabledByClient bool
 	// ReasoningConversion is the suffix-derived reasoning intent attached
 	// after model mapping. Converters read it via ReasoningState().
 	ReasoningConversion *dto.ReasoningConversionState

@@ -15,6 +15,12 @@ type ChannelSettings struct {
 	TaskPluginKey             string `json:"task_plugin_key,omitempty"`
 	ForceFormat               bool   `json:"force_format,omitempty"`
 	ThinkingToContent         bool   `json:"thinking_to_content,omitempty"`
+	// StreamCoalesceMs merges consecutive text deltas of a streaming response
+	// into one SSE event per window before they reach the client. Kimi-family
+	// upstreams emit ~2 characters per event with a ~200-byte JSON envelope, so
+	// an uncoalesced stream costs roughly 100x the payload in framing. Zero
+	// disables coalescing (default).
+	StreamCoalesceMs int `json:"stream_coalesce_ms,omitempty"`
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
