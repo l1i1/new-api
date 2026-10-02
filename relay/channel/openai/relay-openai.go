@@ -544,9 +544,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 	if usage != nil {
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
-		if shouldSuppressReasoningContent(info) && info.UpstreamReasoningTokens > 0 {
-			suppressReasoningUsage(usage)
-		}
 	}
 
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
@@ -696,10 +693,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	suppressReasoningContent := shouldSuppressReasoningContent(info)
 	if suppressReasoningContent {
 		stripReasoningContentFromTextResponse(&simpleResponse)
-		if simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens > 0 {
-			info.UpstreamReasoningTokens = simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens
-			suppressReasoningUsage(&simpleResponse.Usage)
-		}
+	}
+	if simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens > 0 {
+		info.UpstreamReasoningTokens = simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens
 	}
 
 	usageModified := false

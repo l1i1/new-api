@@ -146,10 +146,6 @@ type RelayInfo struct {
 	// reasoning can be measured instead of inferred.
 	ReasoningContentSeen    bool
 	UpstreamReasoningTokens int
-	// ReasoningDisabledByClient records the CALLER's disable-thinking intent
-	// (reasoning_effort none, or thinking.type disabled) independently of any
-	// dialect the request is later translated into for the upstream.
-	ReasoningDisabledByClient bool
 	// ReasoningConversion is the suffix-derived reasoning intent attached
 	// after model mapping. Converters read it via ReasoningState().
 	ReasoningConversion *dto.ReasoningConversionState

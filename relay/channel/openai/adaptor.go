@@ -960,9 +960,5 @@ func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dt
 	if !kimiK3DisabledThinkingRequest(info, request) {
 		return
 	}
-	// Remember the caller's intent: the response path must still follow the
-	// official contract (strip reasoning content, report no reasoning tokens)
-	// even though the wire dialect below is the aggregator's.
-	info.ReasoningDisabledByClient = true
 	request.ReasoningEffort = kimiK3AggregatorDisabledEffort
 }

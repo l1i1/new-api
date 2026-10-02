@@ -19,9 +19,15 @@ func kimiDialectInfo(channelType int, effort, thinking string) (*relaycommon.Rel
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: channelType, ApiType: constant.APITypeOpenAI}}
 	info.Request = req
 	info.ReasoningEffort = effort
+	info.OriginModelName = req.Model
 	return info, req
 }
 
+// The caller's disable-thinking intent must reach aggregator channels in a
+// dialect they honour, and the response must NOT be stripped: the gateway cannot
+// tell at delta time whether the upstream obeyed, and hiding content that may
+// already be billed is exactly what produced the 2026-10-02
+// "reasoning_tokens without reasoning_content" reports.
 func TestKimiK3DisabledThinkingTranslatedForAggregator(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -37,11 +43,8 @@ func TestKimiK3DisabledThinkingTranslatedForAggregator(t *testing.T) {
 		if req.ReasoningEffort != kimiK3AggregatorDisabledEffort {
 			t.Fatalf("%s: effort = %q, want %q", tc.name, req.ReasoningEffort, kimiK3AggregatorDisabledEffort)
 		}
-		if !info.ReasoningDisabledByClient {
-			t.Fatalf("%s: caller intent must be remembered for the response contract", tc.name)
-		}
-		if !shouldSuppressReasoningContent(info) {
-			t.Fatalf("%s: the caller asked for disabled thinking, content must still be suppressed", tc.name)
+		if shouldSuppressReasoningContent(info) {
+			t.Fatalf("%s: Kimi K3 responses must be delivered, not stripped", tc.name)
 		}
 	}
 }
@@ -68,30 +71,31 @@ func TestKimiK3DialectLeavesOtherRequestsAlone(t *testing.T) {
 		if req.ReasoningEffort != before {
 			t.Fatalf("%s: effort must not be rewritten (%q -> %q)", name, before, req.ReasoningEffort)
 		}
-		if info.ReasoningDisabledByClient {
-			t.Fatalf("%s: intent flag must stay false", name)
-		}
 	}
 
-	// A different family keeps its own handling (DeepSeek V4 has its own helper).
+	// A different family keeps its own handling: DeepSeek V4 has its own dialect
+	// helper and its own response contract.
 	info, req := kimiDialectInfo(1, "none", "")
 	req.Model = "deepseek-v4-flash"
+	info.OriginModelName = "deepseek-v4-flash"
 	info.UpstreamModelName = "deepseek-v4-flash"
 	applyKimiK3DisabledThinkingDialect(info, req)
-	if req.ReasoningEffort != "none" || info.ReasoningDisabledByClient {
-		t.Fatalf("non-Kimi model must not be rewritten: effort=%q flag=%v", req.ReasoningEffort, info.ReasoningDisabledByClient)
+	if req.ReasoningEffort != "none" {
+		t.Fatalf("non-Kimi model must not be rewritten: effort=%q", req.ReasoningEffort)
+	}
+	if !shouldSuppressReasoningContent(info) {
+		t.Fatal("DeepSeek V4 keeps its existing disabled-thinking response contract")
 	}
 }
 
-func TestSuppressReasoningUsageZeroesOnlyReasoning(t *testing.T) {
-	usage := &dto.Usage{CompletionTokens: 500, TotalTokens: 600}
-	usage.CompletionTokenDetails.ReasoningTokens = 480
-	suppressReasoningUsage(usage)
-	if usage.CompletionTokenDetails.ReasoningTokens != 0 {
-		t.Fatalf("reasoning tokens must be cleared, got %d", usage.CompletionTokenDetails.ReasoningTokens)
+// A plain max-effort Kimi K3 request is never rewritten and never suppressed.
+func TestKimiK3MaxEffortUntouched(t *testing.T) {
+	info, req := kimiDialectInfo(1, "max", "")
+	applyKimiK3DisabledThinkingDialect(info, req)
+	if req.ReasoningEffort != "max" {
+		t.Fatalf("effort = %q, want max", req.ReasoningEffort)
 	}
-	if usage.CompletionTokens != 500 || usage.TotalTokens != 600 {
-		t.Fatalf("visible token accounting must survive: %+v", usage)
+	if shouldSuppressReasoningContent(info) {
+		t.Fatal("max effort must deliver reasoning content")
 	}
-	suppressReasoningUsage(nil) // must not panic
 }

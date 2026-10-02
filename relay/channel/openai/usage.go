@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
@@ -42,11 +43,16 @@ func shouldSuppressReasoningContent(info *relaycommon.RelayInfo) bool {
 	if info == nil {
 		return false
 	}
-	// The caller's intent outranks the wire dialect: a translated request (for
-	// example a Kimi K3 disable-thinking request rewritten to an effort the
-	// aggregator honours) must still produce the official response contract.
-	if info.ReasoningDisabledByClient {
-		return true
+	// Kimi K3 is exempt from response-side stripping. The disable-thinking
+	// intent is already made real on the REQUEST side (see
+	// applyKimiK3DisabledThinkingDialect), and a streaming gateway cannot know
+	// whether the upstream honoured it by the time the deltas arrive: hiding
+	// reasoning that may already have been billed would leave the caller paying
+	// for tokens it cannot see, which is exactly the failure this work removed.
+	// When the upstream really stops thinking the official shape follows on its
+	// own (no reasoning_content, no reasoning tokens).
+	if kimiK3ReasoningExempt(info) {
+		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
 		return true
@@ -430,17 +436,15 @@ func extractLlamaCachedTokensFromBody(body []byte) (int, bool) {
 	return *payload.Timings.CachedTokens, true
 }
 
-// suppressReasoningUsage removes the upstream's reasoning accounting from a
-// client-visible usage after the gateway suppressed the reasoning content.
-//
-// Official behaviour for a disabled-thinking request is "no reasoning at all":
-// no reasoning_content and no reasoning_tokens (live-probed 2026-10-02 on
-// api.moonshot.cn). An aggregator that keeps thinking despite the intent would
-// otherwise hand the caller a usage block reporting reasoning tokens whose text
-// was stripped — billing the caller for something it cannot see.
-func suppressReasoningUsage(usage *dto.Usage) {
-	if usage == nil {
-		return
+// kimiK3ReasoningExempt reports whether the request targets the Kimi K3 family,
+// whose reasoning content is always delivered rather than stripped.
+func kimiK3ReasoningExempt(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
 	}
-	usage.CompletionTokenDetails.ReasoningTokens = 0
+	model := info.OriginModelName
+	if model == "" {
+		model = info.GetUpstreamModelName()
+	}
+	return officialfit.FamilyOf(model) == officialfit.FamilyKimiK3
 }
