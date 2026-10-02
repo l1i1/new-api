@@ -385,6 +385,12 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 		return false
 	}
 	if !common.MemoryCacheEnabled {
+		// No database handle means the answer cannot be verified (a test
+		// context, or a node that has not opened the DB); the conservative
+		// answer is "not official-behaving", never a panic.
+		if DB == nil {
+			return false
+		}
 		channel := &Channel{Id: channelID}
 		if err := DB.Select("id, type, settings").First(channel, "id = ?", channelID).Error; err != nil {
 			return false

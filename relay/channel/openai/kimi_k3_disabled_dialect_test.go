@@ -3,9 +3,14 @@ package openai
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func kimiDialectInfo(channelType int, effort, thinking string) (*relaycommon.RelayInfo, *dto.GeneralOpenAIRequest) {
@@ -97,5 +102,59 @@ func TestKimiK3MaxEffortUntouched(t *testing.T) {
 	}
 	if shouldSuppressReasoningContent(info) {
 		t.Fatal("max effort must deliver reasoning content")
+	}
+}
+
+// A channel that declared the model in its official_fit_models allowlist
+// promises the official control axes natively, so the disable intent must
+// reach it unchanged. Translating it into the aggregator dialect breaks such
+// channels: the whitelisted K3 reseller answers 400 "supported values are
+// 'low', 'high', 'max'" for reasoning_effort=minimal (live 2026-10-02) while
+// accepting the official axes the caller actually sent.
+func TestKimiK3DisabledThinkingKeptForOfficialBehaviorChannel(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	previousDB := model.DB
+	previousCache := common.MemoryCacheEnabled
+	model.DB = db
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.MemoryCacheEnabled = previousCache
+	})
+	if err := db.AutoMigrate(&model.Channel{}); err != nil {
+		t.Fatalf("migrate channels: %v", err)
+	}
+	if err := db.Create(&model.Channel{Id: 41, Type: 1, Name: "whitelisted", Models: "kimi-k3", OtherSettings: `{"official_fit_models":["kimi-k3"]}`}).Error; err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	if err := db.Create(&model.Channel{Id: 37, Type: 1, Name: "aggregator", Models: "kimi-k3"}).Error; err != nil {
+		t.Fatalf("seed aggregator: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		effort   string
+		thinking string
+		channel  int
+		want     string
+	}{
+		{"whitelisted channel keeps effort none", "none", "", 41, "none"},
+		{"whitelisted channel keeps thinking disabled", "", "disabled", 41, ""},
+		{"plain aggregator still translates", "none", "", 37, kimiK3AggregatorDisabledEffort},
+	} {
+		info, req := kimiDialectInfo(1, tc.effort, tc.thinking)
+		info.ChannelId = tc.channel
+		applyKimiK3DisabledThinkingDialect(info, req)
+		if tc.thinking == "" && req.ReasoningEffort != tc.want {
+			t.Fatalf("%s: effort = %q, want %q", tc.name, req.ReasoningEffort, tc.want)
+		}
+		if tc.thinking != "" && req.ReasoningEffort != "" {
+			// A thinking-object request carries no effort; the official axis
+			// stays on the thinking object, and no effort may be injected.
+			t.Fatalf("%s: effort = %q, want empty", tc.name, req.ReasoningEffort)
+		}
 	}
 }

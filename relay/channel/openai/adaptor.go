@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/ai360"
@@ -938,8 +939,15 @@ func kimiK3DisabledThinkingRequest(info *relaycommon.RelayInfo, request *dto.Gen
 // honouring the official contract, strips the reasoning content, so the caller
 // is billed for tokens it never sees. Translating the intent into the dialect
 // the aggregator does honour removes the middle state instead of papering over
-// it. The official Moonshot channel is exempt: it implements the official
-// dialect itself.
+// it.
+//
+// Both kinds of official-behaving channel are exempt because they promise the
+// official control axes natively: the Moonshot channel type, and any channel
+// that declared the model in its official_fit_models allowlist. Translating
+// their requests into the aggregator dialect breaks them — the whitelisted K3
+// reseller answers 400 "supported values are 'low', 'high', 'max'" for
+// reasoning_effort=minimal (live 2026-10-02) while accepting the official axes
+// the caller actually sent.
 func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
 	if info == nil || request == nil {
 		return
@@ -950,11 +958,14 @@ func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dt
 	if info.ChannelType == constant.ChannelTypeMoonshot {
 		return
 	}
-	model := request.Model
+	modelName := request.Model
 	if upstream := info.GetUpstreamModelName(); upstream != "" {
-		model = upstream
+		modelName = upstream
 	}
-	if officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
+	if officialfit.FamilyOf(modelName) != officialfit.FamilyKimiK3 {
+		return
+	}
+	if info.ChannelId != 0 && model.ChannelIsOfficialFitForModel(info.ChannelId, modelName) {
 		return
 	}
 	if !kimiK3DisabledThinkingRequest(info, request) {
