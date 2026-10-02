@@ -81,8 +81,8 @@ func TestDefaultPolicyDecidesLikeTheShippedPredicates(t *testing.T) {
 			view: RequestView{Model: "deepseek-v4-flash", Thinking: thinkingOff, Messages: userOnly},
 		},
 		{
-			name: "k3 forcing tool choice pins", model: "kimi-k3", want: true,
-			view: RequestView{Model: "kimi-k3", Thinking: thinkingOn, ToolChoice: []byte(`"required"`), Messages: userOnly},
+			name: "k3 ordinary thinking pins whole family", model: "kimi-k3", want: true,
+			view: RequestView{Model: "kimi-k3", Thinking: thinkingOn, ToolChoice: []byte(`"auto"`), Messages: userOnly},
 		},
 		{
 			name: "glm whole family pins", model: "glm-5.3", want: true,
@@ -153,9 +153,9 @@ func TestDivergenceFromBuiltinNamesWhatMoved(t *testing.T) {
 		if ruleRemoved.Families[i].ID != familyKimiK3 {
 			continue
 		}
-		ruleRemoved.Families[i].Rules = ruleRemoved.Families[i].Rules[:2]
+		ruleRemoved.Families[i].Rules = nil
 	}
-	if diff := DivergenceFromBuiltin(ruleRemoved); !strings.Contains(diff, "k3-response-format removed") {
+	if diff := DivergenceFromBuiltin(ruleRemoved); !strings.Contains(diff, "k3-whole-family removed") {
 		t.Fatalf("a removed rule must be named, got %q", diff)
 	}
 

@@ -67,7 +67,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOff, Messages: userOnly},
 		},
 		{
-			name: "k3 thinking enabled does not pin", family: "kimi-k3", want: false,
+			name: "k3 thinking enabled pins whole family", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: userOnly},
 		},
 		{
@@ -79,7 +79,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`"required"`), Messages: userOnly},
 		},
 		{
-			name: "k3 tool_choice auto does not pin", family: "kimi-k3", want: false,
+			name: "k3 tool_choice auto pins whole family", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`"auto"`), Messages: userOnly},
 		},
 		{
@@ -95,7 +95,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ResponseFormat: json.RawMessage(`{"type":"json_object"}`), Messages: userOnly},
 		},
 		{
-			name: "k3 response_format text does not pin", family: "kimi-k3", want: false,
+			name: "k3 response_format text pins whole family", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ResponseFormat: json.RawMessage(`{"type":"text"}`), Messages: userOnly},
 		},
 		{
@@ -115,15 +115,15 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: []dto.Message{{Role: "user"}, {Role: "system", Tools: json.RawMessage(`[{"type":"function"}]`)}}},
 		},
 		{
-			name: "k3 fully servable shape does not pin", family: "kimi-k3", want: false,
+			name: "k3 fully servable shape pins whole family", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ReasoningEffort: "high", ToolChoice: json.RawMessage(`"auto"`), ResponseFormat: json.RawMessage(`{"type":"text"}`), Messages: userOnly},
 		},
 		{
-			name: "k3 empty messages does not pin", family: "kimi-k3", want: false,
+			name: "k3 empty messages still pins family before validation", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn},
 		},
 		{
-			name: "k3 leading system then user does not pin", family: "kimi-k3", want: false,
+			name: "k3 leading system then user pins whole family", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: []dto.Message{{Role: "system"}, {Role: "user"}}},
 		},
 

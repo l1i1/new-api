@@ -20,9 +20,9 @@ package fitpolicy
 // Family-specific notes, all carried over from middleware/distributor.go:
 //   - DeepSeek V4 pins logprobs, image parts and thinking-output requests; the
 //     one class the pool serves faithfully is explicit thinking-off.
-//   - kimi-k3 pins thinking-OFF (the pool reports the thinking-on prompt count
-//     for it), a forcing tool_choice, a non-text response_format, a history
-//     that does not begin with a user turn, and dynamic tools.
+//   - kimi-k3 is pinned as a whole family: the deployed customer contract
+//     requires official Moonshot semantics for reasoning, streaming, and tool
+//     continuation, while reseller behavior remains nondeterministic.
 //   - glm-5.3 has no measured selective predicate yet, so the whole family
 //     pins.
 func BuiltinPolicy() Policy {
@@ -49,18 +49,10 @@ func BuiltinPolicy() Policy {
 			{
 				ID: familyKimiK3,
 				Rules: []Rule{
-					{ID: "k3-thinking-off", When: "ThinkingDisabled()", Require: []string{BehaviorThinkingCounting}},
-					{ID: "k3-tool-choice", When: "ToolChoiceForcesOfficial()", Require: []string{BehaviorToolsChoiceSemantics}},
-					{ID: "k3-response-format", When: "ResponseFormatNotText()", Require: []string{BehaviorResponseFormatJSON}},
-					{ID: "k3-history-not-user", When: "!HistoryBeginsWithUserTurn()", Require: []string{BehaviorHistoryAssistantFirst}},
-					{ID: "k3-dynamic-tools", When: "MessagesCarryDynamicTools()", Require: []string{BehaviorToolsDynamicNames}},
+					{ID: "k3-whole-family", When: "WholeFamily()", Require: []string{BehaviorFamilyWhole}},
 				},
 				Behaviors: map[string]Behavior{
-					BehaviorThinkingCounting:      {Class: ClassVerdict},
-					BehaviorToolsChoiceSemantics:  {Class: ClassVerdict},
-					BehaviorResponseFormatJSON:    {Class: ClassVerdict},
-					BehaviorHistoryAssistantFirst: {Class: ClassVerdict},
-					BehaviorToolsDynamicNames:     {Class: ClassVerdict},
+					BehaviorFamilyWhole: {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
 				EmptyMatchPolicy:  EmptyMatchLegacyHardPin,

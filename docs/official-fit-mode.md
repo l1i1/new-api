@@ -15,7 +15,7 @@
   "official_fit": {
     "profile": {
       "deepseek-v4":  { "validate": true, "errors": true, "shape": true, "route": true },
-      "kimi-k3":      { "validate": true, "errors": true }
+      "kimi-k3":      { "validate": true, "errors": true, "shape": true, "route": true }
     }
   }
 }
@@ -45,7 +45,7 @@
       `upstream did not return reasoning_content in thinking mode`），并触发跨全部候选渠道的
       重试风暴。该 gate 已删除：想要官方顺序保证的用户应开启 `route` 把请求收窄到官方行为
       渠道；未开启者接受聚合器的 content-only 应答。空输出仍判失败。
-  - `route`：**保真路由（选择性，2026-09-06 起；名称含义见下）**。Route 开启时按请求形状
+  - `route`：**保真路由（按模型族契约收窄；名称含义见下）**。Route 开启时按请求形状
     决定是否把候选**收窄到「官方行为渠道」**，复用 `ContextKeyV4OfficialPin`
     机制（distributor 选路前标记，选路时按模型族窄化到对应类型/白名单）。
     **「官方行为渠道」= 本族官方渠道类型 ∪ 渠道级 `official_fit_models` 白名单命中的渠道，
@@ -62,7 +62,7 @@
       （`thinking.type=disabled` 或无 thinking 对象时 `reasoning_effort=none`）：官方返回
       `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
       "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
-    - kimi-k3：**五类形状 pin**（2026-09-23 实测，官方端点 vs 首选上游逐例比对
+    - kimi-k3：**整族 pin 到官方行为渠道**（2026-10-02 收紧；旧五类形状选择性规则已废弃，普通思考、关闭思考、流式、非流式及 tool continuation 统一只允许官方行为候选，候选耗尽时硬失败，不降级到聚合池；此前规则无法覆盖 reseller reasoning_tokens/reasoning_content 不一致，官方端点 vs 首选上游逐例比对
       `prompt_tokens`）：① **思考关闭**（`thinking.type=disabled` 或
       `reasoning_effort=none`；池报思考开计数 **+67**，也是全部 vision 用例失败的原因）；
       ② **`tool_choice` 非 auto**（required **-36** / none **-112**；auto 与缺省一致）；

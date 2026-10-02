@@ -115,10 +115,10 @@ func TestFitPolicyLiveAttachesTheMarksTheShapeNeeds(t *testing.T) {
 		body string
 		want string
 	}{
-		{`{"model":"kimi-k3","tool_choice":"required"}`, fitpolicy.BehaviorToolsChoiceSemantics},
-		{`{"model":"kimi-k3","tool_choice":{"type":"function","function":{"name":"f"}}}`, fitpolicy.BehaviorToolsChoiceSemantics},
-		{`{"model":"kimi-k3","response_format":{"type":"json_object"}}`, fitpolicy.BehaviorResponseFormatJSON},
-		{`{"model":"kimi-k3","thinking":{"type":"disabled"}}`, fitpolicy.BehaviorThinkingCounting},
+		{`{"model":"kimi-k3","tool_choice":"required"}`, fitpolicy.BehaviorFamilyWhole},
+		{`{"model":"kimi-k3","tool_choice":{"type":"function","function":{"name":"f"}}}`, fitpolicy.BehaviorFamilyWhole},
+		{`{"model":"kimi-k3","response_format":{"type":"json_object"}}`, fitpolicy.BehaviorFamilyWhole},
+		{`{"model":"kimi-k3","thinking":{"type":"disabled"}}`, fitpolicy.BehaviorFamilyWhole},
 		{`{"model":"deepseek-v4-flash","logprobs":true}`, fitpolicy.BehaviorLogprobsDualPath},
 		{`{"model":"glm-5.3","temperature":1}`, fitpolicy.BehaviorFamilyWhole},
 	}
@@ -127,11 +127,10 @@ func TestFitPolicyLiveAttachesTheMarksTheShapeNeeds(t *testing.T) {
 		assert.Containsf(t, requirement.Marks, tc.want, "marks attached for %s", tc.body)
 	}
 
-	// The counterpart: a shape the document says nothing about must keep the
-	// normal routing it always had, or the migration would pin traffic the old
-	// predicates left alone.
-	assert.False(t, requirementAttachedFor(t, `{"model":"kimi-k3","temperature":0.7}`),
-		"an unopinionated shape must keep normal routing")
+	// K3 is intentionally whole-family pinned: ordinary thinking and tool
+	// continuation are part of the official contract, not an unopinionated shape.
+	assert.Contains(t, fitRequirementFor(t, `{"model":"kimi-k3","temperature":0.7}`).Marks,
+		fitpolicy.BehaviorFamilyWhole)
 }
 
 // TestFitPolicyAttachesRequirementOnlyOutsideShadow is the structural half of

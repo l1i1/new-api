@@ -65,8 +65,8 @@ func TestDecideGating(t *testing.T) {
 	if got := snapshot.Decide("kimi-k3", false, thinkingEnabled()); got.HasOpinion() {
 		t.Fatal("route-disabled request must produce no opinion")
 	}
-	if got := snapshot.Decide("kimi-k3", true, thinkingEnabled()); got.HasOpinion() {
-		t.Fatal("a shape no clause matches must produce no opinion")
+	if got := snapshot.Decide("kimi-k3", true, thinkingEnabled()); !got.HasOpinion() {
+		t.Fatal("K3 whole-family policy must produce an opinion for enabled thinking")
 	}
 	if got := snapshot.Decide("", true, thinkingEnabled()); got.HasOpinion() {
 		t.Fatal("an empty model must produce no opinion")
@@ -103,8 +103,8 @@ func TestDecideReportsPolicyIdentity(t *testing.T) {
 	if got.EmptyMatchPolicy != EmptyMatchLegacyHardPin {
 		t.Fatalf("empty match policy = %q", got.EmptyMatchPolicy)
 	}
-	if got.Behaviors[BehaviorThinkingCounting] != ClassVerdict {
-		t.Fatal("required behaviour must carry its declared class")
+	if got.Behaviors[BehaviorFamilyWhole] != ClassVerdict {
+		t.Fatal("whole-family behaviour must carry its declared class")
 	}
 	if !got.Shadow {
 		t.Fatal("requirement must record that the producing policy was shadow")

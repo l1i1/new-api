@@ -820,46 +820,13 @@ func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 	return !officialFitThinkingDisabled(req)
 }
 
-// kimiK3RequestNeedsOfficial reports whether a kimi-k3 request has a shape the
-// priority pool cannot serve with official fidelity.
-//
-// Every clause below is a measured divergence against the official endpoint
-// (2026-09-23, official `api.moonshot.cn` vs the top-priority reseller, bodies
-// byte-identical, prompt_tokens read from the terminal chunk). KVV's
-// prompt-token suite asserts Moonshot's own constants with a tolerance of
-// [expected, expected+3], so a shape whose count differs by more than that
-// cannot be served by the pool: the caller is billed tokens the official
-// endpoint never reports. The clause set was checked against the suite's
-// measured failure list and selects exactly those cases — no misses, no
-// over-selection.
-//
-// Divergences, with the delta observed for the reseller:
-//   - thinking off (thinking.type=disabled, or reasoning_effort=none without a
-//     thinking object re-enabling it): +67. The pool reports the thinking-on
-//     count for every thinking-off request, which is also why the suite's
-//     vision cases fail — they all send reasoning_effort=none.
-//   - tool_choice other than "auto": -36 (required), -112 (none), -38 (none
-//     without tools). "auto" and an absent field agree exactly.
-//   - response_format other than type=text: +6 (json_object) to +28
-//     (json_schema). type=text agrees.
-//   - a history that does not begin with a user turn: -12 (a leading assistant
-//     message), +12 (system messages only). A leading user turn agrees,
-//     whichever precedes it.
-//   - dynamic tools (a `tools` key on a message): -8 to -79. The clause covers
-//     every dynamic-tool shape, and the suite's behavioral dynamic-tool cases
-//     fail on the same pool for the same reason.
-//
-// Shapes whose classification is ambiguous pin: an unparseable tool_choice or
-// response_format is answered by the relay's local K3 validation with the
-// official 400 before any upstream call, so over-pinning costs nothing, while
-// under-pinning a shape that really does diverge would leak the pool's
-// behavior to a caller comparing against the official endpoint.
+// kimiK3RequestNeedsOfficial is retained as the legacy equivalence hook for
+// tests and operator diagnostics. K3 is now an explicit whole-family official
+// route: reseller behavior is not sufficiently stable for ordinary thinking,
+// streaming, or tool continuation requests, so no request shape is allowed to
+// fall back to the priority aggregator pool.
 func kimiK3RequestNeedsOfficial(req v4OfficialPinRequest) bool {
-	return kimiK3ToolChoiceNeedsOfficial(req.ToolChoice) ||
-		officialFitThinkingDisabled(req) ||
-		kimiK3ResponseFormatNeedsOfficial(req.ResponseFormat) ||
-		!historyBeginsWithUserTurn(req.Messages) ||
-		messagesCarryDynamicTools(req.Messages)
+	return officialfit.FamilyOf(req.Model) == officialfit.FamilyKimiK3
 }
 
 // kimiK3ToolChoiceNeedsOfficial reports whether the tool_choice value obliges
