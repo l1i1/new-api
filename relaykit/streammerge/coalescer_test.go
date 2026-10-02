@@ -112,16 +112,16 @@ func TestPassThroughFlushesFirstAndKeepsOriginalBytes(t *testing.T) {
 
 func TestNonMergeableShapesPassThrough(t *testing.T) {
 	cases := map[string]string{
-		"role only":        chunk("c", "m", `{"role":"assistant","content":""}`),
-		"multi key delta":  chunk("c", "m", `{"content":"x","reasoning_content":"y"}`),
-		"empty content":    chunk("c", "m", `{"content":""}`),
-		"null content":     chunk("c", "m", `{"content":null}`),
-		"usage":            `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"}}],"usage":{"completion_tokens":3}}`,
-		"finish":           `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]}`,
-		"two choices":      `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"}},{"index":1,"delta":{"content":"y"}}]}`,
-		"malformed":        `{"id":`,
-		"no choices":       `{"id":"c","model":"m","choices":[]}`,
-		"choice usage":     `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"},"usage":{"completion_tokens":1}}]}`,
+		"role only":       chunk("c", "m", `{"role":"assistant","content":""}`),
+		"multi key delta": chunk("c", "m", `{"content":"x","reasoning_content":"y"}`),
+		"empty content":   chunk("c", "m", `{"content":""}`),
+		"null content":    chunk("c", "m", `{"content":null}`),
+		"usage":           `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"}}],"usage":{"completion_tokens":3}}`,
+		"finish":          `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]}`,
+		"two choices":     `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"}},{"index":1,"delta":{"content":"y"}}]}`,
+		"malformed":       `{"id":`,
+		"no choices":      `{"id":"c","model":"m","choices":[]}`,
+		"choice usage":    `{"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"x"},"usage":{"completion_tokens":1}}]}`,
 	}
 	for name, in := range cases {
 		c := New(Config{MaxChars: 1000, MaxDelay: time.Hour})
