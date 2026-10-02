@@ -27,21 +27,47 @@ func deltaText(t *testing.T, event, kind string) string {
 	return parsed.Choices[0].Delta[kind]
 }
 
-func TestMergesConsecutiveContentDeltas(t *testing.T) {
+// The first event of a stream must not wait for the window: coalescing may not
+// add latency to the first visible token.
+func TestFirstEventLeavesImmediately(t *testing.T) {
+	c := New(Config{MaxChars: 10000, MaxDelay: time.Hour})
+	out := c.Add(chunk("c", "m", `{"content":"H"}`))
+	if len(out) != 1 {
+		t.Fatalf("the first delta must leave at once, got %v", out)
+	}
+	if got := deltaText(t, out[0], "content"); got != "H" {
+		t.Fatalf("first event text = %q", got)
+	}
+	if out := c.Add(chunk("c", "m", `{"content":"e"}`)); len(out) != 0 {
+		t.Fatalf("the second delta must batch, got %v", out)
+	}
+	out = c.Close()
+	if len(out) != 1 {
+		t.Fatalf("close must flush the batched tail, got %v", out)
+	}
+	if got := deltaText(t, out[0], "content"); got != "e" {
+		t.Fatalf("batched text = %q", got)
+	}
+}
+
+func TestBatchesAfterTheFirstEvent(t *testing.T) {
 	c := New(Config{MaxChars: 1000, MaxDelay: time.Hour})
-	var out []string
-	for _, s := range []string{"Hel", "lo", " wor", "ld"} {
+	out := c.Add(chunk("chatcmpl-1", "kimi-k3", `{"content":"Hel"}`))
+	if len(out) != 1 {
+		t.Fatalf("first event: %v", out)
+	}
+	for _, s := range []string{"lo", " wor", "ld"} {
 		out = append(out, c.Add(chunk("chatcmpl-1", "kimi-k3", `{"content":"`+s+`"}`))...)
 	}
-	if len(out) != 0 {
+	if len(out) != 1 {
 		t.Fatalf("nothing should flush before the threshold: %v", out)
 	}
 	out = append(out, c.Close()...)
-	if len(out) != 1 {
-		t.Fatalf("want exactly one merged event, got %d: %v", len(out), out)
+	if len(out) != 2 {
+		t.Fatalf("want the first event plus the merged tail, got %d: %v", len(out), out)
 	}
-	if got := deltaText(t, out[0], "content"); got != "Hello world" {
-		t.Fatalf("merged text = %q, want %q", got, "Hello world")
+	if got := deltaText(t, out[1], "content"); got != "lo world" {
+		t.Fatalf("merged text = %q, want %q", got, "lo world")
 	}
 	var env struct {
 		ID                string `json:"id"`
@@ -49,7 +75,7 @@ func TestMergesConsecutiveContentDeltas(t *testing.T) {
 		Created           int64  `json:"created"`
 		SystemFingerprint string `json:"system_fingerprint"`
 	}
-	if err := json.Unmarshal([]byte(out[0]), &env); err != nil {
+	if err := json.Unmarshal([]byte(out[1]), &env); err != nil {
 		t.Fatal(err)
 	}
 	if env.ID != "chatcmpl-1" || env.Model != "kimi-k3" || env.Created != 111 || env.SystemFingerprint != "fpv0_x" {
@@ -59,15 +85,17 @@ func TestMergesConsecutiveContentDeltas(t *testing.T) {
 
 func TestFlushesOnCharacterThreshold(t *testing.T) {
 	c := New(Config{MaxChars: 5, MaxDelay: time.Hour})
-	out := c.Add(chunk("c", "m", `{"content":"abc"}`))
-	if len(out) != 0 {
-		t.Fatalf("3 chars must not flush a 5-char threshold: %v", out)
+	if out := c.Add(chunk("c", "m", `{"content":"abc"}`)); len(out) != 1 {
+		t.Fatalf("first event must leave immediately: %v", out)
 	}
-	out = append(out, c.Add(chunk("c", "m", `{"content":"def"}`))...)
+	if out := c.Add(chunk("c", "m", `{"content":"de"}`)); len(out) != 0 {
+		t.Fatalf("2 chars must not flush a 5-char threshold: %v", out)
+	}
+	out := c.Add(chunk("c", "m", `{"content":"fgh"}`))
 	if len(out) != 1 {
-		t.Fatalf("6 chars must flush: %v", out)
+		t.Fatalf("5 chars must flush: %v", out)
 	}
-	if got := deltaText(t, out[0], "content"); got != "abcdef" {
+	if got := deltaText(t, out[0], "content"); got != "defgh" {
 		t.Fatalf("merged text = %q", got)
 	}
 	if rest := c.Close(); len(rest) != 0 {
@@ -77,13 +105,15 @@ func TestFlushesOnCharacterThreshold(t *testing.T) {
 
 func TestSeparatesReasoningFromContent(t *testing.T) {
 	c := New(Config{MaxChars: 1000, MaxDelay: time.Hour})
-	c.Add(chunk("c", "m", `{"reasoning_content":"think"}`))
-	out := c.Add(chunk("c", "m", `{"content":"answer"}`))
+	out := c.Add(chunk("c", "m", `{"reasoning_content":"think"}`))
 	if len(out) != 1 {
-		t.Fatalf("kind change must flush the reasoning buffer first: %v", out)
+		t.Fatalf("first reasoning event must leave at once: %v", out)
 	}
 	if got := deltaText(t, out[0], "reasoning_content"); got != "think" {
 		t.Fatalf("reasoning text = %q", got)
+	}
+	if out := c.Add(chunk("c", "m", `{"content":"answer"}`)); len(out) != 0 {
+		t.Fatalf("a kind change with nothing pending must buffer the new kind: %v", out)
 	}
 	out = c.Close()
 	if len(out) != 1 {
@@ -94,15 +124,18 @@ func TestSeparatesReasoningFromContent(t *testing.T) {
 	}
 }
 
-func TestPassThroughFlushesFirstAndKeepsOriginalBytes(t *testing.T) {
+// A terminal event must never overtake buffered text: the text is flushed first
+// and the terminal event keeps its original bytes.
+func TestTerminalEventFlushesPendingTextFirst(t *testing.T) {
 	c := New(Config{MaxChars: 1000, MaxDelay: time.Hour})
-	c.Add(chunk("c", "m", `{"content":"partial"}`))
+	c.Add(chunk("c", "m", `{"content":"first"}`))  // leaves immediately
+	c.Add(chunk("c", "m", `{"content":"second"}`)) // buffered
 	terminal := `{"id":"c","object":"chat.completion.chunk","created":111,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}]}`
 	out := c.Add(terminal)
 	if len(out) != 2 {
-		t.Fatalf("want the flush plus the untouched terminal event, got %d: %v", len(out), out)
+		t.Fatalf("want the flushed text plus the untouched terminal event, got %d: %v", len(out), out)
 	}
-	if got := deltaText(t, out[0], "content"); got != "partial" {
+	if got := deltaText(t, out[0], "content"); got != "second" {
 		t.Fatalf("pending text = %q", got)
 	}
 	if out[1] != terminal {
@@ -136,25 +169,24 @@ func TestNonMergeableShapesPassThrough(t *testing.T) {
 }
 
 func TestDelayFlush(t *testing.T) {
-	c := New(Config{MaxChars: 10000, MaxDelay: time.Millisecond})
-	out := c.Add(chunk("c", "m", `{"content":"a"}`))
-	if len(out) != 0 {
-		t.Fatalf("first character starts the window and must not flush immediately: %v", out)
+	c := New(Config{MaxChars: 10000, MaxDelay: 5 * time.Millisecond})
+	if out := c.Add(chunk("c", "m", `{"content":"a"}`)); len(out) != 1 {
+		t.Fatalf("first event leaves immediately: %v", out)
 	}
-	time.Sleep(5 * time.Millisecond)
-	out = c.Add(chunk("c", "m", `{"content":"b"}`))
+	c.Add(chunk("c", "m", `{"content":"b"}`))
+	time.Sleep(10 * time.Millisecond)
+	out := c.Add(chunk("c", "m", `{"content":"c"}`)) // window elapsed -> flush b+c
 	if len(out) != 1 {
 		t.Fatalf("the window must flush on the next event: %v", out)
 	}
-	if got := deltaText(t, out[0], "content"); got != "ab" {
+	if got := deltaText(t, out[0], "content"); got != "bc" {
 		t.Fatalf("merged text = %q", got)
 	}
 }
 
 func TestCloseStopsAcceptingInput(t *testing.T) {
 	c := New(Config{MaxChars: 10, MaxDelay: time.Hour})
-	out := c.Close()
-	if len(out) != 0 {
+	if out := c.Close(); len(out) != 0 {
 		t.Fatalf("empty close must emit nothing: %v", out)
 	}
 	if got := c.Add(chunk("c", "m", `{"content":"x"}`)); got != nil {

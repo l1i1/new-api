@@ -186,6 +186,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
 	isK3OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info)
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
+	// One coalescer per attempt: a retry must not inherit a previous attempt's
+	// buffered text.
+	info.StreamCoalescer = nil
 	if ms := info.ChannelSetting.StreamCoalesceMs; ms > 0 {
 		info.StreamCoalescer = streammerge.New(streammerge.Config{MaxDelay: time.Duration(ms) * time.Millisecond})
 	}
@@ -356,6 +359,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	})
 	if streamErr != nil {
 		return usage, streamErr
+	}
+	// Flush merged text before anything terminal (finish_reason / usage) is
+	// written: buffered deltas are always older than the held final chunk, and
+	// text must never trail the finish marker.
+	if info.StreamCoalescer.Enabled() {
+		for _, merged := range info.StreamCoalescer.Close() {
+			if err := writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				logger.LogError(c, "error writing coalesced stream event: "+err.Error())
+			}
+		}
 	}
 	for _, name := range streamFunctionCallNames {
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
@@ -537,11 +550,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
-	if info.StreamCoalescer.Enabled() {
-		for _, merged := range info.StreamCoalescer.Close() {
-			_ = writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
-		}
-	}
 	if usage != nil {
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
 	}
@@ -696,6 +704,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 	if simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens > 0 {
 		info.UpstreamReasoningTokens = simpleResponse.Usage.CompletionTokenDetails.ReasoningTokens
+	}
+	for i := range simpleResponse.Choices {
+		if simpleResponse.Choices[i].Message.GetReasoningContent() != "" {
+			info.ReasoningContentSeen = true
+			break
+		}
 	}
 
 	usageModified := false

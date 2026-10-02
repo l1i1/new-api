@@ -55,6 +55,8 @@ type Coalescer struct {
 	model             string
 	systemFingerprint *string
 	closed            bool
+	// emitted records whether any event already left this coalescer.
+	emitted bool
 }
 
 // New creates a coalescer with defaults applied.
@@ -97,6 +99,7 @@ func (c *Coalescer) Add(data string) []string {
 	text, kind, choice, ok := c.classify(data)
 	if !ok {
 		out := c.flush()
+		c.emitted = true
 		return append(out, data)
 	}
 	c.remember(data)
@@ -111,8 +114,12 @@ func (c *Coalescer) Add(data string) []string {
 		c.current = &pending{choice: choice, kind: kind, start: now}
 	}
 	c.current.text.WriteString(text)
-	if c.current.text.Len() >= c.cfg.MaxChars || now.Sub(c.current.start) >= c.cfg.MaxDelay {
+	// The first event of a stream leaves immediately: coalescing must never add
+	// latency to the first visible token. Later events batch until the character
+	// threshold or the time window is reached.
+	if !c.emitted || c.current.text.Len() >= c.cfg.MaxChars || now.Sub(c.current.start) >= c.cfg.MaxDelay {
 		out = append(out, c.flush()...)
+		c.emitted = true
 	}
 	return out
 }
