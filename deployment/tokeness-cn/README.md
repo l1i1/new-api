@@ -114,7 +114,7 @@ streams mid-answer.
 2. write `/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both**
    lightweight hosts;
 3. wait until both nginx copies serve the new instance only;
-4. hold `ML_DRAIN_SECONDS` (default 600, above the slowest stream measured);
+4. hold `ML_DRAIN_SECONDS` (default 1900, above the measured 1807s stream); the release emits a 30s heartbeat so CNB's no-output watchdog does not kill the stage;
 5. scale back to 1 - the pin must outlive this step, or ml-sync would re-add the
    still-InService old instance on its next 30s pass;
 6. clear the pin.
@@ -138,9 +138,9 @@ being retired by the very release that raises it. **Drain-first is what takes
 effect immediately; the grace period is the second layer, from the next release
 onward.**
 
-Tuning: `ML_DRAIN_SECONDS`, `ML_DRAIN_CONVERGE_ATTEMPTS` (default 12),
-`ML_DRAIN_CONVERGE_DELAY_SECONDS` (default 15), `ML_DRAIN_MARKER_TTL_SECONDS`
-(default 1800, must exceed convergence plus drain).
+Tuning: `ML_DRAIN_SECONDS` (default 1900), `ROLLOUT_HEARTBEAT_SECONDS` (default 30),
+`ML_DRAIN_CONVERGE_ATTEMPTS` (default 12), `ML_DRAIN_CONVERGE_DELAY_SECONDS` (default 15),
+`ML_DRAIN_MARKER_TTL_SECONDS` (default 3600, must exceed convergence plus drain).
 
 ## Cutover
 

@@ -759,7 +759,8 @@ mkdir -p "$drain_case/state"
 init_ess_state "$drain_case/state"
 if ! run_deploy "$drain_case" \
   TOKENESS_TEST_MLSYNC=1 \
-  ML_DRAIN_SECONDS=1 \
+  ML_DRAIN_SECONDS=2 \
+  ROLLOUT_HEARTBEAT_SECONDS=1 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
   fail "drain-first rollout did not converge"
@@ -780,6 +781,8 @@ remove_line="$(grep -n '^ssh 8.133.172.195 marker-remove$' "$drain_log" | head -
   || fail "the drain marker was cleared before the scale-down, so ml-sync could put the retiring instance back in rotation"
 grep -q 'drain-first: holding' "$drain_case/state/stdout.log" \
   || fail "the rollout did not hold the relay tier while in-flight streams finished"
+grep -q 'rollout drain still active' "$drain_case/state/stdout.log" \
+  || fail "the long drain did not emit a CNB watchdog heartbeat"
 jq -e '.instances | length == 1' "$drain_case/state/state.json" > /dev/null \
   || fail "drain-first rollout did not settle on a single instance"
 jq -e '.instances[0].InstanceId == "eci-new-1"' "$drain_case/state/state.json" > /dev/null \

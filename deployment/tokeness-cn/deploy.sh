@@ -56,6 +56,9 @@ readonly DIRECT_PROBE_INSECURE="${DIRECT_PROBE_INSECURE:-0}"
 readonly VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-45}"
 readonly ROLLOUT_VERIFY_ATTEMPTS="${ROLLOUT_VERIFY_ATTEMPTS:-6}"
 readonly ROLLOUT_VERIFY_DELAY_SECONDS="${ROLLOUT_VERIFY_DELAY_SECONDS:-10}"
+# CNB kills a running stage after ten minutes with no output. Long drain windows
+# therefore emit a bounded heartbeat while preserving the full drain duration.
+readonly ROLLOUT_HEARTBEAT_SECONDS="${ROLLOUT_HEARTBEAT_SECONDS:-30}"
 
 # Drain-first rollout. Before the group scales back, both lightweight hosts
 # are told to serve the NEW instance only, and the rollout then waits longer
@@ -116,6 +119,21 @@ log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; }
 warn() { log "WARN: $*"; }
 error() { log "ERROR: $*" >&2; }
 die() { error "$*"; exit 1; }
+
+sleep_with_heartbeat() {
+  local seconds="$1" interval chunk elapsed=0
+  [[ "$seconds" =~ ^[0-9]+$ ]] || die "sleep duration is not an integer: $seconds"
+  interval="$ROLLOUT_HEARTBEAT_SECONDS"
+  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || die "ROLLOUT_HEARTBEAT_SECONDS must be a positive integer"
+  while (( elapsed < seconds )); do
+    chunk=$(( seconds - elapsed < interval ? seconds - elapsed : interval ))
+    sleep "$chunk"
+    elapsed=$(( elapsed + chunk ))
+    if (( elapsed < seconds )); then
+      log "rollout drain still active (${elapsed}/${seconds}s)"
+    fi
+  done
+}
 
 # Refuse Windows Git Bash/MSYS: Windows-side aliyun CLI or jq can emit CRLF,
 # and a stray \r inside a re-sent scaling-config env value crash-loops the
@@ -1211,7 +1229,7 @@ ess_rollout() {
     return 1
   fi
   log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams (p95 181s, max 461s) finish on the retiring instance"
-  sleep "$ML_DRAIN_SECONDS"
+  sleep_with_heartbeat "$ML_DRAIN_SECONDS"
   # The pin must outlive the scale-down. Clearing it first would let ml-sync
   # re-add the still-InService old instance on its next 30s pass, sending new
   # requests back to an instance that is about to be deleted.

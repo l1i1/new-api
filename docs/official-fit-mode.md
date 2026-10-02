@@ -51,7 +51,7 @@
     **「官方行为渠道」= 本族官方渠道类型 ∪ 渠道级 `official_fit_models` 白名单命中的渠道，
     再由 priority 在候选内选路**——所以 pin 不等于「送往官方端点」：带标记的转售渠道
     通常承接该流量，官方端点可以长期零请求（国内站 k3 实测：标记渠道 ch19 承接、ch8
-    Moonshot 官方 24h 内 0 请求）。同理它不是「整族收窄」，各族范围由各自的形状谓词决定。
+    Moonshot 官方 24h 内 0 请求）。K3 的 Route 现为整族收窄；DeepSeek V4 仍按其形状谓词选择。
     **`route` 这个字段名是历史遗留**（早期语义确为「整族 pin 到官方渠道」），为免迁移已存
     用户配置而保留；界面标签用 **Fidelity routing / 保真路由**。
     - DeepSeek V4：仅三类请求 pin——① `logprobs=true`（聚合器无法复刻官方双路
@@ -62,15 +62,8 @@
       （`thinking.type=disabled` 或无 thinking 对象时 `reasoning_effort=none`）：官方返回
       `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
       "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
-    - kimi-k3：**整族 pin 到官方行为渠道**（2026-10-02 收紧；旧五类形状选择性规则已废弃，普通思考、关闭思考、流式、非流式及 tool continuation 统一只允许官方行为候选，候选耗尽时硬失败，不降级到聚合池；此前规则无法覆盖 reseller reasoning_tokens/reasoning_content 不一致，官方端点 vs 首选上游逐例比对
-      `prompt_tokens`）：① **思考关闭**（`thinking.type=disabled` 或
-      `reasoning_effort=none`；池报思考开计数 **+67**，也是全部 vision 用例失败的原因）；
-      ② **`tool_choice` 非 auto**（required **-36** / none **-112**；auto 与缺省一致）；
-      ③ **`response_format` 非 text**（json_object **+6**、json_schema **+6~+28**；text 一致）；
-      ④ **历史不以 user 开头**（首条 assistant **-12**、只有 system **+12**）；
-      ⑤ **消息里带 `tools` 的 dynamic tools**（**-8~-79**）。这套子句对 KVV 全部用例做过
-      **离线覆盖度校验：命中 30 / 漏报 0 / 过报 0**。不可解析的 tool_choice /
-      response_format 选择 pin（本地校验会按官方 400，过 pin 零成本）。
+    - kimi-k3：**整族 pin 到官方行为渠道**（2026-10-02 收紧）。
+      普通 `max`、关闭思考、流式、非流式及 tool continuation 全部只允许官方行为候选；候选耗尽时硬失败，不降级到聚合池。原先的五类形状选择性规则无法覆盖 reseller 的 `reasoning_tokens`/`reasoning_content` 不一致，因此不再作为 K3 的路由边界。
     - GLM 5.3：**保持整族 pin**（尚无实测出来的选择性谓词）。
     **route 仍是唯一 pin 触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
     （temperature>1.5 / top_p<0.3 / penalty>1.0 / thinking 字段 / logprobs=true 自动
@@ -132,7 +125,7 @@
 | `relay/helper/common.go` `isDeepSeekV4StreamModel`（stream_scanner Content-Type） | 加入 profile.Shape 判定 |
 | `relay/channel/openai/relay-openai.go` `requiresDeepSeekV4ReasoningLogprobs` | 加入 profile.Validate 判定 |
 | `controller/relay.go` 错误原文 + octet-stream | `IsDeepSeekV4ValidationMessage`（仅 DS）→ `IsStrictFitValidationMessage`（DS+K3），并加 `profile.Errors` 门控 |
-| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | 增加 profile.Route 时按**各族的形状谓词**标记 pin（选路前生效）；DS 三类、K3 五类，GLM 仍整族（见上文「route」条） |
+| `middleware/distributor.go` `markV4OfficialPinFromDistributor` | profile.Route 开启时按策略文档标记 pin（选路前生效）；DS 仍按形状，K3/GLM 整族（见上文「route」条） |
 | `model/channel_cache.go` `preferOfficialFitChannels` / `OfficialFitChannelType` | 候选窄化从"仅官方渠道类型"扩展为"官方类型 ∪ `channel.settings.official_fit_models` 白名单"（按模型，不整族）；新增 `ChannelIsOfficialFitForModel` 缓存索引查询 |
 | `model/ability.go` `preferOfficialFitAbilities` | 无内存缓存（DB）路径同步支持白名单（`SELECT id, type, settings`） |
 | `middleware/distributor.go` `officialPinAllowsAffinity` | 改为 (pinActive, officialType, preferredType, preferredIsOfficialBehavior)，pin 用白名单并集、未 pin 只排除官方渠道类型 |
