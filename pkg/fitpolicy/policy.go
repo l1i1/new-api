@@ -56,7 +56,8 @@ type FamilyPolicy struct {
 	// AdmissionSource selects how a channel qualifies as official-behaving for
 	// this family. "declared" (the default, and the only value before this
 	// field existed) answers from the channel's own declaration: the family's
-	// official channel type or its official_fit_models allowlist. "measured"
+	// official channel type alone (the official_fit_models allowlist that
+	// used to sit here is retired, 2026-10-03). "measured"
 	// replaces the allowlist with the admission battery below — a channel
 	// qualifies only by carrying fresh, passing marks for every battery
 	// behaviour, so admission stops being an operator's memory and becomes the
@@ -140,9 +141,9 @@ const (
 )
 
 const (
-	// AdmissionSourceDeclared answers official behaviour from the channel's own
-	// declaration: the family's official channel type or the
-	// official_fit_models allowlist. It is the default, the only behaviour
+	// AdmissionSourceDeclared answers official behaviour from the family's
+	// official channel type alone (the retired allowlist's successor). It is
+	// the default, the only behaviour
 	// before the field existed, and the rollback target for the other value.
 	AdmissionSourceDeclared = "declared"
 	// AdmissionSourceMeasured answers official behaviour from the admission

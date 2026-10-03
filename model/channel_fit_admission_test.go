@@ -32,14 +32,10 @@ func installAdmissionSelectionCache(t *testing.T) {
 	oldMemoryCacheEnabled := common.MemoryCacheEnabled
 	channelSyncLock.Lock()
 	oldChannelsIDM := channelsIDM
-	oldAllowlist := channel2officialFitModels
 	channelsIDM = map[int]*Channel{
 		8:  {Id: 8, Type: constant.ChannelTypeMoonshot, Priority: int64Ptr(10), Weight: uintPtr(1)},
 		41: {Id: 41, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
 		37: {Id: 37, Type: constant.ChannelTypeOpenAI, Priority: int64Ptr(10), Weight: uintPtr(1)},
-	}
-	channel2officialFitModels = map[int]map[string]struct{}{
-		41: {"kimi-k3": {}},
 	}
 	channelSyncLock.Unlock()
 	common.MemoryCacheEnabled = true
@@ -47,7 +43,6 @@ func installAdmissionSelectionCache(t *testing.T) {
 		common.MemoryCacheEnabled = oldMemoryCacheEnabled
 		channelSyncLock.Lock()
 		channelsIDM = oldChannelsIDM
-		channel2officialFitModels = oldAllowlist
 		channelSyncLock.Unlock()
 	})
 }
@@ -94,9 +89,9 @@ func matchAdmission(channelID int, model string, admission fitpolicy.Admission) 
 	return officialFitChannelMatchesAdmissionLocked(channelID, model, admission)
 }
 
-// TestOfficialFitAdmissionDeclaredMatchesLegacy pins the declared source to
-// exactly the predicate that predates admission: the allowlist plus the family
-// type, nothing about marks.
+// TestOfficialFitAdmissionDeclaredMatchesLegacy pins the declared source after
+// the allowlist retirement: only the family's official channel type qualifies,
+// marks and former allowlist entries change nothing.
 func TestOfficialFitAdmissionDeclaredMatchesLegacy(t *testing.T) {
 	installAdmissionSelectionCache(t)
 	setupFitCapabilityDB(t)
@@ -106,18 +101,19 @@ func TestOfficialFitAdmissionDeclaredMatchesLegacy(t *testing.T) {
 	rebuildAdmissionIndex(t)
 
 	declared := fitpolicy.Admission{Family: "kimi-k3", Source: fitpolicy.AdmissionSourceDeclared}
-	assert.True(t, matchAdmission(41, "kimi-k3", declared), "the whitelisted aggregator stays admitted by declaration")
 	assert.True(t, matchAdmission(8, "kimi-k3", declared), "the family's official type stays admitted")
-	assert.False(t, matchAdmission(37, "kimi-k3", declared), "an unlisted aggregator is not admitted by declaration")
+	assert.False(t, matchAdmission(41, "kimi-k3", declared),
+		"with the allowlist retired, a non-official-typed channel is never admitted under declared, marks or not")
+	assert.False(t, matchAdmission(37, "kimi-k3", declared))
 
 	// The legacy predicate resolves the same answer from the installed policy:
 	// no snapshot is installed, so the default is declared.
 	channelSyncLock.RLock()
+	legacy8 := officialFitChannelMatchesLocked(8, "kimi-k3")
 	legacy41 := officialFitChannelMatchesLocked(41, "kimi-k3")
-	legacy37 := officialFitChannelMatchesLocked(37, "kimi-k3")
 	channelSyncLock.RUnlock()
-	assert.True(t, legacy41)
-	assert.False(t, legacy37)
+	assert.True(t, legacy8)
+	assert.False(t, legacy41)
 }
 
 // TestOfficialFitAdmissionMeasuredFromMarks is the replacement's core
@@ -215,7 +211,8 @@ func TestNarrowChannelsUnderMeasuredAdmission(t *testing.T) {
 	declared, appliedDeclared := declaredFilter.narrowChannels(candidates, "kimi-k3")
 	channelSyncLock.RUnlock()
 	require.True(t, appliedDeclared)
-	assert.ElementsMatch(t, []int{8, 41}, declared, "declared keeps today's official set")
+	assert.ElementsMatch(t, []int{8}, declared,
+		"declared is the type-only set now that the allowlist is retired")
 
 	// A measured family whose battery admits no candidate empties the set so
 	// the caller fails honestly — the availability cliff is deliberate and the

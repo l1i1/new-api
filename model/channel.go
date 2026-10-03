@@ -15,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
@@ -1271,16 +1270,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelOtherSettings.ValidateToolLossPolicy(); err != nil {
 		return err
 	}
-	if err := channelOtherSettings.ValidateOfficialFitModels(); err != nil {
-		return err
-	}
+
 	if err := channelOtherSettings.ValidateVideoUsageMode(); err != nil {
 		return err
-	}
-	for _, m := range channelOtherSettings.NormalizeOfficialFitModels() {
-		if OfficialFitChannelType(m) == 0 {
-			return fmt.Errorf("official_fit_models: %q is not an official-fit model family", m)
-		}
 	}
 	if preset := common.GetAdvancedCustomPreset(channel.Type); preset != nil {
 		channelOtherSettings.AdvancedCustom = preset
@@ -1302,65 +1294,6 @@ func (channel *Channel) ValidateSettings() error {
 	}
 	return nil
 }
-
-// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
-// ValidateOfficialFitModelsMeasured rejects official_fit_models entries the
-// live policy ignores: a model whose family runs measured admission is
-// admitted by its battery, never by the allowlist, so writing an allowlist
-// entry for it configures something the selector will not read.
-//
-// The rejection is deliberately narrower than "the field is deprecated":
-// it fires only for entries that are NEW to this channel — an entry carried
-// over unchanged from previous (nil on insert, the stored channel on update)
-// keeps passing so that flipping a family to measured cannot turn an
-// unrelated edit of an existing channel into a save failure. The stale entry
-// stays inert until it is removed; the UI hides the input for measured
-// families, which is what makes removal the path of least resistance.
-//
-// Declared families, families absent from the document and an unwritten
-// policy all keep today's behaviour: the allowlist is their admission source,
-// and this check must not fire before the measured mode exists for real.
-func (channel *Channel) ValidateOfficialFitModelsMeasured(previous *Channel) error {
-	if channel == nil {
-		return nil
-	}
-	settings := &dto.ChannelOtherSettings{}
-	if channel.OtherSettings != "" {
-		if err := common.UnmarshalJsonStr(channel.OtherSettings, settings); err != nil {
-			// A malformed settings document fails the structural validation in
-			// ValidateSettings; this check is not where that is diagnosed.
-			return nil
-		}
-	}
-	models := settings.NormalizeOfficialFitModels()
-	if len(models) == 0 {
-		return nil
-	}
-	carried := make(map[string]struct{})
-	if previous != nil && previous.OtherSettings != "" {
-		previousSettings := &dto.ChannelOtherSettings{}
-		if err := common.UnmarshalJsonStr(previous.OtherSettings, previousSettings); err == nil {
-			for _, m := range previousSettings.NormalizeOfficialFitModels() {
-				carried[m] = struct{}{}
-			}
-		}
-	}
-	for _, m := range models {
-		if _, ok := carried[m]; ok {
-			continue
-		}
-		admission, known := fitpolicy.Current().AdmissionFor(m)
-		if !known || !admission.Measured() {
-			continue
-		}
-		return fmt.Errorf(
-			"official_fit_models: %q belongs to family %q, which admits channels by measurement (admission_source=measured); the allowlist entry is ignored — remove it, or return the family to declared admission",
-			m, admission.Family)
-	}
-	return nil
-}
-
-// tokeness-fitpolicy:end
 
 func (channel *Channel) GetSetting() dto.ChannelSettings {
 	setting := dto.ChannelSettings{}

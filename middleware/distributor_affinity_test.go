@@ -351,20 +351,21 @@ func TestOfficialPinAllowsAffinityDropsStaleOfficialBindingWhenUnpinned(t *testi
 	assert.True(t, officialPinAllowsAffinity(true, 0, constant.ChannelTypeOpenAI, false))
 }
 
-// The unpinned exclusion targets the official channel *type* only. A channel
-// that declares a model in official_fit_models but carries an aggregator type
-// is normal traffic for unpinned requests and must keep its affinity, or every
-// unpinned request to a verified reseller would have its prompt cache broken.
-func TestOfficialPinAllowsAffinityKeepsAllowlistAggregatorForUnpinned(t *testing.T) {
+// The unpinned exclusion targets the official channel *type* only. A battery-
+// admitted aggregator (measured admission) is a valid pin target for pinned
+// requests; for unpinned requests the exclusion is not applied at all, so an
+// aggregator's affinity survives regardless.
+func TestOfficialPinAllowsAffinityKeepsMeasuredAggregatorForUnpinned(t *testing.T) {
 	officialType := model.OfficialFitChannelType("deepseek-v4.1-flash")
 	require.NotZero(t, officialType)
 
-	// Aggregator type (not the official one) that declared official behavior.
+	// An aggregator admitted by measurement (the preferredIsOfficialBehavior
+	// argument) keeps affinity for unpinned requests.
 	assert.True(t, officialPinAllowsAffinity(false, officialType, constant.ChannelTypeOpenAI, true),
-		"an allowlist aggregator keeps affinity for unpinned requests")
+		"an official-behaving aggregator keeps affinity for unpinned requests")
 	// Pinned requests may use it too.
 	assert.True(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, true))
-	// But an aggregator that did NOT declare is still rejected when pinned.
+	// But an aggregator that is not official-behaving is still rejected when pinned.
 	assert.False(t, officialPinAllowsAffinity(true, officialType, constant.ChannelTypeOpenAI, false))
 }
 
@@ -387,33 +388,6 @@ func TestOfficialPinAllowsAffinityIsFamilyGeneric(t *testing.T) {
 	deepSeekType := model.OfficialFitChannelType("deepseek-v4-flash")
 	assert.False(t, officialPinAllowsAffinity(true, glmOfficialType, deepSeekType, false))
 	assert.True(t, officialPinAllowsAffinity(true, glmOfficialType, constant.ChannelTypeZhipu_v4, true))
-}
-
-// A channel that declares a model in official_fit_models is official-behaving
-// for that model even though its channel type is a plain aggregator (type 1).
-// This is what lets a reseller that maps deepseek-v4.1-flash onto the official
-// deepseek-flash serve pinned v4.1 traffic. Its unlisted models stay
-// non-official, so a mixed channel is never wholesale promoted.
-func TestOfficialFitChannelAllowlistIsPerModel(t *testing.T) {
-	mixed := &model.Channel{Type: constant.ChannelTypeOpenAI}
-	mixed.SetOtherSettings(dto.ChannelOtherSettings{
-		OfficialFitModels: []string{" DeepSeek-V4.1-Flash ", "deepseek-v4.1-flash"},
-	})
-
-	assert.True(t, mixed.IsOfficialFitChannelForModel("deepseek-v4.1-flash"))
-	assert.True(t, mixed.IsOfficialFitChannelForModel("DEEPSEEK-V4.1-FLASH"))
-	// A model the channel did not declare is not official on it, even though it
-	// belongs to the same family.
-	assert.False(t, mixed.IsOfficialFitChannelForModel("deepseek-v4-flash"))
-
-	// The official channel type qualifies without any allowlist entry.
-	official := &model.Channel{Type: constant.ChannelTypeDeepSeek}
-	assert.True(t, official.IsOfficialFitChannelForModel("deepseek-v4.1-flash"))
-
-	// The marker cannot promote a model outside an official-fit family.
-	outsider := &model.Channel{Type: constant.ChannelTypeOpenAI}
-	outsider.SetOtherSettings(dto.ChannelOtherSettings{OfficialFitModels: []string{"gpt-4o"}})
-	assert.False(t, outsider.IsOfficialFitChannelForModel("gpt-4o"))
 }
 
 // The exclusion is driven by the current request's pin, not by whether the

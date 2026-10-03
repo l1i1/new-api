@@ -497,7 +497,8 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 // preferOfficialFitAbilities narrows official-fit candidates to the channels
 // that are official-behaving for the model when the request is marked for the
 // official pin, mirroring the memory-cache path. A channel qualifies when it
-// declares the model in its official_fit_models allowlist or carries the
+// carries the family's official channel type (the official_fit_models
+// allowlist is retired) or passes the admission battery for a measured family:
 // family's official channel type. The pin is HARD: when no official candidate
 // remains (including the retry path, where the failed official channel is
 // excluded), the candidate set is emptied so the request fails honestly.

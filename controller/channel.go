@@ -647,23 +647,6 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
 	}
-	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
-	// Reject new official_fit_models entries a measured family ignores. The
-	// previous row is fetched here (fail-open: an unreadable previous skips the
-	// check rather than turning a transient DB fault into a save failure) so
-	// only entries this save actually adds are judged.
-	if !isAdd && channel.Id != 0 {
-		if previous, err := model.GetChannelById(channel.Id, false); err == nil {
-			if err := channel.ValidateOfficialFitModelsMeasured(previous); err != nil {
-				return err
-			}
-		} else {
-			common.SysLog(fmt.Sprintf("official_fit_models admission check skipped: channel %d could not be re-read: %v", channel.Id, err))
-		}
-	} else if err := channel.ValidateOfficialFitModelsMeasured(nil); err != nil {
-		return err
-	}
-	// tokeness-fitpolicy:end
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		pluginKey := strings.TrimSpace(channel.GetSetting().TaskPluginKey)
 		if pluginKey == "" {
@@ -2040,17 +2023,6 @@ func CopyChannel(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "Failed to copy channel: invalid channel settings"})
 		return
 	}
-	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
-	// A clone is a new channel: every allowlist entry it carries counts as
-	// newly written, so a measured family's dead entry cannot be duplicated
-	// into existence here.
-	if err := clone.ValidateOfficialFitModelsMeasured(nil); err != nil {
-		common.SysError("failed to validate cloned channel: " + err.Error())
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
-		return
-	}
-	// tokeness-fitpolicy:end
-
 	// insert
 	if err := clone.Insert(); err != nil {
 		common.SysError("failed to clone channel: " + err.Error())

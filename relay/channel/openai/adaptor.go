@@ -943,7 +943,8 @@ func kimiK3DisabledThinkingRequest(info *relaycommon.RelayInfo, request *dto.Gen
 //
 // Both kinds of official-behaving channel are exempt because they promise the
 // official control axes natively: the Moonshot channel type, and any channel
-// that declared the model in its official_fit_models allowlist. Translating
+// that is official-behaving (family type or, for a measured family, the
+// admission battery; the official_fit_models allowlist is retired). Translating
 // their requests into the aggregator dialect breaks them — the whitelisted K3
 // reseller answers 400 "supported values are 'low', 'high', 'max'" for
 // reasoning_effort=minimal (live 2026-10-02) while accepting the official axes

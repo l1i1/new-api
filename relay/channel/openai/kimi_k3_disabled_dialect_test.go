@@ -105,12 +105,15 @@ func TestKimiK3MaxEffortUntouched(t *testing.T) {
 	}
 }
 
-// A channel that declared the model in its official_fit_models allowlist
-// promises the official control axes natively, so the disable intent must
-// reach it unchanged. Translating it into the aggregator dialect breaks such
-// channels: the whitelisted K3 reseller answers 400 "supported values are
-// 'low', 'high', 'max'" for reasoning_effort=minimal (live 2026-10-02) while
-// accepting the official axes the caller actually sent.
+// An official-behaving channel promises the official control axes natively,
+// so the disable intent must reach it unchanged. Translating it into the
+// aggregator dialect breaks such channels: the K3 reseller that used to sit in
+// the official_fit_models allowlist answered 400 "supported values are 'low',
+// 'high', 'max'" for reasoning_effort=minimal (live 2026-10-02) while accepting
+// the official axes the caller actually sent. The allowlist is retired; the
+// official-behaving predicate now answers from the family's official channel
+// type (exercised here through the DB path) plus the admission battery for
+// measured families (covered by the model package's admission tests).
 func TestKimiK3DisabledThinkingKeptForOfficialBehaviorChannel(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -127,8 +130,8 @@ func TestKimiK3DisabledThinkingKeptForOfficialBehaviorChannel(t *testing.T) {
 	if err := db.AutoMigrate(&model.Channel{}); err != nil {
 		t.Fatalf("migrate channels: %v", err)
 	}
-	if err := db.Create(&model.Channel{Id: 41, Type: 1, Name: "whitelisted", Models: "kimi-k3", OtherSettings: `{"official_fit_models":["kimi-k3"]}`}).Error; err != nil {
-		t.Fatalf("seed channel: %v", err)
+	if err := db.Create(&model.Channel{Id: 8, Type: 25, Name: "moonshot-official", Models: "kimi-k3"}).Error; err != nil {
+		t.Fatalf("seed official channel: %v", err)
 	}
 	if err := db.Create(&model.Channel{Id: 37, Type: 1, Name: "aggregator", Models: "kimi-k3"}).Error; err != nil {
 		t.Fatalf("seed aggregator: %v", err)
@@ -141,8 +144,8 @@ func TestKimiK3DisabledThinkingKeptForOfficialBehaviorChannel(t *testing.T) {
 		channel  int
 		want     string
 	}{
-		{"whitelisted channel keeps effort none", "none", "", 41, "none"},
-		{"whitelisted channel keeps thinking disabled", "", "disabled", 41, ""},
+		{"official channel keeps effort none", "none", "", 8, "none"},
+		{"official channel keeps thinking disabled", "", "disabled", 8, ""},
 		{"plain aggregator still translates", "none", "", 37, kimiK3AggregatorDisabledEffort},
 	} {
 		info, req := kimiDialectInfo(1, tc.effort, tc.thinking)

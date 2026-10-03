@@ -25,12 +25,6 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
 
-// channel2officialFitModels caches each channel's normalized official-behavior
-// model allowlist (dto.ChannelOtherSettings.OfficialFitModels) so official-fit
-// routing avoids re-parsing channel settings JSON per candidate.
-// Refreshed with the channel cache.
-var channel2officialFitModels map[int]map[string]struct{}
-
 // channel2concurrencyLimits caches each channel's configured concurrency limit
 // (dto.ChannelSettings.ConcurrencyLimit, 0 = unlimited) so the relay hot path
 // never parses channel settings JSON per attempt. Refreshed with the channel
@@ -107,44 +101,6 @@ func setConcurrencyLimitIn(channel2 map[int]int, channel *Channel) {
 	}
 }
 
-// officialFitModelsForCache returns the channel's declared official-behavior
-// allowlist for the cache index. It deliberately avoids Channel.GetOtherSettings,
-// whose malformed-JSON self-heal writes "{}" back to the database: this runs for
-// every channel on every rebuild, so one corrupt row must not cause a write per
-// sync. Unparseable settings contribute no allowlist; save-time ValidateSettings
-// already rejects them.
-func officialFitModelsForCache(channel *Channel) []string {
-	if channel == nil || channel.OtherSettings == "" {
-		return nil
-	}
-	var settings dto.ChannelOtherSettings
-	if err := common.UnmarshalJsonStr(channel.OtherSettings, &settings); err != nil {
-		return nil
-	}
-	return settings.NormalizeOfficialFitModels()
-}
-
-// setOfficialFitModelsIn records channel's normalized official-fit allowlist
-// into the index, replacing any previous entry. It takes the target map
-// explicitly so the full cache rebuild can populate its private snapshot before
-// publishing it, while the incremental update mutates the live map under the
-// write lock.
-func setOfficialFitModelsIn(channel2 map[int]map[string]struct{}, channel *Channel) {
-	if channel == nil {
-		return
-	}
-	delete(channel2, channel.Id)
-	models := officialFitModelsForCache(channel)
-	if len(models) == 0 {
-		return
-	}
-	set := make(map[string]struct{}, len(models))
-	for _, m := range models {
-		set[m] = struct{}{}
-	}
-	channel2[channel.Id] = set
-}
-
 type channelSelectionCandidate struct {
 	channelID       int
 	effectiveWeight int
@@ -178,7 +134,6 @@ func InitChannelCache() {
 	}
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
-	newChannel2officialFitModels := make(map[int]map[string]struct{})
 	newChannel2concurrencyLimits := make(map[int]int)
 	newChannel2supportsVideo := make(map[int]struct{})
 	var channels []*Channel
@@ -198,7 +153,6 @@ func InitChannelCache() {
 				newChannel2advancedCustomConfig[channel.Id] = config
 			}
 		}
-		setOfficialFitModelsIn(newChannel2officialFitModels, channel)
 		setConcurrencyLimitIn(newChannel2concurrencyLimits, channel)
 		setSupportsVideoIn(newChannel2supportsVideo, channel)
 	}
@@ -280,7 +234,6 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
-	channel2officialFitModels = newChannel2officialFitModels
 	channel2concurrencyLimits = newChannel2concurrencyLimits
 	channel2supportsVideo = newChannel2supportsVideo
 	group2model2channelSelection = newGroup2model2channelSelection
@@ -328,33 +281,19 @@ func OfficialFitChannelType(model string) int {
 }
 
 // IsOfficialFitChannelForModel reports whether this channel may serve model as
-// an official-behaving upstream. A channel qualifies when it declares the model
-// in its official_fit_models allowlist (per-model verified official behavior),
-// or when it is the channel type that is official for the model's family
-// (deepseek-v4* -> DeepSeek, kimi-k3 -> Moonshot, glm-5.3 -> Zhipu).
-//
-// The allowlist is additive: it lets a reseller that maps e.g.
-// deepseek-v4.1-flash onto the official deepseek-flash serve pinned requests
-// without being switched to the official channel type, while its unmarked
-// models keep normal aggregator routing (a mixed channel is official for the
-// verified models only). Models outside an official-fit family never qualify,
-// so the marker cannot turn an unrelated model into an official one. This
-// reads the channel's own settings, so it works on DB-loaded channels too.
+// an official-behaving upstream. The official_fit_models allowlist that used to
+// sit here is retired (spec §19.3.5, removed 2026-10-03 by operator order):
+// a channel qualifies by carrying the family's official channel type, or — for
+// a family running measured admission — by passing the admission battery. This
+// struct form reads only the channel row's own type, so it is the type half
+// alone; the battery half needs the live policy and lives in the
+// admission-aware predicates. Models outside an official-fit family never
+// qualify.
 func (channel *Channel) IsOfficialFitChannelForModel(model string) bool {
 	if channel == nil {
 		return false
 	}
-	officialType := OfficialFitChannelType(model)
-	if officialType == 0 {
-		return false
-	}
-	target := strings.ToLower(strings.TrimSpace(model))
-	for _, declared := range officialFitModelsForCache(channel) {
-		if declared == target {
-			return true
-		}
-	}
-	return channel.Type == officialType
+	return channel.Type == OfficialFitChannelType(model) && OfficialFitChannelType(model) != 0
 }
 
 // officialFitChannelMatchesAdmissionLocked is the cache-backed form of the
@@ -365,8 +304,8 @@ func (channel *Channel) IsOfficialFitChannelForModel(model string) bool {
 // identity the baseline was measured against, not a claim the battery needs to
 // prove. What the source selects is how every other channel qualifies:
 //
-//   - declared: the channel's own declaration, exactly the predicate that
-//     predates admission (official_fit_models allowlist ∪ family type);
+//   - declared: the family's official channel type alone — the predicate the
+//     allowlist era left behind once the allowlist was retired;
 //   - measured: the admission battery — every battery behaviour must carry a
 //     fresh, passing mark bound to the admission's policy and baseline.
 //
@@ -388,11 +327,10 @@ func officialFitChannelMatchesAdmissionLocked(channelID int, model string, admis
 		}
 		return channelAdmissionBatterySatisfied(channelID, model, admission)
 	}
-	if set := channel2officialFitModels[channelID]; len(set) > 0 {
-		if _, declared := set[strings.ToLower(strings.TrimSpace(model))]; declared {
-			return true
-		}
-	}
+	// Declared admission is the channel type alone: the official_fit_models
+	// allowlist that used to widen it is retired (spec §19.3.5), so a family
+	// that has not armed a battery is served by its official-type channels
+	// only.
 	channel, ok := channelsIDM[channelID]
 	return ok && channel.Type == officialType
 }
@@ -438,18 +376,15 @@ func officialFitChannelMatchesLocked(channelID int, model string) bool {
 }
 
 // ChannelIsOfficialFitForModel reports whether the channel may serve model as
-// an official-behaving upstream. It reads the channel cache's allowlist index
-// and falls back to a targeted DB read when the memory cache is disabled, so
-// callers outside the selection lock (e.g. the affinity check) get the same
-// answer as candidate filtering without re-parsing channel settings JSON per
-// request. The DB fallback selects only the classifying columns — never the
-// channel key or credentials, which this check has no use for.
-//
-// The admission source of the installed policy is honoured on both paths: when
-// the family runs measured, an aggregator qualifies through the admission
-// battery instead of the allowlist. On the DB path the battery is read through
-// the capability index (built from the same database), so a node without the
-// memory cache answers from the same marks.
+// an official-behaving upstream: the family's official channel type, plus —
+// for a family running measured admission — the admission battery. It falls
+// back to a targeted DB read when the memory cache is disabled, so callers
+// outside the selection lock (e.g. the affinity check) get the same answer as
+// candidate filtering. The DB fallback selects only the classifying columns —
+// never the channel key or credentials, which this check has no use for. On
+// the DB path the battery is read through the capability index (built from the
+// same database), so a node without the memory cache answers from the same
+// marks.
 func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 	if OfficialFitChannelType(model) == 0 {
 		return false
@@ -473,7 +408,7 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 			return false
 		}
 		channel := &Channel{Id: channelID}
-		if err := DB.Select("id, type, settings").First(channel, "id = ?", channelID).Error; err != nil {
+		if err := DB.Select("id, type").First(channel, "id = ?", channelID).Error; err != nil {
 			return false
 		}
 		if channel.Type == OfficialFitChannelType(model) {
@@ -482,7 +417,7 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 		if admission.Measured() {
 			return channelAdmissionBatterySatisfied(channelID, model, admission)
 		}
-		return channel.IsOfficialFitChannelForModel(model)
+		return false
 	}
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
@@ -491,8 +426,8 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 
 // preferOfficialFitChannels narrows official-fit candidates to the channels
 // that are official-behaving for the model when the request is marked for the
-// official pin. The candidate is kept when it declares the model in its
-// official_fit_models allowlist or carries the family's official channel type.
+// official pin. The candidate is kept when it carries the family's official
+// channel type or, for a measured family, passes the admission battery.
 // The pin is HARD: when no official candidate remains (including retries where
 // the failed official channel is excluded), the set is emptied so the request
 // fails honestly instead of silently degrading to a fit-violating aggregator.
@@ -923,10 +858,6 @@ func CacheUpdateChannel(channel *Channel) {
 			channel2advancedCustomConfig[channel.Id] = config
 		}
 	}
-	if channel2officialFitModels == nil {
-		channel2officialFitModels = make(map[int]map[string]struct{})
-	}
-	setOfficialFitModelsIn(channel2officialFitModels, channel)
 	if channel2concurrencyLimits == nil {
 		channel2concurrencyLimits = make(map[int]int)
 	}

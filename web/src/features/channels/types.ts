@@ -119,9 +119,6 @@ export interface ChannelOtherSettings {
   // model's number, for an upstream that reads the media but ignores it when
   // counting. Requires supports_video; absent means trust the upstream.
   video_usage_mode?: 'estimate'
-  // Platform model ids this channel serves with verified official-equivalent
-  // behavior; official-fit routing may pin them here regardless of channel type.
-  official_fit_models?: string[]
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean
   upstream_model_update_ignored_models?: string[]

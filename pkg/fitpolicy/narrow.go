@@ -70,7 +70,8 @@ func (n Narrowing) Matched(channelID int) bool {
 // Narrow applies the two-phase narrowing.
 //
 // isOfficial reports whether a candidate is an official-behaviour channel
-// (official_fit_models allowlist or the family's official channel type).
+// (the family's official channel type; the official_fit_models allowlist is
+// retired, so a declared family is its official type alone).
 // satisfiesMarks reports whether a candidate satisfies every required
 // behaviour; nil means "no capability data exists", which keeps phase 1 empty
 // and the result equal to today's official pin.

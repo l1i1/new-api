@@ -284,10 +284,6 @@ export const channelFormSchema = z
     // line can both qualify.
     supports_video: z.boolean().optional(),
     video_usage_mode: z.enum(['', 'estimate']).optional(),
-    // Channel-level official-fit behavior allowlist (stored in settings JSON).
-    // Comma-separated platform model ids verified byte-level official on this
-    // channel; empty keeps the channel's default (official family type only).
-    official_fit_models: z.string().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -474,7 +470,6 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_task_polling_sleep: false,
   supports_video: false,
   video_usage_mode: '',
-  official_fit_models: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -568,7 +563,6 @@ export function transformChannelToFormDefaults(
   let disableTaskPollingSleep = false
   let supportsVideo = false
   let videoUsageMode: '' | 'estimate' = ''
-  let officialFitModels = ''
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -594,9 +588,6 @@ export function transformChannelToFormDefaults(
       // Anything other than the known mode reads as "trust the upstream": an
       // unrecognised value must not become a different billing rule in the UI.
       videoUsageMode = parsed.video_usage_mode === 'estimate' ? 'estimate' : ''
-      officialFitModels = Array.isArray(parsed.official_fit_models)
-        ? parsed.official_fit_models.join(',')
-        : ''
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -658,7 +649,6 @@ export function transformChannelToFormDefaults(
     disable_task_polling_sleep: disableTaskPollingSleep,
     supports_video: supportsVideo,
     video_usage_mode: videoUsageMode,
-    official_fit_models: officialFitModels,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -852,22 +842,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   } else {
     delete settingsObj.supports_video
     delete settingsObj.video_usage_mode
-  }
-
-  // Channel-level official-fit behavior allowlist: comma-separated model ids.
-  // An empty list drops the key so the channel keeps its default behavior.
-  const officialFitModels = [
-    ...new Set(
-      String(formData.official_fit_models || '')
-        .split(',')
-        .map((model) => model.trim())
-        .filter(Boolean)
-    ),
-  ]
-  if (officialFitModels.length > 0) {
-    settingsObj.official_fit_models = officialFitModels
-  } else {
-    delete settingsObj.official_fit_models
   }
 
   // Upstream model update settings (for model-fetchable channel types)

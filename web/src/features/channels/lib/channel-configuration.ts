@@ -86,7 +86,6 @@ const CONFIGURATION_BLOCKS = {
       'http2_connection_shards',
       'concurrency_limit',
       'ollama_cache_estimation_enabled',
-      'official_fit_models',
       'multi_key_test_enabled',
       'multi_key_test_interval_minutes',
       'multi_key_test_model',
@@ -184,7 +183,6 @@ export function getChannelConfigurationState(
       (values.http2_connection_shards ?? 1) > 1 ||
       (values.concurrency_limit ?? 0) > 0 ||
       (values.type === 4 && values.ollama_cache_estimation_enabled) ||
-      values.official_fit_models?.trim() ||
       values.multi_key_test_enabled ||
       Boolean(values.multi_key_test_model?.trim()) ||
       values.disable_task_polling_sleep
