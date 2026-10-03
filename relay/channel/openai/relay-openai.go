@@ -631,14 +631,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 	logger.LogDebug(c, "upstream response body: %s", common.LocalLogPreview(common.MaskSensitiveInfo(string(responseBody))))
-	// Channel-configured response rewrite, before the body is parsed: every
-	// downstream consumer (usage, validation, rendering) then sees the same
-	// shape the client will receive.
-	if rewritten, rewriteErr := relaycommon.ApplyResponseOverride(responseBody, info); rewriteErr != nil {
-		logger.LogDebug(c, "response override skipped for channel #%d: %v", info.ChannelId, rewriteErr)
-	} else if len(rewritten) > 0 {
-		responseBody = rewritten
-	}
 	// Unmarshal to simpleResponse
 	if info.ChannelType == constant.ChannelTypeOpenRouter && info.ChannelOtherSettings.IsOpenRouterEnterprise() {
 		// 尝试解析为 openrouter enterprise
@@ -862,6 +854,17 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 	}
 
+	// Channel-configured response rewrite, applied to the bytes the client
+	// actually receives: several branches above rebuild the body from the
+	// typed response, which would drop a field the document added or
+	// reintroduce one it removed. The upstream's own body has already been
+	// parsed for usage and contract checks, so accounting stays the
+	// upstream's while the client's copy is the configured shape.
+	if rewritten, rewriteErr := relaycommon.ApplyResponseOverride(responseBody, info); rewriteErr != nil {
+		logger.LogDebug(c, "response override skipped for channel #%d: %v", info.ChannelId, rewriteErr)
+	} else if len(rewritten) > 0 {
+		responseBody = rewritten
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil
