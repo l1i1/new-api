@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/gin-gonic/gin"
 )
@@ -104,6 +105,15 @@ type fitPolicyLiveView struct {
 	LastError string `json:"last_error"`
 }
 
+// fitPolicyAdmissionView is the prefix-level admission summary of the live
+// snapshot: every official-fit family's model prefixes, and the prefixes of
+// the families that admit channels by measurement. Both lists are empty
+// without an installed snapshot, which is the "everywhere declared" state.
+type fitPolicyAdmissionView struct {
+	OfficialModelPrefixes []string `json:"official_model_prefixes"`
+	MeasuredModelPrefixes []string `json:"measured_model_prefixes"`
+}
+
 // fitPolicyView is the whole administration view of the policy.
 type fitPolicyView struct {
 	OptionPresent bool   `json:"option_present"`
@@ -123,6 +133,10 @@ type fitPolicyView struct {
 	Divergence string             `json:"divergence"`
 	Warnings   []fitPolicyWarning `json:"warnings"`
 	Live       fitPolicyLiveView  `json:"live"`
+	// Admission is the prefix-level summary of which official-fit families run
+	// measured admission, so surfaces that manage channels can hide or filter
+	// the official_fit_models allowlist without duplicating the family table.
+	Admission fitPolicyAdmissionView `json:"admission"`
 	// DefaultDocument is the shipped default, indented, so the editor can offer
 	// "restore the shipped default" without guessing its bytes.
 	DefaultDocument string `json:"default_document"`
@@ -209,6 +223,7 @@ func buildFitPolicyView() fitPolicyView {
 		Document:        raw,
 		DefaultDocument: defaultDocument,
 		Live:            currentFitPolicyLiveView(),
+		Admission:       currentFitPolicyAdmissionView(),
 	}
 
 	effective := ""
@@ -343,6 +358,30 @@ func currentFitPolicyLiveView() fitPolicyLiveView {
 	view.Shadow = snapshot.Shadow()
 	view.Baseline = snapshot.Baseline()
 	view.Hash = snapshot.Hash()
+	return view
+}
+
+// currentFitPolicyAdmissionView summarizes, at model-prefix level, which
+// official-fit families run measured admission under the live snapshot.
+//
+// The prefixes are the same ones the Go family table classifies models by, so
+// a client can decide "this allowlist entry is ignored" and "every official
+// family is measured, hide the input" without carrying its own copy of the
+// family table. A family with no official model name cannot be classified
+// through the public API and is left out of both lists.
+func currentFitPolicyAdmissionView() fitPolicyAdmissionView {
+	var view fitPolicyAdmissionView
+	snapshot := fitpolicy.Current()
+	for _, family := range officialfit.Families {
+		if len(family.OfficialModelNames) == 0 {
+			continue
+		}
+		view.OfficialModelPrefixes = append(view.OfficialModelPrefixes, family.ModelPrefixes...)
+		admission, known := snapshot.AdmissionFor(family.OfficialModelNames[0])
+		if known && admission.Measured() {
+			view.MeasuredModelPrefixes = append(view.MeasuredModelPrefixes, family.ModelPrefixes...)
+		}
+	}
 	return view
 }
 

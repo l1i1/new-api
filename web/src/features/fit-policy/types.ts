@@ -65,6 +65,16 @@ export type FitPolicyView = {
   warnings: FitPolicyWarning[]
   live: FitPolicyLiveView
   default_document: string
+  /**
+   * Prefix-level admission summary of the live snapshot: every official-fit
+   * family's model prefixes and the prefixes of the families that admit
+   * channels by measurement. Both empty without an installed snapshot (the
+   * everywhere-declared state).
+   */
+  admission: {
+    official_model_prefixes: string[]
+    measured_model_prefixes: string[]
+  }
 }
 
 type FitPolicySummary = {

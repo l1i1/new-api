@@ -145,6 +145,7 @@
     "Enter an optional note for this action": "この操作のメモ（任意）",
     "Enter at least one key": "少なくとも 1 つのキーを入力してください",
     "Enter one exact model name per line. Wildcards are not supported.": "1 行に 1 つの完全一致するモデル名を入力してください。ワイルドカードはサポートされていません。",
+    "Entries for {{families}} are ignored: those families admit channels by measurement.": "{{families}} のエントリは無視されます：これらのファミリーは測定に基づいてチャネルを認定します。",
     "Error message privacy": "エラーメッセージのプライバシー",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "上流が cached_tokens を返さない場合、メッセージプレフィックス照合でキャッシュトークン数を推定",
     "Estimate from the video": "動画から推定",

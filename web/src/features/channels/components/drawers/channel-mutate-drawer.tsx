@@ -137,6 +137,15 @@ import {
   getTaskPluginOptions,
   refreshCodexCredential,
 } from '../../api'
+// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
+import { getFitPolicy } from '@/features/fit-policy/api'
+import {
+  EMPTY_OFFICIAL_FIT_ADMISSION,
+  allOfficialFamiliesMeasured,
+  filterIgnoredOfficialFitModels,
+  measuredFamilyPrefixes,
+} from '../../lib/official-fit-admission'
+// tokeness-fitpolicy:end
 import {
   ADD_MODE_OPTIONS,
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
@@ -544,6 +553,32 @@ export function ChannelMutateDrawer({
     enabled: open,
     staleTime: 5 * 60 * 1000,
   })
+
+  // tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
+  // Which official-fit families run measured admission: a measured family
+  // ignores the official_fit_models allowlist, so the field is hidden once
+  // every family runs measured, annotated while some do, and entries for
+  // measured families are dropped on save. A failed or forbidden read is the
+  // everywhere-declared state — the field simply stays as it is.
+  const { data: officialFitAdmission } = useQuery({
+    queryKey: ['fit-policy-admission'],
+    queryFn: () =>
+      getFitPolicy()
+        .then((view) => view.admission)
+        .catch(() => EMPTY_OFFICIAL_FIT_ADMISSION),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  })
+  const measuredPrefixes =
+    officialFitAdmission?.measured_model_prefixes ?? []
+  const hideOfficialFitModels =
+    officialFitAdmission !== undefined &&
+    allOfficialFamiliesMeasured(officialFitAdmission)
+  const noteMeasuredPrefixes =
+    officialFitAdmission !== undefined && !hideOfficialFitModels
+      ? measuredFamilyPrefixes(officialFitAdmission)
+      : []
+  // tokeness-fitpolicy:end
 
   // Fetch channel details if editing
   const {
@@ -1753,6 +1788,20 @@ export function ChannelMutateDrawer({
         }
       }
 
+      // tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
+      // Drop allowlist entries a measured family ignores before the payload is
+      // built: the server would reject a NEW entry of this kind, and carrying
+      // a stale one forward is exactly the dead config this filter retires.
+      // The form value itself is left alone so the operator still sees what
+      // was stored; the note under the input names the families involved.
+      if (measuredPrefixes.length > 0 && data.official_fit_models) {
+        data.official_fit_models = filterIgnoredOfficialFitModels(
+          data.official_fit_models,
+          measuredPrefixes
+        )
+      }
+      // tokeness-fitpolicy:end
+
       try {
         await channelMutation.mutateAsync(data)
       } catch {
@@ -1769,6 +1818,7 @@ export function ChannelMutateDrawer({
       confirmMissingModelMappings,
       confirmStatusCodeRisk,
       channelMutation,
+      measuredPrefixes,
       t,
     ]
   )
@@ -2105,7 +2155,11 @@ export function ChannelMutateDrawer({
     </div>
   )
 
-  const officialFitModelsField = (
+  // tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md §19.3）
+  // Hidden once every official-fit family runs measured admission (the
+  // allowlist has no reader left); annotated with the measured families while
+  // at least one family is still declared.
+  const officialFitModelsField = !hideOfficialFitModels && (
     <FormField
       control={form.control}
       name='official_fit_models'
@@ -2122,12 +2176,19 @@ export function ChannelMutateDrawer({
             {t(
               'Comma-separated model ids this channel serves with verified official-equivalent behavior. Official-fit routing may pin those models here even when the channel is not the official type.'
             )}
+            {noteMeasuredPrefixes.length > 0 &&
+              ' ' +
+                t(
+                  'Entries for {{families}} are ignored: those families admit channels by measurement.',
+                  { families: noteMeasuredPrefixes.join(', ') }
+                )}
           </FormDescription>
           <FormMessage />
         </FormItem>
       )}
     />
   )
+  // tokeness-fitpolicy:end
 
   const multiKeyScheduledTestFields = (isMultiKeyChannel ||
     isConvertingToMultiKey) && (

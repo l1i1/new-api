@@ -145,6 +145,7 @@
     "Enter an optional note for this action": "Введите необязательное примечание",
     "Enter at least one key": "Введите хотя бы один ключ",
     "Enter one exact model name per line. Wildcards are not supported.": "Введите одно точное имя модели в строке. Подстановочные знаки не поддерживаются.",
+    "Entries for {{families}} are ignored: those families admit channels by measurement.": "Записи для {{families}} игнорируются: эти семейства допускают каналы по результатам измерений.",
     "Error message privacy": "Конфиденциальность сообщений об ошибках",
     "Estimate cached prompt tokens via message-prefix matching when upstream omits cached_tokens": "Оценивать кэшированные токены промпта сопоставлением префикса сообщения, если апстрим не вернул cached_tokens",
     "Estimate from the video": "Оценивать по видео",

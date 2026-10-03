@@ -570,3 +570,50 @@ func TestGetChannelFitCapabilitiesRefusesAMalformedChannelFilter(t *testing.T) {
 	data, _ = payload["data"].(map[string]any)
 	assert.Equal(t, float64(1), data["total"], "a valid channel_id keeps narrowing")
 }
+
+// TestFitPolicyViewReportsAdmissionPrefixes covers the prefix-level admission
+// summary the channel surfaces consume: with a measured family installed its
+// model prefixes are reported as measured, the other families stay in the
+// official list only, and with no snapshot at all both lists are empty — the
+// "everywhere declared" state in which the allowlist is still the admission
+// source everywhere.
+func TestFitPolicyViewReportsAdmissionPrefixes(t *testing.T) {
+	policy := fitpolicy.Policy{
+		Version: 1, Enabled: true,
+		Families: []fitpolicy.FamilyPolicy{{
+			ID: "kimi-k3",
+			Rules: []fitpolicy.Rule{{
+				ID: "k3-whole-family", When: "WholeFamily()", Require: []string{fitpolicy.BehaviorFamilyWhole},
+			}},
+			Behaviors: map[string]fitpolicy.Behavior{
+				fitpolicy.BehaviorFamilyWhole:      {Class: fitpolicy.ClassVerdict},
+				fitpolicy.BehaviorThinkingCounting: {Class: fitpolicy.ClassVerdict},
+			},
+			AdmissionSource:  fitpolicy.AdmissionSourceMeasured,
+			AdmissionBattery: []string{fitpolicy.BehaviorThinkingCounting},
+		}},
+	}
+	document, err := common.Marshal(policy)
+	require.NoError(t, err)
+	installFitPolicySnapshot(t, string(document))
+
+	view := getFitPolicyView(t)
+	admission, ok := view["admission"].(map[string]any)
+	require.True(t, ok)
+	assert.ElementsMatch(t, []any{"kimi-k3"}, admission["measured_model_prefixes"])
+	official, ok := admission["official_model_prefixes"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, official, "kimi-k3")
+	assert.Contains(t, official, "deepseek-v4")
+	assert.Contains(t, official, "glm-5.3")
+
+	// Without a snapshot every family is declared: nothing is measured.
+	previous := fitpolicy.Current()
+	fitpolicy.Install(nil)
+	t.Cleanup(func() { fitpolicy.Install(previous) })
+	view = getFitPolicyView(t)
+	admission, ok = view["admission"].(map[string]any)
+	require.True(t, ok)
+	assert.Empty(t, admission["measured_model_prefixes"])
+	assert.NotEmpty(t, admission["official_model_prefixes"])
+}
