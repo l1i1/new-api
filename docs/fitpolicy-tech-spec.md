@@ -602,7 +602,7 @@ func narrow(candidates, fit) []Channel:
 2. **写文档**：kimi-k3 声明 battery（declared source）。文档 hash 变化 → **此时才重跑套件**，marks 绑定新 hash——先武装再换 hash 等于白跑一遍。提交 `POST /api/fit-capability/report`（报告必须带新 policy_version/policy_hash，`ValidateSuiteReport` 强制校验）。
 3. **等价窗口 ≥48h**：消费 `fitpolicy admission shadow` 日志，确认 measured 集与 declared 集的差分符合预期（哪些渠道合格、哪些因 stale/缺行为出局）。
 4. **翻转**：kimi-k3 的 `admission_source` 改 `measured`（文档编辑，epoch 生效）。回滚 = 改回 declared。
-5. **deprecate `official_fit_models`**（翻转确认后的独立代码变更）：校验拒绝新写入、管理 UI 隐藏、文档标注弃用；**读路径保留一个版本**（measured 族已不读它），再下一个版本删除读取与 `setOfficialFitModelsIn` 索引。删除前必须确认所有族都在 measured（或该族无 pinned 流量）。
+5. **deprecate `official_fit_models`**（翻转确认后的独立代码变更，2026-10-03 后端半已落地为 `Channel.ValidateOfficialFitModelsMeasured`）：**条件式拒绝**——仅拒绝"为 measured 族新写入的条目"（错误信息点名家族与两条出路）；**存量携带条目放行**（翻转后对既有渠道的无关节编辑不能变成保存失败；陈旧条目 inert，等 UI 隐藏逼出清理）。declared 族、文档未覆盖的族、无快照时一律不触发——准入来源还没切换的地方，白名单仍是事实。克隆渠道按"新渠道=全部新条目"论处（复制不能让死配置扩散）。管理 UI 隐藏（对 measured 族隐藏输入并停止提交该字段）与文档标注弃用随同发布；**读路径保留一个版本**（measured 族已不读它），再下一个版本删除读取与 `setOfficialFitModelsIn` 索引。全局写拒绝与读路径删除前必须确认所有族都在 measured（或该族无 pinned 流量）。
 
 ### 19.4 接受的残余风险（写给签字的人）
 
