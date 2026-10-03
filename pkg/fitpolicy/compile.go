@@ -45,6 +45,8 @@ type compiledFamily struct {
 	behaviors         map[string]string // behaviour name -> class
 	unknownMarkPolicy string
 	emptyMatchPolicy  string
+	admissionSource   string
+	admissionBattery  []string
 }
 
 // Snapshot is an immutable compiled policy. A request reads one snapshot for
@@ -128,6 +130,8 @@ func compileFamily(family FamilyPolicy) (*compiledFamily, error) {
 		behaviors:         make(map[string]string, len(family.Behaviors)),
 		unknownMarkPolicy: family.UnknownMarkPolicyOrDefault(),
 		emptyMatchPolicy:  family.EmptyMatchPolicyOrDefault(),
+		admissionSource:   family.AdmissionSourceOrDefault(),
+		admissionBattery:  family.AdmissionBatteryOrDefault(),
 	}
 	for name, behavior := range family.Behaviors {
 		compiled.behaviors[name] = behavior.Class

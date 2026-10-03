@@ -20,9 +20,29 @@ import (
 const (
 	fitNarrowingLogBurst    = 40
 	fitNarrowingLogInterval = 30 * time.Second
+
+	// fitAdmissionShadowLogBurst/Interval bound the shadow-admission lines: in
+	// declared mode with a battery declared, every narrowing can say what the
+	// measured set would have been, which is the equivalence window's data.
+	// The burst keeps a full traffic day readable in the log without one line
+	// per request.
+	fitAdmissionShadowLogBurst    = 20
+	fitAdmissionShadowLogInterval = time.Minute
+
+	// fitAdmissionEmptyLogBurst/Interval bound the measured-empty alert: a
+	// family running measured whose battery admits no candidate is the
+	// availability cliff this layer must never be silent about. One line
+	// immediately, then one per interval, so a state that is still broken an
+	// hour later has not gone quiet.
+	fitAdmissionEmptyLogBurst    = 2
+	fitAdmissionEmptyLogInterval = 5 * time.Minute
 )
 
-var fitNarrowingLog = common.NewLogBudget(fitNarrowingLogBurst, fitNarrowingLogInterval)
+var (
+	fitNarrowingLog       = common.NewLogBudget(fitNarrowingLogBurst, fitNarrowingLogInterval)
+	fitAdmissionShadowLog = common.NewLogBudget(fitAdmissionShadowLogBurst, fitAdmissionShadowLogInterval)
+	fitAdmissionEmptyLog  = common.NewLogBudget(fitAdmissionEmptyLogBurst, fitAdmissionEmptyLogInterval)
+)
 
 // Fit-policy narrowing for the channel selector.
 //
@@ -105,21 +125,78 @@ func (f *FitChannelFilter) hasOpinion() bool {
 // had an opinion. Caller must hold channelSyncLock (read lock).
 //
 // The official predicate is the same cache lookup the legacy pin uses, so phase
-// 2 reproduces the legacy result exactly rather than approximating it.
+// 2 reproduces the legacy result exactly rather than approximating it — under
+// the declared admission source. Under the measured source the predicate is the
+// admission battery instead of the allowlist (see
+// officialFitChannelMatchesAdmissionLocked); the narrowing structure is
+// unchanged, which is what lets the equivalence window compare the two answers
+// on real traffic.
 func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, bool) {
 	if f == nil {
 		return channels, false
 	}
-	result := f.Requirement.Narrow(
-		channels,
-		func(channelID int) bool { return officialFitChannelMatchesLocked(channelID, model) },
-		f.MarkSatisfied,
-	)
+	admission := f.Requirement.Admission
+	isOfficial := func(channelID int) bool {
+		return officialFitChannelMatchesAdmissionLocked(channelID, model, admission)
+	}
+	result := f.Requirement.Narrow(channels, isOfficial, f.MarkSatisfied)
+	reportFitAdmissionShadow(model, channels, admission, isOfficial)
 	reportFitNarrowing(model, channels, result)
+	if result.Applied && admission.Measured() && len(result.Channels) == 0 {
+		alertMeasuredAdmissionEmpty(model, channels, admission)
+	}
 	if !result.Applied {
 		return channels, false
 	}
 	return result.Channels, true
+}
+
+// reportFitAdmissionShadow logs what the measured admission would have kept, in
+// declared mode, for a family that declares a battery. This is the equivalence
+// window's instrument: flipping the family to measured is a document edit, and
+// these lines are the evidence of what that edit would do to real traffic
+// before it does it.
+//
+// The line carries identifiers and counts only. It is budgeted, and the sets
+// are only computed when a line will actually be written.
+func reportFitAdmissionShadow(model string, channels []int, admission fitpolicy.Admission, isOfficial func(int) bool) {
+	if admission.Measured() || len(admission.Battery) == 0 {
+		return
+	}
+	if !fitAdmissionShadowLog.Allow() {
+		return
+	}
+	declared := make([]int, 0, len(channels))
+	for _, channelID := range channels {
+		if isOfficial(channelID) {
+			declared = append(declared, channelID)
+		}
+	}
+	measuredAdmission := admission.WithSourceMeasured()
+	measured := make([]int, 0, len(channels))
+	for _, channelID := range channels {
+		if officialFitChannelMatchesAdmissionLocked(channelID, model, measuredAdmission) {
+			measured = append(measured, channelID)
+		}
+	}
+	common.SysLog(fmt.Sprintf(
+		"fitpolicy admission shadow: model=%q candidates=%v declared=%v measured=%v battery=%v",
+		model, channels, declared, measured, admission.Battery))
+}
+
+// alertMeasuredAdmissionEmpty reports the one state a measured family must
+// never reach silently: the battery admitted no candidate at all. Every
+// consequence is a hard failure (the narrowing keeps the empty set so the
+// request fails honestly instead of degrading to an unverified aggregator), so
+// the line names the rollback — the admission source is a document edit.
+func alertMeasuredAdmissionEmpty(model string, channels []int, admission fitpolicy.Admission) {
+	if !fitAdmissionEmptyLog.Allow() {
+		return
+	}
+	common.SysError(fmt.Sprintf(
+		"fitpolicy: measured admission kept no candidate for model=%q (candidates=%v, battery=%v, policy_hash=%s); "+
+			"pinned requests fail honestly until marks refresh or the family's admission_source returns to declared",
+		model, channels, admission.Battery, admission.PolicyHash))
 }
 
 // reportFitNarrowing records how one narrowing decision came out. An empty result

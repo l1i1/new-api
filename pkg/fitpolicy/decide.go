@@ -38,6 +38,13 @@ type Requirement struct {
 	// single legal value and the narrowing implements exactly that behaviour.
 	EmptyMatchPolicy  string
 	UnknownMarkPolicy string
+	// Admission is the family's admission rule bound to this decision: which
+	// channels the narrowing may consider official-behaving, and against which
+	// policy/baseline the battery is evaluated. It travels with the request for
+	// the same reason the mark bindings do — a retry stays under the admission
+	// rules it started with. The zero value means declared, the behaviour that
+	// predates the field.
+	Admission Admission
 	// Shadow records that the producing policy was observe-only. The consumer
 	// must not narrow candidates when this is true.
 	Shadow bool
@@ -88,7 +95,14 @@ func (s *Snapshot) Decide(model string, routeEnabled bool, view RequestView) Req
 		BaselineHash:      s.baseline,
 		EmptyMatchPolicy:  family.emptyMatchPolicy,
 		UnknownMarkPolicy: family.unknownMarkPolicy,
-		Shadow:            s.shadow,
+		Admission: Admission{
+			Family:       familyID,
+			Source:       family.admissionSource,
+			Battery:      append([]string(nil), family.admissionBattery...),
+			PolicyHash:   s.hash,
+			BaselineHash: s.baseline,
+		},
+		Shadow: s.shadow,
 	}
 }
 

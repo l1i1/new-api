@@ -53,6 +53,34 @@ type FamilyPolicy struct {
 	// at all is not ruled out, so the narrowing's PermittedByMarks must not be
 	// read as "verified" for that policy.
 	UnknownMarkPolicy string `json:"unknown_mark_policy"`
+	// AdmissionSource selects how a channel qualifies as official-behaving for
+	// this family. "declared" (the default, and the only value before this
+	// field existed) answers from the channel's own declaration: the family's
+	// official channel type or its official_fit_models allowlist. "measured"
+	// replaces the allowlist with the admission battery below — a channel
+	// qualifies only by carrying fresh, passing marks for every battery
+	// behaviour, so admission stops being an operator's memory and becomes the
+	// suite's output. The family's official channel type remains admitted by
+	// identity under both values: it is the baseline the measurements are taken
+	// against, not a thing the battery needs to prove.
+	//
+	// The switch is per family on purpose: kimi-k3 can move to measured while
+	// deepseek-v4 stays declared, and the rollback is a document edit away
+	// (epoch reload, seconds) rather than a release.
+	AdmissionSource string `json:"admission_source,omitempty"`
+	// AdmissionBattery is the set of behaviours that constitute official
+	// equivalence for this family. It is only read when AdmissionSource is
+	// "measured"; when the source is "declared" it is carried so the selection
+	// path can log the admission shadow — what the measured set would have been
+	// — which is the data the equivalence window runs on.
+	//
+	// Every entry must be declared in Behaviors: the battery draws from the same
+	// vocabulary the rules do, so a typo cannot quietly shrink the battery. The
+	// battery is always evaluated conservatively (an unknown or stale mark means
+	// "not admitted"), regardless of UnknownMarkPolicy: admission is a promise,
+	// and the permissive reading exists to keep phase-1 narrowing from ruling
+	// out channels nobody has measured — never to admit an unmeasured channel.
+	AdmissionBattery []string `json:"admission_battery,omitempty"`
 	// EmptyMatchPolicy decides what happens when requirement narrowing leaves no
 	// candidate.
 	//
@@ -110,6 +138,23 @@ const (
 	// falls back to the ordinary priority pool.
 	EmptyMatchLegacyHardPin = "legacy_hard_pin_then_existing_error"
 )
+
+const (
+	// AdmissionSourceDeclared answers official behaviour from the channel's own
+	// declaration: the family's official channel type or the
+	// official_fit_models allowlist. It is the default, the only behaviour
+	// before the field existed, and the rollback target for the other value.
+	AdmissionSourceDeclared = "declared"
+	// AdmissionSourceMeasured answers official behaviour from the admission
+	// battery: fresh passing marks for every battery behaviour, plus the
+	// family's official channel type by identity.
+	AdmissionSourceMeasured = "measured"
+)
+
+// MaxAdmissionBatteryBehaviors bounds a family's battery. It matches
+// MaxRulesPerFamily: a battery is a list of behaviour identifiers the way a
+// rule list is, and both are hand-authored and reviewed.
+const MaxAdmissionBatteryBehaviors = 64
 
 // MaxPolicyFamilies bounds a policy so a malformed write cannot make the
 // per-request evaluation unbounded.
@@ -218,6 +263,9 @@ func (f FamilyPolicy) validate() error {
 		}
 		behaviors[behaviorName] = struct{}{}
 	}
+	if err := f.validateAdmission(id, behaviors); err != nil {
+		return err
+	}
 	seenRule := make(map[string]struct{}, len(f.Rules))
 	for _, rule := range f.Rules {
 		ruleID := strings.TrimSpace(rule.ID)
@@ -244,6 +292,38 @@ func (f FamilyPolicy) validate() error {
 	return nil
 }
 
+// validateAdmission checks the admission pair. The battery is validated under
+// both sources — a declared family with a battery is the shadow-admission
+// window's configuration, and its entries must obey the same rules then.
+func (f FamilyPolicy) validateAdmission(id string, behaviors map[string]struct{}) error {
+	if source := strings.TrimSpace(f.AdmissionSource); source != "" {
+		if source != AdmissionSourceDeclared && source != AdmissionSourceMeasured {
+			return fmt.Errorf("%w: family %q admission_source %q is not supported", ErrPolicyInvalid, id, source)
+		}
+	}
+	if len(f.AdmissionBattery) > MaxAdmissionBatteryBehaviors {
+		return fmt.Errorf("%w: family %q has more than %d admission battery behaviours", ErrPolicyInvalid, id, MaxAdmissionBatteryBehaviors)
+	}
+	seen := make(map[string]struct{}, len(f.AdmissionBattery))
+	for _, entry := range f.AdmissionBattery {
+		name := strings.TrimSpace(entry)
+		if name == "" {
+			return fmt.Errorf("%w: family %q has an empty admission battery behaviour", ErrPolicyInvalid, id)
+		}
+		if _, declared := behaviors[name]; !declared {
+			return fmt.Errorf("%w: family %q admission battery lists undeclared behaviour %q", ErrPolicyInvalid, id, entry)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("%w: family %q admission battery repeats behaviour %q", ErrPolicyInvalid, id, entry)
+		}
+		seen[name] = struct{}{}
+	}
+	if f.AdmissionSourceOrDefault() == AdmissionSourceMeasured && len(f.AdmissionBattery) == 0 {
+		return fmt.Errorf("%w: family %q sets admission_source to measured without an admission battery", ErrPolicyInvalid, id)
+	}
+	return nil
+}
+
 // UnknownMarkPolicyOrDefault returns the family's policy or the v1 default.
 func (f FamilyPolicy) UnknownMarkPolicyOrDefault() string {
 	if value := strings.TrimSpace(f.UnknownMarkPolicy); value != "" {
@@ -258,4 +338,34 @@ func (f FamilyPolicy) EmptyMatchPolicyOrDefault() string {
 		return value
 	}
 	return EmptyMatchLegacyHardPin
+}
+
+// AdmissionSourceOrDefault returns the family's admission source or the
+// default, which is the behaviour that predates the field: admission from the
+// channel's own declaration.
+func (f FamilyPolicy) AdmissionSourceOrDefault() string {
+	if value := strings.TrimSpace(f.AdmissionSource); value != "" {
+		return value
+	}
+	return AdmissionSourceDeclared
+}
+
+// AdmissionBatteryOrDefault returns the family's battery, normalized: trimmed,
+// in declaration order, and nil when absent. Normalizing here rather than at
+// each consumer keeps the compiled snapshot and the divergence report reading
+// the same list.
+func (f FamilyPolicy) AdmissionBatteryOrDefault() []string {
+	if len(f.AdmissionBattery) == 0 {
+		return nil
+	}
+	battery := make([]string, 0, len(f.AdmissionBattery))
+	for _, entry := range f.AdmissionBattery {
+		if name := strings.TrimSpace(entry); name != "" {
+			battery = append(battery, name)
+		}
+	}
+	if len(battery) == 0 {
+		return nil
+	}
+	return battery
 }

@@ -14,6 +14,7 @@ import (
 	apidto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/officialfit"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -356,13 +357,36 @@ func (channel *Channel) IsOfficialFitChannelForModel(model string) bool {
 	return channel.Type == officialType
 }
 
-// officialFitChannelMatchesLocked is the cache-backed form of
-// Channel.IsOfficialFitChannelForModel for the selection hot path. Caller must
-// hold channelSyncLock (read lock).
-func officialFitChannelMatchesLocked(channelID int, model string) bool {
+// officialFitChannelMatchesAdmissionLocked is the cache-backed form of the
+// admission-aware official-behaviour predicate for the selection hot path.
+// Caller must hold channelSyncLock (read lock).
+//
+// The family's official channel type is admitted under both sources — it is the
+// identity the baseline was measured against, not a claim the battery needs to
+// prove. What the source selects is how every other channel qualifies:
+//
+//   - declared: the channel's own declaration, exactly the predicate that
+//     predates admission (official_fit_models allowlist ∪ family type);
+//   - measured: the admission battery — every battery behaviour must carry a
+//     fresh, passing mark bound to the admission's policy and baseline.
+//
+// The battery is evaluated through ChannelSatisfiesFitMarks with its
+// conservative reading (an unknown or stale mark never admits): admission is a
+// promise, and the policy's UnknownMarkPolicy exists so phase-1 narrowing does
+// not rule out unmeasured channels — never so an unmeasured channel is admitted.
+// The mark lookups take the capability index lock nested inside the channel
+// lock, which is the documented order (channel → index); the non-building
+// lookup is what keeps that safe.
+func officialFitChannelMatchesAdmissionLocked(channelID int, model string, admission fitpolicy.Admission) bool {
 	officialType := OfficialFitChannelType(model)
 	if officialType == 0 {
 		return false
+	}
+	if admission.Measured() {
+		if channel, ok := channelsIDM[channelID]; ok && channel.Type == officialType {
+			return true
+		}
+		return channelAdmissionBatterySatisfied(channelID, model, admission)
 	}
 	if set := channel2officialFitModels[channelID]; len(set) > 0 {
 		if _, declared := set[strings.ToLower(strings.TrimSpace(model))]; declared {
@@ -373,6 +397,46 @@ func officialFitChannelMatchesLocked(channelID int, model string) bool {
 	return ok && channel.Type == officialType
 }
 
+// channelAdmissionBatterySatisfied reports whether the channel carries fresh,
+// passing marks for every battery behaviour. A channel with no battery to
+// evaluate (an empty battery cannot pass validation under measured, but a
+// hand-built admission may carry one) is never admitted by measurement.
+//
+// Safe under channelSyncLock: the mark lookups never build the capability index.
+func channelAdmissionBatterySatisfied(channelID int, model string, admission fitpolicy.Admission) bool {
+	if len(admission.Battery) == 0 {
+		return false
+	}
+	return ChannelSatisfiesFitMarks(channelID, FitMarkRequirement{
+		Model:        model,
+		Marks:        admission.Battery,
+		PolicyHash:   admission.PolicyHash,
+		BaselineHash: admission.BaselineHash,
+	})
+}
+
+// currentOfficialFitAdmission resolves the admission the installed policy
+// declares for a model. No snapshot, or a family the document says nothing
+// about, resolves to the declared default — the behaviour that predates
+// admission, which is what keeps an unwritten or partial document from
+// changing routing.
+func currentOfficialFitAdmission(model string) fitpolicy.Admission {
+	if admission, ok := fitpolicy.Current().AdmissionFor(model); ok {
+		return admission
+	}
+	return fitpolicy.Admission{Source: fitpolicy.AdmissionSourceDeclared}
+}
+
+// officialFitChannelMatchesLocked is the legacy form of the admission-aware
+// predicate: it resolves the admission from the installed policy, which is
+// correct for the callers that do not carry a request's requirement (the
+// legacy pin branch and the selection-metadata guard). The narrowing passes
+// its own admission so a retry stays under the rules it started with.
+// Caller must hold channelSyncLock (read lock).
+func officialFitChannelMatchesLocked(channelID int, model string) bool {
+	return officialFitChannelMatchesAdmissionLocked(channelID, model, currentOfficialFitAdmission(model))
+}
+
 // ChannelIsOfficialFitForModel reports whether the channel may serve model as
 // an official-behaving upstream. It reads the channel cache's allowlist index
 // and falls back to a targeted DB read when the memory cache is disabled, so
@@ -380,9 +444,26 @@ func officialFitChannelMatchesLocked(channelID int, model string) bool {
 // answer as candidate filtering without re-parsing channel settings JSON per
 // request. The DB fallback selects only the classifying columns — never the
 // channel key or credentials, which this check has no use for.
+//
+// The admission source of the installed policy is honoured on both paths: when
+// the family runs measured, an aggregator qualifies through the admission
+// battery instead of the allowlist. On the DB path the battery is read through
+// the capability index (built from the same database), so a node without the
+// memory cache answers from the same marks.
 func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 	if OfficialFitChannelType(model) == 0 {
 		return false
+	}
+	admission := currentOfficialFitAdmission(model)
+	if admission.Measured() {
+		// Outside channelSyncLock on purpose: a first-use build is a full table
+		// scan, and doing it under the channel lock would block every channel
+		// write for its duration — the ordering the capability index documents
+		// and forbids. The call is a cheap readiness check once built, and it
+		// only runs for measured families, so the affinity path (which reaches
+		// this before the first selection) sees the same marks the selection
+		// path will.
+		ensureFitCapabilityIndexBuilt()
 	}
 	if !common.MemoryCacheEnabled {
 		// No database handle means the answer cannot be verified (a test
@@ -395,11 +476,17 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 		if err := DB.Select("id, type, settings").First(channel, "id = ?", channelID).Error; err != nil {
 			return false
 		}
+		if channel.Type == OfficialFitChannelType(model) {
+			return true
+		}
+		if admission.Measured() {
+			return channelAdmissionBatterySatisfied(channelID, model, admission)
+		}
 		return channel.IsOfficialFitChannelForModel(model)
 	}
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
-	return officialFitChannelMatchesLocked(channelID, model)
+	return officialFitChannelMatchesAdmissionLocked(channelID, model, admission)
 }
 
 // preferOfficialFitChannels narrows official-fit candidates to the channels

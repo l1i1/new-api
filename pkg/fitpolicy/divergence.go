@@ -104,6 +104,14 @@ func familyDivergence(id string, reference, live FamilyPolicy) string {
 		parts = append(parts, fmt.Sprintf("empty_match_policy %s→%s",
 			reference.EmptyMatchPolicyOrDefault(), live.EmptyMatchPolicyOrDefault()))
 	}
+	if reference.AdmissionSourceOrDefault() != live.AdmissionSourceOrDefault() {
+		parts = append(parts, fmt.Sprintf("admission_source %s→%s",
+			reference.AdmissionSourceOrDefault(), live.AdmissionSourceOrDefault()))
+	}
+	if !equalAdmissionBatteries(reference.AdmissionBatteryOrDefault(), live.AdmissionBatteryOrDefault()) {
+		parts = append(parts, "admission_battery "+admissionBatteryDiff(
+			reference.AdmissionBatteryOrDefault(), live.AdmissionBatteryOrDefault()))
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -200,4 +208,49 @@ func normalizedBehaviorClasses(behaviors map[string]Behavior) map[string]string 
 		classes[strings.TrimSpace(name)] = strings.TrimSpace(behavior.Class)
 	}
 	return classes
+}
+
+// equalAdmissionBatteries compares two batteries as sets: the order of a
+// battery is irrelevant to the admission decision, so a reordering is not a
+// divergence worth a line.
+func equalAdmissionBatteries(reference, live []string) bool {
+	if len(reference) != len(live) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(reference))
+	for _, name := range reference {
+		seen[name] = struct{}{}
+	}
+	for _, name := range live {
+		if _, ok := seen[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// admissionBatteryDiff renders a battery change the way behavioursDiff renders
+// a vocabulary change: named additions and removals, sorted.
+func admissionBatteryDiff(reference, live []string) string {
+	referenceSet := make(map[string]struct{}, len(reference))
+	for _, name := range reference {
+		referenceSet[name] = struct{}{}
+	}
+	liveSet := make(map[string]struct{}, len(live))
+	for _, name := range live {
+		liveSet[name] = struct{}{}
+	}
+	var parts []string
+	for name := range referenceSet {
+		if _, ok := liveSet[name]; !ok {
+			parts = append(parts, name+" removed")
+		}
+	}
+	for name := range liveSet {
+		if _, ok := referenceSet[name]; !ok {
+			parts = append(parts, name+" added")
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }

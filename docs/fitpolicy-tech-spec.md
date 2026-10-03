@@ -198,6 +198,8 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 - `behaviors[*].class`：`verdict`（判决类：宁失败不失真）/ `capability`（能力类：换渠道即可）/ `courtesy`（体感类：可降级并标注）。**v1 三个值都接受、都校验、都随决策传递，但没有任何消费者按 class 分支**：写 `capability` 或 `courtesy` 不会改变失败处理方式，收窄对所有 require 一视同仁。当前文档里每个行为都是 `verdict`。写策略的人不要把 class 当成开关。
 - `unknown_mark_policy`：无标记的渠道如何处理——`conservative`（视为不支持，**标记当承诺用**）/ `permissive`（视为未知，即"未被证伪"）。v1 默认 conservative；该默认值在 shadow 阶段冻结，未经单独验收不得改。注意 `permissive` 下"未被证伪"不等于"已验证"：没有任何实测数据的渠道也会进入阶段 1，因此观测字段叫 `PermittedByMarks`（不是 MatchedMarks）。
 - `empty_match_policy`：收窄后为空时的口径。v1 只允许也**只实现** `legacy_hard_pin_then_existing_error`：先沿用现有 `official_fit_models ∪ 官方渠道类型` 硬 pin 集合；该集合为空时保留现有选择失败/官方错误语义，禁止回到普通未标记优先级池，禁止 fitpolicy 自造 4xx/5xx。因为只有一个合法值，决策期不读该字段（读它没有可分支的语义）；`fail_verbatim` / `fallthrough_priority` 不属于 v1，未来若启用必须另立指标、回滚演练和用户确认，并在 `pkg/fitpolicy/narrow.go` 里真正接上。
+- `admission_source`（§19，2026-10-03 新增）：`declared`（默认，字段出现前的唯一行为）或 `measured`。它选择**非官方类型渠道**如何获得官方行为资格：`declared` 读渠道自己的声明（`official_fit_models` 白名单）；`measured` 读 admission battery。族官方渠道类型（Moonshot 直连等）在两种 source 下都按身份准入——它是基线本身，不需要靠测量自证。**per-family**，因此 kimi-k3 可以先行、deepseek-v4 保持 declared；回滚 = 改文档（epoch 秒级）。
+- `admission_battery`（§19）：构成该族"官方等价"的完整行为集。仅当 `admission_source: measured` 时被读为准入条件；declared 模式下被携带用于 **shadow-admission** 日志（等价窗口的数据）。校验：每项必须在 `behaviors` 词汇表内（typo 不能静默缩小电池）、去重、上限 64 项；`measured` 必须带非空 battery。battery **永远按 conservative 语义评估**（unknown/stale/failed = 不准入），与族 `unknown_mark_policy` 无关：`permissive` 存在的意义是让阶段 1 不排除未测量渠道，从来不是让未测量渠道准入——准入是承诺。
 - **文档缺省 vs 显式清空**：选项从未写过时，节点装载**内置默认文档**（`fitpolicy.DefaultPolicy()`：内置规则 + `shadow:false`），使"没人配置过"的部署也走等价性测试证明过的那套规则；选项被显式清空（值为空串）时才是"无意见"的卸载杠杆。两者的区别由 `model/fitpolicy_option.go` 的 loader 保留，装载后由一行日志说明当前是哪一种；管理员文档与内置默认的差异每次装载都会记一条 `fitpolicy: the live document differs from the shipped default`（允许偏离，但不允许无声）。
 - **未验证与过期标记**：`unknown`、`stale`、`supported:false` 必须是可区分状态；过期或撤销不能被当作 `supported:true`，也不能静默转成官方集合。
 - 写时 schema 校验 + 引用完整性 + policy version 单调递增 + capability-row CAS/revision + 审计（谁、何时、变更摘要）。
@@ -286,7 +288,7 @@ func Decide(req) FitRequirement:
 
 ```
 func narrow(candidates, fit) []Channel:
-    official := base ∩ (official_fit_models ∪ 官方渠道类型)
+    official := base ∩ officialSet(family)                   // §19: declared=白名单∪类型; measured=电池∪类型
     if fit == NoOpinion: return existingOfficialPinBehavior(candidates, official)
     marked := official ∩ supportsAll(marks, fit.RequiredMarks, conservative)
     if len(marked) > 0: return marked                          // 阶段 1：marked 优先
@@ -572,3 +574,44 @@ func narrow(candidates, fit) []Channel:
 - **强制重装**：存储文档与运行快照不一致（`live.last_error` 非空 / 未安装）时，界面提供 root-only 的
   「Reinstall the stored document」，把**同样的字节**再写一次。这是节点装载失败保留 last-known-good 之后、
   故障原因消失时唯一的手动恢复手段；闸门仅在「文本未变化」一项上放行，校验、角色与后果确认照旧。
+
+## 19. 测量准入（admission battery）：用 capability marks 替换 official_fit_models（2026-10-03）
+
+**动机**（来自 2026-10-02 K3 事故的复盘，用户 2026-10-03 决策"全部处理"）：`official_fit_models` 是人工维护的准入层——事故中它藏在 `settings` 列（键名 `settings` vs `setting` 的混淆耗费了一整轮诊断）、靠运维记忆同步（ch19 靠手工加白）、且声明不可信（ch41 在册却对 `effort=minimal` 400）。capability marks 层是为"渠道是否真的复现官方行为"设计的，却只做 phase-1 过滤、还因 policy hash 过期整层 inert。**方向：测量应该成为准入的事实来源，白名单退役。** 但直接删白名单会当场清空 pinned 池（唯一 type-25 渠道 ch8 已被停用，池子 {19,41} 100% 来自白名单），因此本节是替换设计而非删除补丁。
+
+### 19.1 分工与不变量
+
+- **白名单（`official_fit_models`）**：渠道**整面**的准入声明——错误形状、重试语义、计费、未探测形态，全部靠人工背书。常设声明，不会因为日历过期。
+- **marks（`channel_fit_capabilities`）**：逐行为的测量。会过期（30 天窗口）、绑定 policy/baseline hash（规则一改全部 stale）。**只能做减法，永远不能凭单点测量把渠道加进官方集合**——这是 §68 行决定"fitpolicy 不替换 official_fit_models"的全部理由，也是 marks 层"fail-open 落地"性质（无数据 = 不收窄）的来源。
+- **admission battery**：本节引入的桥——把"构成官方等价的完整行为集"声明为族级电池，**用整组 fresh passing marks 替代整面人工背书**。电池覆盖面 ≈ 白名单背书面（都承认有残余：电池外的行为仍无人验证；白名单的"人工整面背书"在实践中同样覆盖不了 ch41 式发散，这正是替换的论据）。
+- **类型地板不变**：族官方渠道类型（Moonshot 直连）按身份准入。它是基线的定义来源，不是被测对象。
+
+### 19.2 语义（已实现）
+
+- `admission_source: declared`（默认）：与字段出现前**逐字节等价**。谓词 `officialFitChannelMatchesAdmissionLocked` 的 declared 分支 = 旧 `officialFitChannelMatchesLocked`。请求携带的 `Requirement.Admission` 零值即 declared——存量文档、存量行为、存量 policy hash（字段 omitempty）全部不变。
+- `admission_source: measured`：非类型渠道的准入 = `ChannelSatisfiesFitMarks(channel, battery, 保守语义, admission.PolicyHash, admission.BaselineHash)`。unknown/stale/failed/过期一概不准入。
+- **绑定随请求**：`Decide` 把 Admission（含 battery 与 hash 绑定）放进 Requirement，收窄用它——重试保持在它开始时的准入规则下，与 marks 绑定的既有语义一致。无请求上下文的消费者（.18 方言豁免、affinity 门、legacy pin 分支）读 `fitpolicy.Current().AdmissionFor(model)`（当前快照），两条路都汇入同一个谓词，不存在第二套判定。
+- **锁序**：battery 评估走 `channelFitCapabilityMark`（非构建型查找，channel lock → index lock 的既定顺序）。`ChannelIsOfficialFitForModel` 在 measured 模式下于取 channel 锁**之前** `ensureFitCapabilityIndexBuilt()`——冷启动的 affinity 路径在首次选择前就能看到 marks，而构建（全表扫描）永远不会发生在 channel 锁内。
+- **shadow-admission 日志**：declared + 声明了 battery 时，收窄按预算记录 `fitpolicy admission shadow: model=... candidates=... declared=... measured=... battery=...`——"如果现在翻 measured，这批候选谁会合格"。这就是等价窗口的仪表。
+- **空池告警**：measured 收窄结果为空时按预算记 `fitpolicy: measured admission kept no candidate ...`（SysError），点名回滚手段（文档改回 declared）。
+
+### 19.3 部署与迁移顺序（顺序是硬约束）
+
+0. **代码先行、文档后写**（DisallowUnknownFields 的后果）：带 admission 字段的文档，旧节点解析失败 → 保留 last-known-good → 新旧节点 split-brain。因此必须**全舰队跑上含本节的构建之后**，才允许写带 battery 的文档。`TestParsePolicyRejectsUnknownAdmissionFields` 钉住这一行为。
+1. **发布含本节的版本**（默认 declared，行为零变化；divergence 报告开始显示 admission 字段差异）。
+2. **写文档**：kimi-k3 声明 battery（declared source）。文档 hash 变化 → **此时才重跑套件**，marks 绑定新 hash——先武装再换 hash 等于白跑一遍。提交 `POST /api/fit-capability/report`（报告必须带新 policy_version/policy_hash，`ValidateSuiteReport` 强制校验）。
+3. **等价窗口 ≥48h**：消费 `fitpolicy admission shadow` 日志，确认 measured 集与 declared 集的差分符合预期（哪些渠道合格、哪些因 stale/缺行为出局）。
+4. **翻转**：kimi-k3 的 `admission_source` 改 `measured`（文档编辑，epoch 生效）。回滚 = 改回 declared。
+5. **deprecate `official_fit_models`**（翻转确认后的独立代码变更）：校验拒绝新写入、管理 UI 隐藏、文档标注弃用；**读路径保留一个版本**（measured 族已不读它），再下一个版本删除读取与 `setOfficialFitModelsIn` 索引。删除前必须确认所有族都在 measured（或该族无 pinned 流量）。
+
+### 19.4 接受的残余风险（写给签字的人）
+
+- **新鲜度 = 可用性**：套件成为生产设施（定时跑、过期前告警、准入池缩水告警）。套件停摆 = 渠道逐个出局（30 天斜坡），pinned 流量最终诚实失败。这是用"运维的日历背书"换"运维的记忆背书"——日历至少会响。
+- **电池覆盖缺口**：电池外的行为（计费一致性、罕见错误类）无人验证。缓解：电池只增不减、行为词汇表扩展走 spec。白名单时代同样有此缺口（ch41 在册照样 400），且不可观测。
+- **上游漂移**：官方端改行为后、基线文档更新前，旧基线绑定的 marks 仍"fresh"。与现状相同，不因本节恶化。
+- 探测成本 = 渠道数 × 电池大小 × 频率（真实请求计费）。kimi-k3 两渠道可忽略；规模化后是真实账单。
+
+### 19.5 验收（已实现部分）
+
+- `pkg/fitpolicy/admission_test.go`：schema 校验（measured 需 battery、词汇表外拒绝、去重、上限）、`Decide` 携带 Admission（battery 拷贝不别名）、`Snapshot.AdmissionFor`、**DefaultPolicy 不含 admission 字段**（policy hash 对存量文档不变，兼容性闸门）、divergence 报告含 admission 差异、battery 重排不报差异、未知字段拒绝（rollout 契约）。
+- `model/channel_fit_admission_test.go`：declared 与旧谓词逐例等价（含 legacy wrapper）；measured 从 marks 准入（fresh ✓ / stale-hash ✗ / 部分满足 ✗ / measured-failed ✗ / 类型地板 ✓）；battery 保守语义（无 marks 不准入，无视 permissive）；收窄集成为 type∪battery、declared 不变、空集诚实失败；DB 路径（无内存缓存）装真实快照读 capability index。
