@@ -288,20 +288,20 @@ func Decide(req) FitRequirement:
 
 ```
 func narrow(candidates, fit) []Channel:
-    official := base ∩ officialSet(family)                   // §19: declared=白名单∪类型; measured=电池∪类型
-    if fit == NoOpinion: return existingOfficialPinBehavior(candidates, official)
-    marked := official ∩ supportsAll(marks, fit.RequiredMarks, conservative)
-    if len(marked) > 0: return marked                          // 阶段 1：marked 优先
-    return official                                            // 阶段 2：今天硬 pin 的等价结果
-    // 阶段 3：official 为空 → 沿用现有 nil / selection-error 分类，不落普通池
+    if fit == NoOpinion: return existingRoutingBehavior(candidates)   // 无形状要求 → 不干预
+    marked := candidates ∩ supportsAll(marks, fit.RequiredMarks, conservative)
+    if len(marked) > 0: return marked                          // 阶段 1：特性门槛，优先级在集合内选路
+    official := candidates ∩ officialSet(family)               // §19: declared=官方类型; measured=电池∪类型
+    return official                                            // 阶段 2：兜底（为空 → 现有 selection-error）
+    // 阶段 3：兜底也为空 → 沿用现有 nil / selection-error 分类，不落普通池
 ```
 
-**运营语义（写给用这套规则的人，必须与实现一致）：mark 是偏好，不是约束。**
+**运营语义（2026-10-03 按操作员对功能目标的原话定稿："在能做到拟合官方的情况下，优先按优先级匹配渠道，该渠道不支持特定特性则按优先级顺延下一渠道"）：特性是门槛，优先级是顺序。**
 
-- 阶段 1 只有在**至少一个官方候选满足全部 mark** 时才生效。此时请求的候选集收窄到这些"被证明过"的官方渠道。
-- 只要有任何一个 mark 没有任何官方候选满足（包括"全部 mark 都没有实测数据"这一常见状态），就回落到阶段 2：**仍然使用未经验证的官方候选**。也就是说，标记不会让请求失败——它只在能被满足时改变**选哪个官方渠道**。
-- 唯一会拒绝请求的是阶段 3：候选集里**完全没有官方行为渠道**（`official_fit_models ∪ 官方渠道类型` 为空，或重试已把它们全部排除）。这是"没有官方渠道可走"的诚实失败，不是"标记没满足"的失败。
-- 因此日常可观测的现象是："有实测标记的渠道优先拿到流量；没有标记时行为与内置默认完全一致"。若掉期到阶段 2，日志里 `official_and_permitted=false`，而不是报错。
+- 阶段 1 把**每个候选**（不只是官方集合）按本请求 require 的行为逐项判定：满足全部 require 的候选进入集合，**调用方 selector 在集合内按 priority/weight 选路**——最高优先级且能胜任本请求的渠道胜出；它不满足时，自然顺延到下一优先级中满足的渠道。
+- 阶段 2（没有任何候选满足 require，包括"这些行为从未实测"的常见状态）回落到族的**官方行为集合**（declared=官方类型；measured=类型∪电池）。这是"请求要的官方语义无从验证"时的兜底；兜底为空则是阶段 3 的诚实失败，绝不静默落到普通优先级池。
+- 请求形状**没有任何 require**（策略无意见）时完全不干预：走普通优先级路由——这就是"37 当主力"的来源。
+- 候选内选路仍由 selector 的 priority/weight 决定，因此"有实测标记的渠道优先"不再是阶段 1 的含义；阶段 1 的含义是"能胜任本请求的渠道集合"。日志里 `official_and_permitted=true` 表示阶段 1 生效，`false` 表示走了阶段 2 兜底。
 
 - **候选构造（selector 职责，不含并发饱和）**：`base` = group/model 候选经 request filter、model alias/path、group policy、blocked channels、compact alias 解析后的结果；这就是 `service.CacheGetRandomSatisfiedChannel` 与 `model.GetRandomSatisfiedChannelPinned`/`GetChannelWithBlockedChannelsPinned` 现在负责的部分。
 - **attempt admission（不是 selector 职责）**：并发饱和在 `controller/relay.go` 的 `AcquireChannelConcurrency` → `ExcludeSaturatedChannel`、以及 Responses WS 的对应分支处理；`narrow` 只接受 blocked/excluded 输入，不自己探测饱和。文档与实现都不得把饱和写成候选构造的一部分。

@@ -1,24 +1,31 @@
 package fitpolicy
 
-// Two-phase narrowing.
+// Narrowing order.
 //
 // A policy opinion does not pick a channel; it narrows the candidates the
-// selector already computed. The order is fixed and deliberately conservative:
+// selector already computed. The order (2026-10-03, per the operator's
+// statement of the feature's goal — "when official fitting is achievable,
+// match channels by priority; if the channel does not support the specific
+// feature, step to the next one by priority"):
 //
-//	phase 1  candidates ∩ official-behaviour ∩ satisfied-marks   (preferred)
-//	phase 2  candidates ∩ official-behaviour                     (today's result)
-//	phase 3  nothing official remains                            (existing error)
+//	phase 1  candidates ∩ satisfied-marks                          (preferred)
+//	phase 2  candidates ∩ official-behaviour                        (fallback)
+//	phase 3  neither leaves anything                               (existing error)
 //
-// Phase 1 is empty in step A because no channel capability data exists yet, so
-// the outcome is phase 2 — byte-for-byte today's hard pin. That is what makes
-// this wiring safe to land before the capability table does: the marked branch
-// can only ever *remove* candidates once real marks exist, and every removal is
-// backed by a measured suite result.
+// Phase 1 judges every candidate by the behaviours THIS request requires, not
+// only the officials: the caller's selector then decides by priority among
+// them, so the highest-priority channel that measurably handles this request
+// wins and the next one steps in when it does not. Phase 2 covers the case no
+// candidate carries the required behaviours: the family's official-behaviour
+// set (official channel type plus, for a measured family, the admission
+// battery) serves as the fallback, and an empty fallback keeps the empty set so
+// the caller reports its existing selection error rather than silently serving
+// from the ordinary pool.
 //
-// The narrowing never falls through to the ordinary priority pool. A request
-// whose shape diverges from the official endpoint must either reach a channel
-// that reproduces official behaviour or fail honestly; silently serving it from
-// an unverified aggregator is the exact failure this layer exists to prevent.
+// With no capability data — the state before the first suite run, and the state
+// a node is in when its index is unavailable — phase 1 is empty and the result
+// is the official set, which is what keeps this layer no worse than the hard
+// pin it replaced.
 
 // Narrowing is the outcome of applying a requirement to a candidate set.
 type Narrowing struct {
@@ -69,31 +76,32 @@ func (n Narrowing) Matched(channelID int) bool {
 
 // Narrow applies the two-phase narrowing.
 //
-// isOfficial reports whether a candidate is an official-behaviour channel
-// (the family's official channel type; the official_fit_models allowlist is
-// retired, so a declared family is its official type alone).
-// satisfiesMarks reports whether a candidate satisfies every required
-// behaviour; nil means "no capability data exists", which keeps phase 1 empty
-// and the result equal to today's official pin.
+// isOfficial reports whether a candidate belongs to the family's
+// official-behaviour set (the official channel type, plus the admission
+// battery for a measured family).
+// satisfiesMarks reports whether a candidate carries fresh passing marks for
+// every behaviour this request requires; nil means "no capability data
+// exists", which keeps the per-request phase empty and the result equal to the
+// official set.
 //
 // Both predicates receive a channel id; the caller owns the cache lookups.
+//
+// Order (2026-10-03, per operator's statement of the feature's goal): the
+// request's own required behaviours are the first gate, and every candidate is
+// judged by them — not just the official set. Priority then decides among the
+// candidates that carry them, which is what makes the higher-priority channel
+// win when it measurably handles this request, and the next channel by
+// priority step in when it does not. Only when no candidate carries the
+// required behaviours does the official-behaviour set take over as the
+// fallback; an empty fallback keeps the empty set so the caller reports its
+// existing selection error rather than serving from the ordinary pool.
 func (r Requirement) Narrow(candidates []int, isOfficial func(int) bool, satisfiesMarks func(int) bool) Narrowing {
 	if !r.HasOpinion() || r.Shadow || isOfficial == nil {
 		return Narrowing{}
 	}
-	official := make([]int, 0, len(candidates))
-	for _, candidate := range candidates {
-		if isOfficial(candidate) {
-			official = append(official, candidate)
-		}
-	}
-	if len(official) == 0 {
-		// Phase 3: keep the empty set so the caller reports its existing error.
-		return Narrowing{Applied: true}
-	}
 	if satisfiesMarks != nil && len(r.Marks) > 0 {
-		marked := make([]int, 0, len(official))
-		for _, candidate := range official {
+		marked := make([]int, 0, len(candidates))
+		for _, candidate := range candidates {
 			if satisfiesMarks(candidate) {
 				marked = append(marked, candidate)
 			}
@@ -101,13 +109,24 @@ func (r Requirement) Narrow(candidates []int, isOfficial func(int) bool, satisfi
 		if len(marked) > 0 {
 			return Narrowing{Applied: true, Channels: marked, PermittedByMarks: true, Satisfied: marked}
 		}
-		// Phase 2: no verified candidate, so use the official set unchanged. This
-		// is where step A always lands. The empty Satisfied set is carried on
-		// purpose: it says "the marks were evaluated and none carried them",
-		// which is what separates a failed mark from data that never existed.
-		return Narrowing{Applied: true, Channels: official, Satisfied: marked}
+		// No candidate carries every required behaviour, so the per-request
+		// gate cannot decide. Fall back to the official-behaviour set. The
+		// empty Satisfied slice is carried on purpose: it says "the marks were
+		// evaluated and none carried them", which is what separates a failed
+		// mark from data that never existed.
+		return Narrowing{Applied: true, Channels: officialCandidates(candidates, isOfficial), Satisfied: marked}
 	}
-	// Phase 2: no verified candidate, so use the official set unchanged. This is
-	// where step A always lands.
-	return Narrowing{Applied: true, Channels: official}
+	return Narrowing{Applied: true, Channels: officialCandidates(candidates, isOfficial)}
+}
+
+// officialCandidates keeps the candidates isOfficial admits, preserving the
+// caller's order (the caller's selector decides by priority among them).
+func officialCandidates(candidates []int, isOfficial func(int) bool) []int {
+	official := make([]int, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isOfficial(candidate) {
+			official = append(official, candidate)
+		}
+	}
+	return official
 }

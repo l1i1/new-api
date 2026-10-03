@@ -450,12 +450,29 @@ func TestNarrowTwoPhase(t *testing.T) {
 			want:        []int{2, 4, 6, 8},
 		},
 		{
-			name:        "marked subset wins over the official set",
+			// The request's own required behaviours are the first gate and
+			// every candidate is judged by them — not just the official set.
+			// The caller's selector then picks by priority among the kept set,
+			// which is what lets a higher-priority channel win when it carries
+			// the marks.
+			name:        "candidates carrying the marks win over the official set",
 			requirement: opinion,
 			candidates:  []int{1, 2, 3, 4, 5, 6, 7, 8},
 			satisfies:   func(id int) bool { return id%3 == 0 },
 			wantApplied: true,
-			want:        []int{6},
+			want:        []int{3, 6},
+			wantMatched: true,
+		},
+		{
+			// A non-official channel that carries the marks is a valid answer:
+			// eligibility is the per-request measurement, not the whole-channel
+			// admission.
+			name:        "a marked candidate outside the official set is kept",
+			requirement: opinion,
+			candidates:  []int{1, 3, 5},
+			satisfies:   lowIDs,
+			wantApplied: true,
+			want:        []int{1, 3, 5},
 			wantMatched: true,
 		},
 		{
@@ -467,10 +484,10 @@ func TestNarrowTwoPhase(t *testing.T) {
 			want:        []int{2, 4},
 		},
 		{
-			name:        "no official candidate yields an empty applied set",
+			name:        "no marked candidate and no official fallback yields an empty set",
 			requirement: opinion,
 			candidates:  []int{1, 3, 5},
-			satisfies:   lowIDs,
+			satisfies:   func(int) bool { return false },
 			wantApplied: true,
 			want:        nil,
 		},
