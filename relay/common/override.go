@@ -52,6 +52,11 @@ var paramOverrideSensitivePathPrefixes = []string{
 
 type paramOverrideAuditRecorder struct {
 	lines []string
+	// all records every applied operation, not only the ones touching a
+	// sensitive path. Response-body overrides use it: there the question the
+	// audit answers is "why does the client's response differ from the
+	// upstream's", and every operation is part of that answer.
+	all bool
 }
 
 type ConditionOperation struct {
@@ -368,7 +373,10 @@ func (r *paramOverrideAuditRecorder) recordOperation(mode, path, from, to string
 	if r == nil {
 		return
 	}
-	line := buildParamOverrideAuditLine(mode, path, from, to, value)
+	if !r.all && !shouldAuditOperation(mode, path, from, to) {
+		return
+	}
+	line := formatParamOverrideAuditLine(mode, path, from, to, value)
 	if line == "" {
 		return
 	}
@@ -412,15 +420,13 @@ func formatParamOverrideAuditValue(value any) string {
 	}
 }
 
-func buildParamOverrideAuditLine(mode, path, from, to string, value any) string {
+// formatParamOverrideAuditLine renders one operation. Whether the operation is
+// worth recording is the recorder's decision (see recordOperation).
+func formatParamOverrideAuditLine(mode, path, from, to string, value any) string {
 	mode = strings.TrimSpace(mode)
 	path = strings.TrimSpace(path)
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
-
-	if !shouldAuditOperation(mode, path, from, to) {
-		return ""
-	}
 
 	switch mode {
 	case "set":

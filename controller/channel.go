@@ -647,6 +647,15 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
 	}
+	// tokeness: the response-body override is shape-only. Reject a document
+	// that tries to rewrite token accounting (or response headers) at save
+	// time, so the operator sees the problem where the document is written
+	// instead of in a client's response.
+	if channel.ResponseOverride != nil {
+		if err := relaycommon.ValidateResponseOverride(*channel.ResponseOverride); err != nil {
+			return err
+		}
+	}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		pluginKey := strings.TrimSpace(channel.GetSetting().TaskPluginKey)
 		if pluginKey == "" {

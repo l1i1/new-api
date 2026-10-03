@@ -1355,6 +1355,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		paramOverride = mergedParam
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelParamOverride, paramOverride)
+	common.SetContextKey(c, constant.ContextKeyChannelResponseOverride, channel.GetResponseOverride())
 	common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, headerOverride)
 	if nil != channel.OpenAIOrganization && *channel.OpenAIOrganization != "" {
 		common.SetContextKey(c, constant.ContextKeyChannelOrganization, *channel.OpenAIOrganization)

@@ -151,6 +151,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
+	appendResponseOverrideInfo(relayInfo, other)
 	appendStreamStatus(ctx, relayInfo, other)
 	return other
 }
@@ -173,6 +174,16 @@ func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogO
 		return
 	}
 	other.SetPublic("po", relayInfo.ParamOverrideAudit)
+}
+
+// appendResponseOverrideInfo records the response-body rewrite the client's
+// copy went through, under "ro" — the response-side sibling of "po". Without
+// it a shape change is indistinguishable from the upstream's own output.
+func appendResponseOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if relayInfo == nil || other == nil || len(relayInfo.ResponseOverrideAudit) == 0 {
+		return
+	}
+	other.SetPublic("ro", relayInfo.ResponseOverrideAudit)
 }
 
 func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {

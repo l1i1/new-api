@@ -70,6 +70,7 @@ type ChannelMeta struct {
 	Organization         string
 	ChannelCreateTime    int64
 	ParamOverride        map[string]any
+	ResponseOverride     map[string]any
 	HeadersOverride      map[string]any
 	ChannelSetting       dto.ChannelSettings
 	ChannelOtherSettings dto.ChannelOtherSettings
@@ -196,6 +197,7 @@ type RelayInfo struct {
 	RuntimeHeadersOverride                map[string]any
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
+	ResponseOverrideAudit                 []string
 
 	PriceData hosttypes.PriceData
 
@@ -289,6 +291,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ChatToGeminiStreamState = nil
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
+	responseOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelResponseOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
 	apiType, _ := common.ChannelType2APIType(channelType)
 	channelMeta := &ChannelMeta{
@@ -304,6 +307,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		Organization:         c.GetString("channel_organization"),
 		ChannelCreateTime:    c.GetInt64("channel_create_time"),
 		ParamOverride:        paramOverride,
+		ResponseOverride:     responseOverride,
 		HeadersOverride:      headerOverride,
 		UpstreamModelName:    common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 		IsModelMapped:        false,

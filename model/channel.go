@@ -51,8 +51,13 @@ type Channel struct {
 	Tag               *string `json:"tag" gorm:"index"`
 	Setting           *string `json:"setting" gorm:"type:text"` // 渠道额外设置
 	ParamOverride     *string `json:"param_override" gorm:"type:text"`
-	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
-	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	// ResponseOverride rewrites the RESPONSE BODY before the client sees it,
+	// with the same operations/conditions document as ParamOverride. Shape
+	// only: the save path rejects operations that target usage/billing paths,
+	// so reported token counts stay the upstream's own.
+	ResponseOverride *string `json:"response_override" gorm:"type:text"`
+	HeaderOverride   *string `json:"header_override" gorm:"type:text"`
+	Remark           *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
@@ -1351,6 +1356,21 @@ func (channel *Channel) GetParamOverride() map[string]any {
 		}
 	}
 	return paramOverride
+}
+
+// GetResponseOverride returns the channel's response-body override document.
+// A malformed document is logged and treated as absent: the save path rejects
+// unusable documents, so this only fires for a row written around the API.
+func (channel *Channel) GetResponseOverride() map[string]any {
+	responseOverride := make(map[string]any)
+	if channel.ResponseOverride != nil && *channel.ResponseOverride != "" {
+		err := common.Unmarshal([]byte(*channel.ResponseOverride), &responseOverride)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("failed to unmarshal response override: channel_id=%d, error=%v", channel.Id, err))
+			return make(map[string]any)
+		}
+	}
+	return responseOverride
 }
 
 func (channel *Channel) GetHeaderOverride() map[string]any {

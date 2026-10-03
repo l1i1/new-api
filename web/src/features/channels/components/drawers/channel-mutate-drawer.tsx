@@ -296,6 +296,7 @@ const SENSITIVE_FORM_FIELDS = [
   'other',
   'key_mode',
   'param_override',
+  'response_override',
   'header_override',
   'settings',
   'setting',
@@ -472,6 +473,8 @@ export function ChannelMutateDrawer({
     pluginKey?: string
   } | null>(null)
   const [paramOverrideEditorOpen, setParamOverrideEditorOpen] = useState(false)
+  const [responseOverrideEditorOpen, setResponseOverrideEditorOpen] =
+    useState(false)
   const [advancedCustomEditorOpen, setAdvancedCustomEditorOpen] =
     useState(false)
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
@@ -3043,6 +3046,82 @@ export function ChannelMutateDrawer({
 
         <FormField
           control={form.control}
+          name='response_override'
+          render={({ field }) => (
+            <FormItem className='space-y-3 border-t pt-4'>
+              <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                <div className='space-y-1'>
+                  <FormLabel>{t('Response Override')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Rewrite the response body before the client sees it, with the same operations as Parameter Override. Shape only: token accounting cannot be rewritten.'
+                    )}
+                  </FormDescription>
+                </div>
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => setResponseOverrideEditorOpen(true)}
+                  >
+                    <Wand2 className='mr-2 h-4 w-4' />
+                    {t('Visual edit')}
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() =>
+                      field.onChange(
+                        JSON.stringify(
+                          {
+                            operations: [
+                              {
+                                path: 'choices.0.message.reasoning_content',
+                                mode: 'delete',
+                              },
+                            ],
+                          },
+                          null,
+                          2
+                        )
+                      )
+                    }
+                  >
+                    <Code className='mr-2 h-4 w-4' />
+                    {t('New Format Template')}
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    onClick={() => field.onChange('')}
+                  >
+                    {t('Clear')}
+                  </Button>
+                </div>
+              </div>
+              <FormControl>
+                <JsonCodeEditor
+                  value={field.value || ''}
+                  onChange={field.onChange}
+                  name={field.name}
+                  onBlur={field.onBlur}
+                  textareaRef={field.ref}
+                  disabled={sensitiveLocked || isSubmitting}
+                  placeholder={t(
+                    'Rewrite the response body before the client sees it, with the same operations as Parameter Override. Shape only: token accounting cannot be rewritten.'
+                  )}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
           name='header_override'
           render={({ field }) => (
             <FormItem className='space-y-3 border-t pt-4'>
@@ -5305,6 +5384,20 @@ export function ChannelMutateDrawer({
             if (!nextOpen) setBatchMapping(null)
           }}
           onApply={handleBatchMappingApply}
+        />
+      )}
+
+      {responseOverrideEditorOpen && !sensitiveLocked && (
+        <ParamOverrideEditorDialog
+          open={responseOverrideEditorOpen}
+          value={formValues.response_override || ''}
+          onOpenChange={setResponseOverrideEditorOpen}
+          onSave={(nextValue) => {
+            form.setValue('response_override', nextValue, {
+              shouldDirty: true,
+              shouldValidate: true,
+            })
+          }}
         />
       )}
 

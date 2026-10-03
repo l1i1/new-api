@@ -49,6 +49,17 @@ func writeStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, f
 	if data == "" {
 		return nil
 	}
+	// Channel-configured response rewrite, applied to every outgoing event
+	// before any other transformation so the parsed copy and the forwarded
+	// copy agree. A misbehaving document leaves the event untouched.
+	if rewritten, err := relaycommon.ApplyResponseOverride(common.StringToByteSlice(data), info); err != nil {
+		logger.LogDebug(c, "response override skipped for channel #%d: %v", info.ChannelId, err)
+	} else if len(rewritten) > 0 {
+		data = string(rewritten)
+	}
+	if data == "" {
+		return nil
+	}
 	// Observability: whether the response path ever carried reasoning content.
 	// Recorded before any transformation so the request log can distinguish
 	// "upstream produced no reasoning" from "the gateway stripped it".
@@ -620,6 +631,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 	logger.LogDebug(c, "upstream response body: %s", common.LocalLogPreview(common.MaskSensitiveInfo(string(responseBody))))
+	// Channel-configured response rewrite, before the body is parsed: every
+	// downstream consumer (usage, validation, rendering) then sees the same
+	// shape the client will receive.
+	if rewritten, rewriteErr := relaycommon.ApplyResponseOverride(responseBody, info); rewriteErr != nil {
+		logger.LogDebug(c, "response override skipped for channel #%d: %v", info.ChannelId, rewriteErr)
+	} else if len(rewritten) > 0 {
+		responseBody = rewritten
+	}
 	// Unmarshal to simpleResponse
 	if info.ChannelType == constant.ChannelTypeOpenRouter && info.ChannelOtherSettings.IsOpenRouterEnterprise() {
 		// 尝试解析为 openrouter enterprise

@@ -226,6 +226,10 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
+    response_override: z
+      .string()
+      .optional()
+      .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
     header_override: z
       .string()
       .optional()
@@ -430,6 +434,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   remark: '',
   setting: '',
   param_override: '',
+  response_override: '',
   header_override: '',
   settings: '{}',
   other: '',
@@ -625,6 +630,7 @@ export function transformChannelToFormDefaults(
     remark: channel.remark || '',
     setting: channel.setting || '',
     param_override: channel.param_override || '',
+    response_override: channel.response_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
     other: channel.other || '',
@@ -932,6 +938,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     remark: formData.remark || '',
     setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
+    response_override: formData.response_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
@@ -994,6 +1001,7 @@ export function transformFormDataToUpdatePayload(
     remark: formData.remark || '',
     setting: buildSettingJSON(formData),
     param_override: formData.param_override || null,
+    response_override: formData.response_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
@@ -1044,6 +1052,7 @@ export function transformFormDataToUpdatePayload(
   payloadWithCredentials.status_code_mapping =
     formData.status_code_mapping || ''
   payloadWithCredentials.param_override = formData.param_override || ''
+  payloadWithCredentials.response_override = formData.response_override || ''
   payloadWithCredentials.header_override = formData.header_override || ''
 
   return payloadWithCredentials
