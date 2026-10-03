@@ -59,9 +59,10 @@ type OfficialFitProfile struct {
 	Errors   bool `json:"errors,omitempty"`   // 错误消息官方原文：不附加网关 request id
 	Shape    bool `json:"shape,omitempty"`    // 响应形态拟合：官方 usage 结构/SSE 拼接/剥离扩展字段
 	// Route 是保真路由：按各族的形状谓词，把「实测行为与官方端点不一致」的请求收窄到
-	// 「行为等同官方」的候选渠道（本族官方渠道类型 ∪ 声明了 official_fit_models 的渠道），
-	// 再由 priority 在候选内选路。因此它既不是「整族收窄」，也不等于「送往官方端点」——
-	// 转售渠道带标记即可承接，官方端点常常是零流量。字段名保留 route 以免迁移已存配置。
+	// 「行为等同官方」的候选渠道（本族官方渠道类型；measured 族另加通过 admission battery
+	// 的渠道——official_fit_models 白名单已于 2026-10-03 整删），再由 priority 在候选内选路。
+	// 因此它既不是「整族收窄」，也不等于「送往官方端点」——通过实测的转售渠道即可承接，
+	// 官方端点常常是零流量。字段名保留 route 以免迁移已存配置。
 	Route bool `json:"route,omitempty"` // 保真路由：形状分歧的请求收窄到官方行为渠道，priority 仍决定具体渠道
 }
 

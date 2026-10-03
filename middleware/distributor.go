@@ -732,10 +732,12 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	}
 	// The official-fit Route dimension is the only switch. "Official channel"
 	// here means an official-BEHAVING channel, not the vendor's own endpoint:
-	// candidates are the family's official channel type UNION any channel that
-	// declared the model in official_fit_models, and priority then picks among
-	// them — so a marked reseller normally takes the traffic and the vendor
-	// endpoint can sit at zero requests. Everything the policy does not pin keeps
+	// candidates are the family's official channel type, plus — for a family
+	// running measured admission — the channels that pass its admission battery
+	// (the official_fit_models allowlist that used to widen this set is
+	// retired), and priority then picks among them — so a verified reseller
+	// normally takes the traffic and the vendor endpoint can sit at zero
+	// requests. Everything the policy does not pin keeps
 	// normal priority routing, which keeps prompt-cache affinity and
 	// official-endpoint spend down. The family's channel type still comes from the
 	// registry (DeepSeek V4 -> 43, kimi-k3 -> 25, glm-5.3 -> 26).
@@ -780,9 +782,9 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 // The two directions are deliberately asymmetric because they answer different
 // questions:
 //   - Pinned: the request demands official bytes, so the cached channel must be
-//     official-behaving for this model — either the family's official type or a
-//     channel that declared the model in official_fit_models
-//     (preferredIsOfficialBehavior).
+//     official-behaving for this model — the family's official type, or (for a
+//     measured family) a channel passing the admission battery
+//     (preferredIsOfficialBehavior; the allowlist is retired).
 //   - Unpinned: the request is normal aggregator traffic. Only the family's
 //     official type is excluded, so a binding left behind by earlier pinned
 //     traffic cannot hijack the affinity key onto the expensive official

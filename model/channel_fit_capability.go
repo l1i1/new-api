@@ -17,10 +17,11 @@ import (
 // dedicated table also lets a concurrent suite write be a conditional UPDATE
 // instead of a read-modify-write of a large document.
 //
-// official_fit_models keeps its current meaning as the coarse official-behaviour
-// source. This table only answers the narrower question "has this behaviour been
-// verified on this channel", and an absent row means unknown, which keeps every
-// existing request on today's behaviour.
+// This table answers the narrow question "has this behaviour been verified on
+// this channel". Since the official_fit_models allowlist was retired
+// (2026-10-03) it is also the only source of admitted non-official-type
+// channels: a family running measured admission qualifies a channel through
+// its battery. An absent row means unknown, which never admits.
 
 const (
 	// FitCapabilitySourceSuite marks a result produced by an automated suite run.
