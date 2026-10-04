@@ -54,9 +54,14 @@ func canonicalFamily(family FamilyPolicy) string {
 		"#" + family.UnknownMarkPolicyOrDefault() + "#" + family.EmptyMatchPolicyOrDefault()
 }
 
-// TestDefaultPolicyDecidesLikeTheShippedPredicates keeps the seed honest against
-// the retired predicates: with the default live, a shape the predicate pins must
-// carry an opinion, and one it leaves alone must not.
+// TestDefaultPolicyDecidesShippedShapes keeps the seed honest: with the default
+// live, a shape the shipped contract narrows must carry an opinion, and one it
+// leaves to the priority channel must not.
+//
+// deepseek-v4 and glm-5.3 keep their original predicate shapes. kimi-k3 moved
+// to per-shape narrowing on 2026-10-03, so ordinary thinking is deliberately NO
+// longer pinned for that family — the family-wide pin took all of its traffic
+// off the priority channel, which is the defect the per-shape rules replaced.
 func TestDefaultPolicyDecidesLikeTheShippedPredicates(t *testing.T) {
 	snapshot, err := Compile(DefaultPolicy())
 	if err != nil {
@@ -81,8 +86,12 @@ func TestDefaultPolicyDecidesLikeTheShippedPredicates(t *testing.T) {
 			view: RequestView{Model: "deepseek-v4-flash", Thinking: thinkingOff, Messages: userOnly},
 		},
 		{
-			name: "k3 ordinary thinking pins whole family", model: "kimi-k3", want: true,
+			name: "k3 ordinary thinking stays on the priority channel", model: "kimi-k3", want: false,
 			view: RequestView{Model: "kimi-k3", Thinking: thinkingOn, ToolChoice: []byte(`"auto"`), Messages: userOnly},
+		},
+		{
+			name: "k3 thinking off narrows", model: "kimi-k3", want: true,
+			view: RequestView{Model: "kimi-k3", Thinking: thinkingOff, Messages: userOnly},
 		},
 		{
 			name: "glm whole family pins", model: "glm-5.3", want: true,
@@ -149,13 +158,15 @@ func TestDivergenceFromBuiltinNamesWhatMoved(t *testing.T) {
 	}
 
 	ruleRemoved := DefaultPolicy()
+	droppedRule := ""
 	for i := range ruleRemoved.Families {
 		if ruleRemoved.Families[i].ID != familyKimiK3 {
 			continue
 		}
+		droppedRule = ruleRemoved.Families[i].Rules[0].ID
 		ruleRemoved.Families[i].Rules = nil
 	}
-	if diff := DivergenceFromBuiltin(ruleRemoved); !strings.Contains(diff, "k3-whole-family removed") {
+	if diff := DivergenceFromBuiltin(ruleRemoved); !strings.Contains(diff, droppedRule+" removed") {
 		t.Fatalf("a removed rule must be named, got %q", diff)
 	}
 

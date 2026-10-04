@@ -276,8 +276,8 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 	markV4OfficialPinFromDistributor(routeOff)
 	assert.False(t, fitRequirementAttached(routeOff))
 
-	// K3 with Route enabled is whole-family pinned. The official channel is the
-	// only accepted candidate for ordinary reasoning and tool continuation.
+	// K3 with Route enabled narrows per shape: a forcing tool_choice is a shape
+	// the priority pool does not reproduce, an ordinary request is not.
 	k3Route := newCtx(`{"model":"kimi-k3","tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"required"}`, "/v1/chat/completions")
 	common.SetContextKey(k3Route, constant.ContextKeyUserSetting, dto.UserSetting{
 		OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
@@ -294,11 +294,12 @@ func TestMarkV4OfficialPinFromDistributorHonorsRouteProfile(t *testing.T) {
 		}},
 	})
 	markV4OfficialPinFromDistributor(k3PlainRoute)
-	assert.True(t, fitRequirementAttached(k3PlainRoute))
+	assert.False(t, fitRequirementAttached(k3PlainRoute),
+		"an ordinary kimi-k3 request stays on the priority channel; only its divergent shapes narrow")
 
 	k3Plain := newCtx(`{"model":"kimi-k3","temperature":2}`, "/v1/chat/completions")
 	markV4OfficialPinFromDistributor(k3Plain)
-	assert.False(t, fitRequirementAttached(k3Plain), "Route is still required for the whole-family pin")
+	assert.False(t, fitRequirementAttached(k3Plain), "Route is still required before any shape narrows")
 }
 
 // A pinned deepseek-v4 request with affinity cached to an aggregator channel

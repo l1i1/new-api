@@ -111,13 +111,14 @@ func TestOfficialFitRouteContracts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	requireLiveBuiltinPolicy(t)
 
-	// Route-enabled DeepSeek V4 profile: which shapes pin is now read out of the
-	// shipped policy document rather than out of compiled-in predicates, so this
-	// test is the document's contract. The table below is unchanged — it is the
-	// behaviour contract, not an implementation detail: only features the
-	// aggregator mix cannot reproduce land on the official channel (live evidence
-	// 2026-09-06: reasoning_content drops and missing dual-path logprobs on
-	// aggregators; image parts unverified there).
+	// Route-enabled profile: which shapes pin is read out of the shipped policy
+	// document rather than out of compiled-in predicates, so this test is the
+	// document's contract. Only features the priority pool cannot reproduce land
+	// on the official channel (live evidence 2026-09-06: reasoning_content drops
+	// and missing dual-path logprobs on aggregators; image parts unverified
+	// there). For kimi-k3 that means per shape: the family-wide pin was retired
+	// on 2026-10-03 because it took all of K3's traffic off the priority
+	// channel, and each shape below is one the pool measurably cannot serve.
 	newContext := func(body string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
@@ -176,8 +177,8 @@ func TestOfficialFitRouteContracts(t *testing.T) {
 		unpinned(t, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"reasoning_effort":"none"}`)
 	})
 
-	t.Run("kimi-k3 plain user turn pins whole family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`)
+	t.Run("kimi-k3 plain user turn stays on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`)
 	})
 	t.Run("kimi-k3 required pins (pool cannot force a call)", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"required"}`)
@@ -185,8 +186,8 @@ func TestOfficialFitRouteContracts(t *testing.T) {
 	t.Run("kimi-k3 named-function object pins", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`)
 	})
-	t.Run("kimi-k3 auto pins whole family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`)
+	t.Run("kimi-k3 auto stays on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto"}`)
 	})
 	t.Run("kimi-k3 tool_choice none pins (pool under-reports the declared tools)", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"none"}`)
@@ -200,11 +201,11 @@ func TestOfficialFitRouteContracts(t *testing.T) {
 	t.Run("kimi-k3 reasoning_effort none pins", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 	})
-	t.Run("kimi-k3 explicit enabled thinking still pins family", func(t *testing.T) {
+	t.Run("kimi-k3 explicit enabled thinking with effort none still pins", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"},"reasoning_effort":"none"}`)
 	})
-	t.Run("kimi-k3 response_format text pins family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"text"}}`)
+	t.Run("kimi-k3 response_format text stays on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"text"}}`)
 	})
 	t.Run("kimi-k3 response_format json_object pins", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`)
@@ -221,17 +222,17 @@ func TestOfficialFitRouteContracts(t *testing.T) {
 	t.Run("kimi-k3 system-only history pins", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"system","content":"hi"}]}`)
 	})
-	t.Run("kimi-k3 leading system then user pins family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"system","content":"hi"},{"role":"user","content":"hi"}]}`)
+	t.Run("kimi-k3 leading system then user stays on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"system","content":"hi"},{"role":"user","content":"hi"}]}`)
 	})
-	t.Run("kimi-k3 later assistant turn pins family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hi"},{"role":"user","content":"hi"}]}`)
+	t.Run("kimi-k3 later assistant turn stays on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hi"},{"role":"user","content":"hi"}]}`)
 	})
 	t.Run("kimi-k3 dynamic tools on a message pin", func(t *testing.T) {
 		pinned(t, `{"model":"kimi-k3","messages":[{"role":"system","tools":[{"type":"function","function":{"name":"get_time"}}]},{"role":"user","content":"hi"}]}`)
 	})
-	t.Run("kimi-k3 global tools alone pin family", func(t *testing.T) {
-		pinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`)
+	t.Run("kimi-k3 global tools alone stay on the priority channel", func(t *testing.T) {
+		unpinned(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`)
 	})
 }
 

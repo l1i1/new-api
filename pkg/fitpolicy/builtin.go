@@ -1,7 +1,7 @@
 package fitpolicy
 
-// BuiltinPolicy returns the policy that reproduces today's shipped pin
-// predicates exactly.
+// BuiltinPolicy returns the shipped default document — the rules a node runs
+// when no policy option has been written (see DefaultPolicy).
 //
 // It exists so step A can run in shadow and prove equivalence: with this policy
 // installed, "the request requires at least one behaviour" must be true if and
@@ -20,9 +20,12 @@ package fitpolicy
 // Family-specific notes, all carried over from middleware/distributor.go:
 //   - DeepSeek V4 pins logprobs, image parts and thinking-output requests; the
 //     one class the pool serves faithfully is explicit thinking-off.
-//   - kimi-k3 is pinned as a whole family: the deployed customer contract
-//     requires official Moonshot semantics for reasoning, streaming, and tool
-//     continuation, while reseller behavior remains nondeterministic.
+//   - kimi-k3 narrows per shape. The family moved to measured admission on
+//     2026-10-03: a channel qualifies by passing the five behaviour probes
+//     below, so a request is only pinned when its own shape is one the
+//     priority channel measurably cannot reproduce. Pinning the whole family
+//     would take ordinary traffic off the priority channel, which is exactly
+//     what the per-shape rules exist to avoid.
 //   - glm-5.3 has no measured selective predicate yet, so the whole family
 //     pins.
 func BuiltinPolicy() Policy {
@@ -49,13 +52,29 @@ func BuiltinPolicy() Policy {
 			{
 				ID: familyKimiK3,
 				Rules: []Rule{
-					{ID: "k3-whole-family", When: "WholeFamily()", Require: []string{BehaviorFamilyWhole}},
+					{ID: "k3-thinking-off", When: `ThinkingDisabled() || ReasoningEffortIs("none") || ReasoningEffortIs("minimal")`, Require: []string{BehaviorThinkingCounting}},
+					{ID: "k3-tool-choice", When: "ToolChoiceForcesOfficial()", Require: []string{BehaviorToolsChoiceSemantics}},
+					{ID: "k3-response-format", When: "ResponseFormatNotText()", Require: []string{BehaviorResponseFormatJSON}},
+					{ID: "k3-history", When: "!HistoryBeginsWithUserTurn()", Require: []string{BehaviorHistoryAssistantFirst}},
+					{ID: "k3-dynamic-tools", When: "MessagesCarryDynamicTools()", Require: []string{BehaviorToolsDynamicNames}},
 				},
 				Behaviors: map[string]Behavior{
-					BehaviorFamilyWhole: {Class: ClassVerdict},
+					BehaviorThinkingCounting:      {Class: ClassVerdict},
+					BehaviorToolsChoiceSemantics:  {Class: ClassVerdict},
+					BehaviorResponseFormatJSON:    {Class: ClassVerdict},
+					BehaviorHistoryAssistantFirst: {Class: ClassVerdict},
+					BehaviorToolsDynamicNames:     {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
 				EmptyMatchPolicy:  EmptyMatchLegacyHardPin,
+				AdmissionSource:   AdmissionSourceMeasured,
+				AdmissionBattery: []string{
+					BehaviorThinkingCounting,
+					BehaviorToolsChoiceSemantics,
+					BehaviorResponseFormatJSON,
+					BehaviorHistoryAssistantFirst,
+					BehaviorToolsDynamicNames,
+				},
 			},
 			{
 				ID: familyGlm53,

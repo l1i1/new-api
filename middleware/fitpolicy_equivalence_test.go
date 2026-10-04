@@ -25,11 +25,12 @@ func toRequestView(req v4OfficialPinRequest) fitpolicy.RequestView {
 }
 
 // TestFitPolicyBuiltinMatchesShippedPredicates is the step-A equivalence gate.
-// For every fixture the built-in policy must select exactly the requests the
-// shipped Go predicate for that family pins — no misses (which would leak pool
-// behaviour to a caller comparing against the official endpoint) and no
-// over-selection (which would spend official capacity on shapes the pool
-// serves faithfully).
+// For every deepseek-v4 fixture the built-in policy must select exactly the
+// requests the shipped Go predicate for that family pins — no misses (which
+// would leak pool behaviour to a caller comparing against the official
+// endpoint) and no over-selection (which would spend official capacity on
+// shapes the pool serves faithfully). The kimi-k3 fixtures assert the per-shape
+// contract instead; see the loop below.
 //
 // Each case names one family and is compared only against that family's
 // predicate and policy: the predicates are family-specific, so calling both on
@@ -67,7 +68,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOff, Messages: userOnly},
 		},
 		{
-			name: "k3 thinking enabled pins whole family", family: "kimi-k3", want: true,
+			name: "k3 thinking enabled stays on the priority channel", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: userOnly},
 		},
 		{
@@ -79,7 +80,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`"required"`), Messages: userOnly},
 		},
 		{
-			name: "k3 tool_choice auto pins whole family", family: "kimi-k3", want: true,
+			name: "k3 tool_choice auto stays on the priority channel", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`"auto"`), Messages: userOnly},
 		},
 		{
@@ -95,7 +96,7 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ResponseFormat: json.RawMessage(`{"type":"json_object"}`), Messages: userOnly},
 		},
 		{
-			name: "k3 response_format text pins whole family", family: "kimi-k3", want: true,
+			name: "k3 response_format text stays on the priority channel", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ResponseFormat: json.RawMessage(`{"type":"text"}`), Messages: userOnly},
 		},
 		{
@@ -115,15 +116,15 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: []dto.Message{{Role: "user"}, {Role: "system", Tools: json.RawMessage(`[{"type":"function"}]`)}}},
 		},
 		{
-			name: "k3 fully servable shape pins whole family", family: "kimi-k3", want: true,
+			name: "k3 fully servable shape stays on the priority channel", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ReasoningEffort: "high", ToolChoice: json.RawMessage(`"auto"`), ResponseFormat: json.RawMessage(`{"type":"text"}`), Messages: userOnly},
 		},
 		{
-			name: "k3 empty messages still pins family before validation", family: "kimi-k3", want: true,
+			name: "k3 empty messages carries no requirement", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn},
 		},
 		{
-			name: "k3 leading system then user pins whole family", family: "kimi-k3", want: true,
+			name: "k3 leading system then user stays on the priority channel", family: "kimi-k3", want: false,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, Messages: []dto.Message{{Role: "system"}, {Role: "user"}}},
 		},
 
@@ -166,24 +167,29 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			req := testCase.req
 
-			var legacy bool
-			switch testCase.family {
-			case "kimi-k3":
-				legacy = kimiK3RequestNeedsOfficial(req)
-			case "deepseek-v4":
-				legacy = deepSeekV4RequestNeedsOfficial(req)
-			default:
-				t.Fatalf("fixture names unsupported family %q", testCase.family)
-			}
-
-			if legacy != testCase.want {
-				t.Fatalf("shipped %s predicate = %v, table says %v (update the table if the predicate changed on purpose)",
-					testCase.family, legacy, testCase.want)
+			// The equivalence claim is family-specific and now holds for
+			// deepseek-v4 only: its rules mirror deepSeekV4RequestNeedsOfficial
+			// clause for clause. kimi-k3's whole-family predicate was retired on
+			// 2026-10-03 in favour of per-shape narrowing (retained in
+			// distributor.go as a diagnostics hook, not a decision), so its cases
+			// assert the shape contract itself — the table is the contract.
+			if testCase.family != "kimi-k3" {
+				var legacy bool
+				switch testCase.family {
+				case "deepseek-v4":
+					legacy = deepSeekV4RequestNeedsOfficial(req)
+				default:
+					t.Fatalf("fixture names unsupported family %q", testCase.family)
+				}
+				if legacy != testCase.want {
+					t.Fatalf("shipped %s predicate = %v, table says %v (update the table if the predicate changed on purpose)",
+						testCase.family, legacy, testCase.want)
+				}
 			}
 
 			got := snapshot.Decide(testCase.family, true, toRequestView(req)).HasOpinion()
-			if got != legacy {
-				t.Fatalf("policy = %v, shipped %s predicate = %v (equivalence violated)", got, testCase.family, legacy)
+			if got != testCase.want {
+				t.Fatalf("policy = %v, table says %v", got, testCase.want)
 			}
 		})
 	}

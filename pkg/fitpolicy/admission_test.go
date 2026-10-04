@@ -117,20 +117,27 @@ func TestAdmissionSourceOrDefault(t *testing.T) {
 	assert.Equal(t, AdmissionSourceDeclared, declared.SourceOrDefault(), "WithSourceMeasured must not mutate the receiver")
 }
 
-// TestDefaultPolicyOmitsAdmissionFields is the compatibility gate for the
-// hash: the shipped default carries no admission fields, so its JSON — and
-// therefore its policy hash, and every capability report bound to that hash —
-// is byte-identical to what it was before the fields existed. A document that
-// wants admission opts in by naming it.
-func TestDefaultPolicyOmitsAdmissionFields(t *testing.T) {
-	for name, document := range map[string]Policy{
-		"default": DefaultPolicy(),
-		"builtin": BuiltinPolicy(),
-	} {
-		encoded, err := json.Marshal(document)
-		require.NoError(t, err)
-		assert.NotContains(t, string(encoded), "admission_source", name)
-		assert.NotContains(t, string(encoded), "admission_battery", name)
+// TestDefaultPolicyDeclaresAdmissionOnlyWhereMeasured pins the shape of the
+// shipped default: a family that answers official behaviour from its channel
+// type alone carries no admission fields at all (so its JSON — and therefore
+// the hashes of documents that only change other families — stays as small as
+// it was before the fields existed), while kimi-k3, which qualifies channels by
+// measurement, names both the source and the battery it measures.
+func TestDefaultPolicyDeclaresAdmissionOnlyWhereMeasured(t *testing.T) {
+	document := DefaultPolicy()
+	encoded, err := json.Marshal(document)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"admission_source":"measured"`)
+	assert.Contains(t, string(encoded), `"admission_battery"`)
+
+	for _, family := range document.Families {
+		if family.ID == familyKimiK3 {
+			assert.Equal(t, AdmissionSourceMeasured, family.AdmissionSource)
+			assert.Len(t, family.AdmissionBattery, 5, "every kimi-k3 shape rule must be measured")
+			continue
+		}
+		assert.Empty(t, family.AdmissionSource, "family %s answers from its type alone", family.ID)
+		assert.Empty(t, family.AdmissionBattery, "family %s answers from its type alone", family.ID)
 	}
 	// The fields are omitempty in both directions: a document that round-trips
 	// without them parses to the same zero values.
@@ -188,12 +195,15 @@ func TestSnapshotAdmissionFor(t *testing.T) {
 }
 
 func TestAdmissionDivergence(t *testing.T) {
-	live := admissionFamily()
-	live.AdmissionSource = AdmissionSourceMeasured
-	live.AdmissionBattery = []string{BehaviorThinkingCounting}
-	policy := Policy{Version: 1, Enabled: true, Families: []FamilyPolicy{live}}
+	// Compared family-to-family rather than against the builtin: the question is
+	// whether an admission change is legible, not what the shipped kimi-k3
+	// rules happen to be this month.
+	declared := admissionFamily()
+	measured := admissionFamily()
+	measured.AdmissionSource = AdmissionSourceMeasured
+	measured.AdmissionBattery = []string{BehaviorThinkingCounting}
 
-	diff := DivergenceFromBuiltin(policy)
+	diff := familyDivergence("kimi-k3", declared, measured)
 	require.NotEmpty(t, diff)
 	assert.Contains(t, diff, "admission_source declared→measured")
 	assert.Contains(t, diff, "admission_battery")

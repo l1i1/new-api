@@ -115,10 +115,12 @@ func TestFitPolicyLiveAttachesTheMarksTheShapeNeeds(t *testing.T) {
 		body string
 		want string
 	}{
-		{`{"model":"kimi-k3","tool_choice":"required"}`, fitpolicy.BehaviorFamilyWhole},
-		{`{"model":"kimi-k3","tool_choice":{"type":"function","function":{"name":"f"}}}`, fitpolicy.BehaviorFamilyWhole},
-		{`{"model":"kimi-k3","response_format":{"type":"json_object"}}`, fitpolicy.BehaviorFamilyWhole},
-		{`{"model":"kimi-k3","thinking":{"type":"disabled"}}`, fitpolicy.BehaviorFamilyWhole},
+		{`{"model":"kimi-k3","tool_choice":"required"}`, fitpolicy.BehaviorToolsChoiceSemantics},
+		{`{"model":"kimi-k3","tool_choice":{"type":"function","function":{"name":"f"}}}`, fitpolicy.BehaviorToolsChoiceSemantics},
+		{`{"model":"kimi-k3","response_format":{"type":"json_object"}}`, fitpolicy.BehaviorResponseFormatJSON},
+		{`{"model":"kimi-k3","thinking":{"type":"disabled"}}`, fitpolicy.BehaviorThinkingCounting},
+		{`{"model":"kimi-k3","messages":[{"role":"assistant"},{"role":"user"}]}`, fitpolicy.BehaviorHistoryAssistantFirst},
+		{`{"model":"kimi-k3","messages":[{"role":"system","tools":[{"type":"function","function":{"name":"t"}}]},{"role":"user"}]}`, fitpolicy.BehaviorToolsDynamicNames},
 		{`{"model":"deepseek-v4-flash","logprobs":true}`, fitpolicy.BehaviorLogprobsDualPath},
 		{`{"model":"glm-5.3","temperature":1}`, fitpolicy.BehaviorFamilyWhole},
 	}
@@ -127,10 +129,12 @@ func TestFitPolicyLiveAttachesTheMarksTheShapeNeeds(t *testing.T) {
 		assert.Containsf(t, requirement.Marks, tc.want, "marks attached for %s", tc.body)
 	}
 
-	// K3 is intentionally whole-family pinned: ordinary thinking and tool
-	// continuation are part of the official contract, not an unopinionated shape.
-	assert.Contains(t, fitRequirementFor(t, `{"model":"kimi-k3","temperature":0.7}`).Marks,
-		fitpolicy.BehaviorFamilyWhole)
+	// kimi-k3 narrows per shape (2026-10-03): an ordinary request is served by
+	// the priority channel, so it must carry no requirement at all.
+	ordinary := newFitPolicyContext(t, `{"model":"kimi-k3","temperature":0.7}`)
+	markV4OfficialPinFromDistributor(ordinary)
+	assert.False(t, fitRequirementAttached(ordinary),
+		"an ordinary kimi-k3 request must stay on the priority channel")
 }
 
 // TestFitPolicyAttachesRequirementOnlyOutsideShadow is the structural half of

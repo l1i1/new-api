@@ -130,7 +130,7 @@ func TestFitPolicyObserverSeparatesEveryExitPath(t *testing.T) {
 		requirement, attached := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement)
 		assert.Greater(t, fitPolicyStats.evaluated.Load(), before)
 		require.True(t, attached, "a live policy must attach the requirement")
-		assert.Contains(t, requirement.Marks, fitpolicy.BehaviorFamilyWhole,
-			"the K3 whole-family rule must require its behaviour mark")
+		assert.Contains(t, requirement.Marks, fitpolicy.BehaviorToolsChoiceSemantics,
+			"the K3 tool-choice rule must require its behaviour mark")
 	})
 }
