@@ -97,8 +97,13 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
                 {title}
               </h2>
             </div>
+            {/* Shrinkable on purpose: a wide action cluster (e.g. the API
+                addresses strip plus buttons) that refuses to shrink renders
+                past the viewport, and `main` clips the overflow, so the
+                rightmost controls become unreachable on a phone. Letting the
+                row shrink makes the inner `flex-wrap` clusters wrap instead. */}
             {actions != null && (
-              <div className='flex shrink-0 flex-wrap items-center justify-end gap-2 sm:gap-x-4'>
+              <div className='flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-x-4'>
                 {actions}
               </div>
             )}

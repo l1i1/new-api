@@ -116,6 +116,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | i18n overlay 机制本身：上游 bundle 与 fork 文案分离，sync 时 `git checkout upstream/main -- web/src/i18n/locales` 整目录取上游，fork 侧只动 `overlay/` | `web/src/i18n/overlay.ts`、`web/src/i18n/fork-bundles.ts`、`scripts/fork-invariants/upstream-locales.json`、`.github/workflows/tokeness-upstream-sync.yml` | 同上；**任何直接 import `i18n/locales/*.json` 的文件（除 `fork-bundles.ts`/`overlay.ts`）都会被门禁判失败** |
 | 主题定制持久化与首屏应用 | `web/src/lib/theme-storage.ts`、`web/src/lib/theme-customization-storage.ts`、`web/src/context/theme-customization-provider.tsx` | `web/src/context/__tests__/theme-preferences.test.tsx`、`web/src/context/__tests__/theme-customization-provider.test.tsx`、`web/src/lib/__tests__/theme-customization.test.ts` |
 | 主题定制：**存储底座取上游**（rc.40 起 localStorage `newapi:theme:v1:*`，cookie 通道废弃），**默认值与首屏应用取 fork**（`preset: sunset-glow`、`radius: none`；`main.tsx` 挂载前应用） | 同上 | 同上；三处（provider / 首屏初始化 / 测试）必须读同一套键 |
+| 窄屏页面头：操作区允许收缩（`min-w-0`，不再 `shrink-0`）并在自身内部换行，宽操作簇（API 地址条 + 按钮）不再被 `Main` 的 `overflow-hidden` 裁到视口外——移动端「创建 API 密钥」因此可见可点 | `web/src/components/layout/components/section-page-layout.tsx` | `web/src/components/layout/components/__tests__/section-page-layout.test.tsx`（操作区可收缩换行契约） |
 | 测试运行器必须两阶段都跑（vitest + node:test） | `web/scripts/run-tests.mjs`、`web/scripts/node-test-setup.ts` | 运行器自身 + 两段汇总 |
 
 ## 8. 运营、合作方与部署

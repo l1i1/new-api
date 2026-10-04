@@ -2434,6 +2434,34 @@
           ]
         }
       ]
+    },
+    {
+      "id": "窄屏页面头-操作区允许收缩-min-w-0-不再-shrink-0-并在自身内部换行-宽操作簇--41",
+      "title": "窄屏页面头：操作区允许收缩（`min-w-0`，不再 `shrink-0`）并在自身内部换行，宽操作簇（API 地址条 + 按钮）不再被 `Main` 的 `overflow-hidden` 裁到视口外——移动端「创建 API 密钥」因此可见可点",
+      "source": "FORK-CHANGES.md › 7. 前端与国际化",
+      "files": [
+        "web/src/components/layout/components/section-page-layout.tsx"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "web/src/components/layout/components/section-page-layout.tsx",
+          "contains": "min-w-0 flex-wrap items-center justify-end"
+        },
+        {
+          "kind": "file",
+          "file": "web/src/components/layout/components/__tests__/section-page-layout.test.tsx"
+        }
+      ],
+      "tests": [
+        {
+          "file": "web/src/components/layout/components/__tests__/section-page-layout.test.tsx",
+          "names": [
+            "a wide action cluster shrinks and wraps instead of overflowing the clipped main pane",
+            "the title keeps shrinking so the actions row can take the line it needs"
+          ]
+        }
+      ]
     }
   ]
 }
