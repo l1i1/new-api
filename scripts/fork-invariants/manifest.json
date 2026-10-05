@@ -2508,7 +2508,7 @@
         {
           "file": "deployment/tokeness/tests/remote-command-test.sh",
           "names": [
-            "did not reclaim dangling images before the pull and after the switch",
+            "did not reclaim unused images before the pull and after the switch",
             "low-disk deploy changed the committed release selection",
             "a failed release-selection write replaced the committed selection"
           ]

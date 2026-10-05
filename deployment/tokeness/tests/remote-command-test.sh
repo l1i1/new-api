@@ -190,7 +190,9 @@ unset TEST_TARGET_FINAL_HEALTH
 [[ "$(<"$commit_case/runtime-image")" == "$NEW_IMAGE" ]] || fail_test "successful deploy did not start the target runtime"
 [[ "$(<"$commit_case/compose.log")" == $'pull\nup' ]] || fail_test "successful deploy did not pull and recreate exactly once"
 [[ "$(wc -l < "$commit_case/prune.log")" -eq 2 ]] ||
-  fail_test "successful deploy did not reclaim dangling images before the pull and after the switch"
+  fail_test "successful deploy did not reclaim unused images before the pull and after the switch"
+grep -q 'image prune -af' "$commit_case/prune.log" ||
+  fail_test "image cleanup must also collect untagged images the containerd store does not report dangling"
 grep -q $'TOKENESS_RESULT\t.*\trunning\thealthy\t' <<< "$commit_output" ||
   fail_test "successful deploy did not emit a healthy result"
 

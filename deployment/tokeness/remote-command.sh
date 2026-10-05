@@ -754,17 +754,20 @@ available_disk_kb() {
   df -Pk "$DEPLOY_DIR" 2>/dev/null | awk 'NR==2 {print $4}'
 }
 
-# Deployments pull by digest, so superseded releases are untagged images. Only
-# images no container references are removed, which keeps both the running
-# release and any container a rollback still needs. Best effort: a prune failure
-# must not fail a deploy, and the headroom gate below reports the real problem.
+# Deployments pull by digest, so superseded releases pile up as untagged
+# images. `-a` is required: under the containerd overlayfs store every node
+# runs, a digest-pulled image is not reported as dangling, so a plain prune
+# reclaims nothing (measured 2026-10-05 on all four nodes). `-a` removes only
+# images with no container at all, which keeps the running release and any
+# container a rollback still needs. Best effort: a prune failure must not fail
+# a deploy, and the headroom gate below reports the real problem.
 reclaim_dangling_images() {
   local output
-  if ! output="$(run_timed "$IMAGE_PRUNE_TIMEOUT_SECONDS" docker image prune -f 2>&1)"; then
-    log "WARNING: dangling image cleanup failed; continuing"
+  if ! output="$(run_timed "$IMAGE_PRUNE_TIMEOUT_SECONDS" docker image prune -af 2>&1)"; then
+    log "WARNING: image cleanup failed; continuing"
     return 0
   fi
-  log "dangling image cleanup: $(printf '%s\n' "$output" | tail -n 1)"
+  log "image cleanup: $(printf '%s\n' "$output" | tail -n 1)"
 }
 
 ensure_disk_headroom() {
