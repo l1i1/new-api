@@ -226,7 +226,7 @@
     "Inherit channel proxy": "Kế thừa proxy kênh",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "Được chèn nguyên văn vào <head> của mọi trang ở phía máy chủ, trước khi bất kỳ script nào chạy — crawler đọc được mà không cần chạy JavaScript. Để trống để khôi phục đầu trang mặc định.",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "Xem các dấu năng lực theo hành vi của kênh và tài liệu chính sách tương thích chính thức.",
-    "Inspect the latest user turn before upstream relay.": "Kiểm tra lượt nhắn mới nhất của người dùng trước khi chuyển tiếp lên thượng nguồn.",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "Kiểm tra lượt nhắn mới nhất của người dùng hoặc prompt tạo sinh trước khi chuyển tiếp lên thượng nguồn.",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "Số dư không đủ để trả phí xử lý hóa đơn {{fee}}",
     "Insufficient sample": "Không đủ mẫu",
     "Invite balance": "Invite balance",

@@ -38,11 +38,18 @@ import (
 )
 
 const (
-	ContentModerationOptionKey                 = model.ContentModerationOptionKey
-	ContentModerationProtocolOpenAIChat        = "openai_chat"
-	ContentModerationProtocolOpenAIResponses   = "openai_responses"
-	ContentModerationProtocolAnthropic         = "anthropic_messages"
-	ContentModerationProtocolGemini            = "gemini"
+	ContentModerationOptionKey               = model.ContentModerationOptionKey
+	ContentModerationProtocolOpenAIChat      = "openai_chat"
+	ContentModerationProtocolOpenAIResponses = "openai_responses"
+	ContentModerationProtocolAnthropic       = "anthropic_messages"
+	ContentModerationProtocolGemini          = "gemini"
+	// Generation protocols audit the prompt a request asks a model to render,
+	// rather than a conversation turn. They reuse the same provider contract
+	// (the moderation model sees the prompt as text) and the same thresholds,
+	// so an operator does not configure them separately.
+	ContentModerationProtocolOpenAIImage       = "openai_image"
+	ContentModerationProtocolOpenAIVideo       = "openai_video"
+	ContentModerationProtocolTask              = "task"
 	contentModerationDefaultBaseURL            = "https://api.openai.com"
 	contentModerationDefaultModel              = "omni-moderation-latest"
 	contentModerationDefaultTimeout            = 1500
@@ -2248,6 +2255,15 @@ func ExtractContentModerationContent(request dto.Request, protocol string) Conte
 		input = extractLatestResponsesInput(value.Input)
 	case *dto.OpenAIResponsesCompactionRequest:
 		input = extractLatestResponsesInput(value.Input)
+	case *dto.ImageRequest:
+		// An image generation request has no conversation turn: the prompt is
+		// the entire user input. Validation fills Prompt for both the JSON
+		// /v1/images/generations body and the multipart /v1/images/edits form.
+		// Input images (edits) are deliberately not audited here: the typed
+		// request only carries the provider's own reference, which is a
+		// multipart filename rather than a fetchable image, and treating it as
+		// an image would turn a valid request into a validation failure.
+		input = ContentModerationInput{Text: value.Prompt}
 	}
 	input.normalize()
 	return input

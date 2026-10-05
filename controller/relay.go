@@ -449,17 +449,7 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	if c == nil || c.Request == nil || info == nil || relayFormat == types.RelayFormatOpenAIRealtime {
 		return nil
 	}
-	// This is only the platform AI moderation layer. Local sensitive-word
-	// checks and provider-side safety policies remain enforced later/upstream.
-	if service.GroupAccessPolicyModerationDisabled(c) {
-		return nil
-	}
-	enabled, configErr := service.ContentModerationEnabled()
-	if configErr != nil {
-		logger.LogError(c, fmt.Sprintf("content moderation fail-open user_id=%d request_id=%q: %s", info.UserId, info.RequestId, common.LocalLogPreview(configErr.Error())))
-		return nil
-	}
-	if !enabled {
+	if !contentModerationGateOpen(c, info) {
 		return nil
 	}
 	if relayconstant.Path2RelayMode(c.Request.URL.Path) == relayconstant.RelayModeModerations {
@@ -485,11 +475,7 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 	// Direct unit-test callers and legacy handlers may not expose a typed
 	// request. The normal Relay path never takes this body fallback.
 	if moderationRequest.Text == "" && len(moderationRequest.Images) == 0 && info.Request == nil {
-		if storage, storageErr := common.GetBodyStorage(c); storageErr == nil {
-			if body, bodyErr := storage.Bytes(); bodyErr == nil {
-				moderationRequest.Body = body
-			}
-		}
+		moderationRequest.Body = contentModerationBody(c)
 	}
 	if affinity, ok := service.GetChannelAffinityStatsContext(c); ok {
 		moderationRequest.AffinityRuleName = affinity.RuleName
@@ -499,22 +485,69 @@ func checkRelayContentModeration(c *gin.Context, relayFormat types.RelayFormat, 
 		moderationRequest.AffinityChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	}
 	decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
-	if decision != nil && decision.Error != "" {
-		logLabel := "content moderation fail-open"
-		if decision.Overloaded {
-			logLabel = "content moderation overloaded"
-		}
-		logger.LogError(c, fmt.Sprintf(
-			"%s user_id=%d request_id=%q protocol=%s path=%q: %s",
-			logLabel,
-			info.UserId,
-			info.RequestId,
-			protocol,
-			c.Request.URL.Path,
-			common.LocalLogPreview(decision.Error),
-		))
-	}
+	logContentModerationDecisionError(c, info, protocol, decision)
 	return decision
+}
+
+// contentModerationGateOpen applies the checks every surface shares before it
+// extracts auditable content: the request exists, the group policy does not
+// exempt the subject group, and the operator switch is on with a readable
+// configuration. This is only the platform AI moderation layer; local
+// sensitive-word checks and provider-side safety policies remain enforced
+// later/upstream.
+func contentModerationGateOpen(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if c == nil || c.Request == nil || info == nil {
+		return false
+	}
+	if service.GroupAccessPolicyModerationDisabled(c) {
+		return false
+	}
+	enabled, configErr := service.ContentModerationEnabled()
+	if configErr != nil {
+		logger.LogError(c, fmt.Sprintf("content moderation fail-open user_id=%d request_id=%q: %s", info.UserId, info.RequestId, common.LocalLogPreview(configErr.Error())))
+		return false
+	}
+	return enabled
+}
+
+// contentModerationBody materializes the disk-backed request body for the
+// surfaces that carry no typed request. It is the same body the adaptor
+// forwards upstream, so the audit sees exactly what the provider will.
+func contentModerationBody(c *gin.Context) []byte {
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	storage, storageErr := common.GetBodyStorage(c)
+	if storageErr != nil {
+		return nil
+	}
+	body, bodyErr := storage.Bytes()
+	if bodyErr != nil {
+		return nil
+	}
+	return body
+}
+
+// logContentModerationDecisionError keeps the fail-open/overloaded logging
+// identical across the conversation and generation gates. It never logs prompt
+// text or provider credentials.
+func logContentModerationDecisionError(c *gin.Context, info *relaycommon.RelayInfo, protocol string, decision *service.ContentModerationDecision) {
+	if c == nil || c.Request == nil || info == nil || decision == nil || decision.Error == "" {
+		return
+	}
+	logLabel := "content moderation fail-open"
+	if decision.Overloaded {
+		logLabel = "content moderation overloaded"
+	}
+	logger.LogError(c, fmt.Sprintf(
+		"%s user_id=%d request_id=%q protocol=%s path=%q: %s",
+		logLabel,
+		info.UserId,
+		info.RequestId,
+		protocol,
+		c.Request.URL.Path,
+		common.LocalLogPreview(decision.Error),
+	))
 }
 
 func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) string {
@@ -527,9 +560,78 @@ func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) stri
 		return service.ContentModerationProtocolAnthropic
 	case types.RelayFormatGemini:
 		return service.ContentModerationProtocolGemini
+	case types.RelayFormatOpenAIImage:
+		return service.ContentModerationProtocolOpenAIImage
 	default:
 		return ""
 	}
+}
+
+// checkGenerationContentModeration is the task-path counterpart of
+// checkRelayContentModeration. Image, video, music and face-swap submissions
+// never carry a typed conversation DTO, so the audited text is the generation
+// prompt read from the request body (the same body the task adaptor forwards
+// upstream). It runs before channel selection, quota reservation and the
+// upstream call, so a blocked request costs nothing and reaches no provider.
+func checkGenerationContentModeration(c *gin.Context, info *relaycommon.RelayInfo, protocol string) *service.ContentModerationDecision {
+	if protocol == "" || !contentModerationGateOpen(c, info) {
+		return nil
+	}
+	group := info.UsingGroup
+	if group == "" {
+		group = info.TokenGroup
+	}
+	moderationRequest := service.ContentModerationRequest{
+		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
+		RequestPath: c.Request.URL.Path, RequestID: info.RequestId, Body: contentModerationBody(c),
+	}
+	if policy, loaded := service.GetGroupAccessPolicy(c); loaded {
+		moderationRequest.GroupPolicyFingerprint = policy.Fingerprint
+	}
+	decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
+	logContentModerationDecisionError(c, info, protocol, decision)
+	return decision
+}
+
+// generationContentModerationProtocolForRequest names the audited surface. A
+// pinned task-plugin endpoint states its own protocol; everything else is a
+// task submission route, which is identified by path.
+func generationContentModerationProtocolForRequest(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
+		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok {
+			switch pinned.Protocol {
+			case pluginruntime.ProtocolOpenAIImage:
+				return service.ContentModerationProtocolOpenAIImage
+			case "openai_video":
+				return service.ContentModerationProtocolOpenAIVideo
+			}
+		}
+	}
+	path := c.Request.URL.Path
+	switch {
+	case strings.HasPrefix(path, "/v1/images/"), strings.HasPrefix(path, "/pg/images/"), strings.HasPrefix(path, "/v1/edits"):
+		return service.ContentModerationProtocolOpenAIImage
+	case strings.HasPrefix(path, "/v1/videos"), strings.HasPrefix(path, "/v1/video/"),
+		strings.HasPrefix(path, "/kling/"), strings.HasPrefix(path, "/jimeng/"):
+		return service.ContentModerationProtocolOpenAIVideo
+	default:
+		return service.ContentModerationProtocolTask
+	}
+}
+
+func generationModerationTaskError(decision *service.ContentModerationDecision) *taskdto.TaskError {
+	message := decision.Message
+	if message == "" {
+		message = "Request blocked by content policy"
+	}
+	statusCode := decision.StatusCode
+	if statusCode < 400 || statusCode > 599 {
+		statusCode = http.StatusForbidden
+	}
+	return service.TaskErrorWrapperLocal(errors.New(message), "content_policy_violation", statusCode)
 }
 
 type relayObservationWriter struct {
@@ -1078,6 +1180,19 @@ func executeTaskSubmissionWith(
 		diagnostics.cancelled("before_attempt", 0)
 		return nil, service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
 	}
+
+	// Generation prompts are audited once, before the first channel is chosen:
+	// a blocked submission must not reserve quota, hold a channel slot, or
+	// consume an upstream call, and a retry must not re-audit the same prompt.
+	stage = "moderation"
+	if protocol := generationContentModerationProtocolForRequest(c); protocol != "" {
+		if decision := checkGenerationContentModeration(c, relayInfo, protocol); decision != nil && decision.Blocked && !decision.Overloaded {
+			taskErr := generationModerationTaskError(decision)
+			diagnostics.failed(stage, "content_policy_violation", taskErr, false)
+			return nil, taskErr
+		}
+	}
+	stage = "before_attempt"
 
 	retryParam := &service.RetryParam{
 		Ctx:         c,

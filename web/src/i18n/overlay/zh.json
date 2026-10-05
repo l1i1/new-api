@@ -226,7 +226,7 @@
     "Inherit channel proxy": "继承渠道代理",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "在服务端逐字注入每个页面的 <head>，先于任何脚本执行——爬虫无需运行 JavaScript 即可读取。留空恢复默认头部。",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "查看行为级渠道能力标记与官方适配策略文档。",
-    "Inspect the latest user turn before upstream relay.": "在转发到上游前审核最新的用户消息。",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "在转发到上游前审核最新的用户消息或生成请求的提示词。",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "余额不足，无法支付发票手续费 {{fee}}",
     "Insufficient sample": "样本不足",
     "Invite balance": "邀请余额",

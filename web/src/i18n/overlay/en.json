@@ -226,7 +226,7 @@
     "Inherit channel proxy": "Inherit channel proxy",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "Inspect behaviour-level channel capability marks and the official-fit policy document.",
-    "Inspect the latest user turn before upstream relay.": "Inspect the latest user turn before upstream relay.",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "Inspect the latest user turn or generation prompt before upstream relay.",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "Insufficient balance to cover the invoice handling fee of {{fee}}",
     "Insufficient sample": "Insufficient sample",
     "Invite balance": "Invite balance",

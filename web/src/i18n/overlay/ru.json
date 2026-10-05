@@ -226,7 +226,7 @@
     "Inherit channel proxy": "Унаследовать прокси канала",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "Дословно вставляется в <head> каждой страницы на сервере до выполнения любых скриптов — краулеры видят его без запуска JavaScript. Оставьте пустым, чтобы восстановить заголовок по умолчанию.",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "Просмотр поведенческих отметок возможностей каналов и документа политики соответствия.",
-    "Inspect the latest user turn before upstream relay.": "Проверять последнее сообщение пользователя перед отправкой вверх по цепочке.",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "Проверять последнее сообщение пользователя или промпт генерации перед отправкой вверх по цепочке.",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "Недостаточно средств для оплаты комиссии за оформление счёта {{fee}}",
     "Insufficient sample": "Недостаточно выборки",
     "Invite balance": "Пригласительный остаток",

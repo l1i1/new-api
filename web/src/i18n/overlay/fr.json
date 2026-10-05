@@ -226,7 +226,7 @@
     "Inherit channel proxy": "Hériter du proxy du canal",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "Injecté tel quel dans le <head> de chaque page côté serveur, avant toute exécution de script — les crawlers le voient sans exécuter JavaScript. Laissez vide pour restaurer l'en-tête par défaut.",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "Consultez les marques de capacité par comportement des canaux et le document de politique d'adéquation officielle.",
-    "Inspect the latest user turn before upstream relay.": "Inspecter le dernier message utilisateur avant le relais amont.",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "Inspecter le dernier message utilisateur ou le prompt de génération avant le relais amont.",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "Solde insuffisant pour couvrir les frais de traitement de facture de {{fee}}",
     "Insufficient sample": "Échantillon insuffisant",
     "Invite balance": "Invite balance",

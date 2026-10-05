@@ -234,7 +234,9 @@ export function ContentModerationSection(
                   <SettingsSwitchContent>
                     <FormLabel>{t('Enable content moderation')}</FormLabel>
                     <FormDescription>
-                      {t('Inspect the latest user turn before upstream relay.')}
+                      {t(
+                        'Inspect the latest user turn or generation prompt before upstream relay.'
+                      )}
                     </FormDescription>
                   </SettingsSwitchContent>
                   <FormControl>

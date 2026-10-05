@@ -7,6 +7,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 ## Scope
 
 - OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini request bodies.
+- Generation prompts: the OpenAI Images API (`/v1/images/generations`, `/v1/images/edits`, `/v1/edits`), the video generation routes (`/v1/videos`, `/v1/video/generations`, `/kling/*`), the pinned task-plugin image and video bridges, and the task submission routes (`/suno/submit/*`, `/task/*`) are audited from the request prompt before channel selection, quota reservation, and the upstream call.
 - Text and image extraction from the latest user turn. Images are normalized from OpenAI Chat `image_url`, OpenAI Responses `input_image`, Anthropic image sources, and Gemini inline/file data.
 - OpenAI-compatible multimodal moderation input using `omni-moderation-latest`; HTTP(S) image URLs and Base64 image data URLs are supported, and at most one image is sampled per audited request.
 - Global enable switch, `observe` and `pre_block` modes, group and model filters, sample rate, timeout, retry count, API key rotation, and per-category thresholds.
@@ -20,7 +21,8 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 ## Non-goals
 
 - Persisting complete request bodies, image URLs, or Base64 image data.
-- Moderating assistant output.
+- Moderating assistant output. Generated images, video, and audio are never inspected: only the prompt that asked for them is audited.
+- Moderating image-edit input images. The typed image request carries a multipart reference rather than a fetchable image, so only the edit prompt is audited.
 - Replacing the existing `/v1/moderations` relay endpoint.
 - Adding a persistent queue/worker system in the first release; both modes use a bounded synchronous moderation call with the configured timeout, while notification email is dispatched after the decision through a bounded background task.
 
@@ -77,7 +79,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 - Cache correctness: cache only successful, durably recorded moderation responses; version keys by normalized policy; cap TTL at one year; merge concurrent first requests in-process and across Redis-backed nodes; keep failures retryable.
 - Input completeness: split oversized latest-user content rather than truncating it, keep one moderation HTTP request, and aggregate category maxima across chunks.
 - Multimodal compatibility: pure text keeps the existing one-result-per-text-input contract. When an image is present, bounded text chunks and one image are combined into one multimodal input and require one aggregate result. The configured moderation provider must implement the OpenAI multimodal `/v1/moderations` contract.
-- Conversation endpoint coverage: OpenAI Chat, OpenAI Responses and Responses Compaction, Anthropic Messages, and Gemini are covered; image generation, Realtime, Audio, and other non-conversation endpoints remain out of scope.
+- Conversation endpoint coverage: OpenAI Chat, OpenAI Responses and Responses Compaction, Anthropic Messages, and Gemini are covered, and generation prompts are covered for the OpenAI Images API, video generation, the pinned task-plugin bridges, and task submission routes. Realtime, Audio, Rerank, Embeddings, and non-submission task fetches remain out of scope. Generated media and image-edit input images are not inspected (see Non-goals).
 - Image privacy and size: image content is forwarded only to the configured moderation provider and is never persisted locally. Data URLs are restricted to PNG, JPEG, WEBP, or GIF, validated as strict Base64, and limited to 20 MB decoded bytes; image URLs are limited to 8 KiB and must be valid HTTP(S) URLs without embedded user info. More than 16 distinct candidate images is rejected before sampling one image. These limits follow the official OpenAI moderation 20 MB image boundary while bounding local parsing and provider payload cost.
 - Side-effect idempotency: auto-ban uses a conditional status transition, and notification email uses a durable per-log claim. SMTP cannot provide exactly-once delivery after an ambiguous connection failure, so ambiguous claims require operator review instead of an automatic resend.
 - Conversation semantics: both allow and flagged decisions are intentionally reused for the affinity TTL. This feature is a conversation-level gate; request-level enforcement requires an affinity key that advances when the auditable user-content revision changes.

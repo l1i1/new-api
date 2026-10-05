@@ -226,7 +226,7 @@
     "Inherit channel proxy": "チャネルのプロキシを継承",
     "Injected verbatim into the <head> of every page on the server, before any script runs — crawlers see it without executing JavaScript. Leave empty to restore the default head.": "サーバー側でスクリプト実行前に全ページの <head> へそのまま注入されます。クローラーは JavaScript を実行せずに読み取れます。空にするとデフォルトのヘッダーに戻ります。",
     "Inspect behaviour-level channel capability marks and the official-fit policy document.": "ビヘイビア単位のチャネル能力マークと公式適合ポリシードキュメントを確認します。",
-    "Inspect the latest user turn before upstream relay.": "上流へリレーする前に最新のユーザーメッセージを検査します。",
+    "Inspect the latest user turn or generation prompt before upstream relay.": "上流へリレーする前に最新のユーザーメッセージまたは生成プロンプトを検査します。",
     "Insufficient balance to cover the invoice handling fee of {{fee}}": "請求手数料 {{fee}} を支払うための残高が不足しています",
     "Insufficient sample": "サンプル不足",
     "Invite balance": "招待残高",

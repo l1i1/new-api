@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -35,6 +37,7 @@ func TestContentModerationProtocolForRelayFormatScopesConversationFormats(t *tes
 		{types.RelayFormatOpenAIResponsesCompaction, service.ContentModerationProtocolOpenAIResponses},
 		{types.RelayFormatClaude, service.ContentModerationProtocolAnthropic},
 		{types.RelayFormatGemini, service.ContentModerationProtocolGemini},
+		{types.RelayFormatOpenAIImage, service.ContentModerationProtocolOpenAIImage},
 	}
 	for _, test := range tests {
 		t.Run(string(test.format), func(t *testing.T) {
@@ -45,7 +48,6 @@ func TestContentModerationProtocolForRelayFormatScopesConversationFormats(t *tes
 	for _, format := range []types.RelayFormat{
 		types.RelayFormatOpenAIAlphaSearch,
 		types.RelayFormatOpenAIAudio,
-		types.RelayFormatOpenAIImage,
 		types.RelayFormatOpenAIRealtime,
 		types.RelayFormatRerank,
 		types.RelayFormatEmbedding,
@@ -188,6 +190,126 @@ func TestCheckRelayContentModerationUsesTypedImagesWithoutReadingBody(t *testing
 			require.Zero(t, body.reads)
 		})
 	}
+}
+
+func TestCheckRelayContentModerationAuditsImageGenerationPrompt(t *testing.T) {
+	var audited string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Input json.RawMessage `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(request.Body, &payload))
+		audited = string(payload.Input)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.97}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	// The image request is typed, so its prompt is audited without another
+	// BodyStorage read.
+	body := &unreadableRequestBody{}
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", body)
+	decision := checkRelayContentModeration(context, types.RelayFormatOpenAIImage, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "gpt-image-2", RequestId: "image-prompt-test",
+		Request: &dto.ImageRequest{Model: "gpt-image-2", Prompt: "flagged image prompt"},
+	})
+
+	require.NotNil(t, decision)
+	require.True(t, decision.Checked)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, decision.StatusCode)
+	require.Contains(t, audited, "flagged image prompt")
+	require.Zero(t, body.reads)
+}
+
+func TestGenerationContentModerationProtocolForRequestScopesGenerationRoutes(t *testing.T) {
+	tests := []struct {
+		path     string
+		protocol string
+	}{
+		{"/v1/images/generations", service.ContentModerationProtocolOpenAIImage},
+		{"/v1/images/edits", service.ContentModerationProtocolOpenAIImage},
+		{"/v1/edits", service.ContentModerationProtocolOpenAIImage},
+		{"/pg/images/generations", service.ContentModerationProtocolOpenAIImage},
+		{"/v1/videos", service.ContentModerationProtocolOpenAIVideo},
+		{"/v1/video/generations", service.ContentModerationProtocolOpenAIVideo},
+		{"/kling/v1/videos/text2video", service.ContentModerationProtocolOpenAIVideo},
+		{"/suno/submit/music", service.ContentModerationProtocolTask},
+	}
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(`{"prompt":"x"}`))
+			require.Equal(t, test.protocol, generationContentModerationProtocolForRequest(context))
+		})
+	}
+
+	// A pinned task-plugin endpoint states its own protocol, which wins over
+	// the path even when the bridge rewrites it.
+	pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
+	pinned.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"x"}`))
+	pinned.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Protocol: pluginruntime.ProtocolOpenAIImage})
+	require.Equal(t, service.ContentModerationProtocolOpenAIImage, generationContentModerationProtocolForRequest(pinned))
+}
+
+func TestCheckGenerationContentModerationAuditsTaskPrompt(t *testing.T) {
+	var audited string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Input json.RawMessage `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(request.Body, &payload))
+		audited = string(payload.Input)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"violence":0.99}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/videos",
+		strings.NewReader(`{"model":"grok-imagine-video","prompt":"flagged video prompt"}`))
+	common.SetContextKey(context, constant.ContextKeyOriginalModel, "grok-imagine-video")
+	context.Set(common.RequestIdKey, "task-prompt-test")
+
+	decision := checkGenerationContentModeration(context, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "grok-imagine-video", RequestId: "task-prompt-test",
+	}, generationContentModerationProtocolForRequest(context))
+	common.CleanupBodyStorage(context)
+
+	require.NotNil(t, decision)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, decision.StatusCode)
+	require.Contains(t, audited, "flagged video prompt")
+}
+
+func TestExecuteTaskSubmissionModerationPreBlockStopsBeforeChannelSelection(t *testing.T) {
+	moderationCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		moderationCalls++
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.99}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/suno/submit/music",
+		strings.NewReader(`{"prompt":"flagged music prompt"}`))
+	context.Set(common.RequestIdKey, "task-block-test")
+
+	outcome, taskErr := executeTaskSubmission(context, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "suno-v5", RequestId: "task-block-test",
+	})
+	common.CleanupBodyStorage(context)
+
+	require.Nil(t, outcome)
+	require.NotNil(t, taskErr)
+	require.True(t, taskErr.LocalError)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, taskErr.StatusCode)
+	require.Equal(t, 1, moderationCalls)
 }
 
 func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T) {

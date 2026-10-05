@@ -56,6 +56,18 @@ func TestExtractContentModerationTextUsesTypedRequests(t *testing.T) {
 	require.Equal(t, "latest responses", ExtractContentModerationText(responses, ContentModerationProtocolOpenAIResponses))
 }
 
+func TestExtractContentModerationTextUsesGenerationPrompts(t *testing.T) {
+	var image dto.ImageRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"model":"gpt-image-2","prompt":"a photorealistic scene"}`), &image))
+	require.Equal(t, "a photorealistic scene", ExtractContentModerationText(&image, ContentModerationProtocolOpenAIImage))
+
+	// Task routes (video, music, generic plugin submissions) carry no typed
+	// conversation DTO, so their prompt is read from the raw request body.
+	task := []byte(`{"model":"grok-imagine-video","prompt":"a storm over a city"}`)
+	require.Equal(t, "a storm over a city", ExtractContentModerationInput(nil, task, ContentModerationProtocolOpenAIVideo).Text)
+	require.Equal(t, "a storm over a city", ExtractContentModerationInput(nil, task, ContentModerationProtocolTask).Text)
+}
+
 func TestExtractContentModerationInputSupportsConversationImages(t *testing.T) {
 	tests := []struct {
 		name     string

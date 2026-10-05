@@ -102,7 +102,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 
 | 改造 | 关键文件 | 检测 |
 | --- | --- | --- |
-| 内容审核（可运营配置、日志与状态） | `service/content_moderation.go`、`model/content_moderation.go`、`docs/content-moderation-tech-spec.md` | `service/content_moderation_test.go`、`controller/content_moderation_relay_test.go` |
+| 内容审核（可运营配置、日志与状态；对话 + 图片/视频/任务生成提示词） | `service/content_moderation.go`、`controller/relay.go`、`model/content_moderation.go`、`docs/content-moderation-tech-spec.md` | `service/content_moderation_test.go`、`controller/content_moderation_relay_test.go` |
 | cyber policy / 违规费用归一化 | `controller/relay.go`、`service/relay_error.go`、`docs/cyber-policy-tech-spec.md` | 对应 `*_test.go` |
 | error-message 过滤 | `docs/error-message-filter-tech-spec.md` | 对应 `*_test.go` |
 
