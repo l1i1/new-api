@@ -511,8 +511,10 @@ func contentModerationGateOpen(c *gin.Context, info *relaycommon.RelayInfo) bool
 }
 
 // contentModerationBody materializes the disk-backed request body for the
-// surfaces that carry no typed request. It is the same body the adaptor
-// forwards upstream, so the audit sees exactly what the provider will.
+// surfaces that carry no typed request. It is the body the client sent; an
+// adaptor may normalise it further (the Kling and Jimeng middlewares rewrite
+// the path and reshape the payload), and in that case the audit still sees the
+// client's own prompt field rather than the adapted copy.
 func contentModerationBody(c *gin.Context) []byte {
 	if c == nil || c.Request == nil {
 		return nil
@@ -570,9 +572,11 @@ func ContentModerationProtocolForRelayFormat(relayFormat types.RelayFormat) stri
 // checkGenerationContentModeration is the task-path counterpart of
 // checkRelayContentModeration. Image, video, music and face-swap submissions
 // never carry a typed conversation DTO, so the audited text is the generation
-// prompt read from the request body (the same body the task adaptor forwards
-// upstream). It runs before channel selection, quota reservation and the
-// upstream call, so a blocked request costs nothing and reaches no provider.
+// prompt read from the request: the JSON body the client sent, or the prompt
+// form field when the request is form-encoded (the task adaptor may normalise
+// that body further before it reaches the provider). It runs before channel
+// selection, quota reservation and the upstream call, so a blocked request
+// costs nothing and reaches no provider.
 func checkGenerationContentModeration(c *gin.Context, info *relaycommon.RelayInfo, protocol string) *service.ContentModerationDecision {
 	if protocol == "" || !contentModerationGateOpen(c, info) {
 		return nil
@@ -583,7 +587,8 @@ func checkGenerationContentModeration(c *gin.Context, info *relaycommon.RelayInf
 	}
 	moderationRequest := service.ContentModerationRequest{
 		UserID: info.UserId, Group: group, Model: info.OriginModelName, Protocol: protocol,
-		RequestPath: c.Request.URL.Path, RequestID: info.RequestId, Body: contentModerationBody(c),
+		RequestPath: c.Request.URL.Path, RequestID: info.RequestId,
+		Text: contentModerationFormPrompt(c), Body: contentModerationBody(c),
 	}
 	if policy, loaded := service.GetGroupAccessPolicy(c); loaded {
 		moderationRequest.GroupPolicyFingerprint = policy.Fingerprint
@@ -591,6 +596,34 @@ func checkGenerationContentModeration(c *gin.Context, info *relaycommon.RelayInf
 	decision, _ := service.SubmitContentModeration(c.Request.Context(), moderationRequest)
 	logContentModerationDecisionError(c, info, protocol, decision)
 	return decision
+}
+
+// contentModerationFormPrompt reads the prompt of a form-encoded generation
+// request. Both multipart/form-data (POST /v1/videos, pinned /v1/images/edits)
+// and urlencoded bodies keep the prompt in a form field, which the JSON
+// extractor cannot see; leaving it unread would make every form-encoded
+// generation request unauditable. The parse is the shared reusable one, so the
+// adaptor parses the same payload later.
+func contentModerationFormPrompt(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
+	switch {
+	case strings.HasPrefix(contentType, "multipart/form-data"):
+		form, err := common.ParseMultipartFormReusable(c)
+		if err != nil || form == nil {
+			return ""
+		}
+		return strings.TrimSpace(strings.Join(form.Value["prompt"], "\n"))
+	case strings.HasPrefix(contentType, "application/x-www-form-urlencoded"):
+		if err := c.Request.ParseForm(); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(strings.Join(c.Request.PostForm["prompt"], "\n"))
+	default:
+		return ""
+	}
 }
 
 // generationContentModerationProtocolForRequest names the audited surface. A
@@ -605,8 +638,13 @@ func generationContentModerationProtocolForRequest(c *gin.Context) string {
 			switch pinned.Protocol {
 			case pluginruntime.ProtocolOpenAIImage:
 				return service.ContentModerationProtocolOpenAIImage
-			case "openai_video":
+			case pluginruntime.ProtocolOpenAIVideo:
 				return service.ContentModerationProtocolOpenAIVideo
+			case pluginruntime.ProtocolOpenAIResponses:
+				// The pinned Responses bridge submits through the task path and
+				// carries a Responses body, so it must keep the Responses
+				// extractor (`input`) instead of the task prompt extractor.
+				return service.ContentModerationProtocolOpenAIResponses
 			}
 		}
 	}
@@ -1085,7 +1123,7 @@ func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
 		return
 	}
 	switch pinned.Protocol {
-	case "openai_responses":
+	case pluginruntime.ProtocolOpenAIResponses:
 		serveTaskPluginProtocol(c, pinned, defaultPluginProtocolBridgeDeps())
 	case pluginruntime.ProtocolOpenAIImage:
 		serveTaskPluginImageProtocol(c, pinned, defaultPluginProtocolBridgeDeps())
@@ -1459,7 +1497,7 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 		}
 	}
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Protocol == "openai_video" && pinned.Operation.Name == "create" {
+		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Protocol == pluginruntime.ProtocolOpenAIVideo && pinned.Operation.Name == "create" {
 			diagnostics.present(outcome.Task, "openai_video_create")
 			c.JSON(http.StatusOK, outcome.Task.ToOpenAIVideo())
 			return

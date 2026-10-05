@@ -85,11 +85,11 @@ type HostProtocolDefinition struct {
 }
 
 var hostProtocols = []HostProtocolDefinition{
-	{Name: "openai_responses", Operations: []HostProtocolOperation{
+	{Name: ProtocolOpenAIResponses, Operations: []HostProtocolOperation{
 		{Name: "create", Methods: []string{http.MethodPost}, Path: "/v1/responses", BodyKinds: []BodyKind{BodyJSON}, ModelField: "model", RequiredProtocolMembers: []string{"decodeRequest"}, Modes: []ProtocolMode{{Name: "stream", Hook: "renderEvents"}, {Name: "sync", Hook: "renderFinal"}, {Name: "background", Hook: "renderFinal"}}},
 		{Name: "retrieve", Methods: []string{http.MethodGet}, Path: "/v1/responses/:response_id", BodyKinds: []BodyKind{BodyNone}},
 	}},
-	{Name: "openai_video", Operations: []HostProtocolOperation{
+	{Name: ProtocolOpenAIVideo, Operations: []HostProtocolOperation{
 		{Name: "create", Methods: []string{http.MethodPost}, Path: "/v1/videos", BodyKinds: []BodyKind{BodyJSON, BodyMultipart}, ModelField: "model", RequiredProtocolMembers: []string{"decodeRequest"}},
 		{Name: "retrieve", Methods: []string{http.MethodGet}, Path: "/v1/videos/:task_id", BodyKinds: []BodyKind{BodyNone}, RequiredProtocolMembers: []string{"render"}},
 		{Name: "content", Methods: []string{http.MethodGet, http.MethodHead}, Path: "/v1/videos/:task_id/content", BodyKinds: []BodyKind{BodyNone}, RequiredDriverHooks: []string{"listArtifacts", "buildContentRequest"}},
@@ -103,9 +103,20 @@ var hostProtocols = []HostProtocolDefinition{
 	}},
 }
 
-// ProtocolOpenAIImage is the host protocol that serves the OpenAI Images API
-// (`POST /v1/images/generations` and `POST /v1/images/edits`) from a plugin.
-const ProtocolOpenAIImage = "openai_image"
+// The host protocol names are wire values: they appear in plugin manifests and
+// in request-path labels, so callers must use these constants instead of
+// repeating the literals (a typo silently disables the matching bridge branch).
+const (
+	// ProtocolOpenAIResponses is the host protocol that serves the OpenAI
+	// Responses API (`POST /v1/responses`) from a plugin.
+	ProtocolOpenAIResponses = "openai_responses"
+	// ProtocolOpenAIVideo is the host protocol that serves the OpenAI Videos API
+	// (`POST /v1/videos` and its retrieve/content operations) from a plugin.
+	ProtocolOpenAIVideo = "openai_video"
+	// ProtocolOpenAIImage is the host protocol that serves the OpenAI Images API
+	// (`POST /v1/images/generations` and `POST /v1/images/edits`) from a plugin.
+	ProtocolOpenAIImage = "openai_image"
+)
 
 func HostProtocol(name string) (HostProtocolDefinition, bool) {
 	for _, definition := range hostProtocols {

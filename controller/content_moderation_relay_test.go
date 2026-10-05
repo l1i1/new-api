@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -248,10 +249,92 @@ func TestGenerationContentModerationProtocolForRequestScopesGenerationRoutes(t *
 
 	// A pinned task-plugin endpoint states its own protocol, which wins over
 	// the path even when the bridge rewrites it.
-	pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
-	pinned.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"x"}`))
-	pinned.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Protocol: pluginruntime.ProtocolOpenAIImage})
-	require.Equal(t, service.ContentModerationProtocolOpenAIImage, generationContentModerationProtocolForRequest(pinned))
+	pinnedProtocols := []struct {
+		pinned   string
+		protocol string
+	}{
+		{pluginruntime.ProtocolOpenAIImage, service.ContentModerationProtocolOpenAIImage},
+		{pluginruntime.ProtocolOpenAIVideo, service.ContentModerationProtocolOpenAIVideo},
+		// The Responses bridge submits through the task path but carries a
+		// Responses body, so it must keep the Responses extractor.
+		{pluginruntime.ProtocolOpenAIResponses, service.ContentModerationProtocolOpenAIResponses},
+	}
+	for _, test := range pinnedProtocols {
+		t.Run("pinned "+test.pinned, func(t *testing.T) {
+			pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
+			pinned.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"x"}`))
+			pinned.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Protocol: test.pinned})
+			require.Equal(t, test.protocol, generationContentModerationProtocolForRequest(pinned))
+		})
+	}
+}
+
+func TestCheckGenerationContentModerationAuditsPinnedResponsesInput(t *testing.T) {
+	var audited string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Input json.RawMessage `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(request.Body, &payload))
+		audited = string(payload.Input)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"illicit":0.99}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/responses",
+		strings.NewReader(`{"model":"gpt-test","input":"flagged responses prompt"}`))
+	context.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Protocol: pluginruntime.ProtocolOpenAIResponses})
+	context.Set(common.RequestIdKey, "pinned-responses-test")
+
+	decision := checkGenerationContentModeration(context, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "gpt-test", RequestId: "pinned-responses-test",
+	}, generationContentModerationProtocolForRequest(context))
+	common.CleanupBodyStorage(context)
+
+	require.NotNil(t, decision)
+	require.True(t, decision.Blocked)
+	require.Contains(t, audited, "flagged responses prompt")
+}
+
+func TestCheckGenerationContentModerationAuditsMultipartTaskPrompt(t *testing.T) {
+	var audited string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Input json.RawMessage `json:"input"`
+		}
+		require.NoError(t, common.DecodeJson(request.Body, &payload))
+		audited = string(payload.Input)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.99}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	// POST /v1/videos accepts multipart/form-data as a declared body kind; the
+	// prompt lives in a form field, which the JSON extractor cannot see.
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	require.NoError(t, writer.WriteField("model", "grok-imagine-video"))
+	require.NoError(t, writer.WriteField("prompt", "flagged multipart prompt"))
+	require.NoError(t, writer.Close())
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(form.Bytes()))
+	context.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	common.SetContextKey(context, constant.ContextKeyOriginalModel, "grok-imagine-video")
+	context.Set(common.RequestIdKey, "multipart-prompt-test")
+
+	decision := checkGenerationContentModeration(context, &relaycommon.RelayInfo{
+		UserId: 1, OriginModelName: "grok-imagine-video", RequestId: "multipart-prompt-test",
+	}, generationContentModerationProtocolForRequest(context))
+	common.CleanupBodyStorage(context)
+
+	require.NotNil(t, decision)
+	require.True(t, decision.Blocked)
+	require.Contains(t, audited, "flagged multipart prompt")
 }
 
 func TestCheckGenerationContentModerationAuditsTaskPrompt(t *testing.T) {
@@ -309,6 +392,34 @@ func TestExecuteTaskSubmissionModerationPreBlockStopsBeforeChannelSelection(t *t
 	require.NotNil(t, taskErr)
 	require.True(t, taskErr.LocalError)
 	require.Equal(t, http.StatusUnavailableForLegalReasons, taskErr.StatusCode)
+	require.Equal(t, 1, moderationCalls)
+}
+
+func TestExecuteTaskSubmissionPassesAllowedGenerationPromptToChannelSelection(t *testing.T) {
+	moderationCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		moderationCalls++
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":false,"category_scores":{"sexual":0.01}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/suno/submit/music",
+		strings.NewReader(`{"prompt":"a calm melody"}`))
+	context.Set(common.RequestIdKey, "task-allow-test")
+	info, err := relaycommon.GenRelayInfo(context, types.RelayFormatTask, nil, nil)
+	require.NoError(t, err)
+
+	outcome, taskErr := executeTaskSubmission(context, info)
+	common.CleanupBodyStorage(context)
+
+	// This test has no database, so channel selection is what fails; the point
+	// is that an allowed prompt is not turned into a content-policy block.
+	require.Nil(t, outcome)
+	require.NotNil(t, taskErr)
+	require.NotEqual(t, "content_policy_violation", taskErr.Code)
 	require.Equal(t, 1, moderationCalls)
 }
 

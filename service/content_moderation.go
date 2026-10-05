@@ -2327,6 +2327,16 @@ func extractLatestUserInput(body []byte, protocol string) (ContentModerationInpu
 		return ContentModerationInput{}, false
 	}
 	protocol = strings.ToLower(protocol)
+	if isGenerationContentModerationProtocol(protocol) {
+		// A generation body is a request for one artifact, not a conversation:
+		// the prompt is the whole user input. Generation protocols therefore
+		// consult `prompt` first and never fall back to `messages`, because a
+		// caller who attaches an assistant-role `messages` array to an image or
+		// video body would otherwise suppress its own audit.
+		if input, ok := extractGenerationModerationPrompt(body); ok {
+			return input, true
+		}
+	}
 	if strings.Contains(protocol, "gemini") {
 		// Gemini omits role for user contents in some compatible clients; an
 		// empty role is treated as user while model turns remain excluded.
@@ -2352,6 +2362,37 @@ func extractLatestUserInput(body []byte, protocol string) (ContentModerationInpu
 		return ContentModerationInput{Text: prompt.String()}, true
 	}
 	return ContentModerationInput{}, false
+}
+
+// isGenerationContentModerationProtocol reports whether the protocol names a
+// request whose audited input is a generation prompt rather than a turn.
+func isGenerationContentModerationProtocol(protocol string) bool {
+	switch protocol {
+	case ContentModerationProtocolOpenAIImage, ContentModerationProtocolOpenAIVideo, ContentModerationProtocolTask:
+		return true
+	default:
+		return false
+	}
+}
+
+// extractGenerationModerationPrompt reads the prompt a generation body asks the
+// model to render. A missing prompt falls through to the conversation
+// extraction (a pinned Responses bridge carries `input` instead); a prompt that
+// is not a string is audited in its JSON form rather than skipped, since
+// skipping is what an evasive caller would aim for.
+func extractGenerationModerationPrompt(body []byte) (ContentModerationInput, bool) {
+	prompt := gjson.GetBytes(body, "prompt")
+	if !prompt.Exists() || prompt.Type == gjson.Null {
+		return ContentModerationInput{}, false
+	}
+	if prompt.Type == gjson.String {
+		return ContentModerationInput{Text: prompt.String()}, true
+	}
+	raw := strings.TrimSpace(prompt.Raw)
+	if raw == "" {
+		return ContentModerationInput{}, false
+	}
+	return ContentModerationInput{Text: raw}, true
 }
 
 func latestUserArrayInput(value gjson.Result, requireUserRole bool) ContentModerationInput {

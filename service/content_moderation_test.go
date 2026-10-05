@@ -66,6 +66,19 @@ func TestExtractContentModerationTextUsesGenerationPrompts(t *testing.T) {
 	task := []byte(`{"model":"grok-imagine-video","prompt":"a storm over a city"}`)
 	require.Equal(t, "a storm over a city", ExtractContentModerationInput(nil, task, ContentModerationProtocolOpenAIVideo).Text)
 	require.Equal(t, "a storm over a city", ExtractContentModerationInput(nil, task, ContentModerationProtocolTask).Text)
+
+	// A generation body that also carries conversation-shaped keys must still
+	// audit its prompt: consulting `messages` first would let a caller suppress
+	// the audit by attaching an assistant-role array.
+	decoy := []byte(`{"model":"gpt-image-2","messages":[{"role":"assistant","content":"decoy"}],"prompt":"audited anyway"}`)
+	require.Equal(t, "audited anyway", ExtractContentModerationInput(nil, decoy, ContentModerationProtocolOpenAIImage).Text)
+	require.Equal(t, "audited anyway", ExtractContentModerationInput(nil, decoy, ContentModerationProtocolOpenAIVideo).Text)
+
+	// A prompt that is not a string is user content too; audit its JSON form
+	// instead of skipping it.
+	structured := []byte(`{"model":"grok-imagine-video","prompt":{"scene":"a storm","style":"noir"}}`)
+	require.Contains(t, ExtractContentModerationInput(nil, structured, ContentModerationProtocolOpenAIVideo).Text, "a storm")
+	require.Equal(t, "", ExtractContentModerationInput(nil, []byte(`{"prompt":null}`), ContentModerationProtocolOpenAIVideo).Text)
 }
 
 func TestExtractContentModerationInputSupportsConversationImages(t *testing.T) {

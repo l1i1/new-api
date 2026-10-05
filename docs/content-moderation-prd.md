@@ -7,7 +7,7 @@ Add an operator-controlled conversation content moderation gate to New API. The 
 ## Scope
 
 - OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini request bodies.
-- Generation prompts: the OpenAI Images API (`/v1/images/generations`, `/v1/images/edits`, `/v1/edits`), the video generation routes (`/v1/videos`, `/v1/video/generations`, `/kling/*`), the pinned task-plugin image and video bridges, and the task submission routes (`/suno/submit/*`, `/task/*`) are audited from the request prompt before channel selection, quota reservation, and the upstream call.
+- Generation prompts: the OpenAI Images API (`/v1/images/generations`, `/v1/images/edits`, `/v1/edits`, playground image routes), the video generation routes (`/v1/videos`, `/v1/videos/:id/remix`, `/v1/video/generations`, `/kling/*`, `/jimeng/*`), the pinned task-plugin Responses/Images/Videos bridges, the plugin-generated routes, and the task submission routes (`/suno/submit/*`, `/v1/tasks/:key`) are audited from the request prompt (JSON body or form field) before channel selection, quota reservation, and the upstream call.
 - Text and image extraction from the latest user turn. Images are normalized from OpenAI Chat `image_url`, OpenAI Responses `input_image`, Anthropic image sources, and Gemini inline/file data.
 - OpenAI-compatible multimodal moderation input using `omni-moderation-latest`; HTTP(S) image URLs and Base64 image data URLs are supported, and at most one image is sampled per audited request.
 - Global enable switch, `observe` and `pre_block` modes, group and model filters, sample rate, timeout, retry count, API key rotation, and per-category thresholds.
