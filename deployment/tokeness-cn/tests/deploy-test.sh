@@ -104,6 +104,10 @@ chmod 0700 "$bin_dir"/*
 touch "$test_root/key"
 chmod 0600 "$test_root/key"
 
+run_deploy_legacy() {
+  SWAS_PANEL_TIER=1 run_deploy "$@"
+}
+
 run_deploy() {
   local case_dir="$1"
   shift
@@ -114,6 +118,14 @@ run_deploy() {
   done
   mkdir -p "$case_dir/state"
   local rc=0
+  # The ECS is the relay and panel entry now (SWAS_PANEL_TIER defaults to 0), so
+  # the release reads ITS upstream file instead of the retired lightweight
+  # hosts' nginx. Production fills that file from the local ESS view, so the
+  # default here names the instance the fake ESS promotes; a case that exercises
+  # the gate writes its own copy before calling run_deploy.
+  if [[ ! -e "$case_dir/ecs-upstream.conf" ]]; then
+    printf 'server 10.0.0.241:3000;\n' > "$case_dir/ecs-upstream.conf"
+  fi
   # The relay tier is pinned through a marker file that the fake ssh creates
   # locally, so every case needs its own path; and the drain hold is set to 0
   # because a test cannot usefully wait the production 600s. Cases that assert
@@ -121,6 +133,7 @@ run_deploy() {
   env \
     PATH="$bin_dir:$PATH" \
     NGINX_CONF="$case_dir/nginx.conf" \
+    ECS_UPSTREAM_CONF="$case_dir/ecs-upstream.conf" \
     SWAS_SSH_KEY_PATH="$test_root/key" \
     HOST_BOOTSTRAP_SCRIPT="$host_bootstrap" \
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
@@ -146,21 +159,21 @@ run_deploy() {
 invalid_ip_case="$test_root/invalid-ip"
 mkdir -p "$invalid_ip_case"
 make_conf "$invalid_ip_case/nginx.conf"
-if run_deploy "$invalid_ip_case" nginx-update 10.0.0.999; then
+if run_deploy_legacy "$invalid_ip_case" nginx-update 10.0.0.999; then
   fail "invalid IPv4 address unexpectedly succeeded"
 fi
 
 public_failure_case="$test_root/public-failure"
 mkdir -p "$public_failure_case"
 make_conf "$public_failure_case/nginx.conf"
-if run_deploy "$public_failure_case" TOKENESS_TEST_PUBLIC_FAIL=1 verify; then
+if run_deploy_legacy "$public_failure_case" TOKENESS_TEST_PUBLIC_FAIL=1 verify; then
   fail "public failure unexpectedly passed verification"
 fi
 
 direct_failure_case="$test_root/direct-failure"
 mkdir -p "$direct_failure_case"
 make_conf "$direct_failure_case/nginx.conf"
-if run_deploy "$direct_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 verify; then
+if run_deploy_legacy "$direct_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 verify; then
   fail "direct failure unexpectedly passed verification"
 fi
 
@@ -168,13 +181,13 @@ fi
 bad_body_case="$test_root/bad-body"
 mkdir -p "$bad_body_case"
 make_conf "$bad_body_case/nginx.conf"
-if run_deploy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='{"success":false}' verify; then
+if run_deploy_legacy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='{"success":false}' verify; then
   fail "non-success public body unexpectedly passed verification"
 fi
-if run_deploy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='not-json' verify; then
+if run_deploy_legacy "$bad_body_case" TOKENESS_TEST_PUBLIC_BODY='not-json' verify; then
   fail "invalid public JSON unexpectedly passed verification"
 fi
-if run_deploy "$bad_body_case" TOKENESS_TEST_DIRECT_BODY='{"success":false}' verify; then
+if run_deploy_legacy "$bad_body_case" TOKENESS_TEST_DIRECT_BODY='{"success":false}' verify; then
   fail "non-success direct body unexpectedly passed verification"
 fi
 
@@ -187,7 +200,7 @@ awk '
   $0 == "upstream newapi_ml {" { print "    server 10.0.0.208:3000;" }
 ' "$duplicate_case/nginx.conf" > "$tmp_conf"
 mv -- "$tmp_conf" "$duplicate_case/nginx.conf"
-if run_deploy "$duplicate_case" verify; then
+if run_deploy_legacy "$duplicate_case" verify; then
   fail "duplicate upstream unexpectedly passed verification"
 fi
 
@@ -196,24 +209,24 @@ param_case="$test_root/parameterized"
 mkdir -p "$param_case"
 make_conf "$param_case/nginx.conf"
 sed -i 's|server 10.0.0.207:3000;|server 10.0.0.207:3000 max_fails=3 fail_timeout=30s;|' "$param_case/nginx.conf"
-run_deploy "$param_case" nginx-update 10.0.0.209
+run_deploy_legacy "$param_case" nginx-update 10.0.0.209
 assert_contains "$param_case/nginx.conf" 'server 10.0.0.209:3000 max_fails=3 fail_timeout=30s;'
 assert_not_contains "$param_case/nginx.conf" 'server 10.0.0.207:3000;'
 
 success_case="$test_root/success"
 mkdir -p "$success_case"
 make_conf "$success_case/nginx.conf"
-run_deploy "$success_case" nginx-update 10.0.0.208
+run_deploy_legacy "$success_case" nginx-update 10.0.0.208
 assert_contains "$success_case/nginx.conf" 'server 10.0.0.208:3000;'
 assert_contains "$success_case/nginx.conf" '# server 10.0.0.99:3000;'
 assert_contains "$success_case/nginx.conf" 'server 10.9.9.9:3000;'
 assert_not_contains "$success_case/nginx.conf" 'server 10.0.0.207:3000;'
-run_deploy "$success_case" nginx-update 10.0.0.208
+run_deploy_legacy "$success_case" nginx-update 10.0.0.208
 
 nginx_failure_case="$test_root/nginx-failure"
 mkdir -p "$nginx_failure_case"
 make_conf "$nginx_failure_case/nginx.conf"
-if run_deploy "$nginx_failure_case" TOKENESS_TEST_NGINX_FAIL=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$nginx_failure_case" TOKENESS_TEST_NGINX_FAIL=1 nginx-update 10.0.0.208; then
   fail "nginx validation failure unexpectedly succeeded"
 fi
 assert_contains "$nginx_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -222,7 +235,7 @@ assert_not_contains "$nginx_failure_case/nginx.conf" 'server 10.0.0.208:3000;'
 reload_failure_case="$test_root/reload-failure"
 mkdir -p "$reload_failure_case"
 make_conf "$reload_failure_case/nginx.conf"
-if run_deploy "$reload_failure_case" TOKENESS_TEST_RELOAD_FAIL_ONCE=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$reload_failure_case" TOKENESS_TEST_RELOAD_FAIL_ONCE=1 nginx-update 10.0.0.208; then
   fail "reload failure unexpectedly succeeded"
 fi
 assert_contains "$reload_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -231,7 +244,7 @@ assert_not_contains "$reload_failure_case/nginx.conf" 'server 10.0.0.208:3000;'
 rollback_reload_failure_case="$test_root/rollback-reload-failure"
 mkdir -p "$rollback_reload_failure_case"
 make_conf "$rollback_reload_failure_case/nginx.conf"
-if run_deploy "$rollback_reload_failure_case" TOKENESS_TEST_RELOAD_FAIL_ALWAYS=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$rollback_reload_failure_case" TOKENESS_TEST_RELOAD_FAIL_ALWAYS=1 nginx-update 10.0.0.208; then
   fail "unverified rollback reload unexpectedly succeeded"
 fi
 assert_contains "$rollback_reload_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -243,7 +256,7 @@ fi
 post_verify_case="$test_root/post-verify"
 mkdir -p "$post_verify_case"
 make_conf "$post_verify_case/nginx.conf"
-if run_deploy "$post_verify_case" TOKENESS_TEST_DIRECT_FAIL=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$post_verify_case" TOKENESS_TEST_DIRECT_FAIL=1 nginx-update 10.0.0.208; then
   fail "post-update verification failure unexpectedly succeeded"
 fi
 assert_contains "$post_verify_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -253,7 +266,7 @@ assert_not_contains "$post_verify_case/nginx.conf" 'server 10.0.0.208:3000;'
 post_public_failure_case="$test_root/post-public-failure"
 mkdir -p "$post_public_failure_case"
 make_conf "$post_public_failure_case/nginx.conf"
-if run_deploy "$post_public_failure_case" TOKENESS_TEST_PUBLIC_FAIL=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$post_public_failure_case" TOKENESS_TEST_PUBLIC_FAIL=1 nginx-update 10.0.0.208; then
   fail "post-update public failure unexpectedly succeeded"
 fi
 assert_contains "$post_public_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -264,7 +277,7 @@ assert_not_contains "$post_public_failure_case/nginx.conf" 'server 10.0.0.208:30
 post_rollback_probe_failure_case="$test_root/post-rollback-probe-failure"
 mkdir -p "$post_rollback_probe_failure_case"
 make_conf "$post_rollback_probe_failure_case/nginx.conf"
-if run_deploy "$post_rollback_probe_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 nginx-update 10.0.0.208; then
+if run_deploy_legacy "$post_rollback_probe_failure_case" TOKENESS_TEST_DIRECT_FAIL=1 nginx-update 10.0.0.208; then
   fail "post-rollback probe failure unexpectedly succeeded"
 fi
 assert_contains "$post_rollback_probe_failure_case/nginx.conf" 'server 10.0.0.207:3000;'
@@ -287,7 +300,7 @@ image_ref="$(run_deploy "$image_case" image-ref "$VALID_DIGEST")"
 for bad_ip in 10.0.0.008 10.0.0.256 10.0.0 10.0.0.0.1 10.0.0.a; do
   mkdir -p "$test_root/ip-$bad_ip"
   make_conf "$test_root/ip-$bad_ip/nginx.conf"
-  if run_deploy "$test_root/ip-$bad_ip" nginx-update "$bad_ip"; then
+  if run_deploy_legacy "$test_root/ip-$bad_ip" nginx-update "$bad_ip"; then
     fail "invalid IPv4 '$bad_ip' unexpectedly accepted"
   fi
 done
@@ -497,20 +510,30 @@ grep -q "eci DescribeContainerLog" "$release_case/state/aliyun-calls.log" \
 grep -q "vpc AddCommonBandwidthPackageIp .*--IpInstanceId eip-eci-new-1" "$release_case/state/aliyun-calls.log" \
   || fail "rollout never bound the instance EIP to the shared bandwidth package"
 # The deploy pipeline must converge the master container to the same release,
-# blue-green: start gates the green container, the panel tier is pinned onto
-# the green port and converges, and commit retires blue - all before the ESS
+# blue-green: start gates the green container, the commit flips the ECS's own
+# nginx - the panel tier, now that the lightweight hosts retired - and the
+# post-commit probe must confirm the ECS serves the green port before the ESS
 # group scales out.
 assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 1 phase=start"
 assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 2 phase=commit"
-[[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 2 ]] \
-  || fail "blue-green master roll did not run exactly start+commit"
-# Both lightweight hosts were pinned to the green port (3001), and only after
-# the pin did the commit retire blue.
-[[ "$(cat "$release_case/state/web-primary-port")" == "3001" ]] \
-  || fail "web-primary marker does not name the green port (3001)"
-[[ "$(grep -c 'web-port-pin' "$release_case/state/aliyun-calls.log")" -eq 2 ]] \
-  || fail "both lightweight hosts were not pinned to the green port"
-assert_contains "$release_case/nginx.conf" "server 10.1.0.43:3001 max_fails=2 fail_timeout=10s;"
+# The post-commit probe is the gate that replaced the retired marker
+# convergence: it reads the live serving port rather than our intent.
+assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocation 3 phase=probe"
+[[ "$(wc -l < "$release_case/state/host-bootstrap.log")" -eq 3 ]] \
+  || fail "blue-green master roll did not run exactly start+commit+probe"
+# The retired lightweight hosts are not touched at all: the panel tier is this
+# ECS, the commit flips its nginx, and the post-commit probe proves it.
+grep -q 'panel tier is this ECS' "$release_case/state/stdout.log" \
+  || fail "the release did not take the ECS panel-tier path"
+grep -q 'ECS serves green, blue retired' "$release_case/state/stdout.log" \
+  || fail "the post-commit probe did not confirm the ECS serving green"
+[[ "$(grep -c 'web-port-pin' "$release_case/state/aliyun-calls.log" || true)" -eq 0 ]] \
+  || fail "the release pinned a retired lightweight host"
+[[ ! -e "$release_case/state/web-primary-port" ]] \
+  || fail "a web-primary marker was written although the lightweight tier retired"
+# The relay entry is the ECS too: its upstream file is what the rollout gates on
+# and what verification reads, so it must name the promoted instance.
+assert_contains "$release_case/ecs-upstream.conf" "server 10.0.0.241:3000;"
 # Master-first: the whole blue-green cycle (start..commit) must complete
 # before the ESS group scales out.
 first_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
@@ -557,10 +580,11 @@ if grep -q "ess ModifyScalingGroup" "$host_mismatch_case/state/aliyun-calls.log"
   fail "ESS rollout started even though the master never matched the release"
 fi
 # The failed green roll reconciles (abort), then the recovery path re-rolls
-# blue-green from the restored digest: start+abort, then start+commit.
+# blue-green from the restored digest: start+abort, then start+commit+probe (the
+# post-commit probe is the gate that replaced the retired marker convergence).
 grep -q "phase=abort" "$host_mismatch_case/state/host-bootstrap.log" \
   || fail "master roll did not reconcile via abort after the version mismatch"
-[[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 5 ]] \
+[[ "$(wc -l < "$host_mismatch_case/state/host-bootstrap.log")" -eq 6 ]] \
   || fail "unexpected bootstrap invocation count after the version mismatch"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_mismatch_case/state/state.json" > /dev/null \
   || fail "scaling configuration was not restored after the master version mismatch"
@@ -568,18 +592,23 @@ jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_mis
 # Blue-green panel flip fails closed: when the web-primary pin cannot be
 # written on a lightweight host, the release aborts before commit and before
 # the ESS rollout - blue keeps serving, the abort reconciles green away.
+# SWAS_PANEL_TIER=1 keeps the retired panel path covered: its ml-sync was
+# stopped rather than deleted, so it is one systemctl away from mattering.
 web_flip_fail_case="$test_root/web-flip-fail"
 mkdir -p "$web_flip_fail_case"
 make_conf "$web_flip_fail_case/nginx.conf"
 mkdir -p "$web_flip_fail_case/state"
 init_ess_state "$web_flip_fail_case/state"
 if run_deploy "$web_flip_fail_case" \
+  SWAS_PANEL_TIER=1 \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   TOKENESS_TEST_SSH_FAIL_ON='web_port_marker' \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "release unexpectedly succeeded while the web-primary pin was refused"
 fi
+grep -q 'web-port-pin' "$web_flip_fail_case/state/aliyun-calls.log" \
+  || fail "the retired panel-tier path stopped pinning the lightweight hosts"
 if grep -q "ess ModifyScalingGroup" "$web_flip_fail_case/state/aliyun-calls.log"; then
   fail "ESS rollout started even though the panel tier was never switched"
 fi
@@ -590,6 +619,27 @@ grep -q "phase=abort" "$web_flip_fail_case/state/host-bootstrap.log" \
   || fail "the failed panel switch was not reconciled via abort"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$web_flip_fail_case/state/state.json" > /dev/null \
   || fail "scaling configuration was not restored after the failed panel switch"
+
+# Fail closed on the ECS path too: if the ECS relay entry never picks the new
+# instance up, the rollout must abort while the old instance still serves rather
+# than scale it away. The fixture names only the retiring member, which is what a
+# broken ecs-fleet-sync would leave behind.
+ecs_gate_fail_case="$test_root/ecs-gate-fail"
+mkdir -p "$ecs_gate_fail_case"
+make_conf "$ecs_gate_fail_case/nginx.conf"
+mkdir -p "$ecs_gate_fail_case/state"
+printf 'server 10.0.0.207:3000;\n' > "$ecs_gate_fail_case/ecs-upstream.conf"
+init_ess_state "$ecs_gate_fail_case/state"
+if run_deploy "$ecs_gate_fail_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "release unexpectedly succeeded although the ECS relay entry never served the new instance"
+fi
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$ecs_gate_fail_case/state/state.json" > /dev/null \
+  || fail "the scaling configuration was not restored after the ECS relay gate failed"
+jq -e '.instances | length == 1' "$ecs_gate_fail_case/state/state.json" > /dev/null \
+  || fail "the failed ECS relay gate still scaled the group down"
 
 # Master-first abort: a failing host bootstrap aborts the release before the
 # ESS group is touched, restores the previous scaling configuration, and
@@ -613,7 +663,7 @@ jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$host_fai
   || fail "scaling configuration was not restored after the failed master sync"
 # The green start failed (blue untouched, so no abort), then the recovery path
 # re-rolls blue-green from the restored digest: failed start, then start+commit.
-[[ "$(wc -l < "$host_fail_case/state/host-bootstrap.log")" -eq 3 ]] \
+[[ "$(wc -l < "$host_fail_case/state/host-bootstrap.log")" -eq 4 ]] \
   || fail "host was not re-rolled blue-green from the restored configuration"
 grep -q "phase=commit" "$host_fail_case/state/host-bootstrap.log" \
   || fail "recovery roll did not complete with a commit"
@@ -639,10 +689,10 @@ grep -q "eci DeleteContainerGroup" "$app_failure_case/state/aliyun-calls.log" \
 jq -e '.desired == 1 and ([.instances[].InstanceId] | index("eci-old") != null)' \
   "$app_failure_case/state/state.json" > /dev/null \
   || fail "rollback did not converge back to a single old instance"
-# Master-first: the host took the release before the rollout (start+commit);
-# after the failed rollout the master must be re-synced to the restored
-# previous digest (another start+commit, so four bootstrap invocations).
-[[ "$(wc -l < "$app_failure_case/state/host-bootstrap.log")" -eq 4 ]] \
+# Master-first: the host took the release before the rollout
+# (start+commit+probe); after the failed rollout the master must be re-synced to
+# the restored previous digest (another start+commit+probe, so six invocations).
+[[ "$(wc -l < "$app_failure_case/state/host-bootstrap.log")" -eq 6 ]] \
   || fail "master was not re-synced after the failed rollout"
 grep -q "phase=commit" "$app_failure_case/state/host-bootstrap.log" \
   || fail "master re-sync after the failed rollout did not commit"
@@ -661,9 +711,9 @@ if run_deploy "$fatal_case" \
 fi
 grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
   || fail "FATAL log did not trigger container cleanup"
-# Same accounting as the app-failure case: the release roll (start+commit) plus
-# the post-failure re-sync (start+commit).
-[[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 4 ]] \
+# Same accounting as the app-failure case: the release roll
+# (start+commit+probe) plus the post-failure re-sync (start+commit+probe).
+[[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 6 ]] \
   || fail "master was not re-synced after the FATAL-aborted rollout"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
@@ -758,6 +808,7 @@ make_conf "$drain_case/nginx.conf"
 mkdir -p "$drain_case/state"
 init_ess_state "$drain_case/state"
 if ! run_deploy "$drain_case" \
+  SWAS_PANEL_TIER=1 \
   TOKENESS_TEST_MLSYNC=1 \
   ML_DRAIN_SECONDS=2 \
   ROLLOUT_HEARTBEAT_SECONDS=1 \
@@ -799,6 +850,7 @@ make_conf "$drain_fail_case/nginx.conf"
 mkdir -p "$drain_fail_case/state"
 init_ess_state "$drain_fail_case/state"
 if run_deploy "$drain_fail_case" \
+  SWAS_PANEL_TIER=1 \
   TOKENESS_TEST_MLSYNC=1 \
   ML_DRAIN_SECONDS=1 \
   TOKENESS_TEST_SSH_FAIL_HOST=101.133.234.135 \

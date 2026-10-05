@@ -92,6 +92,17 @@ readonly WEB_PRIMARY_MARKER_PATH="${WEB_PRIMARY_MARKER_PATH:-/etc/ml-sync/web-pr
 # Private address the panel tier uses for the master (the ECS is reached over
 # the VPC peering; MASTER_HOST is its public IP for SSH).
 readonly WEB_PRIMARY_HOST="${WEB_PRIMARY_HOST:-10.1.0.43}"
+# The lightweight panel tier was retired on 2026-10-05 (user decision): the
+# panel domain's EdgeOne origin is this ECS, and the two Chengdu hosts no longer
+# run nginx or ml-sync. At the default the master blue-green relies on the
+# bootstrap's commit to flip the ECS's own nginx and verifies the result through
+# the bootstrap's probe, and the relay rollout waits on the ECS's upstream file
+# instead of pinning a remote host. SWAS_PANEL_TIER=1 restores the retired path,
+# which is kept — and still covered by tests — because that path's ml-sync was
+# stopped rather than deleted, so it is one systemctl away from mattering again.
+readonly SWAS_PANEL_TIER="${SWAS_PANEL_TIER:-0}"
+# The ECS relay upstream file, written by ecs-fleet-sync from the local ESS view.
+readonly ECS_UPSTREAM_CONF="${ECS_UPSTREAM_CONF:-/etc/nginx/fleet/newapi_ml_servers.conf}"
 readonly WEB_PRIMARY_CONVERGE_ATTEMPTS="${WEB_PRIMARY_CONVERGE_ATTEMPTS:-12}"
 readonly WEB_PRIMARY_CONVERGE_DELAY_SECONDS="${WEB_PRIMARY_CONVERGE_DELAY_SECONDS:-15}"
 
@@ -247,6 +258,8 @@ verify_node() {
   require_command jq
 
   local public_body direct_body upstream_ip
+  local -a probe_target
+  local probe_label members
   if ! public_body="$(curl -fsS --connect-timeout 15 --max-time "$VERIFY_TIMEOUT_SECONDS" "$EDGEONE_TEST_URL")"; then
     error "EdgeOne public chain failed: $EDGEONE_TEST_URL"
     return 1
@@ -254,10 +267,27 @@ verify_node() {
   validate_status_body "EdgeOne public chain" "$public_body" || return 1
   log "EdgeOne public chain is healthy"
 
-  upstream_ip="$(get_upstream_ip)" || return 1
-  log "lightweight nginx upstream is $upstream_ip:$NGINX_UPSTREAM_PORT"
+  # SWAS_PANEL_TIER=1 (retired path): the relay entry is the two lightweight
+  # hosts, so read their nginx and probe the private chain from there. Default:
+  # the entry is this ECS — read its upstream file and probe from it, which is
+  # the same hop the public chain takes, minus EdgeOne.
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    upstream_ip="$(get_upstream_ip)" || return 1
+    log "lightweight nginx upstream is $upstream_ip:$NGINX_UPSTREAM_PORT"
+    probe_target=("$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS")
+    probe_label="lightweight server to ECI private chain"
+  else
+    members="$(ecs_upstream_members)" \
+      || { error "could not read the ECS relay upstream members from $MASTER_HOST:$ECS_UPSTREAM_CONF"; return 1; }
+    upstream_ip="$(head -n1 <<<"$members")"
+    [[ -n "$upstream_ip" ]] \
+      || { error "the ECS relay upstream file names no member ($ECS_UPSTREAM_CONF)"; return 1; }
+    log "ECS relay upstream is $(tr '\n' ' ' <<<"$members")(primary $upstream_ip:$NGINX_UPSTREAM_PORT)"
+    probe_target=("$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS")
+    probe_label="ECS to ECI private chain"
+  fi
 
-  if ! direct_body="$(remote_cmd "$DIRECT_PROBE_URL" "$VERIFY_TIMEOUT_SECONDS" "$DIRECT_PROBE_INSECURE" <<'REMOTE_PROBE'
+  if ! direct_body="$(remote_cmd_on "${probe_target[@]}" "$DIRECT_PROBE_URL" "$VERIFY_TIMEOUT_SECONDS" "$DIRECT_PROBE_INSECURE" <<'REMOTE_PROBE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 url="$1"
@@ -270,10 +300,10 @@ fi
 curl -fsS "${extra[@]}" --connect-timeout 15 --max-time "$timeout" -H 'Host: tokeness.cn' "$url"
 REMOTE_PROBE
 )"; then
-    error "lightweight server to ECI private chain failed"
+    error "$probe_label failed"
     return 1
   fi
-  validate_status_body "lightweight server to ECI private chain" "$direct_body" || return 1
+  validate_status_body "$probe_label" "$direct_body" || return 1
   log "verify: OK (upstream=$upstream_ip)"
 }
 
@@ -608,7 +638,9 @@ rollback_failed_rollout() {
   # Release the drain pin first: a rollback deletes the very instance the pin
   # names, and leaving it in place would keep the restored instance out of
   # rotation until the marker expired.
-  ml_drain_end || warn "drain marker could not be cleared on every host during rollback"
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    ml_drain_end || warn "drain marker could not be cleared on every host during rollback"
+  fi
 
   if [[ -n "$previous_snapshot" ]]; then
     if ! restore_scaling_config "$previous_snapshot"; then
@@ -907,27 +939,58 @@ REMOTE_MASTER_VER
   fi
   log "green master version verified: $master_version"
 
-  # Pin the panel tier onto the green port and wait for BOTH lightweight hosts
-  # to actually carry it. Green already passed readiness + version, so the flip
-  # is lossless; a host that cannot be pinned aborts while blue still serves.
-  web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$green_port" \
-    || { error "could not pin the panel primary on $SWAS_HOST"; master_sync_abort "$image_ref" || true; return 1; }
-  web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$green_port" \
-    || { error "could not pin the panel primary on $SWAS2_HOST"; master_sync_abort "$image_ref" || true; return 1; }
-  if ! wait_web_primary_converged "$green_port"; then
-    master_sync_abort "$image_ref" || true
-    return 1
+  # Move the panel entry off blue and onto green, then prove it.
+  #
+  # With the lightweight tier retired (SWAS_PANEL_TIER=0, the default) the panel
+  # entry *is* this ECS, and the bootstrap's commit is what flips its nginx; the
+  # gate that matters is therefore the post-commit probe below, which reads the
+  # live serving port rather than a marker another host has to converge on.
+  # With SWAS_PANEL_TIER=1 the retired path runs unchanged: pin both hosts onto
+  # the green port and wait for their ml-sync to rewrite nginx, aborting while
+  # blue still serves if either host refuses.
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$green_port" \
+      || { error "could not pin the panel primary on $SWAS_HOST"; master_sync_abort "$image_ref" || true; return 1; }
+    web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$green_port" \
+      || { error "could not pin the panel primary on $SWAS2_HOST"; master_sync_abort "$image_ref" || true; return 1; }
+    if ! wait_web_primary_converged "$green_port"; then
+      master_sync_abort "$image_ref" || true
+      return 1
+    fi
+  else
+    log "blue-green: panel tier is this ECS (lightweight hosts retired); the commit flips its nginx"
   fi
 
-  # Both entry points now serve green. Commit on the ECS: :80 last-resort
-  # follows, blue drains briefly and is retired, green takes the canonical name.
+  # Green is reachable and correct; commit on the ECS: :80 last-resort follows,
+  # blue drains briefly and is retired, green takes the canonical name.
   if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
       < "$HOST_BOOTSTRAP_SCRIPT")"; then
     error "blue-green commit failed; reconciling via abort"
     master_sync_abort "$image_ref" || true
     return 1
   fi
-  log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); panel saw no recreate window"
+
+  # Post-commit gate. The commit is the point of no return for blue, so the
+  # check must read live state rather than our intent: ask the bootstrap which
+  # port the panel is actually served from. The marker the commit writes is that
+  # answer, and it must name green — anything else means the flip did not land
+  # and the abort phase has to reconcile. BLUE_OK is deliberately not consulted:
+  # the bootstrap names the *serving* port's container "blue", so it is 1 both
+  # before the commit and after it (there, the renamed green).
+  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" probe \
+      < "$HOST_BOOTSTRAP_SCRIPT" 2>/dev/null)"; then
+    error "post-commit: could not probe the ECS serving state; reconciling via abort"
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+  local serving_port
+  serving_port="$(sed -n 's/^SERVING_PORT=//p' <<<"$out" | tail -n1)"
+  if [[ "$serving_port" != "$green_port" ]]; then
+    error "post-commit: ECS serves :${serving_port:-?} (expected :$green_port); reconciling via abort"
+    master_sync_abort "$image_ref" || true
+    return 1
+  fi
+  log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retired"
 }
 
 # master_sync_abort <image-ref> - reconcile after a failed master roll.
@@ -949,13 +1012,17 @@ master_sync_abort() {
   if [[ "$blue_ok" == "1" && "$serving" =~ ^[0-9]+$ ]]; then
     # Blue can serve: move the panel back to it FIRST (green is still up, so
     # nothing breaks during the re-pin), then let the ECS clean up green.
-    log "abort: blue is alive on :$serving; re-pinning the panel tier before cleanup"
-    web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$serving" \
-      || warn "abort: could not re-pin $SWAS_HOST to :$serving"
-    web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$serving" \
-      || warn "abort: could not re-pin $SWAS2_HOST to :$serving"
-    wait_web_primary_converged "$serving" \
-      || warn "abort: panel tier did not re-converge to :$serving (green remains up meanwhile)"
+    log "abort: blue is alive on :$serving; restoring the panel tier before cleanup"
+    if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+      web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$serving" \
+        || warn "abort: could not re-pin $SWAS_HOST to :$serving"
+      web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$serving" \
+        || warn "abort: could not re-pin $SWAS2_HOST to :$serving"
+      wait_web_primary_converged "$serving" \
+        || warn "abort: panel tier did not re-converge to :$serving (green remains up meanwhile)"
+    else
+      warn "abort: lightweight panel tier retired; the ECS nginx restore is the bootstrap's abort phase"
+    fi
   fi
   out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" abort \
       < "$HOST_BOOTSTRAP_SCRIPT" 2>&1)" || {
@@ -967,7 +1034,7 @@ master_sync_abort() {
   # panel pin follows it - the normal pin already names the green port, so this
   # is only belt-and-braces for a pin that failed mid-flight.
   serving="$(sed -n 's/^SERVING_PORT=//p' <<<"$out" | tail -n1)"
-  if [[ "$serving" =~ ^[0-9]+$ && "$blue_ok" != "1" ]]; then
+  if [[ "$serving" =~ ^[0-9]+$ && "$blue_ok" != "1" && "$SWAS_PANEL_TIER" == "1" ]]; then
     web_primary_pin "$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS" "$serving" \
       || warn "abort: could not pin $SWAS_HOST to finalized :$serving"
     web_primary_pin "$SWAS2_HOST" "$SWAS2_SSH_KEY_PATH" "$SWAS2_SSH_KNOWN_HOSTS" "$serving" \
@@ -1143,6 +1210,76 @@ wait_web_primary_converged() { # <port> - both lightweight hosts' nginx carry it
   return 1
 }
 
+# ecs_upstream_has <ip> - the ECS's relay upstream file names this instance.
+#
+# This replaces the retired drain pin (see SWAS_PANEL_TIER). The ECS *is* the
+# relay entry now and ecs-fleet-sync writes its upstream file straight from the
+# local ESS view, so "the ECS serves the new instance" is what the old
+# marker+ml-sync pair used to establish. It is a strictly weaker guarantee — the
+# file lists every in-service peer, so it cannot single out one instance — which
+# is exactly the trade the retirement accepted: a rollout may briefly send new
+# requests to the retiring instance, and the drain hold below is what still
+# protects its in-flight streams. Fails closed: an unreadable file is not
+# convergence, and neither is an empty answer.
+ecs_upstream_has() {
+  local ip="$1"
+  is_valid_ipv4 "$ip" || { error "upstream probe target is not an IPv4 address: $ip"; return 1; }
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$ECS_UPSTREAM_CONF" "$ip" <<'REMOTE_HAS' 2>/dev/null | grep -qx yes
+#!/usr/bin/env bash
+set -Eeuo pipefail
+conf="$1" ip="$2"
+[[ -r "$conf" ]] || exit 1
+# Same fragment shape as ecs_upstream_members; the IP is escaped so a /8 prefix
+# cannot match 10.0.0.24 against 10.0.0.241.
+grep -E "^[[:space:]]*server[[:space:]]+${ip//./\\.}:[0-9]+" "$conf" | grep -qv backup && printf 'yes\n'
+REMOTE_HAS
+}
+
+# ecs_upstream_members - the relay members the ECS serves, one per line.
+#
+# The ECS is the relay entry (the lightweight tier retired, see
+# SWAS_PANEL_TIER) and ecs-fleet-sync writes this file from the local ESS view,
+# so reading it is the relay-side equivalent of reading both lightweight hosts'
+# nginx. Path/config errors are reported, never papered over: a rollout that
+# cannot read the entry must not conclude that it converged.
+ecs_upstream_members() {
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    "$ECS_UPSTREAM_CONF" <<'REMOTE_MEMBERS' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+conf="$1"
+[[ -r "$conf" ]] || { echo "unreadable upstream file $conf" >&2; exit 1; }
+# The file is an include fragment: ecs-fleet-sync writes the server lines and
+# the vhost supplies the "upstream" block, so members are matched by shape
+# rather than by block scope (a block-scoped parse finds nothing here).
+awk '
+  /^[[:space:]]*#/ { next }
+  /^[[:space:]]*server[[:space:]]+[0-9.]+:[0-9]+/ && !/backup/ {
+    line = $0
+    sub(/^[[:space:]]*server[[:space:]]+/, "", line)
+    sub(/[[:space:]].*/, "", line)
+    sub(/;.*$/, "", line)
+    print line
+  }
+' "$conf"
+REMOTE_MEMBERS
+}
+
+# wait_ecs_upstream_converged <ip> - block until the ECS relay tier serves it.
+wait_ecs_upstream_converged() {
+  local target_ip="$1" i=0
+  while [ "$i" -lt "$ML_DRAIN_CONVERGE_ATTEMPTS" ]; do
+    if ecs_upstream_has "$target_ip"; then
+      log "rollout: the ECS relay tier serves $target_ip"
+      return 0
+    fi
+    sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+    i=$((i + 1))
+  done
+  error "rollout: the ECS relay tier did not start serving $target_ip within $((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS))s"
+  return 1
+}
+
 # wait_drain_converged <target_ip> - block until BOTH hosts serve the target.
 # The drain timer must not start before this: ml-sync converges on a 30s cron,
 # so sleeping first would leave new requests flowing to the retiring instance
@@ -1219,12 +1356,25 @@ ess_rollout() {
   # in-flight SSE streams finish before ESS removes it; otherwise the platform
   # grace period SIGKILLs them mid-answer (the grace period only applies to the
   # config an instance was created with, so this is what protects the very
-  # first release that raises it). Fail closed: if either host cannot be pinned,
-  # or ml-sync does not converge, the rollout aborts while the old instance is
-  # still serving, which is exactly the state rollback restores anyway.
-  if ! ml_drain_begin "$new_ip" || ! wait_drain_converged "$new_ip"; then
+  # first release that raises it).
+  #
+  # SWAS_PANEL_TIER=1 (retired path): pin both lightweight hosts and wait for
+  # ml-sync. Default: the ECS is the relay entry, so the gate is the ECS's own
+  # upstream file carrying the new instance — weaker (it cannot single out one
+  # instance) but honest, and the drain hold below is what keeps the retiring
+  # instance's streams alive. Either way the rollout fails closed: if the relay
+  # tier never picks the new instance up, we abort while the old one still
+  # serves, which is exactly the state rollback restores anyway.
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    if ! ml_drain_begin "$new_ip" || ! wait_drain_converged "$new_ip"; then
+      if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+        error "drain-first could not pin the relay tier and rollback could not be verified"
+      fi
+      return 1
+    fi
+  elif ! wait_ecs_upstream_converged "$new_ip"; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
-      error "drain-first could not pin the relay tier and rollback could not be verified"
+      error "drain-first gate failed and rollback could not be verified"
     fi
     return 1
   fi
@@ -1239,7 +1389,9 @@ ess_rollout() {
     fi
     return 1
   fi
-  ml_drain_end || warn "drain marker left behind; ml-sync expires it on its own"
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    ml_drain_end || warn "drain marker left behind; ml-sync expires it on its own"
+  fi
   if wait_verify_converged; then
     log "ess rollout to $digest complete"
     # EIP → shared-bandwidth convergence is advisory (a binding failure does
