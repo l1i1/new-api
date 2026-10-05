@@ -312,6 +312,32 @@ func TestExecuteTaskSubmissionModerationPreBlockStopsBeforeChannelSelection(t *t
 	require.Equal(t, 1, moderationCalls)
 }
 
+func TestRelayImageContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T) {
+	moderationCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		moderationCalls++
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"sexual":0.98}}]}`))
+	}))
+	defer server.Close()
+	withControllerContentModerationOption(t, `{"enabled":true,"mode":"pre_block","base_url":"`+server.URL+`","api_key":"test-key","sample_rate":1,"all_groups":true,"all_models":true,"block_status":451}`)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations",
+		strings.NewReader(`{"model":"gpt-image-2","prompt":"flagged image prompt"}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(context, constant.ContextKeyOriginalModel, "gpt-image-2")
+	context.Set(common.RequestIdKey, "relay-image-pre-block-test")
+
+	Relay(context, types.RelayFormatOpenAIImage)
+	common.CleanupBodyStorage(context)
+
+	require.Equal(t, http.StatusUnavailableForLegalReasons, recorder.Code)
+	require.Equal(t, 1, moderationCalls)
+	require.Contains(t, recorder.Body.String(), "content_policy_violation")
+}
+
 func TestRelayContentModerationPreBlockStopsBeforeChannelSelection(t *testing.T) {
 	moderationCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
