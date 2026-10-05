@@ -15,7 +15,7 @@ test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
 source "$REMOTE_SCRIPT"
-[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-08-17.4' ]] ||
+[[ "$(bash "$REMOTE_SCRIPT" --version)" == '2026-10-05.1' ]] ||
   fail_test "remote command version handshake is missing"
 eval "$(declare -f blue_green_proxy_reload | sed '1s/blue_green_proxy_reload/real_blue_green_proxy_reload/')"
 eval "$(declare -f blue_green_remove_container | sed '1s/blue_green_remove_container/real_blue_green_remove_container/')"

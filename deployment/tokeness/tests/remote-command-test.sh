@@ -52,6 +52,7 @@ prepare_case() {
   printf 'EPAY_RECONCILIATION_QUERY_URL=%s\n' "$EPAY_RECONCILIATION_URL" > "$case_dir/new-api-env"
   printf '{"code":-3}\n' > "$case_dir/epay-probe.json"
   : > "$case_dir/compose.log"
+  : > "$case_dir/prune.log"
 }
 
 container_id() {
@@ -61,6 +62,11 @@ container_id() {
 run_timed() {
   local seconds="$1"
   shift
+  if [[ "$1" == docker && "$2" == image && "$3" == prune ]]; then
+    printf '%s\n' "$*" >> "$DEPLOY_DIR/prune.log"
+    printf 'Total reclaimed space: 0B\n'
+    return 0
+  fi
   if [[ "$1" == docker && "$2" == image && "$3" == inspect ]]; then
     return 1
   fi
@@ -142,6 +148,12 @@ status_json() {
   cat "$DEPLOY_DIR/status.json"
 }
 
+# Free space is a host fact the cases below must control; TEST_AVAILABLE_DISK_KB
+# defaults to a comfortable value and is lowered for the headroom gate case.
+available_disk_kb() {
+  printf '%s\n' "${TEST_AVAILABLE_DISK_KB:-99999999}"
+}
+
 compose_timed() {
   local seconds="$1" operation
   shift
@@ -177,6 +189,8 @@ unset TEST_TARGET_FINAL_HEALTH
 [[ "$(read_release_image)" == "$NEW_IMAGE" ]] || fail_test "successful deploy did not commit the target selection"
 [[ "$(<"$commit_case/runtime-image")" == "$NEW_IMAGE" ]] || fail_test "successful deploy did not start the target runtime"
 [[ "$(<"$commit_case/compose.log")" == $'pull\nup' ]] || fail_test "successful deploy did not pull and recreate exactly once"
+[[ "$(wc -l < "$commit_case/prune.log")" -eq 2 ]] ||
+  fail_test "successful deploy did not reclaim dangling images before the pull and after the switch"
 grep -q $'TOKENESS_RESULT\t.*\trunning\thealthy\t' <<< "$commit_output" ||
   fail_test "successful deploy did not emit a healthy result"
 
@@ -226,6 +240,47 @@ grep -q 'rollback did not restore the previous runtime image' <<< "$failed_outpu
   fail_test "runtime mismatch was incorrectly reported as restored"
 if grep -q 'previous image restored and verified' <<< "$failed_output"; then
   fail_test "failed rollback emitted a false success message"
+fi
+
+# A deploy that cannot hold a pull plus extraction must stop before it writes a
+# release selection, so a full disk cannot leave the node without one.
+headroom_case="$test_root/insufficient-disk"
+prepare_case "$headroom_case"
+set +e
+headroom_output="$({
+  export TEST_AVAILABLE_DISK_KB=1024
+  deploy_release "$NEW_IMAGE"
+} 2>&1)"
+headroom_status=$?
+set -e
+[[ "$headroom_status" -ne 0 ]] || fail_test "deploy proceeded without free disk headroom"
+[[ "$(read_release_image)" == "$OLD_IMAGE" ]] || fail_test "low-disk deploy changed the committed release selection"
+[[ ! -s "$headroom_case/compose.log" ]] || fail_test "low-disk deploy reached Compose"
+[[ "$(wc -l < "$headroom_case/prune.log")" -eq 1 ]] ||
+  fail_test "low-disk deploy did not attempt dangling image cleanup before failing"
+grep -q 'insufficient free disk space' <<< "$headroom_output" ||
+  fail_test "low-disk deploy did not report the missing headroom"
+
+# The release selection must survive a failed write: the rollback path reaches
+# write_release_image from inside an `if`, where `set -e` does not apply.
+write_guard_case="$test_root/release-write-guard"
+prepare_case "$write_guard_case"
+set +e
+write_guard_output="$({
+  printf() { return 1; }
+  if write_release_image "$NEW_IMAGE"; then
+    echo committed
+  else
+    echo rejected
+  fi
+} 2>&1)"
+write_guard_status=$?
+set -e
+[[ "$write_guard_status" -ne 0 ]] || fail_test "a failed release-selection write unexpectedly succeeded"
+[[ "$(read_release_image)" == "$OLD_IMAGE" ]] ||
+  fail_test "a failed release-selection write replaced the committed selection"
+if compgen -G "$write_guard_case/.release.env.*" >/dev/null; then
+  fail_test "a failed release-selection write left its temporary file behind"
 fi
 
 none_healthy_case="$test_root/status-healthy"

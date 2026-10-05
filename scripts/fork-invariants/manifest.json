@@ -2462,6 +2462,58 @@
           ]
         }
       ]
+    },
+    {
+      "id": "部署命令-v2026-10-05-1-拉取前回收-dangling-镜像并设磁盘下限-低于下限拒绝部署且不改-release-env-切换成功后再次回收-release-env-写入失败绝不用截断文件覆盖已提交的选择",
+      "title": "部署命令 v2026-10-05.1：拉取前回收 dangling 镜像并设磁盘下限（低于下限拒绝部署且不改 release.env），切换成功后再次回收；release.env 写入失败绝不用截断文件覆盖已提交的选择",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness/remote-command.sh",
+        "deployment/tokeness/rollout.sh",
+        "deployment/tokeness/install-remote-command.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/remote-command.sh",
+          "contains": "ensure_disk_headroom()"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/remote-command.sh",
+          "contains": "reclaim_dangling_images()"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/remote-command.sh",
+          "contains": "insufficient free disk space after image cleanup"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/remote-command.sh",
+          "contains": "could not write the release selection"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/rollout.sh",
+          "contains": "EXPECTED_REMOTE_COMMAND_VERSION"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness/install-remote-command.sh",
+          "contains": "EXPECTED_VERSION"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness/tests/remote-command-test.sh",
+          "names": [
+            "did not reclaim dangling images before the pull and after the switch",
+            "low-disk deploy changed the committed release selection",
+            "a failed release-selection write replaced the committed selection"
+          ]
+        }
+      ]
     }
   ]
 }

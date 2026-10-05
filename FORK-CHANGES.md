@@ -128,6 +128,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 渠道可观测性（多 Key 测试、指标、凭据管理） | `pkg/channel_observability/observability.go`、`controller/channel_credentials.go`、`model/channel_observation_metric.go` | |
 | invoice / wallet / 支付结算加固 | `docs/invoice-tech-spec.md`、`docs/payment-settlement-hardening.md`、`web/src/features/system-settings/integrations/payment-settings-section.tsx` | |
 | 双站发布：`mainland`（CNY + 简体固定）与 `intl`；staged 发布、金丝雀、回滚 | `deployment/tokeness/rollout.sh`、`deployment/tokeness-cn/deploy.sh`、`.cnb.yml`、`.github/workflows/tokeness-publish.yml`、`tokeness-deploy.yml`、`tokeness-upstream-sync.yml` | 版本命名 `v1.0.0-rc.NN-tokeness-<edition>.M` |
+| 部署命令 v2026-10-05.1：拉取前回收 dangling 镜像并设磁盘下限（低于下限拒绝部署且不改 release.env），切换成功后再次回收；release.env 写入失败绝不用截断文件覆盖已提交的选择 | `deployment/tokeness/remote-command.sh`、`deployment/tokeness/rollout.sh`、`deployment/tokeness/install-remote-command.sh` | `deployment/tokeness/tests/remote-command-test.sh`（磁盘下限、写保护、切换前后各一次回收）；版本号三处必须同批更新并重装到四个节点 |
 | 运营插件（task plugins） | `deployment/tokeness/task-plugins/*`（如 `openai-video-agg`） | 插件契约见 `docs/plugin-api/v1.md` |
 
 ## 9. 最容易被静默覆盖的跨边界契约（同步时逐条 grep，两侧都要在）

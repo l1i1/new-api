@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-08-17.4'
+readonly TOKENESS_DEPLOY_COMMAND_VERSION='2026-10-05.1'
 
 log() {
   printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -39,6 +39,12 @@ PREVIOUS_IMAGE=''
 readonly COMPOSE_PULL_TIMEOUT_SECONDS=240
 readonly COMPOSE_UP_TIMEOUT_SECONDS=120
 readonly DOCKER_COMMAND_TIMEOUT_SECONDS=10
+readonly IMAGE_PRUNE_TIMEOUT_SECONDS=120
+# A pull needs room for the compressed layers plus their extraction. Deployments
+# pull by digest, so every superseded release leaves an untagged image behind;
+# on 2026-10-04 a node hit 0 bytes free this way and the failed pull corrupted
+# the release selection. Prune first, then refuse to start below this floor.
+readonly MIN_FREE_DISK_MB="${TOKENESS_MIN_FREE_DISK_MB:-2048}"
 readonly STATUS_TIMEOUT_SECONDS=15
 readonly READY_TIMEOUT_SECONDS=120
 readonly BLUE_GREEN_DRAIN_TIMEOUT_SECONDS=120
@@ -724,11 +730,54 @@ read_release_image() {
 }
 
 write_release_image() {
-  local image="$1" next_file
+  local image="$1" next_file written
   next_file="$(mktemp "$DEPLOY_DIR/.release.env.XXXXXX")"
-  printf 'NEW_API_IMAGE=%s\n' "$image" > "$next_file"
-  chmod 0644 "$next_file"
-  mv -f "$next_file" "$RELEASE_ENV"
+  # The write is checked explicitly: callers reach this from rollback paths that
+  # sit inside an `if` condition, where `set -e` is disabled. An unchecked
+  # failed write used to move a truncated file over a valid release selection.
+  if ! printf 'NEW_API_IMAGE=%s\n' "$image" > "$next_file"; then
+    rm -f -- "$next_file"
+    fail "could not write the release selection to $next_file"
+  fi
+  written="$(cat "$next_file" 2>/dev/null || true)"
+  if [[ "$written" != "NEW_API_IMAGE=$image" ]]; then
+    rm -f -- "$next_file"
+    fail "release selection write to $next_file was incomplete"
+  fi
+  if ! chmod 0644 "$next_file" || ! mv -f "$next_file" "$RELEASE_ENV"; then
+    rm -f -- "$next_file"
+    fail "could not install the release selection at $RELEASE_ENV"
+  fi
+}
+
+available_disk_kb() {
+  df -Pk "$DEPLOY_DIR" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+# Deployments pull by digest, so superseded releases are untagged images. Only
+# images no container references are removed, which keeps both the running
+# release and any container a rollback still needs. Best effort: a prune failure
+# must not fail a deploy, and the headroom gate below reports the real problem.
+reclaim_dangling_images() {
+  local output
+  if ! output="$(run_timed "$IMAGE_PRUNE_TIMEOUT_SECONDS" docker image prune -f 2>&1)"; then
+    log "WARNING: dangling image cleanup failed; continuing"
+    return 0
+  fi
+  log "dangling image cleanup: $(printf '%s\n' "$output" | tail -n 1)"
+}
+
+ensure_disk_headroom() {
+  local available_kb
+  reclaim_dangling_images
+  available_kb="$(available_disk_kb || true)"
+  if [[ ! "$available_kb" =~ ^[0-9]+$ ]]; then
+    log "WARNING: could not read free disk space; continuing"
+    return 0
+  fi
+  if (( available_kb < MIN_FREE_DISK_MB * 1024 )); then
+    fail "insufficient free disk space after image cleanup: $((available_kb / 1024)) MiB available, ${MIN_FREE_DISK_MB} MiB required"
+  fi
 }
 
 container_id() {
@@ -1286,6 +1335,10 @@ deploy_release() {
     log "release.env selects the target but the runtime differs; recreating"
   fi
 
+  # Refuse before any state changes (no release-selection write, no blue-green
+  # pending state) when a node cannot hold a pull plus extraction.
+  ensure_disk_headroom
+
   PREVIOUS_IMAGE="$previous"
   DEPLOY_IN_PROGRESS=1
   if [[ "$BLUE_GREEN_MODE" -eq 1 ]]; then
@@ -1308,6 +1361,8 @@ deploy_release() {
 
   if [[ "$BLUE_GREEN_MODE" -eq 1 ]]; then
     deploy_blue_green "$target"
+    # The superseded slot's image is dangling once the cleanup phase succeeds.
+    reclaim_dangling_images
     return 0
   fi
 
@@ -1315,6 +1370,7 @@ deploy_release() {
   compose_timed "$COMPOSE_UP_TIMEOUT_SECONDS" up -d --no-deps --force-recreate "$SERVICE_NAME" ||
     fail "compose up failed or timed out"
   wait_for_ready "$target" || fail "target image did not become ready"
+  reclaim_dangling_images
 
   emit_result "$target"
   DEPLOY_IN_PROGRESS=0
