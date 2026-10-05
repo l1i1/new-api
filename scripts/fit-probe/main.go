@@ -486,7 +486,7 @@ func run(ctx context.Context, opts options, stdout, stderr io.Writer) error {
 		payloadIn = &payloadInReport{
 			File:           opts.payloadIn,
 			Rows:           len(postable.Results),
-			Validation:     "every row is inside this run's probed scope and matches this run's own decision; the envelope, binding, rounds, cases and expires_at are this run's, not the file's",
+			Validation:     "every row is inside this run's probed scope and matches this run's own decision; the envelope, binding, rounds and cases are this run's, not the file's",
 			OmittedDecided: decidedRowCount(rows) - len(postable.Results),
 		}
 	}

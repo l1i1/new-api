@@ -118,7 +118,6 @@ export type FitCapabilityMark = {
   cases: string
   rounds: number
   at: number
-  expires_at: number
   policy_version: number
   policy_hash: string
   baseline_hash: string

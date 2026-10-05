@@ -57,9 +57,6 @@ type SuiteResult struct {
 	Behavior  string `json:"behavior"`
 	Supported bool   `json:"supported"`
 	Cases     string `json:"cases"`
-	// ExpiresAt is optional. A suite result normally has no explicit expiry and
-	// ages out through the freshness window instead.
-	ExpiresAt int64 `json:"expires_at"`
 }
 
 // ReportBinding is what the receiving node requires a report to have been

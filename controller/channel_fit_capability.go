@@ -36,7 +36,6 @@ type fitCapabilityRequest struct {
 	Cases         string `json:"cases"`
 	Rounds        int    `json:"rounds"`
 	At            int64  `json:"at"`
-	ExpiresAt     int64  `json:"expires_at"`
 	PolicyVersion int    `json:"policy_version"`
 	PolicyHash    string `json:"policy_hash"`
 	BaselineHash  string `json:"baseline_hash"`
@@ -82,7 +81,6 @@ func PutChannelFitCapability(c *gin.Context) {
 		Cases:            request.Cases,
 		Rounds:           request.Rounds,
 		At:               request.At,
-		ExpiresAt:        request.ExpiresAt,
 		PolicyVersion:    request.PolicyVersion,
 		PolicyHash:       request.PolicyHash,
 		BaselineHash:     request.BaselineHash,
@@ -312,7 +310,7 @@ func fitCapabilityBindingCurrent(row *model.ChannelFitCapability, now int64, pol
 	if row == nil {
 		return false
 	}
-	if row.Source != model.FitCapabilitySourceSuite || !row.Supported || model.FitCapabilityExpired(row, now) {
+	if row.Source != model.FitCapabilitySourceSuite || !row.Supported {
 		return true
 	}
 	if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
@@ -347,7 +345,6 @@ func recordFitCapabilityAudit(c *gin.Context, before, after *model.ChannelFitCap
 		"run_id":       after.RunId,
 		"report_id":    after.ReportId,
 		"force":        force,
-		"expires_at":   after.ExpiresAt,
 		"new_revision": after.Revision,
 	}
 	// The revision the caller claimed is part of the record: it is what makes a

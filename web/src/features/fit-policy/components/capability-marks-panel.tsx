@@ -274,7 +274,6 @@ function MarksTable(props: {
               <TableHead>{t('Source')}</TableHead>
               <TableHead>{t('State')}</TableHead>
               <TableHead>{t('Binding')}</TableHead>
-              <TableHead>{t('Expires at')}</TableHead>
               <TableHead>{t('Last verified')}</TableHead>
               <TableHead>{t('Revision')}</TableHead>
             </TableRow>
@@ -314,9 +313,6 @@ function MarksTable(props: {
                 </TableCell>
                 <TableCell>
                   <BindingCell mark={mark} />
-                </TableCell>
-                <TableCell className='text-xs'>
-                  {formatTimestampToDate(mark.expires_at)}
                 </TableCell>
                 <TableCell className='text-xs'>
                   {formatTimestampToDate(mark.at)}

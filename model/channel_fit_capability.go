@@ -45,18 +45,15 @@ const (
 	// FitCapabilitySuiteFailed is an explicit negative suite result. It is a
 	// claim, not an absence of information.
 	FitCapabilitySuiteFailed = "suite_failed"
-	// FitCapabilityManualActive is an unexpired operator mark.
+	// FitCapabilityManualActive is an operator mark. Until a write sets Force,
+	// it is sticky: an automated result cannot replace it.
 	FitCapabilityManualActive = "manual_active"
-	// FitCapabilityManualExpired is an operator mark past its expiry. It falls
-	// back to whatever the latest measured result says.
-	FitCapabilityManualExpired = "manual_expired"
 )
 
 // ChannelFitCapability is one behaviour mark for one channel and model.
 //
 // Timestamps are Unix seconds (int64) rather than time.Time so the same schema
-// migrates cleanly on SQLite, MySQL and PostgreSQL. ExpiresAt == 0 means "no
-// expiry".
+// migrates cleanly on SQLite, MySQL and PostgreSQL.
 type ChannelFitCapability struct {
 	Id        int    `json:"id" gorm:"primaryKey"`
 	ChannelId int    `json:"channel_id" gorm:"uniqueIndex:idx_channel_fit_capability,priority:1;index:idx_channel_fit_cap_channel"`
@@ -70,7 +67,6 @@ type ChannelFitCapability struct {
 	Cases     string `json:"cases" gorm:"type:varchar(32)"`
 	Rounds    int    `json:"rounds"`
 	At        int64  `json:"at"`
-	ExpiresAt int64  `json:"expires_at"`
 
 	// Provenance binding. A suite result is only valid for the policy and
 	// official baseline it was measured against; changing either makes it stale
@@ -106,7 +102,6 @@ type FitCapabilityWrite struct {
 	Cases         string
 	Rounds        int
 	At            int64
-	ExpiresAt     int64
 	PolicyVersion int
 	PolicyHash    string
 	BaselineHash  string
@@ -323,7 +318,7 @@ func ApplyChannelFitCapability(write FitCapabilityWrite, now int64) (*ChannelFit
 	if current.Revision != write.ExpectedRevision {
 		return nil, &FitCapabilityConflictError{Reason: "revision does not match the stored capability", Current: current}
 	}
-	if err := guardFitCapabilitySticky(current, write, now); err != nil {
+	if err := guardFitCapabilitySticky(current, write); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +329,6 @@ func ApplyChannelFitCapability(write FitCapabilityWrite, now int64) (*ChannelFit
 		"cases":          write.Cases,
 		"rounds":         write.Rounds,
 		"at":             write.At,
-		"expires_at":     write.ExpiresAt,
 		"policy_version": write.PolicyVersion,
 		"policy_hash":    write.PolicyHash,
 		"baseline_hash":  write.BaselineHash,
@@ -382,22 +376,21 @@ func ensureFitCapabilityChannelExists(channelID int) error {
 }
 
 // guardFitCapabilitySticky enforces the conflict semantics: a measured result
-// never silently replaces an operator's unexpired manual mark. An expired manual
-// mark is not sticky, which is what stops a stale override from living forever.
-func guardFitCapabilitySticky(current *ChannelFitCapability, write FitCapabilityWrite, now int64) error {
+// never silently replaces an operator's manual mark. The mark is sticky until a
+// write says Force: expiry used to end that stickiness on a clock (2026-10-05
+// removed it), so replacing an operator's judgement is now always an explicit
+// act rather than something that happens to a row for being old.
+func guardFitCapabilitySticky(current *ChannelFitCapability, write FitCapabilityWrite) error {
 	if current.Source != FitCapabilitySourceManual || write.Source != FitCapabilitySourceSuite {
 		return nil
 	}
 	if write.Force {
 		return nil
 	}
-	if !FitCapabilityExpired(current, now) {
-		return &FitCapabilityConflictError{
-			Reason:  "a manual mark is still active; an automated write needs force",
-			Current: current,
-		}
+	return &FitCapabilityConflictError{
+		Reason:  "a manual mark is active; an automated write needs force",
+		Current: current,
 	}
-	return nil
 }
 
 func buildFitCapabilityRow(write FitCapabilityWrite, now int64, revision int64) *ChannelFitCapability {
@@ -412,7 +405,6 @@ func buildFitCapabilityRow(write FitCapabilityWrite, now int64, revision int64) 
 		Cases:         write.Cases,
 		Rounds:        write.Rounds,
 		At:            write.At,
-		ExpiresAt:     write.ExpiresAt,
 		PolicyVersion: write.PolicyVersion,
 		PolicyHash:    write.PolicyHash,
 		BaselineHash:  write.BaselineHash,
@@ -422,12 +414,6 @@ func buildFitCapabilityRow(write FitCapabilityWrite, now int64, revision int64) 
 		Revision:      revision,
 		UpdatedAt:     now,
 	}
-}
-
-// FitCapabilityExpired reports whether a manual mark's expiry has passed. A zero
-// expiry never expires.
-func FitCapabilityExpired(row *ChannelFitCapability, now int64) bool {
-	return row != nil && row.ExpiresAt > 0 && now >= row.ExpiresAt
 }
 
 // FitCapabilityState resolves the state of one stored mark.
@@ -450,18 +436,10 @@ func FitCapabilityState(row *ChannelFitCapability, now int64, policyHash, baseli
 	}
 	switch row.Source {
 	case FitCapabilitySourceManual:
-		if FitCapabilityExpired(row, now) {
-			return FitCapabilityManualExpired
-		}
 		return FitCapabilityManualActive
 	case FitCapabilitySourceSuite:
 		if !row.Supported {
 			return FitCapabilitySuiteFailed
-		}
-		// An explicit expiry applies to a measured result too. Ignoring it would
-		// let a suite row that asked to expire keep vouching for a channel.
-		if FitCapabilityExpired(row, now) {
-			return FitCapabilitySuiteStale
 		}
 		if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
 			return FitCapabilitySuiteStale

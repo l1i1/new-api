@@ -22,8 +22,7 @@ package main
 //     past the gate that would have dropped it;
 //   - everything else is regenerated rather than trusted: the envelope
 //     (report_id, run_id, suite, generated_at), the binding (policy version,
-//     hash and baseline), rounds, and each row's cases and expires_at all come
-//     from this run. The file contributes the row set and the supported flags;
+//     hash and baseline), rounds, and each row's cases all come from this run. The file contributes the row set and the supported flags;
 //     its values for the regenerated fields are ignored deliberately and
 //     visibly, never silently believed.
 //

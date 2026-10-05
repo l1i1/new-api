@@ -34,7 +34,6 @@ type fitCapabilityMark struct {
 	Supported    bool
 	Source       string
 	At           int64
-	ExpiresAt    int64
 	PolicyHash   string
 	BaselineHash string
 	Revision     int64
@@ -142,7 +141,6 @@ func buildFitCapabilityIndexLocked() bool {
 			Supported:    row.Supported,
 			Source:       row.Source,
 			At:           row.At,
-			ExpiresAt:    row.ExpiresAt,
 			PolicyHash:   row.PolicyHash,
 			BaselineHash: row.BaselineHash,
 			Revision:     row.Revision,
@@ -292,7 +290,6 @@ func ChannelSatisfiesFitMarks(channelID int, requirement FitMarkRequirement) boo
 			Supported:    mark.Supported,
 			Source:       mark.Source,
 			At:           mark.At,
-			ExpiresAt:    mark.ExpiresAt,
 			PolicyHash:   mark.PolicyHash,
 			BaselineHash: mark.BaselineHash,
 			Revision:     mark.Revision,

@@ -52,7 +52,6 @@ func TestSuiteMarkSatisfiesWhenEveryBindingMatches(t *testing.T) {
 		Supported:        true,
 		Source:           FitCapabilitySourceSuite,
 		At:               now,
-		ExpiresAt:        now + 14*24*60*60,
 		PolicyVersion:    1,
 		PolicyHash:       policyHash,
 		ExpectedRevision: 0,

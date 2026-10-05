@@ -216,14 +216,14 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
       "tools.dynamic_names":   {"supported": true,  "source": "suite",  "suite": "cdp-k3", "cases": "30/30", "rounds": 3, "at": "2026-09-24T02:11:00+08:00"},
       "history.assistant_first":{"supported": true, "source": "suite",  "suite": "cdp-k3", "cases": "12/12", "rounds": 3, "at": "2026-09-24T02:11:00+08:00"},
       "tools.choice_semantics": {"supported": false, "source": "suite", "suite": "cdp-k3", "cases": "2/8", "rounds": 3, "at": "2026-09-24T02:11:00+08:00"},
-      "usage.thinking_counting":{"supported": true,  "source": "manual", "by": "user", "at": "2026-09-26T11:02:00+08:00", "expires_at": null}
+      "usage.thinking_counting":{"supported": true,  "source": "manual", "by": "user", "at": "2026-09-26T11:02:00+08:00"}
     }
   }
 }
 ```
 
 - **存储选择的理由**：用户要求“多在渠道中加标记”，标记的语义归属仍是渠道；但因为现有 `channel.settings` 是整行 JSON 更新，本设计新增独立 `channel_fit_capabilities` 表（每行 `channel_id + family/model + behavior` 唯一），并**新增**一个随 `InitChannelCacheAndNotify()` 刷新的能力索引（该索引当前不存在，属步 B 交付物）。`official_fit_models` 继续从渠道行读取，作为官方行为判定的粗粒度来源。
-- **最小物理字段**：`channel_id`、`family`、`model`、`behavior`、`supported`、`source`、`suite`、`cases`、`rounds`、`at`、`expires_at`、`policy_version`、`policy_hash`、`baseline_hash`、`report_id`、`run_id`、`force`、`revision`、`updated_at`；数据库唯一键保证同一渠道/模型/行为只有一条当前记录，历史审计另写 `AuditLog`/受控审计表，不把完整 body 或凭据落库。
+- **最小物理字段**：`channel_id`、`family`、`model`、`behavior`、`supported`、`source`、`suite`、`cases`、`rounds`、`at`、`policy_version`、`policy_hash`、`baseline_hash`、`report_id`、`run_id`、`force`、`revision`、`updated_at`；数据库唯一键保证同一渠道/模型/行为只有一条当前记录，历史审计另写 `AuditLog`/受控审计表，不把完整 body 或凭据落库。
 - **数据库门禁**：新增表/索引必须同时支持 SQLite、MySQL ≥5.7.8、PostgreSQL ≥9.6；fresh DB、上一版本升级和二次启动迁移都要验证，SQLite 不使用不兼容的 `ALTER COLUMN`。字段长度/类型/索引/唯一键在实现前冻结。
 - **CAS 必须用条件 UPDATE，不是行锁**：`lockForUpdate` 在 SQLite 跳过 `FOR UPDATE`（`model/locking.go`），且 `channel` 行**没有** revision/UpdatedAt 字段（现有多键 credential revision 不覆盖它）。三库统一做法是：能力表自带 `revision`，`expected_revision` 必填；`UPDATE ... SET revision=revision+1, ... WHERE channel_id=? AND family=? AND model=? AND behavior=? AND revision=?` 并检查 `RowsAffected==1`；为 0 即冲突，返回 409。首次写入先按唯一键 INSERT，并处理并发 INSERT 的唯一键冲突（冲突后重读并返回 409/重试）。不得把“事务内 `SELECT ... FOR UPDATE`”或复用 credential revision 当成方案。
 - **能力表当前不存在**：仓库目前没有 capability model、migration、cache index 或 authz action；`InitChannelCacheAndNotify()` 只做 `InitChannelCache()+epoch`（`model/config_epoch.go`），现有 cache 只读 Channel/Ability、不读新表。这些全部是**步 B 的实现前置**，不是既有能力。
@@ -233,8 +233,8 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 - **写入授权与并发**：专用 endpoint 区分 `capability.write` 与 `capability.force`；suite 通过独立受限 service identity/受控 applier 调用，不能持有通用 AdminAuth。**当前不存在受限 applier principal**：`RequirePermission` 只认 dashboard 用户/PAT，authz 只有 read/operate/write/sensitive_write/secret_view，channel 路由一律先 `AdminAuth`；generic `ChannelWrite` 还允许改任意非敏感字段，不能代替 capability action。步 B 必须在“dashboard 用户 + 专用 action”“HMAC/service principal”或“专用 Casbin subject”中选定一种并给出真实鉴权路径与测试。请求携带**必填** `expected_revision`、`report_id/run_id`，冲突不覆盖。
 
 - **审计最小字段**：channel_id、family/model、behavior、before/after 摘要、source/by、suite/run/report id、force、expires_at、expected/new revision、结果和失败原因；禁止写入请求 body、token、完整响应或凭据。
-- **冲突语义（C4）**：实测为默认来源；人工写入即 sticky，套件覆盖人工必须显式 `force`；人工项可带 `expires_at`，到期自动回退到最新实测值（防"人工遗毒"）。
-- **新鲜度（2026-10-05 起：无时间维度）**：`source=suite` 的通过行**不随时间失效**——只要它绑定的 policy/baseline 仍是当前生效值，就是 `suite_fresh`。使一条标记 stale 的只有两件事：**绑定变化**（policy/baseline 与当前不一致）与**该行自带 `expires_at` 到期**。因此不再有 30 天窗、不再需要周期性重测来"续期"；每行仍保留 `at`，控制台显示它以便人工判断年龄。**运维决策依据**：旧窗口产出的唯一效果是重复记录上一次运行已经确立的结论，而它真正的价值（"证据所描述的对象变了"）由绑定承担。
+- **冲突语义（C4，2026-10-05 修订）**：实测为默认来源；人工写入即 sticky，套件覆盖人工**必须**显式 `force`（`expires_at` 已移除，人工标记不再随时间让位——替换操作者的判断从此永远是一次显式动作）。
+- **新鲜度（2026-10-05 起：无时间维度）**：`source=suite` 的通过行**不随时间失效**——只要它绑定的 policy/baseline 仍是当前生效值，就是 `suite_fresh`。使一条标记 stale 的只有一件事：**绑定变化**（policy/baseline 与当前不一致；`expires_at` 已于同日移除）。因此不再有 30 天窗、不再需要周期性重测来"续期"；每行仍保留 `at`，控制台显示它以便人工判断年龄。**运维决策依据**：旧窗口与 `expires_at` 产出的唯一效果是重复记录上一次运行已经确立的结论，而它真正的价值（"证据所描述的对象变了"）由绑定承担。
 - **兼容**：`official_fit_models` 仍按现语义参与硬 pin 候选并集（`ChannelIsOfficialFitForModel`）；`channel_fit_capabilities` 缺省或索引不可用时行为完全不变。
 - **能力状态机**：每个 `family/model × behavior` 独立维护 `unknown`、`suite_fresh`、`suite_stale`、`suite_failed`、`manual_active`、`manual_expired`；`supported:false` 是明确的否定结果，不等同 unknown。`supportsAll` 只接受 `suite_fresh` 或未过期 `manual_active` 的 true；stale/failed/expired 一律不满足 conservative。套件报告必须绑定 `policy_version` 与规则 hash；规则或官方基线变化会使旧报告 stale，不能自动恢复。探针失败立即产生新的 suite_failed 结果；连续两轮通过只能恢复最近一次同版本 suite 结果，不能覆盖未过期人工 sticky 项。
 
@@ -263,7 +263,7 @@ tools/cdp-bench (Bun/TS, src/suites/{ds-v4,kimi-k3,glm-v53}.ts)
 - **写回采用两段式**：套件默认只产出带 `schema_version`、`report_id`、官方基线指纹、目标渠道/模型、行为结果和签名摘要的报告；独立的受控 applier 校验报告、权限、幂等键和当前 capability-row revision 后才写入。v1 不允许套件进程持有通用 AdminAuth，也不允许无条件覆盖整条渠道 settings。
 - **并发与幂等**：写回必须使用 capability-row compare-and-swap（`expected_revision`），冲突即拒绝并重新读取；同一 `report_id` 重放不得重复产生审计事件。人工编辑与 suite 写回都必须保留 before/after 摘要、操作者、原因、来源、`force`、`expires_at` 和关联报告。
 - **持续校准**：cron 每 6h 轻探针（3-5 例）；任一失败 → 立即把对应行为标 `supported:false` + 告警；连续 2 轮通过 → 自动恢复（沿用 cost plan §1.2 的校准纪律与自动摘除/恢复）。自动恢复只能恢复到最近一次通过的 suite 结果，不能覆盖未过期人工 sticky 项。
-- **人工编辑（C4）**：同一字段可由管理员/控制台直接改写；人工项 sticky，套件需 `force` 才覆盖；带 `expires_at` 的临时覆盖到期回落到最新实测值；每次写入留 provenance + 审计。报告签名/权限/版本校验失败时保持 last-known-good，不改变线上标记。
+- **人工编辑（C4）**：同一字段可由管理员/控制台直接改写；人工项 sticky，套件需 `force` 才覆盖；每次写入留 provenance + 审计。报告签名/权限/版本校验失败时保持 last-known-good，不改变线上标记。
 
 ## 8. 决策流（route 触发，两阶段收窄在 selector 内完成）
 
@@ -336,7 +336,7 @@ func narrow(candidates, fit) []Channel:
 2. 任何规则/标记变更先 **shadow**（§11）再放行；shadow 结论入 `logs.other.fitpolicy`，可按规则 id 聚合"若启用影响多少请求"。
 3. 一键回滚：`official_fit.policy.enabled=false`（秒级回旧行为）或回滚到指定 `version`。
 4. 判定纪律（夜间教训）：**慢≠死**（无完成≠池全灭）、**请求侧≠渠道侧**（渠道文案默认可疑，先对齐官方基准）、**未知标记语义显式**（默认 conservative）。
-5. 标记新鲜度：绑定变化即 stale + 人工项到期回落 + `force` 覆盖留审计（时间维度已移除，2026-10-05；原定 6h 校准任务随之不再承担"续期"职责）。
+5. 标记新鲜度：绑定变化即 stale + `force` 覆盖留审计（时间维度与 `expires_at` 均已移除，2026-10-05；原定 6h 校准任务随之不再承担"续期"职责）。
 6. 观测：Trace 只写规则 id、policy/mark revision、requiredMarks 哈希、候选/选择渠道 id、状态和 shadow 结果；请求 body、messages、tools、token、完整响应和凭据禁止入日志。按采样率记录并设保留期；巡检脚本增加“收窄集为空比率”、候选绕过率和 FitRequirement 缺失率指标。
 
 ## 11. 影子、灰度与卸载

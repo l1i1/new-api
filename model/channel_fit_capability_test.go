@@ -3,7 +3,6 @@ package model
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -178,22 +177,27 @@ func TestFitCapabilityManualIsStickyAgainstSuite(t *testing.T) {
 	require.True(t, forced.Force)
 	require.Equal(t, FitCapabilitySourceSuite, forced.Source)
 
-	// An expired manual mark is not sticky, so no force is needed.
-	expiring := manual
-	expiring.Source = FitCapabilitySourceManual
-	expiring.ExpectedRevision = 2
-	expiring.ExpiresAt = 1_700_000_350
-	expiredRow, err := ApplyChannelFitCapability(expiring, 1_700_000_400)
-	require.NoError(t, err)
-	require.Equal(t, int64(3), expiredRow.Revision)
+	// A manual mark is sticky regardless of age: with expires_at removed
+	// (2026-10-05) nothing but an explicit force ends it. The same suite write
+	// that was refused above is refused again a year later.
+	const muchLater = int64(1_700_000_000) + 365*24*60*60
+	restored := manual
+	restored.Source = FitCapabilitySourceManual
+	restored.ExpectedRevision = 2
+	restoredRow, err := ApplyChannelFitCapability(restored, muchLater)
+	require.NoError(t, err, "a manual write refreshes the mark")
+	require.Equal(t, int64(3), restoredRow.Revision)
 
 	replacement := manual
 	replacement.Source = FitCapabilitySourceSuite
 	replacement.Suite = "cdp-k3"
 	replacement.ExpectedRevision = 3
-	replacement.At = 1_700_000_400
-	replaced, err := ApplyChannelFitCapability(replacement, 1_700_000_500)
-	require.NoError(t, err, "an expired manual mark must fall back to the measured result")
+	_, err = ApplyChannelFitCapability(replacement, muchLater+1)
+	require.Error(t, err, "an old manual mark must still refuse an automated write")
+	require.True(t, IsFitCapabilityConflict(err))
+	replacement.Force = true
+	replaced, err := ApplyChannelFitCapability(replacement, muchLater+2)
+	require.NoError(t, err, "force is the only way past a manual mark")
 	require.Equal(t, int64(4), replaced.Revision)
 }
 
@@ -242,9 +246,9 @@ func TestFitCapabilityStateMachine(t *testing.T) {
 			want: FitCapabilityManualActive,
 		},
 		{
-			name: "manual mark past its expiry expires",
-			row:  &ChannelFitCapability{Source: FitCapabilitySourceManual, Supported: true, At: now - 400*day, ExpiresAt: now - day},
-			want: FitCapabilityManualExpired,
+			name: "an old manual mark stays active: nothing expires it but force",
+			row:  &ChannelFitCapability{Source: FitCapabilitySourceManual, Supported: true, At: now - 400*day},
+			want: FitCapabilityManualActive,
 		},
 	}
 
@@ -261,7 +265,7 @@ func TestFitCapabilityStateMachine(t *testing.T) {
 	assert.True(t, FitCapabilityStateSatisfies(FitCapabilitySuiteFresh))
 	assert.True(t, FitCapabilityStateSatisfies(FitCapabilityManualActive))
 	for _, state := range []string{
-		FitCapabilityUnknown, FitCapabilitySuiteStale, FitCapabilitySuiteFailed, FitCapabilityManualExpired,
+		FitCapabilityUnknown, FitCapabilitySuiteStale, FitCapabilitySuiteFailed,
 	} {
 		assert.Falsef(t, FitCapabilityStateSatisfies(state), "%s must not satisfy a conservative requirement", state)
 	}
@@ -400,50 +404,49 @@ func TestFitMarksGoStaleWhenThePolicyBindingChanges(t *testing.T) {
 	}
 }
 
-// TestFitMarkExpiryIsHonoredWithoutARebuild is the clock half of the same defect:
-// freshness and expiry used to be computed when the index was built, so a mark
-// could keep satisfying a requirement for up to one sync interval after it
-// expired.
-func TestFitMarkExpiryIsHonoredWithoutARebuild(t *testing.T) {
+// TestFitMarkBindingIsHonoredWithoutARebuild is the other half of the same
+// defect: freshness and expiry used to be computed when the index was built, so
+// a mark could keep satisfying a requirement for up to one sync interval after
+// it stopped applying. Expiry is gone (2026-10-05); the binding still has to be
+// re-evaluated per request, because a document or baseline change lands in the
+// database long before the index is rebuilt.
+func TestFitMarkBindingIsHonoredWithoutARebuild(t *testing.T) {
 	setupFitCapabilityDB(t)
 
 	now := common.GetTimestamp()
 	_, err := ApplyChannelFitCapability(FitCapabilityWrite{
 		ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "usage.thinking_counting",
-		Supported: true, Source: FitCapabilitySourceManual, At: now, ExpiresAt: now + 1,
+		Supported: true, Source: FitCapabilitySourceSuite, At: now,
+		PolicyHash: "policy-a", BaselineHash: "baseline-a",
 		ExpectedRevision: 0,
 	}, now)
 	require.NoError(t, err)
 	InitFitCapabilityIndex()
 
-	requirement := FitMarkRequirement{Model: "kimi-k3", Marks: []string{"usage.thinking_counting"}}
-	if !ChannelSatisfiesFitMarks(7, requirement) {
-		t.Fatal("an unexpired manual mark must satisfy")
+	bound := FitMarkRequirement{
+		Model: "kimi-k3", Marks: []string{"usage.thinking_counting"},
+		PolicyHash: "policy-a", BaselineHash: "baseline-a",
+	}
+	if !ChannelSatisfiesFitMarks(7, bound) {
+		t.Fatal("a mark bound to the effective policy must satisfy")
 	}
 
-	time.Sleep(1100 * time.Millisecond)
-
-	if ChannelSatisfiesFitMarks(7, requirement) {
-		t.Fatal("an expired manual mark must stop satisfying without waiting for a cache rebuild")
+	// The document is replaced while the index still holds the old binding. No
+	// rebuild happens here on purpose: the request itself must invalidate it.
+	moved := bound
+	moved.PolicyHash = "policy-b"
+	if ChannelSatisfiesFitMarks(7, moved) {
+		t.Fatal("a mark bound to a replaced policy must stop satisfying without waiting for a cache rebuild")
+	}
+	movedBaseline := bound
+	movedBaseline.BaselineHash = "baseline-b"
+	if ChannelSatisfiesFitMarks(7, movedBaseline) {
+		t.Fatal("a mark bound to a replaced baseline must stop satisfying without waiting for a cache rebuild")
 	}
 }
 
 // TestSuiteResultHonorsItsOwnExpiry: an explicit expiry on a measured result
 // used to be ignored, letting a row that asked to expire keep vouching.
-func TestSuiteResultHonorsItsOwnExpiry(t *testing.T) {
-	now := int64(1_700_000_000)
-	row := &ChannelFitCapability{
-		Source: FitCapabilitySourceSuite, Supported: true, At: now - 60, ExpiresAt: now - 1,
-	}
-	if got := FitCapabilityState(row, now, "", ""); got != FitCapabilitySuiteStale {
-		t.Fatalf("an expired suite result must be stale, got %s", got)
-	}
-	row.ExpiresAt = now + 60
-	if got := FitCapabilityState(row, now, "", ""); got != FitCapabilitySuiteFresh {
-		t.Fatalf("an unexpired suite result must stay fresh, got %s", got)
-	}
-}
-
 // TestInitChannelCacheToleratesChannelWithoutAbilities covers a latent crash
 // found while reviewing: the group map was seeded from Ability rows, so an
 // enabled channel whose group had no abilities made the rebuild assign into a

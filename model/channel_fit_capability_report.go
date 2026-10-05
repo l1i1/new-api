@@ -92,7 +92,6 @@ func ApplyFitCapabilityReport(report fitpolicy.SuiteReport, now int64) FitCapabi
 			Cases:            result.Cases,
 			Rounds:           report.Rounds,
 			At:               measuredAt,
-			ExpiresAt:        result.ExpiresAt,
 			PolicyVersion:    report.PolicyVersion,
 			PolicyHash:       report.PolicyHash,
 			BaselineHash:     report.BaselineHash,
