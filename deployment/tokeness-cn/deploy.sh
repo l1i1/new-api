@@ -558,7 +558,18 @@ snapshot_config_digest() {
 
 app_status_ok() {
   local ip="$1" body
-  body="$(remote_cmd "$ip" <<'REMOTE_PROBE'
+  # Probe from the ECS, which is the relay entry and reaches the ECI private
+  # addresses directly — that is exactly what its nginx upstreams do. The
+  # retired lightweight hosts used to be this probe's origin (SWAS_PANEL_TIER=1
+  # restores them for a fleet that still has one), and with them gone this gate
+  # timed out for its whole readiness window and rolled back a healthy instance:
+  # the release that hit it was the first rollout after the hosts were deleted,
+  # because .29's own rollout had finished before that.
+  local -a probe_origin=("$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS")
+  if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+    probe_origin=("$SWAS_HOST" "$SWAS_SSH_KEY_PATH" "$SWAS_SSH_KNOWN_HOSTS")
+  fi
+  body="$(remote_cmd_on "${probe_origin[@]}" "$ip" <<'REMOTE_PROBE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/health/ready"

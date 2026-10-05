@@ -534,6 +534,15 @@ grep -q 'ECS serves green, blue retired' "$release_case/state/stdout.log" \
 # The relay entry is the ECS too: its upstream file is what the rollout gates on
 # and what verification reads, so it must name the promoted instance.
 assert_contains "$release_case/ecs-upstream.conf" "server 10.0.0.241:3000;"
+# No step of a release may reach a retired lightweight host. This is the guard
+# the app-readiness probe lacked: it kept SSHing to 8.133.172.195 to read the new
+# instance's health, timed out for its whole window once the hosts were deleted,
+# and rolled back a healthy instance - the failure .30 died of.
+for retired in 8.133.172.195 101.133.234.135; do
+  if grep -q "^ssh $retired" "$release_case/state/aliyun-calls.log"; then
+    fail "the release contacted the retired lightweight host $retired"
+  fi
+done
 # Master-first: the whole blue-green cycle (start..commit) must complete
 # before the ESS group scales out.
 first_bootstrap="$(grep -n '^host-bootstrap$' "$release_case/state/aliyun-calls.log" | head -n1 | cut -d: -f1)"
