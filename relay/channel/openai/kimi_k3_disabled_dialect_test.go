@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -48,9 +49,33 @@ func TestKimiK3DisabledThinkingTranslatedForAggregator(t *testing.T) {
 		if req.ReasoningEffort != kimiK3AggregatorDisabledEffort {
 			t.Fatalf("%s: effort = %q, want %q", tc.name, req.ReasoningEffort, kimiK3AggregatorDisabledEffort)
 		}
+		// The native axis must not travel next to the translated effort: an
+		// aggregator that validates the pair answers 400 (channel 14, live
+		// 2026-10-05). The body is what goes upstream, so assert on the body.
+		body, err := common.Marshal(req)
+		if err != nil {
+			t.Fatalf("%s: marshal request: %v", tc.name, err)
+		}
+		if strings.Contains(string(body), `"thinking"`) {
+			t.Fatalf("%s: translated request still carries a thinking object: %s", tc.name, body)
+		}
 		if shouldSuppressReasoningContent(info) {
 			t.Fatalf("%s: Kimi K3 responses must be delivered, not stripped", tc.name)
 		}
+	}
+}
+
+// The exported dialect contract for other channels: an official-behaving
+// channel keeps the caller's own axis, and a request that did not ask for
+// disabled thinking keeps whatever thinking object it sent.
+func TestKimiK3DialectKeepsThinkingWhereItIsNotContradictory(t *testing.T) {
+	info, req := kimiDialectInfo(1, "", "enabled")
+	applyKimiK3DisabledThinkingDialect(info, req)
+	if len(req.THINKING) == 0 {
+		t.Fatal("a thinking-enabled request must keep its thinking object")
+	}
+	if req.ReasoningEffort != "" {
+		t.Fatalf("effort = %q, want empty", req.ReasoningEffort)
 	}
 }
 
@@ -158,6 +183,14 @@ func TestKimiK3DisabledThinkingKeptForOfficialBehaviorChannel(t *testing.T) {
 			// A thinking-object request carries no effort; the official axis
 			// stays on the thinking object, and no effort may be injected.
 			t.Fatalf("%s: effort = %q, want empty", tc.name, req.ReasoningEffort)
+		}
+		// The official-behaving channel is why the field can be dropped safely
+		// everywhere else: the caller's own axis has to survive here untouched.
+		if tc.channel == 8 && tc.thinking != "" && len(req.THINKING) == 0 {
+			t.Fatalf("%s: official-behaving channel lost the caller's thinking object", tc.name)
+		}
+		if tc.channel == 37 && len(req.THINKING) != 0 {
+			t.Fatalf("%s: translated aggregator request still carries the native axis", tc.name)
 		}
 	}
 }

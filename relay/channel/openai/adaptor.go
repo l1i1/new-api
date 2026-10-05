@@ -973,4 +973,20 @@ func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dt
 		return
 	}
 	request.ReasoningEffort = kimiK3AggregatorDisabledEffort
+	// The aggregator dialect carries the whole intent on reasoning_effort, so the
+	// caller's native thinking object must not travel next to it. The pair
+	// "thinking.type=disabled + reasoning_effort=minimal" is self-contradictory,
+	// and an aggregator that validates it rejects the whole request: channel 14
+	// answered 400 "invalid thinking type, only be disabled when reasoning effort
+	// is none and enabled when reasoning effort is not none" (live 2026-10-05),
+	// which cost a retry hop and a second upstream attempt on every
+	// disabled-thinking request that reached it. Dropping the field loses no
+	// signal that this function has not already replaced: an aggregator ignores
+	// thinking.type (that is why the dialect exists), and nothing reads it
+	// afterwards for this family — channels that honour the official axis
+	// natively never reach this line (the official-behaving predicate returned
+	// above), Kimi K3 responses are never stripped
+	// (shouldSuppressReasoningContent exempts the family), and the relay info
+	// keeps the caller's effort separately (reasoningEffortFromRequest).
+	request.THINKING = nil
 }
