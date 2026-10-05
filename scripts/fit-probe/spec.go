@@ -154,6 +154,22 @@ var officialExpectations = []Expectation{
 		},
 	},
 	{
+		// The live kimi-k3 document requires this mark (policy v5, rule
+		// k3-logprobs) for every logprobs request. The shipped builtin document
+		// does not carry it yet, so the basis is the live document by hash and
+		// the official expectation is measured by this run, not asserted. Its
+		// only discriminator is structural: presence of the logprobs object.
+		Family:         "kimi-k3",
+		Behavior:       "logprobs.present",
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v5, hash 711aabfe600d3912c3da989afd52d74865d52ba16d9c8b806c27d743f80047c0) rule k3-logprobs",
+			"pkg/fitpolicy/decide.go (the requirement carries the policy mark verbatim)",
+		},
+	},
+	{
 		Family:         "glm-5.3",
 		Behavior:       fitpolicy.BehaviorFamilyWhole,
 		Official:       expectSupported,

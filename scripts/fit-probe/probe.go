@@ -252,6 +252,33 @@ var probeSpecs = map[string]ProbeSpec{
 			return []string{"content_is_json_object official=" + boolText(base.ContentIsJSONObject) + " channel=" + boolText(channel.ContentIsJSONObject)}
 		},
 	},
+	// logprobs.present is the kimi-k3 logprobs mark the live policy document
+	// (v5, rule k3-logprobs) requires. The structural fact is whether an
+	// accepted response carries the logprobs object at all: the upstream pools
+	// split cleanly into those that do and those that return nothing, and a
+	// missing field cannot be excused by sampling. The official expectation is
+	// measured by this same tool at run time, so nothing about the official
+	// endpoint is asserted from general knowledge here.
+	"logprobs.present": {
+		Behavior:  "logprobs.present",
+		Path:      chatPath,
+		MaxTokens: 16,
+		Fields:    []string{"logprobs", "top_logprobs"},
+		Build: func(family, model string) map[string]any {
+			body := chatBody(model, []map[string]any{userMessage("hi")}, 16)
+			body["logprobs"] = true
+			body["top_logprobs"] = 1
+			return body
+		},
+		StructuralAbsenceIsDivergence: true,
+		EvidenceIsGeneratedOutput:     true,
+		StructuralCompare: func(base, channel signature) []string {
+			if base.HasLogprobs != channel.HasLogprobs {
+				return []string{"logprobs_present official=" + boolText(base.HasLogprobs) + " channel=" + boolText(channel.HasLogprobs)}
+			}
+			return nil
+		},
+	},
 	fitpolicy.BehaviorHistoryAssistantFirst: {
 		Behavior:  fitpolicy.BehaviorHistoryAssistantFirst,
 		Path:      chatPath,
@@ -828,6 +855,8 @@ func structuralEvidence(spec ProbeSpec, channel signature) (known, present bool)
 		return true, channel.HasToolCalls
 	case fitpolicy.BehaviorResponseFormatJSON:
 		return true, channel.ContentIsJSONObject
+	case "logprobs.present":
+		return true, channel.HasLogprobs
 	case fitpolicy.BehaviorThinkingCounting:
 		return true, channel.HasReasoningContent || channel.ReasoningTokens >= 0
 	default:
