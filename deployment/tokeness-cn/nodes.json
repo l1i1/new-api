@@ -5,12 +5,12 @@
   "production_image_policy": "digest-only",
   "nodes": [
     {
-      "name": "swas-lw",
+      "name": "entry-ecs",
       "role": "reverse-proxy",
-      "host": "8.133.172.195",
+      "host": "47.101.40.104",
       "user": "root",
       "ssh_key": "private/access/keys/swas-ml",
-      "note": "Shanghai lightweight nginx reverse proxy; upstream newapi_ml points to the ECI private IP."
+      "note": "Shanghai entry ECS: panel-tier nginx (EdgeOne origin), relay last resort, and the master container's host. Its relay upstream list is written by ecs-fleet-sync from the local ESS view; the release flips its nginx on commit and gates on its upstream file."
     },
     {
       "name": "eci-ml",
@@ -25,13 +25,13 @@
       "role": "database",
       "region": "cn-shanghai",
       "instance_id": "pgm-uf6k624063503266",
-      "note": "RDS PostgreSQL private endpoint; access is restricted to the ECI and SWAS private networks."
+      "note": "RDS PostgreSQL private endpoint; access is restricted to the ECI fleet's VPC (the SWAS private network left the path on 2026-10-05)."
     },
     {
       "name": "edgeone-cn",
       "role": "cdn-waf",
       "site": "tokeness.cn",
-      "note": "Tencent EdgeOne public entry; origin is the SWAS reverse proxy."
+      "note": "Tencent EdgeOne public entry; origin is the Shanghai entry ECS (47.101.40.104), not the retired Chengdu lightweight tier."
     }
   ],
   "public_endpoints": [

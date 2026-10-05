@@ -1,6 +1,8 @@
 # Tokeness China Production Deployment
 
-The China site uses one Alibaba Cloud ECI instance behind a Shanghai lightweight nginx reverse proxy and EdgeOne. A Git push builds images only. It never changes production.
+The China site uses an Alibaba Cloud ECI fleet behind the Shanghai entry ECS's nginx and EdgeOne. A Git push builds images only. It never changes production.
+
+The Chengdu lightweight tier (two hosts) retired on 2026-10-05: it no longer runs nginx or ml-sync, nothing resolves to it, and every role it held — EdgeOne origin, panel tier, relay entry, drain pinning — belongs to the entry ECS now. The release paths that used it are kept behind `SWAS_PANEL_TIER=1` (the hosts' ml-sync was stopped, not deleted) and fail closed if enabled while the hosts are gone; the default path never contacts them.
 
 ## Release Gate (tag is version)
 
@@ -29,8 +31,8 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    | Key | Content | Least-privilege guidance |
    | --- | --- | --- |
    | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only the ESS/ECI/VPC Describe/Modify actions `deploy.sh` actually calls on `cn-shanghai` — never the main-account AK |
-   | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key | Key is limited to the two lightweight hosts |
-   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the two SWAS hosts **and the backup entry ECS** (`47.101.40.104`) | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step now rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
+   | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key — the **entry ECS's** key since the lightweight tier retired (the secret name is kept for the Web-only key repo) | Key is limited to the entry ECS and the (retired) lightweight hosts |
+   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the **entry ECS** (`47.101.40.104`) and the (retired) lightweight hosts | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
 
    All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
 
@@ -77,8 +79,10 @@ The master container (`new-api-master` on the backup ECS) serves the panel and i
 
 1. `start` — a green container comes up on the **other** port of the `3000`/`3001` pair (`docker pull` first; blue is never touched) and must answer `/health/ready`.
 2. `gate` — green's `/api/status` version must equal the release.
-3. `pin` — `deploy.sh` writes `/etc/ml-sync/web-primary-port` on both lightweight hosts; ml-sync (30s cron) rewrites the `newapi_web` primary line **only while the pinned port answers `/health/ready`**, then reloads nginx. The deploy waits until both hosts carry the port.
-4. `commit` — on the ECS: the local `:80` last-resort upstream and `/etc/tokeness-cn/master-serving-port` follow green, blue gets a short quiet window, then `docker stop` → `rm` → green is renamed to `new-api-master`.
+3. `commit` — on the ECS: the local `:80` last-resort upstream and `/etc/tokeness-cn/master-serving-port` follow green, blue gets a short quiet window, then `docker stop` → `rm` → green is renamed to `new-api-master`.
+4. `probe` — the deploy asks the bootstrap which port the panel is actually served from and requires green's. `BLUE_OK` is not consulted: the bootstrap names the container on the *serving* port "blue", so after the commit that is the renamed green.
+
+With `SWAS_PANEL_TIER=1` the retired step returns: `deploy.sh` wrote `/etc/ml-sync/web-primary-port` on both lightweight hosts and ml-sync (30s cron) rewrote the `newapi_web` primary line **only while the pinned port answered `/health/ready`**, with the deploy waiting for both hosts to carry it. That path is dead while the hosts are gone and fails closed.
 
 The serving port therefore alternates per release (`:3000` → `:3001` → `:3000` …). That is expected: `deploy.sh` discovers it from the ECS marker, so never hand-edit the port in either nginx conf. A failed roll reconciles itself: `abort` keeps blue (removing green and restoring `:80`) when blue is still alive, and *finalizes* green when the commit already retired blue — nothing ever points at a dead container.
 
@@ -111,13 +115,19 @@ streams mid-answer.
 `ess_rollout` now drains first:
 
 1. scale out to 2 and gate the new instance on the application itself;
-2. write `/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both**
-   lightweight hosts;
-3. wait until both nginx copies serve the new instance only;
-4. hold `ML_DRAIN_SECONDS` (default 1900, above the measured 1807s stream); the release emits a 30s heartbeat so CNB's no-output watchdog does not kill the stage;
-5. scale back to 1 - the pin must outlive this step, or ml-sync would re-add the
-   still-InService old instance on its next 30s pass;
-6. clear the pin.
+2. wait until the ECS's relay upstream file names the new instance (the entry is
+   the ECS now; `ecs-fleet-sync` writes that list from the local ESS view). This
+   is weaker than the retired pin - the file lists every in-service peer, so it
+   cannot single out one instance - which is the trade the lightweight
+   retirement accepted;
+3. hold `ML_DRAIN_SECONDS` (default 1900, above the measured 1807s stream); the release emits a 30s heartbeat so CNB's no-output watchdog does not kill the stage;
+4. scale back to 1.
+
+With `SWAS_PANEL_TIER=1` the retired step returns: write
+`/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both** lightweight
+hosts, wait until both nginx copies serve the new instance only, scale back, and
+clear the pin afterwards (the pin had to outlive the scale-down, or ml-sync would
+re-add the still-InService old instance on its next 30s pass).
 
 ml-sync honours the pin only while its target is healthy, and the marker expires
 on its own, so the worst failure mode is a fall back to the previous behaviour
@@ -172,10 +182,15 @@ jq -e . deployment/tokeness-cn/nodes.json >/dev/null
 
 ### SSH host verification
 
-`deploy.sh` runs with `StrictHostKeyChecking=yes` and `IdentitiesOnly=yes`. The lightweight host `8.133.172.195` must be present in the SSH client's `~/.ssh/known_hosts` (or set `SWAS_SSH_KNOWN_HOSTS` to a pinned file). On first use, record the host fingerprint through a trusted channel:
+`deploy.sh` runs with `StrictHostKeyChecking=yes` and `IdentitiesOnly=yes`. The
+hosts it SSHes to are the **entry ECS** (`47.101.40.104`, `MASTER_SSH_*`) and, on
+the retired path only, the two lightweight hosts (`SWAS_SSH_*`); each must be in
+the client's `~/.ssh/known_hosts` or covered by the pinned
+`SWAS_SSH_KNOWN_HOSTS`/`MASTER_SSH_KNOWN_HOSTS` file. On first use, record
+fingerprints through a trusted channel:
 
 ```bash
-ssh-keyscan -H 8.133.172.195 >> ~/.ssh/known_hosts
+ssh-keyscan -H 47.101.40.104 >> ~/.ssh/known_hosts
 ```
 
 Do not deploy without a verified host fingerprint.
