@@ -192,7 +192,13 @@ func TestFailedIndexBuildLogIsBudgetedNotSpent(t *testing.T) {
 	}()
 
 	originalBudget := fitCapabilityIndexLog
-	fitCapabilityIndexLog = common.NewLogBudget(1, time.Millisecond)
+	// A long window keeps the burst assertion deterministic: five attempts
+	// cannot refill inside one hour. The refill arithmetic itself is covered
+	// deterministically in common/log_budget_test.go, which can inject the
+	// clock; asserting it here with a millisecond window made the test fail on
+	// a loaded runner whenever the five attempts straddled the window boundary
+	// (observed on the v1.0.0-rc.40-tokeness-intl.13 publish run).
+	fitCapabilityIndexLog = common.NewLogBudget(1, time.Hour)
 	defer func() { fitCapabilityIndexLog = originalBudget }()
 
 	var logs strings.Builder
@@ -209,7 +215,7 @@ func TestFailedIndexBuildLogIsBudgetedNotSpent(t *testing.T) {
 
 	// The window refills: the same fault a moment later is still reported, which
 	// is what a spent one-shot counter cannot do.
-	time.Sleep(5 * time.Millisecond)
+	fitCapabilityIndexLog = common.NewLogBudget(1, time.Nanosecond)
 	InitFitCapabilityIndex()
 	assert.Equal(t, 2, strings.Count(logs.String(), "failed to load channel fit capabilities"),
 		"the failure site must come back after the window instead of staying silent forever")
