@@ -18,6 +18,15 @@ type Requirement struct {
 	Model string
 	// Marks are the required behaviours, in rule order and deduplicated.
 	Marks []string
+	// Rules are the ids of the rules that matched, in rule order and
+	// deduplicated. Marks say *what* the request requires; Rules say *why*.
+	// They are not the same statement: nothing in the document schema keeps a
+	// behaviour owned by a single rule, and the shipped kimi-k3 document relies
+	// on that one-to-one mapping today rather than enforcing it. The request log
+	// carries both, because "why did this request land on that channel" is the
+	// question the log has to answer and the marks alone cannot attribute a
+	// narrowing to a rule once two rules share a behaviour.
+	Rules []string
 	// Behaviors maps each required mark to its class. It is carried for
 	// consumers that will need the classification; no code branches on it yet,
 	// and every behaviour the shipped document declares is ClassVerdict.
@@ -77,7 +86,7 @@ func (s *Snapshot) Decide(model string, routeEnabled bool, view RequestView) Req
 	if !known {
 		return Requirement{}
 	}
-	marks, ok := family.evaluate(view)
+	marks, rules, ok := family.evaluate(view)
 	if !ok || len(marks) == 0 {
 		return Requirement{}
 	}
@@ -89,6 +98,7 @@ func (s *Snapshot) Decide(model string, routeEnabled bool, view RequestView) Req
 		Family:            familyID,
 		Model:             model,
 		Marks:             marks,
+		Rules:             rules,
 		Behaviors:         behaviors,
 		PolicyVersion:     s.version,
 		PolicyHash:        s.hash,
@@ -107,23 +117,26 @@ func (s *Snapshot) Decide(model string, routeEnabled bool, view RequestView) Req
 }
 
 // evaluate runs the family's rules and returns the union of the required
-// behaviours. ok is false when any rule failed to evaluate, which the caller
-// treats as "no opinion" so the legacy path stays in charge.
-func (f *compiledFamily) evaluate(view RequestView) ([]string, bool) {
+// behaviours and the ids of the rules that produced them, both in rule order
+// and deduplicated. ok is false when any rule failed to evaluate, which the
+// caller treats as "no opinion" so the legacy path stays in charge.
+func (f *compiledFamily) evaluate(view RequestView) ([]string, []string, bool) {
 	if len(f.rules) == 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	env := &evalEnv{View: view}
 	var marks []string
+	var rules []string
 	seen := make(map[string]struct{}, 8)
 	for i := range f.rules {
 		matched, err := runRule(f.rules[i].prog, env)
 		if err != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		if !matched {
 			continue
 		}
+		rules = append(rules, f.rules[i].id)
 		for _, mark := range f.rules[i].require {
 			if _, duplicate := seen[mark]; duplicate {
 				continue
@@ -132,7 +145,14 @@ func (f *compiledFamily) evaluate(view RequestView) ([]string, bool) {
 			marks = append(marks, mark)
 		}
 	}
-	return marks, true
+	// A rule that matched but requires nothing is not a decision, so it must not
+	// be reported as the reason for one: HasOpinion() reads Marks, and a Rules
+	// entry without a Mark would make the log claim a narrowing that never
+	// happened.
+	if len(marks) == 0 {
+		return nil, nil, true
+	}
+	return marks, rules, true
 }
 
 // runRule executes one compiled rule, converting a panic into an evaluation

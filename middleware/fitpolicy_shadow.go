@@ -239,6 +239,9 @@ func reportFitPolicyShadow(c *gin.Context, model string, requirement fitpolicy.R
 		"model=" + strconv.Quote(model),
 		"family=" + requirement.Family,
 		"required_marks=" + strings.Join(requirement.Marks, ","),
+		// The rule ids are what make a dry-run line attributable: marks say what
+		// the request required, rules say which rule required it.
+		"matched_rules=" + strings.Join(requirement.Rules, ","),
 		"policy_version=" + itoa(requirement.PolicyVersion),
 		"policy_hash=" + requirement.PolicyHash,
 		"total=" + itoa64(total),

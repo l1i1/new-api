@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -152,8 +153,39 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
 	appendResponseOverrideInfo(relayInfo, other)
+	appendFitRequirementInfo(ctx, other)
 	appendStreamStatus(ctx, relayInfo, other)
 	return other
+}
+
+// appendFitRequirementInfo records the official-fit decision that narrowed this
+// request's channel candidates, under "fit".
+//
+// Without it the channel a request lands on is unexplainable from the log: the
+// narrowing is silent, the same body routes differently depending on the user's
+// Route dimension, and a narrowing looks exactly like ordinary priority
+// routing. "fit" answers which family matched, which behaviours the request
+// required, and — through rules — which rules required them.
+//
+// It is written only when the policy had an opinion, so the field's presence is
+// itself the statement "this request was pinned to an official-behaving
+// channel". The behaviour names are already public in the policy document and
+// the rule ids are operator-authored, so this carries no request content.
+func appendFitRequirementInfo(ctx *gin.Context, other *model.LogOther) {
+	if ctx == nil || other == nil {
+		return
+	}
+	requirement, ok := common.GetContextKeyType[fitpolicy.Requirement](ctx, constant.ContextKeyFitRequirement)
+	if !ok || len(requirement.Marks) == 0 {
+		return
+	}
+	other.SetPublic("fit", map[string]any{
+		"family":   requirement.Family,
+		"marks":    requirement.Marks,
+		"rules":    requirement.Rules,
+		"policy":   requirement.PolicyVersion,
+		"baseline": requirement.BaselineHash,
+	})
 }
 
 func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {

@@ -148,6 +148,47 @@ func TestDecideDeduplicatesMarksInRuleOrder(t *testing.T) {
 			t.Fatalf("marks = %v, want %v", got.Marks, want)
 		}
 	}
+	// Both rules matched and both must be reported: the behaviours are
+	// deduplicated, the reasons are not. Two rules sharing a behaviour is a
+	// legal document, and it is exactly the case where the marks alone cannot
+	// say which rule fired.
+	wantRules := []string{"a", "b"}
+	if len(got.Rules) != len(wantRules) {
+		t.Fatalf("rules = %v, want %v", got.Rules, wantRules)
+	}
+	for i := range wantRules {
+		if got.Rules[i] != wantRules[i] {
+			t.Fatalf("rules = %v, want %v", got.Rules, wantRules)
+		}
+	}
+}
+
+// TestDecideReportsTheMatchedRuleIdForAShippedShape pins the attribution the
+// request log depends on: for the shipped kimi-k3 document one shape has one
+// rule, and the decision must carry that rule's id so a log line can say why a
+// request was pinned to an official-behaving channel.
+func TestDecideReportsTheMatchedRuleIdForAShippedShape(t *testing.T) {
+	snapshot, err := Compile(BuiltinPolicy())
+	if err != nil {
+		t.Fatalf("builtin policy must compile: %v", err)
+	}
+	// k3-thinking-off is the shipped rule this shape must attribute to. The
+	// built-in document is the fallback used when no operator document is
+	// installed; it carries the five rules the shipped battery measures.
+	thinkingOff := json.RawMessage(`{"type":"disabled"}`)
+	got := snapshot.Decide("kimi-k3", true, RequestView{Thinking: thinkingOff})
+	if len(got.Rules) != 1 || got.Rules[0] != "k3-thinking-off" {
+		t.Fatalf("rules = %v, want [k3-thinking-off]", got.Rules)
+	}
+	if len(got.Marks) != 1 || got.Marks[0] != BehaviorThinkingCounting {
+		t.Fatalf("marks = %v, want [%s]", got.Marks, BehaviorThinkingCounting)
+	}
+	// A request the policy has no opinion about must carry neither: an empty
+	// decision must not look like a narrowing in the log.
+	plain := snapshot.Decide("kimi-k3", true, RequestView{Messages: []dto.Message{{Role: "user", Content: json.RawMessage(`"hi"`)}}})
+	if len(plain.Marks) != 0 || len(plain.Rules) != 0 {
+		t.Fatalf("plain request produced marks=%v rules=%v, want none", plain.Marks, plain.Rules)
+	}
 }
 
 func TestPolicyValidationRejects(t *testing.T) {
