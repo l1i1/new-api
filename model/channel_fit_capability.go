@@ -29,19 +29,18 @@ const (
 	// FitCapabilitySourceManual marks an operator override. Manual results are
 	// sticky: a suite write cannot replace one unless it sets Force.
 	FitCapabilitySourceManual = "manual"
-
-	// DefaultFitCapabilityStaleAfterDays is how long a suite result stays fresh.
-	DefaultFitCapabilityStaleAfterDays = 30
 )
 
 // Fit capability states. Each family/model × behaviour pair holds exactly one.
 const (
 	// FitCapabilityUnknown means no row exists: nothing is claimed either way.
 	FitCapabilityUnknown = "unknown"
-	// FitCapabilitySuiteFresh is a passing suite result inside the freshness window.
+	// FitCapabilitySuiteFresh is a passing suite result bound to the policy and
+	// baseline currently in force.
 	FitCapabilitySuiteFresh = "suite_fresh"
-	// FitCapabilitySuiteStale is a passing suite result past the window, or one
-	// bound to a different policy/baseline. It cannot satisfy a requirement.
+	// FitCapabilitySuiteStale is a passing suite result bound to a different
+	// policy/baseline, or past the expiry the row itself carries. It cannot
+	// satisfy a requirement.
 	FitCapabilitySuiteStale = "suite_stale"
 	// FitCapabilitySuiteFailed is an explicit negative suite result. It is a
 	// claim, not an absence of information.
@@ -437,12 +436,17 @@ func FitCapabilityExpired(row *ChannelFitCapability, now int64) bool {
 // measured against a different policy or baseline is stale rather than valid:
 // the behaviour may have changed underneath it, and the spec forbids letting it
 // recover silently.
-func FitCapabilityState(row *ChannelFitCapability, now int64, staleAfterDays int, policyHash, baselineHash string) string {
+//
+// Age deliberately plays no part (operator decision, 2026-10-05). Marks used to
+// expire 30 days after they were taken, which forced a periodic re-measurement
+// whose only product was re-recording what the previous run had already
+// established. What invalidates evidence here is that the thing it is evidence
+// *about* changed — the policy document or the baseline — and that is still
+// enforced. Each row keeps its `at` and the management surface reports it, so a
+// reader can still judge age; nothing expires it silently.
+func FitCapabilityState(row *ChannelFitCapability, now int64, policyHash, baselineHash string) string {
 	if row == nil {
 		return FitCapabilityUnknown
-	}
-	if staleAfterDays <= 0 {
-		staleAfterDays = DefaultFitCapabilityStaleAfterDays
 	}
 	switch row.Source {
 	case FitCapabilitySourceManual:
@@ -463,10 +467,6 @@ func FitCapabilityState(row *ChannelFitCapability, now int64, staleAfterDays int
 			return FitCapabilitySuiteStale
 		}
 		if baselineHash != "" && row.BaselineHash != "" && row.BaselineHash != baselineHash {
-			return FitCapabilitySuiteStale
-		}
-		staleAfterSeconds := int64(staleAfterDays) * 24 * 60 * 60
-		if row.At <= 0 || now-row.At > staleAfterSeconds {
 			return FitCapabilitySuiteStale
 		}
 		return FitCapabilitySuiteFresh

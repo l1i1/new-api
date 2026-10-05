@@ -297,7 +297,7 @@ func ChannelSatisfiesFitMarks(channelID int, requirement FitMarkRequirement) boo
 			BaselineHash: mark.BaselineHash,
 			Revision:     mark.Revision,
 		}
-		state := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, requirement.PolicyHash, requirement.BaselineHash)
+		state := FitCapabilityState(row, now, requirement.PolicyHash, requirement.BaselineHash)
 		if !FitCapabilityStateSatisfies(state) {
 			return false
 		}

@@ -234,7 +234,7 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 
 - **审计最小字段**：channel_id、family/model、behavior、before/after 摘要、source/by、suite/run/report id、force、expires_at、expected/new revision、结果和失败原因；禁止写入请求 body、token、完整响应或凭据。
 - **冲突语义（C4）**：实测为默认来源；人工写入即 sticky，套件覆盖人工必须显式 `force`；人工项可带 `expires_at`，到期自动回退到最新实测值（防"人工遗毒"）。
-- **新鲜度**：`source=suite` 且 `at` 超过 `stale_after_days`（v1 默认 30 天）即为 `suite_stale`；conservative 策略下 stale 不满足能力。时间基准由网关服务端 UTC 判定；控制台与采样日志显示 stale。
+- **新鲜度（2026-10-05 起：无时间维度）**：`source=suite` 的通过行**不随时间失效**——只要它绑定的 policy/baseline 仍是当前生效值，就是 `suite_fresh`。使一条标记 stale 的只有两件事：**绑定变化**（policy/baseline 与当前不一致）与**该行自带 `expires_at` 到期**。因此不再有 30 天窗、不再需要周期性重测来"续期"；每行仍保留 `at`，控制台显示它以便人工判断年龄。**运维决策依据**：旧窗口产出的唯一效果是重复记录上一次运行已经确立的结论，而它真正的价值（"证据所描述的对象变了"）由绑定承担。
 - **兼容**：`official_fit_models` 仍按现语义参与硬 pin 候选并集（`ChannelIsOfficialFitForModel`）；`channel_fit_capabilities` 缺省或索引不可用时行为完全不变。
 - **能力状态机**：每个 `family/model × behavior` 独立维护 `unknown`、`suite_fresh`、`suite_stale`、`suite_failed`、`manual_active`、`manual_expired`；`supported:false` 是明确的否定结果，不等同 unknown。`supportsAll` 只接受 `suite_fresh` 或未过期 `manual_active` 的 true；stale/failed/expired 一律不满足 conservative。套件报告必须绑定 `policy_version` 与规则 hash；规则或官方基线变化会使旧报告 stale，不能自动恢复。探针失败立即产生新的 suite_failed 结果；连续两轮通过只能恢复最近一次同版本 suite 结果，不能覆盖未过期人工 sticky 项。
 
@@ -336,7 +336,7 @@ func narrow(candidates, fit) []Channel:
 2. 任何规则/标记变更先 **shadow**（§11）再放行；shadow 结论入 `logs.other.fitpolicy`，可按规则 id 聚合"若启用影响多少请求"。
 3. 一键回滚：`official_fit.policy.enabled=false`（秒级回旧行为）或回滚到指定 `version`。
 4. 判定纪律（夜间教训）：**慢≠死**（无完成≠池全灭）、**请求侧≠渠道侧**（渠道文案默认可疑，先对齐官方基准）、**未知标记语义显式**（默认 conservative）。
-5. 标记新鲜度：`stale` 标记 + 6h 校准 + 人工项过期；`force` 覆盖留审计。
+5. 标记新鲜度：绑定变化即 stale + 人工项到期回落 + `force` 覆盖留审计（时间维度已移除，2026-10-05；原定 6h 校准任务随之不再承担"续期"职责）。
 6. 观测：Trace 只写规则 id、policy/mark revision、requiredMarks 哈希、候选/选择渠道 id、状态和 shadow 结果；请求 body、messages、tools、token、完整响应和凭据禁止入日志。按采样率记录并设保留期；巡检脚本增加“收窄集为空比率”、候选绕过率和 FitRequirement 缺失率指标。
 
 ## 11. 影子、灰度与卸载
@@ -582,7 +582,7 @@ func narrow(candidates, fit) []Channel:
 ### 19.1 分工与不变量
 
 - **白名单（`official_fit_models`）**：渠道**整面**的准入声明——错误形状、重试语义、计费、未探测形态，全部靠人工背书。常设声明，不会因为日历过期。
-- **marks（`channel_fit_capabilities`）**：逐行为的测量。会过期（30 天窗口）、绑定 policy/baseline hash（规则一改全部 stale）。**只能做减法，永远不能凭单点测量把渠道加进官方集合**——这是 §68 行决定"fitpolicy 不替换 official_fit_models"的全部理由，也是 marks 层"fail-open 落地"性质（无数据 = 不收窄）的来源。
+- **marks（`channel_fit_capabilities`）**：逐行为的测量。绑定 policy/baseline hash（规则或基线一改全部 stale；自 2026-10-05 起**不再随时间过期**）。**只能做减法，永远不能凭单点测量把渠道加进官方集合**——这是 §68 行决定"fitpolicy 不替换 official_fit_models"的全部理由，也是 marks 层"fail-open 落地"性质（无数据 = 不收窄）的来源。
 - **admission battery**：本节引入的桥——把"构成官方等价的完整行为集"声明为族级电池，**用整组 fresh passing marks 替代整面人工背书**。电池覆盖面 ≈ 白名单背书面（都承认有残余：电池外的行为仍无人验证；白名单的"人工整面背书"在实践中同样覆盖不了 ch41 式发散，这正是替换的论据）。
 - **类型地板不变**：族官方渠道类型（Moonshot 直连）按身份准入。它是基线的定义来源，不是被测对象。
 
@@ -606,7 +606,7 @@ func narrow(candidates, fit) []Channel:
 
 ### 19.4 接受的残余风险（写给签字的人）
 
-- **新鲜度 = 可用性**：套件成为生产设施（定时跑、过期前告警、准入池缩水告警）。套件停摆 = 渠道逐个出局（30 天斜坡），pinned 流量最终诚实失败。这是用"运维的日历背书"换"运维的记忆背书"——日历至少会响。
+- **新鲜度 = 可用性（2026-10-05 修订）**：时间窗移除后，套件不必再为"续期"而跑；渠道仍会因**绑定变化**（策略文档或 baseline 改动）整体出局，届时需要重测来重新取得标记。套件停摆的后果因此从"30 天斜坡逐步出局"变成"下一次文档/baseline 变更时一次性出局"——风险更集中，应在改文档前安排重测。
 - **电池覆盖缺口**：电池外的行为（计费一致性、罕见错误类）无人验证。缓解：电池只增不减、行为词汇表扩展走 spec。白名单时代同样有此缺口（ch41 在册照样 400），且不可观测。
 - **上游漂移**：官方端改行为后、基线文档更新前，旧基线绑定的 marks 仍"fresh"。与现状相同，不因本节恶化。
 - 探测成本 = 渠道数 × 电池大小 × 频率（真实请求计费）。kimi-k3 两渠道可忽略；规模化后是真实账单。

@@ -137,7 +137,7 @@ func GetChannelFitCapabilities(c *gin.Context) {
 	for i := range rows {
 		views = append(views, markView{
 			ChannelFitCapability: rows[i],
-			State:                model.FitCapabilityState(&rows[i], now, model.DefaultFitCapabilityStaleAfterDays, "", ""),
+			State:                model.FitCapabilityState(&rows[i], now, "", ""),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": views})
@@ -231,7 +231,7 @@ func GetChannelFitCapabilitiesPage(c *gin.Context) {
 		views = append(views, fitCapabilityPageItem{
 			ChannelFitCapability: row,
 			ChannelName:          names[row.ChannelId],
-			State:                model.FitCapabilityState(&row, now, model.DefaultFitCapabilityStaleAfterDays, policyHash, baselineHash),
+			State:                model.FitCapabilityState(&row, now, policyHash, baselineHash),
 			BindingCurrent:       fitCapabilityBindingCurrent(&row, now, policyHash, baselineHash),
 		})
 	}

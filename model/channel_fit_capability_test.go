@@ -213,9 +213,13 @@ func TestFitCapabilityStateMachine(t *testing.T) {
 			want: FitCapabilitySuiteFresh,
 		},
 		{
-			name: "suite pass past the window is stale",
-			row:  &ChannelFitCapability{Source: FitCapabilitySourceSuite, Supported: true, At: now - 40*day},
-			want: FitCapabilitySuiteStale,
+			// Age alone must not invalidate: the window was removed on
+			// 2026-10-05 because it forced re-measurement that only re-recorded
+			// what the previous run had established. A negative result is still
+			// a claim (next case), and a binding mismatch still stales.
+			name: "age alone never invalidates a suite pass",
+			row:  &ChannelFitCapability{Source: FitCapabilitySourceSuite, Supported: true, At: now - 400*day},
+			want: FitCapabilitySuiteFresh,
 		},
 		{
 			name: "suite negative is an explicit failure, not staleness",
@@ -247,7 +251,7 @@ func TestFitCapabilityStateMachine(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			policyHash, baselineHash := "policy-b", "baseline-b"
-			got := FitCapabilityState(testCase.row, now, DefaultFitCapabilityStaleAfterDays, policyHash, baselineHash)
+			got := FitCapabilityState(testCase.row, now, policyHash, baselineHash)
 			assert.Equal(t, testCase.want, got)
 		})
 	}
@@ -431,11 +435,11 @@ func TestSuiteResultHonorsItsOwnExpiry(t *testing.T) {
 	row := &ChannelFitCapability{
 		Source: FitCapabilitySourceSuite, Supported: true, At: now - 60, ExpiresAt: now - 1,
 	}
-	if got := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, "", ""); got != FitCapabilitySuiteStale {
+	if got := FitCapabilityState(row, now, "", ""); got != FitCapabilitySuiteStale {
 		t.Fatalf("an expired suite result must be stale, got %s", got)
 	}
 	row.ExpiresAt = now + 60
-	if got := FitCapabilityState(row, now, DefaultFitCapabilityStaleAfterDays, "", ""); got != FitCapabilitySuiteFresh {
+	if got := FitCapabilityState(row, now, "", ""); got != FitCapabilitySuiteFresh {
 		t.Fatalf("an unexpired suite result must stay fresh, got %s", got)
 	}
 }
