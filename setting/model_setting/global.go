@@ -52,7 +52,9 @@ type GlobalSettings struct {
 	// snapshot ids such as claude-haiku-4-5-20251001) to the canonical catalog
 	// id that routes, bills, and logs them. The alias itself stays out of the
 	// pricing catalog: only the target model carries supply and a price entry.
-	ModelAliasMap map[string]string `json:"model_alias_map,omitempty"`
+	// The json tag is the option key verbatim: the config loader matches fields
+	// by its raw value, so it must not carry ,omitempty or other options.
+	ModelAliasMap map[string]string `json:"model_alias_map"`
 }
 
 // 默认配置

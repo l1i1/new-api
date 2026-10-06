@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,4 +86,35 @@ func TestResolveModelAlias(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = ResolveModelAlias("self")
 	assert.False(t, ok)
+}
+
+// The option loader matches struct fields by their exact json tag, so the
+// exported key must equal the option key an operator writes. A tag carrying
+// ,omitempty silently exports "model_alias_map,omitempty" and every written
+// value lands on the floor — this pins both directions of that round trip.
+func TestModelAliasOptionRoundTrip(t *testing.T) {
+	settings := GetGlobalSettings()
+	original := settings.ModelAliasMap
+	t.Cleanup(func() { settings.ModelAliasMap = original })
+	settings.ModelAliasMap = nil
+
+	exported, err := config.ConfigToMap(settings)
+	require.NoError(t, err)
+	require.Contains(t, exported, "model_alias_map")
+	require.NotContains(t, exported, "model_alias_map,omitempty")
+
+	require.NoError(t, config.UpdateConfigFromMap(settings, map[string]string{
+		"model_alias_map": `{"claude-haiku-4-5-20251001":"claude-haiku-4-5"}`,
+	}))
+	target, ok := ResolveModelAlias("claude-haiku-4-5-20251001")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-haiku-4-5", target)
+
+	// An unknown key must leave the configured map untouched.
+	require.NoError(t, config.UpdateConfigFromMap(settings, map[string]string{
+		"model_alias_map,omitempty": `{}`,
+	}))
+	target, ok = ResolveModelAlias("claude-haiku-4-5-20251001")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-haiku-4-5", target)
 }
