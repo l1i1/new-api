@@ -48,6 +48,11 @@ type GlobalSettings struct {
 	// different upstream id, the response model field is rewritten to the
 	// origin request model. Billing/usage/logging keep the upstream name.
 	MaskUpstreamModelName bool `json:"mask_upstream_model_name"`
+	// ModelAliasMap maps alternate client-facing model ids (for example dated
+	// snapshot ids such as claude-haiku-4-5-20251001) to the canonical catalog
+	// id that routes, bills, and logs them. The alias itself stays out of the
+	// pricing catalog: only the target model carries supply and a price entry.
+	ModelAliasMap map[string]string `json:"model_alias_map,omitempty"`
 }
 
 // 默认配置
@@ -80,6 +85,27 @@ func init() {
 
 func GetGlobalSettings() *GlobalSettings {
 	return &globalSettings
+}
+
+// ResolveModelAlias returns the canonical catalog id for an operator-declared
+// model alias. Entries are exact, case-sensitive matches; blank targets and
+// self-mappings are ignored. The settings field is replaced wholesale on option
+// reload and never mutated in place, so reading the live map needs no lock: a
+// lookup can at worst observe the previous mapping for one request.
+func ResolveModelAlias(modelName string) (string, bool) {
+	name := strings.TrimSpace(modelName)
+	if name == "" {
+		return "", false
+	}
+	target, ok := globalSettings.ModelAliasMap[name]
+	if !ok {
+		return "", false
+	}
+	target = strings.TrimSpace(target)
+	if target == "" || target == name {
+		return "", false
+	}
+	return target, true
 }
 
 const thinkingBlacklistRegexPrefix = "re:"

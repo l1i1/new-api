@@ -25,6 +25,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -55,6 +56,15 @@ func Distribute() func(c *gin.Context) {
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
+		}
+		// Operator-declared model aliases (dated snapshot ids and the like) are
+		// served, billed, and logged as their canonical catalog id. Rewriting
+		// here, before channel selection and before original_model is
+		// published, keeps every downstream consumer on one name while the
+		// catalog keeps only the canonical entry.
+		if alias, ok := model_setting.ResolveModelAlias(modelRequest.Model); ok {
+			logger.LogDebug(c, "model alias %s -> %s", modelRequest.Model, alias)
+			modelRequest.Model = alias
 		}
 		// A request carrying video must only reach channels that declared they
 		// can read it; the filter also guards the pinned and affinity paths,

@@ -42,3 +42,47 @@ func TestShouldPreserveThinkingSuffixExactAndRegex(t *testing.T) {
 	assert.True(t, ShouldPreserveThinkingSuffix("beta@sha256:abc"))
 	assert.False(t, ShouldPreserveThinkingSuffix("alpha@sha256:abc"))
 }
+
+func TestResolveModelAlias(t *testing.T) {
+	settings := GetGlobalSettings()
+	original := settings.ModelAliasMap
+	t.Cleanup(func() { settings.ModelAliasMap = original })
+	settings.ModelAliasMap = nil
+
+	_, ok := ResolveModelAlias("claude-haiku-4-5-20251001")
+	assert.False(t, ok, "no aliases configured means no resolution")
+
+	settings.ModelAliasMap = map[string]string{
+		"claude-haiku-4-5-20251001": "claude-haiku-4-5",
+		"padded-target":             "  claude-haiku-4-5  ",
+		"blank-target":              "   ",
+		"self":                      "self",
+	}
+
+	target, ok := ResolveModelAlias("claude-haiku-4-5-20251001")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-haiku-4-5", target)
+
+	// The canonical id itself, unknown ids, and empty input resolve to nothing.
+	_, ok = ResolveModelAlias("claude-haiku-4-5")
+	assert.False(t, ok)
+	_, ok = ResolveModelAlias("claude-sonnet-4-5-20250929")
+	assert.False(t, ok)
+	_, ok = ResolveModelAlias("")
+	assert.False(t, ok)
+
+	// Whitespace around the requested id and around the configured target is
+	// trimmed.
+	target, ok = ResolveModelAlias("  claude-haiku-4-5-20251001  ")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-haiku-4-5", target)
+	target, ok = ResolveModelAlias("padded-target")
+	assert.True(t, ok)
+	assert.Equal(t, "claude-haiku-4-5", target)
+
+	// Blank targets and self-mappings are ignored instead of looping.
+	_, ok = ResolveModelAlias("blank-target")
+	assert.False(t, ok)
+	_, ok = ResolveModelAlias("self")
+	assert.False(t, ok)
+}
