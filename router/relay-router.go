@@ -74,6 +74,9 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
+	// Targeted capture sits after auth (the token is known) and before the handlers (the body is
+	// untouched and the response writer can still be wrapped). One place covers every protocol.
+	relayV1Router.Use(middleware.RequestCaptureMiddleware())
 	{
 		// Responses WebSocket route. Channel selection happens after the first
 		// response.create event; each event runs the ordinary request limiter.

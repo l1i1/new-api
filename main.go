@@ -122,6 +122,10 @@ func main() {
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
 	go controller.SyncTaskPlugins()
+	// The master drains targeted request captures from the shared queue into files; every other
+	// node only enqueues them. Started unconditionally because the feature is off until an
+	// operator writes a rule, and the loop costs one idle ticker when it is.
+	service.StartRequestCaptureWriter(context.Background())
 
 	// Periodic reloads stay in place as the backstop for the case where Redis
 	// is unavailable; the epoch watcher makes a committed change visible to the
