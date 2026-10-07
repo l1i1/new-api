@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // captureResponseWriter tees the response without changing it. Every byte still reaches the client
@@ -176,13 +176,8 @@ func capturePeek(c *gin.Context) (string, []byte) {
 	if err != nil || len(body) == 0 {
 		return "", nil
 	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return "", body
-	}
-	var model string
-	if raw, ok := probe["model"]; ok {
-		_ = json.Unmarshal(raw, &model)
-	}
-	return strings.TrimSpace(model), body
+	// gjson reads the one field matching needs without decoding the whole body. Capture runs on the
+	// request path, and a chat request can carry a long conversation; unmarshalling all of it into a
+	// map to read a single string would cost the relay real time for nothing.
+	return strings.TrimSpace(gjson.GetBytes(body, "model").String()), body
 }

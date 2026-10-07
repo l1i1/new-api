@@ -88,3 +88,24 @@ func TestCaptureTruncateMarksOversizedBodies(t *testing.T) {
 	require.False(t, truncated)
 	require.Equal(t, "short", value)
 }
+
+// The capture wrapper sits on every relay protocol, including the ones that need more than Write:
+// a websocket upgrade hijacks the connection and SSE flushing drives streaming. Embedding the gin
+// interface promotes those methods, and this pins that they are still reachable - losing them would
+// break protocols the capture feature has nothing to do with.
+func TestCaptureResponseWriterKeepsHijackAndFlush(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	w := &captureResponseWriter{ResponseWriter: c.Writer, limit: 1024}
+	c.Writer = w
+
+	var asWriter gin.ResponseWriter = w
+	require.Implements(t, (*http.Hijacker)(nil), asWriter, "a websocket route hijacks through this writer")
+	require.Implements(t, (*http.Flusher)(nil), asWriter, "streaming flushes through this writer")
+
+	// Flushing must reach the real writer rather than stopping at the wrapper.
+	w.Write([]byte("data: hello\n\n"))
+	require.NotPanics(t, func() { asWriter.Flush() })
+	require.Equal(t, "data: hello\n\n", rec.Body.String())
+}

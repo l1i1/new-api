@@ -163,8 +163,10 @@ func EnqueueRequestCapture(ctx context.Context, payload *RequestCapturePayload) 
 	pipe := common.RDB.TxPipeline()
 	pipe.RPush(ctx, key, raw)
 	// A queue that only grows is a way to exhaust Redis when the master is down or not draining.
-	// Keeping the newest entries and expiring the key bounds the damage.
-	pipe.LTrim(ctx, key, -5000, -1)
+	// Keeping the newest entries and expiring the key bounds the damage: a capture payload is roughly
+	// its bodies plus headers, so the worst case here is 500 x (2 x MaxBytes + headers) - about 300MB
+	// at the default 256KB cap, and far less in practice, where a chat body is kilobytes.
+	pipe.LTrim(ctx, key, -500, -1)
 	pipe.Expire(ctx, key, time.Duration(setting.EffectiveRetentionHours())*time.Hour)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
@@ -241,6 +243,7 @@ func PruneRequestCaptures(setting *operation_setting.RequestCaptureSetting, now 
 	cutoff := now.Add(-time.Duration(setting.EffectiveRetentionHours()) * time.Hour)
 	removed := 0
 	for _, entry := range entries {
+		dir := filepath.Join(root, entry.Name())
 		if !entry.IsDir() {
 			continue
 		}
@@ -248,14 +251,34 @@ func PruneRequestCaptures(setting *operation_setting.RequestCaptureSetting, now 
 		if err != nil {
 			continue
 		}
-		// A directory is kept while any part of its day is inside the window.
-		if day.Add(24 * time.Hour).After(cutoff) {
+		// A directory whose whole day has left the window goes in one call.
+		if !day.Add(24 * time.Hour).After(cutoff) {
+			if err := os.RemoveAll(dir); err != nil {
+				return removed, err
+			}
+			removed++
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-			return removed, err
+		// Day directories alone would let a file live until its day leaves the window - up to twice
+		// the configured retention. The window is the promise, so sweep inside the directory too.
+		fileErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			info, statErr := d.Info()
+			if statErr != nil {
+				return nil
+			}
+			if info.ModTime().Before(cutoff) {
+				if removeErr := os.Remove(path); removeErr == nil {
+					removed++
+				}
+			}
+			return nil
+		})
+		if fileErr != nil {
+			return removed, fileErr
 		}
-		removed++
 	}
 	return removed, nil
 }

@@ -178,3 +178,29 @@ func TestCaptureDefaultsBoundAnUnconfiguredRule(t *testing.T) {
 	require.Equal(t, 24, setting.EffectiveRetentionHours())
 	require.NotEmpty(t, setting.EffectiveDirectory())
 }
+
+// Day directories alone would keep a file until its whole day leaves the window, which is up to twice
+// the configured retention. The window is a promise about the data, so files inside a retained day
+// must be swept too.
+func TestPruneRequestCapturesSweepsExpiredFilesInsideARetainedDay(t *testing.T) {
+	dir := t.TempDir()
+	setting := &operation_setting.RequestCaptureSetting{Directory: dir, RetentionHours: 24}
+	now := time.Now()
+
+	// One file from two days ago parked in today's directory: the directory is inside the window, the
+	// file is not.
+	today := filepath.Join(dir, now.Format("2006-01-02"))
+	require.NoError(t, os.MkdirAll(today, 0o700))
+	stale := filepath.Join(today, "old.json")
+	fresh := filepath.Join(today, "new.json")
+	require.NoError(t, os.WriteFile(stale, []byte("{}"), 0o600))
+	require.NoError(t, os.WriteFile(fresh, []byte("{}"), 0o600))
+	old := now.Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(stale, old, old))
+
+	removed, err := PruneRequestCaptures(setting, now)
+	require.NoError(t, err)
+	require.Equal(t, 1, removed)
+	require.NoFileExists(t, stale, "a file past the retention window must go even though its day is kept")
+	require.FileExists(t, fresh)
+}
