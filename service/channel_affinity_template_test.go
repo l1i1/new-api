@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -565,4 +566,32 @@ func TestConversationPrefixFingerprintHonoursAnExplicitPath(t *testing.T) {
 	body := `{"input":[{"role":"user","content":"responses api shape"}]}`
 	require.NotEmpty(t, conversationPrefixFingerprint([]byte(body), "input"))
 	require.Empty(t, conversationPrefixFingerprint([]byte(body), "messages"))
+}
+
+// A prefix longer than the scan cap must still produce a key. If the cap returned nothing, long
+// conversations would silently fall through to the caller identity source - the very behaviour this
+// source exists to replace - and they would do it only once they got long enough to notice.
+func TestConversationPrefixFingerprintStillKeysPastTheScanCap(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"messages":[`)
+	for i := 0; i < 80; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"role":"user","content":"turn `)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`"}`)
+	}
+	sb.WriteString(`]}`)
+
+	first := conversationPrefixFingerprint([]byte(sb.String()), "")
+	require.NotEmpty(t, first, "a long prefix must not fall through to the identity sources")
+	require.Equal(t, first, conversationPrefixFingerprint([]byte(sb.String()), ""),
+		"the cap must be deterministic, so the same long request keys the same way every time")
+
+	// The cap also keeps two long prefixes that agree for the first 32 messages in one bucket, which
+	// is the intended trade: bounded work, and a binding that is still per-conversation for every
+	// conversation that does not share an unusually long identical opening.
+	other := strings.Replace(sb.String(), `"turn 79"`, `"answer 79"`, 1)
+	require.Equal(t, first, conversationPrefixFingerprint([]byte(other), ""))
 }
