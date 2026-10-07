@@ -58,7 +58,18 @@ const KEY_SOURCE_TYPES = [
   'context_string',
   'request_header',
   'gjson',
+  'conversation_prefix',
 ] as const
+
+// Both of these address a JSON body path rather than a context key, and both may leave it empty:
+// gjson then yields nothing, while conversation_prefix falls back to the messages array.
+const isBodyPathSource = (type: string) =>
+  type === 'gjson' || type === 'conversation_prefix'
+
+const KEY_SOURCE_PLACEHOLDER: Record<string, string> = {
+  conversation_prefix: 'messages',
+  gjson: 'metadata.conversation_id',
+}
 
 const CONTEXT_KEY_PRESETS = [
   'id',
@@ -98,6 +109,9 @@ function normalizeStringList(text: string): string[] {
 
 function normalizeKeySource(src: Partial<KeySource>): KeySource {
   const type = (src?.type || 'gjson') as KeySource['type']
+  if (type === 'conversation_prefix') {
+    return { ...src, type, key: '', path: src?.path || 'messages' }
+  }
   if (type === 'gjson') return { ...src, type, key: '', path: src?.path || '' }
   return { ...src, type, key: src?.key || '', path: '' }
 }
@@ -207,7 +221,12 @@ export function RuleEditorDialog(props: Props) {
 
     const validKeySources = keySources
       .map(({ rowId: _, ...source }) => normalizeKeySource(source))
-      .filter((s) => s.type && (s.type === 'gjson' ? s.path : s.key))
+      .filter((s) => {
+        if (!s.type) return false
+        if (s.type === 'conversation_prefix') return true // the path defaults to messages
+        if (isBodyPathSource(s.type)) return !!s.path
+        return !!s.key
+      })
     if (validKeySources.length === 0) {
       toast.error(t('At least one valid key source is required'))
       return
@@ -401,15 +420,13 @@ export function RuleEditorDialog(props: Props) {
                 </Select>
                 <Input
                   className='min-w-0 flex-1'
-                  placeholder={
-                    src.type === 'gjson'
-                      ? 'metadata.conversation_id'
-                      : 'user_id'
+                  placeholder={KEY_SOURCE_PLACEHOLDER[src.type] || 'user_id'}
+                  value={
+                    isBodyPathSource(src.type) ? src.path || '' : src.key || ''
                   }
-                  value={src.type === 'gjson' ? src.path || '' : src.key || ''}
                   onChange={(e) => {
                     const next = [...keySources]
-                    if (src.type === 'gjson') {
+                    if (isBodyPathSource(src.type)) {
                       next[idx] = { ...src, path: e.target.value }
                     } else {
                       next[idx] = { ...src, key: e.target.value }

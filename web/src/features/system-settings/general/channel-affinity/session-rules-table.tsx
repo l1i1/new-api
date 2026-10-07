@@ -141,11 +141,17 @@ export function SessionRulesTable(props: SessionRulesTableProps) {
                   <TruncatedCell
                     tabIndex={0}
                     tooltipContent={
-                      source.type === 'gjson' ? source.path : source.key
+                      source.type === 'gjson' ||
+                      source.type === 'conversation_prefix'
+                        ? source.path || 'messages'
+                        : source.key
                     }
                   >
                     <code>
-                      {source.type === 'gjson' ? source.path : source.key}
+                      {source.type === 'gjson' ||
+                      source.type === 'conversation_prefix'
+                        ? source.path || 'messages'
+                        : source.key}
                     </code>
                   </TruncatedCell>
                 </div>

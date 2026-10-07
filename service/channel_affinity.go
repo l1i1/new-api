@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
@@ -312,6 +313,21 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 			return ""
 		}
 		return strings.TrimSpace(c.Request.Header.Get(src.Key))
+	case "conversation_prefix":
+		// Identify the conversation rather than the caller. The messages before the first assistant
+		// reply are the part of a chat request that cannot change while the conversation continues -
+		// every client resends them - so hashing them gives one stable key per conversation, where
+		// the identity sources above give one per token or user and therefore pin a caller's whole
+		// traffic to a single channel. Path selects the message array ("messages" by default).
+		storage, err := common.GetBodyStorage(c)
+		if err != nil {
+			return ""
+		}
+		body, err := storage.Bytes()
+		if err != nil || len(body) == 0 {
+			return ""
+		}
+		return conversationPrefixFingerprint(body, src.Path)
 	case "gjson":
 		if src.Path == "" {
 			return ""
@@ -337,6 +353,77 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 	default:
 		return ""
 	}
+}
+
+// conversationPrefixFingerprint derives a stable identifier for one conversation from the part of
+// the request that cannot change while that conversation continues: the leading system/developer/
+// user messages, up to but not including the first assistant reply. A client resends that prefix on
+// every turn, so the fingerprint survives across turns, while two conversations differ in how they
+// open. The first assistant message is the boundary on purpose - everything after it depends on
+// what the model said and would drift between turns.
+//
+// It returns "" when the body carries no usable message array, so a rule that lists this source
+// falls through to its next one rather than binding every request to a single bucket.
+func conversationPrefixFingerprint(body []byte, path string) string {
+	if strings.TrimSpace(path) == "" {
+		path = "messages"
+	}
+	msgs := gjson.GetBytes(body, path)
+	if !msgs.IsArray() {
+		return ""
+	}
+	const (
+		// A prefix that never reaches an assistant reply is a malformed or hostile body; stopping
+		// keeps the hash bounded without changing the answer for well-formed conversations.
+		maxMessages = 32
+		maxBytes    = 64 << 10
+	)
+	var sb strings.Builder
+	scanned := 0
+	msgs.ForEach(func(_, msg gjson.Result) bool {
+		if scanned >= maxMessages || sb.Len() > maxBytes {
+			return false
+		}
+		role := strings.TrimSpace(msg.Get("role").String())
+		switch role {
+		case "system", "developer", "user":
+		default:
+			return false
+		}
+		scanned++
+		sb.WriteString(role)
+		sb.WriteByte(0)
+		sb.WriteString(channelAffinityContentText(msg.Get("content")))
+		sb.WriteByte(1)
+		return true
+	})
+	if sb.Len() == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return "conv_" + hex.EncodeToString(sum[:12])
+}
+
+// channelAffinityContentText flattens a message content field, which is a plain string in the common
+// case and an array of typed parts for multimodal requests. Anything else contributes nothing.
+func channelAffinityContentText(content gjson.Result) string {
+	if !content.Exists() {
+		return ""
+	}
+	if content.Type == gjson.String {
+		return content.String()
+	}
+	if !content.IsArray() {
+		return ""
+	}
+	var sb strings.Builder
+	content.ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text"); text.Exists() && text.Type == gjson.String {
+			sb.WriteString(text.String())
+		}
+		return true
+	})
+	return sb.String()
 }
 
 func buildChannelAffinityCacheKeySuffix(rule operation_setting.ChannelAffinityRule, modelName string, usingGroup string, affinityValue string) string {

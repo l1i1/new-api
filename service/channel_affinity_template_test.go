@@ -515,3 +515,54 @@ func TestSessionRulesInheritOrOverrideGlobalDefault(t *testing.T) {
 		}
 	}
 }
+
+// The point of keying on the conversation prefix is that it stays put across the turns of one
+// conversation while differing between conversations. Both halves matter: a key that drifts between
+// turns loses the upstream prompt cache, and a key that collides across conversations puts unrelated
+// traffic on one channel, which is the behaviour being replaced.
+func TestConversationPrefixFingerprintIsStableAcrossTurnsAndDistinctBetweenConversations(t *testing.T) {
+	firstTurn := `{"model":"kimi-k3","messages":[{"role":"system","content":"You are terse."},{"role":"user","content":"what is a kilobyte"}]}`
+	// The next turn resends the opening and appends the assistant reply plus a new question.
+	thirdTurn := `{"model":"kimi-k3","messages":[{"role":"system","content":"You are terse."},{"role":"user","content":"what is a kilobyte"},{"role":"assistant","content":"1024 bytes."},{"role":"user","content":"and a megabyte"}]}`
+	otherConversation := `{"model":"kimi-k3","messages":[{"role":"system","content":"You are terse."},{"role":"user","content":"what is a kibibyte"}]}`
+
+	opening := conversationPrefixFingerprint([]byte(firstTurn), "")
+	require.NotEmpty(t, opening)
+	require.Equal(t, opening, conversationPrefixFingerprint([]byte(thirdTurn), ""),
+		"the messages before the first assistant reply do not change as the conversation continues")
+	require.NotEqual(t, opening, conversationPrefixFingerprint([]byte(otherConversation), ""),
+		"two conversations that open differently must not share a binding")
+
+	// The same conversation through a different surface is a different binding only when the rule says
+	// so; here the whole point is the message content, so a leading system prompt change is a new key.
+	changedSystem := `{"model":"kimi-k3","messages":[{"role":"system","content":"You are verbose."},{"role":"user","content":"what is a kilobyte"}]}`
+	require.NotEqual(t, opening, conversationPrefixFingerprint([]byte(changedSystem), ""))
+}
+
+func TestConversationPrefixFingerprintFlattensMultimodalContent(t *testing.T) {
+	textParts := `{"messages":[{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image_url","image_url":{"url":"http://x/y.png"}}]}]}`
+	plain := `{"messages":[{"role":"user","content":"describe this"}]}`
+	require.Equal(t, conversationPrefixFingerprint([]byte(plain), ""),
+		conversationPrefixFingerprint([]byte(textParts), ""),
+		"the text of a multimodal turn is the part that identifies the conversation")
+}
+
+func TestConversationPrefixFingerprintFallsThroughWhenTheBodyHasNoUsableMessages(t *testing.T) {
+	for name, body := range map[string]string{
+		"no messages array": `{"model":"kimi-k3","input":"hello"}`,
+		"empty array":       `{"messages":[]}`,
+		"assistant first":   `{"messages":[{"role":"assistant","content":"hi"}]}`,
+		"not an array":      `{"messages":{"role":"user","content":"hi"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Empty(t, conversationPrefixFingerprint([]byte(body), ""),
+				"an unusable body must fall through to the next key source, not bind every request to one bucket")
+		})
+	}
+}
+
+func TestConversationPrefixFingerprintHonoursAnExplicitPath(t *testing.T) {
+	body := `{"input":[{"role":"user","content":"responses api shape"}]}`
+	require.NotEmpty(t, conversationPrefixFingerprint([]byte(body), "input"))
+	require.Empty(t, conversationPrefixFingerprint([]byte(body), "messages"))
+}
