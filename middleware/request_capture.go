@@ -79,15 +79,23 @@ func RequestCaptureMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		ctx := c.Request.Context()
-		if !service.CaptureBudgetAllows(ctx, rule) {
-			c.Next()
-			return
-		}
-
 		writer := &captureResponseWriter{ResponseWriter: c.Writer, limit: setting.EffectiveMaxBytes()}
 		c.Writer = writer
 		c.Next()
+
+		// The status filter and the budget are applied after the response, not before, for one
+		// reason: a rule that watches failures must not spend its limit on successes. Deciding
+		// before the request runs would consume the window on traffic the operator never asked for
+		// and leave nothing for the errors it exists to catch.
+		if !service.CaptureStatusAllowed(rule, writer.status) {
+			return
+		}
+		budgetCtx, cancelBudget := context.WithTimeout(context.Background(), 3*time.Second)
+		allowed := service.CaptureBudgetAllows(budgetCtx, rule)
+		cancelBudget()
+		if !allowed {
+			return
+		}
 
 		payload := &service.RequestCapturePayload{
 			CapturedAt: time.Now().Unix(),

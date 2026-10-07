@@ -204,3 +204,43 @@ func TestPruneRequestCapturesSweepsExpiredFilesInsideARetainedDay(t *testing.T) 
 	require.NoFileExists(t, stale, "a file past the retention window must go even though its day is kept")
 	require.FileExists(t, fresh)
 }
+
+// A rule that watches failures is the common case: it is how an operator catches the errors they
+// cannot reproduce, and it has to stay cheap enough to leave running. That only works if the filter
+// is applied to the response and the limit is spent on captures rather than on the successes the
+// rule already decided to ignore.
+func TestCaptureStatusAllowedFiltersOnTheResponse(t *testing.T) {
+	tests := []struct {
+		filter string
+		status int
+		want   bool
+	}{
+		{"", 200, true},
+		{"", 502, true},
+		{"400-599", 502, true},
+		{"400-599", 200, false},
+		{"429,500-503", 429, true},
+		{"429,500-503", 503, true},
+		{"429,500-503", 504, false},
+		{"429,500-503", 200, false},
+		{"500", 500, true},
+		{"500", 501, false},
+		// A filter nobody can read is a typo in a debugging rule. Failing open keeps the rule
+		// doing something visible instead of silently capturing nothing.
+		{"not-a-range", 500, true},
+	}
+	for _, tt := range tests {
+		rule := &operation_setting.RequestCaptureRule{Name: "t", ResponseStatusIn: tt.filter}
+		require.Equal(t, tt.want, CaptureStatusAllowed(rule, tt.status),
+			"filter %q against status %d", tt.filter, tt.status)
+	}
+}
+
+func TestCaptureStatusAllowedTreatsAnUnsetStatusAsUnfiltered(t *testing.T) {
+	rule := &operation_setting.RequestCaptureRule{Name: "t", ResponseStatusIn: "400-599"}
+	require.False(t, CaptureStatusAllowed(rule, 0),
+		"a response with no status yet has not failed, so a failure filter must not match it")
+
+	require.True(t, CaptureStatusAllowed(&operation_setting.RequestCaptureRule{Name: "t"}, 0),
+		"without a filter there is nothing to exclude it")
+}

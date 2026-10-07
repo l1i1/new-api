@@ -94,6 +94,41 @@ func captureContainsInt(values []int, want int) bool {
 	return false
 }
 
+// captureStatusRanges caches the parsed form of a rule's status filter. The filter lives in a
+// hot-reloaded setting, so parsing it on every capture decision would repeat the same work.
+var captureStatusRanges sync.Map // filter string -> []operation_setting.StatusCodeRange
+
+// CaptureStatusAllowed reports whether a response status passes the rule's filter. An empty filter
+// admits everything, and an unreadable one is logged and then treated as empty rather than as
+// "capture nothing": a typo in a debugging rule must not silently disable the debugging.
+func CaptureStatusAllowed(rule *operation_setting.RequestCaptureRule, status int) bool {
+	filter := strings.TrimSpace(rule.ResponseStatusIn)
+	if filter == "" {
+		return true
+	}
+	var ranges []operation_setting.StatusCodeRange
+	if cached, ok := captureStatusRanges.Load(filter); ok {
+		ranges, _ = cached.([]operation_setting.StatusCodeRange)
+	} else {
+		parsed, err := operation_setting.ParseHTTPStatusCodeRanges(filter)
+		if err != nil {
+			logger.LogWarn(context.Background(), fmt.Sprintf("request capture rule %q has an unreadable status filter %q: %v", rule.Name, filter, err))
+			parsed = nil
+		}
+		captureStatusRanges.Store(filter, parsed)
+		ranges = parsed
+	}
+	if len(ranges) == 0 {
+		return true
+	}
+	for _, r := range ranges {
+		if status >= r.Start && status <= r.End {
+			return true
+		}
+	}
+	return false
+}
+
 // MatchRequestCaptureRule returns the first enabled rule whose conditions this request satisfies, or
 // nil. An empty condition list means "any", so a rule that sets nothing matches everything - which is
 // allowed on purpose (an operator may want a broad sample) and bounded by the rule's own limit.

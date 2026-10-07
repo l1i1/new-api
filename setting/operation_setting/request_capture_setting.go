@@ -13,15 +13,21 @@ import "github.com/QuantumNous/new-api/setting/config"
 // an operator writes a rule, each rule stops after its own limit inside its own window, one capture
 // cannot exceed MaxBytes, and the files are pruned after RetentionHours.
 type RequestCaptureRule struct {
-	Name          string                `json:"name"`
-	Enabled       bool                  `json:"enabled"`
-	TokenIDs      []int                 `json:"token_ids,omitempty"`
-	UserIDs       []int                 `json:"user_ids,omitempty"`
-	ModelRegex    []string              `json:"model_regex,omitempty"`
-	PathRegex     []string              `json:"path_regex,omitempty"`
-	WindowSeconds int                   `json:"window_seconds,omitempty"`
-	Limit         int                   `json:"limit,omitempty"`
-	Include       RequestCaptureInclude `json:"include"`
+	Name          string   `json:"name"`
+	Enabled       bool     `json:"enabled"`
+	TokenIDs      []int    `json:"token_ids,omitempty"`
+	UserIDs       []int    `json:"user_ids,omitempty"`
+	ModelRegex    []string `json:"model_regex,omitempty"`
+	PathRegex     []string `json:"path_regex,omitempty"`
+	WindowSeconds int      `json:"window_seconds,omitempty"`
+	Limit         int      `json:"limit,omitempty"`
+	// ResponseStatusIn filters on the response status using the same range syntax the rest of the
+	// platform uses ("400-599", "429,500-503"). Empty keeps every response the other conditions
+	// already admitted. It exists because the interesting capture is usually a failure: a rule that
+	// watches only errors stays useful at a small limit, while the same limit spent on successful
+	// traffic documents nothing.
+	ResponseStatusIn string                `json:"response_status_in,omitempty"`
+	Include          RequestCaptureInclude `json:"include"`
 	// RedactHeaders replaces the value of these request headers. Authorization is always added: a
 	// capture that leaks a live API key into a file on disk is worse than the bug it was taken for.
 	RedactHeaders []string `json:"redact_headers,omitempty"`
