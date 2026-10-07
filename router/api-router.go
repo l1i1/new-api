@@ -275,6 +275,7 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
 			optionRoute.GET("/request_capture", controller.ListRequestCaptures)
 			optionRoute.GET("/request_capture/content", controller.GetRequestCapture)
+			optionRoute.DELETE("/request_capture", controller.DeleteRequestCaptures)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)
 			optionRoute.POST("/rest_model_ratio", controller.ResetModelRatio)

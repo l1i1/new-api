@@ -50,3 +50,20 @@ func GetRequestCapture(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"name": name, "content": string(raw)}})
 }
+
+// DeleteRequestCaptures removes one capture by name, or all of them when no name is given. It is the
+// counterpart to capturing: an operator who took a copy of a customer's request must be able to take
+// it back without waiting out the retention window.
+func DeleteRequestCaptures(c *gin.Context) {
+	name := c.Query("name")
+	removed, err := service.DeleteRequestCapture(operation_setting.GetRequestCaptureSetting(), name)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	scope := "all captures"
+	if name != "" {
+		scope = name
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"removed": removed, "scope": scope}})
+}

@@ -106,6 +106,8 @@ func RequestCaptureMiddleware() gin.HandlerFunc {
 			Model:      model,
 			Path:       path,
 			ChannelID:  c.GetInt("channel_id"),
+			Node:       common.NodeName,
+			Version:    common.Version,
 		}
 		if rule.Include.RequestHeaders {
 			payload.RequestHeaders = captureRequestHeaders(c, rule)

@@ -115,13 +115,30 @@ func TestWriteAndReadRequestCapture(t *testing.T) {
 	require.Equal(t, payload.RuleName, back.RuleName)
 }
 
-func TestReadRequestCaptureRefusesToEscapeItsDirectory(t *testing.T) {
-	dir := t.TempDir()
+// The property that matters is that a name from a request cannot reach a file outside the capture
+// directory. Asserting only that the call errors would pass for the wrong reason - the earlier
+// version of this test passed because the neutralised path happened not to exist - so this plants a
+// real file outside and proves it is still there afterwards.
+func TestCapturePathsCannotReachOutsideTheDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "captures")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	outside := filepath.Join(parent, "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte("not a capture"), 0o600))
+
 	setting := &operation_setting.RequestCaptureSetting{Directory: dir}
-	for _, name := range []string{"../outside.json", "../../etc/passwd", "a/../../b.json"} {
+	for _, name := range []string{"../outside.json", "../../etc/passwd", "a/../../b.json", "..", "  ../outside.json  "} {
 		_, err := ReadRequestCapture(setting, name)
-		require.Error(t, err, "a name that escapes the capture directory must be refused: %s", name)
+		require.Error(t, err, "read must refuse a name that escapes: %q", name)
+
+		_, err = DeleteRequestCapture(setting, name)
+		require.Error(t, err, "delete must refuse a name that escapes: %q", name)
 	}
+
+	require.FileExists(t, outside, "a traversal-shaped name must not delete anything outside the directory")
+	body, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, "not a capture", string(body), "and must not have overwritten it either")
 }
 
 func TestPruneRequestCapturesRemovesExpiredDaysOnly(t *testing.T) {
@@ -243,4 +260,51 @@ func TestCaptureStatusAllowedTreatsAnUnsetStatusAsUnfiltered(t *testing.T) {
 
 	require.True(t, CaptureStatusAllowed(&operation_setting.RequestCaptureRule{Name: "t"}, 0),
 		"without a filter there is nothing to exclude it")
+}
+
+// Capturing a customer's prompt is a deliberate act, and it has to be reversible before the retention
+// window elapses. Without this the only way to take a capture back is to reach the disk.
+func TestDeleteRequestCaptureRemovesOneOrEverything(t *testing.T) {
+	dir := t.TempDir()
+	setting := &operation_setting.RequestCaptureSetting{Directory: dir}
+	write := func(id string) string {
+		full, err := WriteRequestCapture(setting, &RequestCapturePayload{
+			CapturedAt: time.Now().Unix(), RequestID: id, RuleName: "r",
+		})
+		require.NoError(t, err)
+		return full
+	}
+	first := write("one")
+	second := write("two")
+
+	files, err := ListRequestCaptures(setting, 10)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	// The name an operator gets from the listing is the one the delete and read paths accept: a path
+	// relative to the capture directory, which includes the day.
+	firstName, err := filepath.Rel(dir, first)
+	require.NoError(t, err)
+	require.Contains(t, []string{files[0].Name, files[1].Name}, firstName)
+
+	removed, err := DeleteRequestCapture(setting, firstName)
+	require.NoError(t, err)
+	require.Equal(t, 1, removed)
+	require.NoFileExists(t, first)
+	require.FileExists(t, second)
+
+	// Deleting something already gone is not an error: an operator retrying a cleanup should not have
+	// to distinguish "removed" from "was never there".
+	removed, err = DeleteRequestCapture(setting, firstName)
+	require.NoError(t, err)
+	require.Equal(t, 0, removed)
+
+	removed, err = DeleteRequestCapture(setting, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, removed, "an empty name clears the whole directory")
+	require.NoFileExists(t, second)
+
+	// And it must refuse to reach outside the capture directory, exactly like the read path.
+	_, err = DeleteRequestCapture(setting, "../outside.json")
+	require.Error(t, err)
 }

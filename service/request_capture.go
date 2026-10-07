@@ -43,7 +43,12 @@ type RequestCapturePayload struct {
 	Model      string `json:"model"`
 	Path       string `json:"path"`
 	ChannelID  int    `json:"channel_id"`
-	Node       string `json:"node,omitempty"`
+	// Node and Version name the machine that served the request. Without them a mixed fleet is a
+	// blind spot: a capture listing with no files cannot be told apart from "nothing matched" versus
+	// "the node that served it does not have this code yet", which is exactly the confusion a rolling
+	// fleet produces.
+	Node    string `json:"node,omitempty"`
+	Version string `json:"version,omitempty"`
 
 	RequestHeaders   map[string]string `json:"request_headers,omitempty"`
 	RequestBody      string            `json:"request_body,omitempty"`
@@ -360,12 +365,68 @@ type CaptureFileInfo struct {
 // an attacker chooses.
 func ReadRequestCapture(setting *operation_setting.RequestCaptureSetting, name string) ([]byte, error) {
 	root := setting.EffectiveDirectory()
-	full := filepath.Join(root, filepath.Clean("/"+name))
-	rel, err := filepath.Rel(root, full)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return nil, fmt.Errorf("capture name escapes the capture directory")
+	full, err := resolveCapturePath(root, name)
+	if err != nil {
+		return nil, err
 	}
 	return os.ReadFile(full)
+}
+
+// resolveCapturePath turns a capture name into a path inside the capture directory, or refuses it.
+//
+// Cleaning the name neutralises a traversal - "/../x" collapses to "/x" and stays inside the root -
+// but neutralising it is not the same as refusing it, and a name that came from a request should be
+// refused: silently acting on a different file than the caller named is how a bug hides. No capture
+// this program writes contains "..", so nothing legitimate is lost.
+func resolveCapturePath(root, name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("capture name is empty")
+	}
+	if strings.Contains(trimmed, "..") {
+		return "", fmt.Errorf("capture name escapes the capture directory")
+	}
+	full := filepath.Join(root, filepath.Clean("/"+trimmed))
+	rel, err := filepath.Rel(root, full)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("capture name escapes the capture directory")
+	}
+	return full, nil
+}
+
+// DeleteRequestCapture removes one capture, or every capture when name is empty. An operator who
+// captures prompts needs a way to take them back before the retention window elapses; without one the
+// only way to remove the file is to wait or to reach the disk directly.
+func DeleteRequestCapture(setting *operation_setting.RequestCaptureSetting, name string) (int, error) {
+	root := setting.EffectiveDirectory()
+	if strings.TrimSpace(name) == "" {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return 0, nil
+			}
+			return 0, err
+		}
+		removed := 0
+		for _, entry := range entries {
+			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+		return removed, nil
+	}
+	full, err := resolveCapturePath(root, name)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.Remove(full); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return 1, nil
 }
 
 // StartRequestCaptureWriter drains the shared queue into files. Only the master runs it: the panel
