@@ -74,6 +74,12 @@ esac
 CONTAINER="${MASTER_CONTAINER:-new-api-master}"
 GREEN="${MASTER_GREEN_NAME:-new-api-master--green}"
 SERVE_IP="${MASTER_SERVE_IP:-10.1.0.43}"
+# Targeted request captures are files, and the panel can only read files on the machine it runs on,
+# so the master owns them. Without a bind mount they would live in the container and disappear on the
+# next release - a debugging tool that silently loses the evidence it was taken for. Both blue and
+# green get the same mount, so a roll neither hides nor destroys what was captured.
+readonly CAPTURE_HOST_DIR="${CAPTURE_HOST_DIR:-/var/lib/new-api-captures}"
+readonly CAPTURE_CONTAINER_DIR="${CAPTURE_CONTAINER_DIR:-/data/request-captures}"
 PORT_A="${MASTER_PORT_A:-3000}"
 PORT_B="${MASTER_PORT_B:-3001}"
 SERVING_PORT_FILE="${MASTER_SERVING_PORT_FILE:-/etc/tokeness-cn/master-serving-port}"
@@ -269,6 +275,26 @@ fi
 restart="$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$CONTAINER")"
 log_driver="$(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$CONTAINER")"
 
+# Binds are preserved rather than restated: this script already refuses to guess about ports and
+# environment, and silently dropping a mount a previous release added would be the same class of
+# mistake. The capture mount is then ensured on top of whatever was there.
+binds=()
+while IFS= read -r b; do
+  [ -n "$b" ] || continue
+  case "$b" in
+    *":$CAPTURE_CONTAINER_DIR") continue ;;  # re-added below, so the host path is the configured one
+  esac
+  binds+=(-v "$b")
+done < <(docker inspect -f '{{range .HostConfig.Binds}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null || true)
+
+if mkdir -p "$CAPTURE_HOST_DIR" 2>/dev/null; then
+  chmod 700 "$CAPTURE_HOST_DIR" 2>/dev/null || true
+  binds+=(-v "$CAPTURE_HOST_DIR:$CAPTURE_CONTAINER_DIR")
+else
+  err "cannot create the capture directory $CAPTURE_HOST_DIR; refusing to start green without it"
+  exit 3
+fi
+
 envs=()
 while IFS= read -r kv; do
   [ -n "$kv" ] || continue
@@ -328,7 +354,7 @@ while IFS='=' read -r k v; do
 done < <(docker inspect -f '{{range $k, $v := .HostConfig.LogConfig.Config}}{{$k}}={{$v}}{{println}}{{end}}' "$CONTAINER")
 
 log "$CONTAINER (serving :$sp) -> green on :$gp with $IMAGE_REF"
-log "preserving $(( ${#envs[@]} / 2 )) env vars, restart=$restart, log_driver=$log_driver"
+log "preserving $(( ${#envs[@]} / 2 )) env vars, $(( ${#binds[@]} / 2 )) bind(s), restart=$restart, log_driver=$log_driver"
 
 # Adopt a leftover green when it is healthy on the right port with the right
 # image (an earlier run died after start); otherwise clear it and start fresh.
@@ -349,7 +375,7 @@ if ! docker pull "$IMAGE_REF"; then
 fi
 
 if ! docker run -d --name "$GREEN" --restart "$restart" \
-  "${ports[@]}" --log-driver "$log_driver" "${log_opts[@]}" "${envs[@]}" "$IMAGE_REF" >/dev/null; then
+  "${ports[@]}" "${binds[@]}" --log-driver "$log_driver" "${log_opts[@]}" "${envs[@]}" "$IMAGE_REF" >/dev/null; then
   err "could not start the green container; blue keeps serving"
   docker rm -f "$GREEN" >/dev/null 2>&1 || true
   exit 3
