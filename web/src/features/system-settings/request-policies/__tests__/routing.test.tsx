@@ -778,6 +778,39 @@ it('unavailable cache statistics show an unknown count and refresh recovers the 
   expect(api.patch).not.toHaveBeenCalled()
 })
 
+it('a Redis-backed cache names the backend instead of dividing by a zero capacity', async () => {
+  const get = vi.mocked(api.get).getMockImplementation()
+  if (!get) throw new Error('API fixture is not initialized')
+  // Redis holds the entries and nothing is written to the memory tier, so the reported capacity is
+  // zero. Rendering "3 / 0" tells an operator nothing; the backend is the fact worth showing.
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/option/channel_affinity_cache') {
+      return {
+        data: {
+          success: true,
+          data: {
+            enabled: true,
+            total: 3,
+            unknown: 0,
+            by_rule_name: { 'Session rule': 3 },
+            cache_capacity: 0,
+            cache_algo: 'redis',
+          },
+        },
+      } as never
+    }
+    return get(url, config)
+  })
+  show()
+  const section = await screen.findByRole('region', {
+    name: 'Session rules',
+  })
+  const status = within(section).getByRole('status')
+  await waitFor(() => expect(status).toHaveTextContent('3'))
+  expect(status).toHaveTextContent('redis')
+  expect(status).not.toHaveTextContent('/ 0')
+})
+
 it.each([
   ['zhCN', /100,000/, '3,600 seconds'],
   ['zhTW', /100,000/, '3,600 seconds'],

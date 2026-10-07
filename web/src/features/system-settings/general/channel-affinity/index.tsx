@@ -25,7 +25,13 @@ import {
   RefreshCw,
   Trash2,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -203,6 +209,35 @@ export function ChannelAffinitySection(props: Props) {
     }
   }
 
+  // A capacity only means something when entries live in a bounded in-process cache. With Redis as
+  // the backend nothing is written to the memory tier, so the reported capacity is zero and "3 / 0"
+  // reads as nonsense. Name the backend instead: that is the fact an operator needs - the entries
+  // exist, and where they are held.
+  let cacheSummary: ReactNode = null
+  if (cacheStats) {
+    if (cacheStats.cache_capacity > 0) {
+      cacheSummary = (
+        <span className='flex flex-wrap items-baseline gap-1 font-medium tabular-nums'>
+          {formatNumber(cacheStats.total, locale)}
+          <span className='text-muted-foreground font-normal'>
+            / {formatNumber(cacheStats.cache_capacity, locale)}
+          </span>
+        </span>
+      )
+    } else {
+      cacheSummary = (
+        <span className='flex flex-wrap items-baseline gap-1 font-medium tabular-nums'>
+          {formatNumber(cacheStats.total, locale)}
+          {cacheStats.cache_algo ? (
+            <span className='text-muted-foreground font-normal'>
+              · {cacheStats.cache_algo}
+            </span>
+          ) : null}
+        </span>
+      )
+    }
+  }
+
   return (
     <>
       <section
@@ -328,14 +363,7 @@ export function ChannelAffinitySection(props: Props) {
               className='text-muted-foreground size-4 shrink-0'
             />
             <span className='text-muted-foreground'>{t('Cache Entries')}</span>
-            {cacheStats ? (
-              <span className='flex flex-wrap items-baseline gap-1 font-medium tabular-nums'>
-                {formatNumber(cacheStats.total, locale)}
-                <span className='text-muted-foreground font-normal'>
-                  / {formatNumber(cacheStats.cache_capacity, locale)}
-                </span>
-              </span>
-            ) : (
+            {cacheSummary ?? (
               <span className='text-muted-foreground'>
                 {cacheLoading ? t('Loading...') : t('Unavailable')}
               </span>
