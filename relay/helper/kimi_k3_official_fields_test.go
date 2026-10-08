@@ -59,13 +59,15 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 		message string
 	}{
 		{
-			"temperature 0 with thinking enabled (default)",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0)},
+			// The endpoint accepts 0.0/0.6/1.0 while thinking (the upstream verifier sends all
+			// three); 2.0 is outside the set and is rejected with the same text as before.
+			"temperature 2.0 with thinking enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(2.0)},
 			kimiK3TemperatureThinkingMessage,
 		},
 		{
-			"temperature 0.6 while thinking enabled",
-			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0.6)},
+			"temperature -0.1 with thinking enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(-0.1)},
 			kimiK3TemperatureThinkingMessage,
 		},
 		{
@@ -143,10 +145,11 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 			kimiK3TemperatureDisabledMessage,
 		},
 		{
-			// K1: an explicit thinking type outranks the effort field.
+			// K1: an explicit thinking type outranks the effort field, so this request is in the
+			// thinking state - where 0.6 is accepted along with 0.0 and 1.0.
 			"temperature at the thinking-off pin while thinking is explicitly enabled",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"enabled"}`),
-				ReasoningEffort: "none", Temperature: floatPtr(0.6)},
+				ReasoningEffort: "none", Temperature: floatPtr(2.0)},
 			kimiK3TemperatureThinkingMessage,
 		},
 		{
@@ -365,6 +368,12 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "low"},
 		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "max"},
 		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(1.0)},
+		// The upstream verifier requires each of these to be accepted while thinking is on.
+		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(0.6)},
+		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(0.0)},
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled"}`), Temperature: floatPtr(0.6)},
+		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled"}`),
+			ReasoningEffort: "none", Temperature: floatPtr(0.6)},
 		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled","effort":"high"}`), Temperature: floatPtr(1.0)},
 		{Model: "kimi-k3", Messages: base.Messages, TopP: floatPtr(0.95)},
 		{Model: "kimi-k3", Messages: base.Messages, N: intPtr(1)},

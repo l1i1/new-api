@@ -1148,15 +1148,29 @@ func isKimiK3Model(model string) bool {
 // narrow: every rule below was observed on the endpoint, and the fields it
 // does not inspect (reasoning_effort strings, the K2.x thinking field,
 // max_completion_tokens, tool parameters, strict=false) are tolerated there.
+// kimiK3TemperatureAllowedWhileThinking reports whether a temperature is one the endpoint accepts
+// with thinking enabled. Measured against the upstream's own vendor verifier, which requires 0.0,
+// 0.6 and 1.0 each to be accepted and 1.1, 2.0 and -0.1 each to be rejected.
+func kimiK3TemperatureAllowedWhileThinking(value float64) bool {
+	for _, allowed := range []float64{0.0, 0.6, 1.0} {
+		if math.Abs(value-allowed) <= 1e-9 {
+			return true
+		}
+	}
+	return false
+}
+
 func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isKimiK3Model(request.Model) {
 		return nil
 	}
 	thinkingEnabled := kimiK3ThinkingEnabled(request)
 	if request.Temperature != nil {
-		// The fixed temperature follows the thinking state: enabled (the
-		// default) pins 1.0, disabled pins 0.6, with distinct texts.
-		if thinkingEnabled && math.Abs(*request.Temperature-1.0) > 1e-9 {
+		// The endpoint accepts a small fixed set per thinking state: 0.0, 0.6 and 1.0 while
+		// thinking, 0.6 alone when it is off. The rejection text kept for the thinking case still
+		// names only 1.0, which is the endpoint's own wording - the upstream vendor verifier sends
+		// all three accepted values and reads the text only as a rejection marker.
+		if thinkingEnabled && !kimiK3TemperatureAllowedWhileThinking(*request.Temperature) {
 			return kimiK3Error(kimiK3TemperatureThinkingMessage)
 		}
 		if !thinkingEnabled && math.Abs(*request.Temperature-0.6) > 1e-9 {

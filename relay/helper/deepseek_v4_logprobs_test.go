@@ -168,7 +168,9 @@ func TestKimiK3ValidationGatedByOfficialFitProfile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	// kimi-k3 validation is likewise gated: with the profile enabled the
 	// fixed-sampling rules reject, without it the request passes.
-	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"1+1=?"}],"temperature":0}`
+	// 2.0 is outside the accepted set in either thinking state, so it still exercises the gate;
+	// 0 and 0.6 are accepted while thinking and would no longer reject.
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":"1+1=?"}],"temperature":2.0}`
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	c.Request.Header.Set("Content-Type", "application/json")
