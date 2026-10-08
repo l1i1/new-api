@@ -447,3 +447,68 @@ ECS          日志每分钟新鲜;fleet.json 与 nginx 一致(3 成员);upstrea
    判断舰队版本应以 `fleet.json` + nginx 上游文件为准；
 4. **gateway 仓库有 12 个未提交文件**，属另一会话的在制品，本夜未触碰，`node_modules/` 未跟踪；
 5. **cutover 工作仍暂停**：边缘 canary 份额 0%，S8（生产切流）未获授权。
+
+## 二十、池渠道能力实测与标记写入（2026-10-08 17:0x–17:2x）
+
+### 起因：xzj 的 kimi-k3 流量为何全在 ch8
+
+不是 pin，是**官方一致性 Route** 的收窄：
+
+1. 请求日志 `other.fit` 11/11 行都写着 `marks=[history.assistant_first] rules=[k3-history]`；
+   这个字段只在策略真的收窄了候选时写入（`service/log_info_generate.go:174` 的注释即此意）；
+2. admin（user 1）的 `official_fit.profile` = `{"kimi-k3":{"validate":true,"errors":true,"shape":true,"route":true}}`；
+3. 规则 `k3-history` = `!HistoryBeginsWithUserTurn()`（`pkg/fitpolicy/builtin.go:58`），谓词是
+   "第一条非 `system` 消息是 `user`"（`pkg/fitpolicy/request.go:106`）；这批请求的首条消息是
+   **`developer`**（日志 `po` 里那 27 条 `messages.N.role developer→system` 就是它），既不是
+   `system` 也不是 `user` ⇒ 判为 assistant 开头 ⇒ 要求 `history.assistant_first`；
+4. 两阶段收窄（`pkg/fitpolicy/narrow.go:98`）：阶段一只保留"带该行为、标记仍新鲜"的渠道。当时
+   ch8/ch21/ch41 为 true，ch14/ch26/ch37/ch48/ch71 实测 false，**ch49/75/76 根本没有该标记**
+   （未验证按保守判否）⇒ 候选 {ch8(prio 2), ch41(1), ch21(0)} ⇒ priority 取最大 = ch8。
+   池子渠道的 148–150 优先级在这里不参与：priority 只在"已具备所需行为"的候选集合内决定。
+
+### 实测（fit-probe，3 轮，官方基线 = 中继 pin ch8，启用 acceptance 标记）
+
+- 二进制 md5 `31e01819231ccdf3f93335ea37d639a7`，源码 HEAD `ae515dd1b`（工具已入库）；
+- 策略绑定：version 5 / hash `711aabfe…47c0` / baseline `kimi-k3-moonshot-2026-10-03`；
+- 先跑一次**不写**的验证（60 个 relay 探针 + 15 个官方腿请求），20/20 行有结论，再跑写入；
+- 抽样复核：同一 body 直接打 pin 的 ch8 得 `prompt_tokens=111`、ch37 得 `86`，与工具记录逐字一致
+  ⇒ pin 与官方基线腿都成立，比较链路可信。
+
+| 渠道 | usage.thinking_counting | tools.choice_semantics | response_format.json | history.assistant_first | tools.dynamic_names |
+|---|---|---|---|---|---|
+| ch37 | false | false | false | false | false |
+| ch49 | false | **true 2/3** | **true 3/3** | **true 3/3** | false |
+| ch75 | false | false | false | false | false |
+| ch76 | false | false | false | false | false |
+
+写入结果 `HTTP 200 {"applied":20,"conflicts":0,"failed":0}`，suite `fit-probe-kimi-k3-pool-r21`。
+ch37 的 5 行此前已是 false（rev 5–13），本轮刷新；ch75/ch76 原有的 `tools.choice_semantics=true`
+（当日 docs-only、只有结构判据）被这次更完整的实测**取代**为 false —— 该表只有 supersede、没有撤回路径。
+
+失败形态不是笼统的"不支持"：ch75 的 prompt 计数被放大（官方 188→渠道 639；141→581；111→598；169→573）；
+ch37/49/75 在 `thinking.type=disabled` 下仍回 `reasoning_content`（官方无）；
+ch76 对 tool_choice 与 assistant-first 两个形状**直接 400**（上游原文
+`messages 不能为空（请求体解析失败或客户端未传）`）。
+
+### 影响（已端到端验证）
+
+一个**未 pin** 的、首条消息为 `developer` 的请求现在落在 **ch49**：
+
+```
+17:21:01 ch=49 DEF_YJDY-JYUAN group=default
+         fit.marks=['history.assistant_first'] fit.rules=['k3-history']
+```
+
+即这类流量按设计从 ch8（官方端点）移到"实测能复现官方行为"的池渠道；未经收窄的普通流量仍按
+priority 正常走池子（ch37/ch75 的 148–150 不变）。
+
+### 风险与未决
+
+1. ch49 的 `tools.choice_semantics` 是 **2/3**：第三轮是**官方腿自己**没吐 `tool_calls`
+   （`tool_calls_present official=false channel=true`），渠道两轮逐字一致；
+2. ch76 同一 body 在不同时刻 400/200 交替（本轮 3/3 得 400，人工复核同 body 得 200）——
+   疑与其多 key 轮换有关，未查证；
+3. 标记没有过期时间（`e59d0dfcc` 删掉了 expires_at），绑定在 policy hash + baseline 上，
+   换策略或换基线即自动 stale；要改判只能重测后 supersede；
+4. 探针 token（id 85，group `default`，6h）已删除；探针全部串行、无并发；
+5. 本节只动了 fit-capability 标记，未触碰 cutover（§19 的暂停状态不变）。
