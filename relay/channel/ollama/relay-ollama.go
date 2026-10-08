@@ -25,6 +25,12 @@ func toOllamaResponseFormat(responseFormat *dto.ResponseFormat) (any, error) {
 		return nil, nil
 	}
 	switch responseFormat.Type {
+	case "text":
+		// The OpenAI default. Ollama says "plain text" by sending no format at all, so
+		// this is a successful no-op rather than an unsupported type: clients that spell
+		// out the default (the field is optional, and some SDKs set it unconditionally)
+		// were answered 400 before any upstream saw the request.
+		return nil, nil
 	case "json", "json_object":
 		return "json", nil
 	case "json_schema":

@@ -207,8 +207,14 @@ func TestOpenAIChatRejectsUnsupportedTool(t *testing.T) {
 	assert.Contains(t, err.Error(), "function name is required")
 }
 
-func TestOllamaResponseFormatRejectsUnsupportedOrIncompleteSchema(t *testing.T) {
-	_, err := toOllamaResponseFormat(&dto.ResponseFormat{Type: "text"})
+func TestOllamaResponseFormatMapsTheOpenAIDefaultAndRejectsTheRest(t *testing.T) {
+	// "text" is the OpenAI default and means "no structured output"; ollama expresses it
+	// by omitting format, so it maps to nil rather than being rejected.
+	format, err := toOllamaResponseFormat(&dto.ResponseFormat{Type: "text"})
+	require.NoError(t, err)
+	require.Nil(t, format)
+
+	_, err = toOllamaResponseFormat(&dto.ResponseFormat{Type: "xml"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported ollama response format type")
 
