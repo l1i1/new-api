@@ -9,9 +9,15 @@ import (
 
 // kimiK3EffortOverride is the document applied to channels that honour
 // reasoning_effort but ignore thinking.effort (ch48 and ch75 measured: they answer
-// the default while the official endpoint answers the requested level). The
-// official contract makes reasoning_effort override thinking.effort, so copying
-// the value across is equivalent rather than a downgrade.
+// the default while the official endpoint answers the requested level). Mirroring the
+// value into reasoning_effort is what makes those channels answer the requested
+// level, and it is not a downgrade: when a request carries both fields with
+// conflicting values the official endpoint reads thinking.effort as the
+// higher-precedence one (measured directly - thinking.effort=low + reasoning_effort=max
+// answers "low" on the official channel and on ch19 alike), and the copy makes the
+// flat field carry that same value. The upstream suite's module docstring states the
+// opposite precedence, but its own test asserts what was measured here:
+// tests/k3_features/test_thinking_effort.py::test_reasoning_effort_ignored_when_effort_present.
 func kimiK3EffortOverride() map[string]any {
 	var doc map[string]any
 	require.NoError(nil, json.Unmarshal([]byte(kimiK3EffortOverrideJSON), &doc))
