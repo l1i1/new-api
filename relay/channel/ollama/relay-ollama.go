@@ -302,14 +302,18 @@ func openAIChatToOllamaChat(c *gin.Context, r *dto.GeneralOpenAIRequest) (*Ollam
 				for _, tc := range parsed {
 					var args any
 					if tc.Function.Arguments != "" {
+						// Undecodable arguments are history rather than the request being made:
+						// a replayed tool call can carry JSON that an interrupted stream
+						// truncated or that a client re-emitted badly. Failing the whole chat
+						// with a 400 the caller cannot act on used to be the behaviour, so the
+						// call is forwarded the same way an empty-arguments call is.
 						if err := common.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-							return nil, fmt.Errorf("invalid arguments for ollama tool %q: %w", tc.Function.Name, err)
-						}
-						if args == nil {
-							return nil, fmt.Errorf("invalid arguments for ollama tool %q: expected a JSON value", tc.Function.Name)
+							args = nil
 						}
 					}
-					if args == nil {
+					// An object is the only shape ollama's arguments field accepts; anything
+					// else (unparseable text, null, a bare scalar) becomes an empty object.
+					if _, ok := args.(map[string]any); !ok {
 						args = map[string]any{}
 					}
 					oc := OllamaToolCall{ID: tc.ID}

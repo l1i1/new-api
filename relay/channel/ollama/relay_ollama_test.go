@@ -230,17 +230,36 @@ func TestOllamaResponseFormatMapsTheOpenAIDefaultAndRejectsTheRest(t *testing.T)
 	assert.Contains(t, err.Error(), "missing schema")
 }
 
-func TestOpenAIChatRejectsInvalidToolArguments(t *testing.T) {
-	request := &dto.GeneralOpenAIRequest{
-		Messages: []dto.Message{{
-			Role:      "assistant",
-			ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"not-json"}}]`),
-		}},
+func TestOpenAIChatForwardsUndecodableToolArgumentsAsEmpty(t *testing.T) {
+	// A replayed tool call whose arguments are truncated JSON - an interrupted stream, or a
+	// client that stores and re-emits them badly - must not fail the whole chat: ollama's
+	// arguments field is an object, so the call is forwarded like an empty-arguments one.
+	newRequest := func(arguments string) *dto.GeneralOpenAIRequest {
+		return &dto.GeneralOpenAIRequest{
+			Messages: []dto.Message{{
+				Role:      "assistant",
+				ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"` + arguments + `"}}]`),
+			}},
+		}
 	}
 
-	_, err := openAIChatToOllamaChat(nil, request)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `invalid arguments for ollama tool "lookup"`)
+	for _, tc := range []struct{ name, arguments string }{
+		{"truncated json", `{\"city\":`},
+		{"null", `null`},
+		{"bare string", `\"paris\"`},
+	} {
+		chat, err := openAIChatToOllamaChat(nil, newRequest(tc.arguments))
+		require.NoError(t, err, tc.name)
+		require.Len(t, chat.Messages, 1, tc.name)
+		require.Len(t, chat.Messages[0].ToolCalls, 1, tc.name)
+		assert.Equal(t, "lookup", chat.Messages[0].ToolCalls[0].Function.Name, tc.name)
+		assert.Equal(t, map[string]any{}, chat.Messages[0].ToolCalls[0].Function.Arguments, tc.name)
+	}
+
+	// A well-formed object still travels through untouched.
+	chat, err := openAIChatToOllamaChat(nil, newRequest(`{\"city\":\"paris\"}`))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"city": "paris"}, chat.Messages[0].ToolCalls[0].Function.Arguments)
 }
 
 func TestOpenAIChatRejectsMalformedToolCalls(t *testing.T) {
