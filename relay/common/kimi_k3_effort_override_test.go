@@ -66,15 +66,9 @@ func TestKimiK3EffortOverrideMapsEffortAndLeavesOthersAlone(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &parsed))
 	require.NotContains(t, parsed, "reasoning_effort")
 
-	// NOT covered here, and deliberately: when the effort mapping is appended to a
-	// channel's own document, the two interact. ch48's production document
-	// ({"path":"reasoning_effort","mode":"set","value":"minimal",
-	//   "conditions":[{"path":"reasoning_effort","mode":"full","value":"none"}]})
-	// fires even when reasoning_effort is absent, so it pins the field on requests
-	// that never set it, and the outcome then depends on operation order. That is a
-	// property of the channel's pre-existing document rather than of this mapping,
-	// it is worth its own decision, and it is recorded in the report instead of
-	// being asserted here against a guess about the engine's missing-key default.
+	// The channels' own documents are untouched by this mapping: ch75 keeps its
+	// developer->system rewrite and ch48 its none->minimal rewrite, each verified
+	// against the engine separately by TestReasoningEffortConditionMissingKeySemantics.
 
 	// An effort value outside the documented set is left alone rather than
 	// guessed at.
