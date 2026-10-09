@@ -82,7 +82,19 @@ clear_drain() { [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain mark
 
 # A release owns the tier for its whole duration: it grows and steps the group
 # down on its own schedule and already drains the instances it retires.
-if [[ -f "$HOLD_FILE" ]]; then log "release hold present ($HOLD_FILE); not shrinking"; exit 0; fi
+if [[ -f "$HOLD_FILE" ]]; then
+  # A release owns the tier while it runs. If we were mid-drain when it started,
+  # release the marker first: leaving it set would keep the victim out of the
+  # relay for the whole release, and the resume branch below would later shrink a
+  # group the release had already resized - the tier losing two members for one
+  # decision. The release re-drains whatever it retires on its own.
+  if [[ -f "$DRAIN_FILE" || -n "$(state_get drain_until)" ]]; then
+    log "release hold present; releasing the in-flight drain so the release owns the tier"
+    clear_drain
+    state_set idle_streak 0
+  fi
+  log "release hold present ($HOLD_FILE); not shrinking"; exit 0
+fi
 
 instances="$(in_service_count)"; instances="${instances:-0}"
 desired="$(desired_count)"; desired="${desired:-0}"
@@ -94,6 +106,14 @@ if [[ -n "$(state_get drain_until)" ]]; then
   until_ts="$(state_get drain_until)"
   if (( $(date +%s) < until_ts )); then log "draining $(state_get draining) for another $(( until_ts - $(date +%s) ))s"; exit 0; fi
   drained="$(state_get draining)"
+  # The tier may have started serving again while we waited - the scale-out alarm
+  # fires on its own. Shrinking into a ramp is the same mistake in the other
+  # direction, so the idle test runs again before anything is removed.
+  recent_now="$(recent_requests)"; rpm_now=$(( recent_now * 60 / RATE_WINDOW_SECONDS ))
+  if (( rpm_now > IDLE_RPM )); then
+    log "load returned during the drain (${rpm_now} req/min > $IDLE_RPM); releasing the drain without shrinking"
+    clear_drain; state_set idle_streak 0; exit 0
+  fi
   log "drain window over for $drained; asking ESS for $(( desired - 1 )) instance(s)"
   if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$(( desired - 1 ))"; clear_drain; exit 0; fi
   if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$(( desired - 1 ))" >/dev/null; then

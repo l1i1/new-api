@@ -141,6 +141,33 @@ Before releasing again: restore `DesiredCapacity` to 6 (the cancelled `.41` left
 
 Both causes found tonight are fixed and covered: the asynchronous scale-in race (`rollout-all-scale-in-race`) and the relay-list cap (`relay-cap-explicit`, `relay-cap-clamp`). No release should be attempted while traffic is spiking.
 
+## Who may change tier capacity (2026-10-10)
+
+Five things can move `DesiredCapacity` on `asg-uf641n1j5akwa1ozcz6t`. Two are
+automatic and two are ordered, and every pair that can overlap is resolved by a
+guard rather than by timing:
+
+| Actor | Direction | How it is bounded |
+| --- | --- | --- |
+| `deploy.sh` (`deploy-release`, `rollout-all`, `rollout-batch`, `rollback`) | up per round, back to the round's base | One release at a time; rounds size against what is actually in service, so an autoscaler that grew the group mid-release is respected rather than undone; the relay list cap bounds the growth (`relay_member_cap`) |
+| `cpu-out-70` alarm -> `scale-out-cpu70` (+2, 60s x 2) | up | Fires on its own at any time. A release tolerates it: the round gates on the retire set, not on an exact count |
+| `ecs-shrink-guard` (entry cron, every 5 min) | down, one instance | Only when idle (<= `SHRINK_IDLE_RPM` for `SHRINK_IDLE_MINUTES`), never below `MIN_KEEP`, stands down while a release holds `/etc/ml-sync/shrink-hold`, re-tests the load before shrinking, and drains first (see below) |
+| `cpu-in-25` alarm -> `scale-in-cpu25` | down | **Disabled.** It retired an instance immediately and cut streams longer than the 180s shutdown window; the guard replaced it. Its rule stays for a manual `ExecuteScalingRule` |
+| Human (`ModifyScalingGroup`) | either | The only actor that can do something the others cannot: an emergency change during an incident |
+
+**The drain.** `ecs-shrink-guard` never removes an instance blind: it parks the
+oldest one in `/etc/ml-sync/shrink-drain`, `ecs-fleet-sync` subtracts that member
+from the relay upstream list within a minute, and the shrink is issued only after
+`SHRINK_DRAIN_SECONDS` (1900s, the same hold a release uses) so in-flight streams
+finish. That matters because 7.2% of this tier's requests run past 180 seconds
+(p99 765s, max 2132s) - an instance removed without draining cuts them.
+
+**Release vs guard.** `deploy.sh` writes `/etc/ml-sync/shrink-hold` for the
+duration of every mutating verb and removes it through the same EXIT trap that
+resumes the alarm. If the guard was mid-drain when the hold appeared, it releases
+that drain instead of leaving the victim out of the relay for the whole release
+and then shrinking a group the release had already resized.
+
 ## Troubleshooting the pipeline
 
 The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokeness-mainland.16`/`.17`). Four defects kept every earlier CI release from ever reaching production; all four are now fixed and covered by the deploy test suite:
