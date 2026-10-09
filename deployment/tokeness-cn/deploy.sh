@@ -1228,6 +1228,9 @@ suspend_scale_in_guard() {
 }
 
 resume_scale_in_guard() {
+  # Never leave a drain marker behind: it keeps a healthy member out of the relay
+  # list indefinitely, which reads as lost capacity rather than a failed release.
+  relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
   shrink_hold_write clear && log "entry shrink guard released"
   [[ -n "$scale_in_guard_suspended" ]] || return 0
   local id="$scale_in_guard_suspended"
@@ -1357,6 +1360,9 @@ wait_retired() {
     done <<<"$ids"
     if (( left >= want )); then
       log "scale-in complete: $left of the $want retiring instance(s) left service"
+      # The parked members are gone; drop the marker so the relay carries every
+      # healthy instance again. Best-effort here because the EXIT trap retries it.
+      relay_drain_clear >/dev/null 2>&1 || true
       return 0
     fi
     sleep "$HEALTH_POLL_SECONDS"

@@ -1053,6 +1053,9 @@ grep -q "scale-in alarm resumed" "$alarm_case/state/stdout.log" \
   || fail "the release did not resume the scale-in alarm"
 jq -e '.scale_in_alarm.state == "enabled"' "$alarm_case/state/state.json" > /dev/null \
   || fail "the alarm was left suspended after the release"
+# A drain marker left behind would keep a healthy member out of the relay list.
+[[ ! -e "$alarm_case/shrink-drain" ]] \
+  || fail "a relay drain marker was left behind after the release"
 # The entry's shrink guard is held off for the same window, and released after.
 [[ ! -e "$alarm_case/shrink-hold" ]] \
   || fail "the shrink guard hold was left behind after the release"
