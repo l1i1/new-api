@@ -1234,6 +1234,20 @@ case "$action" in
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$path" ;;
   clear)
     existing="$(sed -n '2p' "$path" 2>/dev/null | tr -d ' \r' || true)"
+    if [ -z "$existing" ]; then
+      # No owner recorded: an older-format hold, or a write truncated between the
+      # two lines. A STALE hold is a dead release and may go; a fresh one belongs
+      # to a release that simply does not record owners, and removing it would
+      # re-open the tier to a scale-in while that release is still rolling.
+      ts="$(head -1 "$path" 2>/dev/null | tr -d ' \r' || true)"
+      epoch="$(date -d "$ts" +%s 2>/dev/null || printf 0)"
+      now="$(date +%s)"
+      if [ "${epoch:-0}" -gt 0 ] && [ $(( now - epoch )) -lt "${HOLD_FRESH_SECONDS:-900}" ]; then
+        printf 'hold records no owner and is still fresh; not removing\n' >&2
+        exit 3
+      fi
+      rm -f "$path"; exit 0
+    fi
     if [ -n "$existing" ] && [ "$existing" != "${3:-}" ]; then
       printf 'hold belongs to %s; not removing\n' "$existing" >&2
       exit 3
