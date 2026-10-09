@@ -59,6 +59,23 @@ func quotaAmount(quota int) float64 {
 	return amount
 }
 
+// currencyCode names the unit that the OpenAI-compatible *_USD fields actually
+// carry. OpenAI's Costs API models this the same way - a lowercase ISO-4217
+// code - while the legacy /dashboard/billing/* endpoints this fork speaks
+// predate any currency field, so it is added additively there. The code always
+// matches what quotaAmount computed, which is why CUSTOM (still converted as
+// USD by quotaAmount) reports usd rather than its symbol.
+func currencyCode() string {
+	switch operation_setting.GetQuotaDisplayType() {
+	case operation_setting.QuotaDisplayTypeCNY:
+		return "cny"
+	case operation_setting.QuotaDisplayTypeTokens:
+		return "tokens"
+	default:
+		return "usd"
+	}
+}
+
 func GetSubscription(c *gin.Context) {
 	remainQuota, usedQuota, token, err := quotaLine(c)
 	expiredTime := int64(0)
@@ -90,6 +107,7 @@ func GetSubscription(c *gin.Context) {
 		HardLimitUSD:       amount,
 		SystemHardLimitUSD: amount,
 		AccessUntil:        expiredTime,
+		Currency:           currencyCode(),
 	}
 	c.JSON(200, subscription)
 	return
@@ -112,6 +130,7 @@ func GetUsage(c *gin.Context) {
 	usage := OpenAIUsageResponse{
 		Object:     "list",
 		TotalUsage: quotaAmount(usedQuota) * 100,
+		Currency:   currencyCode(),
 	}
 	c.JSON(200, usage)
 	return

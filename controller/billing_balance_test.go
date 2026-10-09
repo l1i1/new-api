@@ -17,7 +17,9 @@ import (
 
 // The partner-facing balance contract: /v1/dashboard/billing/subscription must
 // describe the same account as /v1/dashboard/billing/usage, so that
-//   remaining = hard_limit_usd - total_usage/100
+//
+//	remaining = hard_limit_usd - total_usage/100
+//
 // equals the real remaining quota. An unlimited token has no quota line of its
 // own, so both endpoints have to answer with the account's line instead of the
 // old fixed 100000000 placeholder.
@@ -50,10 +52,12 @@ func TestBillingEndpointsReportTheAccountForUnlimitedTokens(t *testing.T) {
 		HardLimitUSD       float64 `json:"hard_limit_usd"`
 		SystemHardLimitUSD float64 `json:"system_hard_limit_usd"`
 		Object             string  `json:"object"`
+		Currency           string  `json:"currency"`
 	}
 	type usage struct {
 		Object     string  `json:"object"`
 		TotalUsage float64 `json:"total_usage"`
+		Currency   string  `json:"currency"`
 	}
 
 	call := func(handler gin.HandlerFunc, token model.Token) (subscription, usage) {
@@ -98,5 +102,22 @@ func TestBillingEndpointsReportTheAccountForUnlimitedTokens(t *testing.T) {
 		assert.InDelta(t, 6.0, sub.HardLimitUSD, 0.0001)
 		assert.InDelta(t, 200.0, use.TotalUsage, 0.0001)
 		assert.InDelta(t, 4.0, sub.HardLimitUSD-use.TotalUsage/100, 0.0001)
+	})
+
+	// The values follow the site's display currency, so the response has to say
+	// which one it is: this site runs CNY, and a client that hardcodes "$" would
+	// otherwise mislabel the balance.
+	t.Run("currency marker names the unit that was actually computed", func(t *testing.T) {
+		for displayType, want := range map[string]string{
+			operation_setting.QuotaDisplayTypeCNY:    "cny",
+			operation_setting.QuotaDisplayTypeUSD:    "usd",
+			operation_setting.QuotaDisplayTypeTokens: "tokens",
+		} {
+			operation_setting.GetGeneralSetting().QuotaDisplayType = displayType
+			sub, use := call(GetSubscription, unlimited)
+			assert.Equal(t, want, sub.Currency, "subscription currency for %s", displayType)
+			assert.Equal(t, want, use.Currency, "usage currency for %s", displayType)
+		}
+		operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
 	})
 }

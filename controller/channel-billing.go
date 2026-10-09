@@ -36,6 +36,12 @@ type OpenAISubscriptionResponse struct {
 	HardLimitUSD       float64 `json:"hard_limit_usd"`
 	SystemHardLimitUSD float64 `json:"system_hard_limit_usd"`
 	AccessUntil        int64   `json:"access_until"`
+	// Currency is an extension. The legacy /dashboard/billing/* endpoints carry
+	// no currency field and imply USD, but this site can display CNY or tokens.
+	// Lowercase ISO-4217, the vocabulary OpenAI's own Costs API uses inside
+	// `amount`. omitempty keeps it absent when parsing an upstream response that
+	// does not send it.
+	Currency string `json:"currency,omitempty"`
 }
 
 type OpenAIUsageDailyCost struct {
@@ -64,6 +70,8 @@ type OpenAIUsageResponse struct {
 	Object string `json:"object"`
 	//DailyCosts []OpenAIUsageDailyCost `json:"daily_costs"`
 	TotalUsage float64 `json:"total_usage"` // unit: 0.01 dollar
+	// Currency names the unit of TotalUsage; see OpenAISubscriptionResponse.
+	Currency string `json:"currency,omitempty"`
 }
 
 type OpenAISBUsageResponse struct {
