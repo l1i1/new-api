@@ -75,6 +75,9 @@ readonly ROLLOUT_HEARTBEAT_SECONDS="${ROLLOUT_HEARTBEAT_SECONDS:-30}"
 # that is the price of not cutting a 30-minute request, not an oversight.
 readonly DRAIN_MARKER_PATH="${DRAIN_MARKER_PATH:-/etc/ml-sync/drain-target}"
 readonly ML_DRAIN_SECONDS="${ML_DRAIN_SECONDS:-1900}"
+# Poll interval for the instance-count gates. Production keeps 20s; the tests
+# shorten it because the fake ESS emulates an asynchronous scale-in window.
+readonly HEALTH_POLL_SECONDS="${HEALTH_POLL_SECONDS:-20}"
 readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
 readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
 # Must outlive convergence plus the drain wait, or ml-sync would drop the pin
@@ -1123,10 +1126,39 @@ wait_healthy_instances() {
       log "healthy instances: $got (want $want)"
       return 0
     fi
-    sleep 20
+    sleep "$HEALTH_POLL_SECONDS"
     i=$((i + 1))
   done
   error "timed out waiting for $want healthy instance(s) (have $got)"
+  return 1
+}
+
+# wait_instances_exactly <want> [tries] - wait until EXACTLY <want> instances are
+# InService and Healthy.
+#
+# This is the gate that a scale-IN must use, and the distinction is the whole
+# point: scaling in is asynchronous, so right after ModifyScalingGroup the group
+# still reports the larger set for as long as ESS needs to terminate the
+# instances. wait_healthy_instances uses "at least" (correct for a scale-out
+# gate, where the count only grows toward the target), so after a scale-in it
+# returns immediately, the rollout's next round issues a scale-out while the
+# removal is still in flight, ESS supersedes the pending removal, no new
+# instance appears, and the rollout aborts - which is exactly how the
+# 2026-10-09 release lost two hours and rolled the whole tier back.
+wait_instances_exactly() {
+  local want="$1" tries="${2:-40}" i=0 got
+  while [ "$i" -lt "$tries" ]; do
+    got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+      | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' | tr -d '\r')" \
+      || got="0"
+    if [ "$got" -eq "$want" ]; then
+      log "instances settled at $got (want exactly $want)"
+      return 0
+    fi
+    sleep "$HEALTH_POLL_SECONDS"
+    i=$((i + 1))
+  done
+  error "timed out waiting for exactly $want healthy instance(s) (have $got)"
   return 1
 }
 
@@ -1554,8 +1586,8 @@ rollout_batch() {
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
-    want=$(( stable + batch ))
-    log "round $rounds: replacing up to $batch of ${#remaining[@]} remaining pre-existing instance(s) via $want instances"
+    want=$(( stable + (batch < ${#remaining[@]} ? batch : ${#remaining[@]}) ))
+    log "round $rounds: replacing up to $(( want - stable )) of ${#remaining[@]} remaining pre-existing instance(s) via $want instances"
     if ! scale_group "$want" || ! wait_healthy_instances "$want"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
@@ -1589,7 +1621,13 @@ rollout_batch() {
     done
     log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
-    if ! scale_group "$stable" || ! wait_healthy_instances "$stable"; then
+    # EXACT count, not "at least": scaling in is asynchronous, so the group keeps
+    # reporting the larger set for a while after ModifyScalingGroup. An "at
+    # least" gate passes instantly here, the next round issues its scale-out
+    # while this scale-in is still in flight, ESS supersedes the pending removal
+    # and reports no new instance - which is how the 2026-10-09 release died
+    # after two hours and rolled the whole tier back.
+    if ! scale_group "$stable" || ! wait_instances_exactly "$stable"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi

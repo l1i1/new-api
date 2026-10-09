@@ -312,6 +312,15 @@ PY
 case "$cmd" in
   "ess ModifyScalingGroup")
     desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
+    # A scale-out SUPERSEDES an in-flight scale-in, exactly as the real ESS does:
+    # the instances the pending removal had already detached come back and no
+    # replacement is created for them. This is the behaviour that killed the
+    # 2026-10-09 release - a rollout that scaled out while its previous scale-in
+    # was still terminating got no new instance at all.
+    if (( $(jq '.instances | length' "$state" | tr -d '\r') < desired )); then
+      state_update '.instances = ((.pending_removal.instances // []) + .instances)
+                    | .pending_removal = null'
+    fi
     while (( $(jq '.instances | length' "$state" | tr -d '\r') < desired )); do
       # Monotonic numbering, not "current length": a batch rollout scales up and
       # down repeatedly, and a length-derived index would reuse an ID and a
@@ -326,9 +335,20 @@ case "$cmd" in
         "LifecycleState": "InService"
       }] | .next_index = ($n + 1)'
     done
+    # A scale-in detaches the oldest instances, but the group keeps REPORTING
+    # them until the platform finishes terminating them
+    # (TOKENESS_TEST_SCALE_IN_LAG_SECONDS, 0 by default so every earlier case
+    # keeps its previous behaviour).
+    lag="${TOKENESS_TEST_SCALE_IN_LAG_SECONDS:-0}"
     while (( $(jq '.instances | length' "$state" | tr -d '\r') > desired )); do
       # ESS removal policy removes the oldest instance first.
-      state_update '.instances = .instances[1:]'
+      if [[ "$lag" =~ ^[1-9][0-9]*$ ]]; then
+        state_update --argjson until "$(( $(date +%s) + lag ))" \
+          '.pending_removal = {until: $until, instances: ((.pending_removal.instances // []) + [.instances[0]])}
+           | .instances = .instances[1:]'
+      else
+        state_update '.instances = .instances[1:]'
+      fi
     done
     state_update --argjson d "$desired" '.desired = $d'
     printf '%s\n' '{"RequestId":"fake"}'
@@ -348,11 +368,19 @@ case "$cmd" in
     }]}}' "$state"
     ;;
   "ess DescribeScalingInstances")
-    jq '{ScalingInstances: {ScalingInstance: [.instances[] | {
-      InstanceId, PrivateIpAddress,
-      HealthStatus: "Healthy",
-      LifecycleState: "InService"
-    }]}}' "$state"
+    # Instances a pending scale-in has detached are still REPORTED until the lag
+    # expires, then the pending record is dropped - the same asynchronous window
+    # the real ESS has, and the reason a rollout must wait for an EXACT count
+    # after scaling in.
+    state_update --argjson now "$(date +%s)" '
+      if (.pending_removal != null) and (.pending_removal.until <= $now)
+      then .pending_removal = null else . end' >/dev/null 2>&1 || true
+    jq '{ScalingInstances: {ScalingInstance:
+          [((.pending_removal.instances // []) + .instances)[] | {
+            InstanceId, PrivateIpAddress,
+            HealthStatus: "Healthy",
+            LifecycleState: "InService"
+          }]}}' "$state"
     ;;
   "ess DescribeEciScalingConfigurations")
     describe_config

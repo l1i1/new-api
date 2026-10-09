@@ -936,6 +936,45 @@ grep -q "no batch headroom" "$noheadroom_release_case/state/output.log" \
 grep -q "deployed to one instance (batch convergence skipped" "$noheadroom_release_case/state/stdout.log" \
   || fail "a release on a headroom-less group did not fall back to one instance"
 
+# (8) REGRESSION: scaling in is asynchronous, so the group keeps REPORTING the
+# detached instances for a while. A gate that accepts "at least N" therefore
+# passes the instant it is asked, the next round scales out while the removal is
+# still pending, the ESS supersedes that removal, no new instance appears - and
+# the rollout aborts after hours. That is precisely how
+# v1.0.0-rc.40-tokeness-mainland.40 died on 2026-10-09:
+#
+#   [18:00:47] scaling group desired capacity set to 6
+#   [18:00:48] healthy instances: 8 (want 6)      <- "at least" gate, passed
+#   [18:00:49] ERROR: round 3: ESS reported no new instance after scaling to 8
+#
+# The fake now emulates the window (TOKENESS_TEST_SCALE_IN_LAG_SECONDS) and the
+# supersede, so this case fails on the old gate and passes on the exact one.
+race_case="$test_root/rollout-all-scale-in-race"
+mkdir -p "$race_case/state"
+make_conf "$race_case/nginx.conf"
+init_ess_state "$race_case/state"
+jq '.desired = 2 | .max_size = 3 | .instances += [{
+      InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
+      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+  "$race_case/state/state.json" > "$race_case/state/tmp.json" \
+  && mv "$race_case/state/tmp.json" "$race_case/state/state.json"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\n' > "$race_case/ecs-upstream.conf"
+run_deploy "$race_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 \
+  TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  rollout-all
+grep -q "instances settled at 2 (want exactly 2)" "$race_case/state/stdout.log" \
+  || fail "the rollout did not wait for the asynchronous scale-in to settle"
+grep -q "retired all 2 pre-existing instance(s) in 2 round(s)" "$race_case/state/stdout.log" \
+  || fail "the rollout did not converge once the scale-in settled"
+jq -e '(.instances | length) == 2
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)' \
+  "$race_case/state/state.json" > /dev/null \
+  || fail "the rollout did not retire every pre-existing instance after the race"
+
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
 crlf_case="$test_root/crlf"
