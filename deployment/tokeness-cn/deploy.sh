@@ -156,7 +156,20 @@ readonly APP_READY_TIMEOUT_SECONDS="${APP_READY_TIMEOUT_SECONDS:-300}"
 readonly APP_READY_POLL_SECONDS="${APP_READY_POLL_SECONDS:-15}"
 readonly APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-newapi}"
 
-log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; }
+# Throttled heartbeat for the release's shrink-guard hold, called from log().
+# Every long wait in this script polls and logs, so this covers the waits
+# sleep_with_heartbeat never sees (SSH reads, image pulls, the blue-green roll).
+# Without it the hold goes stale during any step longer than the freshness window,
+# which both loses the guard's protection and admits a second release.
+hold_heartbeat() {
+  [[ -n "$scale_in_guard_suspended" ]] || return 0
+  local _now; _now="$(date +%s)"
+  (( _now - ${scale_in_hold_refresh:-0} >= 60 )) || return 0
+  scale_in_hold_refresh="$_now"
+  shrink_hold_write set >/dev/null 2>&1 || true
+}
+
+log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; hold_heartbeat; }
 warn() { log "WARN: $*"; }
 error() { log "ERROR: $*" >&2; }
 die() { error "$*"; exit 1; }
