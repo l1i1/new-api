@@ -1199,19 +1199,38 @@ REMOTE_HOLD_AGE
   (( age < max_age ))
 }
 
+# RELEASE_OWNER identifies this release to the hold: cleanup must not remove a hold
+# another release wrote, or a late finisher would re-open the tier to a scale-in
+# while the release that owns it is still rolling.
+readonly RELEASE_OWNER="${RELEASE_OWNER:-$(hostname 2>/dev/null || printf host)-$$}"
+
 shrink_hold_write() {
   local action="$1"
-  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" <<'REMOTE_HOLD' >/dev/null 2>&1
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" <<'REMOTE_HOLD' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
 path="$1"; action="$2"
 case "$action" in
   set)   mkdir -p "$(dirname "$path")" && printf '%s
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$path" ;;
-  clear) rm -f "$path" ;;
+  clear)
+    existing="$(sed -n '2p' "$path" 2>/dev/null | tr -d ' \r' || true)"
+    if [ -n "$existing" ] && [ "$existing" != "${3:-}" ]; then
+      printf 'hold belongs to %s; not removing\n' "$existing" >&2
+      exit 3
+    fi
+    rm -f "$path" ;;
   *)     exit 2 ;;
 esac
 REMOTE_HOLD
+  if [[ "$action" == "set" ]]; then
+    # Line 2 is the owner; line 1 stays the timestamp the entry's guard parses.
+    remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$RELEASE_OWNER" <<'REMOTE_OWNER' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$2" >>"$1"
+REMOTE_OWNER
+  fi
 }
 
 suspend_scale_in_guard() {
