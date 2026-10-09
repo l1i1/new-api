@@ -136,11 +136,13 @@ $:
         # release fail this build instead of leaving a green tag behind.
         # timeout: the chained release converges the WHOLE ECI tier now - one
         # per-instance roll plus ceil(n/batch) batch rounds, each with its own
-        # drain window - so it runs well past the 2h job default. Declaring a
-        # timeout also lifts the 10-minute no-output limit off the drain holds.
+        # ~32 minute drain window - so it runs well past the 2h job default.
+        # Declaring a timeout also lifts the 10-minute no-output limit off the
+        # drain holds. 4h covers the default (batches of 2: ~2.6h) with room for
+        # an explicit ROLLOUT_BATCH=1, the slowest safe setting.
         - name: deploy to production
           type: cnb:trigger
-          timeout: 3h
+          timeout: 4h
           options:
             slug: imvhb/new-api-cn
             branch: tokeness/main
@@ -213,7 +215,7 @@ $:
         # convergence of the rest of the tier, each round taking its own drain
         # window. See the tag_push stage above for why the default no longer fits.
         - name: release to production
-          timeout: 3h
+          timeout: 4h
           script: |
             set -Eeuo pipefail
             TAG="$(cat /tmp/release-tag)"
@@ -288,7 +290,7 @@ $:
         # chained pipeline (master-first, one per-instance roll, then the batch
         # rounds), which no longer fits the 2h job default.
         - name: release to production
-          timeout: 3h
+          timeout: 4h
           script: |
             set -Eeuo pipefail
             TAG="$CNB_BRANCH"

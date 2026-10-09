@@ -853,7 +853,7 @@ jq -e '(.instances | length) == 3
 jq -e '.desired == 3' "$converge_case/state/state.json" > /dev/null \
   || fail "the converging release did not restore the steady-state capacity"
 
-# (5) ROLLOUT_ALL=0 keeps the old one-at-a-time behaviour for a release that
+# (5) ROLLOUT_BATCH=0 keeps the old one-at-a-time behaviour for a release that
 # only touches master-served paths, and an invalid value is refused rather than
 # silently treated as "on".
 optout_case="$test_root/release-rollout-all-optout"
@@ -863,16 +863,16 @@ init_ess_state "$optout_case/state"
 run_deploy "$optout_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
-  ROLLOUT_ALL=0 \
+  ROLLOUT_BATCH=0 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
-grep -q "deployed to one instance (ROLLOUT_ALL=0" "$optout_case/state/stdout.log" \
-  || fail "ROLLOUT_ALL=0 did not skip the batch convergence"
+grep -q "deployed to one instance (batch convergence skipped" "$optout_case/state/stdout.log" \
+  || fail "ROLLOUT_BATCH=0 did not skip the batch convergence"
 if grep -q "batch rollout" "$optout_case/state/stdout.log"; then
-  fail "ROLLOUT_ALL=0 still ran the batch convergence"
+  fail "ROLLOUT_BATCH=0 still ran the batch convergence"
 fi
 # Two calls: the release's own single-instance roll, and nothing else.
 [[ "$(grep -c 'ess ModifyScalingGroup' "$optout_case/state/aliyun-calls.log")" -eq 2 ]] \
-  || fail "ROLLOUT_ALL=0 did not keep the one-at-a-time roll"
+  || fail "ROLLOUT_BATCH=0 did not keep the one-at-a-time roll"
 
 invalid_rollout_case="$test_root/release-rollout-all-invalid"
 mkdir -p "$invalid_rollout_case/state"
@@ -881,17 +881,60 @@ init_ess_state "$invalid_rollout_case/state"
 if run_deploy "$invalid_rollout_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
-  ROLLOUT_ALL=maybe \
+  ROLLOUT_BATCH=maybe \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
-  fail "an invalid ROLLOUT_ALL value was accepted"
+  fail "an invalid ROLLOUT_BATCH value was accepted"
 fi
-grep -q "ROLLOUT_ALL must be 0 or 1" "$invalid_rollout_case/state/output.log" \
-  || fail "an invalid ROLLOUT_ALL value did not explain itself"
+grep -q "ROLLOUT_BATCH must be a non-negative integer" "$invalid_rollout_case/state/output.log" \
+  || fail "an invalid ROLLOUT_BATCH value did not explain itself"
 # The value is validated before any tier mutation: the release's own roll must
 # not have started.
 if grep -q "ess ModifyScalingGroup" "$invalid_rollout_case/state/aliyun-calls.log"; then
-  fail "an invalid ROLLOUT_ALL value was rejected only after the tier had moved"
+  fail "an invalid ROLLOUT_BATCH value was rejected only after the tier had moved"
 fi
+
+# (6) An EXPLICIT batch size is a demand, not a preference: asking for more than
+# the group's headroom must be refused before anything mutates, while the
+# built-in default is clamped instead (case (4) relies on exactly that clamp).
+overbatch_case="$test_root/release-batch-over-headroom"
+mkdir -p "$overbatch_case/state"
+make_conf "$overbatch_case/nginx.conf"
+init_ess_state "$overbatch_case/state"
+# MaxSize=3 against a steady state of 1 leaves room for 2, so asking for 3 is the
+# impossible demand this case is about.
+jq '.max_size = 3' "$overbatch_case/state/state.json" > "$overbatch_case/state/tmp.json" \
+  && mv "$overbatch_case/state/tmp.json" "$overbatch_case/state/state.json"
+if run_deploy "$overbatch_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_BATCH=3 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "an explicit batch size above the group's headroom was accepted"
+fi
+grep -q "exceeds the scaling group's headroom" "$overbatch_case/state/output.log" \
+  || fail "an over-large explicit batch did not explain the headroom limit"
+if grep -q "ess ModifyScalingGroup" "$overbatch_case/state/aliyun-calls.log"; then
+  fail "an over-large explicit batch was rejected only after the tier had moved"
+fi
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$overbatch_case/state/state.json" > /dev/null \
+  || fail "the refused release still re-pinned the scaling configuration"
+
+# (7) A group with no headroom must still be releasable: the built-in default
+# degrades to the one-at-a-time path instead of failing the release.
+noheadroom_release_case="$test_root/release-no-headroom"
+mkdir -p "$noheadroom_release_case/state"
+make_conf "$noheadroom_release_case/nginx.conf"
+init_ess_state "$noheadroom_release_case/state"
+jq '.max_size = 1' "$noheadroom_release_case/state/state.json" > "$noheadroom_release_case/state/tmp.json" \
+  && mv "$noheadroom_release_case/state/tmp.json" "$noheadroom_release_case/state/state.json"
+run_deploy "$noheadroom_release_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "no batch headroom" "$noheadroom_release_case/state/output.log" \
+  || fail "a headroom-less group did not report why the convergence was skipped"
+grep -q "deployed to one instance (batch convergence skipped" "$noheadroom_release_case/state/stdout.log" \
+  || fail "a release on a headroom-less group did not fall back to one instance"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.

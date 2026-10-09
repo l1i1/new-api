@@ -1450,21 +1450,28 @@ ess_rollout() {
   return 1
 }
 
-# rollout_all <digest> [expected_version] [previous_digest] [snapshot] - retire
-# EVERY instance that predates <digest> in one invocation, replacing as many per
-# drain window as the scaling group's MaxSize allows.
+# rollout_batch <digest> [expected_version] [previous_digest] [snapshot]
+#               [retire_ids] [batch_size] - retire EVERY instance in the retire
+# set in one invocation, replacing batch_size of them per drain window.
 #
 # Why this exists: ess_rollout replaces exactly one instance per release, so a
 # six-instance fleet needs six releases - six tags, six builds, roughly three
 # hours - before the whole tier serves an image. Anything that image carries on
 # the ECI tier (the OpenAI-compatible billing endpoints, for one) stays only
 # partially live in the meantime. This batches the same tested steps and repeats
-# them until no pre-existing instance is left:
+# them until no instance from the retire set is left:
 #
 #   scale to stable+batch -> gate EVERY new instance on the application ->
 #   wait for the relay tier to serve them -> ONE drain hold -> scale to stable
 #
 # so the tier converges in ceil(n/batch) drain windows instead of n.
+#
+# batch_size is what the operator trades time against blast radius with. It
+# defaults to every slot MaxSize allows, but the RELEASE path asks for
+# ROLLOUT_BATCH (2 by default): a bad image starts serving its share of traffic
+# the moment its instance joins the pool, so a wider batch widens that window in
+# proportion. An explicit size is validated, never clamped - an operator who
+# asked for 4 and silently got 2 would misread how wide the roll actually was.
 #
 # What an operator must know before using it:
 #   * it is bounded by MaxSize and never grows past it; a group with no headroom
@@ -1479,17 +1486,36 @@ ess_rollout() {
 #     lightweight tier used to), so all fresh instances join the pool and share
 #     traffic. In-flight requests on the instances ESS retires are protected by
 #     the drain hold plus the ECI termination grace, not by a pin.
-rollout_all() {
-  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}"
+rollout_batch() {
+  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
   local stable max batch rounds=0 round_limit current_ids id ip want
   local -a original_ids=() remaining=() new_ids=()
-  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-all needs a sha256:<64 hex> digest"; return 1; }
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
   stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
   max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
-  batch=$(( max - stable ))
+  if [[ -n "$requested_batch" ]]; then
+    case "$requested_batch" in
+      ''|*[!0-9]*) error "batch size must be a positive integer (got '$requested_batch')"; return 1 ;;
+    esac
+    batch="$requested_batch"
+  else
+    # No size asked for: use every slot MaxSize allows.
+    batch=$(( max - stable ))
+  fi
   if (( batch < 1 )); then
-    error "no headroom to batch: DesiredCapacity=$stable MaxSize=$max (raise MaxSize, or use deploy-release for one-at-a-time)"
+    if [[ -n "$requested_batch" ]]; then
+      error "batch size must be at least 1 (got $batch)"
+    else
+      error "no headroom to batch: DesiredCapacity=$stable MaxSize=$max (raise MaxSize, or roll one instance per release)"
+    fi
+    return 1
+  fi
+  # MaxSize is a hard ceiling, so an over-large request is refused rather than
+  # silently clamped: an operator who asked for 8 wants 8, and quietly replacing
+  # 4 would misreport how wide the blast radius was.
+  if (( batch > max - stable )); then
+    error "batch size $batch exceeds the scaling group's headroom (MaxSize=$max DesiredCapacity=$stable, so at most $(( max - stable )))"
     return 1
   fi
   if [[ -n "$retire_ids" ]]; then
@@ -1500,7 +1526,7 @@ rollout_all() {
     while IFS= read -r id; do
       [ -n "$id" ] && original_ids+=("$id")
     done <<<"$retire_ids"
-    [[ "${#original_ids[@]}" -gt 0 ]] || { error "rollout-all was given an empty retire set"; return 1; }
+    [[ "${#original_ids[@]}" -gt 0 ]] || { error "rollout-batch was given an empty retire set"; return 1; }
   else
     current_ids="$(in_service_instance_ids)" || { error "could not read the current in-service instance set"; return 1; }
     [[ -n "$current_ids" ]] || { error "the scaling group reports no in-service instance"; return 1; }
@@ -1594,6 +1620,107 @@ rollout_all() {
   return 0
 }
 
+# rollout_all - the manual "get the tier converged now" form: every slot MaxSize
+# allows, in as few drain windows as the group can take. Exposed because the
+# release path deliberately does NOT use it - see rollout_batch's default.
+rollout_all() {
+  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}"
+  rollout_batch "$digest" "$expected_version" "$previous_digest" "$previous_snapshot" "$retire_ids" ""
+}
+
+# rollout_verb <batch_size> <tag> <digest> - shared body of `rollout-all` and
+# `rollout-batch`. An empty batch_size means "every slot MaxSize allows".
+#
+# With no tag and no digest it converges onto whatever the scaling configuration
+# already pins: the "finish the job" form a release leaves behind, which changes
+# no configuration and therefore has nothing to roll back to. With a tag it pins
+# the digest and rolls the master FIRST - the fleet must never serve an image the
+# master (panel + migrations + system tasks) has not taken yet.
+rollout_verb() {
+  local batch="$1" tag="$2" digest="$3" snapshot='' prev=''
+  if [[ -z "$tag" && -z "$digest" ]]; then
+    snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+    digest="$(snapshot_config_digest "$snapshot")"
+    prev="$digest"
+    snapshot=''
+  else
+    if [[ -n "$digest" ]]; then
+      [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "certified digest must be sha256:<64 lowercase hex>"
+    else
+      digest="$(resolve_ml_digest "$tag")"
+    fi
+    snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+    prev="$(snapshot_config_digest "$snapshot")"
+    [[ "$prev" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a batch rollout without a rollback target"
+    if ! apply_ml_digest "$digest" "$snapshot"; then
+      restore_scaling_config "$snapshot" || die "image pin failed and the complete configuration could not be restored"
+      die "batch rollout: pinning $digest failed; the previous configuration was restored"
+    fi
+    if ! sync_master_container "$tag" "$digest"; then
+      restore_scaling_config "$snapshot" || error "master roll failed and the scaling configuration could not be restored"
+      sync_master_container "" || error "master container could not be restored; manual intervention required (deploy.sh sync-host)"
+      die "batch rollout aborted: master container failed to converge to $tag"
+    fi
+  fi
+  if ! rollout_batch "$digest" "$tag" "$prev" "$snapshot" "" "$batch"; then
+    die "batch rollout failed; rollback was attempted and must be verified before retrying"
+  fi
+  log "batch rollout: the ECI tier now serves $digest"
+}
+
+# resolve_release_batch - how many instances a release's batch convergence may
+# replace per drain window. Prints 0 to skip convergence entirely.
+#
+# The distinction that matters here: an EXPLICIT ROLLOUT_BATCH is a demand, so an
+# impossible one is refused (the caller does this before anything mutates); the
+# built-in default is a preference, so it is clamped to the group's headroom and
+# degrades to "skip" on a group that cannot batch at all. A release must never
+# fail because of the shape of its scaling group.
+resolve_release_batch() {
+  local requested="${ROLLOUT_BATCH-}" batch stable max headroom
+  # Empty means "unset" and takes the built-in default; anything non-numeric is
+  # an operator error. The two must not share a case branch: an unset variable is
+  # the normal case, and failing on it would break every release.
+  if [[ -n "$requested" ]]; then
+    case "$requested" in
+      *[!0-9]*) error "ROLLOUT_BATCH must be a non-negative integer (0 disables the batch convergence)"; return 1 ;;
+    esac
+  fi
+  if [[ -z "$requested" ]]; then
+    batch=2
+  else
+    batch="$requested"
+  fi
+  if (( batch == 0 )); then
+    printf '0\n'
+    return 0
+  fi
+  stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
+  max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
+  headroom=$(( max - stable ))
+  if (( headroom < 1 )); then
+    if [[ -n "$requested" ]]; then
+      error "ROLLOUT_BATCH=$batch cannot run: MaxSize=$max DesiredCapacity=$stable leaves no headroom (use ROLLOUT_BATCH=0 to release one instance at a time)"
+      return 1
+    fi
+    # stderr, not stdout: this function's stdout is the batch size the caller
+    # captures, and log()/warn() write to stdout by design. A WARN here once got
+    # parsed as part of the value and turned a graceful skip into a failed
+    # release.
+    warn "no batch headroom (MaxSize=$max DesiredCapacity=$stable): releasing one instance and leaving the rest of the tier on the one-at-a-time path" >&2
+    printf '0\n'
+    return 0
+  fi
+  if (( batch > headroom )); then
+    if [[ -n "$requested" ]]; then
+      error "ROLLOUT_BATCH=$batch exceeds the scaling group's headroom (MaxSize=$max DesiredCapacity=$stable, so at most $headroom)"
+      return 1
+    fi
+    batch="$headroom"
+  fi
+  printf '%s\n' "$batch"
+}
+
 # postcheck - post-deployment public verification: version identity, the
 # server-rendered head (exactly one <title>; the <!--head-html--> placeholder
 # must have been replaced — head CONTENT itself is admin-editable via the
@@ -1627,10 +1754,13 @@ Usage:
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag> [sha256:DIGEST]
   deploy.sh rollout-all [tag] [sha256:DIGEST]
-                     # converge the WHOLE ECI tier in one invocation, batching
-                     # as many replacements per drain window as MaxSize allows;
-                     # with no argument it converges onto the digest the scaling
-                     # configuration already pins
+                     # converge the WHOLE ECI tier now, using every slot
+                     # MaxSize allows (manual emergency form)
+  deploy.sh rollout-batch [N] [tag] [sha256:DIGEST]
+                     # same convergence with N instances per drain window
+                     # (default $ROLLOUT_BATCH, 2); 0 is refused, over-large is
+                     # refused rather than clamped. With no tag/digest it
+                     # converges onto the digest the scaling config already pins
   deploy.sh rollback <sha256:DIGEST>
   deploy.sh sync-host          # re-roll the master container (alias: sync-master)
   deploy.sh eip-sync
@@ -1676,12 +1806,11 @@ main() {
       ;;
     deploy-release)
       [[ $# -eq 2 || $# -eq 3 ]] || die "deploy-release requires a version tag and optionally a certified digest"
-      # Validate the convergence switch before anything mutates: an operator typo
-      # must not be discovered after the tier has already started moving.
-      case "${ROLLOUT_ALL:-1}" in
-        0|1) ;;
-        *) die "ROLLOUT_ALL must be 0 or 1" ;;
-      esac
+      # Resolve the convergence switch before anything mutates: an operator typo,
+      # or a batch size this group cannot serve, must not be discovered after the
+      # tier has already started moving.
+      local release_batch
+      release_batch="$(resolve_release_batch)" || die "the release's batch convergence is not usable as configured"
       local release_tag="$2"
       local release_digest previous_digest previous_snapshot
       if [[ $# -eq 3 ]]; then
@@ -1734,15 +1863,15 @@ main() {
       # replaced. Anything the image carries on the ECI tier - the
       # OpenAI-compatible billing endpoints, for one - would otherwise serve
       # only 1/n of its traffic until n releases accumulate.
-      # ROLLOUT_ALL=0 opts out: a release that only changes master-served paths
+      # ROLLOUT_BATCH=0 opts out: a release that only changes master-served paths
       # (panel, migrations, system tasks) pays ~1 drain window per batch round
       # for nothing. The tier then converges on the next default release, or on
       # an explicit `deploy.sh rollout-all`.
-      if [[ "${ROLLOUT_ALL:-1}" == "0" ]]; then
-        log "release $release_tag -> $release_digest deployed to one instance (ROLLOUT_ALL=0: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
+      if (( release_batch == 0 )); then
+        log "release $release_tag -> $release_digest deployed to one instance (batch convergence skipped: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
       else
-        if ! rollout_all "$release_digest" "$release_tag" "$previous_digest" "$previous_snapshot" "$release_before_ids"; then
-          # rollout_all already restored the scaling configuration and the
+        if ! rollout_batch "$release_digest" "$release_tag" "$previous_digest" "$previous_snapshot" "$release_before_ids" "$release_batch"; then
+          # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
           if ! sync_master_container ""; then
@@ -1750,7 +1879,7 @@ main() {
           fi
           die "release batch rollout failed; rollback was attempted and must be verified before retrying"
         fi
-        log "release $release_tag -> $release_digest deployed to the whole ECI tier"
+        log "release $release_tag -> $release_digest deployed to the whole ECI tier (batches of $release_batch)"
       fi
       ;;
     sync-host|sync-master)
@@ -1758,41 +1887,22 @@ main() {
       sync_master_container ""
       ;;
     rollout-all)
+      # Manual emergency convergence: every slot MaxSize allows, in as few drain
+      # windows as the group can take. The release path does not use this - it
+      # asks for ROLLOUT_BATCH instead.
       [[ $# -le 3 ]] || die "rollout-all takes at most a version tag and a certified digest"
-      local ra_tag="${2:-}" ra_digest="${3:-}" ra_snapshot='' ra_prev=''
-      if [[ -z "$ra_tag" && -z "$ra_digest" ]]; then
-        # No argument: converge onto whatever the scaling configuration already
-        # pins. This is the "finish the job" form a release leaves behind - it
-        # changes no configuration, so there is nothing to roll back to.
-        ra_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
-        ra_digest="$(snapshot_config_digest "$ra_snapshot")"
-        ra_prev="$ra_digest"
-        ra_snapshot=''
-      else
-        if [[ -n "$ra_digest" ]]; then
-          [[ "$ra_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "certified digest must be sha256:<64 lowercase hex>"
-        else
-          ra_digest="$(resolve_ml_digest "$ra_tag")"
-        fi
-        ra_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
-        ra_prev="$(snapshot_config_digest "$ra_snapshot")"
-        [[ "$ra_prev" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a batch rollout without a rollback target"
-        if ! apply_ml_digest "$ra_digest" "$ra_snapshot"; then
-          restore_scaling_config "$ra_snapshot" || die "image pin failed and the complete configuration could not be restored"
-          die "rollout-all: pinning $ra_digest failed; the previous configuration was restored"
-        fi
-        # Master-first, exactly as a release does: the fleet must never serve an
-        # image the master (panel + migrations + system tasks) has not taken yet.
-        if ! sync_master_container "$ra_tag" "$ra_digest"; then
-          restore_scaling_config "$ra_snapshot" || error "master roll failed and the scaling configuration could not be restored"
-          sync_master_container "" || error "master container could not be restored; manual intervention required (deploy.sh sync-host)"
-          die "rollout-all aborted: master container failed to converge to $ra_tag"
-        fi
+      rollout_verb "" "${2:-}" "${3:-}"
+      ;;
+    rollout-batch)
+      [[ $# -le 4 ]] || die "rollout-batch takes an optional batch size, then an optional version tag and certified digest"
+      local -a rb_rest=("${@:2}")
+      local rb_batch="${ROLLOUT_BATCH:-2}"
+      if [[ "${rb_rest[0]:-}" =~ ^[0-9]+$ ]]; then
+        rb_batch="${rb_rest[0]}"
+        rb_rest=("${rb_rest[@]:1}")
       fi
-      if ! rollout_all "$ra_digest" "$ra_tag" "$ra_prev" "$ra_snapshot"; then
-        die "rollout-all failed; rollback was attempted and must be verified before retrying"
-      fi
-      log "rollout-all: the ECI tier now serves $ra_digest"
+      [[ "${#rb_rest[@]}" -le 2 ]] || die "rollout-batch takes an optional batch size, then an optional version tag and certified digest"
+      rollout_verb "$rb_batch" "${rb_rest[0]:-}" "${rb_rest[1]:-}"
       ;;
     eip-sync)
       [[ $# -eq 1 ]] || die "eip-sync does not accept arguments"

@@ -22,7 +22,12 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
-   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_all`, which retires the rest of the pre-release set in batches bounded by the scaling group's `MaxSize` (`batch = MaxSize − DesiredCapacity`), each batch taking one drain window. A release therefore costs `1 + ceil(n/batch)` drain windows instead of one — with `MaxSize=10` and six instances that is one roll plus two batch rounds, roughly two hours end to end. That is why the deploy stages in `.cnb.yml` declare `timeout: 3h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds. Set `ROLLOUT_ALL=0` for a release that only changes master-served paths (panel, migrations, system tasks) — it keeps the old one-at-a-time roll and leaves the rest of the tier for the next default release or for an explicit `deploy.sh rollout-all`.
+   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_batch`, which retires the rest of the pre-release set that many at a time, each batch taking one drain window. A release therefore costs `1 + ceil(n/batch)` drain windows instead of one — with six instances and the default batch of 2 that is one roll plus three batch rounds, roughly two and a half hours end to end. That is why the deploy stages in `.cnb.yml` declare `timeout: 4h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds.
+
+   `ROLLOUT_BATCH` sets the batch size and is read **before anything mutates**:
+   - **unset** (default 2) — a preference. It is clamped to the group's headroom, and on a group with `MaxSize == DesiredCapacity` it degrades to the one-at-a-time roll with a warning rather than failing the release. A release must never fail because of the shape of its scaling group.
+   - **`ROLLOUT_BATCH=N`** — a demand. `N` above the headroom, or above zero on a group with no headroom at all, aborts the release before the image is pinned.
+   - **`ROLLOUT_BATCH=0`** — skip the convergence. Use it for a release that only changes master-served paths (panel, migrations, system tasks); the rest of the tier then converges on the next default release or on an explicit `deploy.sh rollout-all`.
 
    The snapshot of the pre-release instance set is taken **before** the release's own roll, so the batch step never re-replaces the instance that roll just brought onto the new image; a single-instance site therefore converges in zero batch rounds.
 
@@ -50,17 +55,20 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    ```bash
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1            # resolves the digest itself
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1 sha256:... # pins a pre-certified digest
-   ROLLOUT_ALL=0 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one instance only
+   ROLLOUT_BATCH=1 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # narrowest convergence
+   ROLLOUT_BATCH=0 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one instance only
    ```
 
-4. Converge the whole ECI tier without a release (no configuration change, no master roll):
+4. Converge the ECI tier outside a release (the two forms differ only in batch size):
 
    ```bash
-   bash deployment/tokeness-cn/deploy.sh rollout-all                    # onto the digest the scaling config pins
-   bash deployment/tokeness-cn/deploy.sh rollout-all <tag> [sha256:...] # pin, roll the master, then converge
+   bash deployment/tokeness-cn/deploy.sh rollout-batch [N] [tag] [sha256:...]  # N per drain window (default 2)
+   bash deployment/tokeness-cn/deploy.sh rollout-all [tag] [sha256:...]        # every slot MaxSize allows
    ```
 
-   `rollout-all` is what `deploy-release` calls after its own roll, exposed on its own for the cases that need it out of band — the `ROLLOUT_ALL=0` release above, or a rollback (which stays single-instance on purpose: an emergency rollback must not take two hours, so converge afterwards with `rollout-all`, whose no-argument form targets the digest the rollback re-pinned). It is bounded by `MaxSize` and refuses to run when `MaxSize == DesiredCapacity` rather than silently degrading to one-at-a-time. Every failure path restores the scaling configuration and the steady-state capacity.
+   With no tag/digest both converge onto the digest the scaling config already pins — no configuration change, no master roll. With a tag they pin the digest and roll the master first. `rollout-batch` is what `deploy-release` calls after its own roll; `rollout-all` is the manual emergency form that trades blast radius for time. Both are bounded by `MaxSize`, both refuse a batch size above the headroom rather than clamping it silently, and every failure path restores the scaling configuration and the steady-state capacity.
+
+   Use them for the cases a release cannot cover by itself: a `ROLLOUT_BATCH=0` release, or a rollback. `rollback` stays single-instance **on purpose** — an emergency rollback must not take two and a half hours — so converge afterwards with `rollout-batch`, whose no-argument form targets the digest the rollback re-pinned.
 
 5. Verify the release from the public internet (the cn-production pipeline already runs this stage; this is the manual form):
 
@@ -138,13 +146,14 @@ streams mid-answer.
 3. hold `ML_DRAIN_SECONDS` (default 1900, above the measured 1807s stream); the release emits a 30s heartbeat so CNB's no-output watchdog does not kill the stage;
 4. scale back to 1.
 
-`rollout_all` repeats exactly those steps, but scales to `stable + batch` and gates
-**every** newcomer individually before the hold, then loops until no instance from
-its retire set is left. It shares `ess_rollout`'s gates and its
+`rollout_batch` repeats exactly those steps, but scales to `stable + batch` and
+gates **every** newcomer individually before the hold, then loops until no instance
+from its retire set is left. It shares `ess_rollout`'s gates and its
 `rollback_failed_rollout` path, so a batch round is the same operation with more
 than one instance in flight; what widens is the blast radius of a bad image, which
 is why the per-instance application gate runs before the hold rather than after
-the scale-down.
+the scale-down, and why the release path asks for a batch of 2 rather than for
+every slot `MaxSize` allows.
 
 With `SWAS_PANEL_TIER=1` the retired step returns: write
 `/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both** lightweight
