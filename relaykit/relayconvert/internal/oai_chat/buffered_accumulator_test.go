@@ -1,6 +1,7 @@
 package oaichat
 
 import (
+	"strings"
 	"encoding/json"
 	"testing"
 
@@ -211,5 +212,91 @@ func TestChatBufferedAccumulatorFallsBackForIdentity(t *testing.T) {
 	}
 	if created, ok := out.Created.(int64); !ok || created != 42 {
 		t.Fatalf("created = %#v, want the fallback 42", out.Created)
+	}
+}
+
+// Review-driven: the streaming fingerprint must survive buffering, otherwise the
+// non-streaming answer silently differs from what a streaming client would see.
+func TestChatBufferedAccumulatorPreservesSystemFingerprint(t *testing.T) {
+	a := NewChatBufferedAccumulator()
+	a.ProcessChunk(chunk(t, `{"system_fingerprint":"fp_abc","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]}`))
+	out := a.BuildResponse("i", "m", 0)
+	if out.SystemFingerprint == nil || *out.SystemFingerprint != "fp_abc" {
+		t.Fatalf("system_fingerprint = %v, want fp_abc", out.SystemFingerprint)
+	}
+}
+
+// Review-driven: per-chunk logprobs describe that chunk's tokens, so a buffered
+// answer must concatenate them instead of keeping only the last fragment.
+func TestChatBufferedAccumulatorConcatenatesLogprobs(t *testing.T) {
+	a := NewChatBufferedAccumulator()
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"content":"a"},"logprobs":{"content":[{"token":"a"}]}}]}`))
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"content":"b"},"logprobs":{"content":[{"token":"b"}]},"finish_reason":"stop"}]}`))
+	out := a.BuildResponse("i", "m", 0)
+	lp := out.Choices[0].Logprobs
+	if lp == nil {
+		t.Fatalf("logprobs missing: %#v", out.Choices[0].Logprobs)
+	}
+	obj, ok := (*lp).(map[string]any)
+	if !ok {
+		t.Fatalf("logprobs shape changed: %#v", *lp)
+	}
+	arr, _ := obj["content"].([]any)
+	if len(arr) != 2 {
+		t.Fatalf("logprobs content length = %d, want 2 (concatenated)", len(arr))
+	}
+}
+
+// Review-driven: a provider that omits tool_call indexes must not have separate
+// calls fused into slot 0.
+func TestChatBufferedAccumulatorSeparatesIndexlessToolCalls(t *testing.T) {
+	a := NewChatBufferedAccumulator()
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"first","arguments":"{}"}}]}}]}`))
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_b","type":"function","function":{"name":"second","arguments":"{}"}}]}}]}`))
+	out := a.BuildResponse("i", "m", 0)
+	var calls []dto.ToolCallResponse
+	if err := json.Unmarshal(out.Choices[0].Message.ToolCalls, &calls); err != nil {
+		t.Fatalf("tool_calls invalid: %v", err)
+	}
+	if len(calls) != 2 || calls[0].Function.Name != "first" || calls[1].Function.Name != "second" {
+		t.Fatalf("index-less tool calls fused: %#v", calls)
+	}
+}
+
+// Review-driven: without a [DONE] marker every choice must have terminated;
+// one finished choice does not prove the others did.
+func TestChatBufferedAccumulatorRequiresAllChoicesToFinish(t *testing.T) {
+	a := NewChatBufferedAccumulator()
+	// One finished choice means every choice so far finished - the flag answers
+	// "did all known choices terminate", so it is true here.
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}]}`))
+	if !a.AllChoicesFinished() {
+		t.Fatal("a single finished choice should count as all-finished")
+	}
+	// A second choice that never terminates must flip it back: that is the
+	// partial multi-choice answer the handler refuses to send.
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":1,"delta":{"content":"b"}}]}`))
+	if a.AllChoicesFinished() {
+		t.Fatal("an unterminated second choice must make AllChoicesFinished false")
+	}
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":1,"delta":{},"finish_reason":"stop"}]}`))
+	if !a.AllChoicesFinished() {
+		t.Fatal("both choices finished but AllChoicesFinished = false")
+	}
+	if a.ChoiceCount() != 2 {
+		t.Fatalf("ChoiceCount = %d, want 2", a.ChoiceCount())
+	}
+}
+
+// Review-driven: the estimation text must include reasoning and tool arguments,
+// otherwise a thinking/tool answer is under-billed.
+func TestChatBufferedAccumulatorEstimateTextIncludesReasoningAndTools(t *testing.T) {
+	a := NewChatBufferedAccumulator()
+	a.ProcessChunk(chunk(t, `{"choices":[{"index":0,"delta":{"reasoning_content":"思考","tool_calls":[{"index":0,"function":{"arguments":"{\"k\":1}"}}],"content":"答"},"finish_reason":"tool_calls"}]}`))
+	text := a.Text()
+	for _, want := range []string{"答", "思考", `{"k":1}`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("estimation text %q is missing %q", text, want)
+		}
 	}
 }

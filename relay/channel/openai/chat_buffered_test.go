@@ -93,3 +93,84 @@ func TestOaiChatBufferedStreamHandlerReadsChoiceLevelUsage(t *testing.T) {
 	require.Equal(t, 11, usage.TotalTokens, "choice-level usage must survive the buffering")
 	require.Contains(t, recorder.Body.String(), `"total_tokens":11`)
 }
+
+// Review-driven: the upstream answered SSE, so IOCopyBytesGracefully would copy
+// its content type verbatim; a non-streaming client must still see JSON.
+func TestOaiChatBufferedStreamHandlerSendsJSONContentType(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.Contains(t, recorder.Header().Get("Content-Type"), "application/json",
+		"the client asked for JSON and must not inherit text/event-stream")
+}
+
+// Review-driven: the caller dereferences the usage pointer, so a successful
+// buffered answer must never hand back nil.
+func TestOaiChatBufferedStreamHandlerNeverReturnsNilUsage(t *testing.T) {
+	ctx, _, info := bufferedStreamContext(t)
+	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	usage, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.NotNil(t, usage, "a nil usage would be dereferenced by the caller")
+}
+
+// Review-driven: [DONE] with no chunks is a legitimate empty answer and must come
+// back as a well-formed shape, not an empty choices array.
+func TestOaiChatBufferedStreamHandlerAnswersEmptyCompletionWithOneChoice(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse("data: [DONE]\n\n"))
+	require.Nil(t, err, "an empty completion signalled with [DONE] is not a failure")
+	body := recorder.Body.String()
+	require.Contains(t, body, `"choices":[{"index":0`)
+	require.Contains(t, body, `"role":"assistant"`)
+}
+
+// Review-driven: with no [DONE] and no choices at all the stream was cut short.
+func TestOaiChatBufferedStreamHandlerRejectsNoChoiceStreamWithoutDone(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(": keep-alive\n\n"))
+	require.NotNil(t, err)
+	require.Zero(t, recorder.Body.Len())
+}
+
+// Review-driven: without [DONE], an unfinished second choice means the answer is
+// incomplete even though the first choice finished.
+func TestOaiChatBufferedStreamHandlerRejectsPartiallyFinishedChoices(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"choices\":[{\"index\":1,\"delta\":{\"content\":\"b\"}}]}\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.NotNil(t, err, "choice 1 never terminated, so the stream was cut short")
+	require.Zero(t, recorder.Body.Len())
+}
+
+// A single choice that terminated is a complete answer even without [DONE]:
+// some compatible upstreams close right after the terminal chunk.
+func TestOaiChatBufferedStreamHandlerAcceptsSingleFinishedChoiceWithoutDone(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":\"stop\"}]}\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.Contains(t, recorder.Body.String(), `"content":"a"`)
+}
+
+// Review-driven: system_fingerprint must survive into the buffered body.
+func TestOaiChatBufferedStreamHandlerKeepsSystemFingerprint(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := "data: {\"system_fingerprint\":\"fp_zzz\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.Contains(t, recorder.Body.String(), `"system_fingerprint":"fp_zzz"`)
+}
+
+// Second-review-driven: [DONE] alone must not excuse an unterminated choice. An
+// upstream can close the stream early, and a half-finished answer behind a 200
+// would hide exactly the channel failure this mode exists to make retryable.
+func TestOaiChatBufferedStreamHandlerRejectsUnfinishedChoiceEvenWithDone(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\ndata: [DONE]\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.NotNil(t, err, "[DONE] with an unfinished choice is still an incomplete answer")
+	require.Zero(t, recorder.Body.Len())
+}

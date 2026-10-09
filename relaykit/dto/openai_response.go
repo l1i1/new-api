@@ -47,6 +47,11 @@ type OpenAITextResponse struct {
 	Choices []OpenAITextResponseChoice `json:"choices"`
 	Error   any                        `json:"error,omitempty"`
 	Usage   `json:"usage"`
+	// SystemFingerprint is part of the official chat.completion shape and is set
+	// when a buffered stream is folded into this response (the streaming chunk
+	// carries it per chunk). Omitted when empty so responses built from upstream
+	// JSON that never had the field stay byte-identical.
+	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
 }
 
 // GetOpenAIError 从动态错误类型中提取OpenAIError结构

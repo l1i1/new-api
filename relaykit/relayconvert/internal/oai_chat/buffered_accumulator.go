@@ -114,9 +114,21 @@ func (a *ChatBufferedAccumulator) ProcessChunk(chunk *dto.ChatCompletionsStreamR
 			c.reasoning.WriteString(text)
 		}
 		for _, tc := range sc.Delta.ToolCalls {
-			idx := 0
-			if tc.Index != nil {
+			// Index identifies the call being continued. It is present in OpenAI's
+			// chunks, but a compatible provider may omit it: then a fragment that
+			// carries an id or a name starts a new call, and one that carries only
+			// arguments continues the previous one. Collapsing every index-less
+			// fragment into slot 0 would fuse separate calls into one.
+			var idx int
+			switch {
+			case tc.Index != nil:
 				idx = *tc.Index
+			case tc.ID != "" || tc.Function.Name != "":
+				idx = len(c.toolOrder)
+			case len(c.toolOrder) > 0:
+				idx = c.toolOrder[len(c.toolOrder)-1]
+			default:
+				idx = 0
 			}
 			acc, ok := c.toolCalls[idx]
 			if !ok {
@@ -124,13 +136,13 @@ func (a *ChatBufferedAccumulator) ProcessChunk(chunk *dto.ChatCompletionsStreamR
 				c.toolCalls[idx] = acc
 				c.toolOrder = append(c.toolOrder, idx)
 			}
-			if tc.ID != "" {
+			if tc.ID != "" && acc.id == "" {
 				acc.id = tc.ID
 			}
-			if tc.Type != nil {
+			if tc.Type != nil && acc.callType == nil {
 				acc.callType = tc.Type
 			}
-			if tc.Function.Name != "" {
+			if tc.Function.Name != "" && acc.name == "" {
 				acc.name = tc.Function.Name
 			}
 			if tc.Function.Arguments != "" {
@@ -141,7 +153,10 @@ func (a *ChatBufferedAccumulator) ProcessChunk(chunk *dto.ChatCompletionsStreamR
 			c.annotations = mergeRawJSONArrays(c.annotations, sc.Delta.Annotations)
 		}
 		if sc.Logprobs != nil {
-			c.logprobs = sc.Logprobs
+			// Streaming logprobs describe the tokens of the chunk that carried
+			// them, so a buffered answer needs them concatenated; overwriting kept
+			// only the last fragment.
+			c.logprobs = appendLogprobs(c.logprobs, sc.Logprobs)
 		}
 		if sc.FinishReason != nil && *sc.FinishReason != "" {
 			c.finishReason = *sc.FinishReason
@@ -190,16 +205,44 @@ func (a *ChatBufferedAccumulator) FinishReason() string {
 	return ""
 }
 
-// Text returns the concatenated content across choices, used for token
-// estimation when the upstream reported no usage.
+// Text returns everything the upstream generated that costs tokens - visible
+// content, reasoning and tool-call arguments - for estimation when no usage was
+// reported. Counting only the visible content would under-bill a thinking model
+// and a tool-calling answer.
 func (a *ChatBufferedAccumulator) Text() string {
 	var sb strings.Builder
 	indices := append([]int(nil), a.order...)
 	sort.Ints(indices)
 	for _, idx := range indices {
-		sb.WriteString(a.choices[idx].content.String())
+		c := a.choices[idx]
+		sb.WriteString(c.content.String())
+		sb.WriteString(c.reasoning.String())
+		for _, toolIdx := range c.toolOrder {
+			sb.WriteString(c.toolCalls[toolIdx].arguments.String())
+		}
 	}
 	return sb.String()
+}
+
+// AllChoicesFinished reports whether every choice produced a finish_reason. A
+// stream without a [DONE] marker is only complete when each choice terminated;
+// checking just one would let a multi-choice answer through half-finished.
+func (a *ChatBufferedAccumulator) AllChoicesFinished() bool {
+	if len(a.choices) == 0 {
+		return false
+	}
+	for _, c := range a.choices {
+		if c.finishReason == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// ChoiceCount reports how many choices were accumulated; zero means the upstream
+// never produced an answer structure at all.
+func (a *ChatBufferedAccumulator) ChoiceCount() int {
+	return len(a.choices)
 }
 
 // BuildResponse assembles the non-streaming response. id/model/created are
@@ -221,6 +264,9 @@ func (a *ChatBufferedAccumulator) BuildResponse(id, model string, created int64)
 	}
 	if a.usage != nil {
 		out.Usage = *a.usage
+	}
+	if a.fingerprint != nil {
+		out.SystemFingerprint = a.fingerprint
 	}
 
 	indices := append([]int(nil), a.order...)
@@ -297,6 +343,51 @@ func mergeRawJSONArrays(existing, incoming json.RawMessage) json.RawMessage {
 		return incoming
 	}
 	return merged
+}
+
+// appendLogprobs folds per-chunk logprobs into one object. Chat logprobs arrive
+// as {"content":[...],"refusal":[...]} where each chunk carries the entries for
+// the tokens it produced, so the inner arrays must concatenate; keeping only the
+// last chunk (the previous behaviour) silently dropped earlier tokens. Shapes
+// that cannot be merged fall back to the newer value rather than fabricating a
+// structure the provider never sent.
+func appendLogprobs(existing *any, incoming *any) *any {
+	if existing == nil || incoming == nil {
+		if incoming != nil {
+			return incoming
+		}
+		return existing
+	}
+	leftMap, leftOK := (*existing).(map[string]any)
+	rightMap, rightOK := (*incoming).(map[string]any)
+	if leftOK && rightOK {
+		merged := make(map[string]any, len(rightMap))
+		for k, v := range rightMap {
+			merged[k] = v
+		}
+		for _, key := range []string{"content", "refusal"} {
+			leftArr, lok := leftMap[key].([]any)
+			rightArr, rok := rightMap[key].([]any)
+			if lok && rok {
+				joined := make([]any, 0, len(leftArr)+len(rightArr))
+				joined = append(joined, leftArr...)
+				joined = append(joined, rightArr...)
+				merged[key] = joined
+			}
+		}
+		var boxed any = merged
+		return &boxed
+	}
+	if leftArr, lok := (*existing).([]any); lok {
+		if rightArr, rok := (*incoming).([]any); rok {
+			joined := make([]any, 0, len(leftArr)+len(rightArr))
+			joined = append(joined, leftArr...)
+			joined = append(joined, rightArr...)
+			var boxed any = joined
+			return &boxed
+		}
+	}
+	return incoming
 }
 
 func firstNonEmpty(values ...string) string {

@@ -209,9 +209,17 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	// upstream is now emitting SSE while the client asked for one JSON body.
 	// Nothing has been written to the client at this point, so a failure here
 	// still leaves the response uncommitted and the retry loop can fail over.
+	//
+	// The content-type check is the fallback for an upstream that ignores
+	// stream=true and answers with a plain JSON body: that is a normal
+	// non-streaming response, so it goes down the ordinary path. info.IsStream is
+	// forced back to false because the check above just set it from the upstream
+	// content type - the client still asked for, and must receive, one JSON body.
 	var usage any
 	var newApiErr *types.NewAPIError
-	if internalStreamForNonStream && httpResp != nil {
+	if internalStreamForNonStream && httpResp != nil &&
+		strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
+		info.IsStream = false
 		usage, newApiErr = openaichannel.OaiChatBufferedStreamHandler(c, info, httpResp)
 	} else {
 		usage, newApiErr = adaptor.DoResponse(c, httpResp, info)

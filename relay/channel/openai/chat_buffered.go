@@ -97,35 +97,60 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return usageOrAccumulated(usage, accumulator), types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
-	// A stream that ends with neither a terminal marker nor a finish_reason was
-	// cut short. Answering with the partial body would hide a channel failure
-	// behind a plausible-looking 200, so fail instead - retryable, uncommitted,
-	// which is exactly the failover this mode exists to enable.
-	if !sawDone && accumulator.FinishReason() == "" {
+	// A stream that produced no answer structure at all, and never signalled the
+	// end of one, was cut short. Answering with a partial body would hide a
+	// channel failure behind a plausible-looking 200, so fail instead - retryable,
+	// uncommitted, which is exactly the failover this mode exists to enable.
+	//
+	// The two "empty" cases are deliberately judged differently: [DONE] with no
+	// chunks is a legitimate empty answer (the platform treats empty visible
+	// output as valid upstream output), while no [DONE] and no choices at all is
+	// truncation. [DONE] is NOT sufficient on its own once choices exist - an
+	// upstream can close the stream early - so every accumulated choice must also
+	// have terminated, or a half-finished answer goes out.
+	if !(accumulator.ChoiceCount() == 0 && sawDone) && !accumulator.AllChoicesFinished() {
 		return usageOrAccumulated(usage, accumulator), types.NewOpenAIError(
 			fmt.Errorf("upstream chat stream ended before completion"),
 			types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
 	final := accumulator.BuildResponse(helper.GetResponseID(c), info.UpstreamModelName, time.Now().Unix())
+	if len(final.Choices) == 0 {
+		// A well-formed empty answer for a non-streaming client: choices must not
+		// be an empty array, so state one empty completion rather than a shape no
+		// SDK expects.
+		final.Choices = []dto.OpenAITextResponseChoice{{
+			Index:        0,
+			Message:      dto.Message{Role: "assistant", Content: ""},
+			FinishReason: "stop",
+		}}
+	}
 	if u := usageOrAccumulated(usage, accumulator); u != nil {
 		final.Usage = *u
 		usage = u
 	}
 	if final.Usage.TotalTokens == 0 {
 		// Upstream reported nothing usable; fall back to the platform's own
-		// accounting so the request is still billed and the caller never sees a
-		// nil usage.
+		// accounting so the request is still billed.
 		if estimated := service.ResponseText2Usage(c, accumulator.Text(), info.UpstreamModelName, info.GetEstimatePromptTokens()); estimated != nil {
 			final.Usage = *estimated
 			usage = estimated
 		}
+	}
+	if usage == nil {
+		// The caller dereferences the typed pointer, so never hand back a nil.
+		usage = &dto.Usage{}
 	}
 
 	responseBody, err := common.Marshal(final)
 	if err != nil {
 		return usage, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
+	// The upstream answered with SSE; a non-streaming client must not inherit that
+	// content type, and IOCopyBytesGracefully copies upstream headers verbatim.
+	// Dropping it also stops net/http from re-adding it ahead of the body.
+	resp.Header.Del("Content-Type")
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 	return usage, nil
 }
