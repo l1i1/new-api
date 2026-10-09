@@ -126,6 +126,8 @@ readonly WEB_PRIMARY_HOST="${WEB_PRIMARY_HOST:-10.0.0.249}"
 readonly SWAS_PANEL_TIER="${SWAS_PANEL_TIER:-0}"
 # The ECS relay upstream file, written by ecs-fleet-sync from the local ESS view.
 readonly ECS_UPSTREAM_CONF="${ECS_UPSTREAM_CONF:-/etc/nginx/fleet/newapi_ml_servers.conf}"
+# Set by release-on-master.sh when the whole script runs on the entry ECS.
+readonly MASTER_LOCAL="${MASTER_LOCAL:-0}"
 readonly WEB_PRIMARY_CONVERGE_ATTEMPTS="${WEB_PRIMARY_CONVERGE_ATTEMPTS:-12}"
 readonly WEB_PRIMARY_CONVERGE_DELAY_SECONDS="${WEB_PRIMARY_CONVERGE_DELAY_SECONDS:-15}"
 
@@ -208,6 +210,14 @@ is_valid_ipv4() {
 remote_cmd_on() {
   local host="$1" key="$2" known="$3"
   shift 3
+  # Local mode: this script is running ON the master itself (release-on-master.sh),
+  # and that host has no ssh key for itself. Everything it would fetch over ssh -
+  # the relay include, the drain marker, the master container - is local there, so
+  # run the payload here. Placed before the key check on purpose: no key exists.
+  if [[ "$MASTER_LOCAL" == "1" ]]; then
+    bash -s -- "$@"
+    return $?
+  fi
   [[ -r "$key" ]] || die "missing lightweight-server SSH key at $key"
   local ssh_args=(
     -i "$key"
