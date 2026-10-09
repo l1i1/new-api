@@ -94,3 +94,21 @@ DesiredCapacity = 7  MinSize = 2  MaxSize = 10
 Entry-layer access log (`canary.log`, 19:46–20:46, 11,481 requests): `200` x 11,481, `401` x 506
 (invalid-key probes), `400` x 7, `502` x 6 = **0.052%**, below the 0.771% baseline. The 502s are
 churn artefacts (two at 20:03 on ~798s requests, two at 20:36/20:41 during the rollout).
+
+## Update 2026-10-09 21:30 — the `.42` gate failure is explained
+
+`bef526db8` (fix(deploy): the relay list cap is a second ceiling on every rollout) found the
+mechanism, and it closes the loop on this incident:
+
+- `ecs-fleet-sync` writes the entry's upstream list through `head -n "$MAX_MEMBERS"` — **8** members
+  on the entry. The scaling group's `MaxSize` (10) is not the binding limit; the relay list is.
+- `.40` survived because its steady state was 6 and its peak 8 landed exactly on the cap.
+- `.42` **inherited `DesiredCapacity` 7 from the deployment that was cancelled mid-flight** (the
+  `.41` run in this document), so its batch rollout peaked at 9 and the ninth instance could never
+  appear in the relay tier. The instance was healthy; the list could not carry it.
+
+所以这次事故的因果链是：**`.41` 的 tag 竞态 → 取消时 ESS 容量残留 7 → `.42` 峰值 9 越过 relay 列表上限
+8 → 门禁失败 → fail-closed 回滚（1h44m）**。链条起点是打 tag 早于工具修复 5 秒，记录在此以免重复。
+
+`.43` (`e0be7332b`) carries the fix: peak becomes `min(MaxSize, relay cap)` = 8, and a cap at or
+below the steady state now aborts before anything is pinned.
