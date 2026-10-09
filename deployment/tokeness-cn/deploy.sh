@@ -95,6 +95,7 @@ readonly SHRINK_HOLD_PATH="${SHRINK_HOLD_PATH:-/etc/ml-sync/shrink-hold}"
 SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
 # Set while the alarm is suspended, so the exit trap knows it has work to do.
 scale_in_guard_suspended=""
+scale_in_alarm_was_enabled=""
 readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
 readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
 # Must outlive convergence plus the drain wait, or ml-sync would drop the pin
@@ -1144,6 +1145,15 @@ suspend_scale_in_guard() {
     warn "no scale-in alarm named '$SCALE_IN_ALARM_NAME' on this scaling group; the tier may shed capacity during the rollout"
     return 0
   fi
+  # Remember whether it was enabled BEFORE disabling: an operator may have turned
+  # it off deliberately (cpu-in-25 is off today because it cut long streams), and
+  # resuming must restore that state rather than switch it back on.
+  if [[ "$(aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+        | jq -r --arg n "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name==$n) | .Enable' | head -1 | tr -d '\r')" == "true" ]]; then
+    scale_in_alarm_was_enabled=1
+  else
+    scale_in_alarm_was_enabled=0
+  fi
   if aliyun_cmd ess DisableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
     scale_in_guard_suspended="$id"
     log "scale-in alarm suspended for the rollout ($id)"
@@ -1157,6 +1167,10 @@ resume_scale_in_guard() {
   [[ -n "$scale_in_guard_suspended" ]] || return 0
   local id="$scale_in_guard_suspended"
   scale_in_guard_suspended=""
+  if [[ "${scale_in_alarm_was_enabled:-0}" != "1" ]]; then
+    log "scale-in alarm $id was already disabled before this run; leaving it disabled"
+    return 0
+  fi
   if aliyun_cmd ess EnableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
     log "scale-in alarm resumed ($id)"
   else
@@ -1265,7 +1279,12 @@ wait_healthy_instances() {
 wait_retired() {
   local ids="$1" want="$2" tries="${3:-40}" i=0 left=0 current id
   while [ "$i" -lt "$tries" ]; do
-    current="$(in_service_instance_ids)" || current=""
+    # A failed query must NOT read as "they all left": that is the fail-open
+    # direction this gate exists to prevent. Retry instead.
+    if ! current="$(in_service_instance_ids)"; then
+      sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue
+    fi
+    [[ -n "$current" ]] || { sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue; }
     left=0
     while IFS= read -r id; do
       [ -n "$id" ] || continue

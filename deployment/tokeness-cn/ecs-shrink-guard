@@ -41,11 +41,35 @@ DRAIN_FILE="${SHRINK_DRAIN_FILE:-/etc/ml-sync/shrink-drain}"
 HOLD_FILE="${SHRINK_HOLD_FILE:-/etc/ml-sync/shrink-hold}"
 STATE_FILE="${SHRINK_STATE_FILE:-/var/lib/ml-sync/shrink-state.json}"
 LOG="${SHRINK_LOG:-/var/log/ecs-shrink-guard.log}"
-ACCESS_LOG="${SHRINK_ACCESS_LOG:-/var/log/nginx/access.log}"
+# Rotation: logrotate moves the current file to .1, and a 15-minute window that
+# straddles a rotation must still be counted in full - reading only the current
+# file right after a rotation reports a near-zero rate, which the idle test below
+# would read as "safe to shrink" while the tier is busy. Count both.
+ACCESS_LOGS="${SHRINK_ACCESS_LOGS:-/var/log/nginx/access.log /var/log/nginx/access.log.1}"
+LOCK_FILE="${SHRINK_LOCK_FILE:-/var/lock/ecs-shrink-guard.lock}"
+# A release that is SIGKILLed (CNB cancelled two of them on 2026-10-09) never
+# runs its EXIT trap, so its hold file survives and would keep the guard off
+# forever. Past this age the hold is treated as abandoned.
+HOLD_MAX_AGE="${SHRINK_HOLD_MAX_AGE:-21600}"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true; [[ "$DRY_RUN" == 1 ]] && printf '%s\n' "$*"; }
+hold_is_stale() {
+  local written age
+  written="$(head -1 "$HOLD_FILE" 2>/dev/null | tr -d ' \r')"
+  [[ -n "$written" ]] || return 1
+  age=$(( $(date +%s) - $(date -d "$written" +%s 2>/dev/null || printf '0') ))
+  (( age > HOLD_MAX_AGE ))
+}
+
+# Must always return 0: under `set -e` a bare `log "..."` whose last command is a
+# false [[ ]] test terminates the whole run, which is how the first version of
+# this script exited before doing anything at all.
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true
+  if [[ "$DRY_RUN" == 1 ]]; then printf '%s\n' "$*"; fi
+  return 0
+}
 logrotate_local() { [[ -f "$LOG" ]] || return 0; [[ "$(wc -l <"$LOG")" -gt 2000 ]] || return 0; tail -n 1000 "$LOG" >"$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"; }
 
 aliyun_ess() { aliyun ess "$@" --region "$REGION" 2>/dev/null; }
@@ -64,24 +88,53 @@ oldest_ip() {
 }
 # Requests served in the last RATE_WINDOW_SECONDS, straight from the relay's own
 # access log - no metrics API round trip, and it counts what the tier actually did.
+# Comparable zero-padded key (YYYYmmddHHMMSS) instead of a formatted date string:
+# the old version compared "10/Oct/2026:01:26:10" lexically, which silently
+# breaks across a month or year boundary, and it assumed gawk for date maths -
+# this host's awk is mawk.
 recent_requests() {
-  local since
-  since="$(date -d "@$(( $(date +%s) - RATE_WINDOW_SECONDS ))" '+%d/%b/%Y:%H:%M:%S' 2>/dev/null)" || { printf '0\n'; return 0; }
-  awk -v since="$since" '{ ts=substr($4,2); if (ts >= since) n++ } END { print n+0 }' "$ACCESS_LOG" 2>/dev/null || printf '0\n'
+  local since_key total=0 f
+  since_key="$(date -d "@$(( $(date +%s) - RATE_WINDOW_SECONDS ))" '+%Y%m%d%H%M%S' 2>/dev/null)" || since_key=""
+  [[ -n "$since_key" ]] || { printf '0\n'; return 0; }
+  for f in $ACCESS_LOGS; do
+    [[ -r "$f" ]] || continue
+    total=$(( total + $(awk -v since="$since_key" '
+      BEGIN { split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", mo, " "); for (i = 1; i <= 12; i++) mon[mo[i]] = i }
+      {
+        ts = substr($4, 2); split(ts, a, "[:/]")
+        if (!(a[2] in mon)) next
+        key = sprintf("%04d%02d%02d%02d%02d%02d", a[3], mon[a[2]], a[1], a[4], a[5], a[6])
+        if (key >= since) n++
+      }
+      END { print n+0 }' "$f" 2>/dev/null) ))
+  done
+  printf '%s\n' "$total"
 }
 state_get() { [[ -f "$STATE_FILE" ]] && jq -r --arg k "$1" '.[$k] // empty' "$STATE_FILE" 2>/dev/null | tr -d '\r' || true; }
 state_set() {
+  if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would set $1=$2"; return 0; fi
   local tmp; tmp="$(mktemp)"
   if [[ -f "$STATE_FILE" ]]; then jq --arg k "$1" --arg v "$2" '.[$k] = $v' "$STATE_FILE" >"$tmp" 2>/dev/null || printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"
   else printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"; fi
   mv -f "$tmp" "$STATE_FILE"
 }
-clear_drain() { [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"; state_set draining ""; state_set drain_until ""; return 0; }
+clear_drain() { if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the drain marker"; return 0; fi; [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"; state_set draining ""; state_set drain_until ""; return 0; }
 
-[[ "$DRY_RUN" == 1 ]] && log "--- dry run ---"
+[[ "$DRY_RUN" == 1 ]] && log "--- dry run ---" || true
+
+# cron can start a second run while the first is still inside its verification
+# poll (up to 5 minutes), and two runs each deciding to shrink would retire two
+# instances for one idle period. Fail fast rather than queue: the next tick is
+# five minutes away.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then log "another run holds the lock; skipping this tick"; exit 0; fi
 
 # A release owns the tier for its whole duration: it grows and steps the group
 # down on its own schedule and already drains the instances it retires.
+if [[ -f "$HOLD_FILE" ]] && hold_is_stale; then
+  log "WARN: shrink hold at $HOLD_FILE is older than ${HOLD_MAX_AGE}s; treating it as abandoned (a killed release left it behind) and continuing"
+  rm -f "$HOLD_FILE" 2>/dev/null || true
+fi
 if [[ -f "$HOLD_FILE" ]]; then
   # A release owns the tier while it runs. If we were mid-drain when it started,
   # release the marker first: leaving it set would keep the victim out of the
