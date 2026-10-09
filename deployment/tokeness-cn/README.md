@@ -22,6 +22,11 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
+   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_all`, which retires the rest of the pre-release set in batches bounded by the scaling group's `MaxSize` (`batch = MaxSize − DesiredCapacity`), each batch taking one drain window. A release therefore costs `1 + ceil(n/batch)` drain windows instead of one — with `MaxSize=10` and six instances that is one roll plus two batch rounds, roughly two hours end to end. That is why the deploy stages in `.cnb.yml` declare `timeout: 3h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds. Set `ROLLOUT_ALL=0` for a release that only changes master-served paths (panel, migrations, system tasks) — it keeps the old one-at-a-time roll and leaves the rest of the tier for the next default release or for an explicit `deploy.sh rollout-all`.
+
+   The snapshot of the pre-release instance set is taken **before** the release's own roll, so the batch step never re-replaces the instance that roll just brought onto the new image; a single-instance site therefore converges in zero batch rounds.
+
+
    The deploy pipeline is triggered with `cnb:trigger` rather than `cnb:apply` on purpose: `cnb:apply` runs the applied pipeline in the **tag** context, where `CNB_BRANCH` is the tag name, and the key repo authorizes imports by `allow_branches` matched against `CNB_BRANCH` — so the import was refused during Prepare and no stage ever ran. `cnb:trigger` pins the run to `tokeness/main` (keeping the credential boundary unchanged) and carries the version in `RELEASE_TAG`, with `sha` set to the tagged commit so the deploy tooling matches the image.
 
    The manual `cn-production` deploy button (`.cnb/tag_deploy.yml`, owner/master only) still exists as an approval-gated alternative and runs the identical stages; it is also subject to the same tag-context import rule, so use the tag push or a direct `api_trigger` on `tokeness/main`.
@@ -45,9 +50,19 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    ```bash
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1            # resolves the digest itself
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1 sha256:... # pins a pre-certified digest
+   ROLLOUT_ALL=0 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one instance only
    ```
 
-4. Verify the release from the public internet (the cn-production pipeline already runs this stage; this is the manual form):
+4. Converge the whole ECI tier without a release (no configuration change, no master roll):
+
+   ```bash
+   bash deployment/tokeness-cn/deploy.sh rollout-all                    # onto the digest the scaling config pins
+   bash deployment/tokeness-cn/deploy.sh rollout-all <tag> [sha256:...] # pin, roll the master, then converge
+   ```
+
+   `rollout-all` is what `deploy-release` calls after its own roll, exposed on its own for the cases that need it out of band — the `ROLLOUT_ALL=0` release above, or a rollback (which stays single-instance on purpose: an emergency rollback must not take two hours, so converge afterwards with `rollout-all`, whose no-argument form targets the digest the rollback re-pinned). It is bounded by `MaxSize` and refuses to run when `MaxSize == DesiredCapacity` rather than silently degrading to one-at-a-time. Every failure path restores the scaling configuration and the steady-state capacity.
+
+5. Verify the release from the public internet (the cn-production pipeline already runs this stage; this is the manual form):
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh postcheck
@@ -55,15 +70,15 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
 
    `postcheck` asserts the public `/api/status` version, that the rendered head has exactly one `<title>` and no leaked `<!--head-html-->` placeholder (head content itself is admin-editable), and that `/v1/models` answers 401.
 
-5. Roll back to a previous digest:
+6. Roll back to a previous digest:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh rollback sha256:<previous-digest>
    ```
 
-   `rollback` follows the same gated master-first path as `deploy-release` (the master container is blue-green re-rolled and gated before the ESS rollout).
+   `rollback` follows the same gated master-first path as `deploy-release` (the master container is blue-green re-rolled and gated before the ESS rollout). It rolls back **one** instance and does not batch: speed is the point of an emergency rollback. The rest of the tier keeps the bad image until you run `deploy.sh rollout-all`, which with no argument converges onto the digest the rollback just re-pinned.
 
-6. Keep the egress EIP in the shared bandwidth package:
+7. Keep the egress EIP in the shared bandwidth package:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh eip-sync
@@ -122,6 +137,14 @@ streams mid-answer.
    retirement accepted;
 3. hold `ML_DRAIN_SECONDS` (default 1900, above the measured 1807s stream); the release emits a 30s heartbeat so CNB's no-output watchdog does not kill the stage;
 4. scale back to 1.
+
+`rollout_all` repeats exactly those steps, but scales to `stable + batch` and gates
+**every** newcomer individually before the hold, then loops until no instance from
+its retire set is left. It shares `ess_rollout`'s gates and its
+`rollback_failed_rollout` path, so a batch round is the same operation with more
+than one instance in flight; what widens is the blast radius of a bad image, which
+is why the per-instance application gate runs before the hold rather than after
+the scale-down.
 
 With `SWAS_PANEL_TIER=1` the retired step returns: write
 `/etc/ml-sync/drain-target` (`<ipv4> <expires-epoch>`) on **both** lightweight

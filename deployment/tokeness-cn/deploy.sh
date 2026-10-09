@@ -1480,7 +1480,7 @@ ess_rollout() {
 #     traffic. In-flight requests on the instances ESS retires are protected by
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_all() {
-  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}"
+  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}"
   local stable max batch rounds=0 round_limit current_ids id ip want
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-all needs a sha256:<64 hex> digest"; return 1; }
@@ -1492,11 +1492,22 @@ rollout_all() {
     error "no headroom to batch: DesiredCapacity=$stable MaxSize=$max (raise MaxSize, or use deploy-release for one-at-a-time)"
     return 1
   fi
-  current_ids="$(in_service_instance_ids)" || { error "could not read the current in-service instance set"; return 1; }
-  [[ -n "$current_ids" ]] || { error "the scaling group reports no in-service instance"; return 1; }
-  while IFS= read -r id; do
-    [ -n "$id" ] && original_ids+=("$id")
-  done <<<"$current_ids"
+  if [[ -n "$retire_ids" ]]; then
+    # The caller already replaced some instances (deploy-release rolls one
+    # before calling this). Retiring "whatever is in service right now" would
+    # re-replace the instance that release just rolled, so the caller hands in
+    # the set it means to retire: the fleet as it stood before that roll.
+    while IFS= read -r id; do
+      [ -n "$id" ] && original_ids+=("$id")
+    done <<<"$retire_ids"
+    [[ "${#original_ids[@]}" -gt 0 ]] || { error "rollout-all was given an empty retire set"; return 1; }
+  else
+    current_ids="$(in_service_instance_ids)" || { error "could not read the current in-service instance set"; return 1; }
+    [[ -n "$current_ids" ]] || { error "the scaling group reports no in-service instance"; return 1; }
+    while IFS= read -r id; do
+      [ -n "$id" ] && original_ids+=("$id")
+    done <<<"$current_ids"
+  fi
   # Every failure path must hand back the capacity the site actually runs with.
   ROLLOUT_STABLE_CAPACITY="$stable"
   round_limit=$(( ${#original_ids[@]} * 2 + 2 ))
@@ -1665,6 +1676,12 @@ main() {
       ;;
     deploy-release)
       [[ $# -eq 2 || $# -eq 3 ]] || die "deploy-release requires a version tag and optionally a certified digest"
+      # Validate the convergence switch before anything mutates: an operator typo
+      # must not be discovered after the tier has already started moving.
+      case "${ROLLOUT_ALL:-1}" in
+        0|1) ;;
+        *) die "ROLLOUT_ALL must be 0 or 1" ;;
+      esac
       local release_tag="$2"
       local release_digest previous_digest previous_snapshot
       if [[ $# -eq 3 ]]; then
@@ -1678,6 +1695,12 @@ main() {
       previous_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
       previous_digest="$(snapshot_config_digest "$previous_snapshot")"
       [[ "$previous_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a release without rollback target"
+      # The fleet as it stood BEFORE this release's single-instance roll. The
+      # batch convergence below retires exactly this set, so it never re-replaces
+      # the instance ess_rollout just brought onto the new image.
+      local release_before_ids
+      release_before_ids="$(in_service_instance_ids)" \
+        || die "could not read the in-service instance set before the release"
       if ! apply_ml_digest "$release_digest" "$previous_snapshot"; then
         if ! restore_scaling_config "$previous_snapshot"; then
           die "release update failed and the complete scaling configuration could not be restored"
@@ -1707,7 +1730,28 @@ main() {
         fi
         die "release rollout failed; rollback was attempted and must be verified before retrying"
       fi
-      log "release $release_tag -> $release_digest deployed"
+      # Converge the WHOLE tier, not just the single instance ess_rollout
+      # replaced. Anything the image carries on the ECI tier - the
+      # OpenAI-compatible billing endpoints, for one - would otherwise serve
+      # only 1/n of its traffic until n releases accumulate.
+      # ROLLOUT_ALL=0 opts out: a release that only changes master-served paths
+      # (panel, migrations, system tasks) pays ~1 drain window per batch round
+      # for nothing. The tier then converges on the next default release, or on
+      # an explicit `deploy.sh rollout-all`.
+      if [[ "${ROLLOUT_ALL:-1}" == "0" ]]; then
+        log "release $release_tag -> $release_digest deployed to one instance (ROLLOUT_ALL=0: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
+      else
+        if ! rollout_all "$release_digest" "$release_tag" "$previous_digest" "$previous_snapshot" "$release_before_ids"; then
+          # rollout_all already restored the scaling configuration and the
+          # steady-state capacity on every failure path; keep the master on that
+          # same (previous) digest so node versions never drift.
+          if ! sync_master_container ""; then
+            error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
+          fi
+          die "release batch rollout failed; rollback was attempted and must be verified before retrying"
+        fi
+        log "release $release_tag -> $release_digest deployed to the whole ECI tier"
+      fi
       ;;
     sync-host|sync-master)
       [[ $# -eq 1 ]] || die "sync-host does not accept arguments"

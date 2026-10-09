@@ -814,6 +814,85 @@ jq -e '(.instances | length) == 2
 jq -e '.desired == 2' "$multi_case/state/state.json" > /dev/null \
   || fail "rollout-all did not restore the steady-state capacity after the last round"
 
+# (4) A release converges the WHOLE tier, not just the instance ess_rollout
+# replaced. Three pre-existing instances with MaxSize=4 give the batch one slot
+# per round, so convergence takes two rounds after the release's own roll - and
+# the instance that roll already replaced (eci-new-1) must survive untouched,
+# which is why the retire set is snapshotted BEFORE the roll.
+converge_case="$test_root/release-converges-tier"
+mkdir -p "$converge_case/state"
+make_conf "$converge_case/nginx.conf"
+init_ess_state "$converge_case/state"
+jq '.desired = 3 | .max_size = 4 | .instances += [
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService"},
+      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+  "$converge_case/state/state.json" > "$converge_case/state/tmp.json" \
+  && mv "$converge_case/state/tmp.json" "$converge_case/state/state.json"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
+  > "$converge_case/ecs-upstream.conf"
+run_deploy "$converge_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "batch rollout: 3 instance(s) to retire, up to 1 per round" "$converge_case/state/stdout.log" \
+  || fail "the release did not hand the batch rollout the pre-release instance set"
+grep -q "retired all 3 pre-existing instance(s) in 2 round(s)" "$converge_case/state/stdout.log" \
+  || fail "the release did not converge the rest of the tier"
+grep -q "deployed to the whole ECI tier" "$converge_case/state/stdout.log" \
+  || fail "the release did not report whole-tier convergence"
+# Six calls: the release's own roll (4 then 3) plus two batch rounds (4 then 3).
+[[ "$(grep -c 'ess ModifyScalingGroup' "$converge_case/state/aliyun-calls.log")" -eq 6 ]] \
+  || fail "the converging release issued an unexpected number of scaling calls"
+jq -e '(.instances | length) == 3
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)
+       and ([.instances[].InstanceId] | index("eci-old3") == null)
+       and ([.instances[].InstanceId] | index("eci-new-1") != null)' \
+  "$converge_case/state/state.json" > /dev/null \
+  || fail "the release left a pre-existing instance serving, or re-replaced the one it had just rolled"
+jq -e '.desired == 3' "$converge_case/state/state.json" > /dev/null \
+  || fail "the converging release did not restore the steady-state capacity"
+
+# (5) ROLLOUT_ALL=0 keeps the old one-at-a-time behaviour for a release that
+# only touches master-served paths, and an invalid value is refused rather than
+# silently treated as "on".
+optout_case="$test_root/release-rollout-all-optout"
+mkdir -p "$optout_case/state"
+make_conf "$optout_case/nginx.conf"
+init_ess_state "$optout_case/state"
+run_deploy "$optout_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_ALL=0 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "deployed to one instance (ROLLOUT_ALL=0" "$optout_case/state/stdout.log" \
+  || fail "ROLLOUT_ALL=0 did not skip the batch convergence"
+if grep -q "batch rollout" "$optout_case/state/stdout.log"; then
+  fail "ROLLOUT_ALL=0 still ran the batch convergence"
+fi
+# Two calls: the release's own single-instance roll, and nothing else.
+[[ "$(grep -c 'ess ModifyScalingGroup' "$optout_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "ROLLOUT_ALL=0 did not keep the one-at-a-time roll"
+
+invalid_rollout_case="$test_root/release-rollout-all-invalid"
+mkdir -p "$invalid_rollout_case/state"
+make_conf "$invalid_rollout_case/nginx.conf"
+init_ess_state "$invalid_rollout_case/state"
+if run_deploy "$invalid_rollout_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_ALL=maybe \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "an invalid ROLLOUT_ALL value was accepted"
+fi
+grep -q "ROLLOUT_ALL must be 0 or 1" "$invalid_rollout_case/state/output.log" \
+  || fail "an invalid ROLLOUT_ALL value did not explain itself"
+# The value is validated before any tier mutation: the release's own roll must
+# not have started.
+if grep -q "ess ModifyScalingGroup" "$invalid_rollout_case/state/aliyun-calls.log"; then
+  fail "an invalid ROLLOUT_ALL value was rejected only after the tier had moved"
+fi
+
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
 crlf_case="$test_root/crlf"
