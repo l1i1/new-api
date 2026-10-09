@@ -1177,6 +1177,28 @@ rm -f "$1"
 REMOTE_DRAIN_CLEAR
 }
 
+# release_hold_is_fresh <max_age_seconds> - true when a hold written by a LIVE
+# release is present. A release heartbeats its hold during every drain window, so
+# a hold younger than a few minutes means another release is running: that is the
+# mutual exclusion two publishers need (a CNB run and a local one, or two systemd
+# units), because both would otherwise drive the same scaling config and green
+# container. A stale hold is a dead release and is ignored here - the entry's
+# shrink guard uses the same rule.
+release_hold_is_fresh() {
+  local max_age="$1" written age
+  written="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" <<'REMOTE_HOLD_AGE' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ -r "$1" ]] || exit 1
+head -1 "$1"
+REMOTE_HOLD_AGE
+)" || return 1
+  written="$(printf '%s' "$written" | tr -d ' \r')"
+  [[ -n "$written" ]] || return 1
+  age=$(( $(date +%s) - $(date -d "$written" +%s 2>/dev/null || printf '0') ))
+  (( age < max_age ))
+}
+
 shrink_hold_write() {
   local action="$1"
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" <<'REMOTE_HOLD' >/dev/null 2>&1
@@ -1194,6 +1216,11 @@ REMOTE_HOLD
 
 suspend_scale_in_guard() {
   local id
+  # One release at a time. The hold doubles as the lock: a live release refreshes
+  # it every heartbeat, so a fresh one means somebody else owns the tier.
+  if release_hold_is_fresh "${RELEASE_HOLD_FRESH_SECONDS:-900}"; then
+    die "another release is in progress on $MASTER_HOST (its shrink guard hold is fresh); refusing to run two at once"
+  fi
   # Tell the entry's shrink guard to stand down for the whole release, whatever
   # happens to the alarm half below.
   if shrink_hold_write set; then
