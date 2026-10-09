@@ -49,7 +49,22 @@ check() {
 }
 
 tag="${1:-}"; digest="${2:-}"
-if [[ "$tag" == "--check" ]]; then check; exit $?; fi
+if [[ "$tag" == "--check" ]]; then
+  check || exit $?
+  # An optional tag turns the reachability probe into a real pull-authorisation
+  # check: the manifest read uses this host's docker credentials, which is the
+  # thing a release actually needs and a curl cannot prove.
+  if [[ -n "${2:-}" ]]; then
+    if docker manifest inspect "$IMAGE_NAME:ml-${2}" >/dev/null 2>&1; then
+      log "pull authorisation: OK ($IMAGE_NAME:ml-${2})"
+    else
+      log "pull authorisation: FAILED for $IMAGE_NAME:ml-${2}"; exit 1
+    fi
+  else
+    log "NOTE: pass --check <tag> to also prove this host may pull that image; without it only reachability is checked"
+  fi
+  exit 0
+fi
 [[ -n "$tag" && -n "$digest" ]] || die "usage: release-on-master.sh --check | <tag> <sha256:digest>"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "digest must be sha256:<64 lowercase hex>"
 check || die "prerequisites are not satisfied; run --check and fix the reported lines"

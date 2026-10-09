@@ -94,7 +94,13 @@ if (( USE_CACHE )); then
   if [[ -z "$CACHE_FROM" ]]; then
     # Newest local ml-* image first: pulling the previous release from our own
     # registry takes seconds, while the daemon's configured public mirrors crawl.
-    CACHE_FROM="$(docker images --format '{{.Repository}}:{{.Tag}}' "$IMAGE_NAME" 2>/dev/null | grep ':ml-' | head -1 || true)"
+    # The newest release we have locally, by tag number - not "whichever image
+    # docker lists first", which could be an unrelated branch build and would give
+    # a cache with almost nothing in common.
+    CACHE_FROM="$(docker images --format '{{.Repository}}:{{.Tag}}' "$IMAGE_NAME" 2>/dev/null \
+      | grep -E ':ml-.*-tokeness-mainland\.[0-9]+$' \
+      | sed 's/.*mainland\.//' | sort -n | tail -1 | sed "s|^|$IMAGE_NAME:ml-|" || true)"
+    [[ -n "$CACHE_FROM" ]] || CACHE_FROM="$(docker images --format '{{.Repository}}:{{.Tag}}' "$IMAGE_NAME" 2>/dev/null | grep ':ml-' | head -1 || true)"
     [[ -n "$CACHE_FROM" ]] || CACHE_FROM="$IMAGE_NAME:ml-latest"
   fi
   if docker pull "$CACHE_FROM" >/dev/null 2>&1; then
@@ -115,7 +121,13 @@ build_args=(--build-arg "GOPROXY=${GOPROXY:-https://goproxy.cn,direct}"
             --build-arg "VITE_ICP_BEIAN=$ICP_BEIAN"
             --build-arg "VITE_POLICE_BEIAN=$POLICE_BEIAN")
 cache_args=()
-[[ -n "$CACHE_FROM" ]] && cache_args=(--cache-from "$CACHE_FROM")
+if (( USE_CACHE )); then
+  [[ -n "$CACHE_FROM" ]] && cache_args=(--cache-from "$CACHE_FROM")
+else
+  # Not just "no cache source": BuildKit's own cache would still short-circuit the
+  # build, so the flag has to reach docker too.
+  cache_args=(--no-cache)
+fi
 
 log "docker build (this is the CPU-heavy step; Go and bun use every core)"
 docker build "${cache_args[@]}" "${build_args[@]}" \
