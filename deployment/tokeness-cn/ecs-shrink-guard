@@ -58,7 +58,12 @@ hold_is_stale() {
   local written age
   written="$(head -1 "$HOLD_FILE" 2>/dev/null | tr -d ' \r')"
   [[ -n "$written" ]] || return 1
-  age=$(( $(date +%s) - $(date -d "$written" +%s 2>/dev/null || printf '0') ))
+  # Unparsable means we cannot prove the release is dead, and guessing "stale"
+  # here would let the guard shrink the tier during that release - the dangerous
+  # direction. Treat it as a live hold and leave the tier alone.
+  epoch="$(date -d "$written" +%s 2>/dev/null)" || return 1
+  (( epoch > 0 )) || return 1
+  age=$(( $(date +%s) - epoch ))
   (( age > HOLD_MAX_AGE ))
 }
 

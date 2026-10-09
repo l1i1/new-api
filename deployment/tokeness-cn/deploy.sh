@@ -1195,8 +1195,14 @@ REMOTE_HOLD_AGE
 )" || return 1
   written="$(printf '%s' "$written" | tr -d ' \r')"
   [[ -n "$written" ]] || return 1
-  age=$(( $(date +%s) - $(date -d "$written" +%s 2>/dev/null || printf '0') ))
-  (( age < max_age ))
+  # A timestamp we cannot parse proves nothing: falling back to epoch made age
+  # enormous and reported "nobody is releasing", which is the direction that lets a
+  # second release in. Unparsable or nonsensical now counts as NOT fresh.
+  local epoch
+  epoch="$(date -d "$written" +%s 2>/dev/null)" || return 1
+  (( epoch > 0 )) || return 1
+  age=$(( $(date +%s) - epoch ))
+  (( age >= 0 && age < max_age ))
 }
 
 # RELEASE_OWNER identifies this release to the hold: cleanup must not remove a hold
