@@ -105,7 +105,13 @@ if (( USE_CACHE )); then
   fi
 fi
 
-build_args=(--build-arg "VITE_SITE_FLAVOR=$SITE_FLAVOR"
+# Build here, restore afterwards: VERSION is a build artifact the Dockerfile reads
+# from the build context, and leaving it modified invites committing it.
+restore_version() { git -C "$REPO_DIR" checkout -- VERSION 2>/dev/null || rm -f "$REPO_DIR/VERSION"; }
+trap restore_version EXIT
+
+build_args=(--build-arg "GOPROXY=${GOPROXY:-https://goproxy.cn,direct}"
+            --build-arg "VITE_SITE_FLAVOR=$SITE_FLAVOR"
             --build-arg "VITE_ICP_BEIAN=$ICP_BEIAN"
             --build-arg "VITE_POLICE_BEIAN=$POLICE_BEIAN")
 cache_args=()
