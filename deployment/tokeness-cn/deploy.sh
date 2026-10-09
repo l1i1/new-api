@@ -87,6 +87,11 @@ readonly HEALTH_POLL_SECONDS="${HEALTH_POLL_SECONDS:-20}"
 # looked up by name (an empty result just logs a warning - a missing alarm must
 # never block a release).
 readonly SCALE_IN_ALARM_NAME="${SCALE_IN_ALARM_NAME:-cpu-in-25}"
+# The entry's ecs-shrink-guard performs graceful scale-ins (it parks the victim
+# in the relay drain file, waits for in-flight streams, then shrinks). It must
+# stand down for the duration of a release, which grows and steps the tier down
+# on its own schedule; this marker is how it is told.
+readonly SHRINK_HOLD_PATH="${SHRINK_HOLD_PATH:-/etc/ml-sync/shrink-hold}"
 SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
 # Set while the alarm is suspended, so the exit trap knows it has work to do.
 scale_in_guard_suspended=""
@@ -1110,8 +1115,30 @@ scale_in_alarm_id() {
 # duration of a rollout. Both are best-effort: an ESS hiccup here must not abort
 # a release, and a release that fails after suspending still resumes it via the
 # caller's EXIT trap.
+shrink_hold_write() {
+  local action="$1"
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" <<'REMOTE_HOLD' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+path="$1"; action="$2"
+case "$action" in
+  set)   mkdir -p "$(dirname "$path")" && printf '%s
+' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$path" ;;
+  clear) rm -f "$path" ;;
+  *)     exit 2 ;;
+esac
+REMOTE_HOLD
+}
+
 suspend_scale_in_guard() {
   local id
+  # Tell the entry's shrink guard to stand down for the whole release, whatever
+  # happens to the alarm half below.
+  if shrink_hold_write set; then
+    log "entry shrink guard held off for the release"
+  else
+    warn "could not write the shrink guard hold on $MASTER_HOST; a scale-in could race this release"
+  fi
   id="$(scale_in_alarm_id)" || id=""
   if [[ -z "$id" ]]; then
     warn "no scale-in alarm named '$SCALE_IN_ALARM_NAME' on this scaling group; the tier may shed capacity during the rollout"
@@ -1126,6 +1153,7 @@ suspend_scale_in_guard() {
 }
 
 resume_scale_in_guard() {
+  shrink_hold_write clear && log "entry shrink guard released"
   [[ -n "$scale_in_guard_suspended" ]] || return 0
   local id="$scale_in_guard_suspended"
   scale_in_guard_suspended=""

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# ecs-shrink-guard - graceful scale-in for the China ECI tier, run from the
+# entry host by cron.
+#
+# Why this exists: an ESS alarm can only call a simple scaling rule, which
+# retires an instance the moment it fires. The app then has APP_SHUTDOWN_TIMEOUT
+# (180s) to finish in-flight work before the platform's 240s grace kills the
+# container - and 7.2% of this tier's requests run longer than 180 seconds
+# (p99 765s, max 2132s; measured over 393,800 requests on 2026-10-09), so an
+# alarm-driven scale-in cuts live streams. The release path avoids this with a
+# 1900s drain-first hold; this script gives the automatic path the same
+# treatment:
+#
+#   1. only when the tier has been idle long enough (no release running, request
+#      rate below IDLE_RPM for IDLE_MINUTES),
+#   2. park the oldest instance in DRAIN_FILE, which ecs-fleet-sync subtracts
+#      from the relay upstream list within a minute - so it stops receiving new
+#      requests while its in-flight streams finish,
+#   3. wait DRAIN_SECONDS, then ask ESS for one fewer instance. ESS's
+#      OldestInstance removal policy picks the parked instance.
+#
+# It never goes below MIN_KEEP instances, never acts while /etc/ml-sync/shrink-hold
+# exists (deploy.sh writes it for the duration of a release), and clears the
+# drain marker on every exit path so a failed shrink cannot leave the relay
+# short a member.
+#
+# Every decision is logged to LOG; run with --dry-run to print what it would do.
+set -Eeuo pipefail
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+GROUP="${SCALING_GROUP_ID:-asg-uf641n1j5akwa1ozcz6t}"
+REGION="${ALIYUN_REGION:-cn-shanghai}"
+MIN_KEEP="${SHRINK_MIN_KEEP:-2}"
+IDLE_RPM="${SHRINK_IDLE_RPM:-300}"          # requests/minute below which the tier counts as idle
+IDLE_MINUTES="${SHRINK_IDLE_MINUTES:-60}"   # how long it must stay idle before shrinking
+RATE_WINDOW_SECONDS="${SHRINK_RATE_WINDOW:-900}"
+DRAIN_SECONDS="${SHRINK_DRAIN_SECONDS:-1900}"  # same hold the release uses
+DRAIN_FILE="${SHRINK_DRAIN_FILE:-/etc/ml-sync/shrink-drain}"
+HOLD_FILE="${SHRINK_HOLD_FILE:-/etc/ml-sync/shrink-hold}"
+STATE_FILE="${SHRINK_STATE_FILE:-/var/lib/ml-sync/shrink-state.json}"
+LOG="${SHRINK_LOG:-/var/log/ecs-shrink-guard.log}"
+ACCESS_LOG="${SHRINK_ACCESS_LOG:-/var/log/nginx/access.log}"
+DRY_RUN=0
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true; [[ "$DRY_RUN" == 1 ]] && printf '%s\n' "$*"; }
+logrotate_local() { [[ -f "$LOG" ]] || return 0; [[ "$(wc -l <"$LOG")" -gt 2000 ]] || return 0; tail -n 1000 "$LOG" >"$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"; }
+
+aliyun_ess() { aliyun ess "$@" --region "$REGION" 2>/dev/null; }
+in_service_count() {
+  aliyun_ess DescribeScalingInstances --ScalingGroupId "$GROUP" \
+    | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' 2>/dev/null | tr -d '\r'
+}
+desired_count() {
+  aliyun_ess DescribeScalingGroups --ScalingGroupId "$GROUP" \
+    | jq -r '.ScalingGroups.ScalingGroup[0].DesiredCapacity // empty' 2>/dev/null | tr -d '\r'
+}
+oldest_ip() {
+  aliyun_ess DescribeScalingInstances --ScalingGroupId "$GROUP" \
+    | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+             | sort_by(.CreationTime) | .[0].PrivateIpAddress // empty' 2>/dev/null | tr -d '\r'
+}
+# Requests served in the last RATE_WINDOW_SECONDS, straight from the relay's own
+# access log - no metrics API round trip, and it counts what the tier actually did.
+recent_requests() {
+  local since
+  since="$(date -d "@$(( $(date +%s) - RATE_WINDOW_SECONDS ))" '+%d/%b/%Y:%H:%M:%S' 2>/dev/null)" || { printf '0\n'; return 0; }
+  awk -v since="$since" '{ ts=substr($4,2); if (ts >= since) n++ } END { print n+0 }' "$ACCESS_LOG" 2>/dev/null || printf '0\n'
+}
+state_get() { [[ -f "$STATE_FILE" ]] && jq -r --arg k "$1" '.[$k] // empty' "$STATE_FILE" 2>/dev/null | tr -d '\r' || true; }
+state_set() {
+  local tmp; tmp="$(mktemp)"
+  if [[ -f "$STATE_FILE" ]]; then jq --arg k "$1" --arg v "$2" '.[$k] = $v' "$STATE_FILE" >"$tmp" 2>/dev/null || printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"
+  else printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"; fi
+  mv -f "$tmp" "$STATE_FILE"
+}
+clear_drain() { [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"; state_set draining ""; state_set drain_until ""; return 0; }
+
+[[ "$DRY_RUN" == 1 ]] && log "--- dry run ---"
+
+# A release owns the tier for its whole duration: it grows and steps the group
+# down on its own schedule and already drains the instances it retires.
+if [[ -f "$HOLD_FILE" ]]; then log "release hold present ($HOLD_FILE); not shrinking"; exit 0; fi
+
+instances="$(in_service_count)"; instances="${instances:-0}"
+desired="$(desired_count)"; desired="${desired:-0}"
+if (( instances <= MIN_KEEP )); then log "at or below the floor ($instances <= $MIN_KEEP); nothing to do"; exit 0; fi
+
+# Resume an in-flight drain before looking at anything else: the tier is already
+# short one member in the relay list, so finish or undo it.
+if [[ -n "$(state_get drain_until)" ]]; then
+  until_ts="$(state_get drain_until)"
+  if (( $(date +%s) < until_ts )); then log "draining $(state_get draining) for another $(( until_ts - $(date +%s) ))s"; exit 0; fi
+  drained="$(state_get draining)"
+  log "drain window over for $drained; asking ESS for $(( desired - 1 )) instance(s)"
+  if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$(( desired - 1 ))"; clear_drain; exit 0; fi
+  if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$(( desired - 1 ))" >/dev/null; then
+    log "DesiredCapacity set to $(( desired - 1 )); verifying"
+    for _ in $(seq 1 20); do
+      (( $(in_service_count) <= desired - 1 )) && break
+      sleep 15
+    done
+    log "after shrink: $(in_service_count) instance(s) in service"
+  else
+    log "ERROR: ModifyScalingGroup failed; the tier keeps $instances instance(s)"
+  fi
+  clear_drain
+  exit 0
+fi
+
+# Idle test: a busy tier resets the streak, so shrinking only ever happens after
+# a sustained quiet period (the same signal the release's drain holds wait for).
+recent="$(recent_requests)"
+rpm=$(( recent * 60 / (RATE_WINDOW_SECONDS > 0 ? RATE_WINDOW_SECONDS : 1) ))
+if (( rpm > IDLE_RPM )); then
+  log "busy: ${rpm} req/min over the last $(( RATE_WINDOW_SECONDS / 60 )) min (limit $IDLE_RPM); idling streak reset"
+  state_set idle_streak 0
+  exit 0
+fi
+
+streak=$(( $(state_get idle_streak || echo 0) + 1 ))
+state_set idle_streak "$streak"
+needed=$(( (IDLE_MINUTES * 60 + 299) / 300 ))   # cron runs every 5 minutes
+if (( streak < needed )); then log "idle ${rpm} req/min, streak $streak/$needed; waiting"; exit 0; fi
+
+victim="$(oldest_ip)"
+if [[ ! "$victim" =~ ^10\.0\.0\.[0-9]+$ ]]; then log "ERROR: could not resolve the oldest instance (got '$victim')"; state_set idle_streak 0; exit 0; fi
+if (( DRY_RUN == 1 )); then log "dry run: idle $streak checks, would drain $victim then shrink to $(( instances - 1 ))"; exit 0; fi
+
+printf '%s\n' "$victim" >"$DRAIN_FILE"
+state_set draining "$victim"
+state_set drain_until "$(( $(date +%s) + DRAIN_SECONDS ))"
+state_set idle_streak 0
+log "idle for $(( needed * 5 )) min; parked $victim in $DRAIN_FILE (relay drops it within a minute) and will wait ${DRAIN_SECONDS}s for in-flight streams before shrinking"
+logrotate_local

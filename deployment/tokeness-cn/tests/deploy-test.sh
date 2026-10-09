@@ -145,6 +145,7 @@ run_deploy() {
     TOKENESS_TEST_MLSYNC=1 \
     ML_DRAIN_SECONDS=0 \
     RELAY_MAX_MEMBERS=10 \
+    SHRINK_HOLD_PATH="$case_dir/shrink-hold" \
     ML_DRAIN_CONVERGE_ATTEMPTS=2 \
     ML_DRAIN_CONVERGE_DELAY_SECONDS=0 \
     CNB_REGISTRY_TOKEN=dummy-test-token \
@@ -1051,6 +1052,9 @@ grep -q "scale-in alarm resumed" "$alarm_case/state/stdout.log" \
   || fail "the release did not resume the scale-in alarm"
 jq -e '.scale_in_alarm.state == "enabled"' "$alarm_case/state/state.json" > /dev/null \
   || fail "the alarm was left suspended after the release"
+# The entry's shrink guard is held off for the same window, and released after.
+[[ ! -e "$alarm_case/shrink-hold" ]] \
+  || fail "the shrink guard hold was left behind after the release"
 # Suspend must precede the first scaling call, and resume must follow the last.
 awk '/ess DisableAlarm/{d=NR} /ess ModifyScalingGroup/{if (!d) bad=1} /ess EnableAlarm/{e=NR} END{exit (bad||!d||!e)}' \
   "$alarm_case/state/aliyun-calls.log" \
