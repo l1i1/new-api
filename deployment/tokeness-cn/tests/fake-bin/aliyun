@@ -313,13 +313,18 @@ case "$cmd" in
   "ess ModifyScalingGroup")
     desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
     while (( $(jq '.instances | length' "$state" | tr -d '\r') < desired )); do
-      n="$(jq '.instances | length' "$state" | tr -d '\r')"
+      # Monotonic numbering, not "current length": a batch rollout scales up and
+      # down repeatedly, and a length-derived index would reuse an ID and a
+      # private IP on the second round - inventing a collision the real ESS
+      # never produces. Starting from a one-instance fixture this still yields
+      # eci-new-1/10.0.0.241 first, which is what the existing cases expect.
+      n="$(jq '.next_index // 1' "$state" | tr -d '\r')"
       state_update --argjson n "$n" '.instances += [{
         "InstanceId": ("eci-new-" + ($n | tostring)),
         "PrivateIpAddress": ("10.0.0." + (240 + $n | tostring)),
         "HealthStatus": "Healthy",
         "LifecycleState": "InService"
-      }]'
+      }] | .next_index = ($n + 1)'
     done
     while (( $(jq '.instances | length' "$state" | tr -d '\r') > desired )); do
       # ESS removal policy removes the oldest instance first.
@@ -332,10 +337,12 @@ case "$cmd" in
     # DesiredCapacity drives how far a rollout grows the tier and what it
     # returns to; before any ModifyScalingGroup call it is the live instance
     # count, which is what a real group reports for its steady state.
+    # max_size is per-case: a batch rollout is bounded by it, so the "no
+    # headroom" refusal and the multi-round path both need it under test.
     jq '{ScalingGroups: {ScalingGroup: [{
       ScalingGroupId: "asg-test",
       MinSize: 1,
-      MaxSize: 4,
+      MaxSize: (.max_size // 4),
       DesiredCapacity: (.desired // (.instances | length)),
       LifecycleState: "Active"
     }]}}' "$state"

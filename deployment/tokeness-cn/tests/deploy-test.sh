@@ -726,6 +726,94 @@ grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
 [[ "$(wc -l < "$fatal_case/state/host-bootstrap.log")" -eq 6 ]] \
   || fail "master was not re-synced after the FATAL-aborted rollout"
 
+# ---- rollout-all coverage ---------------------------------------------------
+# ess_rollout replaces exactly one instance per release, so a six-instance tier
+# needs six releases before it serves one image. rollout-all batches the same
+# tested steps under the scaling group's MaxSize instead of adding a new path
+# beside them; these cases pin that contract.
+
+# (1) Full batch: MaxSize=4 with a steady state of 1 lets one round replace
+# three instances at once. The fake's oldest-first removal policy then retires
+# the original together with the first two replacements, which is exactly the
+# "more than one old instance retired per drain window" behaviour the command
+# exists for.
+batch_case="$test_root/rollout-all-batch"
+mkdir -p "$batch_case/state"
+make_conf "$batch_case/nginx.conf"
+init_ess_state "$batch_case/state"
+# The relay gate requires the entry to carry EVERY fresh instance before the
+# drain window opens, so the fixture must name all three the fake will create.
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
+  > "$batch_case/ecs-upstream.conf"
+run_deploy "$batch_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  rollout-all
+grep -q "batch rollout: 1 instance(s) to retire, up to 3 per round" "$batch_case/state/stdout.log" \
+  || fail "rollout-all did not size the batch from MaxSize"
+grep -q "retired all 1 pre-existing instance(s) in 1 round(s)" "$batch_case/state/stdout.log" \
+  || fail "rollout-all did not converge the tier in a single round"
+# Two ESS calls: up to stable+batch, then back to stable. More would mean it
+# silently degraded to one-at-a-time.
+[[ "$(grep -c 'ess ModifyScalingGroup' "$batch_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "rollout-all did not batch the replacements into one drain window"
+jq -e '(.instances | length) == 1 and ([.instances[].InstanceId] | index("eci-old") == null)' \
+  "$batch_case/state/state.json" > /dev/null \
+  || fail "rollout-all left a pre-existing instance serving"
+jq -e '.desired == 1' "$batch_case/state/state.json" > /dev/null \
+  || fail "rollout-all did not return the group to its steady-state capacity"
+
+# (2) No headroom: MaxSize == DesiredCapacity. The command must refuse up front
+# rather than half-rolling, and must not touch the scaling group at all.
+no_headroom_case="$test_root/rollout-all-no-headroom"
+mkdir -p "$no_headroom_case/state"
+make_conf "$no_headroom_case/nginx.conf"
+init_ess_state "$no_headroom_case/state"
+jq '.max_size = 1' "$no_headroom_case/state/state.json" > "$no_headroom_case/state/tmp.json" \
+  && mv "$no_headroom_case/state/tmp.json" "$no_headroom_case/state/state.json"
+if run_deploy "$no_headroom_case" rollout-all; then
+  fail "rollout-all without headroom unexpectedly succeeded"
+fi
+grep -q "no headroom to batch" "$no_headroom_case/state/output.log" \
+  || fail "rollout-all did not explain the missing headroom"
+if grep -q "ess ModifyScalingGroup" "$no_headroom_case/state/aliyun-calls.log"; then
+  fail "rollout-all touched the scaling group despite having no headroom"
+fi
+jq -e '(.instances | length) == 1 and ([.instances[].InstanceId] | index("eci-old") != null)' \
+  "$no_headroom_case/state/state.json" > /dev/null \
+  || fail "the refused rollout still churned instances"
+
+# (3) Multi-round: MaxSize=3 with a steady state of 2 allows only one
+# replacement per round, so two pre-existing instances need two rounds. This is
+# the convergence bound - each round must retire at least one, and the loop must
+# stop on its own once none is left.
+multi_case="$test_root/rollout-all-multi"
+mkdir -p "$multi_case/state"
+make_conf "$multi_case/nginx.conf"
+init_ess_state "$multi_case/state"
+jq '.desired = 2 | .max_size = 3 | .instances += [{
+      InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
+      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+  "$multi_case/state/state.json" > "$multi_case/state/tmp.json" \
+  && mv "$multi_case/state/tmp.json" "$multi_case/state/state.json"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\n' > "$multi_case/ecs-upstream.conf"
+run_deploy "$multi_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  rollout-all
+grep -q "retired all 2 pre-existing instance(s) in 2 round(s)" "$multi_case/state/stdout.log" \
+  || fail "rollout-all did not converge in one round per replaceable instance"
+# Four calls: (3 -> 2) twice.
+[[ "$(grep -c 'ess ModifyScalingGroup' "$multi_case/state/aliyun-calls.log")" -eq 4 ]] \
+  || fail "rollout-all issued an unexpected number of scaling calls"
+jq -e '(.instances | length) == 2
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)' \
+  "$multi_case/state/state.json" > /dev/null \
+  || fail "rollout-all did not retire every pre-existing instance"
+jq -e '.desired == 2' "$multi_case/state/state.json" > /dev/null \
+  || fail "rollout-all did not restore the steady-state capacity after the last round"
+
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
 crlf_case="$test_root/crlf"

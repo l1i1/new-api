@@ -580,6 +580,21 @@ REMOTE_PROBE
   jq -e '.success == true' >/dev/null 2>&1 <<<"$body"
 }
 
+# app_version_on <ip> - the version the app on that instance reports, probed
+# from the relay entry (the same origin app_status_ok uses). Used by the batch
+# rollout to report what the fleet actually converged onto: instance identity
+# proves an instance was replaced, only the version proves it serves the image
+# the release published.
+app_version_on() {
+  local ip="$1"
+  is_valid_ipv4 "$ip" || return 1
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$ip" <<'REMOTE_VERSION' 2>/dev/null || return 1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/api/status" | jq -r '.data.version // empty'
+REMOTE_VERSION
+}
+
 # Print the first fatal startup line in the container log, if any. Rate-limit
 # parse warnings are non-fatal (the app continues with defaults) and must not
 # match; only [FATAL] / Go panics abort the rollout early.
@@ -1084,6 +1099,20 @@ current_desired_capacity() {
   printf '%s\n' "$desired"
 }
 
+# current_max_size - the group's MaxSize, i.e. the ceiling a batch rollout may
+# grow into. A batch rollout adds as many fresh instances at once as this
+# allows; a group whose MaxSize equals its DesiredCapacity has no headroom and
+# must keep using the one-at-a-time release path.
+current_max_size() {
+  local max
+  max="$(aliyun_cmd ess DescribeScalingGroups --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    | jq -r '.ScalingGroups.ScalingGroup[0].MaxSize // empty' | tr -d '\r')" || return 1
+  case "$max" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$max"
+}
+
 wait_healthy_instances() {
   local want="$1" tries="${2:-40}" i=0 got
   while [ "$i" -lt "$tries" ]; do
@@ -1421,6 +1450,139 @@ ess_rollout() {
   return 1
 }
 
+# rollout_all <digest> [expected_version] [previous_digest] [snapshot] - retire
+# EVERY instance that predates <digest> in one invocation, replacing as many per
+# drain window as the scaling group's MaxSize allows.
+#
+# Why this exists: ess_rollout replaces exactly one instance per release, so a
+# six-instance fleet needs six releases - six tags, six builds, roughly three
+# hours - before the whole tier serves an image. Anything that image carries on
+# the ECI tier (the OpenAI-compatible billing endpoints, for one) stays only
+# partially live in the meantime. This batches the same tested steps and repeats
+# them until no pre-existing instance is left:
+#
+#   scale to stable+batch -> gate EVERY new instance on the application ->
+#   wait for the relay tier to serve them -> ONE drain hold -> scale to stable
+#
+# so the tier converges in ceil(n/batch) drain windows instead of n.
+#
+# What an operator must know before using it:
+#   * it is bounded by MaxSize and never grows past it; a group with no headroom
+#     is refused up front rather than silently degrading to serial replacement;
+#   * several instances are replaced at once, so a failure can strand more than
+#     one fresh instance. rollback_failed_rollout still restores the scaling
+#     configuration and the steady-state capacity, and ESS retires or replaces
+#     whatever is left - but the blast radius of a bad image is wider here than
+#     in a release, which is why every new instance is gated individually before
+#     the drain hold starts;
+#   * the default relay topology cannot single out one instance (the retired
+#     lightweight tier used to), so all fresh instances join the pool and share
+#     traffic. In-flight requests on the instances ESS retires are protected by
+#     the drain hold plus the ECI termination grace, not by a pin.
+rollout_all() {
+  local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}"
+  local stable max batch rounds=0 round_limit current_ids id ip want
+  local -a original_ids=() remaining=() new_ids=()
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-all needs a sha256:<64 hex> digest"; return 1; }
+
+  stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
+  max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
+  batch=$(( max - stable ))
+  if (( batch < 1 )); then
+    error "no headroom to batch: DesiredCapacity=$stable MaxSize=$max (raise MaxSize, or use deploy-release for one-at-a-time)"
+    return 1
+  fi
+  current_ids="$(in_service_instance_ids)" || { error "could not read the current in-service instance set"; return 1; }
+  [[ -n "$current_ids" ]] || { error "the scaling group reports no in-service instance"; return 1; }
+  while IFS= read -r id; do
+    [ -n "$id" ] && original_ids+=("$id")
+  done <<<"$current_ids"
+  # Every failure path must hand back the capacity the site actually runs with.
+  ROLLOUT_STABLE_CAPACITY="$stable"
+  round_limit=$(( ${#original_ids[@]} * 2 + 2 ))
+  log "batch rollout: ${#original_ids[@]} instance(s) to retire, up to $batch per round (stable=$stable max=$max)"
+
+  while :; do
+    current_ids="$(in_service_instance_ids)" || { error "could not re-read the in-service instance set"; return 1; }
+    remaining=()
+    for id in "${original_ids[@]}"; do
+      printf '%s\n' "$current_ids" | grep -qxF "$id" && remaining+=("$id")
+    done
+    if (( ${#remaining[@]} == 0 )); then
+      break
+    fi
+    rounds=$(( rounds + 1 ))
+    if (( rounds > round_limit )); then
+      error "batch rollout did not converge after $rounds round(s); still serving ${remaining[*]}"
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
+    want=$(( stable + batch ))
+    log "round $rounds: replacing up to $batch of ${#remaining[@]} remaining pre-existing instance(s) via $want instances"
+    if ! scale_group "$want" || ! wait_healthy_instances "$want"; then
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
+    new_ids=()
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$current_ids" | grep -qxF "$id" || new_ids+=("$id")
+    done <<<"$(in_service_instance_ids)"
+    if (( ${#new_ids[@]} == 0 )); then
+      error "round $rounds: ESS reported no new instance after scaling to $want"
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
+    for id in "${new_ids[@]}"; do
+      if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
+        error "round $rounds: could not read a valid private IP for new instance $id"
+        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+      # Gate on the application and then on the relay tier picking it up, one
+      # instance at a time: a batch is only safe if every member of it is.
+      if ! wait_app_ready "$id" "$ip"; then
+        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+      if ! wait_ecs_upstream_converged "$ip"; then
+        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+    done
+    log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
+    sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+    if ! scale_group "$stable" || ! wait_healthy_instances "$stable"; then
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
+    if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+      ml_drain_end || warn "drain marker left behind; ml-sync expires it on its own"
+    fi
+  done
+
+  log "batch rollout: retired all ${#original_ids[@]} pre-existing instance(s) in $rounds round(s)"
+  # Report what the tier converged onto rather than asserting it: the version
+  # probe is advisory, and an instance that cannot answer it must not fail a
+  # rollout whose whole point - retiring the old instances - already happened.
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    ip="$(instance_private_ip "$id" 2>/dev/null || true)"
+    [ -n "$ip" ] || continue
+    log "  $id ($ip) reports $(app_version_on "$ip" || echo 'version unavailable')"
+  done <<<"$(in_service_instance_ids)"
+  if [[ -n "$expected_version" ]]; then
+    log "batch rollout target version was $expected_version"
+  fi
+  if ! wait_verify_converged; then
+    error "post-rollout verify failed after the fleet converged onto $digest"
+    return 1
+  fi
+  # Advisory, exactly as in ess_rollout: a binding failure does not undo the roll.
+  converge_eip_bandwidth || warn "EIP shared-bandwidth convergence failed; rerun deploy.sh eip-sync"
+  return 0
+}
+
 # postcheck - post-deployment public verification: version identity, the
 # server-rendered head (exactly one <title>; the <!--head-html--> placeholder
 # must have been replaced — head CONTENT itself is admin-editable via the
@@ -1453,6 +1615,11 @@ Usage:
   deploy.sh nginx-update <ECI_PRIVATE_IP>
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag> [sha256:DIGEST]
+  deploy.sh rollout-all [tag] [sha256:DIGEST]
+                     # converge the WHOLE ECI tier in one invocation, batching
+                     # as many replacements per drain window as MaxSize allows;
+                     # with no argument it converges onto the digest the scaling
+                     # configuration already pins
   deploy.sh rollback <sha256:DIGEST>
   deploy.sh sync-host          # re-roll the master container (alias: sync-master)
   deploy.sh eip-sync
@@ -1545,6 +1712,43 @@ main() {
     sync-host|sync-master)
       [[ $# -eq 1 ]] || die "sync-host does not accept arguments"
       sync_master_container ""
+      ;;
+    rollout-all)
+      [[ $# -le 3 ]] || die "rollout-all takes at most a version tag and a certified digest"
+      local ra_tag="${2:-}" ra_digest="${3:-}" ra_snapshot='' ra_prev=''
+      if [[ -z "$ra_tag" && -z "$ra_digest" ]]; then
+        # No argument: converge onto whatever the scaling configuration already
+        # pins. This is the "finish the job" form a release leaves behind - it
+        # changes no configuration, so there is nothing to roll back to.
+        ra_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+        ra_digest="$(snapshot_config_digest "$ra_snapshot")"
+        ra_prev="$ra_digest"
+        ra_snapshot=''
+      else
+        if [[ -n "$ra_digest" ]]; then
+          [[ "$ra_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "certified digest must be sha256:<64 lowercase hex>"
+        else
+          ra_digest="$(resolve_ml_digest "$ra_tag")"
+        fi
+        ra_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
+        ra_prev="$(snapshot_config_digest "$ra_snapshot")"
+        [[ "$ra_prev" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a batch rollout without a rollback target"
+        if ! apply_ml_digest "$ra_digest" "$ra_snapshot"; then
+          restore_scaling_config "$ra_snapshot" || die "image pin failed and the complete configuration could not be restored"
+          die "rollout-all: pinning $ra_digest failed; the previous configuration was restored"
+        fi
+        # Master-first, exactly as a release does: the fleet must never serve an
+        # image the master (panel + migrations + system tasks) has not taken yet.
+        if ! sync_master_container "$ra_tag" "$ra_digest"; then
+          restore_scaling_config "$ra_snapshot" || error "master roll failed and the scaling configuration could not be restored"
+          sync_master_container "" || error "master container could not be restored; manual intervention required (deploy.sh sync-host)"
+          die "rollout-all aborted: master container failed to converge to $ra_tag"
+        fi
+      fi
+      if ! rollout_all "$ra_digest" "$ra_tag" "$ra_prev" "$ra_snapshot"; then
+        die "rollout-all failed; rollback was attempted and must be verified before retrying"
+      fi
+      log "rollout-all: the ECI tier now serves $ra_digest"
       ;;
     eip-sync)
       [[ $# -eq 1 ]] || die "eip-sync does not accept arguments"
