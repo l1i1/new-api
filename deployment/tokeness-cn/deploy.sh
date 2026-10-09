@@ -92,6 +92,11 @@ readonly SCALE_IN_ALARM_NAME="${SCALE_IN_ALARM_NAME:-cpu-in-25}"
 # stand down for the duration of a release, which grows and steps the tier down
 # on its own schedule; this marker is how it is told.
 readonly SHRINK_HOLD_PATH="${SHRINK_HOLD_PATH:-/etc/ml-sync/shrink-hold}"
+# The relay drain file: ecs-fleet-sync subtracts every IP listed here from the
+# upstream list, so those members stop receiving NEW requests while their in-flight
+# streams finish. ecs-shrink-guard uses it for its graceful scale-in; a release
+# uses the same file for the instances ESS is about to retire.
+readonly SHRINK_DRAIN_PATH="${SHRINK_DRAIN_PATH:-/etc/ml-sync/shrink-drain}"
 SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
 # Set while the alarm is suspended, so the exit trap knows it has work to do.
 scale_in_guard_suspended=""
@@ -1136,6 +1141,17 @@ scale_in_alarm_id() {
 # duration of a rollout. Both are best-effort: an ESS hiccup here must not abort
 # a release, and a release that fails after suspending still resumes it via the
 # caller's EXIT trap.
+# oldest_instance_ips <n> - private IPs of the n oldest in-service instances.
+# ESS removes by its OldestInstance policy, and the pre-existing instances a round
+# retires are the oldest ones, so this is the set that will actually go.
+oldest_instance_ips() {
+  local n="$1"
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
+  aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    | jq -r --argjson n "$n" '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+             | sort_by(.CreationTime) | .[0:$n] | .[].PrivateIpAddress' | tr -d '\r'
+}
+
 shrink_hold_write() {
   local action="$1"
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" <<'REMOTE_HOLD' >/dev/null 2>&1
