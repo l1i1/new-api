@@ -113,27 +113,30 @@ On the ECS itself the bootstrap edits `/etc/nginx/sites-enabled/tokeness-ml.conf
 
 `deploy.sh sync-host` (alias `sync-master`) re-runs the whole cycle against the digest the scaling configuration currently pins, and is the healing path for a half-finished roll (a leftover green is adopted when it is healthy on the right image, otherwise it is cleared and recreated).
 
-## Deployment baseline (2026-10-09 18:45)
+## Deployment baseline (2026-10-09 21:05)
 
-Recorded so a later reader is not misled by a fleet that does not match the newest tag.
+Recorded so a later reader is not misled by a tier that does not match the newest tag.
 
 | | |
 | --- | --- |
-| Master | `v1.0.0-rc.40-tokeness-mainland.39`, image `sha256:f323413af6c9150129151f724c6577e3c752b30923296789ea3ad1cfc62b0b38`; the serving port is **3001** (blue-green flips it per release — read `/etc/tokeness-cn/master-serving-port`, never assume) |
-| ECI tier | 6 instances, **5 on `…mainland.40` and 1 on `…mainland.39`** — an intentional mixed state, see below |
-| Scaling config | pinned to the **`.39`** digest, `DesiredCapacity=6`, `MaxSize=10` |
-| Entry nginx | `/v1/dashboard/*` is routed to `newapi_web` (the master) rather than the fleet, so the account endpoints answer from one build while the tier rolls |
+| Master | `v1.0.0-rc.40-tokeness-mainland.41`; the serving port flips per release — read `/etc/tokeness-cn/master-serving-port`, never assume |
+| ECI tier | 7 instances: **6 on `…mainland.42` and 1 on `…mainland.41`**, mixed on purpose (see below) |
+| Scaling config | pinned to the **`.41`** digest, `DesiredCapacity=7`, `MaxSize=10` |
+| Relay cap | `/usr/local/sbin/ecs-fleet-sync` on the entry: `MAX_MEMBERS=10` (raised from 8 on 2026-10-09; it must stay >= the group's `MaxSize`) |
+| Entry nginx | `/v1/dashboard/*` routes to `newapi_web` (the master), so the account endpoints answer from one build while the tier rolls |
 
-**Why the tier is mixed.** `v1.0.0-rc.40-tokeness-mainland.40` carries no application change — its commits are all deployment tooling — so the two versions behave identically. That release existed to exercise the converging pipeline on the real fleet, and it did: two batch rounds converged cleanly, then round 3 hit the asynchronous-scale-in race described in the commit log (`wait_healthy_instances` accepted "at least 6" while the group still reported 8, so the next round scaled out into a pending removal). The rollout failed closed and restored the scaling configuration, the capacity, and the master — the tier keeps running the image it had.
+**Why the tier is mixed, and why capacity is 7.** Three releases overlapped tonight. `.41` was cancelled mid-`ess_rollout`, which left `DesiredCapacity` at 7 with no cleanup — the deploy script reads the steady state at the start (`steady-state capacity is $stable`), so `.42` inherited 7 as its steady state. `.42` then converged three batch rounds and failed on the last one: `ecs-fleet-sync` truncated the entry's upstream list at `MAX_MEMBERS=8`, the round peaked at 9, and the ninth instance never reached the relay tier, so `wait_ecs_upstream_converged` timed out after 180s and the release rolled back (config, capacity and master returned to `.41`; the six instances already on `.42` kept running it). `.41` and `.42` differ only in the deployment tooling — `.42`'s extra relay behaviour is off by default — so the mixed state is behaviourally uniform.
 
-Converging the tier onto either digest is a single command, and the two images are interchangeable for behaviour:
+Converging the tier is one command once a release is allowed to run:
 
 ```bash
-bash deployment/tokeness-cn/deploy.sh rollout-all      # onto the digest the config pins (.39 here)
+bash deployment/tokeness-cn/deploy.sh rollout-all      # onto the digest the config pins
 bash deployment/tokeness-cn/deploy.sh rollout-batch 2  # same, two at a time
 ```
 
-The race is fixed and covered by `rollout-all-scale-in-race`; that test fails on the old gate and passes on the exact one. No release should be attempted while traffic is spiking — the drain windows are sized for long streams, and a surge is not the moment to retire instances.
+Before releasing again: restore `DesiredCapacity` to 6 (the cancelled `.41` left it at 7), and let traffic be at baseline — the drain windows are sized for long streams, and a surge is not the moment to retire instances.
+
+Both causes found tonight are fixed and covered: the asynchronous scale-in race (`rollout-all-scale-in-race`) and the relay-list cap (`relay-cap-explicit`, `relay-cap-clamp`). No release should be attempted while traffic is spiking.
 
 ## Troubleshooting the pipeline
 
