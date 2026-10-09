@@ -26,8 +26,19 @@ import (
 //	reasoning chars for enable_thinking=false), so removing it makes these
 //	channels behave like the official one instead of inventing a promise.
 //
-// What this test pins: the field never reaches an upstream, the four pre-existing
-// operations still run, and nothing else in the request is disturbed.
+//	2026-10-09 later the same day: the same upstream also answered
+//	"400 未知请求字段：prompt_cache_key" (last seen 14:11), so that field is
+//	deleted too. Worth recording WHY the fix lives here and not with them:
+//	new-api's own relay path ignores unknown fields - common.DecodeJson uses the
+//	default decoder, and the only DisallowUnknownFields() callers in the tree are
+//	pkg/fitpolicy (our policy documents) and scripts/fit-probe (our probe tool) -
+//	so the rejection comes from a layer past their gateway, and "upgrade new-api"
+//	would not have changed it. Stripping on our side is the part we control;
+//	prompt caching is not a thing that upstream offers, so the only loss is a
+//	cache hint that never took effect.
+//
+// What this test pins: none of the three rejected fields reaches an upstream,
+// the reasoning_effort copies still run, and nothing else in the request moves.
 func yjdyChatTemplateKwargsOverride() map[string]any {
 	return map[string]any{
 		"operations": []any{
@@ -51,6 +62,7 @@ func yjdyChatTemplateKwargsOverride() map[string]any {
 			},
 			map[string]any{"mode": "delete", "path": "thinking"},
 			map[string]any{"mode": "delete", "path": "chat_template_kwargs"},
+			map[string]any{"mode": "delete", "path": "prompt_cache_key"},
 		},
 	}
 }
@@ -86,26 +98,65 @@ func TestYjdyChatTemplateKwargsIsStrippedAndNothingElseMoves(t *testing.T) {
 			`{"model":"kimi-k3","reasoning_effort":"max","chat_template_kwargs":{"enable_thinking":false}}`,
 			"max",
 		},
+		{
+			"prompt_cache_key alone: stripped",
+			`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"conv-42"}`,
+			"",
+		},
+		{
+			"all three rejected fields together: all stripped, effort still copied",
+			`{"model":"kimi-k3","stream":true,"max_tokens":512,"messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"conv-42","chat_template_kwargs":{"enable_thinking":false},"thinking":{"effort":"max","keep":"all"}}`,
+			"max",
+		},
+		{
+			// minimal is deliberately not a copy condition: that upstream does not
+			// collapse reasoning for it, so translating the disable intent into it
+			// would be a billed no-op. The thinking object is removed regardless.
+			"thinking.effort minimal: no effort invented, thinking still stripped",
+			`{"model":"kimi-k3","prompt_cache_key":"conv-42","thinking":{"effort":"minimal"}}`,
+			"",
+		},
 	}
 	for _, tc := range cases {
 		out, err := ApplyParamOverride([]byte(tc.in), yjdyChatTemplateKwargsOverride(), nil)
 		if err != nil {
 			t.Fatalf("%s: ApplyParamOverride: %v", tc.name, err)
 		}
-		var got map[string]any
+		var got, in map[string]any
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("%s: output is not JSON: %v", tc.name, err)
 		}
-		if _, present := got["chat_template_kwargs"]; present {
-			t.Fatalf("%s: chat_template_kwargs still present (body: %s)", tc.name, string(out))
+		if err := json.Unmarshal([]byte(tc.in), &in); err != nil {
+			t.Fatalf("%s: input is not JSON: %v", tc.name, err)
 		}
-		if _, present := got["thinking"]; present {
-			t.Fatalf("%s: thinking not stripped (body: %s)", tc.name, string(out))
+		for _, field := range []string{"chat_template_kwargs", "thinking", "prompt_cache_key"} {
+			if _, present := got[field]; present {
+				t.Fatalf("%s: %s still present (body: %s)", tc.name, field, string(out))
+			}
 		}
 		effort, _ := got["reasoning_effort"].(string)
 		if effort != tc.wantEffort {
 			t.Fatalf("%s: reasoning_effort = %q, want %q (body: %s)",
 				tc.name, effort, tc.wantEffort, string(out))
+		}
+		// Everything the caller sent that is not one of the stripped keys must
+		// come through untouched - a delete op that ate neighbouring fields would
+		// otherwise silently change the request.
+		for k, want := range in {
+			switch k {
+			case "chat_template_kwargs", "thinking", "prompt_cache_key":
+				continue
+			}
+			gotVal, present := got[k]
+			if !present {
+				t.Fatalf("%s: field %q disappeared (body: %s)", tc.name, k, string(out))
+			}
+			wantJSON, _ := json.Marshal(want)
+			gotJSON, _ := json.Marshal(gotVal)
+			if string(wantJSON) != string(gotJSON) {
+				t.Fatalf("%s: field %q changed: %s -> %s (body: %s)",
+					tc.name, k, wantJSON, gotJSON, string(out))
+			}
 		}
 	}
 }
