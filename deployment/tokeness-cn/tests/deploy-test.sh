@@ -968,6 +968,10 @@ run_deploy "$race_case" \
   TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   rollout-all
+# The parking must actually happen: without this the drain marker is never written
+# and the assertion below (that none is left behind) passes for the wrong reason.
+grep -q "parked the retiring instance" "$race_case/state/stdout.log" \
+  || fail "the round did not park its retiring instance in the relay drain file"
 grep -q "scale-in complete:" "$race_case/state/stdout.log" \
   || fail "the rollout did not wait for the asynchronous scale-in to settle"
 grep -q "retired all 2 pre-existing instance(s) in 2 round(s)" "$race_case/state/stdout.log" \

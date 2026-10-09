@@ -1916,12 +1916,18 @@ rollout_batch() {
         return 1
       fi
     done
+    # How many instances this scale-in will ask ESS to remove, measured now: an
+    # external scale-out during the gate can push the group above `want`. It has to
+    # be computed HERE (before the hold) because the parking below needs it.
+    scalein_before=$(in_service_instance_ids | grep -c . || true)
+    retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
     # Park the instances ESS is about to remove in the relay drain file BEFORE the
     # hold. The hold only protects streams that were already running when it
     # started; anything arriving during the 1900s would still be cut at the
     # scale-in. The marker is cleared once the removals are confirmed (wait_retired)
     # and by the release's EXIT trap.
     drain_ips="$(oldest_instance_ips "$retiring" || true)"
+    [[ -n "$drain_ips" ]] || warn "round $rounds: no instance to park (retiring=$retiring); requests arriving during the hold are unprotected"
     if [[ -n "$drain_ips" ]]; then
       if relay_drain_write "$drain_ips"; then
         log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
@@ -1941,8 +1947,6 @@ rollout_batch() {
     # Measure what this scale-in actually asks ESS to remove, now: an external
     # scale-out during the gate can push the group above `want`, and gating on the
     # nominal want-base would then pass while removals are still in flight.
-    scalein_before=$(in_service_instance_ids | grep -c . || true)
-    retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
     if ! scale_group "$base" || ! wait_retired "$(printf '%s\n' "${remaining[@]}")" "$retiring"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
