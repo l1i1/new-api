@@ -141,6 +141,50 @@ Before releasing again: restore `DesiredCapacity` to 6 (the cancelled `.41` left
 
 Both causes found tonight are fixed and covered: the asynchronous scale-in race (`rollout-all-scale-in-race`) and the relay-list cap (`relay-cap-explicit`, `relay-cap-clamp`). No release should be attempted while traffic is spiking.
 
+## Releasing when CNB cannot build (2026-10-10)
+
+CNB ran out of build quota: every build after 16:57 UTC failed in the `Prepare`
+stage in under five seconds, with `validate release tag`, `build immutable
+release image`, `push immutable release image` and `deploy to production` all
+skipped. A tag push therefore no longer produces an image, and `.44` sat
+unbuilt while the code side was ready.
+
+The deploy half never needed CNB - `deploy.sh` talks to Aliyun and to the hosts
+directly - so the mainland release path is now **local build first**:
+
+```bash
+bash tools/secrets-broker/broker.sh exec --cred cnb -- \
+  bash deployment/tokeness-cn/release-local.sh v1.0.0-rc.40-tokeness-mainland.45
+
+# then, with a session that holds the deploy credentials:
+bash deployment/tokeness-cn/deploy.sh deploy-release <tag> sha256:<digest>
+```
+
+`release-local.sh` does what the tag_push line did: checks the tag matches HEAD,
+writes `VERSION` (the Go binary bakes it in through `-ldflags`, and deploy.sh
+verifies the running container reports it), builds `Dockerfile.tokeness`, pushes
+`ml-<tag>`, and prints the digest for `deploy-release`. Pass `--deploy` to run
+the rollout in the same command when the environment also has the deploy
+credentials, or `--build-only` to stop after the build.
+
+**Always let it use the cache source.** The image layers for a release are
+almost identical to the previous one (the app code is unchanged between a
+tooling-only release and its predecessor), and our own registry is fast where the
+daemon's configured public mirrors are not:
+
+| Source | Time for the previous release image |
+| --- | --- |
+| `docker.cnb.cool` (our registry, used as `--cache-from`) | **10 seconds** |
+| the configured mirrors (`docker.1panel.live`, `hub.1panel.dev`, `docker.1ms.run`) | minutes, ~0.2 MB/s, CPU idle |
+
+With a cache hit the frontend stage completes in seconds and the build goes
+straight to the Go stage, which uses every core. `--no-cache` exists but is
+rarely what you want.
+
+The two halves use different credentials: the build needs the `cnb` registry
+credential, the rollout needs the deploy set. Run them as separate commands
+(that is why `--deploy` is opt-in) so neither has to be handed to the other.
+
 ## Who may change tier capacity (2026-10-10)
 
 Five things can move `DesiredCapacity` on `asg-uf641n1j5akwa1ozcz6t`. Two are
