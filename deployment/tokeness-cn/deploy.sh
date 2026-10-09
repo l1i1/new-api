@@ -1596,7 +1596,19 @@ ess_rollout() {
   # The pin must outlive the scale-down. Clearing it first would let ml-sync
   # re-add the still-InService old instance on its next 30s pass, sending new
   # requests back to an instance that is about to be deleted.
-  if ! scale_group "$stable" || ! wait_healthy_instances "$stable"; then
+  # Same asynchronous-removal trap as the batch rounds: "at least stable healthy"
+  # passes while a removal is still in flight once anything else has grown the
+  # group, and the next scale-out then supersedes the pending removal. Gate on an
+  # instance actually leaving service.
+  roll_before_ids="$(in_service_instance_ids)" || roll_before_ids=""
+  scale_in_ok=0
+  if [[ -n "$roll_before_ids" ]]; then
+    scale_group "$stable" && wait_retired "$roll_before_ids" 1 && scale_in_ok=1
+  else
+    warn "could not read the in-service set before the scale-in; falling back to a healthy-count gate"
+    scale_group "$stable" && wait_healthy_instances "$stable" && scale_in_ok=1
+  fi
+  if (( scale_in_ok == 0 )); then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "scale-down gate failed and rollback could not be verified"
     fi
@@ -1659,7 +1671,7 @@ ess_rollout() {
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
-  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count
+  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
@@ -1748,6 +1760,14 @@ rollout_batch() {
     (( current_count > base )) && base="$current_count"
     want=$(( base + (batch < ${#remaining[@]} ? batch : ${#remaining[@]}) ))
     log "round $rounds: replacing up to $(( want - base )) of ${#remaining[@]} remaining pre-existing instance(s) via $want instances (steady state $base)"
+    # The autoscaler may already have consumed this round's headroom: growing past
+    # the relay cap creates an instance the relay never carries (the .42 failure),
+    # and past MaxSize ESS simply refuses. Refuse loudly before moving anything.
+    if (( want > ceiling )); then
+      error "round $rounds: no headroom for this round's instance: $base in service against a growth ceiling of $ceiling (MaxSize=$max, relay cap=${relay_cap:-unknown})"
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
     if ! scale_group "$want" || ! wait_healthy_instances "$want"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
@@ -1788,7 +1808,11 @@ rollout_batch() {
     # exact gate time out mid-release. Gate on the retire set instead: this
     # round asked ESS to remove $retiring pre-existing instance(s), and the next
     # round may only scale out once they are actually gone.
-    retiring=$(( want - base ))
+    # Measure what this scale-in actually asks ESS to remove, now: an external
+    # scale-out during the gate can push the group above `want`, and gating on the
+    # nominal want-base would then pass while removals are still in flight.
+    scalein_before=$(in_service_instance_ids | grep -c . || true)
+    retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
     if ! scale_group "$base" || ! wait_retired "$(printf '%s\n' "${remaining[@]}")" "$retiring"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1

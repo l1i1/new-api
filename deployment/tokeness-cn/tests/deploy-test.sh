@@ -1084,7 +1084,7 @@ external_case="$test_root/scale-in-external-scaleout"
 mkdir -p "$external_case/state"
 make_conf "$external_case/nginx.conf"
 init_ess_state "$external_case/state"
-jq '.desired = 2 | .max_size = 3 | .instances += [{
+jq '.desired = 2 | .max_size = 6 | .instances += [{
       InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
       HealthStatus: "Healthy", LifecycleState: "InService"}]' \
   "$external_case/state/state.json" > "$external_case/state/tmp.json" \
