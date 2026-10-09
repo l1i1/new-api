@@ -33,7 +33,9 @@ check() {
     log "aliyun credentials: FAILED for $GROUP in $REGION"; rc=1
   fi
   docker info >/dev/null 2>&1 && log "docker: OK" || { log "docker: unreachable"; rc=1; }
-  if timeout 10 curl -fsS -o /dev/null "https://${IMAGE_NAME%%/*}/v2/" -w '%{http_code}\n' 2>/dev/null | grep -qE '200|401'; then
+  # No -f: a registry answers 401 (authentication required) when it is reachable,
+  # and -f makes curl discard that status, reporting a false NOT REACHABLE.
+  if timeout 10 curl -sS -o /dev/null "https://${IMAGE_NAME%%/*}/v2/" -w '%{http_code}\n' 2>/dev/null | grep -qE '200|401'; then
     log "registry reachable: ${IMAGE_NAME%%/*}"
   else
     log "registry NOT reachable: ${IMAGE_NAME%%/*}"; rc=1
