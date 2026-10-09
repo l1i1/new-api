@@ -76,9 +76,13 @@ fi
 # tag, so uncommitted source would ship under a version that does not describe it,
 # and deploy.sh's version check cannot tell the difference. CI gets this for free
 # by building a fresh clone.
-dirty="$(git status --porcelain -- . | grep -v '^?? VERSION$' | grep -v '^ M VERSION$' || true)"
-[[ -z "$dirty" ]] || die "working tree has uncommitted changes:$(
-printf '\n%s' "$dirty")"
+dirty="$(git status --porcelain --untracked-files=no -- . | grep -v '^ M VERSION$' || true)"
+[[ -z "$dirty" ]] || die "tracked files have uncommitted changes:$(printf '\n%s' "$dirty")"
+# Untracked files only warn: this repository carries scratch files from other
+# work, and refusing on those would make the script unusable, while a tracked
+# modification is what silently diverges the image from the tag.
+untracked="$(git status --porcelain --untracked-files=all -- . | grep '^??' || true)"
+[[ -z "$untracked" ]] || log "WARNING: untracked files are not part of the tagged commit:$(printf '\n  %s' "$untracked")"
 
 log "building $IMAGE_NAME:ml-$TAG from $tag_commit"
 printf '%s\n' "$TAG" > VERSION
