@@ -113,6 +113,28 @@ On the ECS itself the bootstrap edits `/etc/nginx/sites-enabled/tokeness-ml.conf
 
 `deploy.sh sync-host` (alias `sync-master`) re-runs the whole cycle against the digest the scaling configuration currently pins, and is the healing path for a half-finished roll (a leftover green is adopted when it is healthy on the right image, otherwise it is cleared and recreated).
 
+## Deployment baseline (2026-10-09 18:45)
+
+Recorded so a later reader is not misled by a fleet that does not match the newest tag.
+
+| | |
+| --- | --- |
+| Master | `v1.0.0-rc.40-tokeness-mainland.39`, image `sha256:f323413af6c9150129151f724c6577e3c752b30923296789ea3ad1cfc62b0b38`; the serving port is **3001** (blue-green flips it per release — read `/etc/tokeness-cn/master-serving-port`, never assume) |
+| ECI tier | 6 instances, **5 on `…mainland.40` and 1 on `…mainland.39`** — an intentional mixed state, see below |
+| Scaling config | pinned to the **`.39`** digest, `DesiredCapacity=6`, `MaxSize=10` |
+| Entry nginx | `/v1/dashboard/*` is routed to `newapi_web` (the master) rather than the fleet, so the account endpoints answer from one build while the tier rolls |
+
+**Why the tier is mixed.** `v1.0.0-rc.40-tokeness-mainland.40` carries no application change — its commits are all deployment tooling — so the two versions behave identically. That release existed to exercise the converging pipeline on the real fleet, and it did: two batch rounds converged cleanly, then round 3 hit the asynchronous-scale-in race described in the commit log (`wait_healthy_instances` accepted "at least 6" while the group still reported 8, so the next round scaled out into a pending removal). The rollout failed closed and restored the scaling configuration, the capacity, and the master — the tier keeps running the image it had.
+
+Converging the tier onto either digest is a single command, and the two images are interchangeable for behaviour:
+
+```bash
+bash deployment/tokeness-cn/deploy.sh rollout-all      # onto the digest the config pins (.39 here)
+bash deployment/tokeness-cn/deploy.sh rollout-batch 2  # same, two at a time
+```
+
+The race is fixed and covered by `rollout-all-scale-in-race`; that test fails on the old gate and passes on the exact one. No release should be attempted while traffic is spiking — the drain windows are sized for long streams, and a surge is not the moment to retire instances.
+
 ## Troubleshooting the pipeline
 
 The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokeness-mainland.16`/`.17`). Four defects kept every earlier CI release from ever reaching production; all four are now fixed and covered by the deploy test suite:
