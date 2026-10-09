@@ -1152,6 +1152,31 @@ oldest_instance_ips() {
              | sort_by(.CreationTime) | .[0:$n] | .[].PrivateIpAddress' | tr -d '\r'
 }
 
+# relay_drain_write <ips> - park those relay members: ecs-fleet-sync subtracts
+# them from the upstream list within a minute, so they stop receiving NEW requests
+# while their in-flight streams finish. relay_drain_clear removes the marker.
+relay_drain_write() {
+  local ips="$1"
+  [[ -n "$ips" ]] || return 0
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_DRAIN_PATH" "$ips" <<'REMOTE_DRAIN' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+path="$1"; ips="$2"
+mkdir -p "$(dirname "$path")"
+# No match must still leave a valid (empty) marker rather than abort here: the
+# entry treats an empty marker as "nothing drained".
+printf '%s\n' "$ips" | grep -E '^10\.0\.0\.[0-9]+$' >"$path" || true
+REMOTE_DRAIN
+}
+
+relay_drain_clear() {
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_DRAIN_PATH" <<'REMOTE_DRAIN_CLEAR' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+rm -f "$1"
+REMOTE_DRAIN_CLEAR
+}
+
 shrink_hold_write() {
   local action="$1"
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" <<'REMOTE_HOLD' >/dev/null 2>&1
