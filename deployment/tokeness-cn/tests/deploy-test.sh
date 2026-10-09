@@ -139,6 +139,7 @@ run_deploy() {
     TOKENESS_TEST_STATE_DIR="$case_dir/state" \
     DRAIN_MARKER_PATH="$case_dir/state/drain-target" \
     WEB_PRIMARY_MARKER_PATH="$case_dir/state/web-primary-port" \
+    WEB_PRIMARY_HOST=10.1.0.43 \
     WEB_PRIMARY_CONVERGE_ATTEMPTS=3 \
     WEB_PRIMARY_CONVERGE_DELAY_SECONDS=0 \
     TOKENESS_TEST_MLSYNC=1 \

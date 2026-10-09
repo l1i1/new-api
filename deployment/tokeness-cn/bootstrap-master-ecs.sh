@@ -73,7 +73,11 @@ esac
 
 CONTAINER="${MASTER_CONTAINER:-new-api-master}"
 GREEN="${MASTER_GREEN_NAME:-new-api-master--green}"
-SERVE_IP="${MASTER_SERVE_IP:-10.1.0.43}"
+# Default = the entry ECS that has hosted the master since the 2026-10-09
+# migration; the host also pins MASTER_SERVE_IP in /etc/environment (pam_env
+# applies it to non-interactive ssh commands), so this default is a fallback for
+# a host whose environment was lost, not the primary source.
+SERVE_IP="${MASTER_SERVE_IP:-10.0.0.249}"
 # Targeted request captures are files, and the panel can only read files on the machine it runs on,
 # so the master owns them. Without a bind mount they would live in the container and disappear on the
 # next release - a debugging tool that silently loses the evidence it was taken for. Both blue and

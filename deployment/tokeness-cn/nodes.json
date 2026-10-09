@@ -7,10 +7,10 @@
     {
       "name": "entry-ecs",
       "role": "reverse-proxy",
-      "host": "47.101.40.104",
+      "host": "8.133.244.241",
       "user": "root",
       "ssh_key": "private/access/keys/swas-ml",
-      "note": "Shanghai entry ECS: panel-tier nginx (EdgeOne origin), relay last resort, and the master container's host. Its relay upstream list is written by ecs-fleet-sync from the local ESS view; the release flips its nginx on commit and gates on its upstream file."
+      "note": "Shanghai entry ECS (8 vCPU/8 GiB, pay-as-you-go, private 10.0.0.249 in tokeness-ml-vpc): panel-tier nginx (EdgeOne origin), relay last resort, the master container's host, and the fleet-list sync's host. It sits in the same VPC as the ECI fleet and the RDS, so no peering hop. Migrated here on 2026-10-09 from 47.101.40.104, which now keeps only Redis and the ops scripts. Its relay upstream list is written by ecs-fleet-sync from the local ESS view; the release flips its nginx on commit and gates on its upstream file."
     },
     {
       "name": "eci-ml",
@@ -31,7 +31,7 @@
       "name": "edgeone-cn",
       "role": "cdn-waf",
       "site": "tokeness.cn",
-      "note": "Tencent EdgeOne public entry; origin is the Shanghai entry ECS (47.101.40.104), not the retired Chengdu lightweight tier."
+      "note": "Tencent EdgeOne public entry; origin is the Shanghai entry ECS (8.133.244.241 since 2026-10-09, previously 47.101.40.104), not the retired Chengdu lightweight tier."
     }
   ],
   "public_endpoints": [

@@ -32,7 +32,7 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    | --- | --- | --- |
    | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | RAM sub-account AK dedicated to this pipeline | Only the ESS/ECI/VPC Describe/Modify actions `deploy.sh` actually calls on `cn-shanghai` — never the main-account AK |
    | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key — the **entry ECS's** key since the lightweight tier retired (the secret name is kept for the Web-only key repo) | Key is limited to the entry ECS and the (retired) lightweight hosts |
-   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the **entry ECS** (`47.101.40.104`) and the (retired) lightweight hosts | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
+   | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the **entry ECS** (`8.133.244.241` since the 2026-10-09 migration, previously `47.101.40.104`) and the (retired) lightweight hosts | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
 
    All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
 
@@ -183,14 +183,14 @@ jq -e . deployment/tokeness-cn/nodes.json >/dev/null
 ### SSH host verification
 
 `deploy.sh` runs with `StrictHostKeyChecking=yes` and `IdentitiesOnly=yes`. The
-hosts it SSHes to are the **entry ECS** (`47.101.40.104`, `MASTER_SSH_*`) and, on
+hosts it SSHes to are the **entry ECS** (`8.133.244.241`, `MASTER_SSH_*`) and, on
 the retired path only, the two lightweight hosts (`SWAS_SSH_*`); each must be in
 the client's `~/.ssh/known_hosts` or covered by the pinned
 `SWAS_SSH_KNOWN_HOSTS`/`MASTER_SSH_KNOWN_HOSTS` file. On first use, record
 fingerprints through a trusted channel:
 
 ```bash
-ssh-keyscan -H 47.101.40.104 >> ~/.ssh/known_hosts
+ssh-keyscan -H 8.133.244.241 >> ~/.ssh/known_hosts
 ```
 
 Do not deploy without a verified host fingerprint.

@@ -36,7 +36,7 @@ readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
 # credential (the CNB registry serves this image anonymously).
 # HOST_BOOTSTRAP_SCRIPT still overrides it for local experiments.
 readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-master-ecs.sh}"
-readonly MASTER_HOST="${MASTER_HOST:-47.101.40.104}"
+readonly MASTER_HOST="${MASTER_HOST:-8.133.244.241}"
 readonly MASTER_SSH_KEY_PATH="${MASTER_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 # Inherits the SWAS known-hosts file on purpose: the pipeline materializes one
 # pinned file (CNB_SWAS_KNOWN_HOSTS_B64) and remote_cmd_on hardcodes
@@ -89,9 +89,11 @@ readonly ML_DRAIN_MARKER_TTL_SECONDS="${ML_DRAIN_MARKER_TTL_SECONDS:-3600}"
 # a TTL pin) and ml-sync adopts it only while the pinned port answers
 # /health/ready, so a dead pin can never be written into nginx.
 readonly WEB_PRIMARY_MARKER_PATH="${WEB_PRIMARY_MARKER_PATH:-/etc/ml-sync/web-primary-port}"
-# Private address the panel tier uses for the master (the ECS is reached over
-# the VPC peering; MASTER_HOST is its public IP for SSH).
-readonly WEB_PRIMARY_HOST="${WEB_PRIMARY_HOST:-10.1.0.43}"
+# Private address the panel tier uses for the master. MASTER_HOST is that same
+# host's public IP for SSH (the 2026-10-09 entry migration moved both roles onto
+# the 8x8 ECS in tokeness-ml-vpc, where the master, nginx, the fleet list sync
+# and the RDS all sit in one VPC).
+readonly WEB_PRIMARY_HOST="${WEB_PRIMARY_HOST:-10.0.0.249}"
 # The lightweight panel tier was retired on 2026-10-05 (user decision): the
 # panel domain's EdgeOne origin is this ECS, and the two Chengdu hosts no longer
 # run nginx or ml-sync. At the default the master blue-green relies on the
