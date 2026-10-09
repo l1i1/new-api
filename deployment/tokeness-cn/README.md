@@ -122,8 +122,11 @@ Recorded so a later reader is not misled by a tier that does not match the newes
 | Master | `v1.0.0-rc.40-tokeness-mainland.41`; the serving port flips per release — read `/etc/tokeness-cn/master-serving-port`, never assume |
 | ECI tier | 7 instances: **6 on `…mainland.42` and 1 on `…mainland.41`**, mixed on purpose (see below) |
 | Scaling config | pinned to the **`.41`** digest, `DesiredCapacity=7`, `MaxSize=10` |
+| Scale-in alarm | `cpu-in-25`: `EciPodCpuUtilization <= 25%` for 30 minutes -> `scale-in-cpu25` (-1 instance), floored by `MinSize` (2). Suspended by every mutating verb for the duration of a rollout |
 | Relay cap | `/usr/local/sbin/ecs-fleet-sync` on the entry: `MAX_MEMBERS=10` (raised from 8 on 2026-10-09; it must stay >= the group's `MaxSize`) |
 | Entry nginx | `/v1/dashboard/*` routes to `newapi_web` (the master), so the account endpoints answer from one build while the tier rolls |
+
+**Capacity now trims itself.** Until 2026-10-10 the group had only a scale-out alarm, so capacity ratcheted up and stayed: a cancelled release left `DesiredCapacity` at 7 and nothing brought it back. `cpu-in-25` closes that loop, and `deploy.sh` suspends it while a release rolls so it cannot retire an instance a round is still gating on (see `scale-in-alarm-guard` in the tests). It floors at the group's `MinSize`, currently **2** — raise `MinSize` to 3 if the tier should never run below three instances.
 
 **Why the tier is mixed, and why capacity is 7.** Three releases overlapped tonight. `.41` was cancelled mid-`ess_rollout`, which left `DesiredCapacity` at 7 with no cleanup — the deploy script reads the steady state at the start (`steady-state capacity is $stable`), so `.42` inherited 7 as its steady state. `.42` then converged three batch rounds and failed on the last one: `ecs-fleet-sync` truncated the entry's upstream list at `MAX_MEMBERS=8`, the round peaked at 9, and the ninth instance never reached the relay tier, so `wait_ecs_upstream_converged` timed out after 180s and the release rolled back (config, capacity and master returned to `.41`; the six instances already on `.42` kept running it). `.41` and `.42` differ only in the deployment tooling — `.42`'s extra relay behaviour is off by default — so the mixed state is behaviourally uniform.
 
