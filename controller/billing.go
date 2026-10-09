@@ -8,22 +8,62 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetSubscription(c *gin.Context) {
-	var remainQuota int
-	var usedQuota int
-	var err error
-	var token *model.Token
-	var expiredTime int64
+// quotaLine resolves the (remaining, used) quota pair that the OpenAI-compatible
+// billing endpoints describe.
+//
+// A token that carries its own quota line answers for itself. A token with
+// unlimited_quota has no balance of its own - it draws on the account - so the
+// account's line is the only truthful answer there. The fixed 100000000
+// placeholder that used to stand in for it made every client that renders a
+// balance show a fake number, and made the two endpoints describe different
+// accounts so "remaining = hard_limit_usd - total_usage/100" could not work
+// (reported by the partner 2026-10-09).
+//
+// Both endpoints must use this same helper: a limit from one account and usage
+// from another produce a wrong remainder.
+func quotaLine(c *gin.Context) (remain int, used int, token *model.Token, err error) {
 	if common.DisplayTokenStatEnabled {
 		tokenId := c.GetInt("token_id")
 		token, err = model.GetTokenById(tokenId)
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		if !token.UnlimitedQuota {
+			return token.RemainQuota, token.UsedQuota, token, nil
+		}
+	}
+	userId := c.GetInt("id")
+	remain, err = model.GetUserQuota(userId, false)
+	if err != nil {
+		return 0, 0, token, err
+	}
+	used, err = model.GetUserUsedQuota(userId)
+	return remain, used, token, err
+}
+
+// quotaAmount converts a quota value into the site's display unit, which is
+// what the OpenAI-compatible *_USD fields carry here:
+//   - USD: divide by QuotaPerUnit
+//   - CNY: convert to USD first, then apply the exchange rate
+//   - TOKENS: keep the raw token count
+func quotaAmount(quota int) float64 {
+	amount := float64(quota)
+	switch operation_setting.GetQuotaDisplayType() {
+	case operation_setting.QuotaDisplayTypeCNY:
+		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+	case operation_setting.QuotaDisplayTypeTokens:
+		// amount 保持 tokens 数值
+	default:
+		amount = amount / common.QuotaPerUnit
+	}
+	return amount
+}
+
+func GetSubscription(c *gin.Context) {
+	remainQuota, usedQuota, token, err := quotaLine(c)
+	expiredTime := int64(0)
+	if token != nil {
 		expiredTime = token.ExpiredTime
-		remainQuota = token.RemainQuota
-		usedQuota = token.UsedQuota
-	} else {
-		userId := c.GetInt("id")
-		remainQuota, err = model.GetUserQuota(userId, false)
-		usedQuota, err = model.GetUserUsedQuota(userId)
 	}
 	if expiredTime <= 0 {
 		expiredTime = 0
@@ -38,24 +78,11 @@ func GetSubscription(c *gin.Context) {
 		})
 		return
 	}
-	quota := remainQuota + usedQuota
-	amount := float64(quota)
-	// OpenAI 兼容接口中的 *_USD 字段含义保持“额度单位”对应值：
-	// 我们将其解释为以“站点展示类型”为准：
-	// - USD: 直接除以 QuotaPerUnit
-	// - CNY: 先转 USD 再乘汇率
-	// - TOKENS: 直接使用 tokens 数量
-	switch operation_setting.GetQuotaDisplayType() {
-	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
-	case operation_setting.QuotaDisplayTypeTokens:
-		// amount 保持 tokens 数值
-	default:
-		amount = amount / common.QuotaPerUnit
-	}
-	if token != nil && token.UnlimitedQuota {
-		amount = 100000000
-	}
+	// OpenAI clients render the remaining budget as
+	// hard_limit_usd - total_usage/100, so the limit published here is the
+	// account's *total* quota line (remaining + used) and GetUsage reports the
+	// used half of that same line.
+	amount := quotaAmount(remainQuota + usedQuota)
 	subscription := OpenAISubscriptionResponse{
 		Object:             "billing_subscription",
 		HasPaymentMethod:   true,
@@ -69,17 +96,7 @@ func GetSubscription(c *gin.Context) {
 }
 
 func GetUsage(c *gin.Context) {
-	var quota int
-	var err error
-	var token *model.Token
-	if common.DisplayTokenStatEnabled {
-		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
-		quota = token.UsedQuota
-	} else {
-		userId := c.GetInt("id")
-		quota, err = model.GetUserUsedQuota(userId)
-	}
+	_, usedQuota, _, err := quotaLine(c)
 	if err != nil {
 		openAIError := types.OpenAIError{
 			Message: err.Error(),
@@ -90,18 +107,11 @@ func GetUsage(c *gin.Context) {
 		})
 		return
 	}
-	amount := float64(quota)
-	switch operation_setting.GetQuotaDisplayType() {
-	case operation_setting.QuotaDisplayTypeCNY:
-		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
-	case operation_setting.QuotaDisplayTypeTokens:
-		// tokens 保持原值
-	default:
-		amount = amount / common.QuotaPerUnit
-	}
+	// OpenAI reports this figure in cents; the x100 is what keeps the subtract
+	// above in the same unit as hard_limit_usd.
 	usage := OpenAIUsageResponse{
 		Object:     "list",
-		TotalUsage: amount * 100,
+		TotalUsage: quotaAmount(usedQuota) * 100,
 	}
 	c.JSON(200, usage)
 	return
