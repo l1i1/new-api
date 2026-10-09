@@ -1736,7 +1736,7 @@ ess_rollout() {
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
-  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids
+  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids drain_ips
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
@@ -1864,6 +1864,19 @@ rollout_batch() {
         return 1
       fi
     done
+    # Park the instances ESS is about to remove in the relay drain file BEFORE the
+    # hold. The hold only protects streams that were already running when it
+    # started; anything arriving during the 1900s would still be cut at the
+    # scale-in. The marker is cleared once the removals are confirmed (wait_retired)
+    # and by the release's EXIT trap.
+    drain_ips="$(oldest_instance_ips "$retiring" || true)"
+    if [[ -n "$drain_ips" ]]; then
+      if relay_drain_write "$drain_ips"; then
+        log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
+      else
+        warn "could not park the retiring instances; requests arriving during the hold may be cut at the scale-in"
+      fi
+    fi
     log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
     # Scaling in is asynchronous: the group keeps reporting the removed

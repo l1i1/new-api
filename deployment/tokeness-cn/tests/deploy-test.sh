@@ -146,6 +146,7 @@ run_deploy() {
     ML_DRAIN_SECONDS=0 \
     RELAY_MAX_MEMBERS=10 \
     SHRINK_HOLD_PATH="$case_dir/shrink-hold" \
+    SHRINK_DRAIN_PATH="$case_dir/shrink-drain" \
     ML_DRAIN_CONVERGE_ATTEMPTS=2 \
     ML_DRAIN_CONVERGE_DELAY_SECONDS=0 \
     CNB_REGISTRY_TOKEN=dummy-test-token \
