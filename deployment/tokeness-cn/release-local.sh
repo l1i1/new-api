@@ -143,7 +143,16 @@ docker push "$IMAGE_NAME:ml-$TAG" || die "push failed (is the registry credentia
 
 digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_NAME:ml-$TAG" 2>/dev/null | cut -d@ -f2)"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "could not read the pushed digest for $IMAGE_NAME:ml-$TAG"
-log "digest: $digest"
+# Confirm the registry's own manifest digest before handing this to deploy.sh: the
+# local RepoDigests entry is what the push recorded locally, and a release must
+# deploy an artifact whose identity the registry agrees with. (Read live against
+# ml-...mainland.44: both agree.)
+registry_digest="$(docker buildx imagetools inspect "$IMAGE_NAME:ml-$TAG" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' | tr -d ' \r')"
+if [[ -n "$registry_digest" && "$registry_digest" != "$digest" ]]; then
+  die "registry reports $registry_digest for $IMAGE_NAME:ml-$TAG but the local image says $digest; refusing to deploy an artifact the registry does not confirm"
+fi
+[[ -n "$registry_digest" ]] || log "WARNING: could not read the registry digest; the local one is unverified"
+log "digest: $digest (registry-confirmed)"
 
 if (( DO_DEPLOY )); then
   log "rolling out with deploy.sh (this takes hours: master, then batch rounds with drain windows)"
