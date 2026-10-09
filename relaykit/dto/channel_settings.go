@@ -24,8 +24,20 @@ type ChannelSettings struct {
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
-	SystemPrompt              string `json:"system_prompt,omitempty"`
-	SystemPromptOverride      bool   `json:"system_prompt_override,omitempty"`
+	// InternalStreamForNonStream calls this channel's upstream with stream=true
+	// even when the client asked for a single JSON body, then buffers the deltas
+	// back into one non-streaming response (see relay/channel/openai
+	// OaiChatBufferedStreamHandler). It exists because a non-streaming request is
+	// otherwise bounded by RELAY_RESPONSE_HEADER_TIMEOUT - the relay waits for
+	// response *headers*, and a non-streaming upstream sends none until the whole
+	// answer exists. Streaming moves the wait inside the stream, where the
+	// response-header limit no longer applies, and because nothing is written to
+	// the client until the buffer is complete the ordinary retry/failover path
+	// keeps working. Opt-in per channel so a deployment can pilot it on one
+	// upstream and roll back by clearing the flag.
+	InternalStreamForNonStream bool   `json:"internal_stream_for_nonstream,omitempty"`
+	SystemPrompt               string `json:"system_prompt,omitempty"`
+	SystemPromptOverride       bool   `json:"system_prompt_override,omitempty"`
 	// TaskExtendPluginKeys lists the task plugins a New API channel (type 60)
 	// is extended with. The upstream gateway may host many plugins, so the
 	// channel serves every listed plugin's models while the request still pins

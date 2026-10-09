@@ -16,6 +16,7 @@ type ClaudeToChatStreamState = claudemessages.ClaudeToChatStreamState
 
 type ChatToResponsesStreamEvent = oaichat.ChatToResponsesStreamEvent
 type ChatToResponsesStreamState = oaichat.ChatToResponsesStreamState
+type ChatBufferedAccumulator = oaichat.ChatBufferedAccumulator
 type ResponsesToChatStreamState = oairesponses.ResponsesToChatStreamState
 type ResponsesBufferedAccumulator = oairesponses.ResponsesBufferedAccumulator
 
@@ -207,4 +208,8 @@ func FinalizeResponsesToChatStream(state *ResponsesToChatStreamState) []dto.Chat
 
 func NewResponsesBufferedAccumulator() *ResponsesBufferedAccumulator {
 	return oairesponses.NewResponsesBufferedAccumulator()
+}
+
+func NewChatBufferedAccumulator() *ChatBufferedAccumulator {
+	return oaichat.NewChatBufferedAccumulator()
 }

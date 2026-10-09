@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/lo"
+	"github.com/tidwall/sjson"
 
 	"github.com/gin-gonic/gin"
 )
@@ -100,6 +102,22 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return nil
 	}
 
+	// Internal-stream mode (dto.ChannelSettings.InternalStreamForNonStream): the
+	// client asked for one JSON body, but this channel is served by calling the
+	// upstream with stream=true and buffering the deltas back into a single
+	// response - see relay/channel/openai.OaiChatBufferedStreamHandler for why.
+	//
+	// info.IsStream is deliberately left false here. It gates
+	// relay/channel/api_request.go's SetEventStreamHeaders, and the client must
+	// still receive a plain JSON body; the streaming happens only on the upstream
+	// leg. Pass-through channels are excluded because their body is forwarded
+	// verbatim and cannot be rewritten.
+	internalStreamForNonStream := info.ChannelSetting.InternalStreamForNonStream &&
+		!info.IsStream &&
+		!passThroughRequestBody &&
+		info.RelayMode == relayconstant.RelayModeChatCompletions &&
+		info.RelayFormat == types.RelayFormatOpenAI
+
 	var requestBody io.Reader
 
 	if passThroughRequestBody {
@@ -137,6 +155,24 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			}
 		}
 
+		// Internal-stream mode rewrites the outbound body only. sjson (the same
+		// writer the param-override engine uses) keeps the key order and the
+		// untouched fields byte-identical, which matters because providers such
+		// as Moonshot echo structured fields back and the round trip must survive.
+		// include_usage matches what the platform already sends for real streaming
+		// requests (relay/channel/openai/adaptor.go), so it introduces nothing an
+		// upstream serving our streaming traffic has not already accepted.
+		if internalStreamForNonStream {
+			patched, patchErr := sjson.SetBytes(jsonData, "stream", true)
+			if patchErr == nil {
+				patched, patchErr = sjson.SetBytes(patched, "stream_options.include_usage", true)
+			}
+			if patchErr != nil {
+				return types.NewError(patchErr, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+			jsonData = patched
+		}
+
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
 		body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
@@ -168,7 +204,18 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 	}
 
-	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
+	// Internal-stream mode answers the non-streaming client from the buffered
+	// upstream stream instead of letting DoResponse pick the streaming path: the
+	// upstream is now emitting SSE while the client asked for one JSON body.
+	// Nothing has been written to the client at this point, so a failure here
+	// still leaves the response uncommitted and the retry loop can fail over.
+	var usage any
+	var newApiErr *types.NewAPIError
+	if internalStreamForNonStream && httpResp != nil {
+		usage, newApiErr = openaichannel.OaiChatBufferedStreamHandler(c, info, httpResp)
+	} else {
+		usage, newApiErr = adaptor.DoResponse(c, httpResp, info)
+	}
 	if newApiErr != nil {
 		// A failed stream can still have produced billable upstream usage: either
 		// the transport terminated after output, or the response was rejected as
