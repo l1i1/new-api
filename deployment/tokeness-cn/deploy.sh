@@ -1961,6 +1961,15 @@ rollout_batch() {
     # and by the release's EXIT trap.
     drain_ips="$(oldest_instance_ips "$retiring" || true)"
     [[ -n "$drain_ips" ]] || warn "round $rounds: no instance to park (retiring=$retiring); requests arriving during the hold are unprotected"
+    # The parked set IS the set this round gates on: gating on the count-derived
+    # `retiring` while parking a different number made the two disagree whenever
+    # the group had grown externally (H2). Whatever we actually parked is what we
+    # now require to leave service.
+    parked="$(printf '%s\n' "$drain_ips" | grep -c . || true)"
+    if (( parked > 0 && parked != retiring )); then
+      warn "round $rounds: parked $parked instance(s) but planned to retire $retiring; gating on the parked set"
+      retiring="$parked"
+    fi
     if [[ -n "$drain_ips" ]]; then
       if relay_drain_write "$drain_ips"; then
         log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
