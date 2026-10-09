@@ -1222,32 +1222,35 @@ wait_healthy_instances() {
   return 1
 }
 
-# wait_instances_exactly <want> [tries] - wait until EXACTLY <want> instances are
-# InService and Healthy.
+# wait_retired <ids> <want> [tries] - wait until at least <want> of the
+# newline-separated <ids> have LEFT the in-service set.
 #
-# This is the gate that a scale-IN must use, and the distinction is the whole
-# point: scaling in is asynchronous, so right after ModifyScalingGroup the group
-# still reports the larger set for as long as ESS needs to terminate the
-# instances. wait_healthy_instances uses "at least" (correct for a scale-out
-# gate, where the count only grows toward the target), so after a scale-in it
-# returns immediately, the rollout's next round issues a scale-out while the
-# removal is still in flight, ESS supersedes the pending removal, no new
-# instance appears, and the rollout aborts - which is exactly how the
-# 2026-10-09 release lost two hours and rolled the whole tier back.
-wait_instances_exactly() {
-  local want="$1" tries="${2:-40}" i=0 got
+# This replaces an "exactly N in service" gate. The count could not tell a
+# completed scale-in from an external scale-out: the tier's own alarms can add
+# instances (cpu-out-70 -> +2), so a release that overlapped a downstream ramp
+# saw a legitimately larger group, failed the exact gate after 40 polls and
+# rolled back hours of work. What the gate must actually prove is narrower: the
+# instances this round is retiring are gone, so the next round's scale-out
+# cannot supersede ESS's still-pending removal - the race that killed
+# v1.0.0-rc.40-tokeness-mainland.42 after two hours. Instance identity answers
+# that; the total count does not.
+wait_retired() {
+  local ids="$1" want="$2" tries="${3:-40}" i=0 left=0 current id
   while [ "$i" -lt "$tries" ]; do
-    got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-      | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' | tr -d '\r')" \
-      || got="0"
-    if [ "$got" -eq "$want" ]; then
-      log "instances settled at $got (want exactly $want)"
+    current="$(in_service_instance_ids)" || current=""
+    left=0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$current" | grep -qxF "$id" || left=$(( left + 1 ))
+    done <<<"$ids"
+    if (( left >= want )); then
+      log "scale-in complete: $left of the $want retiring instance(s) left service"
       return 0
     fi
     sleep "$HEALTH_POLL_SECONDS"
-    i=$((i + 1))
+    i=$(( i + 1 ))
   done
-  error "timed out waiting for exactly $want healthy instance(s) (have $got)"
+  error "timed out waiting for $want instance(s) to leave service (only $left gone)"
   return 1
 }
 
@@ -1609,7 +1612,7 @@ ess_rollout() {
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
-  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want
+  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
@@ -1687,8 +1690,17 @@ rollout_batch() {
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
-    want=$(( stable + (batch < ${#remaining[@]} ? batch : ${#remaining[@]}) ))
-    log "round $rounds: replacing up to $(( want - stable )) of ${#remaining[@]} remaining pre-existing instance(s) via $want instances"
+    # Size the round against what is ACTUALLY in service, not against the steady
+    # state this run found at its start. The tier's own alarms add instances
+    # without asking (cpu-out-70 -> +2), and a downstream ramp during a release
+    # will trigger them; "scale to stable + k" would then scale IN, create no new
+    # instance, and fail the round - a rollback caused by the autoscaler doing its
+    # job. The extra instances are left in place for the scale-in alarm to trim.
+    current_count=$(printf '%s\n' "$current_ids" | grep -c . || true)
+    base="$stable"
+    (( current_count > base )) && base="$current_count"
+    want=$(( base + (batch < ${#remaining[@]} ? batch : ${#remaining[@]}) ))
+    log "round $rounds: replacing up to $(( want - base )) of ${#remaining[@]} remaining pre-existing instance(s) via $want instances (steady state $base)"
     if ! scale_group "$want" || ! wait_healthy_instances "$want"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
@@ -1722,13 +1734,15 @@ rollout_batch() {
     done
     log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
-    # EXACT count, not "at least": scaling in is asynchronous, so the group keeps
-    # reporting the larger set for a while after ModifyScalingGroup. An "at
-    # least" gate passes instantly here, the next round issues its scale-out
-    # while this scale-in is still in flight, ESS supersedes the pending removal
-    # and reports no new instance - which is how the 2026-10-09 release died
-    # after two hours and rolled the whole tier back.
-    if ! scale_group "$stable" || ! wait_instances_exactly "$stable"; then
+    # Scaling in is asynchronous: the group keeps reporting the removed
+    # instances for a while after ModifyScalingGroup. Waiting on the COUNT used
+    # to be enough, but the tier's alarms can now add instances on their own
+    # (+2 per firing), which inflates the count legitimately and made the old
+    # exact gate time out mid-release. Gate on the retire set instead: this
+    # round asked ESS to remove $retiring pre-existing instance(s), and the next
+    # round may only scale out once they are actually gone.
+    retiring=$(( want - base ))
+    if ! scale_group "$base" || ! wait_retired "$(printf '%s\n' "${remaining[@]}")" "$retiring"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi

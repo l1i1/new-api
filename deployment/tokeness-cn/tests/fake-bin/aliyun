@@ -327,6 +327,7 @@ case "$cmd" in
     ;;
   "ess ModifyScalingGroup")
     desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
+    before_count="$(jq -c '.instances | length' "$state" | tr -d '\r')"
     # A scale-out SUPERSEDES an in-flight scale-in, exactly as the real ESS does:
     # the instances the pending removal had already detached come back and no
     # replacement is created for them. This is the behaviour that killed the
@@ -365,6 +366,30 @@ case "$cmd" in
         state_update '.instances = .instances[1:]'
       fi
     done
+    # External scale-out injection (test-only): mimic the tier's alarm adding
+    # instances while the rollout is running.
+    ext="${TOKENESS_TEST_EXTERNAL_SCALEOUT:-}"
+    if [[ "$ext" =~ ^[1-9][0-9]*$ && ! -f "$state_dir/.external_scaleout_done" ]] \
+       && (( $(jq -c '.instances | length' "$state" | tr -d '\r') < before_count )); then
+      touch "$state_dir/.external_scaleout_done"
+      # A separate counter and IP range: these instances are NOT the rollout's,
+      # so they must not consume the monotonic index the round's own instances
+      # are numbered from. 10.0.0.201/202 are pre-listed in the case's relay
+      # fixture, which is what the entry's fleet sync would do in production.
+      j=0
+      while (( j < ext )); do
+        e="$(jq '.ext_index // 1' "$state" | tr -d '\r')"
+        state_update --argjson e "$e" '.instances += [{
+          "InstanceId": ("eci-ext-" + ($e | tostring)),
+          "PrivateIpAddress": ("10.0.0." + (200 + $e | tostring)),
+          "HealthStatus": "Healthy",
+          "LifecycleState": "InService"
+        }] | .ext_index = ($e + 1)'
+        j=$(( j + 1 ))
+      done
+      printf '%s\n' "external scale-out injected: $ext instance(s)" >> "$state_dir/external-scaleout.log"
+    fi
+
     state_update --argjson d "$desired" '.desired = $d'
     printf '%s\n' '{"RequestId":"fake"}'
     ;;

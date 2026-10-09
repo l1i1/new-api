@@ -966,7 +966,7 @@ run_deploy "$race_case" \
   TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   rollout-all
-grep -q "instances settled at 2 (want exactly 2)" "$race_case/state/stdout.log" \
+grep -q "scale-in complete:" "$race_case/state/stdout.log" \
   || fail "the rollout did not wait for the asynchronous scale-in to settle"
 grep -q "retired all 2 pre-existing instance(s) in 2 round(s)" "$race_case/state/stdout.log" \
   || fail "the rollout did not converge once the scale-in settled"
@@ -1069,6 +1069,41 @@ grep -q "no scale-in alarm named 'cpu-in-25'" "$no_alarm_case/state/stdout.log" 
   || fail "a missing scale-in alarm did not warn"
 grep -q "master container blue-green complete" "$no_alarm_case/state/stdout.log" \
   || fail "a missing scale-in alarm aborted the release"
+
+# (11) The tier's own alarms can add instances during a release (cpu-out-70 now
+# adds two at a time on a 2-minute window). The old scale-in gate waited for an
+# EXACT instance count, so a downstream ramp mid-release inflated the group
+# legitimately and the release timed out and rolled back hours of work. The gate
+# now waits for the retiring instances to leave service, which an external
+# scale-out does not disturb.
+external_case="$test_root/scale-in-external-scaleout"
+mkdir -p "$external_case/state"
+make_conf "$external_case/nginx.conf"
+init_ess_state "$external_case/state"
+jq '.desired = 2 | .max_size = 3 | .instances += [{
+      InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
+      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+  "$external_case/state/state.json" > "$external_case/state/tmp.json" \
+  && mv "$external_case/state/tmp.json" "$external_case/state/state.json"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.201:3000;\nserver 10.0.0.202:3000;\n' \
+  > "$external_case/ecs-upstream.conf"
+run_deploy "$external_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 \
+  TOKENESS_TEST_EXTERNAL_SCALEOUT=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "scale-in complete:" "$external_case/state/stdout.log" \
+  || fail "the release did not gate on the retire set"
+grep -qE "retired all [12] pre-existing instance\(s\)" "$external_case/state/stdout.log" \
+  || fail "the release did not converge across an external scale-out"
+if grep -q "ERROR: release batch rollout failed" "$external_case/state/stdout.log"; then
+  fail "an external scale-out made the release roll back"
+fi
+# The extra capacity the alarm added is left alone: the release restores the
+# steady state it found, and the scale-in alarm trims the rest later.
+jq -e '(.instances | length) >= 2' "$external_case/state/state.json" > /dev/null \
+  || fail "the external scale-out's instances were removed by the release"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
