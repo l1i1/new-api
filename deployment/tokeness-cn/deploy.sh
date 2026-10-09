@@ -214,7 +214,12 @@ remote_cmd_on() {
   # and that host has no ssh key for itself. Everything it would fetch over ssh -
   # the relay include, the drain marker, the master container - is local there, so
   # run the payload here. Placed before the key check on purpose: no key exists.
-  if [[ "$MASTER_LOCAL" == "1" ]]; then
+  # Local execution is only correct for the master itself. remote_cmd_on is also
+  # called with the SWAS hosts (nginx updates, drain and web-primary markers,
+  # upstream reads); running those here would edit the master while reporting
+  # success, so anything that is not MASTER_HOST keeps going over ssh (and fails
+  # closed there, because this host has no keys for them).
+  if [[ "$MASTER_LOCAL" == "1" && "$host" == "$MASTER_HOST" ]]; then
     bash -s -- "$@"
     return $?
   fi
