@@ -24,6 +24,12 @@ FROM scratch AS web-dist-export
 COPY --from=web-builder /build/web/dist /dist
 
 FROM golang:1.26.1-alpine@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS go-builder
+# Module downloads are the slowest step from the mainland: proxy.golang.org is
+# throttled or unreachable there. Override with --build-arg GOPROXY=...
+# (deployment/tokeness-cn/release-local.sh passes goproxy.cn).
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 ENV GO111MODULE=on CGO_ENABLED=0
 
 ARG TARGETOS
