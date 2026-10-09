@@ -72,8 +72,13 @@ head_commit="$(git rev-parse HEAD)"
 if [[ "$tag_commit" != "$head_commit" ]]; then
   die "HEAD ($head_commit) is not $TAG ($tag_commit); check the tag out or rebuild it"
 fi
-[[ -z "$(git status --porcelain -- . | grep -v '^?? VERSION$' || true)" ]] \
-  || log "WARNING: working tree is dirty; the image will contain uncommitted changes"
+# Build from the committed tree or not at all: the image bakes VERSION from the
+# tag, so uncommitted source would ship under a version that does not describe it,
+# and deploy.sh's version check cannot tell the difference. CI gets this for free
+# by building a fresh clone.
+dirty="$(git status --porcelain -- . | grep -v '^?? VERSION$' | grep -v '^ M VERSION$' || true)"
+[[ -z "$dirty" ]] || die "working tree has uncommitted changes:$(
+printf '\n%s' "$dirty")"
 
 log "building $IMAGE_NAME:ml-$TAG from $tag_commit"
 printf '%s\n' "$TAG" > VERSION
@@ -110,6 +115,17 @@ docker build "${cache_args[@]}" "${build_args[@]}" \
 if (( BUILD_ONLY )); then
   log "built $IMAGE_NAME:ml-$TAG (not pushed)"
   exit 0
+fi
+
+# Release images are immutable: the tag names a version and deploy.sh verifies the
+# running container reports it, so re-pushing one silently replaces a shipped
+# artifact. Refuse unless the operator says so explicitly.
+if docker buildx imagetools inspect "$IMAGE_NAME:ml-$TAG" >/dev/null 2>&1; then
+  if [[ "${ALLOW_TAG_OVERWRITE:-0}" == "1" ]]; then
+    log "WARNING: $IMAGE_NAME:ml-$TAG already exists in the registry; overwriting because ALLOW_TAG_OVERWRITE=1"
+  else
+    die "$IMAGE_NAME:ml-$TAG already exists in the registry; release tags are immutable (set ALLOW_TAG_OVERWRITE=1 only to repair one)"
+  fi
 fi
 
 log "pushing $IMAGE_NAME:ml-$TAG"
