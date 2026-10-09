@@ -167,6 +167,11 @@ sleep_with_heartbeat() {
     elapsed=$(( elapsed + chunk ))
     if (( elapsed < seconds )); then
       log "rollout drain still active (${elapsed}/${seconds}s)"
+      # Heartbeat the hold as well. The guard treats an old hold as abandoned (a
+      # SIGKILLed release never runs its EXIT trap), so a release that runs longer
+      # than that threshold has to keep proving it is alive - otherwise the guard
+      # would resume shrinking while the rollout is still draining.
+      shrink_hold_write set >/dev/null 2>&1 || warn "could not refresh the shrink guard hold"
     fi
   done
 }
@@ -1153,7 +1158,11 @@ suspend_scale_in_guard() {
   if shrink_hold_write set; then
     log "entry shrink guard held off for the release"
   else
-    warn "could not write the shrink guard hold on $MASTER_HOST; a scale-in could race this release"
+    # Fail closed. The guard's only job is to keep the tier from shrinking while a
+    # rollout owns it; releasing without that promise means the tier can shed an
+    # instance mid-round, which is the failure mode the drain windows exist to
+    # avoid. Better to refuse than to roll the dice.
+    die "could not write the shrink guard hold on $MASTER_HOST; refusing to release (a scale-in could race the rollout)"
   fi
   id="$(scale_in_alarm_id)" || id=""
   if [[ -z "$id" ]]; then
