@@ -1116,6 +1116,42 @@ current_max_size() {
   printf '%s\n' "$max"
 }
 
+# relay_member_cap - how many instances the ENTRY's relay upstream list can
+# carry, i.e. MAX_MEMBERS in the entry's /usr/local/sbin/ecs-fleet-sync.
+#
+# This is a second ceiling, independent of the scaling group's MaxSize:
+# ecs-fleet-sync truncates the list it writes with `head -n "$MAX_MEMBERS"`, so an
+# instance beyond the cap never appears in the relay upstream, and
+# wait_ecs_upstream_converged times out 180s later and rolls the whole release
+# back. That is exactly how v1.0.0-rc.40-tokeness-mainland.42 died on 2026-10-09:
+# the group allowed 9, the relay cap was 8, and the 9th instance was invisible.
+#
+# RELAY_MAX_MEMBERS overrides the lookup (the tests use it). When the value
+# cannot be read the caller proceeds on the ESS ceiling alone and says so: a
+# failed lookup must not block a release - only a KNOWN too-small cap does.
+relay_member_cap() {
+  if [[ -n "${RELAY_MAX_MEMBERS:-}" ]]; then
+    case "$RELAY_MAX_MEMBERS" in
+      ''|*[!0-9]*) error "RELAY_MAX_MEMBERS must be a positive integer"; return 1 ;;
+    esac
+    printf '%s\n' "$RELAY_MAX_MEMBERS"
+    return 0
+  fi
+  local cap
+  cap="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" <<'REMOTE_CAP' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+f=/usr/local/sbin/ecs-fleet-sync
+[[ -r "$f" ]] || exit 1
+grep -oE 'MAX_MEMBERS:-[0-9]+' "$f" | head -1 | grep -oE '[0-9]+'
+REMOTE_CAP
+)" || cap=""
+  case "$cap" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$cap"
+}
+
 wait_healthy_instances() {
   local want="$1" tries="${2:-40}" i=0 got
   while [ "$i" -lt "$tries" ]; do
@@ -1520,34 +1556,46 @@ ess_rollout() {
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
-  local stable max batch rounds=0 round_limit current_ids id ip want
+  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
   stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
   max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
+  # The group's MaxSize is not the only ceiling: the entry's relay list caps how
+  # many members it can carry (relay_member_cap), and an instance past that cap
+  # never reaches the relay tier at all. Grow into the smaller of the two.
+  if relay_cap="$(relay_member_cap)"; then
+    ceiling=$(( relay_cap < max ? relay_cap : max ))
+    if (( relay_cap < max )); then
+      log "relay upstream carries at most $relay_cap member(s), below MaxSize=$max; using $ceiling as the growth ceiling"
+    fi
+  else
+    ceiling="$max"
+    warn "could not read the relay list cap on $MASTER_HOST (/usr/local/sbin/ecs-fleet-sync); planning against MaxSize=$max alone - if that cap is lower, the new instance will never reach the relay tier"
+  fi
   if [[ -n "$requested_batch" ]]; then
     case "$requested_batch" in
       ''|*[!0-9]*) error "batch size must be a positive integer (got '$requested_batch')"; return 1 ;;
     esac
     batch="$requested_batch"
   else
-    # No size asked for: use every slot MaxSize allows.
-    batch=$(( max - stable ))
+    # No size asked for: use every slot the ceilings allow.
+    batch=$(( ceiling - stable ))
   fi
   if (( batch < 1 )); then
     if [[ -n "$requested_batch" ]]; then
       error "batch size must be at least 1 (got $batch)"
     else
-      error "no headroom to batch: DesiredCapacity=$stable MaxSize=$max (raise MaxSize, or roll one instance per release)"
+      error "no headroom to batch: DesiredCapacity=$stable growth ceiling=$ceiling (MaxSize=$max, relay cap=${relay_cap:-unknown}) - raise the smaller one, or roll one instance per release"
     fi
     return 1
   fi
-  # MaxSize is a hard ceiling, so an over-large request is refused rather than
+  # Both ceilings are hard, so an over-large request is refused rather than
   # silently clamped: an operator who asked for 8 wants 8, and quietly replacing
   # 4 would misreport how wide the blast radius was.
-  if (( batch > max - stable )); then
-    error "batch size $batch exceeds the scaling group's headroom (MaxSize=$max DesiredCapacity=$stable, so at most $(( max - stable )))"
+  if (( batch > ceiling - stable )); then
+    error "batch size $batch exceeds the headroom (growth ceiling=$ceiling DesiredCapacity=$stable, so at most $(( ceiling - stable )); MaxSize=$max relay cap=${relay_cap:-unknown})"
     return 1
   fi
   if [[ -n "$retire_ids" ]]; then
@@ -1715,7 +1763,7 @@ rollout_verb() {
 # degrades to "skip" on a group that cannot batch at all. A release must never
 # fail because of the shape of its scaling group.
 resolve_release_batch() {
-  local requested="${ROLLOUT_BATCH-}" batch stable max headroom
+  local requested="${ROLLOUT_BATCH-}" batch stable max headroom relay_cap
   # Empty means "unset" and takes the built-in default; anything non-numeric is
   # an operator error. The two must not share a case branch: an unset variable is
   # the normal case, and failing on it would break every release.
@@ -1735,6 +1783,16 @@ resolve_release_batch() {
   fi
   stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
   max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
+  # The entry's relay list is the second ceiling (see relay_member_cap): the
+  # release's own single-instance roll needs stable+1 members carried, so a cap
+  # at or below the steady state cannot serve ANY rollout.
+  if relay_cap="$(relay_member_cap)"; then
+    if (( relay_cap < stable + 1 )); then
+      error "the relay upstream can carry $relay_cap member(s) but the tier runs $stable: raise MAX_MEMBERS on the entry (or lower DesiredCapacity) before releasing - the new instance would never reach the relay tier"
+      return 1
+    fi
+    (( relay_cap < max )) && max="$relay_cap"
+  fi
   headroom=$(( max - stable ))
   if (( headroom < 1 )); then
     if [[ -n "$requested" ]]; then
@@ -1751,7 +1809,7 @@ resolve_release_batch() {
   fi
   if (( batch > headroom )); then
     if [[ -n "$requested" ]]; then
-      error "ROLLOUT_BATCH=$batch exceeds the scaling group's headroom (MaxSize=$max DesiredCapacity=$stable, so at most $headroom)"
+      error "ROLLOUT_BATCH=$batch exceeds the growth ceiling (relay cap=${relay_cap:-unknown}, MaxSize=$max, DesiredCapacity=$stable, so at most $headroom)"
       return 1
     fi
     batch="$headroom"

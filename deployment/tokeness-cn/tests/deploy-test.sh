@@ -144,6 +144,7 @@ run_deploy() {
     WEB_PRIMARY_CONVERGE_DELAY_SECONDS=0 \
     TOKENESS_TEST_MLSYNC=1 \
     ML_DRAIN_SECONDS=0 \
+    RELAY_MAX_MEMBERS=10 \
     ML_DRAIN_CONVERGE_ATTEMPTS=2 \
     ML_DRAIN_CONVERGE_DELAY_SECONDS=0 \
     CNB_REGISTRY_TOKEN=dummy-test-token \
@@ -911,7 +912,7 @@ if run_deploy "$overbatch_case" \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "an explicit batch size above the group's headroom was accepted"
 fi
-grep -q "exceeds the scaling group's headroom" "$overbatch_case/state/output.log" \
+grep -q "exceeds the growth ceiling" "$overbatch_case/state/output.log" \
   || fail "an over-large explicit batch did not explain the headroom limit"
 if grep -q "ess ModifyScalingGroup" "$overbatch_case/state/aliyun-calls.log"; then
   fail "an over-large explicit batch was rejected only after the tier had moved"
@@ -974,6 +975,62 @@ jq -e '(.instances | length) == 2
        and ([.instances[].InstanceId] | index("eci-old2") == null)' \
   "$race_case/state/state.json" > /dev/null \
   || fail "the rollout did not retire every pre-existing instance after the race"
+
+# (9) The entry's relay list is a SECOND ceiling, and the release must respect
+# it: ecs-fleet-sync truncates the list with `head -n MAX_MEMBERS`, so an
+# instance past the cap never reaches the relay tier and the gate times out 180s
+# later. v1.0.0-rc.40-tokeness-mainland.42 died exactly there - the group allowed
+# 9, the cap was 8, and the rollout rolled back after 1h44m with
+# "the ECS relay tier did not start serving 10.0.0.22 within 180s".
+#
+# Explicit request above the cap: refused before anything mutates.
+relay_cap_case="$test_root/relay-cap-explicit"
+mkdir -p "$relay_cap_case/state"
+make_conf "$relay_cap_case/nginx.conf"
+init_ess_state "$relay_cap_case/state"
+jq '.max_size = 6' "$relay_cap_case/state/state.json" > "$relay_cap_case/state/tmp.json" \
+  && mv "$relay_cap_case/state/tmp.json" "$relay_cap_case/state/state.json"
+if run_deploy "$relay_cap_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  RELAY_MAX_MEMBERS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_BATCH=3 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "a batch size above the relay list cap was accepted"
+fi
+grep -q "exceeds the growth ceiling" "$relay_cap_case/state/output.log" \
+  || fail "an over-cap batch did not explain the relay ceiling"
+if grep -q "ess ModifyScalingGroup" "$relay_cap_case/state/aliyun-calls.log"; then
+  fail "an over-cap batch was rejected only after the tier had moved"
+fi
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$relay_cap_case/state/state.json" > /dev/null \
+  || fail "the refused release still re-pinned the scaling configuration"
+
+# Default (no ROLLOUT_BATCH): the batch is clamped to the relay cap instead of
+# the MaxSize, so the rollout stays inside what the entry can carry.
+relay_clamp_case="$test_root/relay-cap-clamp"
+mkdir -p "$relay_clamp_case/state"
+make_conf "$relay_clamp_case/nginx.conf"
+init_ess_state "$relay_clamp_case/state"
+jq '.desired = 2 | .max_size = 8 | .instances += [{
+      InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
+      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+  "$relay_clamp_case/state/state.json" > "$relay_clamp_case/state/tmp.json" \
+  && mv "$relay_clamp_case/state/tmp.json" "$relay_clamp_case/state/state.json"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
+  > "$relay_clamp_case/ecs-upstream.conf"
+run_deploy "$relay_clamp_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 \
+  RELAY_MAX_MEMBERS=4 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "relay upstream carries at most 4 member(s), below MaxSize=8" "$relay_clamp_case/state/stdout.log" \
+  || fail "the release did not notice the relay ceiling"
+grep -q "up to 2 per round" "$relay_clamp_case/state/stdout.log" \
+  || fail "the batch was not clamped to the relay ceiling (cap 4 - stable 2 = 2)"
+jq -e '.desired == 2' "$relay_clamp_case/state/state.json" > /dev/null \
+  || fail "the clamped release did not restore the steady-state capacity"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
