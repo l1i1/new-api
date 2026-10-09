@@ -78,6 +78,18 @@ readonly ML_DRAIN_SECONDS="${ML_DRAIN_SECONDS:-1900}"
 # Poll interval for the instance-count gates. Production keeps 20s; the tests
 # shorten it because the fake ESS emulates an asynchronous scale-in window.
 readonly HEALTH_POLL_SECONDS="${HEALTH_POLL_SECONDS:-20}"
+# The tier carries a scale-in alarm (cpu-in-25: CPU <= 25% for 30 minutes, minus
+# one instance, floored by MinSize) that trims capacity a release leaves behind.
+# It must not run WHILE a release is rolling: the rollout deliberately grows the
+# tier and then steps it back down, and the alarm would retire instances out from
+# under the round. Suspended for the duration of every mutating verb, resumed on
+# exit whatever happens. SCALE_IN_ALARM_ID pins the task id; otherwise it is
+# looked up by name (an empty result just logs a warning - a missing alarm must
+# never block a release).
+readonly SCALE_IN_ALARM_NAME="${SCALE_IN_ALARM_NAME:-cpu-in-25}"
+SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
+# Set while the alarm is suspended, so the exit trap knows it has work to do.
+scale_in_guard_suspended=""
 readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
 readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
 # Must outlive convergence plus the drain wait, or ml-sync would drop the pin
@@ -1083,6 +1095,47 @@ scale_group() {
   log "scaling group desired capacity set to $desired"
 }
 
+# scale_in_alarm_id - the AlarmTaskId of the tier's scale-in alarm, or empty.
+scale_in_alarm_id() {
+  if [[ -n "$SCALE_IN_ALARM_ID" ]]; then
+    printf '%s\n' "$SCALE_IN_ALARM_ID"
+    return 0
+  fi
+  aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    | jq -r --arg name "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name == $name) | .AlarmTaskId' \
+    | head -1 | tr -d '\r'
+}
+
+# suspend_scale_in_guard / resume_scale_in_guard - hold the alarm off for the
+# duration of a rollout. Both are best-effort: an ESS hiccup here must not abort
+# a release, and a release that fails after suspending still resumes it via the
+# caller's EXIT trap.
+suspend_scale_in_guard() {
+  local id
+  id="$(scale_in_alarm_id)" || id=""
+  if [[ -z "$id" ]]; then
+    warn "no scale-in alarm named '$SCALE_IN_ALARM_NAME' on this scaling group; the tier may shed capacity during the rollout"
+    return 0
+  fi
+  if aliyun_cmd ess DisableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
+    scale_in_guard_suspended="$id"
+    log "scale-in alarm suspended for the rollout ($id)"
+  else
+    warn "could not suspend scale-in alarm $id; it may retire an instance mid-round"
+  fi
+}
+
+resume_scale_in_guard() {
+  [[ -n "$scale_in_guard_suspended" ]] || return 0
+  local id="$scale_in_guard_suspended"
+  scale_in_guard_suspended=""
+  if aliyun_cmd ess EnableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
+    log "scale-in alarm resumed ($id)"
+  else
+    warn "could not re-enable scale-in alarm $id; enable it manually"
+  fi
+}
+
 # current_desired_capacity - the group's DesiredCapacity right now.
 #
 # A rollout grows the tier by one and returns to exactly this number, so a site
@@ -1724,6 +1777,9 @@ rollout_all() {
 # master (panel + migrations + system tasks) has not taken yet.
 rollout_verb() {
   local batch="$1" tag="$2" digest="$3" snapshot='' prev=''
+  # The tier's scale-in alarm must not trim instances while a round is draining.
+  suspend_scale_in_guard
+  trap 'resume_scale_in_guard' EXIT
   if [[ -z "$tag" && -z "$digest" ]]; then
     snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
     digest="$(snapshot_config_digest "$snapshot")"
@@ -1907,6 +1963,10 @@ main() {
       # tier has already started moving.
       local release_batch
       release_batch="$(resolve_release_batch)" || die "the release's batch convergence is not usable as configured"
+      # Everything below mutates the tier; hold the scale-in alarm off until the
+      # release has finished (the trap fires on the die paths too).
+      suspend_scale_in_guard
+      trap 'resume_scale_in_guard' EXIT
       local release_tag="$2"
       local release_digest previous_digest previous_snapshot
       if [[ $# -eq 3 ]]; then
@@ -2007,6 +2067,8 @@ main() {
     rollback)
       [[ $# -eq 2 ]] || die "rollback requires one image digest (sha256:...)"
       local rollback_digest="$2" rollback_previous rollback_snapshot
+      suspend_scale_in_guard
+      trap 'resume_scale_in_guard' EXIT
       rollback_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
       rollback_previous="$(snapshot_config_digest "$rollback_snapshot")"
       [[ "$rollback_previous" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a rollback without rollback target"

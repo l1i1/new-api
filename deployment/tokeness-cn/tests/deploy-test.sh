@@ -1032,6 +1032,44 @@ grep -q "up to 2 per round" "$relay_clamp_case/state/stdout.log" \
 jq -e '.desired == 2' "$relay_clamp_case/state/state.json" > /dev/null \
   || fail "the clamped release did not restore the steady-state capacity"
 
+# (10) A release must hold the tier's scale-in alarm off while it rolls. The
+# alarm (cpu-in-25: CPU <= 25% for 30 minutes) trims capacity a release leaves
+# behind - but during a rollout the tier is deliberately grown and stepped back
+# down, so an alarm firing mid-round would retire instances the round is still
+# gating on. Suspended before the first mutation, resumed on exit.
+alarm_case="$test_root/scale-in-alarm-guard"
+mkdir -p "$alarm_case/state"
+make_conf "$alarm_case/nginx.conf"
+init_ess_state "$alarm_case/state"
+run_deploy "$alarm_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "scale-in alarm suspended for the rollout" "$alarm_case/state/stdout.log" \
+  || fail "the release did not suspend the scale-in alarm"
+grep -q "scale-in alarm resumed" "$alarm_case/state/stdout.log" \
+  || fail "the release did not resume the scale-in alarm"
+jq -e '.scale_in_alarm.state == "enabled"' "$alarm_case/state/state.json" > /dev/null \
+  || fail "the alarm was left suspended after the release"
+# Suspend must precede the first scaling call, and resume must follow the last.
+awk '/ess DisableAlarm/{d=NR} /ess ModifyScalingGroup/{if (!d) bad=1} /ess EnableAlarm/{e=NR} END{exit (bad||!d||!e)}' \
+  "$alarm_case/state/aliyun-calls.log" \
+  || fail "the alarm was not suspended before the first scaling call, or never resumed"
+# A missing alarm must warn, not abort: the guard is advisory.
+no_alarm_case="$test_root/scale-in-alarm-missing"
+mkdir -p "$no_alarm_case/state"
+make_conf "$no_alarm_case/nginx.conf"
+init_ess_state "$no_alarm_case/state"
+run_deploy "$no_alarm_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_SCALE_IN_ALARM_NAME=does-not-exist \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "no scale-in alarm named 'cpu-in-25'" "$no_alarm_case/state/stdout.log" \
+  || fail "a missing scale-in alarm did not warn"
+grep -q "master container blue-green complete" "$no_alarm_case/state/stdout.log" \
+  || fail "a missing scale-in alarm aborted the release"
+
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
 crlf_case="$test_root/crlf"

@@ -310,6 +310,21 @@ PY
 }
 
 case "$cmd" in
+  # The tier's scale-in alarm: deploy.sh looks it up by name, suspends it for the
+  # duration of a rollout and re-enables it on exit. The fake records the state so
+  # a case can assert the whole suspend -> rollout -> resume sequence.
+  "ess DescribeAlarms")
+    printf '{"AlarmList":{"Alarm":[{"Name":"%s","AlarmTaskId":"alarm-test-1","Enable":true}]}}\n' \
+      "${TOKENESS_TEST_SCALE_IN_ALARM_NAME:-cpu-in-25}"
+    ;;
+  "ess DisableAlarm"|"ess EnableAlarm")
+    id="$(flag_value --AlarmTaskId "$@" | tr -d '\r')"
+    event=disabled
+    [[ "$cmd" == "ess EnableAlarm" ]] && event=enabled
+    printf '%s\n' "ess $cmd --AlarmTaskId $id" >> "$state_dir/alarm-calls.log"
+    state_update --arg e "$event" --arg i "$id" '.scale_in_alarm = {id: $i, state: $e}'
+    printf '{"RequestId":"fake"}\n'
+    ;;
   "ess ModifyScalingGroup")
     desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
     # A scale-out SUPERSEDES an in-flight scale-in, exactly as the real ESS does:
