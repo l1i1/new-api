@@ -13,21 +13,28 @@
 #
 #   1. only when the tier has been idle long enough (no release running, request
 #      rate below IDLE_RPM for IDLE_MINUTES),
-#   2. park the oldest instance in DRAIN_FILE, which ecs-fleet-sync subtracts
-#      from the relay upstream list within a minute - so it stops receiving new
-#      requests while its in-flight streams finish,
-#   3. wait DRAIN_SECONDS, then ask ESS for one fewer instance. ESS's
-#      OldestInstance removal policy picks the parked instance.
+#   2. park the oldest instance in DRAIN_FILE (the v2 leased marker protocol:
+#      line 1 owner, line 2 lease expiry, then IPs), which ecs-fleet-sync
+#      subtracts from the relay upstream list within a minute - so it stops
+#      receiving new requests while its in-flight streams finish,
+#   3. wait DRAIN_SECONDS, re-verify the victim is still the instance we parked,
+#      then ask ESS for one fewer instance. ESS's OldestInstance removal policy
+#      picks the parked instance,
+#   4. keep the marker parked until the victim has left the group ENTIRELY (a
+#      member still in Removing is a removal in flight), then clear it.
 #
 # It never goes below MIN_KEEP instances, never acts while /etc/ml-sync/shrink-hold
-# exists (deploy.sh writes it for the duration of a release), and clears the
-# drain marker on every exit path so a failed shrink cannot leave the relay
-# short a member.
+# is fresh (deploy.sh writes it for the duration of a release), and only ever
+# clears a drain marker it owns: the release parks its own retire set in the
+# same file, and deleting a foreign marker mid-window would send new requests
+# back to an instance that is being retired.
 #
 # Every decision is logged to LOG; run with --dry-run to print what it would do.
 set -Eeuo pipefail
 
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The path is pinned for cron determinism; SHRINK_PATH exists only so the test
+# harness can prepend its fake-bin directory. Production never sets it.
+PATH="${SHRINK_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export PATH
 
 GROUP="${SCALING_GROUP_ID:-asg-uf641n1j5akwa1ozcz6t}"
@@ -51,11 +58,20 @@ LOCK_FILE="${SHRINK_LOCK_FILE:-/var/lock/ecs-shrink-guard.lock}"
 # runs its EXIT trap, so its hold file survives and would keep the guard off
 # forever. Past this age the hold is treated as abandoned.
 HOLD_MAX_AGE="${SHRINK_HOLD_MAX_AGE:-21600}"
+# The v2 drain marker's lease. The guard renews its own marker every tick while
+# a drain or a removal wait is in flight; a lease this far past expiry means the
+# writer is gone, and anyone may collect the marker.
+DRAIN_LEASE_SECONDS="${SHRINK_DRAIN_LEASE_SECONDS:-$(( DRAIN_SECONDS + 900 ))}"
+# How many 15s polls to wait for the retired instance to leave the group
+# entirely (Removing -> gone) before giving the next tick the job.
+REMOVAL_POLLS="${SHRINK_REMOVAL_POLLS:-20}"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+# The guard's identity on the drain marker (v2 line 1).
+DRAIN_OWNER="shrink-guard:$(hostname 2>/dev/null || printf host)"
 
 hold_is_stale() {
-  local written age
+  local written age epoch
   written="$(head -1 "$HOLD_FILE" 2>/dev/null | tr -d ' \r')"
   [[ -n "$written" ]] || return 1
   # Unparsable means we cannot prove the release is dead, and guessing "stale"
@@ -78,18 +94,42 @@ log() {
 logrotate_local() { [[ -f "$LOG" ]] || return 0; [[ "$(wc -l <"$LOG")" -gt 2000 ]] || return 0; tail -n 1000 "$LOG" >"$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"; }
 
 aliyun_ess() { aliyun ess "$@" --region "$REGION" 2>/dev/null; }
+instances_json() { aliyun_ess DescribeScalingInstances --ScalingGroupId "$GROUP"; }
 in_service_count() {
-  aliyun_ess DescribeScalingInstances --ScalingGroupId "$GROUP" \
+  instances_json \
     | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' 2>/dev/null | tr -d '\r'
 }
 desired_count() {
   aliyun_ess DescribeScalingGroups --ScalingGroupId "$GROUP" \
     | jq -r '.ScalingGroups.ScalingGroup[0].DesiredCapacity // empty' 2>/dev/null | tr -d '\r'
 }
-oldest_ip() {
-  aliyun_ess DescribeScalingInstances --ScalingGroupId "$GROUP" \
-    | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
-             | sort_by(.CreationTime) | .[0].PrivateIpAddress // empty' 2>/dev/null | tr -d '\r'
+# The victim the guard may retire: the OLDEST in-service instance, and only when
+# the group's removal policy and single-zone layout make age order predict what
+# ESS will actually remove. Prints "id ip" or nothing.
+oldest_victim() {
+  local policies zones
+  policies="$(aliyun_ess DescribeScalingGroups --ScalingGroupId "$GROUP" \
+    | jq -r '[.ScalingGroups.ScalingGroup[0].RemovalPolicies.RemovalPolicy[]?] | join(",")' 2>/dev/null | tr -d '\r')" || policies=""
+  if [[ "$policies" != "OldestInstance" ]]; then
+    log "ERROR: the group's removal policy is '${policies:-unknown}', not OldestInstance; cannot predict the scale-in victim"
+    return 1
+  fi
+  zones="$(instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .ZoneId] | unique | length' 2>/dev/null | tr -d '\r')" || zones=""
+  if [[ "$zones" != "1" ]]; then
+    log "ERROR: in-service instances span ${zones:-?} zone(s); age order does not predict the victim"
+    return 1
+  fi
+  instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+    | sort_by(.CreatedTime) | .[0] | "\(.InstanceId) \(.PrivateIpAddress // empty)"' 2>/dev/null | tr -d '\r'
+}
+victim_id_of() {  # <ip> -> the id the group currently reports for that ip
+  instances_json | jq -r --arg ip "$1" '[.ScalingInstances.ScalingInstance[]? | select(.PrivateIpAddress==$ip)]
+    | .[0] | .InstanceId // empty' 2>/dev/null | tr -d '\r'
+}
+victim_gone() {  # <id> -> 0 when the group no longer reports the id at all
+  local n
+  n="$(instances_json | jq -r --arg id "$1" '[.ScalingInstances.ScalingInstance[]? | select(.InstanceId==$id)] | length' 2>/dev/null | tr -d '\r')"
+  [[ "$n" == "0" ]]
 }
 # Requests served in the last RATE_WINDOW_SECONDS, straight from the relay's own
 # access log - no metrics API round trip, and it counts what the tier actually did.
@@ -119,11 +159,67 @@ state_get() { [[ -f "$STATE_FILE" ]] && jq -r --arg k "$1" '.[$k] // empty' "$ST
 state_set() {
   if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would set $1=$2"; return 0; fi
   local tmp; tmp="$(mktemp)"
-  if [[ -f "$STATE_FILE" ]]; then jq --arg k "$1" --arg v "$2" '.[$k] = $v' "$STATE_FILE" >"$tmp" 2>/dev/null || printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"
-  else printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"; fi
+  if [[ -f "$STATE_FILE" ]]; then jq --arg k "$1" --arg v "$2" '.[$k] = $v' "$STATE_FILE" >"$tmp" 2>/dev/null || printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"; else printf '{"%s":"%s"}\n' "$1" "$2" >"$tmp"; fi
   mv -f "$tmp" "$STATE_FILE"
 }
-clear_drain() { if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the drain marker"; return 0; fi; [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"; state_set draining ""; state_set drain_until ""; return 0; }
+
+# --- v2 drain marker helpers (owner line, lease line, IPs) -------------------
+marker_ours() {
+  local found
+  found="$(sed -n '1p' "$DRAIN_FILE" 2>/dev/null | tr -d ' \r' || true)"
+  [[ "$found" == "$DRAIN_OWNER" ]]
+}
+marker_has_ip() { grep -qxF "$1" "$DRAIN_FILE" 2>/dev/null; }
+marker_lease_expired() {
+  local lease
+  lease="$(sed -n '2p' "$DRAIN_FILE" 2>/dev/null | tr -d ' \r' || true)"
+  [[ "$lease" =~ ^[0-9]+$ ]] || return 1
+  (( $(date +%s) >= lease ))
+}
+# write_marker <ip>: rewrite OUR marker with a fresh lease, atomically.
+write_marker() {
+  if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would park $1 in $DRAIN_FILE"; return 0; fi
+  local tmp
+  tmp="$(mktemp "${DRAIN_FILE}.tmp.XXXXXX")"
+  {
+    printf '%s\n' "$DRAIN_OWNER"
+    printf '%s\n' "$(( $(date +%s) + DRAIN_LEASE_SECONDS ))"
+    printf '%s\n' "$1"
+  } >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$DRAIN_FILE"
+}
+# clear_marker: remove OUR marker, or a foreign one whose lease has lapsed. A
+# foreign marker with a live lease belongs to a release mid-drain; deleting it
+# would send new requests to the instance that release is retiring.
+clear_marker() {
+  if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the drain marker"; return 0; fi
+  [[ -f "$DRAIN_FILE" ]] || { state_set draining ""; state_set drain_until ""; state_set draining_id ""; return 0; }
+  if marker_ours || marker_lease_expired; then
+    rm -f "$DRAIN_FILE" && log "drain marker cleared"
+  else
+    log "drain marker belongs to $(sed -n '1p' "$DRAIN_FILE" | tr -d ' \r') with a live lease; leaving it"
+  fi
+  state_set draining ""; state_set drain_until ""; state_set draining_id ""
+  return 0
+}
+# release_our_drain: the release owns the tier; drop OUR parking and state, but
+# never touch a marker that no longer names our victim (the release may have
+# taken the file over since our last tick).
+release_our_drain() {
+  local ours
+  ours="$(state_get draining)"
+  if [[ -n "$ours" ]] && [[ -f "$DRAIN_FILE" ]] && marker_ours && marker_has_ip "$ours"; then
+    clear_marker
+    log "release hold present; releasing our in-flight drain so the release owns the tier"
+  else
+    if [[ -n "$ours" || -n "$(state_get drain_until)" ]]; then
+      log "release hold present; our drain marker was taken over; dropping state without touching the file"
+    fi
+    state_set draining ""; state_set drain_until ""; state_set draining_id ""
+  fi
+  return 0
+}
 
 [[ "$DRY_RUN" == 1 ]] && log "--- dry run ---" || true
 
@@ -134,6 +230,17 @@ clear_drain() { if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the dra
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then log "another run holds the lock; skipping this tick"; exit 0; fi
 
+# Janitor (H6): a marker that is not ours and whose lease has lapsed is the
+# leftover of a SIGKILLed writer (a release's EXIT trap never ran). The consumer
+# may already ignore it once the lease is parsed, but this host's fleet-sync and
+# any operator reading the file deserve a clean state. Runs BEFORE the hold
+# check on purpose: a killed release leaves its hold behind for up to
+# HOLD_MAX_AGE, and the marker must not wait that long.
+if [[ -f "$DRAIN_FILE" ]] && ! marker_ours && marker_lease_expired; then
+  log "WARN: drain marker at $DRAIN_FILE is not ours and its lease has lapsed; removing it as abandoned"
+  rm -f "$DRAIN_FILE" 2>/dev/null || true
+fi
+
 # A release owns the tier for its whole duration: it grows and steps the group
 # down on its own schedule and already drains the instances it retires.
 if [[ -f "$HOLD_FILE" ]] && hold_is_stale; then
@@ -141,52 +248,109 @@ if [[ -f "$HOLD_FILE" ]] && hold_is_stale; then
   rm -f "$HOLD_FILE" 2>/dev/null || true
 fi
 if [[ -f "$HOLD_FILE" ]]; then
-  # A release owns the tier while it runs. If we were mid-drain when it started,
-  # release the marker first: leaving it set would keep the victim out of the
-  # relay for the whole release, and the resume branch below would later shrink a
-  # group the release had already resized - the tier losing two members for one
-  # decision. The release re-drains whatever it retires on its own.
-  if [[ -f "$DRAIN_FILE" || -n "$(state_get drain_until)" ]]; then
-    log "release hold present; releasing the in-flight drain so the release owns the tier"
-    clear_drain
-    state_set idle_streak 0
-  fi
+  release_our_drain
+  state_set idle_streak 0
   log "release hold present ($HOLD_FILE); not shrinking"; exit 0
 fi
 
-instances="$(in_service_count)"; instances="${instances:-0}"
-desired="$(desired_count)"; desired="${desired:-0}"
-if (( instances <= MIN_KEEP )); then log "at or below the floor ($instances <= $MIN_KEEP); nothing to do"; exit 0; fi
-
-# Resume an in-flight drain before looking at anything else: the tier is already
-# short one member in the relay list, so finish or undo it.
-if [[ -n "$(state_get drain_until)" ]]; then
+# Resume an in-flight drain BEFORE the capacity floor check: the tier is already
+# short one member in the relay list, so finish or undo it. Checking the floor
+# first would strand a drain forever once the tier sat at MIN_KEEP.
+if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
+  if [[ -n "$(state_get retiring)" ]]; then
+    # Phase 2: removal was requested; wait for the victim to leave the group
+    # ENTIRELY (Removing -> gone). A member still reported in any lifecycle
+    # state is a removal in flight; un-parking now would send it new requests.
+    rid="$(state_get retiring)"
+    rip="$(state_get draining)"
+    if victim_gone "$rid"; then
+      log "retired $rid ($rip) left the group; clearing the drain marker"
+      clear_marker
+      exit 0
+    fi
+    # Keep the marker parked and its lease fresh while the removal settles.
+    if [[ -f "$DRAIN_FILE" ]] && marker_ours && [[ -n "$rip" ]] && marker_has_ip "$rip"; then
+      write_marker "$rip"
+    else
+      log "WARN: our drain marker vanished mid-removal; $rid may receive new requests until it is gone"
+    fi
+    log "waiting for $rid to leave the group (still reported)"
+    exit 0
+  fi
   until_ts="$(state_get drain_until)"
-  if (( $(date +%s) < until_ts )); then log "draining $(state_get draining) for another $(( until_ts - $(date +%s) ))s"; exit 0; fi
+  if (( $(date +%s) < until_ts )); then
+    # Renew the lease every tick while the drain window runs.
+    rip="$(state_get draining)"
+    if [[ -f "$DRAIN_FILE" ]] && marker_ours && [[ -n "$rip" ]] && marker_has_ip "$rip"; then
+      write_marker "$rip"
+    fi
+    log "draining $(state_get draining) for another $(( until_ts - $(date +%s) ))s"; exit 0
+  fi
   drained="$(state_get draining)"
+  rid="$(state_get draining_id)"
+  # The victim must still be the instance we parked (#8): if it failed, was
+  # replaced, or left the group during the window, shrinking anyway would let
+  # ESS remove a DIFFERENT, never-parked instance - the exact streams this
+  # drain exists to protect.
+  if [[ -z "$rid" ]]; then
+    rid="$(victim_id_of "$drained")"
+  fi
+  still="$(instances_json | jq -r --arg id "$rid" --arg ip "$drained" '[.ScalingInstances.ScalingInstance[]? | select(.InstanceId==$id and .PrivateIpAddress==$ip and .LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' 2>/dev/null | tr -d '\r')"
+  if [[ "$still" != "1" ]]; then
+    log "victim $rid ($drained) is no longer the healthy in-service instance we parked; ending this drain without shrinking"
+    clear_marker; state_set idle_streak 0; exit 0
+  fi
+  # The marker must still be OURS and still park the victim: a release may have
+  # taken the file over, and shrinking while its marker names something else
+  # would remove an instance nobody parked.
+  if ! marker_ours || ! marker_has_ip "$drained"; then
+    log "drain marker no longer parks $drained (owner: $(sed -n '1p' "$DRAIN_FILE" 2>/dev/null | tr -d ' \r')); ending this drain without shrinking"
+    state_set draining ""; state_set drain_until ""; state_set draining_id ""; state_set idle_streak 0
+    exit 0
+  fi
   # The tier may have started serving again while we waited - the scale-out alarm
   # fires on its own. Shrinking into a ramp is the same mistake in the other
   # direction, so the idle test runs again before anything is removed.
   recent_now="$(recent_requests)"; rpm_now=$(( recent_now * 60 / RATE_WINDOW_SECONDS ))
   if (( rpm_now > IDLE_RPM )); then
     log "load returned during the drain (${rpm_now} req/min > $IDLE_RPM); releasing the drain without shrinking"
-    clear_drain; state_set idle_streak 0; exit 0
+    clear_marker; state_set idle_streak 0; exit 0
   fi
-  log "drain window over for $drained; asking ESS for $(( desired - 1 )) instance(s)"
-  if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$(( desired - 1 ))"; clear_drain; exit 0; fi
-  if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$(( desired - 1 ))" >/dev/null; then
-    log "DesiredCapacity set to $(( desired - 1 )); verifying"
-    for _ in $(seq 1 20); do
-      (( $(in_service_count) <= desired - 1 )) && break
-      sleep 15
+  # Re-check the release hold RIGHT BEFORE asking ESS to remove an instance:
+  # a release can start between this tick's earlier check and now (#7).
+  if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
+    log "release hold appeared during the drain; standing down"
+    clear_marker; state_set idle_streak 0; exit 0
+  fi
+  instances="$(in_service_count)"; instances="${instances:-0}"
+  target=$(( instances - 1 ))
+  (( target < MIN_KEEP )) && target="$MIN_KEEP"
+  log "drain window over for $rid ($drained); asking ESS for $target instance(s)"
+  if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$target"; clear_marker; exit 0; fi
+  if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$target" >/dev/null; then
+    log "DesiredCapacity set to $target; waiting for $rid to leave the group"
+    state_set retiring "$rid"
+    for _ in $(seq 1 "$REMOVAL_POLLS"); do
+      if victim_gone "$rid"; then break; fi
+      sleep "${SHRINK_REMOVAL_POLL_SECONDS:-15}"
     done
-    log "after shrink: $(in_service_count) instance(s) in service"
+    if victim_gone "$rid"; then
+      log "after shrink: $rid left the group"
+      clear_marker
+      exit 0
+    fi
+    log "removal of $rid still in flight after $(( REMOVAL_POLLS * ${SHRINK_REMOVAL_POLL_SECONDS:-15} ))s; next tick keeps waiting"
+    exit 0
   else
     log "ERROR: ModifyScalingGroup failed; the tier keeps $instances instance(s)"
+    clear_marker
+    exit 0
   fi
-  clear_drain
-  exit 0
 fi
+
+instances="$(in_service_count)"; instances="${instances:-0}"
+desired="$(desired_count)"; desired="${desired:-0}"
+if (( instances <= MIN_KEEP )); then log "at or below the floor ($instances <= $MIN_KEEP); nothing to do"; exit 0; fi
 
 # Idle test: a busy tier resets the streak, so shrinking only ever happens after
 # a sustained quiet period (the same signal the release's drain holds wait for).
@@ -203,13 +367,20 @@ state_set idle_streak "$streak"
 needed=$(( (IDLE_MINUTES * 60 + 299) / 300 ))   # cron runs every 5 minutes
 if (( streak < needed )); then log "idle ${rpm} req/min, streak $streak/$needed; waiting"; exit 0; fi
 
-victim="$(oldest_ip)"
-if [[ ! "$victim" =~ ^10\.0\.0\.[0-9]+$ ]]; then log "ERROR: could not resolve the oldest instance (got '$victim')"; state_set idle_streak 0; exit 0; fi
-if (( DRY_RUN == 1 )); then log "dry run: idle $streak checks, would drain $victim then shrink to $(( instances - 1 ))"; exit 0; fi
+victim="$(oldest_victim || true)"
+if [[ ! "$victim" =~ ^[a-zA-Z0-9-]+[[:space:]]10\.0\.0\.[0-9]+$ ]]; then
+  log "ERROR: could not resolve a parkable victim (got '$victim'); not shrinking this tick"
+  state_set idle_streak 0
+  exit 0
+fi
+victim_id="$(printf '%s' "$victim" | awk '{print $1}')"
+victim_ip="$(printf '%s' "$victim" | awk '{print $2}')"
+if (( DRY_RUN == 1 )); then log "dry run: idle $streak checks, would drain $victim_id ($victim_ip) then shrink to $(( instances - 1 ))"; exit 0; fi
 
-printf '%s\n' "$victim" >"$DRAIN_FILE"
-state_set draining "$victim"
+write_marker "$victim_ip"
+state_set draining "$victim_ip"
+state_set draining_id "$victim_id"
 state_set drain_until "$(( $(date +%s) + DRAIN_SECONDS ))"
 state_set idle_streak 0
-log "idle for $(( needed * 5 )) min; parked $victim in $DRAIN_FILE (relay drops it within a minute) and will wait ${DRAIN_SECONDS}s for in-flight streams before shrinking"
+log "idle for $(( needed * 5 )) min; parked $victim_id ($victim_ip) in $DRAIN_FILE (relay drops it within a minute) and will wait ${DRAIN_SECONDS}s for in-flight streams before shrinking"
 logrotate_local

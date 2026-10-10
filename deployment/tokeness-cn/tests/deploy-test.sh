@@ -1345,4 +1345,10 @@ if grep -q 'private/scripts/bootstrap-newapi-host.sh' "$DEPLOY_SCRIPT"; then
   fail "deploy.sh still defaults to the private/ bootstrap path"
 fi
 
+# The guard shares the drain marker file, the hold and the tier with the
+# release, and it runs from cron where nobody watches it fail - the coverage
+# gap the 2026-10-10 review called out. Run it as part of this suite so a
+# guard regression fails the same gate as a release regression.
+bash "$TEST_DIR/guard-test.sh" || fail "ecs-shrink-guard tests failed"
+
 printf 'Tokeness China deployment tests passed\n'
