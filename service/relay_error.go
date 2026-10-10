@@ -18,11 +18,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RelayRequestContextDone reports whether the request context behind a relay
+// attempt has already been canceled. A retry can only pick another channel; it
+// cannot deliver an answer to a peer that is no longer connected, and every
+// further attempt would fail instantly against the canceled context while
+// spending upstream capacity nobody is waiting for. The context also dies on
+// server shutdown and middleware cancellation, so callers should treat a
+// positive result as "the request is over", not as evidence about the client.
+func RelayRequestContextDone(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return c.Request.Context().Err() != nil
+}
+
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
+	}
+	// The request is already over (peer disconnected, server shutdown, or the
+	// context was canceled by middleware). A retry can only pick another
+	// channel, never bring the requester back, so stop before spending the
+	// remaining attempt budget on attempts that fail instantly.
+	if RelayRequestContextDone(c) {
+		return PolicyDecision{Action: "stop", Reason: "request_context_done", Source: "system"}
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource

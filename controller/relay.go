@@ -415,6 +415,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if newAPIError == nil {
 				return ""
 			}
+			if service.RelayRequestContextDone(c) {
+				// The attempt failed because the request context is already
+				// canceled: classify it apart from real upstream errors so the
+				// per-channel stats can tell a dead request from a dead channel.
+				return "request_context_done"
+			}
 			return string(newAPIError.GetErrorCode())
 		}())
 
@@ -948,10 +954,18 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 	return false
 }
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
-	// An upstream failure means the selected channel is broken; drop the
-	// affinity binding so the client's retry re-selects a healthy channel
-	// instead of being pinned back to the same one until the TTL expires.
-	service.EvictChannelAffinityOnUpstreamFailure(c, err)
+	// A canceled request context means the failure belongs to the disconnect,
+	// not the channel: the request-level error log below still records what the
+	// requester experienced, but the affinity binding and the auto-disable
+	// decision must not blame a healthy channel for an attempt that died with
+	// the request.
+	ctxDone := service.RelayRequestContextDone(c)
+	if !ctxDone {
+		// An upstream failure means the selected channel is broken; drop the
+		// affinity binding so the client's retry re-selects a healthy channel
+		// instead of being pinned back to the same one until the TTL expires.
+		service.EvictChannelAffinityOnUpstreamFailure(c, err)
+	}
 	errorMessage := err.Error()
 	if service.GetOpsCyberPolicy(c) != nil {
 		errorMessage = service.CyberPolicyMessageForLog(errorMessage)
@@ -963,7 +977,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	if service.ShouldDisableChannel(err) && channelError.AutoBan {
+	if !ctxDone && service.ShouldDisableChannel(err) && channelError.AutoBan {
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
@@ -1313,7 +1327,11 @@ func executeTaskSubmissionWith(
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
-		if !taskErr.LocalError {
+		// A canceled request context must not blame the channel either: the
+		// failure belongs to the disconnect, and processChannelError keeps the
+		// request-level error log while skipping affinity eviction and the
+		// auto-disable decision for it.
+		if !taskErr.LocalError && !service.RelayRequestContextDone(c) {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
 					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),

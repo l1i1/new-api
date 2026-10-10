@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -461,4 +462,38 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 		decision := DecideRelayRetry(c, billingErr, 1)
 		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
 	})
+}
+
+// TestDecideRelayRetryStopsWhenRequestContextDone pins the rule that a dead
+// request context ends the walk: no retry can deliver an answer to a request
+// that is already over, and the extra attempts would fail instantly, spend
+// upstream quota nobody waits for, and count as channel failures in the
+// per-channel stats.
+func TestDecideRelayRetryStopsWhenRequestContextDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// A channel error is retryable with no configuration involved, which keeps
+	// the baseline independent of the operator keyword and status lists.
+	apiErr := types.NewOpenAIError(errors.New("upstream unavailable"), types.ErrorCodeChannelResponseTimeExceeded, http.StatusBadGateway)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}, DecideRelayRetry(c, apiErr, 8), "baseline: a live request retries a channel error")
+
+	// Client disconnect: context.Canceled.
+	cancel()
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "request_context_done", Source: "system"}, DecideRelayRetry(c, apiErr, 8), "a canceled request stops the walk")
+
+	// DeadlineExceeded is the same outcome: the request is over either way,
+	// whatever canceled the context.
+	expired, _ := gin.CreateTestContext(httptest.NewRecorder())
+	dctx, dcancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	<-dctx.Done()
+	dcancel()
+	expired.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(dctx)
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "request_context_done", Source: "system"}, DecideRelayRetry(expired, apiErr, 8))
+
+	// A context without a request stays nil-safe and never looks done.
+	bare, _ := gin.CreateTestContext(httptest.NewRecorder())
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}, DecideRelayRetry(bare, apiErr, 8))
 }
