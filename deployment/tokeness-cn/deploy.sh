@@ -1680,6 +1680,10 @@ suspend_scale_in_guard() {
     # file by hand; a release refuses until then.
     die "the shrink guard hold on $MASTER_HOST is present but unreadable; refusing to release until it is inspected"
   fi
+  # The acquire-attempt log line is the rendezvous marker the concurrent-release
+  # test watches: it proves both contenders reached this point before either
+  # could win the lock.
+  log "acquiring the entry shrink guard hold"
   # Tell the entry's shrink guard to stand down for the whole release, whatever
   # happens to the alarm half below.
   if shrink_hold_write set; then
@@ -1734,25 +1738,32 @@ resume_scale_in_guard() {
   else
     relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
   fi
-  # Both heartbeat gates go down BEFORE any further log line: log() heartbeats
-  # while either is set, and a heartbeat here would re-acquire the hold the
-  # cleanup is trying to drop (leaving a fresh hold behind a release that has
-  # already exited). The alarm id is saved first - the gates going down must
-  # not skip the alarm restore below.
+  # The alarm is restored BEFORE the hold is cleared: clearing first lets a
+  # second release acquire the tier, read the alarm as disabled, keep it off -
+  # and then THIS release re-enables the alarm underneath it. Order matters:
+  # while our hold is still fresh, no other release can start.
   local id="${scale_in_guard_suspended:-}"
-  scale_in_hold_written=""
-  scale_in_guard_suspended=""
-  shrink_hold_write clear && log "entry shrink guard released"
-  [[ -n "$id" ]] || return 0
+  [[ -n "$id" ]] || { scale_in_hold_written=""; scale_in_guard_suspended=""; shrink_hold_write clear && log "entry shrink guard released"; return 0; }
   if [[ "${scale_in_alarm_was_enabled:-0}" != "1" ]]; then
     log "scale-in alarm $id was already disabled before this run; leaving it disabled"
+    scale_in_hold_written=""
+    scale_in_guard_suspended=""
+    shrink_hold_write clear && log "entry shrink guard released"
     return 0
   fi
   if aliyun_cmd ess EnableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
     log "scale-in alarm resumed ($id)"
   else
-    warn "could not re-enable scale-in alarm $id; enable it manually"
+    warn "could not re-enable scale-in alarm $id; re-enable it by hand"
   fi
+  # Both heartbeat gates go down BEFORE any further log line: log() heartbeats
+  # while either is set, and a heartbeat here would re-acquire the hold the
+  # cleanup is trying to drop (leaving a fresh hold behind a release that has
+  # already exited).
+  scale_in_hold_written=""
+  scale_in_guard_suspended=""
+  shrink_hold_write clear && log "entry shrink guard released"
+  return 0
 }
 
 # current_desired_capacity - the group's DesiredCapacity right now.
@@ -1894,18 +1905,21 @@ wait_retired() {
 # gate cannot see that. This turns the residual race into a loud failure
 # instead of a silently under-served tier.
 verify_no_extra_removals() {
-  local before_ids="$1" retire_ids="$2" label="$3" current id extra=0 i=0
+  local before_ids="$1" retire_ids="$2" label="$3" current id extra=0 i=0 read_ok=0
   [[ -n "$retire_ids" ]] || return 0
   # A failed read is NOT a pass: this check is the only witness that the
-  # removal matched the parked set. Retry a few times, then fail the step.
+  # removal matched the parked set. The success FLAG is tracked separately
+  # from the output - a command can emit a full list and still fail (partial
+  # read), and non-empty stdout is not a success signal.
   while (( i < 3 )); do
     if current="$(in_service_instance_ids)"; then
+      read_ok=1
       break
     fi
     sleep "$HEALTH_POLL_SECONDS"
     i=$(( i + 1 ))
   done
-  if [[ -z "${current:-}" ]]; then
+  if (( read_ok != 1 )); then
     error "$label: could not re-read the instance set to verify the removal set; failing closed"
     return 1
   fi

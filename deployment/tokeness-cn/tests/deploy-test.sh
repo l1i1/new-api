@@ -977,8 +977,11 @@ shared_drain="$mutex_case/shared-drain"
 shared_lock="$mutex_case/shared-marker.lock"
 # Rendezvous on the lock itself: an external holder keeps the marker lock
 # busy while BOTH releases start and reach their acquire; releasing it wakes
-# the two contenders together, so the check-and-acquire is what gets raced.
-# Deleting the flock from the acquire would let both through.
+# the two contenders together. The winner is enforced by the lock-protected
+# check-and-acquire AND the read-back (either alone catches the loser: the
+# read-back rejects a foreign owner even without the flock, the flock removes
+# the window where both could write). Both logs below must show the acquire
+# attempt, proving both actually raced rather than one starting late.
 (
   exec 200>"$shared_lock"
   flock -x 200
@@ -1017,6 +1020,12 @@ grep -qE "refusing to release|refusing to run two at once|owned by|is owned by" 
   || fail "the losing release did not explain its refusal"
 grep -q "master container blue-green complete" "$winner/state/stdout.log" \
   || fail "the winning release did not complete its roll"
+# Both contenders reached the acquire while the gate held the lock: the race
+# was real, not one release starting after the other finished.
+for d in "$first" "$second"; do
+  grep -q "acquiring the entry shrink guard hold" "$d/state/stdout.log" \
+    || fail "a contender never reached the hold acquire ($d)"
+done
 
 # (7) A group with no headroom cannot be released at all: even the
 # one-at-a-time leg scales the tier to stable+1 while the old instance still

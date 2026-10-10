@@ -59,13 +59,16 @@ fleet_sync_once() {
   fi
 }
 
-fleet_sync_loop() (
+# { } on purpose: a ( ) body backgrounded spawns a wrapper whose $! is not
+# the process running the loop, and killing the wrapper leaked the loop
+# (reparented to init, still rewriting the upstream).
+fleet_sync_loop() {
   cd / 2>/dev/null || true
   while :; do
     fleet_sync_once "$1"
     sleep 0.3
   done
-)
+}
 
 start_fleet_sync() {
   mkdir -p "$1" "$1/state"
@@ -218,6 +221,16 @@ fi
 # serving the victim. A blind countdown would remove an instance that never
 # stopped receiving new requests - the guard must refuse and clear.
 stuck_case="$test_root/stuck-sync"
+mkdir -p "$stuck_case/state"
+# A REAL stuck consumer: the upstream file exists and still serves every
+# member, the victim included - this exercises the served-IP matching, not
+# merely the unreadable-file fallback.
+jq -n '{desired: 3, instances: [
+    {InstanceId: "eci-old",  PrivateIpAddress: "10.0.0.207", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-01T00:00:00Z", ZoneId: "cn-shanghai-l"},
+    {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"},
+    {InstanceId: "eci-run",  PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-03T00:00:00Z", ZoneId: "cn-shanghai-l"}
+  ], image: "x"}' > "$stuck_case/state/state.json"
+printf 'server 10.0.0.207:3000;\nserver 10.0.0.206:3000;\nserver 10.0.0.205:3000;\n' > "$stuck_case/upstream.conf"
 run_guard "$stuck_case" SHRINK_IDLE_MINUTES=0 >/dev/null
 guard_log "$stuck_case" | grep -q "fleet-sync is not consuming the drain marker" \
   || fail "the guard shrank although the upstream never dropped the victim"

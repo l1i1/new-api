@@ -473,8 +473,10 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
       log "ERROR: could not read the instance list before shrinking; standing down"
       exit 3
     fi
-    unhealthy="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus!="Healthy")] | length' 2>/dev/null | tr -d '\r')"
-    if [[ ! "${unhealthy:-}" =~ ^[0-9]+$ ]]; then
+    if ! unhealthy="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus!="Healthy")] | length' 2>/dev/null)" \
+       || [[ ! "${unhealthy:-}" =~ ^[0-9]+$ ]]; then
+      # The rc is checked, not just the shape: jq can print a valid count and
+      # then fail on a malformed tail, and a trailing tr would swallow that.
       log "ERROR: could not count unhealthy in-service members; standing down"
       exit 3
     fi
@@ -482,8 +484,8 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
       log "in-service member(s) not Healthy ($unhealthy); refusing to shrink this tick"
       exit 3
     fi
-    instances="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService")] | length' 2>/dev/null | tr -d '\r')"
-    if [[ ! "$instances" =~ ^[1-9][0-9]*$ ]]; then
+    if ! instances="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService")] | length' 2>/dev/null)" \
+       || [[ ! "$instances" =~ ^[1-9][0-9]*$ ]]; then
       log "ERROR: could not count in-service members; standing down"
       exit 3
     fi
