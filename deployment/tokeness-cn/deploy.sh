@@ -187,7 +187,16 @@ hold_heartbeat() {
   local _now; _now="$(date +%s)"
   (( _now - ${scale_in_hold_refresh:-0} >= 60 )) || return 0
   scale_in_hold_refresh="$_now"
-  shrink_hold_write set >/dev/null 2>&1 || true
+  local holdrc=0
+  shrink_hold_write set >/dev/null 2>&1 || holdrc=$?
+  if (( holdrc == 3 )); then
+    # Losing the lock mid-rollout means another release is now driving the same
+    # scaling config and green container: the two must not interleave, so this
+    # one aborts (its EXIT trap still runs).
+    die "another release took the shrink guard hold mid-rollout; aborting so the two cannot interleave"
+  elif (( holdrc != 0 )); then
+    warn "could not refresh the shrink guard hold (rc=$holdrc)"
+  fi
   # Extend our drain marker's lease in the same beat: a marker whose writer was
   # SIGKILLed must lapse, but one whose writer is alive must not.
   relay_drain_refresh || warn "our drain marker is gone or no longer ours; the retiring instance may be back in rotation"
@@ -1408,11 +1417,20 @@ REMOTE_HOLD
   }
 
 suspend_scale_in_guard() {
-  local id
+  local id rc=0
   # One release at a time. The hold doubles as the lock: a live release refreshes
   # it every heartbeat, so a fresh one means somebody else owns the tier.
-  if release_hold_is_fresh "${RELEASE_HOLD_FRESH_SECONDS:-900}"; then
+  # `|| rc=$?` keeps set -e from acting on the non-zero exits we are inspecting.
+  release_hold_is_fresh "${RELEASE_HOLD_FRESH_SECONDS:-900}" || rc=$?
+  if (( rc == 0 )); then
     die "another release is in progress on $MASTER_HOST (its shrink guard hold is fresh); refusing to run two at once"
+  fi
+  if (( rc == 2 )); then
+    # A hold that exists but cannot be parsed proves nothing about who is
+    # releasing: proceeding here is the direction that lets a second release
+    # start while the first is still rolling. The operator removes the broken
+    # file by hand; a release refuses until then.
+    die "the shrink guard hold on $MASTER_HOST is present but unreadable; refusing to release until it is inspected"
   fi
   # Tell the entry's shrink guard to stand down for the whole release, whatever
   # happens to the alarm half below.
