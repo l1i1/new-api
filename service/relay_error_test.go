@@ -402,8 +402,11 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	origKeywords := operation_setting.AutomaticRetryKeywords
 	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = origKeywords })
-	operation_setting.AutomaticRetryKeywordsFromString("credits\ninsufficient balance")
+	operation_setting.AutomaticRetryKeywordsFromString("credits\ninsufficient balance\n额度")
 
+	// 额度 is on the live operator list (line 25 of the production
+	// AutomaticRetryKeywords) and is what makes the platform's own billing text
+	// reach this decision path at all.
 	credentialExhausted := types.NewOpenAIError(
 		errors.New("auth_unavailable: no auth available have reached your weekly usage limit, upgrade for higher limits: https://example.com or add usage credits: https://example.com"),
 		types.ErrorCodeBadResponseStatusCode,
@@ -436,6 +439,26 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 			http.StatusBadRequest,
 		)
 		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+	})
+
+	t.Run("official-pinned platform billing 403 still keeps the verdict", func(t *testing.T) {
+		// The operator keyword list contains 额度/余额, which also matches this
+		// platform's own billing text (用户额度不足, a 403 raised by
+		// billing_session.go before any channel is tried). That error is a
+		// locally generated NewAPIError, not an upstream verdict about the
+		// channel's credentials, so the escape hatch must not fire: failing over
+		// cannot serve a request the platform itself refused, and on a family
+		// with a single official channel it would only replace the platform's
+		// 403 with a routing error.
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		billingErr := types.NewErrorWithStatusCode(
+			errors.New("用户额度不足, 剩余额度: ¥0"),
+			types.ErrorCodeInsufficientUserQuota,
+			http.StatusForbidden,
+		)
+		decision := DecideRelayRetry(c, billingErr, 1)
 		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
 	})
 }

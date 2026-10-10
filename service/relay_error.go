@@ -177,9 +177,19 @@ var credentialExhaustedKeywords = []string{
 // isCredentialExhaustedFailure reports whether an upstream error means the
 // channel cannot authenticate or has no quota left. Only statuses an upstream
 // uses for that condition qualify, and the wording list above must match, so a
-// generic 5xx (transient overload) still keeps the official verdict.
+// generic 5xx (transient overload) still keeps the official verdict. Locally
+// generated errors are excluded: the operator keyword list contains 额度/余额,
+// which also matches this platform's own billing text (用户额度不足, a 403 from
+// billing_session.go). That is not a channel credential failure — the pinned
+// channel was never tried — so failing over cannot help and would only replace
+// the platform's own 403 with a routing error when no second official channel
+// exists. Upstream errors carry ErrorTypeOpenAIError/ErrorTypeClaudeError, so
+// the guard costs the real escape path nothing.
 func isCredentialExhaustedFailure(err *types.NewAPIError) bool {
 	if err == nil {
+		return false
+	}
+	if err.GetErrorType() == types.ErrorTypeNewAPIError {
 		return false
 	}
 	switch err.StatusCode {
