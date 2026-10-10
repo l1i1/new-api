@@ -37,6 +37,10 @@ init_guard_ess() {
 run_guard() {
   local case_dir="$1"; shift
   mkdir -p "$case_dir/state"
+  # The relay upstream fleet-sync would maintain: empty by default (nobody
+  # parked), so "victim not served" holds; cases that need the stuck-consumer
+  # direction write their own.
+  [[ -f "$case_dir/upstream.conf" ]] || printf 'server 10.0.0.199:3000;\n' > "$case_dir/upstream.conf"
   if [[ ! -f "$case_dir/state/state.json" ]]; then
     init_guard_ess "$case_dir/state"
   fi
@@ -47,6 +51,11 @@ run_guard() {
     SHRINK_HOLD_FILE="$case_dir/shrink-hold" \
     SHRINK_LOG="$case_dir/guard.log" \
     SHRINK_LOCK_FILE="$case_dir/guard.lock" \
+    SHRINK_MARKER_LOCK="$case_dir/marker.lock" \
+    SHRINK_UPSTREAM_FILE="$case_dir/upstream.conf" \
+    SHRINK_FLEET_APPLY_POLLS=2 \
+    SHRINK_FLEET_APPLY_POLL_SECONDS=1 \
+    SHRINK_REMOVAL_POLLS="${SHRINK_REMOVAL_POLLS:-3}" \
     SHRINK_ACCESS_LOGS="$case_dir/access.log" \
     SHRINK_MIN_KEEP=2 \
     SHRINK_RATE_WINDOW=900 \

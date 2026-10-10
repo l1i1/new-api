@@ -110,6 +110,13 @@ readonly SHRINK_DRAIN_PATH="${SHRINK_DRAIN_PATH:-/etc/ml-sync/shrink-drain}"
 # The old format (plain IP lines) is still cleared by this release: the v2
 # writers replaced every producer, so a plain-IP marker can only be a leftover.
 readonly SHRINK_DRAIN_LEASE_SECONDS="${SHRINK_DRAIN_LEASE_SECONDS:-$(( ML_DRAIN_SECONDS + 900 ))}"
+# Every remote write to the shrink hold or the drain marker takes THIS lock on
+# the entry host, and the shrink guard (running on that same host) takes it for
+# its marker operations too. A lock file is the only mutual exclusion that
+# actually holds across processes: an atomic write alone is not check-and-set,
+# so two releases could both observe "no hold", both write, and both read back
+# their own owner (the loser's write simply happened last).
+readonly MARKER_LOCK_PATH="${MARKER_LOCK_PATH:-/var/lock/ml-sync-marker.lock}"
 SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
 # Set while the alarm is suspended, so the exit trap knows it has work to do.
 scale_in_guard_suspended=""
@@ -222,7 +229,13 @@ sleep_with_heartbeat() {
       # SIGKILLed release never runs its EXIT trap), so a release that runs longer
       # than that threshold has to keep proving it is alive - otherwise the guard
       # would resume shrinking while the rollout is still draining.
-      shrink_hold_write set >/dev/null 2>&1 || warn "could not refresh the shrink guard hold"
+      local hbrc=0
+      shrink_hold_write set >/dev/null 2>&1 || hbrc=$?
+      if (( hbrc == 3 )); then
+        die "another release took the shrink guard hold mid-drain; aborting so the two cannot interleave"
+      elif (( hbrc != 0 )); then
+        warn "could not refresh the shrink guard hold (rc=$hbrc)"
+      fi
     fi
   done
 }
@@ -774,12 +787,16 @@ wait_verify_converged() {
 # runs outside command substitution, and its log() lines must stay on real
 # stdout.
 drain_before_scale_in() {
-  local out_var="$1" target="$2"
-  local now_ids now_count remove_count retire_ids drain_ips id ip drain_comma
+  local out_var="$1" target_var="$2" target_hint="$3"
+  local now_ids now_count remove_count retire_ids drain_ips id ip drain_comma live
   printf -v "$out_var" '%s' ""
-  now_ids="$(in_service_instance_ids)" || { error "could not read the in-service set before a scale-in"; return 1; }
+  printf -v "$target_var" '%s' "$target_hint"
+  if ! now_ids="$(in_service_instance_ids)"; then
+    error "could not read the in-service set before a scale-in; refusing to shrink without one"
+    return 1
+  fi
   now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
-  remove_count=$(( now_count > target ? now_count - target : 0 ))
+  remove_count=$(( now_count > target_hint ? now_count - target_hint : 0 ))
   if (( remove_count == 0 )); then
     return 0
   fi
@@ -806,9 +823,24 @@ drain_before_scale_in() {
     relay_drain_clear >/dev/null 2>&1 || true
     return 1
   fi
-  log "drain-first: parked the instance(s) a scale-in to $target will remove: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
+  log "drain-first: parked the instance(s) a scale-in toward $target_hint would remove: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
   log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
   sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+  # Recompute from the LIVE set after the hold (#5): capacity that joined during
+  # the window must survive, and the removal must stay exactly the parked set.
+  # Scaling straight to the pre-hold target removed (current - target) members -
+  # more than were parked whenever an external scale-out raised the count.
+  if ! now_ids="$(in_service_instance_ids)"; then
+    error "could not re-read the in-service set after the drain hold; refusing to shrink"
+    return 1
+  fi
+  now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
+  live=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
+  done <<<"$retire_ids"
+  printf -v "$target_var" '%s' "$(( now_count - live < target_hint ? target_hint : now_count - live ))"
   printf -v "$out_var" '%s' "$retire_ids"
   return 0
 }
@@ -847,13 +879,13 @@ rollback_failed_rollout() {
   # the steady state removes the OLDEST instances, which are the healthy members
   # still serving traffic. Park them first so the rollback does not cut the
   # streams the release's own gates were protecting.
-  local rollback_retire_ids=""
-  if ! drain_before_scale_in rollback_retire_ids "$stable"; then
+  local rollback_retire_ids="" rollback_target="$stable"
+  if ! drain_before_scale_in rollback_retire_ids rollback_target "$stable"; then
     error "rollback could not park the instances its scale-in would remove; tier left at current capacity"
     return 1
   fi
-  if ! scale_group "$stable"; then
-    error "rollback could not restore desired capacity"
+  if ! scale_group "$rollback_target"; then
+    error "rollback could not restore desired capacity (target $rollback_target)"
     return 1
   fi
   if [[ -n "$rollback_retire_ids" ]] && ! wait_retired "$rollback_retire_ids"; then
@@ -1301,7 +1333,13 @@ oldest_instance_ids() {
       [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
       | sort_by(.CreatedTime) | if (length > $n) and (.[$n-1].CreatedTime == .[$n].CreatedTime) then .[$n].CreatedTime else empty end' | tr -d '\r')"
     if [[ -n "$boundary" ]]; then
-      log "WARN: the oldest-$n boundary falls inside a CreatedTime tie ($boundary); the drain set may not match ESS's removal order" >&2
+      # Refuse, not warn (#9): ESS removes by policy order and a tie at the
+      # boundary means it may pick a DIFFERENT member of the tie than this sort
+      # did. Parking B while ESS removes A is the exact stream-cut this whole
+      # protocol exists to prevent, so an ambiguous boundary is treated like
+      # every other unpredictable-selection case: no retirement this round.
+      log "WARN: the oldest-$n boundary falls inside a CreatedTime tie ($boundary); refusing to retire an ambiguous set" >&2
+      return 1
     fi
   fi
   printf '%s\n' "$ids"
@@ -1331,11 +1369,25 @@ relay_drain_write() {
   [[ -n "$ips" ]] || return 0
   lease=$(( $(date +%s) + SHRINK_DRAIN_LEASE_SECONDS ))
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
-    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" "$ips" <<'REMOTE_DRAIN' >/dev/null 2>&1
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" "$ips" "$MARKER_LOCK_PATH" <<'REMOTE_DRAIN' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; owner="$2"; lease="$3"; ips="$4"
-mkdir -p "$(dirname "$path")"
+path="$1"; owner="$2"; lease="$3"; ips="$4"; lock="$5"
+mkdir -p "$(dirname "$path")" "$(dirname "$lock")"
+exec 200>"$lock"
+flock -x 200
+# A live foreign marker (the shrink guard mid-drain, typically) must not be
+# stomped: overwriting it would un-park the instance IT is protecting and send
+# that instance new requests while it is being retired. Exit 3: the caller
+# fails closed and retries after the other writer's window ends.
+if [ -r "$path" ]; then
+  found_owner="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
+  found_lease="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
+  if [ "$found_owner" != "$owner" ] && [ "$found_lease" -gt "$(date +%s)" ] 2>/dev/null; then
+    printf 'drain marker is owned by %s with a live lease\n' "$found_owner" >&2
+    exit 3
+  fi
+fi
 want="$(printf '%s\n' "$ips" | tr ',' '\n' | grep -cE '^10\.0\.0\.[0-9]+$' || true)"
 tmp="$(mktemp "${path}.tmp.XXXXXX")"
 {
@@ -1361,10 +1413,12 @@ REMOTE_DRAIN
 # legacy producer was replaced by a v2 writer, so removing them is cleanup.
 relay_drain_clear() {
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
-    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" <<'REMOTE_DRAIN_CLEAR' >/dev/null 2>&1
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$MARKER_LOCK_PATH" <<'REMOTE_DRAIN_CLEAR' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; owner="$2"
+path="$1"; owner="$2"; lock="$3"
+exec 200>"$lock"
+flock -x 200
 [ -f "$path" ] || exit 0
 found="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
 lease="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
@@ -1385,10 +1439,12 @@ REMOTE_DRAIN_CLEAR
 relay_drain_refresh() {
   local lease=$(( $(date +%s) + SHRINK_DRAIN_LEASE_SECONDS ))
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
-    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" <<'REMOTE_DRAIN_REFRESH' >/dev/null 2>&1
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" "$MARKER_LOCK_PATH" <<'REMOTE_DRAIN_REFRESH' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; owner="$2"; lease="$3"
+path="$1"; owner="$2"; lease="$3"; lock="$4"
+exec 200>"$lock"
+flock -x 200
 [ -f "$path" ] || exit 0
 found="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
 [ "$found" = "$owner" ] || exit 3
@@ -1410,12 +1466,22 @@ REMOTE_DRAIN_REFRESH
 # Fail closed: a tier that cannot prove the park within the gate loses the
 # round (rollback), because retiring an unparked instance cuts live streams.
 wait_drain_applied() {
-  local ips="$1" ip i=0
+  local ips="$1" ip i=0 members still
   while [ "$i" -lt "$ML_DRAIN_CONVERGE_ATTEMPTS" ]; do
-    local still=0
+    # One full read per attempt, and a FAILED read is a retry, never "still=0":
+    # per-IP probes used to mix "not in the upstream" with "could not read the
+    # upstream", and a tier whose every probe failed sailed through the gate
+    # with zero members found - the fail-open direction this gate exists to
+    # prevent.
+    if ! members="$(ecs_upstream_members)"; then
+      sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+      i=$(( i + 1 ))
+      continue
+    fi
+    still=0
     while IFS= read -r ip; do
       [ -n "$ip" ] || continue
-      if ecs_upstream_has "$ip"; then still=$(( still + 1 )); fi
+      if printf '%s\n' "$members" | grep -qxF "$ip"; then still=$(( still + 1 )); fi
     done < <(printf '%s\n' "$ips" | tr ',' '\n')
     if (( still == 0 )); then
       log "drain applied: the relay upstream no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
@@ -1424,7 +1490,7 @@ wait_drain_applied() {
     sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
     i=$(( i + 1 ))
   done
-  error "drain was not applied to the relay upstream within $((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS))s ($ips still served)"
+  error "drain was not applied to the relay upstream within $((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS))s ($ips still served or unreadable)"
   return 1
 }
 
@@ -1440,14 +1506,26 @@ wait_drain_applied() {
 # releasing, and treating it as "no hold" is the direction that lets a second
 # release start while the first is still rolling.
 release_hold_is_fresh() {
-  local max_age="$1" written age
+  local max_age="$1" written age rc=0
   written="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" <<'REMOTE_HOLD_AGE' 2>/dev/null
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ -r "$1" ]] || exit 1
+# Absent is the only answer that means "nobody holds the tier". Unreadable,
+# truncated, or unreachable must be told apart: a transport failure that reads
+# as "no hold" lets a second release start while the first is mid-rollout.
+if [ ! -e "$1" ]; then exit 1; fi
+if [ ! -r "$1" ]; then exit 2; fi
 head -1 "$1"
 REMOTE_HOLD_AGE
-)" || return 1
+)" || rc=$?
+  if (( rc == 1 )); then
+    return 1
+  fi
+  if (( rc != 0 )); then
+    # exit 2 (unreadable) or an ssh failure: both mean the hold's state is
+    # UNKNOWN, which cannot prove nobody is releasing.
+    return 2
+  fi
   written="$(printf '%s' "$written" | tr -d ' \r')"
   [[ -n "$written" ]] || return 2
   # A timestamp we cannot parse proves nothing: falling back to epoch made age
@@ -1471,37 +1549,40 @@ readonly DRAIN_MARKER_OWNER="release:${RELEASE_OWNER}"
 shrink_hold_write() {
   local action="$1"
   if [[ "$action" == "set" ]]; then
-    # One atomic remote write for both lines (timestamp + owner). The old
-    # two-call sequence (write ts, append owner) left a window in which a
-    # second release saw a fresh-but-ownerless hold, and two releases could
-    # each believe they owned the tier: the loser must be detectable. After
-    # the write the hold is read back and must carry OUR owner - exit 3 means
-    # somebody else won the race and this caller must not proceed.
-    remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$RELEASE_OWNER" <<'REMOTE_HOLD_SET' >/dev/null 2>&1
+    # Check-and-acquire under the entry host's marker lock: an atomic write
+    # alone is not mutual exclusion, and neither is write-then-verify (two
+    # releases both see "no hold", both write, and the one whose write landed
+    # last reads back its own owner). The check and the write happen inside one
+    # flock, so only one of them can win. A hold that exists, is fresh, and is
+    # NOT ours makes this exit 3: somebody else owns the tier, and the caller
+    # must refuse. Stale and absent holds are taken over (a SIGKILLed release
+    # never cleans up). Renews refresh our own timestamp under the same lock.
+    remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+      "$SHRINK_HOLD_PATH" "$RELEASE_OWNER" "${RELEASE_HOLD_FRESH_SECONDS:-900}" "$MARKER_LOCK_PATH" <<'REMOTE_HOLD_SET' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; owner="$2"
-mkdir -p "$(dirname "$path")"
+path="$1"; owner="$2"; max_age="$3"; lock="$4"
+mkdir -p "$(dirname "$path")" "$(dirname "$lock")"
+exec 200>"$lock"
+flock -x 200
+now="$(date +%s)"
+if [ -r "$path" ]; then
+  other="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
+  ts="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
+  epoch="$(date -d "$ts" +%s 2>/dev/null || printf 0)"
+  if [ "$other" != "$owner" ] && [ "$epoch" -gt 0 ] && [ $(( now - epoch )) -lt "$max_age" ]; then
+    printf 'shrink hold is owned by %s and fresh\n' "$other" >&2
+    exit 3
+  fi
+fi
 tmp="$(mktemp "${path}.tmp.XXXXXX")"
 printf '%s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$owner" >"$tmp"
 chmod 0644 "$tmp"
 mv -f -- "$tmp" "$path"
+found="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
+[ "$found" = "$owner" ] || exit 3
 REMOTE_HOLD_SET
-    local rc=$?
-    if (( rc != 0 )); then return "$rc"; fi
-    local found
-    found="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" <<'REMOTE_HOLD_VERIFY' 2>/dev/null
-#!/usr/bin/env bash
-set -Eeuo pipefail
-[[ -r "$1" ]] || exit 1
-sed -n '2p' "$1" | tr -d ' \r'
-REMOTE_HOLD_VERIFY
-    )" || return 1
-    if [[ "$found" != "$RELEASE_OWNER" ]]; then
-      error "another release owns the shrink guard hold ($found); refusing to proceed"
-      return 3
-    fi
-    return 0
+    return $?
   fi
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" <<'REMOTE_HOLD' >/dev/null 2>&1
 #!/usr/bin/env bash
@@ -1586,10 +1667,24 @@ suspend_scale_in_guard() {
   fi
 }
 
+# Set when a retire set failed to leave the group before its gate timed out:
+# the removal may still be terminating, and un-parking the victim now would
+# send it new requests mid-retirement. The EXIT trap respects it and leaves the
+# marker parked instead - its lease lapses once no heartbeat extends it, which
+# is exactly the dead-writer case the lease exists for.
+RETIREMENT_PENDING=0
+
 resume_scale_in_guard() {
   # Never leave a drain marker behind: it keeps a healthy member out of the relay
   # list indefinitely, which reads as lost capacity rather than a failed release.
-  relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
+  # One exception: a removal that timed out mid-flight. The marker's lease is
+  # the safety net there, and clearing it would un-park an instance ESS is still
+  # terminating.
+  if (( RETIREMENT_PENDING == 1 )); then
+    warn "leaving the drain marker parked: a retire set timed out before leaving the group (its lease lapses without a heartbeat)"
+  else
+    relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
+  fi
   shrink_hold_write clear && log "entry shrink guard released"
   [[ -n "$scale_in_guard_suspended" ]] || return 0
   local id="$scale_in_guard_suspended"
@@ -1732,6 +1827,7 @@ wait_retired() {
     i=$(( i + 1 ))
   done
   error "timed out waiting for the retired set to leave the group ($gone of $total gone)"
+  RETIREMENT_PENDING=1
   return 1
 }
 
@@ -2083,7 +2179,13 @@ ess_rollout() {
   # hold must not be undone by this release, and the removal count must stay
   # the count that was parked. Then wait for the set's FULL departure: a
   # member still in Removing is a removal the next scale-out would supersede.
-  roll_before_ids="$(in_service_instance_ids)" || roll_before_ids=""
+  if ! roll_before_ids="$(in_service_instance_ids)"; then
+    # Fail closed (#4): falling back to a healthy-count gate here let a failed
+    # member query shrink the tier with NOTHING parked - the count gate cannot
+    # prove the removal set matches the parked set.
+    error "could not read the in-service set before the scale-in; refusing to shrink unparked"
+    return 1
+  fi
   scale_in_ok=0
   if [[ -n "$roll_before_ids" ]]; then
     now_count=$(printf '%s\n' "$roll_before_ids" | grep -c . || true)
@@ -2095,9 +2197,6 @@ ess_rollout() {
     target=$(( now_count - live ))
     (( target < stable )) && target="$stable"
     scale_group "$target" && wait_retired "$retire_ids" && scale_in_ok=1
-  else
-    warn "could not read the in-service set before the scale-in; falling back to a healthy-count gate"
-    scale_group "$stable" && wait_healthy_instances "$stable" && scale_in_ok=1
   fi
   if (( scale_in_ok == 0 )); then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
@@ -2296,7 +2395,13 @@ rollout_batch() {
     # into MORE instances than were parked - the round then reported success
     # while unparked members were cut - and made the wait condition count
     # departures from a different set than the one parked.
-    scalein_before_ids="$(in_service_instance_ids)" || scalein_before_ids=""
+    if ! scalein_before_ids="$(in_service_instance_ids)"; then
+      # Fail closed (#4): an empty snapshot made retiring=0 and the round shrink
+      # to base with nothing parked at all.
+      error "round $rounds: could not re-read the in-service set; refusing to shrink without one"
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
     scalein_before=$(printf '%s\n' "$scalein_before_ids" | grep -c . || true)
     retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
     retire_ids="" drain_ips=""
@@ -2342,7 +2447,11 @@ rollout_batch() {
     # whenever an external scale-out raised the count during the hold - and
     # unparked members would be cut.
     if [[ -n "$retire_ids" ]]; then
-      now_ids="$(in_service_instance_ids)" || now_ids=""
+      if ! now_ids="$(in_service_instance_ids)"; then
+        error "round $rounds: could not re-read the in-service set; refusing to shrink without one"
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
       now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
       live=0
       while IFS= read -r id; do

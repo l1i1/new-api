@@ -147,6 +147,7 @@ run_deploy() {
     RELAY_MAX_MEMBERS=10 \
     SHRINK_HOLD_PATH="$case_dir/shrink-hold" \
     SHRINK_DRAIN_PATH="$case_dir/shrink-drain" \
+    MARKER_LOCK_PATH="$case_dir/marker.lock" \
     ML_DRAIN_CONVERGE_ATTEMPTS=2 \
     ML_DRAIN_CONVERGE_DELAY_SECONDS=0 \
     CNB_REGISTRY_TOKEN=dummy-test-token \
@@ -952,6 +953,51 @@ if grep -q "ess ModifyScalingGroup" "$overbatch_case/state/aliyun-calls.log"; th
 fi
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$overbatch_case/state/state.json" > /dev/null \
   || fail "the refused release still re-pinned the scaling configuration"
+
+# (6b) Two releases started at the same time: exactly one may own the tier.
+# The check-and-acquire happens under the entry host's marker lock, so the
+# second release must refuse (a fresh foreign hold), not interleave with the
+# first. Atomic writes alone were not mutual exclusion: both could write and
+# each read back its own owner.
+mutex_case="$test_root/release-mutex"
+first="$mutex_case/first"; second="$mutex_case/second"
+for d in "$first" "$second"; do
+  mkdir -p "$d/state"
+  make_conf "$d/nginx.conf"
+  init_ess_state "$d/state"
+done
+shared_hold="$mutex_case/shared-hold"
+shared_drain="$mutex_case/shared-drain"
+shared_lock="$mutex_case/shared-marker.lock"
+run_deploy "$first" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  SHRINK_HOLD_PATH="$shared_hold" \
+  SHRINK_DRAIN_PATH="$shared_drain" \
+  MARKER_LOCK_PATH="$shared_lock" \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 &
+mutex_first_pid=$!
+# Wait until the first release has actually written its hold, then start the
+# second: the race being tested is the ownership check, not the start gun.
+for _ in $(seq 1 50); do
+  [ -s "$shared_hold" ] && break
+  sleep 0.2
+done
+[ -s "$shared_hold" ] || { kill "$mutex_first_pid" 2>/dev/null || true; fail "the first release never wrote its shrink hold"; }
+if run_deploy "$second" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  SHRINK_HOLD_PATH="$shared_hold" \
+  SHRINK_DRAIN_PATH="$shared_drain" \
+  MARKER_LOCK_PATH="$shared_lock" \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  kill "$mutex_first_pid" 2>/dev/null || true
+  fail "a second release started while the first held the tier"
+fi
+grep -qE "refusing to release|refusing to run two at once|owned by" "$second/state/output.log" \
+  || fail "the second release did not explain its refusal"
+wait "$mutex_first_pid" \
+  || fail "the first release failed because of the concurrent second one"
 
 # (7) A group with no headroom cannot be released at all: even the
 # one-at-a-time leg scales the tier to stable+1 while the old instance still

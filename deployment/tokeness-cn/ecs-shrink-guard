@@ -62,9 +62,18 @@ HOLD_MAX_AGE="${SHRINK_HOLD_MAX_AGE:-21600}"
 # a drain or a removal wait is in flight; a lease this far past expiry means the
 # writer is gone, and anyone may collect the marker.
 DRAIN_LEASE_SECONDS="${SHRINK_DRAIN_LEASE_SECONDS:-$(( DRAIN_SECONDS + 900 ))}"
+# The SAME lock deploy.sh takes (remotely) for its hold and marker writes: with
+# it, check-and-acquire and ownership checks are atomic against a release
+# starting on this host; without it, an atomic rename alone is not mutual
+# exclusion between processes.
+MARKER_LOCK="${SHRINK_MARKER_LOCK:-/var/lock/ml-sync-marker.lock}"
 # How many 15s polls to wait for the retired instance to leave the group
 # entirely (Removing -> gone) before giving the next tick the job.
 REMOVAL_POLLS="${SHRINK_REMOVAL_POLLS:-20}"
+# How long to wait for the relay upstream (fleet-sync's output) to actually
+# drop the parked victim before the park counts as consumed.
+FLEET_APPLY_POLLS="${SHRINK_FLEET_APPLY_POLLS:-4}"
+FLEET_APPLY_POLL_SECONDS="${SHRINK_FLEET_APPLY_POLL_SECONDS:-15}"
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 # The guard's identity on the drain marker (v2 line 1).
@@ -126,6 +135,15 @@ victim_id_of() {  # <ip> -> the id the group currently reports for that ip
   instances_json | jq -r --arg ip "$1" '[.ScalingInstances.ScalingInstance[]? | select(.PrivateIpAddress==$ip)]
     | .[0] | .InstanceId // empty' 2>/dev/null | tr -d '\r'
 }
+# upstream_serves <ip>: the entry's relay upstream still lists the IP. The
+# upstream is fleet-sync's OUTPUT: parking only becomes real once the consumer
+# rewrote this file, and a stuck sync leaves the victim receiving new requests
+# while we count down to its removal.
+upstream_serves() {
+  local f="${SHRINK_UPSTREAM_FILE:-/etc/nginx/fleet/newapi_ml_servers.conf}"
+  [[ -r "$f" ]] || return 0   # unreadable = cannot prove it stopped: treat as served
+  grep -q "$1" "$f" 2>/dev/null
+}
 victim_gone() {  # <id> -> 0 when the group no longer reports the id at all
   local n
   n="$(instances_json | jq -r --arg id "$1" '[.ScalingInstances.ScalingInstance[]? | select(.InstanceId==$id)] | length' 2>/dev/null | tr -d '\r')"
@@ -176,10 +194,26 @@ marker_lease_expired() {
   [[ "$lease" =~ ^[0-9]+$ ]] || return 1
   (( $(date +%s) >= lease ))
 }
+# with_marker_lock <fd-cmd...>: run the marker file operations under the shared
+# entry-host lock so a release cannot interleave between our ownership check
+# and our write.
+with_marker_lock() (
+  mkdir -p "$(dirname "$MARKER_LOCK")" 2>/dev/null || true
+  exec 200>"$MARKER_LOCK"
+  flock -x 200
+  "$@"
+)
+
 # write_marker <ip>: rewrite OUR marker with a fresh lease, atomically.
 write_marker() {
   if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would park $1 in $DRAIN_FILE"; return 0; fi
+  write_marker_locked "$1"
+}
+
+write_marker_locked() (
   local tmp
+  exec 200>"$MARKER_LOCK"
+  flock -x 200
   tmp="$(mktemp "${DRAIN_FILE}.tmp.XXXXXX")"
   {
     printf '%s\n' "$DRAIN_OWNER"
@@ -188,35 +222,57 @@ write_marker() {
   } >"$tmp"
   chmod 0644 "$tmp"
   mv -f -- "$tmp" "$DRAIN_FILE"
-}
+)
 # clear_marker: remove OUR marker, or a foreign one whose lease has lapsed. A
 # foreign marker with a live lease belongs to a release mid-drain; deleting it
 # would send new requests to the instance that release is retiring.
 clear_marker() {
-  if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the drain marker"; return 0; fi
-  [[ -f "$DRAIN_FILE" ]] || { state_set draining ""; state_set drain_until ""; state_set draining_id ""; return 0; }
-  if marker_ours || marker_lease_expired; then
-    rm -f "$DRAIN_FILE" && log "drain marker cleared"
-  else
+  if [[ "$DRY_RUN" == 1 ]]; then log "dry run: would clear the drain marker"; reset_drain_state; return 0; fi
+  clear_marker_locked
+  reset_drain_state
+  return 0
+}
+
+clear_marker_locked() (
+  exec 200>"$MARKER_LOCK"
+  flock -x 200
+  # retiring is a terminal-state field too: leaving it set after a completed
+  # removal made every later tick re-process a victim that is already gone and
+  # never park anything again.
+  if [[ -f "$DRAIN_FILE" ]] && ! marker_ours && ! marker_lease_expired; then
     log "drain marker belongs to $(sed -n '1p' "$DRAIN_FILE" | tr -d ' \r') with a live lease; leaving it"
+  else
+    [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"
   fi
-  state_set draining ""; state_set drain_until ""; state_set draining_id ""
+)
+
+reset_drain_state() {
+  state_set draining ""; state_set drain_until ""; state_set draining_id ""; state_set retiring ""
   return 0
 }
 # release_our_drain: the release owns the tier; drop OUR parking and state, but
 # never touch a marker that no longer names our victim (the release may have
 # taken the file over since our last tick).
 release_our_drain() {
-  local ours
+  # A release owns the tier for its whole duration. If WE hold an in-flight
+  # drain or removal, DEFER to it: keep the state, keep the marker parked, and
+  # renew the lease so it does not lapse while the release runs (a release can
+  # outlive DRAIN_LEASE_SECONDS). Dropping our own parking here would un-park
+  # the victim mid-window - and the release refuses to stomp our live marker
+  # (deploy.sh exits 3 on a foreign live lease), so the two protocols wait for
+  # each other instead of racing. Our drain resumes on the first tick after the
+  # hold disappears.
+  local ours rid
   ours="$(state_get draining)"
-  if [[ -n "$ours" ]] && [[ -f "$DRAIN_FILE" ]] && marker_ours && marker_has_ip "$ours"; then
-    clear_marker
-    log "release hold present; releasing our in-flight drain so the release owns the tier"
-  else
-    if [[ -n "$ours" || -n "$(state_get drain_until)" ]]; then
-      log "release hold present; our drain marker was taken over; dropping state without touching the file"
+  rid="$(state_get retiring)"
+  if [[ -n "$ours" || -n "$rid" ]]; then
+    if [[ -n "$ours" ]] && [[ -f "$DRAIN_FILE" ]] && marker_ours && marker_has_ip "$ours"; then
+      write_marker "$ours"
+      log "release hold present; deferring our in-flight drain ($ours) and keeping it parked"
+    else
+      log "release hold present; our drain state has no marker of ours (owner: $(sed -n '1p' "$DRAIN_FILE" 2>/dev/null | tr -d ' \r')); dropping state without touching the file"
+      reset_drain_state
     fi
-    state_set draining ""; state_set drain_until ""; state_set draining_id ""
   fi
   return 0
 }
@@ -305,7 +361,15 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
   # would remove an instance nobody parked.
   if ! marker_ours || ! marker_has_ip "$drained"; then
     log "drain marker no longer parks $drained (owner: $(sed -n '1p' "$DRAIN_FILE" 2>/dev/null | tr -d ' \r')); ending this drain without shrinking"
-    state_set draining ""; state_set drain_until ""; state_set draining_id ""; state_set idle_streak 0
+    reset_drain_state; state_set idle_streak 0
+    exit 0
+  fi
+  # The park must still be CONSUMED (#8): if the relay upstream serves the
+  # victim again (a stuck or hand-edited sync), removing it now cuts the very
+  # streams the window was held for.
+  if upstream_serves "$drained"; then
+    log "the relay upstream still serves the parked $drained; fleet-sync is not consuming the marker; ending this drain without shrinking"
+    clear_marker; state_set idle_streak 0
     exit 0
   fi
   # The tier may have started serving again while we waited - the scale-out alarm
@@ -326,6 +390,19 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
   target=$(( instances - 1 ))
   (( target < MIN_KEEP )) && target="$MIN_KEEP"
   log "drain window over for $rid ($drained); asking ESS for $target instance(s)"
+  # Final re-check of the release hold IMMEDIATELY before the Modify (#7): the
+  # reads above take their own time, and a release that started during them
+  # owns the tier now. Also re-verify the marker one last time under the lock.
+  if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
+    log "release hold appeared during the drain; standing down"
+    clear_marker; state_set idle_streak 0
+    exit 0
+  fi
+  if ! marker_ours || ! marker_has_ip "$drained"; then
+    log "drain marker changed under us right before the shrink; standing down"
+    reset_drain_state; state_set idle_streak 0
+    exit 0
+  fi
   if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$target"; clear_marker; exit 0; fi
   if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$target" >/dev/null; then
     log "DesiredCapacity set to $target; waiting for $rid to leave the group"
@@ -378,9 +455,23 @@ victim_ip="$(printf '%s' "$victim" | awk '{print $2}')"
 if (( DRY_RUN == 1 )); then log "dry run: idle $streak checks, would drain $victim_id ($victim_ip) then shrink to $(( instances - 1 ))"; exit 0; fi
 
 write_marker "$victim_ip"
+# Confirm the park took effect BEFORE starting the countdown (#8): fleet-sync
+# consumes the marker on its own cadence, and a stuck consumer leaves the victim
+# serving while we count down to its removal. Failing to consume is a refusal,
+# not a wait-forever: the marker is cleared and the next tick retries.
+consumed=0
+for _ in $(seq 1 "${FLEET_APPLY_POLLS:-4}"); do
+  if ! upstream_serves "$victim_ip"; then consumed=1; break; fi
+  sleep "${FLEET_APPLY_POLL_SECONDS:-15}"
+done
+if (( consumed == 0 )); then
+  log "ERROR: the relay upstream still serves $victim_ip after $(( FLEET_APPLY_POLLS * FLEET_APPLY_POLL_SECONDS ))s; fleet-sync is not consuming the drain marker; not shrinking this tick"
+  clear_marker
+  exit 0
+fi
 state_set draining "$victim_ip"
 state_set draining_id "$victim_id"
 state_set drain_until "$(( $(date +%s) + DRAIN_SECONDS ))"
 state_set idle_streak 0
-log "idle for $(( needed * 5 )) min; parked $victim_id ($victim_ip) in $DRAIN_FILE (relay drops it within a minute) and will wait ${DRAIN_SECONDS}s for in-flight streams before shrinking"
+log "idle for $(( needed * 5 )) min; parked $victim_id ($victim_ip) in $DRAIN_FILE and the relay dropped it; will wait ${DRAIN_SECONDS}s for in-flight streams before shrinking"
 logrotate_local
