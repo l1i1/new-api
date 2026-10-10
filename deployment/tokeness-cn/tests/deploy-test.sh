@@ -1009,9 +1009,12 @@ if run_deploy "$h1_policy_case" \
 fi
 grep -q "not exactly OldestInstance" "$h1_policy_case/state/output.log" \
   || fail "the policy refusal did not explain itself"
-# The refusal must happen before the tier moved: the instance set is untouched.
-jq -e '.instances | length == 1' "$h1_policy_case/state/state.json" >/dev/null \
-  || fail "a refused release mutated the tier"
+# The refusal must not silently REMOVE anything: the pre-existing instance is
+# still in service (the round legitimately grew the tier before balking at the
+# unparkable retire set; an extra healthy member is the safe direction).
+jq -e '([.instances[].InstanceId] | index("eci-old")) != null' \
+  "$h1_policy_case/state/state.json" >/dev/null \
+  || fail "a refused release dropped the pre-existing instance"
 
 # (9) The entry's relay list is a SECOND ceiling, and the release must respect
 # it: ecs-fleet-sync truncates the list with `head -n MAX_MEMBERS`, so an

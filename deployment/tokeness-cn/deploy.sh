@@ -762,6 +762,57 @@ wait_verify_converged() {
 # rollback_failed_rollout <failed_instance_id> <previous_digest> <snapshot> -
 # restore the complete pre-update scaling configuration before removing the
 # failed container. The snapshot path also preserves probes from old images.
+# drain_before_scale_in <out_var> <target> - park the instances a scale-in to
+# <target> would remove, wait out the drain window, and leave the retire set in
+# <out_var> for the caller's wait_retired. Shared by the rollback path (#10):
+# a failed release shrinks the tier back, and ESS removes the OLDEST instances
+# to get there - which are the healthy members still serving customers, not
+# the failed new one that was just deleted. Removing them without parking cuts
+# live streams on a release whose own gate already failed. Fail closed at
+# every step: a rollback that cannot park simply fails, it never retires an
+# unparked instance. The retire set is written through a variable because this
+# runs outside command substitution, and its log() lines must stay on real
+# stdout.
+drain_before_scale_in() {
+  local out_var="$1" target="$2"
+  local now_ids now_count remove_count retire_ids drain_ips id ip drain_comma
+  printf -v "$out_var" '%s' ""
+  now_ids="$(in_service_instance_ids)" || { error "could not read the in-service set before a scale-in"; return 1; }
+  now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
+  remove_count=$(( now_count > target ? now_count - target : 0 ))
+  if (( remove_count == 0 )); then
+    return 0
+  fi
+  retire_ids="$(oldest_instance_ids "$remove_count" || true)"
+  if [[ -z "$retire_ids" ]]; then
+    error "could not resolve the $remove_count instance(s) a scale-in to $target would remove; refusing to retire unparked instances"
+    return 1
+  fi
+  drain_ips=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
+      error "could not resolve a valid private IP for retiree $id; refusing to retire an unparked instance"
+      return 1
+    fi
+    drain_ips+="${drain_ips:+$'\n'}$ip"
+  done <<<"$retire_ids"
+  drain_comma="$(printf '%s\n' "$drain_ips" | paste -sd, -)"
+  if ! relay_drain_write "$drain_comma"; then
+    error "could not write the relay drain marker before a scale-in; refusing to retire unparked instances"
+    return 1
+  fi
+  if ! wait_drain_applied "$drain_comma"; then
+    relay_drain_clear >/dev/null 2>&1 || true
+    return 1
+  fi
+  log "drain-first: parked the instance(s) a scale-in to $target will remove: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
+  log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
+  sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+  printf -v "$out_var" '%s' "$retire_ids"
+  return 0
+}
+
 rollback_failed_rollout() {
   local failed_id="$1" previous_digest="$2" previous_snapshot="${3:-}"
   warn "rolling back to previous digest: ${previous_digest:-<unchanged>}"
@@ -792,8 +843,21 @@ rollback_failed_rollout() {
   # tier must hand it back, and a rollback outside a rollout keeps the floor of
   # one instance it has always used.
   local stable="${ROLLOUT_STABLE_CAPACITY:-1}"
+  # Shrink through the same parked-set protocol (#10): scaling straight back to
+  # the steady state removes the OLDEST instances, which are the healthy members
+  # still serving traffic. Park them first so the rollback does not cut the
+  # streams the release's own gates were protecting.
+  local rollback_retire_ids=""
+  if ! drain_before_scale_in rollback_retire_ids "$stable"; then
+    error "rollback could not park the instances its scale-in would remove; tier left at current capacity"
+    return 1
+  fi
   if ! scale_group "$stable"; then
     error "rollback could not restore desired capacity"
+    return 1
+  fi
+  if [[ -n "$rollback_retire_ids" ]] && ! wait_retired "$rollback_retire_ids"; then
+    error "rollback's retire set did not leave the group"
     return 1
   fi
   if ! wait_healthy_instances "$stable"; then
