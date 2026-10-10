@@ -445,6 +445,31 @@ case "$cmd" in
     }]}}' "$state"
     ;;
   "ess DescribeScalingInstances")
+    # Hold-window external scale-out (#12): with
+    # TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD, the alarm-style growth happens the
+    # first time the tier is polled AFTER a live drain marker appears - i.e.
+    # DURING the 1900s hold, which is when a cpu-out firing would actually land
+    # - instead of after the shrink already removed members.
+    if [[ "${TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD:-0}" =~ ^[1-9][0-9]*$ ]]        && [[ ! -f "$state_dir/external-hold-done" ]]        && [[ -n "${SHRINK_DRAIN_PATH:-}" && -f "$SHRINK_DRAIN_PATH" ]]; then
+      lease_line="$(sed -n '2p' "$SHRINK_DRAIN_PATH" 2>/dev/null | tr -d ' \r' || true)"
+      if [[ "$lease_line" =~ ^[0-9]+$ ]] && (( lease_line > $(date +%s) )); then
+        k=0
+        while (( k < TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD )); do
+          e="$(jq '.ext_index // 1' "$state" | tr -d '\r')"
+          state_update --argjson e "$e" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.instances += [{
+            "InstanceId": ("eci-ext-" + ($e | tostring)),
+            "PrivateIpAddress": ("10.0.0." + (200 + $e | tostring)),
+            "HealthStatus": "Healthy",
+            "LifecycleState": "InService",
+            "CreatedTime": $created,
+            "ZoneId": "cn-shanghai-l"
+          }] | .ext_index = ($e + 1) | .desired = (.desired + 1)'
+          k=$(( k + 1 ))
+        done
+        touch "$state_dir/external-hold-done"
+        printf '%s\n' "hold-window external scale-out injected: $TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD instance(s)" >> "$state_dir/external-scaleout.log"
+      fi
+    fi
     # Instances a pending scale-in has detached are still REPORTED until the lag
     # expires, then the pending record is dropped - the same asynchronous window
     # the real ESS has. Detached instances report LifecycleState "Removing"
@@ -457,17 +482,20 @@ case "$cmd" in
     state_update --argjson now "$(date +%s)" '
       if (.pending_removal != null) and (.pending_removal.until <= $now)
       then .pending_removal = null else . end' >/dev/null 2>&1 || true
+    # State passthrough (#13): report the instance's OWN HealthStatus/
+    # LifecycleState when the fixture wrote one - forcing Healthy/InService
+    # here let tests seed an Unhealthy member and still see it healthy.
     jq '{ScalingInstances: {ScalingInstance:
           ([((.pending_removal.instances // [])[] | {
             InstanceId, PrivateIpAddress,
-            HealthStatus: "Healthy",
+            HealthStatus: (.HealthStatus // "Healthy"),
             LifecycleState: "Removing",
             CreatedTime: (.CreatedTime // "1970-01-01T00:00:00Z"),
             ZoneId: (.ZoneId // "cn-shanghai-l")
           })] + [(.instances[] | {
             InstanceId, PrivateIpAddress,
-            HealthStatus: "Healthy",
-            LifecycleState: "InService",
+            HealthStatus: (.HealthStatus // "Healthy"),
+            LifecycleState: (.LifecycleState // "InService"),
             CreatedTime: (.CreatedTime // "1970-01-01T00:00:00Z"),
             ZoneId: (.ZoneId // "cn-shanghai-l")
           })] | reverse)}}' "$state"

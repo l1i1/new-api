@@ -156,6 +156,12 @@ run_deploy() {
     > "$case_dir/state/stdout.log" 2> "$case_dir/state/output.log" || rc=$?
   # Replay stdout to the caller. It is part of this helper contract: image-ref
   # prints the immutable reference and a test captures it. Keeping it in a file
+  # ... and on failure also replay stderr: a deploy that died under set -e
+  # writes its only explanation to output.log, and a suite that dies silently
+  # (bare non-zero under its own set -e) loses it completely.
+  if (( rc != 0 )); then
+    cat "$case_dir/state/output.log" 2>/dev/null || true
+  fi
   # as well lets a case assert on log() lines without racing a tee.
   cat "$case_dir/state/stdout.log"
   return "$rc"
@@ -1256,12 +1262,21 @@ jq '.desired = 2 | .max_size = 6 | .instances += [{
   && mv "$external_case/state/tmp.json" "$external_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.201:3000;\nserver 10.0.0.202:3000;\n' \
   > "$external_case/ecs-upstream.conf"
+# The growth is injected DURING the 1900s hold (the first poll after a live
+# drain marker appears) - that is when a cpu-out firing would actually land -
+# and the removal window keeps a Removing lag so the full-departure gate is
+# exercised too. The old variant injected only after the shrink had already
+# removed members, which tested neither the hold window nor the read-to-Modify
+# gap.
 run_deploy "$external_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   HEALTH_POLL_SECONDS=1 \
-  TOKENESS_TEST_EXTERNAL_SCALEOUT=2 \
+  TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+  TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "hold-window external scale-out injected" "$external_case/state/external-scaleout.log" 2>/dev/null \
+  || fail "the hold-window injection never fired (the case no longer tests the window)"
 grep -q "scale-in complete:" "$external_case/state/stdout.log" \
   || fail "the release did not gate on the retire set"
 grep -qE "retired all [12] pre-existing instance\(s\)" "$external_case/state/stdout.log" \
@@ -1280,6 +1295,29 @@ jq -e '([.instances[].InstanceId] | index("eci-ext-1")) != null
 # must not open the next one while a removal is still terminating.
 grep -q "left the group" "$external_case/state/stdout.log" \
   || fail "the retire gate accepted a removal that was still in flight"
+# At the shrink call itself: the parked originals are in the marker, the relay
+# upstream already excludes them, and the externally added members are IN the
+# upstream (the capacity that arrived during the hold is carried, not undone).
+# The LAST resize call is the batch round's shrink (the ess_rollout leg has
+# its own scale-out/shrink pair first).
+ext_snap="$(ls "$external_case/state/modify-snapshots"/modify-*.log 2>/dev/null | sort -V | tail -1)"
+[[ -n "$ext_snap" && -f "$ext_snap" ]] || fail "the shrink call was not snapshotted in the external case"
+# .207 was retired by the ess_rollout leg (its shrink is the second resize
+# call); .206 by the batch round (the last). Each must be parked at ITS OWN
+# shrink, not just gone at the end.
+ess_snap="$external_case/state/modify-snapshots/modify-2.log"
+[[ -f "$ess_snap" ]] || fail "the ess_rollout shrink was not snapshotted in the external case"
+for spec in "10.0.0.207 $ess_snap" "10.0.0.206 $ext_snap"; do
+  set -- $spec
+  grep -qxF "$1" "$2" || fail "at its shrink, the marker did not park $1"
+  if sed -n '/--- relay upstream ---/,$p' "$2" | grep -q "$1"; then
+    fail "at its shrink, the upstream still carried parked $1"
+  fi
+done
+for ext_ip in 10.0.0.201 10.0.0.202; do
+  sed -n '/--- relay upstream ---/,$p' "$ext_snap" | grep -q "$ext_ip" \
+    || fail "at the shrink, the external capacity $ext_ip was not carried by the upstream"
+done
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.

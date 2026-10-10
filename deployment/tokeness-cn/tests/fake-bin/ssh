@@ -132,13 +132,15 @@ if [[ "${TOKENESS_TEST_MLSYNC:-0}" == 1 && -n "${ECS_UPSTREAM_CONF:-}" \
       | (if $total > $cap then $all[0:$cap] else $all end) as $kept
       | ([ ($kept[]) ]) | sort | .[]' "$TOKENESS_TEST_STATE_DIR/state.json" > "$fleet_tmp.body" 2>/dev/null; then
     : > "$fleet_tmp"
-    # IP lines only (v2 marker: owner/lease first). A parked instance is
-    # subtracted even while it is still in .instances: that is the whole point
-    # of the file.
+    # IP lines only (v2 marker: owner/lease first), and only while the lease
+    # is live: a lapsed marker is a dead writer's leftover, and fleet-sync
+    # (like the updated host copy) must return those members to rotation.
+    : > "$fleet_tmp.parked"
     if [[ -n "${SHRINK_DRAIN_PATH:-}" && -f "$SHRINK_DRAIN_PATH" ]]; then
-      grep -E '^10\.0\.0\.[0-9]+$' "$SHRINK_DRAIN_PATH" > "$fleet_tmp.parked" 2>/dev/null || : > "$fleet_tmp.parked"
-    else
-      : > "$fleet_tmp.parked"
+      fleet_lease="$(sed -n '2p' "$SHRINK_DRAIN_PATH" 2>/dev/null | tr -d ' \r' || true)"
+      if [[ "$fleet_lease" =~ ^[0-9]+$ ]] && (( fleet_lease > $(date +%s) )); then
+        grep -E '^10\.0\.0\.[0-9]+$' "$SHRINK_DRAIN_PATH" > "$fleet_tmp.parked" 2>/dev/null || : > "$fleet_tmp.parked"
+      fi
     fi
     while IFS= read -r fleet_ip; do
       [ -n "$fleet_ip" ] || continue

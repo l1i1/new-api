@@ -53,6 +53,8 @@ run_guard() {
     SHRINK_LOCK_FILE="$case_dir/guard.lock" \
     SHRINK_MARKER_LOCK="$case_dir/marker.lock" \
     SHRINK_UPSTREAM_FILE="$case_dir/upstream.conf" \
+    ECS_UPSTREAM_CONF="$case_dir/upstream.conf" \
+    SHRINK_DRAIN_PATH="$case_dir/shrink-drain" \
     SHRINK_FLEET_APPLY_POLLS=2 \
     SHRINK_FLEET_APPLY_POLL_SECONDS=1 \
     SHRINK_REMOVAL_POLLS="${SHRINK_REMOVAL_POLLS:-3}" \
@@ -141,6 +143,16 @@ guard_log "$shrink_case" | grep -q "DesiredCapacity set to 2" || fail "the guard
 guard_log "$shrink_case" | grep -q "eci-old.*left the group" || fail "the guard did not wait for the victim's full departure"
 [[ -f "$shrink_case/shrink-drain" ]] && fail "the marker stayed parked after the victim left the group"
 [[ "$(jq -r '.draining // empty' "$shrink_case/shrink-state.json")" == "" ]] || fail "drain state survived the completed shrink"
+[[ "$(jq -r '.retiring // empty' "$shrink_case/shrink-state.json")" == "" ]] || fail "retiring state survived the completed shrink (the next drain would never start)"
+# The Modify-time snapshot shows the marker still parked on the victim and the
+# upstream already excluding it - the shrink only ever happens through the
+# parking, not around it.
+guard_snap="$shrink_case/state/modify-snapshots/modify-1.log"
+[[ -f "$guard_snap" ]] || fail "the guard's Modify was not snapshotted"
+grep -qxF "10.0.0.207" "$guard_snap" || fail "at the guard's shrink, the marker did not park the victim"
+if sed -n '/--- relay upstream ---/,$p' "$guard_snap" | grep -q "10.0.0.207"; then
+  fail "at the guard's shrink, the relay upstream still served the victim"
+fi
 
 # (6) Policy refusal: when the group's removal policy is not OldestInstance, the
 # guard cannot know which instance a shrink removes, so it must not park a guess.
