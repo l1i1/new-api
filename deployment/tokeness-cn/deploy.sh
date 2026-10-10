@@ -560,6 +560,16 @@ in_service_instance_ids() {
     | select(.LifecycleState == "InService") | .InstanceId' | tr -d '\r' | sort -u
 }
 
+# all_instance_ids - every id the group still reports, in ANY lifecycle state.
+# A retired instance sits in Removing/Removing:Wait for a while before it is
+# gone for good, and a gate that only watches InService passes while the
+# removal is still in flight - the next round's scale-out then supersedes it.
+all_instance_ids() {
+  scaling_instances_json | jq -r '
+    .ScalingInstances.ScalingInstance[]?
+    | .InstanceId' | tr -d '\r' | sort -u
+}
+
 instance_private_ip() {
   local id="$1"
   scaling_instances_json | jq -r --arg id "$id" '
@@ -1617,34 +1627,38 @@ wait_healthy_instances() {
   return 1
 }
 
-# wait_retired <ids> <want> [tries] - wait until at least <want> of the
-# newline-separated <ids> have LEFT the in-service set.
+# wait_retired <ids> [tries] - wait until EVERY id in the newline-separated
+# <ids> has left the group ENTIRELY: absent from DescribeScalingInstances in
+# any lifecycle state.
 #
-# This replaces an "exactly N in service" gate. The count could not tell a
-# completed scale-in from an external scale-out: the tier's own alarms can add
-# instances (cpu-out-70 -> +2), so a release that overlapped a downstream ramp
-# saw a legitimately larger group, failed the exact gate after 40 polls and
-# rolled back hours of work. What the gate must actually prove is narrower: the
-# instances this round is retiring are gone, so the next round's scale-out
-# cannot supersede ESS's still-pending removal - the race that killed
-# v1.0.0-rc.40-tokeness-mainland.42 after two hours. Instance identity answers
-# that; the total count does not.
+# "Left InService" is not departure: a retired instance sits in
+# Removing/Removing:Wait while the platform terminates it, and the next
+# round's scale-out would supersede that pending removal - the race that
+# killed v1.0.0-rc.40-tokeness-mainland.42 after two hours. The count could
+# not tell a completed scale-in from an external scale-out either, so the gate
+# is the exact retire set, fully gone. A failed query retries: reading
+# "they all left" out of a failed query is the fail-open direction this gate
+# exists to prevent. On timeout the drain marker is deliberately NOT cleared:
+# the parked members are still draining, and un-parking them would send new
+# requests to instances that are being terminated.
 wait_retired() {
-  local ids="$1" want="$2" tries="${3:-40}" i=0 left=0 current id
-  while [ "$i" -lt "$tries" ]; do
-    # A failed query must NOT read as "they all left": that is the fail-open
-    # direction this gate exists to prevent. Retry instead.
-    if ! current="$(in_service_instance_ids)"; then
+  local ids="$1" tries="${2:-40}" i=0 total=0 gone=0 current id
+  total=$(printf '%s\n' "$ids" | grep -c . || true)
+  if (( total == 0 )); then
+    return 0
+  fi
+  while (( i < tries )); do
+    if ! current="$(all_instance_ids)"; then
       sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue
     fi
     [[ -n "$current" ]] || { sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue; }
-    left=0
+    gone=0
     while IFS= read -r id; do
       [ -n "$id" ] || continue
-      printf '%s\n' "$current" | grep -qxF "$id" || left=$(( left + 1 ))
+      printf '%s\n' "$current" | grep -qxF "$id" || gone=$(( gone + 1 ))
     done <<<"$ids"
-    if (( left >= want )); then
-      log "scale-in complete: $left of the $want retiring instance(s) left service"
+    if (( gone >= total )); then
+      log "scale-in complete: all $total retired instance(s) left the group"
       # The parked members are gone; drop the marker so the relay carries every
       # healthy instance again. Best-effort here because the EXIT trap retries it.
       relay_drain_clear >/dev/null 2>&1 || true
@@ -1653,7 +1667,7 @@ wait_retired() {
     sleep "$HEALTH_POLL_SECONDS"
     i=$(( i + 1 ))
   done
-  error "timed out waiting for $want instance(s) to leave service (only $left gone)"
+  error "timed out waiting for the retired set to leave the group ($gone of $total gone)"
   return 1
 }
 
@@ -1878,7 +1892,7 @@ wait_drain_converged() {
 # back to the previous digest automatically.
 ess_rollout() {
   local digest="$1" previous_digest="${2:-}" previous_snapshot="${3:-}" attempt
-  local before_ids new_id new_ip stable
+  local before_ids new_id new_ip stable retire_ids retire_ip roll_before_ids now_count live target scale_in_ok
   if ! before_ids="$(in_service_instance_ids)"; then
     error "could not read the current in-service instance set"
     return 1
@@ -1947,19 +1961,62 @@ ess_rollout() {
     fi
     return 1
   fi
+  # Park the instance this scale-down will remove BEFORE the hold, exactly like
+  # the batch rounds (#5): the victim is the oldest in-service instance (the new
+  # one is the newest by construction, and ESS removes by OldestInstance). The
+  # old flow never parked anything here - it only confirmed the NEW instance was
+  # carried, slept, and let ESS remove the old one while it still received new
+  # requests, so the very first leg of every release cut its in-flight streams.
+  retire_ids="$(oldest_instance_ids 1 || true)"
+  if [[ -z "$retire_ids" ]]; then
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "could not resolve the instance to park for drain-first and rollback could not be verified"
+    fi
+    return 1
+  fi
+  retire_ip=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! retire_ip="$(instance_private_ip "$id" 2>/dev/null)" || ! is_valid_ipv4 "$retire_ip"; then
+      if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+        error "could not resolve the parked instance's address and rollback could not be verified"
+      fi
+      return 1
+    fi
+  done <<<"$retire_ids"
+  if ! relay_drain_write "$retire_ip"; then
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "could not park the retiring instance in the relay drain file and rollback could not be verified"
+    fi
+    return 1
+  fi
+  if ! wait_drain_applied "$retire_ip"; then
+    relay_drain_clear >/dev/null 2>&1 || true
+    if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
+      error "the relay never dropped the parked instance and rollback could not be verified"
+    fi
+    return 1
+  fi
+  log "drain-first: parked the retiring instance ($retire_ip) in the relay drain file"
   log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams (p95 181s, max 461s) finish on the retiring instance"
   sleep_with_heartbeat "$ML_DRAIN_SECONDS"
-  # The pin must outlive the scale-down. Clearing it first would let ml-sync
-  # re-add the still-InService old instance on its next 30s pass, sending new
-  # requests back to an instance that is about to be deleted.
-  # Same asynchronous-removal trap as the batch rounds: "at least stable healthy"
-  # passes while a removal is still in flight once anything else has grown the
-  # group, and the next scale-out then supersedes the pending removal. Gate on an
-  # instance actually leaving service.
+  # Scale down by exactly the parked set: remove one (the parked oldest) and
+  # KEEP anything that joined meanwhile - an external scale-out during the
+  # hold must not be undone by this release, and the removal count must stay
+  # the count that was parked. Then wait for the set's FULL departure: a
+  # member still in Removing is a removal the next scale-out would supersede.
   roll_before_ids="$(in_service_instance_ids)" || roll_before_ids=""
   scale_in_ok=0
   if [[ -n "$roll_before_ids" ]]; then
-    scale_group "$stable" && wait_retired "$roll_before_ids" 1 && scale_in_ok=1
+    now_count=$(printf '%s\n' "$roll_before_ids" | grep -c . || true)
+    live=0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$roll_before_ids" | grep -qxF "$id" && live=$(( live + 1 ))
+    done <<<"$retire_ids"
+    target=$(( now_count - live ))
+    (( target < stable )) && target="$stable"
+    scale_group "$target" && wait_retired "$retire_ids" && scale_in_ok=1
   else
     warn "could not read the in-service set before the scale-in; falling back to a healthy-count gate"
     scale_group "$stable" && wait_healthy_instances "$stable" && scale_in_ok=1
@@ -2155,32 +2212,36 @@ rollout_batch() {
         return 1
       fi
     done
-    # How many instances this scale-in will ask ESS to remove, measured now: an
-    # external scale-out during the gate can push the group above `want`. It has to
-    # be computed HERE (before the hold) because the parking below needs it.
-    scalein_before=$(in_service_instance_ids | grep -c . || true)
+    # The retire set is fixed BY ID once, here: the same set is parked, removed
+    # and waited for (H2). Retiring "everything above the steady state" let an
+    # external scale-out during the 1900s hold turn the count-derived removal
+    # into MORE instances than were parked - the round then reported success
+    # while unparked members were cut - and made the wait condition count
+    # departures from a different set than the one parked.
+    scalein_before_ids="$(in_service_instance_ids)" || scalein_before_ids=""
+    scalein_before=$(printf '%s\n' "$scalein_before_ids" | grep -c . || true)
     retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
-    # Park the instances ESS is about to remove in the relay drain file BEFORE the
-    # hold. The hold only protects streams that were already running when it
-    # started; anything arriving during the 1900s would still be cut at the
-    # scale-in. The marker is cleared once the removals are confirmed (wait_retired)
-    # and by the release's EXIT trap.
-    drain_ips="$(oldest_instance_ips "$retiring" || true)"
+    retire_ids="" drain_ips=""
     if (( retiring > 0 )); then
+      retire_ids="$(oldest_instance_ids "$retiring" || true)"
       # Fail closed: retiring an instance we could not park (the API failed, or
       # the marker write failed, or fleet-sync never consumed it) cuts that
       # instance's live streams - the exact failure the drain exists to prevent.
       # The round rolls back instead; the tier stays on the previous version.
-      if [[ -z "$drain_ips" ]]; then
+      if [[ -z "$retire_ids" ]]; then
         error "round $rounds: no instance resolved to park (retiring=$retiring); refusing to retire an unparked instance"
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
-      parked="$(printf '%s\n' "$drain_ips" | grep -c . || true)"
-      if (( parked != retiring )); then
-        warn "round $rounds: resolved $parked instance(s) to park but planned to retire $retiring; gating on the parked set"
-        retiring="$parked"
-      fi
+      while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
+          error "round $rounds: could not resolve a valid private IP for retiree $id; refusing to retire an unparked instance"
+          rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+          return 1
+        fi
+        drain_ips+="${drain_ips:+$'\n'}$ip"
+      done <<<"$retire_ids"
       local drain_comma; drain_comma="$(printf '%s\n' "$drain_ips" | paste -sd, -)"
       if ! relay_drain_write "$drain_comma"; then
         error "round $rounds: could not write the relay drain marker; refusing to retire an unparked instance"
@@ -2196,20 +2257,34 @@ rollout_batch() {
     fi
     log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
-    # Scaling in is asynchronous: the group keeps reporting the removed
-    # instances for a while after ModifyScalingGroup. Waiting on the COUNT used
-    # to be enough, but the tier's alarms can now add instances on their own
-    # (+2 per firing), which inflates the count legitimately and made the old
-    # exact gate time out mid-release. Gate on the retire set instead: this
-    # round asked ESS to remove $retiring pre-existing instance(s), and the next
-    # round may only scale out once they are actually gone.
-    # Measure what this scale-in actually asks ESS to remove, now: an external
-    # scale-out during the gate can push the group above `want`, and gating on the
-    # nominal want-base would then pass while removals are still in flight.
-    if ! scale_group "$base" || ! wait_retired "$(printf '%s\n' "${remaining[@]}")" "$retiring"; then
+    # Scale back by exactly the parked set and KEEP anything that joined
+    # meanwhile: target = current in-service minus the parked members that are
+    # still there (floored at the steady state). Forcing the group to `base`
+    # instead would remove (current - base) instances - more than were parked
+    # whenever an external scale-out raised the count during the hold - and
+    # unparked members would be cut.
+    if [[ -n "$retire_ids" ]]; then
+      now_ids="$(in_service_instance_ids)" || now_ids=""
+      now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
+      live=0
+      while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
+      done <<<"$retire_ids"
+      target=$(( now_count - live ))
+      (( target < base )) && target="$base"
+    else
+      target="$base"
+    fi
+    if ! scale_group "$target" || ! wait_retired "$retire_ids"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
+    # Scaling in is asynchronous: the group keeps reporting the removed
+    # instances for a while after ModifyScalingGroup (in Removing state, then
+    # gone). The gate below is the exact parked set leaving the group ENTIRELY,
+    # so the next round's scale-out cannot supersede a removal that is still
+    # in flight - the race that killed v1.0.0-rc.40-tokeness-mainland.42.
     if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
       ml_drain_end || warn "drain marker left behind; ml-sync expires it on its own"
     fi

@@ -419,21 +419,30 @@ case "$cmd" in
   "ess DescribeScalingInstances")
     # Instances a pending scale-in has detached are still REPORTED until the lag
     # expires, then the pending record is dropped - the same asynchronous window
-    # the real ESS has, and the reason a rollout must wait for an EXACT count
-    # after scaling in. The response REVERSES the state's join order: the real
-    # API makes no ordering promise, and callers were silently sorting by it
-    # before the CreatedTime-based selection landed.
+    # the real ESS has. Detached instances report LifecycleState "Removing"
+    # (they are gone from InService the moment ESS picks them, but not gone
+    # from the group until termination finishes), which is what makes a gate
+    # that watches full departure differ from one that watches InService. The
+    # response REVERSES the state's join order: the real API makes no ordering
+    # promise, and callers were silently sorting by it before the
+    # CreatedTime-based selection landed.
     state_update --argjson now "$(date +%s)" '
       if (.pending_removal != null) and (.pending_removal.until <= $now)
       then .pending_removal = null else . end' >/dev/null 2>&1 || true
     jq '{ScalingInstances: {ScalingInstance:
-          ([((.pending_removal.instances // []) + .instances)[] | {
+          ([((.pending_removal.instances // [])[] | {
+            InstanceId, PrivateIpAddress,
+            HealthStatus: "Healthy",
+            LifecycleState: "Removing",
+            CreatedTime: (.CreatedTime // "1970-01-01T00:00:00Z"),
+            ZoneId: (.ZoneId // "cn-shanghai-l")
+          })] + [(.instances[] | {
             InstanceId, PrivateIpAddress,
             HealthStatus: "Healthy",
             LifecycleState: "InService",
             CreatedTime: (.CreatedTime // "1970-01-01T00:00:00Z"),
             ZoneId: (.ZoneId // "cn-shanghai-l")
-          }] | reverse)}}' "$state"
+          })] | reverse)}}' "$state"
     ;;
   "ess DescribeEciScalingConfigurations")
     describe_config

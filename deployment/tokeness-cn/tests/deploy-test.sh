@@ -1145,10 +1145,17 @@ grep -qE "retired all [12] pre-existing instance\(s\)" "$external_case/state/std
 if grep -q "ERROR: release batch rollout failed" "$external_case/state/stdout.log"; then
   fail "an external scale-out made the release roll back"
 fi
-# The extra capacity the alarm added is left alone: the release restores the
-# steady state it found, and the scale-in alarm trims the rest later.
-jq -e '(.instances | length) >= 2' "$external_case/state/state.json" > /dev/null \
+# The extra capacity the alarm added is left alone BY IDENTITY: "at least 2
+# instances" would also pass if the release had deleted both external members
+# and kept two of its own. The external instances must still be in service.
+jq -e '([.instances[].InstanceId] | index("eci-ext-1")) != null
+       and ([.instances[].InstanceId] | index("eci-ext-2")) != null' \
+  "$external_case/state/state.json" > /dev/null \
   || fail "the external scale-out's instances were removed by the release"
+# The retired set left the group ENTIRELY (not merely InService): the round
+# must not open the next one while a removal is still terminating.
+grep -q "left the group" "$external_case/state/stdout.log" \
+  || fail "the retire gate accepted a removal that was still in flight"
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
 # jq (CRLF on stdout) must never leak \r into re-sent container/env data.
