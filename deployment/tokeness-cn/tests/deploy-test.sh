@@ -1314,14 +1314,21 @@ grep -q "a retire set is still settling" "$retire_pending_case/state/stdout.log"
   || fail "the hold was cleared although the retirement is still in flight"
 jq -e '.scale_in_alarm.state == "disabled"' "$retire_pending_case/state/state.json" >/dev/null \
   || fail "the pending retirement re-enabled the scale-in alarm while a removal was still in flight"
+if grep -q 'ess EnableAlarm' "$retire_pending_case/state/aliyun-calls.log"; then
+  fail "the pending retirement called EnableAlarm (a disable-then-enable sequence would let the alarm fire on the still-Removing tier)"
+fi
 # A missing alarm must warn, not abort: the guard is advisory.
 no_alarm_case="$test_root/scale-in-alarm-missing"
 mkdir -p "$no_alarm_case/state"
 make_conf "$no_alarm_case/nginx.conf"
 init_ess_state "$no_alarm_case/state"
+# A group with NO alarms configured at all (a well-formed empty AlarmList), so
+# the case exercises the genuine no-alarm path - the previous fixture named the
+# fake's alarm after the lookup miss, which passed the same assertion while a
+# same-named alarm existed.
 run_deploy "$no_alarm_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
-  TOKENESS_TEST_SCALE_IN_ALARM_NAME=does-not-exist \
+  TOKENESS_TEST_NO_ALARM=1 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 grep -q "no scale-in alarm named 'cpu-in-25'" "$no_alarm_case/state/stdout.log" \
@@ -1330,17 +1337,19 @@ grep -q "master container blue-green complete" "$no_alarm_case/state/stdout.log"
   || fail "a missing scale-in alarm aborted the release"
 [[ ! -e "$no_alarm_case/shrink-hold" ]] \
   || fail "the hold survived a release that suspended no alarm"
+[[ "$(grep -c 'ess DisableAlarm' "$no_alarm_case/state/aliyun-calls.log")" -eq 0 ]] \
+  || fail "a missing alarm was still 'suspended'"
 # A SECOND release on the same state: the resume path must be repeatable (the
 # alarm state file stays consistent, the hold clears again, nothing doubles).
 run_deploy "$no_alarm_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
-  TOKENESS_TEST_SCALE_IN_ALARM_NAME=does-not-exist \
+  TOKENESS_TEST_NO_ALARM=1 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 [[ ! -e "$no_alarm_case/shrink-hold" ]] \
   || fail "the hold survived a second release on the same state"
 [[ "$(grep -c 'ess DisableAlarm' "$no_alarm_case/state/aliyun-calls.log")" -eq 0 ]] \
-  || fail "a missing alarm was still 'suspended'"
+  || fail "a missing alarm was still 'suspended' after two releases"
 
 # (11) The tier's own alarms can add instances during a release (cpu-out-70 now
 # adds two at a time on a 2-minute window). The old scale-in gate waited for an

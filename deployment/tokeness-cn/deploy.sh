@@ -1310,6 +1310,15 @@ scale_in_alarm_id() {
   if ! printf '%s' "$resp" | jq -e 'type == "object" and has("AlarmList") and (.AlarmList | type == "object" and has("Alarm") and (.Alarm | type == "array"))' >/dev/null; then
     return 1
   fi
+  # A record that MATCHES the name but carries a null/empty AlarmTaskId is a
+  # broken response, not "no alarm": reading it as absent lets the release run
+  # while the (unmanageable) alarm stays live.
+  if ! printf '%s' "$resp" | jq -e --arg name "$SCALE_IN_ALARM_NAME" '
+      [.AlarmList.Alarm[]? | select(.Name == $name)] as $m
+      | if ($m | length) == 0 then true
+        else ($m[0] | type == "object") and ($m[0].AlarmTaskId | type == "string" and length > 0) end' >/dev/null; then
+    return 1
+  fi
   id="$(printf '%s' "$resp" | jq -r --arg name "$SCALE_IN_ALARM_NAME" '[.AlarmList.Alarm[]? | select(.Name == $name) | .AlarmTaskId][0] // empty' | tr -d '\r')"
   printf '%s\n' "$id"
 }
@@ -1701,6 +1710,12 @@ suspend_scale_in_guard() {
     # The heartbeat must run from this moment on (see hold_heartbeat): the hold
     # is written even when the alarm half below never suspends anything.
     scale_in_hold_written=1
+    # The cleanup trap is armed HERE, not by the caller after this function
+    # returns: the alarm queries below die on failure, and without a trap a
+    # die on that path left the just-written hold in place for up to the
+    # guard's max-hold age - blocking the tier's own shrink protection for
+    # hours. Re-installing the same trap later is harmless.
+    trap 'resume_scale_in_guard' EXIT
   else
     # Fail closed. The guard's only job is to keep the tier from shrinking while a
     # rollout owns it; releasing without that promise means the tier can shed an
@@ -1766,10 +1781,13 @@ RETIREMENT_PENDING=0
 release_the_hold() {
   if shrink_hold_write clear; then
     log "entry shrink guard released"
-  else
-    warn "could not clear the shrink guard hold; it stays in place and the guard's janitor treats it as abandoned after its max age"
+    return 0
   fi
-  return 0
+  # Not a warn-and-continue: a leftover hold keeps the guard off the tier for
+  # hours, which is a failed cleanup however well the release itself went.
+  # The caller propagates this so the process exits non-zero.
+  error "could not clear the shrink guard hold; it stays in place and the guard's janitor treats it as abandoned only after its max age"
+  return 1
 }
 
 resume_scale_in_guard() {
@@ -1803,7 +1821,7 @@ resume_scale_in_guard() {
     fi
     scale_in_hold_written=""
     scale_in_guard_suspended=""
-    release_the_hold
+    release_the_hold || exit 1
     return 0
   fi
   # Restore the alarm BEFORE the hold is cleared, gates down first so no
@@ -1822,7 +1840,7 @@ resume_scale_in_guard() {
   done
   if (( ok == 1 )); then
     log "scale-in alarm resumed ($id)"
-    release_the_hold
+    release_the_hold || exit 1
     return 0
   fi
   # The restore failed (#3): the hold is the only thing keeping the guard from

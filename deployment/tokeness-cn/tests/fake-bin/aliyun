@@ -314,6 +314,13 @@ case "$cmd" in
   # duration of a rollout and re-enables it on exit. The fake records the state so
   # a case can assert the whole suspend -> rollout -> resume sequence.
   "ess DescribeAlarms")
+    # TOKENESS_TEST_NO_ALARM=1 models a group with NO alarms configured at all
+    # (a well-formed, empty AlarmList) - as opposed to a name that simply does
+    # not match, which is what the name-override knob exercises.
+    if [[ "${TOKENESS_TEST_NO_ALARM:-0}" == 1 ]]; then
+      printf '{"AlarmList":{"Alarm":[]}}\n'
+      exit 0
+    fi
     # The alarm's enable state comes from the state file, not a constant: a
     # release that suspends an already-disabled alarm must NOT re-enable it at
     # resume, and a test must be able to seed the disabled case.
