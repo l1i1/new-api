@@ -112,6 +112,46 @@ if [[ "$tag" == marker-write && "${TOKENESS_TEST_MLSYNC:-0}" == 1 \
   fi
 fi
 
+# Simulated ecs-fleet-sync on the entry host (the relay tier's real consumer,
+# a 60s cron): the ECS relay upstream is DERIVED from the live instance view
+# minus the drain file - never hand-seeded by the test. Before this, a case
+# could pre-write the upstream with instances that did not exist and the
+# release's "the relay carries the new instance" gate would pass on that
+# pre-filled text; nothing tied the upstream to the drain file or to the ESS
+# state at all. The v2 marker's IP lines (3rd line on) are the parked set; the
+# owner and lease lines are not IPs. RELAY_MAX_MEMBERS truncates like the real
+# sync's `head -n MAX_MEMBERS`. TOKENESS_TEST_FLEET_SYNC_OFF=1 models a stuck
+# sync: the upstream stops tracking reality and the release must fail closed.
+if [[ "${TOKENESS_TEST_MLSYNC:-0}" == 1 && -n "${ECS_UPSTREAM_CONF:-}" \
+   && -n "${TOKENESS_TEST_STATE_DIR:-}" && -f "$TOKENESS_TEST_STATE_DIR/state.json" \
+   && "${TOKENESS_TEST_FLEET_SYNC_OFF:-0}" != 1 ]]; then
+  fleet_tmp="$(mktemp "$ECS_UPSTREAM_CONF.fsync.XXXXXX")"
+  if jq -r --argjson cap "${RELAY_MAX_MEMBERS:-10}" '
+      [ .instances[]? | select(.LifecycleState == "InService") | .PrivateIpAddress ] as $all
+      | ($all | length) as $total
+      | (if $total > $cap then $all[0:$cap] else $all end) as $kept
+      | ([ ($kept[]) ]) | sort | .[]' "$TOKENESS_TEST_STATE_DIR/state.json" > "$fleet_tmp.body" 2>/dev/null; then
+    : > "$fleet_tmp"
+    # IP lines only (v2 marker: owner/lease first). A parked instance is
+    # subtracted even while it is still in .instances: that is the whole point
+    # of the file.
+    if [[ -n "${SHRINK_DRAIN_PATH:-}" && -f "$SHRINK_DRAIN_PATH" ]]; then
+      grep -E '^10\.0\.0\.[0-9]+$' "$SHRINK_DRAIN_PATH" > "$fleet_tmp.parked" 2>/dev/null || : > "$fleet_tmp.parked"
+    else
+      : > "$fleet_tmp.parked"
+    fi
+    while IFS= read -r fleet_ip; do
+      [ -n "$fleet_ip" ] || continue
+      fleet_ip="${fleet_ip//$'\r'/}"
+      [ -n "$fleet_ip" ] || continue
+      grep -qxF "$fleet_ip" "$fleet_tmp.parked" && continue
+      printf 'server %s:3000;\n' "$fleet_ip" >> "$fleet_tmp"
+    done < "$fleet_tmp.body"
+    mv -f -- "$fleet_tmp" "$ECS_UPSTREAM_CONF"
+  fi
+  rm -f -- "$fleet_tmp.body" "$fleet_tmp.parked" "$fleet_tmp" 2>/dev/null || true
+fi
+
 # Simulated web-primary convergence for the blue-green master: production
 # ml-sync adopts the pinned port (health-gated) on its 30s cron; here the
 # rewrite happens on the pin write itself.

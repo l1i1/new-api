@@ -314,8 +314,15 @@ case "$cmd" in
   # duration of a rollout and re-enables it on exit. The fake records the state so
   # a case can assert the whole suspend -> rollout -> resume sequence.
   "ess DescribeAlarms")
-    printf '{"AlarmList":{"Alarm":[{"Name":"%s","AlarmTaskId":"alarm-test-1","Enable":true}]}}\n' \
-      "${TOKENESS_TEST_SCALE_IN_ALARM_NAME:-cpu-in-25}"
+    # The alarm's enable state comes from the state file, not a constant: a
+    # release that suspends an already-disabled alarm must NOT re-enable it at
+    # resume, and a test must be able to seed the disabled case.
+    enable=true
+    if [[ -n "$(jq -r '.scale_in_alarm.state // empty' "$state" 2>/dev/null | tr -d '\r')" ]]; then
+      enable="$(jq -r 'if .scale_in_alarm.state == "enabled" then true else false end' "$state" 2>/dev/null | tr -d '\r')"
+    fi
+    name="${TOKENESS_TEST_SCALE_IN_ALARM_NAME:-cpu-in-25}"
+    printf '{"AlarmList":{"Alarm":[{"Name":"%s","AlarmTaskId":"alarm-test-1","Enable":%s}]}}\n' "$name" "$enable"
     ;;
   "ess DisableAlarm"|"ess EnableAlarm")
     id="$(flag_value --AlarmTaskId "$@" | tr -d '\r')"
@@ -327,7 +334,28 @@ case "$cmd" in
     ;;
   "ess ModifyScalingGroup")
     desired="$(flag_value --DesiredCapacity "$@" | tr -d '\r')"
+    # Capacity boundaries are enforced: the real ESS refuses a DesiredCapacity
+    # outside [MinSize, MaxSize]. A fake that ignored them let tests bless
+    # releases the production API would have rejected outright.
+    group_max="$(jq -r '.max_size // 4' "$state" | tr -d '\r')"
+    if (( desired > group_max || desired < 1 )); then
+      printf '{"Code":"InvalidParameter","Message":"DesiredCapacity %s is out of range [1, %s]"}\n' "$desired" "$group_max" >&2
+      exit 1
+    fi
     before_count="$(jq -c '.instances | length' "$state" | tr -d '\r')"
+    # Evidence snapshot for the tests (#12): what the drain marker and the relay
+    # upstream looked like AT the moment the group was resized. End-state
+    # assertions cannot prove the parking happened; this can.
+    snap="$state_dir/modify-snapshots"
+    mkdir -p "$snap" 2>/dev/null || true
+    snap_n="$(ls "$snap" 2>/dev/null | wc -l)"
+    {
+      printf 'desired=%s before=%s\n' "$desired" "$before_count"
+      printf -- '--- drain marker ---\n'
+      if [[ -n "${SHRINK_DRAIN_PATH:-}" && -f "$SHRINK_DRAIN_PATH" ]]; then cat "$SHRINK_DRAIN_PATH"; else printf '(absent)\n'; fi
+      printf -- '--- relay upstream ---\n'
+      if [[ -n "${ECS_UPSTREAM_CONF:-}" && -f "$ECS_UPSTREAM_CONF" ]]; then cat "$ECS_UPSTREAM_CONF"; else printf '(absent)\n'; fi
+    } > "$snap/modify-$(( snap_n + 1 )).log" 2>/dev/null || true
     # A scale-out SUPERSEDES an in-flight scale-in, exactly as the real ESS does:
     # the instances the pending removal had already detached come back and no
     # replacement is created for them. This is the behaviour that killed the

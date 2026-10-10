@@ -1968,6 +1968,20 @@ ess_rollout() {
   # Read by rollback_failed_rollout so every failure path restores the capacity
   # the site actually runs with, not a hardcoded one.
   ROLLOUT_STABLE_CAPACITY="$stable"
+  # Every path needs one slot of headroom: even one-at-a-time scales the tier to
+  # stable+1 while the old instance still serves. A group already at its
+  # MaxSize cannot be rolled - ESS would reject the ModifyScalingGroup call and
+  # the release would fail mid-flight with a half-open window. Refuse before
+  # moving anything, with the reason.
+  local group_max
+  if ! group_max="$(current_max_size)"; then
+    error "could not read the scaling group's MaxSize"
+    return 1
+  fi
+  if (( stable + 1 > group_max )); then
+    error "no headroom to roll: DesiredCapacity=$stable is already at MaxSize=$group_max; raise MaxSize or retire capacity before releasing"
+    return 1
+  fi
   log "steady-state capacity is $stable; rolling out through $((stable + 1)) instances"
   if ! scale_group $((stable + 1)); then
     rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || true

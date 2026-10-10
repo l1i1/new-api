@@ -641,8 +641,10 @@ jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$web_flip
 
 # Fail closed on the ECS path too: if the ECS relay entry never picks the new
 # instance up, the rollout must abort while the old instance still serves rather
-# than scale it away. The fixture names only the retiring member, which is what a
-# broken ecs-fleet-sync would leave behind.
+# than scale it away. A stuck fleet-sync is modeled with the sync disabled: the
+# upstream stays on the retired member, exactly what a broken ecs-fleet-sync
+# would leave behind (the upstream is derived, so the fixture no longer
+# hand-writes it).
 ecs_gate_fail_case="$test_root/ecs-gate-fail"
 mkdir -p "$ecs_gate_fail_case"
 make_conf "$ecs_gate_fail_case/nginx.conf"
@@ -652,13 +654,19 @@ init_ess_state "$ecs_gate_fail_case/state"
 if run_deploy "$ecs_gate_fail_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  TOKENESS_TEST_FLEET_SYNC_OFF=1 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
   fail "release unexpectedly succeeded although the ECS relay entry never served the new instance"
 fi
+grep -q "relay tier did not start serving" "$ecs_gate_fail_case/state/output.log" \
+  || fail "the ECS relay gate failure did not explain itself"
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$ecs_gate_fail_case/state/state.json" > /dev/null \
   || fail "the scaling configuration was not restored after the ECS relay gate failed"
-jq -e '.instances | length == 1' "$ecs_gate_fail_case/state/state.json" > /dev/null \
-  || fail "the failed ECS relay gate still scaled the group down"
+# By IDENTITY, not count: "1 instance" would also pass if the old one was
+# deleted and the failed new one kept serving on the old image.
+jq -e '([.instances[].InstanceId] | index("eci-old")) != null' \
+  "$ecs_gate_fail_case/state/state.json" > /dev/null \
+  || fail "the failed ECS relay gate removed the pre-existing instance"
 
 # Master-first abort: a failing host bootstrap aborts the release before the
 # ESS group is touched, restores the previous scaling configuration, and
@@ -741,35 +749,51 @@ grep -q "eci DeleteContainerGroup" "$fatal_case/state/aliyun-calls.log" \
 # tested steps under the scaling group's MaxSize instead of adding a new path
 # beside them; these cases pin that contract.
 
-# (1) Full batch: MaxSize=4 with a steady state of 1 lets one round replace
-# three instances at once. The fake's oldest-first removal policy then retires
-# the original together with the first two replacements, which is exactly the
-# "more than one old instance retired per drain window" behaviour the command
-# exists for.
+# (1) Full batch: MaxSize=6 with a steady state of 3 lets ONE round replace
+# THREE instances at once - the case the command exists for. The three
+# pre-existing members must all be parked in the same drain window (asserted
+# from the fake's modify-time snapshot: the marker content and the relay
+# upstream AT the shrink), not merely "gone afterwards".
 batch_case="$test_root/rollout-all-batch"
 mkdir -p "$batch_case/state"
 make_conf "$batch_case/nginx.conf"
 init_ess_state "$batch_case/state"
-# The relay gate requires the entry to carry EVERY fresh instance before the
-# drain window opens, so the fixture must name all three the fake will create.
-printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
-  > "$batch_case/ecs-upstream.conf"
+jq '.max_size = 6 | .desired = 3 | .instances += [
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"},
+      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-03T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
+  "$batch_case/state/state.json" > "$batch_case/state/tmp.json" \
+  && mv "$batch_case/state/tmp.json" "$batch_case/state/state.json"
 run_deploy "$batch_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   rollout-all
-grep -q "batch rollout: 1 instance(s) to retire, up to 3 per round" "$batch_case/state/stdout.log" \
+grep -q "batch rollout: 3 instance(s) to retire, up to 3 per round" "$batch_case/state/stdout.log" \
   || fail "rollout-all did not size the batch from MaxSize"
-grep -q "retired all 1 pre-existing instance(s) in 1 round(s)" "$batch_case/state/stdout.log" \
+grep -q "retired all 3 pre-existing instance(s) in 1 round(s)" "$batch_case/state/stdout.log" \
   || fail "rollout-all did not converge the tier in a single round"
-# Two ESS calls: up to stable+batch, then back to stable. More would mean it
+# Two ESS calls: up to stable+batch, then back to steady state. More would mean it
 # silently degraded to one-at-a-time.
 [[ "$(grep -c 'ess ModifyScalingGroup' "$batch_case/state/aliyun-calls.log")" -eq 2 ]] \
   || fail "rollout-all did not batch the replacements into one drain window"
-jq -e '(.instances | length) == 1 and ([.instances[].InstanceId] | index("eci-old") == null)' \
+# At the shrink call itself, the marker parked ALL THREE identities (one comma
+# argument, not a newline list that the remote shell would split) and the relay
+# upstream carried none of them.
+snap_shrink="$batch_case/state/modify-snapshots/modify-2.log"
+[[ -f "$snap_shrink" ]] || fail "the fake recorded no snapshot of the shrink call"
+for want_ip in 10.0.0.207 10.0.0.206 10.0.0.205; do
+  grep -qxF "$want_ip" "$snap_shrink" \
+    || fail "at the shrink, the drain marker did not park $want_ip"
+  if sed -n '/--- relay upstream ---/,$p' "$snap_shrink" | grep -q "$want_ip"; then
+    fail "at the shrink, the relay upstream still carried the parked $want_ip"
+  fi
+done
+jq -e '(.instances | length) == 3
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)
+       and ([.instances[].InstanceId] | index("eci-old3") == null)' \
   "$batch_case/state/state.json" > /dev/null \
   || fail "rollout-all left a pre-existing instance serving"
-jq -e '.desired == 1' "$batch_case/state/state.json" > /dev/null \
+jq -e '.desired == 3' "$batch_case/state/state.json" > /dev/null \
   || fail "rollout-all did not return the group to its steady-state capacity"
 
 # (2) No headroom: MaxSize == DesiredCapacity. The command must refuse up front
@@ -929,22 +953,32 @@ fi
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$PREV_DIGEST"'"' "$overbatch_case/state/state.json" > /dev/null \
   || fail "the refused release still re-pinned the scaling configuration"
 
-# (7) A group with no headroom must still be releasable: the built-in default
-# degrades to the one-at-a-time path instead of failing the release.
+# (7) A group with no headroom cannot be released at all: even the
+# one-at-a-time leg scales the tier to stable+1 while the old instance still
+# serves, and ESS rejects a DesiredCapacity above MaxSize. The fake now
+# enforces that boundary (the real API always did), so the release must refuse
+# UP FRONT - before any scale call, with the reason - instead of "succeeding"
+# on a fake that ignored MaxSize.
 noheadroom_release_case="$test_root/release-no-headroom"
 mkdir -p "$noheadroom_release_case/state"
 make_conf "$noheadroom_release_case/nginx.conf"
 init_ess_state "$noheadroom_release_case/state"
 jq '.max_size = 1' "$noheadroom_release_case/state/state.json" > "$noheadroom_release_case/state/tmp.json" \
   && mv "$noheadroom_release_case/state/tmp.json" "$noheadroom_release_case/state/state.json"
-run_deploy "$noheadroom_release_case" \
+if run_deploy "$noheadroom_release_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
-  deploy-release v1.0.0-rc.33-tokeness-mainland.9
-grep -q "no batch headroom" "$noheadroom_release_case/state/output.log" \
-  || fail "a headroom-less group did not report why the convergence was skipped"
-grep -q "deployed to one instance (batch convergence skipped" "$noheadroom_release_case/state/stdout.log" \
-  || fail "a release on a headroom-less group did not fall back to one instance"
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "a release succeeded on a group pinned at its MaxSize"
+fi
+grep -q "no headroom to roll" "$noheadroom_release_case/state/output.log" \
+  || fail "a headroom-less release did not refuse with the reason"
+if grep -q "ess ModifyScalingGroup" "$noheadroom_release_case/state/aliyun-calls.log"; then
+  fail "a headroom-less release still touched the scaling group"
+fi
+jq -e '([.instances[].InstanceId] | index("eci-old")) != null' \
+  "$noheadroom_release_case/state/state.json" > /dev/null \
+  || fail "the refused release disturbed the serving instance"
 
 # (8) REGRESSION: scaling in is asynchronous, so the group keeps REPORTING the
 # detached instances for a while. A gate that accepts "at least N" therefore
@@ -989,6 +1023,19 @@ jq -e '(.instances | length) == 2
        and ([.instances[].InstanceId] | index("eci-old2") == null)' \
   "$race_case/state/state.json" > /dev/null \
   || fail "the rollout did not retire every pre-existing instance after the race"
+# At each shrink call itself the drain marker was still parked on that round's
+# victim and the relay upstream had already dropped it (#12): end-state
+# assertions cannot prove the parking ever happened - a relay_drain_write that
+# silently no-ops leaves the same final state.
+for r in '2 10.0.0.207' '4 10.0.0.206'; do
+  set -- $r
+  snap="$race_case/state/modify-snapshots/modify-$1.log"
+  [[ -f "$snap" ]] || fail "the fake recorded no snapshot of shrink #$1"
+  grep -qxF "$2" "$snap" || fail "at shrink #$1, the marker did not park $2"
+  if sed -n '/--- relay upstream ---/,$p' "$snap" | grep -q "$2"; then
+    fail "at shrink #$1, the relay upstream still carried the parked $2"
+  fi
+done
 
 # (8b) H1 guard: when the group's removal policy is not exactly OldestInstance,
 # age order does not predict which instance a scale-in removes, so parking the
@@ -1098,10 +1145,38 @@ jq -e '.scale_in_alarm.state == "enabled"' "$alarm_case/state/state.json" > /dev
 # The entry's shrink guard is held off for the same window, and released after.
 [[ ! -e "$alarm_case/shrink-hold" ]] \
   || fail "the shrink guard hold was left behind after the release"
-# Suspend must precede the first scaling call, and resume must follow the last.
-awk '/ess DisableAlarm/{d=NR} /ess ModifyScalingGroup/{if (!d) bad=1} /ess EnableAlarm/{e=NR} END{exit (bad||!d||!e)}' \
+# Suspend must precede the FIRST scaling call, resume must FOLLOW THE LAST one,
+# and nothing may re-suspend in between. The old check only tested "Disable
+# appeared somewhere early and Enable appeared somewhere" - Disable->Enable->
+# ModifyScalingGroup passed it too.
+awk '
+  /ess DisableAlarm/ {d = d ? d : NR}
+  /ess ModifyScalingGroup/ {first = first ? first : NR; last = NR}
+  /ess EnableAlarm/ {e = NR}
+  END { exit !(d && first && e && d < first && e > last) }' \
   "$alarm_case/state/aliyun-calls.log" \
-  || fail "the alarm was not suspended before the first scaling call, or never resumed"
+  || fail "the alarm suspension did not bracket EVERY scaling call"
+# An alarm that was already disabled before the release must stay disabled: the
+# release records the state it found and restores THAT, not a hardcoded on.
+alarm_pre_disabled_case="$test_root/scale-in-alarm-pre-disabled"
+mkdir -p "$alarm_pre_disabled_case/state"
+make_conf "$alarm_pre_disabled_case/nginx.conf"
+init_ess_state "$alarm_pre_disabled_case/state"
+jq '.scale_in_alarm = {id: "alarm-test-1", state: "disabled"}' \
+  "$alarm_pre_disabled_case/state/state.json" > "$alarm_pre_disabled_case/state/tmp.json" \
+  && mv "$alarm_pre_disabled_case/state/tmp.json" "$alarm_pre_disabled_case/state/state.json"
+run_deploy "$alarm_pre_disabled_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "was already disabled before this run; leaving it disabled" \
+  "$alarm_pre_disabled_case/state/stdout.log" \
+  || fail "the release re-enabled an alarm that was off before it started"
+if grep -q "ess EnableAlarm" "$alarm_pre_disabled_case/state/aliyun-calls.log"; then
+  fail "the release re-enabled an alarm that was off before it started (call log)"
+fi
+jq -e '.scale_in_alarm.state == "disabled"' "$alarm_pre_disabled_case/state/state.json" > /dev/null \
+  || fail "the alarm's disabled state did not survive the release"
 # A missing alarm must warn, not abort: the guard is advisory.
 no_alarm_case="$test_root/scale-in-alarm-missing"
 mkdir -p "$no_alarm_case/state"
