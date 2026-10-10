@@ -6,6 +6,14 @@ set -Eeuo pipefail
 # process stdin. This mirrors real OpenSSH, which starts the remote command
 # with the heredoc on its stdin.
 #
+# The argv handling is deliberately strict: real ssh JOINS its arguments into
+# one remote command string that the remote shell then re-parses, so an
+# argument containing whitespace or a newline splits into several words or
+# even several commands there (a newline-separated IP list parks the first IP
+# and runs the second as a command). This fake reproduces that by running the
+# joined string through bash -c, so a caller relying on argv preservation
+# fails here exactly the way it fails in production.
+#
 # Two additions exist for the drain-first rollout, which writes a marker to a
 # NAMED host and must fail closed when a host refuses it:
 #   - the target host is recovered and logged, so a test can assert which hosts
@@ -70,11 +78,13 @@ if [[ -n "${TOKENESS_TEST_SSH_FAIL_ON:-}" && -n "$stdin_file" ]]; then
 fi
 
 if [[ "${1:-}" == bash ]]; then
-  shift
+  # Re-join the argv the way ssh does (one command string, remote shell
+  # re-parses): arguments must survive word splitting to be safe.
+  joined="$*"
   if [[ -n "$stdin_file" ]]; then
-    bash "$@" < "$stdin_file" || exit $?
+    bash -c "$joined" < "$stdin_file" || exit $?
   else
-    bash "$@" || exit $?
+    bash -c "$joined" || exit $?
   fi
 elif [[ -n "$stdin_file" ]]; then
   bash -c "$1" < "$stdin_file" || exit $?

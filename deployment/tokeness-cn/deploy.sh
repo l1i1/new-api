@@ -97,9 +97,25 @@ readonly SHRINK_HOLD_PATH="${SHRINK_HOLD_PATH:-/etc/ml-sync/shrink-hold}"
 # streams finish. ecs-shrink-guard uses it for its graceful scale-in; a release
 # uses the same file for the instances ESS is about to retire.
 readonly SHRINK_DRAIN_PATH="${SHRINK_DRAIN_PATH:-/etc/ml-sync/shrink-drain}"
+# The drain marker is LEASED and OWNED (v2 format):
+#   line 1: the writer's identity - only that writer may clear the marker;
+#   line 2: an expiry epoch - a writer killed with SIGKILL never runs its EXIT
+#           trap, so the consumer (ecs-fleet-sync) ignores the whole marker once
+#           the lease has lapsed instead of keeping a healthy member out of the
+#           relay forever, and any writer may collect an expired one;
+#   line 3+: one drained IP per line.
+# A live release refreshes the lease from its heartbeat, so the lease only has
+# to outlive one heartbeat gap, not the whole drain window; the margin below
+# covers the drain hold plus the removal poll for writers that cannot refresh.
+# The old format (plain IP lines) is still cleared by this release: the v2
+# writers replaced every producer, so a plain-IP marker can only be a leftover.
+readonly SHRINK_DRAIN_LEASE_SECONDS="${SHRINK_DRAIN_LEASE_SECONDS:-$(( ML_DRAIN_SECONDS + 900 ))}"
 SCALE_IN_ALARM_ID="${SCALE_IN_ALARM_ID:-}"
 # Set while the alarm is suspended, so the exit trap knows it has work to do.
 scale_in_guard_suspended=""
+# Set once the release's hold is on the entry, so the heartbeat keeps it fresh
+# even when the alarm half of the suspension never engaged.
+scale_in_hold_written=""
 scale_in_alarm_was_enabled=""
 readonly ML_DRAIN_CONVERGE_ATTEMPTS="${ML_DRAIN_CONVERGE_ATTEMPTS:-12}"
 readonly ML_DRAIN_CONVERGE_DELAY_SECONDS="${ML_DRAIN_CONVERGE_DELAY_SECONDS:-15}"
@@ -162,11 +178,19 @@ readonly APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-newapi}"
 # Without it the hold goes stale during any step longer than the freshness window,
 # which both loses the guard's protection and admits a second release.
 hold_heartbeat() {
-  [[ -n "$scale_in_guard_suspended" ]] || return 0
+  # Refresh as soon as the hold exists - not only once the alarm was suspended:
+  # a group with no scale-in alarm returns early from suspend_scale_in_guard,
+  # and a release that then never heartbeats looks abandoned to the next one
+  # (the hold goes stale after RELEASE_HOLD_FRESH_SECONDS while the rollout is
+  # still rolling).
+  [[ -n "$scale_in_guard_suspended" || -n "$scale_in_hold_written" ]] || return 0
   local _now; _now="$(date +%s)"
   (( _now - ${scale_in_hold_refresh:-0} >= 60 )) || return 0
   scale_in_hold_refresh="$_now"
   shrink_hold_write set >/dev/null 2>&1 || true
+  # Extend our drain marker's lease in the same beat: a marker whose writer was
+  # SIGKILLed must lapse, but one whose writer is alive must not.
+  relay_drain_refresh || warn "our drain marker is gone or no longer ours; the retiring instance may be back in rotation"
 }
 
 log() { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; hold_heartbeat; }
@@ -1165,29 +1189,116 @@ oldest_instance_ips() {
              | sort_by(.CreationTime) | .[0:$n] | .[].PrivateIpAddress' | tr -d '\r'
 }
 
-# relay_drain_write <ips> - park those relay members: ecs-fleet-sync subtracts
-# them from the upstream list within a minute, so they stop receiving NEW requests
-# while their in-flight streams finish. relay_drain_clear removes the marker.
+# relay_drain_write <comma_ips> - park those relay members: ecs-fleet-sync
+# subtracts them from the upstream list within a minute, so they stop receiving
+# NEW requests while their in-flight streams finish. The marker is leased and
+# owned (v2, see SHRINK_DRAIN_LEASE_SECONDS) and written atomically, because
+# fleet-sync may read it at any moment. The IPs travel comma-joined on purpose:
+# remote_cmd_on's ssh joins its arguments into one remote command string, so a
+# newline-separated list would split into arguments the remote shell re-parses
+# - the first IP parked, the second executed as a command. The write is
+# verified: a marker that dropped IPs on the floor must fail the caller rather
+# than park a subset silently.
 relay_drain_write() {
-  local ips="$1"
+  local ips="$1" lease
   [[ -n "$ips" ]] || return 0
-  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_DRAIN_PATH" "$ips" <<'REMOTE_DRAIN' >/dev/null 2>&1
+  lease=$(( $(date +%s) + SHRINK_DRAIN_LEASE_SECONDS ))
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" "$ips" <<'REMOTE_DRAIN' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; ips="$2"
+path="$1"; owner="$2"; lease="$3"; ips="$4"
 mkdir -p "$(dirname "$path")"
-# No match must still leave a valid (empty) marker rather than abort here: the
-# entry treats an empty marker as "nothing drained".
-printf '%s\n' "$ips" | grep -E '^10\.0\.0\.[0-9]+$' >"$path" || true
+want="$(printf '%s\n' "$ips" | tr ',' '\n' | grep -cE '^10\.0\.0\.[0-9]+$' || true)"
+tmp="$(mktemp "${path}.tmp.XXXXXX")"
+{
+  printf '%s\n' "$owner"
+  printf '%s\n' "$lease"
+  printf '%s\n' "$ips" | tr ',' '\n' | grep -E '^10\.0\.0\.[0-9]+$' || true
+} >"$tmp"
+chmod 0644 "$tmp"
+got="$(grep -cE '^10\.0\.0\.[0-9]+$' "$tmp" || true)"
+if [ "$got" -ne "$want" ]; then
+  rm -f -- "$tmp"
+  printf 'drain marker would carry %s of %s requested IP(s)\n' "$got" "$want" >&2
+  exit 1
+fi
+mv -f -- "$tmp" "$path"
 REMOTE_DRAIN
 }
 
+# relay_drain_clear - remove OUR marker (or an expired one). A marker owned by
+# someone else with a live lease stays: the other writer still needs it, and
+# deleting it mid-window is exactly how a parked instance would go back into
+# rotation before its retirement. Plain-IP legacy markers have no owner; every
+# legacy producer was replaced by a v2 writer, so removing them is cleanup.
 relay_drain_clear() {
-  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_DRAIN_PATH" <<'REMOTE_DRAIN_CLEAR' >/dev/null 2>&1
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" <<'REMOTE_DRAIN_CLEAR' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-rm -f "$1"
+path="$1"; owner="$2"
+[ -f "$path" ] || exit 0
+found="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
+lease="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
+if [ -n "$found" ] && [ "$found" != "$owner" ]; then
+  if [[ "$lease" =~ ^[0-9]+$ ]] && (( $(date +%s) < lease )); then
+    printf 'drain marker belongs to %s and its lease is live; not removing\n' "$found" >&2
+    exit 3
+  fi
+fi
+rm -f -- "$path"
 REMOTE_DRAIN_CLEAR
+}
+
+# relay_drain_refresh - extend OUR marker's lease (dead-man switch). A marker
+# that is absent is normal between rounds and returns 0; returning 3 means the
+# file EXISTS but no longer belongs to us - someone took the marker over, and
+# the drain protection this release believes it has may no longer exist.
+relay_drain_refresh() {
+  local lease=$(( $(date +%s) + SHRINK_DRAIN_LEASE_SECONDS ))
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" <<'REMOTE_DRAIN_REFRESH' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+path="$1"; owner="$2"; lease="$3"
+[ -f "$path" ] || exit 0
+found="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
+[ "$found" = "$owner" ] || exit 3
+tmp="$(mktemp "${path}.tmp.XXXXXX")"
+{
+  printf '%s\n' "$owner"
+  printf '%s\n' "$lease"
+  tail -n +3 -- "$path"
+} >"$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$path"
+REMOTE_DRAIN_REFRESH
+}
+
+# wait_drain_applied <comma_ips> - block until the entry's relay upstream no
+# longer carries ANY of the parked IPs. Parking is only real once fleet-sync
+# consumed the marker and nginx reloaded; starting the drain timer before that
+# would understate how long the retiring instance kept receiving new requests.
+# Fail closed: a tier that cannot prove the park within the gate loses the
+# round (rollback), because retiring an unparked instance cuts live streams.
+wait_drain_applied() {
+  local ips="$1" ip i=0
+  while [ "$i" -lt "$ML_DRAIN_CONVERGE_ATTEMPTS" ]; do
+    local still=0
+    while IFS= read -r ip; do
+      [ -n "$ip" ] || continue
+      if ecs_upstream_has "$ip"; then still=$(( still + 1 )); fi
+    done < <(printf '%s\n' "$ips" | tr ',' '\n')
+    if (( still == 0 )); then
+      log "drain applied: the relay upstream no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
+      return 0
+    fi
+    sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+    i=$(( i + 1 ))
+  done
+  error "drain was not applied to the relay upstream within $((ML_DRAIN_CONVERGE_ATTEMPTS * ML_DRAIN_CONVERGE_DELAY_SECONDS))s ($ips still served)"
+  return 1
 }
 
 # release_hold_is_fresh <max_age_seconds> - true when a hold written by a LIVE
@@ -1222,6 +1333,9 @@ REMOTE_HOLD_AGE
 # another release wrote, or a late finisher would re-open the tier to a scale-in
 # while the release that owns it is still rolling.
 readonly RELEASE_OWNER="${RELEASE_OWNER:-$(hostname 2>/dev/null || printf host)-$$}"
+# The same identity marks this release as the drain marker's owner (v2 line 1);
+# see the SHRINK_DRAIN_LEASE_SECONDS block for the protocol.
+readonly DRAIN_MARKER_OWNER="release:${RELEASE_OWNER}"
 
 shrink_hold_write() {
   local action="$1"
@@ -1277,6 +1391,9 @@ suspend_scale_in_guard() {
   # happens to the alarm half below.
   if shrink_hold_write set; then
     log "entry shrink guard held off for the release"
+    # The heartbeat must run from this moment on (see hold_heartbeat): the hold
+    # is written even when the alarm half below never suspends anything.
+    scale_in_hold_written=1
   else
     # Fail closed. The guard's only job is to keep the tier from shrinking while a
     # rollout owns it; releasing without that promise means the tier can shed an
@@ -1960,22 +2077,33 @@ rollout_batch() {
     # scale-in. The marker is cleared once the removals are confirmed (wait_retired)
     # and by the release's EXIT trap.
     drain_ips="$(oldest_instance_ips "$retiring" || true)"
-    [[ -n "$drain_ips" ]] || warn "round $rounds: no instance to park (retiring=$retiring); requests arriving during the hold are unprotected"
-    # The parked set IS the set this round gates on: gating on the count-derived
-    # `retiring` while parking a different number made the two disagree whenever
-    # the group had grown externally (H2). Whatever we actually parked is what we
-    # now require to leave service.
-    parked="$(printf '%s\n' "$drain_ips" | grep -c . || true)"
-    if (( parked > 0 && parked != retiring )); then
-      warn "round $rounds: parked $parked instance(s) but planned to retire $retiring; gating on the parked set"
-      retiring="$parked"
-    fi
-    if [[ -n "$drain_ips" ]]; then
-      if relay_drain_write "$drain_ips"; then
-        log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
-      else
-        warn "could not park the retiring instances; requests arriving during the hold may be cut at the scale-in"
+    if (( retiring > 0 )); then
+      # Fail closed: retiring an instance we could not park (the API failed, or
+      # the marker write failed, or fleet-sync never consumed it) cuts that
+      # instance's live streams - the exact failure the drain exists to prevent.
+      # The round rolls back instead; the tier stays on the previous version.
+      if [[ -z "$drain_ips" ]]; then
+        error "round $rounds: no instance resolved to park (retiring=$retiring); refusing to retire an unparked instance"
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
       fi
+      parked="$(printf '%s\n' "$drain_ips" | grep -c . || true)"
+      if (( parked != retiring )); then
+        warn "round $rounds: resolved $parked instance(s) to park but planned to retire $retiring; gating on the parked set"
+        retiring="$parked"
+      fi
+      local drain_comma; drain_comma="$(printf '%s\n' "$drain_ips" | paste -sd, -)"
+      if ! relay_drain_write "$drain_comma"; then
+        error "round $rounds: could not write the relay drain marker; refusing to retire an unparked instance"
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+      if ! wait_drain_applied "$drain_comma"; then
+        relay_drain_clear >/dev/null 2>&1 || true
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+      log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
     fi
     log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
