@@ -787,7 +787,7 @@ wait_verify_converged() {
 # runs outside command substitution, and its log() lines must stay on real
 # stdout.
 drain_before_scale_in() {
-  local out_var="$1" target_var="$2" target_hint="$3"
+  local out_var="$1" target_var="$2" before_var="$3" target_hint="$4"
   local now_ids now_count remove_count retire_ids drain_ips id ip drain_comma live
   printf -v "$out_var" '%s' ""
   printf -v "$target_var" '%s' "$target_hint"
@@ -796,6 +796,7 @@ drain_before_scale_in() {
     return 1
   fi
   now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
+  printf -v "$before_var" '%s' "$now_ids"
   remove_count=$(( now_count > target_hint ? now_count - target_hint : 0 ))
   if (( remove_count == 0 )); then
     return 0
@@ -879,18 +880,32 @@ rollback_failed_rollout() {
   # the steady state removes the OLDEST instances, which are the healthy members
   # still serving traffic. Park them first so the rollback does not cut the
   # streams the release's own gates were protecting.
-  local rollback_retire_ids="" rollback_target="$stable"
-  if ! drain_before_scale_in rollback_retire_ids rollback_target "$stable"; then
+  local rollback_retire_ids="" rollback_target="$stable" rollback_before_ids=""
+  if (( RETIREMENT_PENDING == 1 )); then
+    # A retire set is still mid-flight from the failed round: re-parking now
+    # would overwrite the marker protecting THAT removal, and shrinking again
+    # stacks a second removal on top of an unsettled one. Leave the capacity
+    # alone - the in-flight removal settles on its own, and the marker's lease
+    # lapses once this process exits.
+    warn "rollback skipped its capacity restore: a retire set from the failed round is still leaving the group"
+  elif ! drain_before_scale_in rollback_retire_ids rollback_target rollback_before_ids "$stable"; then
     error "rollback could not park the instances its scale-in would remove; tier left at current capacity"
     return 1
   fi
-  if ! scale_group "$rollback_target"; then
-    error "rollback could not restore desired capacity (target $rollback_target)"
-    return 1
-  fi
-  if [[ -n "$rollback_retire_ids" ]] && ! wait_retired "$rollback_retire_ids"; then
-    error "rollback's retire set did not leave the group"
-    return 1
+  if (( RETIREMENT_PENDING != 1 )); then
+    if ! scale_group "$rollback_target"; then
+      error "rollback could not restore desired capacity (target $rollback_target)"
+      return 1
+    fi
+    if [[ -n "$rollback_retire_ids" ]] && ! wait_retired "$rollback_retire_ids"; then
+      error "rollback's retire set did not leave the group"
+      return 1
+    fi
+    if [[ -n "$rollback_retire_ids" ]] \
+       && ! verify_no_extra_removals "$rollback_before_ids" "$rollback_retire_ids" "rollback"; then
+      error "rollback removed instances outside its parked set"
+      return 1
+    fi
   fi
   if ! wait_healthy_instances "$stable"; then
     error "rollback could not restore a healthy instance"
@@ -1320,16 +1335,24 @@ oldest_instance_ids() {
     log "WARN: the scaling group's removal policy is '${policies:-unknown}', not exactly OldestInstance; cannot predict which instance a scale-in removes" >&2
     return 1
   fi
-  zones="$(scaling_instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .ZoneId] | unique | length' | tr -d '\r')" || zones=""
+  # ONE verified snapshot serves zone, sort and tie: this function runs inside
+  # $() with || true at the call site, so set -e cannot catch a failed query
+  # here - an empty zone count or a swallowed tie check reads as "all clear".
+  local snapshot
+  if ! snapshot="$(scaling_instances_json)"; then
+    log "WARN: could not read the instance list for victim selection" >&2
+    return 1
+  fi
+  zones="$(printf '%s' "$snapshot" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .ZoneId] | unique | length' | tr -d '\r')" || zones=""
   if [[ "$zones" != "1" ]]; then
     log "WARN: in-service instances span ${zones:-?} zone(s); ESS rebalances zones before removing, so age order does not predict the victim" >&2
     return 1
   fi
-  ids="$(scaling_instances_json | jq -r --argjson n "$n" '
+  ids="$(printf '%s' "$snapshot" | jq -r --argjson n "$n" '
     [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
     | sort_by(.CreatedTime) | .[0:$n] | .[].InstanceId' | tr -d '\r')" || return 1
   if (( n > 0 )) && [[ -n "$ids" ]]; then
-    boundary="$(scaling_instances_json | jq -r --argjson n "$n" '
+    boundary="$(printf '%s' "$snapshot" | jq -r --argjson n "$n" '
       [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
       | sort_by(.CreatedTime) | if (length > $n) and (.[$n-1].CreatedTime == .[$n].CreatedTime) then .[$n].CreatedTime else empty end' | tr -d '\r')"
     if [[ -n "$boundary" ]]; then
@@ -1481,7 +1504,10 @@ wait_drain_applied() {
     still=0
     while IFS= read -r ip; do
       [ -n "$ip" ] || continue
-      if printf '%s\n' "$members" | grep -qxF "$ip"; then still=$(( still + 1 )); fi
+      # Members are host:port lines; compare the address part, not the whole
+      # line (an exact-line compare of a bare IP against "IP:3000" never
+      # matched, so this gate passed while the victim was still served).
+      if printf '%s\n' "$members" | awk -v want="$ip" '{split($1, a, ":"); if (a[1] == want) found=1} END{exit !found}'; then still=$(( still + 1 )); fi
     done < <(printf '%s\n' "$ips" | tr ',' '\n')
     if (( still == 0 )); then
       log "drain applied: the relay upstream no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
@@ -1515,7 +1541,7 @@ set -Eeuo pipefail
 # as "no hold" lets a second release start while the first is mid-rollout.
 if [ ! -e "$1" ]; then exit 1; fi
 if [ ! -r "$1" ]; then exit 2; fi
-head -1 "$1"
+if ! head -1 "$1" 2>/dev/null; then exit 2; fi
 REMOTE_HOLD_AGE
 )" || rc=$?
   if (( rc == 1 )); then
@@ -1566,10 +1592,30 @@ mkdir -p "$(dirname "$path")" "$(dirname "$lock")"
 exec 200>"$lock"
 flock -x 200
 now="$(date +%s)"
+if [ -e "$path" ] && [ ! -r "$path" ]; then
+  printf 'shrink hold exists but is unreadable\n' >&2
+  exit 3
+fi
 if [ -r "$path" ]; then
   other="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
   ts="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
-  epoch="$(date -d "$ts" +%s 2>/dev/null || printf 0)"
+  if [ -n "$ts" ]; then
+    if ! epoch="$(date -d "$ts" +%s 2>/dev/null)"; then
+      # A foreign hold we cannot date is undecidable - taking it over is the
+      # direction that lets a second release in mid-rollout.
+      if [ "$other" != "$owner" ]; then
+        printf 'shrink hold owned by %s has an unparsable timestamp\n' "$other" >&2
+        exit 3
+      fi
+      epoch=0
+    fi
+  else
+    epoch=0
+    if [ "$other" != "$owner" ]; then
+      printf 'shrink hold owned by %s carries no timestamp\n' "$other" >&2
+      exit 3
+    fi
+  fi
   if [ "$other" != "$owner" ] && [ "$epoch" -gt 0 ] && [ $(( now - epoch )) -lt "$max_age" ]; then
     printf 'shrink hold is owned by %s and fresh\n' "$other" >&2
     exit 3
@@ -1584,10 +1630,13 @@ found="$(sed -n '2p' "$path" | tr -d ' \r' || true)"
 REMOTE_HOLD_SET
     return $?
   fi
-  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" <<'REMOTE_HOLD' >/dev/null 2>&1
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" "$MARKER_LOCK_PATH" <<'REMOTE_HOLD' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; action="$2"
+path="$1"; action="$2"; lock="$3"
+mkdir -p "$(dirname "$lock")"
+exec 200>"$lock"
+flock -x 200
 case "$action" in
   clear)
     existing="$(sed -n '2p' "$path" 2>/dev/null | tr -d ' \r' || true)"
@@ -1685,6 +1734,11 @@ resume_scale_in_guard() {
   else
     relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
   fi
+  # Release the hold BEFORE any further log line: log() heartbeats while
+  # scale_in_hold_written is set, and a heartbeat here would re-acquire the
+  # hold the cleanup is trying to drop (leaving a fresh hold behind a release
+  # that already exited).
+  scale_in_hold_written=""
   shrink_hold_write clear && log "entry shrink guard released"
   [[ -n "$scale_in_guard_suspended" ]] || return 0
   local id="$scale_in_guard_suspended"
@@ -1829,6 +1883,30 @@ wait_retired() {
   error "timed out waiting for the retired set to leave the group ($gone of $total gone)"
   RETIREMENT_PENDING=1
   return 1
+}
+
+# verify_no_extra_removals <before_ids> <retire_ids> <label> - after a removal
+# settled, no member OUTSIDE the parked retire set may have left the group.
+# ModifyScalingGroup carries an absolute capacity, so ESS picks its victims at
+# execution time: anything that joined between our member read and the Modify
+# (or an ESS-side re-pick) can remove MORE than the parked set, and a count
+# gate cannot see that. This turns the residual race into a loud failure
+# instead of a silently under-served tier.
+verify_no_extra_removals() {
+  local before_ids="$1" retire_ids="$2" label="$3" current id extra=0
+  [[ -n "$retire_ids" ]] || return 0
+  if ! current="$(in_service_instance_ids)"; then
+    warn "$label: could not re-read the instance set to verify the removal set"
+    return 0
+  fi
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    printf '%s\n' "$retire_ids" | grep -qxF "$id" && continue
+    printf '%s\n' "$current" | grep -qxF "$id" && continue
+    extra=$(( extra + 1 ))
+    log "ERROR: $label: instance $id left the group although it was not in the parked retire set" >&2
+  done <<<"$before_ids"
+  (( extra == 0 ))
 }
 
 # --- drain-first rollout helpers ----------------------------------------------
@@ -2196,7 +2274,10 @@ ess_rollout() {
     done <<<"$retire_ids"
     target=$(( now_count - live ))
     (( target < stable )) && target="$stable"
-    scale_group "$target" && wait_retired "$retire_ids" && scale_in_ok=1
+    if scale_group "$target" && wait_retired "$retire_ids" \
+       && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
+      scale_in_ok=1
+    fi
   fi
   if (( scale_in_ok == 0 )); then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
@@ -2463,7 +2544,8 @@ rollout_batch() {
     else
       target="$base"
     fi
-    if ! scale_group "$target" || ! wait_retired "$retire_ids"; then
+    if ! scale_group "$target" || ! wait_retired "$retire_ids" \
+       || ! verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
@@ -2703,6 +2785,17 @@ main() {
       # tier has already started moving.
       local release_batch
       release_batch="$(resolve_release_batch)" || die "the release's batch convergence is not usable as configured"
+      # Headroom gate BEFORE anything mutates: every roll path scales the tier to
+      # at least desired+1 while the old instance still serves, and ESS rejects a
+      # DesiredCapacity above MaxSize. Refusing after the config pin and the
+      # master blue-green flip left those restored against the NEW image - the
+      # rollback target itself was already wrong.
+      local pre_stable pre_max
+      pre_stable="$(current_desired_capacity)" || die "could not read the scaling group's desired capacity before the release"
+      pre_max="$(current_max_size)" || die "could not read the scaling group's MaxSize before the release"
+      if (( pre_stable + 1 > pre_max )); then
+        die "no headroom to roll: DesiredCapacity=$pre_stable is already at MaxSize=$pre_max; raise MaxSize or retire capacity before releasing"
+      fi
       # Everything below mutates the tier; hold the scale-in alarm off until the
       # release has finished (the trap fires on the die paths too).
       suspend_scale_in_guard

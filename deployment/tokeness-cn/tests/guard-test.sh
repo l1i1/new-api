@@ -34,13 +34,54 @@ init_guard_ess() {
     > "$1/state.json"
 }
 
+# fleet-sync emulator (#16): rewrites the relay upstream from the fake ESS
+# state minus the drain marker's live-leased IPs, on a short cadence - the
+# guard's consumption checks then observe REAL convergence (initial service,
+# consumption, stuck) instead of a file that excluded the victim from the
+# start. Cases that want a stuck consumer simply never start it.
+fleet_sync_once() {
+  if [[ -f "$1/state/state.json" ]]; then
+    local parked="" lease_line
+    lease_line="$(sed -n '2p' "$1/shrink-drain" 2>/dev/null | tr -d ' \r' || true)"
+    if [[ "$lease_line" =~ ^[0-9]+$ ]] && (( lease_line > $(date +%s) )); then
+      parked="$(grep -E '^10\.0\.0\.[0-9]+$' "$1/shrink-drain" 2>/dev/null || true)"
+    fi
+    jq -r '[.instances[]? | select(.LifecycleState=="InService") | .PrivateIpAddress] | sort | .[]' \
+      "$1/state/state.json" 2>/dev/null | while IFS= read -r fs_ip; do
+      [ -n "$fs_ip" ] || continue
+      if [ -n "$parked" ] && printf '%s\n' "$parked" | grep -qxF "$fs_ip"; then continue; fi
+      printf 'server %s:3000;\n' "$fs_ip"
+    done > "$1/upstream.conf.new" 2>/dev/null && mv -f -- "$1/upstream.conf.new" "$1/upstream.conf"
+  fi
+}
+
+fleet_sync_loop() (
+  cd / 2>/dev/null || true
+  while :; do
+    fleet_sync_once "$1"
+    sleep 0.3
+  done
+)
+
+start_fleet_sync() {
+  mkdir -p "$1" "$1/state"
+  # One synchronous pass first: the guard reads the upstream immediately, and
+  # a loop that has not written yet looks like a stuck consumer.
+  fleet_sync_once "$1"
+  fleet_sync_loop "$1" &
+  echo $! > "$1/fleet-sync.pid"
+}
+
+stop_fleet_sync() {
+  if [[ -f "$1/fleet-sync.pid" ]]; then
+    kill "$(cat "$1/fleet-sync.pid")" 2>/dev/null || true
+    rm -f "$1/fleet-sync.pid"
+  fi
+}
+
 run_guard() {
   local case_dir="$1"; shift
   mkdir -p "$case_dir/state"
-  # The relay upstream fleet-sync would maintain: empty by default (nobody
-  # parked), so "victim not served" holds; cases that need the stuck-consumer
-  # direction write their own.
-  [[ -f "$case_dir/upstream.conf" ]] || printf 'server 10.0.0.199:3000;\n' > "$case_dir/upstream.conf"
   if [[ ! -f "$case_dir/state/state.json" ]]; then
     init_guard_ess "$case_dir/state"
   fi
@@ -71,7 +112,9 @@ guard_log() { cat "$1/guard.log" 2>/dev/null || true; }
 # line, lease line, then the IP. A bare IP list would let any writer delete the
 # marker, and no lease would leave it parked forever after a SIGKILL.
 park_case="$test_root/park"
+start_fleet_sync "$park_case"
 run_guard "$park_case" SHRINK_IDLE_MINUTES=0 >/dev/null
+stop_fleet_sync "$park_case"
 [[ -f "$park_case/shrink-drain" ]] || fail "an idle tier above the floor did not park a drain marker"
 owner="$(sed -n '1p' "$park_case/shrink-drain")"
 lease="$(sed -n '2p' "$park_case/shrink-drain")"
@@ -127,7 +170,9 @@ jq -n '{desired: 3, instances: [
   ], image: "x"}' > "$victim_case/state/state.json"
 jq -n '{draining: "10.0.0.207", draining_id: "eci-old", drain_until: "'$(( $(date +%s) - 60 ))'", idle_streak: "0"}' > "$victim_case/shrink-state.json"
 printf 'shrink-guard:%s\n%s\n10.0.0.207\n' "$(hostname)" "$(( $(date +%s) + 600 ))" > "$victim_case/shrink-drain"
+start_fleet_sync "$victim_case"
 run_guard "$victim_case" >/dev/null
+stop_fleet_sync "$victim_case"
 guard_log "$victim_case" | grep -q "no longer the healthy in-service instance we parked" || fail "a changed victim still triggered a shrink path"
 grep -q "ModifyScalingGroup" "$victim_case/state/aliyun-calls.log" 2>/dev/null && fail "the guard shrank although the parked victim changed"
 
@@ -135,11 +180,21 @@ grep -q "ModifyScalingGroup" "$victim_case/state/aliyun-calls.log" 2>/dev/null &
 # The marker must stay parked until the victim leaves the group ENTIRELY - the
 # fake keeps reporting it in Removing during the lag window.
 shrink_case="$test_root/shrink"
-mkdir -p "$shrink_case"
+mkdir -p "$shrink_case/state"
+# The ESS state must exist BEFORE the fleet-sync emulator starts: the guard's
+# resume path reads the upstream immediately, and a sync that has not written
+# yet is indistinguishable from a stuck consumer.
+jq -n '{desired: 3, instances: [
+    {InstanceId: "eci-old",  PrivateIpAddress: "10.0.0.207", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-01T00:00:00Z", ZoneId: "cn-shanghai-l"},
+    {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"},
+    {InstanceId: "eci-run",  PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-03T00:00:00Z", ZoneId: "cn-shanghai-l"}
+  ], image: "x"}' > "$shrink_case/state/state.json"
 jq -n '{draining: "10.0.0.207", draining_id: "eci-old", drain_until: "'$(( $(date +%s) - 60 ))'", idle_streak: "0"}' > "$shrink_case/shrink-state.json"
 printf 'shrink-guard:%s\n%s\n10.0.0.207\n' "$(hostname)" "$(( $(date +%s) + 600 ))" > "$shrink_case/shrink-drain"
+start_fleet_sync "$shrink_case"
 run_guard "$shrink_case" SHRINK_REMOVAL_POLL_SECONDS=1 TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 >/dev/null
-guard_log "$shrink_case" | grep -q "DesiredCapacity set to 2" || fail "the guard did not shrink an idle drained tier by exactly one"
+stop_fleet_sync "$shrink_case"
+guard_log "$shrink_case" | grep -q "DesiredCapacity set to 2" || { cat "$shrink_case/guard.log" >&2; fail "the guard did not shrink an idle drained tier by exactly one"; }
 guard_log "$shrink_case" | grep -q "eci-old.*left the group" || fail "the guard did not wait for the victim's full departure"
 [[ -f "$shrink_case/shrink-drain" ]] && fail "the marker stayed parked after the victim left the group"
 [[ "$(jq -r '.draining // empty' "$shrink_case/shrink-state.json")" == "" ]] || fail "drain state survived the completed shrink"
@@ -153,6 +208,17 @@ grep -qxF "10.0.0.207" "$guard_snap" || fail "at the guard's shrink, the marker 
 if sed -n '/--- relay upstream ---/,$p' "$guard_snap" | grep -q "10.0.0.207"; then
   fail "at the guard's shrink, the relay upstream still served the victim"
 fi
+
+# (5b) Stuck consumer: fleet-sync is not running, so the upstream keeps
+# serving the victim. A blind countdown would remove an instance that never
+# stopped receiving new requests - the guard must refuse and clear.
+stuck_case="$test_root/stuck-sync"
+run_guard "$stuck_case" SHRINK_IDLE_MINUTES=0 >/dev/null
+guard_log "$stuck_case" | grep -q "fleet-sync is not consuming the drain marker" \
+  || fail "the guard shrank although the upstream never dropped the victim"
+grep -q "ess ModifyScalingGroup" "$stuck_case/state/aliyun-calls.log" 2>/dev/null \
+  && fail "the guard shrank with a stuck fleet-sync"
+[[ -f "$stuck_case/shrink-drain" ]] && fail "the marker stayed parked after a refused stuck-consumer round"
 
 # (6) Policy refusal: when the group's removal policy is not OldestInstance, the
 # guard cannot know which instance a shrink removes, so it must not park a guess.

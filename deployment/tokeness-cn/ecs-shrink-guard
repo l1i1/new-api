@@ -128,8 +128,14 @@ oldest_victim() {
     log "ERROR: in-service instances span ${zones:-?} zone(s); age order does not predict the victim"
     return 1
   fi
+  # A tie at the oldest boundary is a refusal, not a warning: ESS removes by
+  # policy order and may pick a DIFFERENT member of the tie than this sort did,
+  # so parking B while ESS removes A is the stream-cut this script exists to
+  # prevent.
   instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
-    | sort_by(.CreatedTime) | .[0] | "\(.InstanceId) \(.PrivateIpAddress // empty)"' 2>/dev/null | tr -d '\r'
+    | sort_by(.CreatedTime) | if (length > 1) and (.[0].CreatedTime == .[1].CreatedTime)
+      then empty
+      else (.[0] | "\(.InstanceId) \(.PrivateIpAddress // empty)") end' 2>/dev/null | tr -d '\r'
 }
 victim_id_of() {  # <ip> -> the id the group currently reports for that ip
   instances_json | jq -r --arg ip "$1" '[.ScalingInstances.ScalingInstance[]? | select(.PrivateIpAddress==$ip)]
@@ -211,9 +217,23 @@ write_marker() {
 }
 
 write_marker_locked() (
-  local tmp
+  # Check-and-renew under the lock, NOT a blind overwrite: a release that
+  # timed out may have left a LIVE foreign marker while releasing its hold,
+  # and stomping it would un-park the instance that marker protects. Ours is
+  # rewritten; a lapsed foreign marker is taken over; a live foreign one
+  # refuses (exit 3).
+  local tmp found_owner found_lease
   exec 200>"$MARKER_LOCK"
   flock -x 200
+  if [[ -f "$DRAIN_FILE" ]]; then
+    found_owner="$(sed -n '1p' "$DRAIN_FILE" | tr -d ' \r' || true)"
+    found_lease="$(sed -n '2p' "$DRAIN_FILE" | tr -d ' \r' || true)"
+    if [[ "$found_owner" != "$DRAIN_OWNER" ]] && [[ "$found_lease" =~ ^[0-9]+$ ]] \
+       && (( found_lease > $(date +%s) )); then
+      printf 'drain marker owned by %s with a live lease; not overwriting\n' "$found_owner" >&2
+      exit 3
+    fi
+  fi
   tmp="$(mktemp "${DRAIN_FILE}.tmp.XXXXXX")"
   {
     printf '%s\n' "$DRAIN_OWNER"
@@ -234,16 +254,20 @@ clear_marker() {
 }
 
 clear_marker_locked() (
+  # Every branch ends in explicit success: a trailing [[ -f ... ]] && chain
+  # returns 1 when the file is absent, and set -e then kills the script before
+  # the caller's terminal-state reset runs (leaving 'retiring' set forever).
   exec 200>"$MARKER_LOCK"
   flock -x 200
-  # retiring is a terminal-state field too: leaving it set after a completed
-  # removal made every later tick re-process a victim that is already gone and
-  # never park anything again.
-  if [[ -f "$DRAIN_FILE" ]] && ! marker_ours && ! marker_lease_expired; then
-    log "drain marker belongs to $(sed -n '1p' "$DRAIN_FILE" | tr -d ' \r') with a live lease; leaving it"
-  else
-    [[ -f "$DRAIN_FILE" ]] && rm -f "$DRAIN_FILE" && log "drain marker cleared"
+  if [[ -f "$DRAIN_FILE" ]]; then
+    if marker_ours || marker_lease_expired; then
+      rm -f -- "$DRAIN_FILE"
+      log "drain marker cleared"
+    else
+      log "drain marker belongs to $(sed -n '1p' "$DRAIN_FILE" | tr -d ' \r') with a live lease; leaving it"
+    fi
   fi
+  return 0
 )
 
 reset_drain_state() {
@@ -292,9 +316,24 @@ if ! flock -n 9; then log "another run holds the lock; skipping this tick"; exit
 # any operator reading the file deserve a clean state. Runs BEFORE the hold
 # check on purpose: a killed release leaves its hold behind for up to
 # HOLD_MAX_AGE, and the marker must not wait that long.
-if [[ -f "$DRAIN_FILE" ]] && ! marker_ours && marker_lease_expired; then
-  log "WARN: drain marker at $DRAIN_FILE is not ours and its lease has lapsed; removing it as abandoned"
-  rm -f "$DRAIN_FILE" 2>/dev/null || true
+if [[ -f "$DRAIN_FILE" ]] && ! marker_ours; then
+  # The expiry CHECK and the removal run inside one lock section: after the
+  # read, a new writer may have renewed the lease or taken the file over, and
+  # deleting it then would un-park a LIVE drain.
+  if (
+    exec 200>"$MARKER_LOCK"
+    flock -x 200
+    if ! marker_ours && marker_lease_expired; then
+      rm -f -- "$DRAIN_FILE"
+      log "WARN: drain marker at $DRAIN_FILE was not ours and its lease had lapsed; removed it as abandoned"
+      exit 0
+    fi
+    exit 1
+  ) 2>/dev/null; then
+    :
+  else
+    : # a live foreign marker: left alone, its writer owns it
+  fi
 fi
 
 # A release owns the tier for its whole duration: it grows and steps the group
@@ -380,49 +419,91 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
     log "load returned during the drain (${rpm_now} req/min > $IDLE_RPM); releasing the drain without shrinking"
     clear_marker; state_set idle_streak 0; exit 0
   fi
-  # Re-check the release hold RIGHT BEFORE asking ESS to remove an instance:
-  # a release can start between this tick's earlier check and now (#7).
-  if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
-    log "release hold appeared during the drain; standing down"
-    clear_marker; state_set idle_streak 0; exit 0
-  fi
-  instances="$(in_service_count)"; instances="${instances:-0}"
-  target=$(( instances - 1 ))
-  (( target < MIN_KEEP )) && target="$MIN_KEEP"
-  log "drain window over for $rid ($drained); asking ESS for $target instance(s)"
-  # Final re-check of the release hold IMMEDIATELY before the Modify (#7): the
-  # reads above take their own time, and a release that started during them
-  # owns the tier now. Also re-verify the marker one last time under the lock.
-  if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
-    log "release hold appeared during the drain; standing down"
-    clear_marker; state_set idle_streak 0
-    exit 0
-  fi
-  if ! marker_ours || ! marker_has_ip "$drained"; then
-    log "drain marker changed under us right before the shrink; standing down"
-    reset_drain_state; state_set idle_streak 0
-    exit 0
-  fi
-  if (( DRY_RUN == 1 )); then log "dry run: would set DesiredCapacity=$target"; clear_marker; exit 0; fi
-  if aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$target" >/dev/null; then
-    log "DesiredCapacity set to $target; waiting for $rid to leave the group"
-    state_set retiring "$rid"
-    for _ in $(seq 1 "$REMOVAL_POLLS"); do
-      if victim_gone "$rid"; then break; fi
-      sleep "${SHRINK_REMOVAL_POLL_SECONDS:-15}"
-    done
-    if victim_gone "$rid"; then
-      log "after shrink: $rid left the group"
-      clear_marker
+  # The final checks AND the capacity change run inside ONE shared-lock
+  # section, so a release starting on this host cannot interleave between our
+  # ownership re-verification and the Modify. No locking helpers are called
+  # inside - they would self-deadlock on the same lock file.
+  # Subshell exits: 0 = modified, 3 = stand down (state kept), 4 = Modify failed.
+  shrink_rc=0
+  shrink_target=""
+  shrink_section() (
+    exec 200>"$MARKER_LOCK"
+    flock -x 200
+    if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
+      log "release hold appeared during the drain; standing down"
+      exit 3
+    fi
+    if ! marker_ours || ! marker_has_ip "$drained"; then
+      log "drain marker changed under us right before the shrink; standing down"
+      exit 3
+    fi
+    # Capacity from the FULL in-service view, and refuse when any in-service
+    # member is not Healthy: counting only healthy members makes the desired
+    # capacity lower than the real in-service count, and one Modify then
+    # removes an unparked member alongside the parked one.
+    local listing unhealthy instances target
+    if ! listing="$(instances_json)"; then
+      log "ERROR: could not read the instance list before shrinking; standing down"
+      exit 3
+    fi
+    unhealthy="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus!="Healthy")] | length' 2>/dev/null | tr -d '\r')"
+    if [[ "${unhealthy:-0}" != "0" ]]; then
+      log "in-service member(s) not Healthy (${unhealthy:-?}); refusing to shrink this tick"
+      exit 3
+    fi
+    instances="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService")] | length' 2>/dev/null | tr -d '\r')"
+    instances="${instances:-0}"
+    target=$(( instances - 1 ))
+    (( target < MIN_KEEP )) && target="$MIN_KEEP"
+    printf '%s\n' "$target"
+    log "drain window over for $rid ($drained); asking ESS for $target instance(s)"
+    if (( DRY_RUN == 1 )); then
+      log "dry run: would set DesiredCapacity=$target"
       exit 0
     fi
-    log "removal of $rid still in flight after $(( REMOVAL_POLLS * ${SHRINK_REMOVAL_POLL_SECONDS:-15} ))s; next tick keeps waiting"
+    if ! aliyun_ess ModifyScalingGroup --ScalingGroupId "$GROUP" --DesiredCapacity "$target" >/dev/null; then
+      log "ERROR: ModifyScalingGroup failed; the tier keeps $instances instance(s)"
+      exit 4
+    fi
     exit 0
-  else
-    log "ERROR: ModifyScalingGroup failed; the tier keeps $instances instance(s)"
+  )
+  shrink_target="$(shrink_section)"
+  shrink_rc=$?
+  if (( DRY_RUN == 1 )); then
+    # The section refused to Modify in dry-run mode; stop here without
+    # recording a retirement to wait for.
+    reset_drain_state
+    exit 0
+  fi
+  if (( shrink_rc == 3 )); then
+    # Stand down WITHOUT dropping our parking: the release owns the tier for
+    # now; our drain resumes on a later tick once it is gone.
+    if [[ -f "$DRAIN_FILE" ]] && marker_ours && [[ -n "$drained" ]] && marker_has_ip "$drained"; then
+      write_marker "$drained"
+    fi
+    state_set idle_streak 0
+    exit 0
+  fi
+  if (( shrink_rc == 4 )); then
     clear_marker
     exit 0
   fi
+  if (( shrink_rc != 0 )); then
+    exit 0
+  fi
+  log "DesiredCapacity set to ${shrink_target:-?}; waiting for $rid to leave the group"
+  state_set retiring "$rid"
+  for _ in $(seq 1 "$REMOVAL_POLLS"); do
+    if victim_gone "$rid"; then break; fi
+    sleep "${SHRINK_REMOVAL_POLL_SECONDS:-15}"
+  done
+  if victim_gone "$rid"; then
+    log "after shrink: $rid left the group"
+    clear_marker
+    exit 0
+  fi
+  log "removal of $rid still in flight after $(( REMOVAL_POLLS * ${SHRINK_REMOVAL_POLL_SECONDS:-15} ))s; next tick keeps waiting"
+  exit 0
 fi
 
 instances="$(in_service_count)"; instances="${instances:-0}"

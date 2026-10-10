@@ -975,6 +975,9 @@ done
 shared_hold="$mutex_case/shared-hold"
 shared_drain="$mutex_case/shared-drain"
 shared_lock="$mutex_case/shared-marker.lock"
+# Both start together so the CHECK-AND-ACQUIRE itself is raced, not just the
+# pre-read: deleting the flock from the acquire would let both pass their
+# no-hold pre-read and interleave at the write.
 run_deploy "$first" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
@@ -983,27 +986,29 @@ run_deploy "$first" \
   MARKER_LOCK_PATH="$shared_lock" \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9 &
 mutex_first_pid=$!
-# Wait until the first release has actually written its hold, then start the
-# second: the race being tested is the ownership check, not the start gun.
-for _ in $(seq 1 50); do
-  [ -s "$shared_hold" ] && break
-  sleep 0.2
-done
-[ -s "$shared_hold" ] || { kill "$mutex_first_pid" 2>/dev/null || true; fail "the first release never wrote its shrink hold"; }
-if run_deploy "$second" \
+run_deploy "$second" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
   SHRINK_HOLD_PATH="$shared_hold" \
   SHRINK_DRAIN_PATH="$shared_drain" \
   MARKER_LOCK_PATH="$shared_lock" \
-  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
-  kill "$mutex_first_pid" 2>/dev/null || true
-  fail "a second release started while the first held the tier"
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 &
+mutex_second_pid=$!
+mutex_rc1=0; mutex_rc2=0
+wait "$mutex_first_pid" || mutex_rc1=$?
+wait "$mutex_second_pid" || mutex_rc2=$?
+if (( mutex_rc1 == 0 && mutex_rc2 == 0 )); then
+  fail "two releases ran the tier concurrently"
 fi
-grep -qE "refusing to release|refusing to run two at once|owned by" "$second/state/output.log" \
-  || fail "the second release did not explain its refusal"
-wait "$mutex_first_pid" \
-  || fail "the first release failed because of the concurrent second one"
+if (( mutex_rc1 != 0 && mutex_rc2 != 0 )); then
+  fail "both concurrent releases failed (expected exactly one winner)"
+fi
+loser="$first"; winner="$second"
+if (( mutex_rc2 != 0 )); then loser="$second"; winner="$first"; fi
+grep -qE "refusing to release|refusing to run two at once|owned by|is owned by" "$loser/state/output.log" \
+  || fail "the losing release did not explain its refusal"
+grep -q "master container blue-green complete" "$winner/state/stdout.log" \
+  || fail "the winning release did not complete its roll"
 
 # (7) A group with no headroom cannot be released at all: even the
 # one-at-a-time leg scales the tier to stable+1 while the old instance still
@@ -1201,13 +1206,16 @@ jq -e '.scale_in_alarm.state == "enabled"' "$alarm_case/state/state.json" > /dev
 # and nothing may re-suspend in between. The old check only tested "Disable
 # appeared somewhere early and Enable appeared somewhere" - Disable->Enable->
 # ModifyScalingGroup passed it too.
+# A state machine, not first/last bookkeeping: every ModifyScalingGroup must
+# happen while the alarm is disabled, and the final event must be the re-enable.
+# The old check accepted Disable -> Modify -> Enable -> Modify -> Enable.
 awk '
-  /ess DisableAlarm/ {d = d ? d : NR}
-  /ess ModifyScalingGroup/ {first = first ? first : NR; last = NR}
-  /ess EnableAlarm/ {e = NR}
-  END { exit !(d && first && e && d < first && e > last) }' \
+  /ess DisableAlarm/ { state = "d"; next }
+  /ess EnableAlarm/  { state = "e"; next }
+  /ess ModifyScalingGroup/ { if (state != "d") bad = 1; mods++ }
+  END { exit !(mods > 0 && !bad && state == "e") }' \
   "$alarm_case/state/aliyun-calls.log" \
-  || fail "the alarm suspension did not bracket EVERY scaling call"
+  || fail "a scaling call happened while the alarm was enabled, or the alarm never came back"
 # An alarm that was already disabled before the release must stay disabled: the
 # release records the state it found and restores THAT, not a hardcoded on.
 alarm_pre_disabled_case="$test_root/scale-in-alarm-pre-disabled"
