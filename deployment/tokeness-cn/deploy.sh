@@ -1633,7 +1633,7 @@ REMOTE_HOLD_SET
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" "$MARKER_LOCK_PATH" <<'REMOTE_HOLD' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
-path="$1"; action="$2"; lock="$3"
+path="$1"; action="$2"; owner="$3"; lock="$4"
 mkdir -p "$(dirname "$lock")"
 exec 200>"$lock"
 flock -x 200
@@ -1654,7 +1654,7 @@ case "$action" in
       fi
       rm -f "$path"; exit 0
     fi
-    if [ -n "$existing" ] && [ "$existing" != "${3:-}" ]; then
+    if [ -n "$existing" ] && [ "$existing" != "$owner" ]; then
       printf 'hold belongs to %s; not removing\n' "$existing" >&2
       exit 3
     fi
@@ -1734,15 +1734,16 @@ resume_scale_in_guard() {
   else
     relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
   fi
-  # Release the hold BEFORE any further log line: log() heartbeats while
-  # scale_in_hold_written is set, and a heartbeat here would re-acquire the
-  # hold the cleanup is trying to drop (leaving a fresh hold behind a release
-  # that already exited).
+  # Both heartbeat gates go down BEFORE any further log line: log() heartbeats
+  # while either is set, and a heartbeat here would re-acquire the hold the
+  # cleanup is trying to drop (leaving a fresh hold behind a release that has
+  # already exited). The alarm id is saved first - the gates going down must
+  # not skip the alarm restore below.
+  local id="${scale_in_guard_suspended:-}"
   scale_in_hold_written=""
-  shrink_hold_write clear && log "entry shrink guard released"
-  [[ -n "$scale_in_guard_suspended" ]] || return 0
-  local id="$scale_in_guard_suspended"
   scale_in_guard_suspended=""
+  shrink_hold_write clear && log "entry shrink guard released"
+  [[ -n "$id" ]] || return 0
   if [[ "${scale_in_alarm_was_enabled:-0}" != "1" ]]; then
     log "scale-in alarm $id was already disabled before this run; leaving it disabled"
     return 0
@@ -1893,11 +1894,20 @@ wait_retired() {
 # gate cannot see that. This turns the residual race into a loud failure
 # instead of a silently under-served tier.
 verify_no_extra_removals() {
-  local before_ids="$1" retire_ids="$2" label="$3" current id extra=0
+  local before_ids="$1" retire_ids="$2" label="$3" current id extra=0 i=0
   [[ -n "$retire_ids" ]] || return 0
-  if ! current="$(in_service_instance_ids)"; then
-    warn "$label: could not re-read the instance set to verify the removal set"
-    return 0
+  # A failed read is NOT a pass: this check is the only witness that the
+  # removal matched the parked set. Retry a few times, then fail the step.
+  while (( i < 3 )); do
+    if current="$(in_service_instance_ids)"; then
+      break
+    fi
+    sleep "$HEALTH_POLL_SECONDS"
+    i=$(( i + 1 ))
+  done
+  if [[ -z "${current:-}" ]]; then
+    error "$label: could not re-read the instance set to verify the removal set; failing closed"
+    return 1
   fi
   while IFS= read -r id; do
     [ -n "$id" ] || continue

@@ -16,7 +16,11 @@ fail() {
 }
 
 test_root="$(mktemp -d)"
-trap 'rm -rf -- "$test_root"' EXIT
+# Background fleet-sync loops are tracked globally and reaped (kill + wait) by
+# the EXIT trap: a loop inherits this script's stdout otherwise, and a pipeline
+# consumer (| tail) never sees EOF; a fail() mid-case would leak the loop too.
+FLEET_SYNC_PIDS=()
+trap 'for __p in "${FLEET_SYNC_PIDS[@]:-}"; do kill "$__p" 2>/dev/null || true; done; for __p in "${FLEET_SYNC_PIDS[@]:-}"; do wait "$__p" 2>/dev/null || true; done; rm -rf -- "$test_root"' EXIT
 bin_dir="$test_root/bin"
 mkdir -p "$bin_dir"
 cp "$TEST_DIR"/fake-bin/* "$bin_dir/"
@@ -68,8 +72,9 @@ start_fleet_sync() {
   # One synchronous pass first: the guard reads the upstream immediately, and
   # a loop that has not written yet looks like a stuck consumer.
   fleet_sync_once "$1"
-  fleet_sync_loop "$1" &
+  fleet_sync_loop "$1" >/dev/null 2>&1 &
   echo $! > "$1/fleet-sync.pid"
+  FLEET_SYNC_PIDS+=("$!")
 }
 
 stop_fleet_sync() {

@@ -321,11 +321,15 @@ if [[ -f "$DRAIN_FILE" ]] && ! marker_ours; then
   # read, a new writer may have renewed the lease or taken the file over, and
   # deleting it then would un-park a LIVE drain.
   if (
-    exec 200>"$MARKER_LOCK"
-    flock -x 200
+    exec 200>"$MARKER_LOCK" 2>/dev/null || exit 1
+    flock -x 200 || exit 1
     if ! marker_ours && marker_lease_expired; then
-      rm -f -- "$DRAIN_FILE"
-      log "WARN: drain marker at $DRAIN_FILE was not ours and its lease had lapsed; removed it as abandoned"
+      if [[ "$DRY_RUN" == 1 ]]; then
+        log "dry run: would remove the abandoned drain marker at $DRAIN_FILE"
+      else
+        rm -f -- "$DRAIN_FILE"
+        log "WARN: drain marker at $DRAIN_FILE was not ours and its lease had lapsed; removed it as abandoned"
+      fi
       exit 0
     fi
     exit 1
@@ -339,8 +343,27 @@ fi
 # A release owns the tier for its whole duration: it grows and steps the group
 # down on its own schedule and already drains the instances it retires.
 if [[ -f "$HOLD_FILE" ]] && hold_is_stale; then
-  log "WARN: shrink hold at $HOLD_FILE is older than ${HOLD_MAX_AGE}s; treating it as abandoned (a killed release left it behind) and continuing"
-  rm -f "$HOLD_FILE" 2>/dev/null || true
+  # The stale CHECK and the removal share one marker-lock section: a release
+  # can acquire and refresh the hold between an unlocked check and the rm,
+  # and the rm would then delete ITS hold.
+  if (
+    exec 200>"$MARKER_LOCK" 2>/dev/null || exit 1
+    flock -x 200 || exit 1
+    if [[ -f "$HOLD_FILE" ]] && hold_is_stale; then
+      if [[ "$DRY_RUN" == 1 ]]; then
+        log "dry run: would remove the abandoned shrink hold at $HOLD_FILE"
+      else
+        rm -f -- "$HOLD_FILE"
+        log "WARN: shrink hold at $HOLD_FILE was older than ${HOLD_MAX_AGE}s; removed it as abandoned (a killed release left it behind)"
+      fi
+      exit 0
+    fi
+    exit 1
+  ) 2>/dev/null; then
+    :
+  else
+    : # the hold was refreshed under the lock: a live release owns it now
+  fi
 fi
 if [[ -f "$HOLD_FILE" ]]; then
   release_our_drain
@@ -427,8 +450,12 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
   shrink_rc=0
   shrink_target=""
   shrink_section() (
-    exec 200>"$MARKER_LOCK"
-    flock -x 200
+    # Command substitution disables errexit in here, so every step that can
+    # fail is checked explicitly: a failed lock open, a failed read or an
+    # unparsable count must REFUSE the shrink, never fall through to a
+    # zero-count Modify.
+    if ! exec 200>"$MARKER_LOCK" 2>/dev/null; then exit 3; fi
+    if ! flock -x 200; then exit 3; fi
     if [[ -f "$HOLD_FILE" ]] && ! hold_is_stale; then
       log "release hold appeared during the drain; standing down"
       exit 3
@@ -442,17 +469,24 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
     # capacity lower than the real in-service count, and one Modify then
     # removes an unparked member alongside the parked one.
     local listing unhealthy instances target
-    if ! listing="$(instances_json)"; then
+    if ! listing="$(instances_json)" || [[ -z "$listing" ]]; then
       log "ERROR: could not read the instance list before shrinking; standing down"
       exit 3
     fi
     unhealthy="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus!="Healthy")] | length' 2>/dev/null | tr -d '\r')"
-    if [[ "${unhealthy:-0}" != "0" ]]; then
-      log "in-service member(s) not Healthy (${unhealthy:-?}); refusing to shrink this tick"
+    if [[ ! "${unhealthy:-}" =~ ^[0-9]+$ ]]; then
+      log "ERROR: could not count unhealthy in-service members; standing down"
+      exit 3
+    fi
+    if [[ "$unhealthy" != "0" ]]; then
+      log "in-service member(s) not Healthy ($unhealthy); refusing to shrink this tick"
       exit 3
     fi
     instances="$(printf '%s' "$listing" | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService")] | length' 2>/dev/null | tr -d '\r')"
-    instances="${instances:-0}"
+    if [[ ! "$instances" =~ ^[1-9][0-9]*$ ]]; then
+      log "ERROR: could not count in-service members; standing down"
+      exit 3
+    fi
     target=$(( instances - 1 ))
     (( target < MIN_KEEP )) && target="$MIN_KEEP"
     printf '%s\n' "$target"
@@ -467,8 +501,9 @@ if [[ -n "$(state_get drain_until)" || -n "$(state_get retiring)" ]]; then
     fi
     exit 0
   )
-  shrink_target="$(shrink_section)"
-  shrink_rc=$?
+  # `|| shrink_rc=$?` on purpose: a bare assignment of a failing command
+  # substitution is itself terminated by set -e before the rc can be read.
+  shrink_target="$(shrink_section)" || shrink_rc=$?
   if (( DRY_RUN == 1 )); then
     # The section refused to Modify in dry-run mode; stop here without
     # recording a retirement to wait for.
