@@ -1299,9 +1299,19 @@ scale_in_alarm_id() {
     printf '%s\n' "$SCALE_IN_ALARM_ID"
     return 0
   fi
-  aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-    | jq -r --arg name "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name == $name) | .AlarmTaskId' \
-    | head -1 | tr -d '\r'
+  # The response SHAPE is validated before the name select: `[]?` swallows a
+  # malformed or error body into an empty result with exit 0, which read as
+  # "no alarm exists" and let the release run while a live alarm could remove
+  # instances mid-round. Only a well-formed AlarmList may yield "no match".
+  local resp id
+  if ! resp="$(aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION")"; then
+    return 1
+  fi
+  if ! printf '%s' "$resp" | jq -e 'type == "object" and has("AlarmList") and (.AlarmList | type == "object" and has("Alarm") and (.Alarm | type == "array"))' >/dev/null; then
+    return 1
+  fi
+  id="$(printf '%s' "$resp" | jq -r --arg name "$SCALE_IN_ALARM_NAME" '[.AlarmList.Alarm[]? | select(.Name == $name) | .AlarmTaskId][0] // empty' | tr -d '\r')"
+  printf '%s\n' "$id"
 }
 
 # suspend_scale_in_guard / resume_scale_in_guard - hold the alarm off for the
@@ -1713,9 +1723,18 @@ suspend_scale_in_guard() {
   # it off deliberately (cpu-in-25 is off today because it cut long streams), and
   # resuming must restore that state rather than switch it back on.
   local alarm_state
+  # jq's `//` treats false as absent (false // empty -> empty), so a DISABLED
+  # alarm read as "state unknown" and killed the release; the value is matched
+  # explicitly instead.
   if ! alarm_state="$(aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-        | jq -r --arg n "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name==$n) | .Enable' | head -1 | tr -d '\r')"; then
+        | jq -r --arg n "$SCALE_IN_ALARM_NAME" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then (.[0].Enable | if . == true then "true" elif . == false then "false" else "invalid" end) else "absent" end' | tr -d '\r')"; then
     die "could not read the scale-in alarm's enable state; refusing to release without knowing what to restore"
+  fi
+  if [[ "$alarm_state" != "true" && "$alarm_state" != "false" ]]; then
+    # 'absent' (the id was found but the state record is gone), 'invalid'
+    # (not a boolean), or an error body: treating any of them as 'disabled'
+    # would permanently skip the restore of an alarm that was actually on.
+    die "the scale-in alarm's enable state is not readable ('$alarm_state'); refusing to release"
   fi
   if [[ "$alarm_state" == "true" ]]; then
     scale_in_alarm_was_enabled=1
@@ -1726,7 +1745,11 @@ suspend_scale_in_guard() {
     scale_in_guard_suspended="$id"
     log "scale-in alarm suspended for the rollout ($id)"
   else
-    warn "could not suspend scale-in alarm $id; it may retire an instance mid-round"
+    # Fail closed: continuing with the alarm LIVE lets it remove an instance
+    # mid-round (the exact streams the drain windows protect), and a later
+    # RETIREMENT_PENDING exit would even claim the alarm was left off. The
+    # hold was already written; the EXIT trap cleans it up.
+    die "could not suspend scale-in alarm $id; refusing to release with the alarm live"
   fi
 }
 
@@ -1736,6 +1759,18 @@ suspend_scale_in_guard() {
 # marker parked instead - its lease lapses once no heartbeat extends it, which
 # is exactly the dead-writer case the lease exists for.
 RETIREMENT_PENDING=0
+
+# release_the_hold - clear the shrink guard hold with an explicit outcome: a
+# FAILED clear must be said out loud, not swallowed by an `&& log` chain that
+# leaves the caller's return 0 reporting success with the hold still parked.
+release_the_hold() {
+  if shrink_hold_write clear; then
+    log "entry shrink guard released"
+  else
+    warn "could not clear the shrink guard hold; it stays in place and the guard's janitor treats it as abandoned after its max age"
+  fi
+  return 0
+}
 
 resume_scale_in_guard() {
   local id="${scale_in_guard_suspended:-}"
@@ -1768,7 +1803,7 @@ resume_scale_in_guard() {
     fi
     scale_in_hold_written=""
     scale_in_guard_suspended=""
-    shrink_hold_write clear && log "entry shrink guard released"
+    release_the_hold
     return 0
   fi
   # Restore the alarm BEFORE the hold is cleared, gates down first so no
@@ -1787,7 +1822,7 @@ resume_scale_in_guard() {
   done
   if (( ok == 1 )); then
     log "scale-in alarm resumed ($id)"
-    shrink_hold_write clear && log "entry shrink guard released"
+    release_the_hold
     return 0
   fi
   # The restore failed (#3): the hold is the only thing keeping the guard from
