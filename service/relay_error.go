@@ -18,11 +18,33 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// relayClientGone reports whether the client connection behind the request has
+// already closed. gin cancels c.Request.Context() as soon as the peer goes
+// away, so a non-nil context error is direct evidence that no response can be
+// delivered anymore, whatever any retry rule would decide.
+func relayClientGone(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return c.Request.Context().Err() != nil
+}
+
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
+	}
+	// A retry can only pick another channel; it cannot bring the customer
+	// back. Once the caller's connection is dead, every further attempt fails
+	// within milliseconds with "context canceled", spends upstream quota on a
+	// request nobody is waiting for, and records itself as a channel failure in
+	// the per-channel error stats (observed 2026-10-10: after a customer's own
+	// deadline fired mid-walk, doomed requests kept issuing ~5 instantly-failing
+	// attempts, which made healthy channels report 100% failure rates). Stop at
+	// the first dead connection instead of walking the rest of the pool.
+	if relayClientGone(c) {
+		return PolicyDecision{Action: "stop", Reason: "client_gone", Source: "system"}
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource

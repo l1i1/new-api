@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -461,4 +462,31 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 		decision := DecideRelayRetry(c, billingErr, 1)
 		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
 	})
+}
+
+// TestDecideRelayRetryStopsWhenClientGone pins the rule that a dead client
+// connection ends the walk: no retry can deliver an answer to a peer that
+// already hung up, and the extra attempts fail within milliseconds with
+// "context canceled", spend upstream quota nobody is waiting for, and record
+// per-channel failures that make healthy channels look dead (the walk-tail
+// artifact seen on 2026-10-10: after a customer's own 10-minute deadline fired,
+// doomed walks kept issuing ~5 instantly-failing attempts each).
+func TestDecideRelayRetryStopsWhenClientGone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// A channel error is retryable with no configuration involved, which keeps
+	// the baseline independent of the operator keyword and status lists.
+	apiErr := types.NewOpenAIError(errors.New("upstream unavailable"), types.ErrorCodeChannelResponseTimeExceeded, http.StatusBadGateway)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}, DecideRelayRetry(c, apiErr, 8), "baseline: a live connection retries a channel error")
+
+	cancel()
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "client_gone", Source: "system"}, DecideRelayRetry(c, apiErr, 8), "a dead connection stops the walk before the next upstream attempt")
+
+	// A context without a request must stay nil-safe and never look gone.
+	bare, _ := gin.CreateTestContext(httptest.NewRecorder())
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}, DecideRelayRetry(bare, apiErr, 8))
 }
