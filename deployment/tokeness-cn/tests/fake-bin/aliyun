@@ -344,11 +344,13 @@ case "$cmd" in
       # never produces. Starting from a one-instance fixture this still yields
       # eci-new-1/10.0.0.241 first, which is what the existing cases expect.
       n="$(jq '.next_index // 1' "$state" | tr -d '\r')"
-      state_update --argjson n "$n" '.instances += [{
+      state_update --argjson n "$n" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.instances += [{
         "InstanceId": ("eci-new-" + ($n | tostring)),
         "PrivateIpAddress": ("10.0.0." + (240 + $n | tostring)),
         "HealthStatus": "Healthy",
-        "LifecycleState": "InService"
+        "LifecycleState": "InService",
+        "CreatedTime": $created,
+        "ZoneId": "cn-shanghai-l"
       }] | .next_index = ($n + 1)'
     done
     # A scale-in detaches the oldest instances, but the group keeps REPORTING
@@ -357,13 +359,15 @@ case "$cmd" in
     # keeps its previous behaviour).
     lag="${TOKENESS_TEST_SCALE_IN_LAG_SECONDS:-0}"
     while (( $(jq '.instances | length' "$state" | tr -d '\r') > desired )); do
-      # ESS removal policy removes the oldest instance first.
+      # ESS's OldestInstance policy removes the earliest-joined instance, not
+      # the first array member: the fake state keeps .instances in join order,
+      # so this is also where a caller that assumed array order breaks.
       if [[ "$lag" =~ ^[1-9][0-9]*$ ]]; then
-        state_update --argjson until "$(( $(date +%s) + lag ))" \
-          '.pending_removal = {until: $until, instances: ((.pending_removal.instances // []) + [.instances[0]])}
-           | .instances = .instances[1:]'
+        state_update --argjson until "$(( $(date +%s) + lag ))" '
+          .pending_removal = {until: $until, instances: ((.pending_removal.instances // []) + [(.instances | sort_by(.CreatedTime))[0]])}
+          | .instances = (.instances | sort_by(.CreatedTime) | .[1:])'
       else
-        state_update '.instances = .instances[1:]'
+        state_update '.instances = (.instances | sort_by(.CreatedTime) | .[1:])'
       fi
     done
     # External scale-out injection (test-only): mimic the tier's alarm adding
@@ -379,11 +383,13 @@ case "$cmd" in
       j=0
       while (( j < ext )); do
         e="$(jq '.ext_index // 1' "$state" | tr -d '\r')"
-        state_update --argjson e "$e" '.instances += [{
+        state_update --argjson e "$e" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.instances += [{
           "InstanceId": ("eci-ext-" + ($e | tostring)),
           "PrivateIpAddress": ("10.0.0." + (200 + $e | tostring)),
           "HealthStatus": "Healthy",
-          "LifecycleState": "InService"
+          "LifecycleState": "InService",
+          "CreatedTime": $created,
+          "ZoneId": "cn-shanghai-l"
         }] | .ext_index = ($e + 1)'
         j=$(( j + 1 ))
       done
@@ -399,28 +405,35 @@ case "$cmd" in
     # count, which is what a real group reports for its steady state.
     # max_size is per-case: a batch rollout is bounded by it, so the "no
     # headroom" refusal and the multi-round path both need it under test.
-    jq '{ScalingGroups: {ScalingGroup: [{
+    # RemovalPolicies mirrors the real group this tier runs (verified by the
+    # release's oldest-instance selection before it dares to predict victims).
+    jq --arg rp "${TOKENESS_TEST_REMOVAL_POLICY:-OldestInstance}" '{ScalingGroups: {ScalingGroup: [{
       ScalingGroupId: "asg-test",
       MinSize: 1,
       MaxSize: (.max_size // 4),
       DesiredCapacity: (.desired // (.instances | length)),
-      LifecycleState: "Active"
+      LifecycleState: "Active",
+      RemovalPolicies: {RemovalPolicy: [$rp]}
     }]}}' "$state"
     ;;
   "ess DescribeScalingInstances")
     # Instances a pending scale-in has detached are still REPORTED until the lag
     # expires, then the pending record is dropped - the same asynchronous window
     # the real ESS has, and the reason a rollout must wait for an EXACT count
-    # after scaling in.
+    # after scaling in. The response REVERSES the state's join order: the real
+    # API makes no ordering promise, and callers were silently sorting by it
+    # before the CreatedTime-based selection landed.
     state_update --argjson now "$(date +%s)" '
       if (.pending_removal != null) and (.pending_removal.until <= $now)
       then .pending_removal = null else . end' >/dev/null 2>&1 || true
     jq '{ScalingInstances: {ScalingInstance:
-          [((.pending_removal.instances // []) + .instances)[] | {
+          ([((.pending_removal.instances // []) + .instances)[] | {
             InstanceId, PrivateIpAddress,
             HealthStatus: "Healthy",
-            LifecycleState: "InService"
-          }]}}' "$state"
+            LifecycleState: "InService",
+            CreatedTime: (.CreatedTime // "1970-01-01T00:00:00Z"),
+            ZoneId: (.ZoneId // "cn-shanghai-l")
+          }] | reverse)}}' "$state"
     ;;
   "ess DescribeEciScalingConfigurations")
     describe_config

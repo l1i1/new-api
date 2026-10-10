@@ -1187,15 +1187,59 @@ scale_in_alarm_id() {
 # duration of a rollout. Both are best-effort: an ESS hiccup here must not abort
 # a release, and a release that fails after suspending still resumes it via the
 # caller's EXIT trap.
-# oldest_instance_ips <n> - private IPs of the n oldest in-service instances.
-# ESS removes by its OldestInstance policy, and the pre-existing instances a round
-# retires are the oldest ones, so this is the set that will actually go.
-oldest_instance_ips() {
-  local n="$1"
+# oldest_instance_ids <n> - instance IDs of the n oldest in-service instances.
+#
+# ESS removes by its OldestInstance policy, so the pre-existing instances a
+# round retires are the oldest ones - IF the group really removes that way.
+# Three preconditions are verified, because each silently changes which
+# instance ESS actually picks while we park a different one:
+#   - the group's removal policy is exactly OldestInstance;
+#   - every in-service instance sits in ONE zone (ESS rebalances zones before
+#     applying the policy in a multi-zone group, so age order stops predicting
+#     the victim);
+#   - the sort key is CreatedTime, which carries seconds. CreationTime is
+#     minute-precise, and a batch scale-out joins several instances within the
+#     same minute; when the boundary of the requested set falls inside a tie
+#     the choice is a guess, so that case is warned about, never silent.
+# Exits 1 with a warn when a precondition fails: the caller must not park, and
+# must not read the empty result as "nothing to retire".
+oldest_instance_ids() {
+  local n="$1" policies zones ids boundary
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
-  aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-    | jq -r --argjson n "$n" '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
-             | sort_by(.CreationTime) | .[0:$n] | .[].PrivateIpAddress' | tr -d '\r'
+  policies="$(aliyun_cmd ess DescribeScalingGroups --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    | jq -r '[.ScalingGroups.ScalingGroup[0].RemovalPolicies.RemovalPolicy[]?] | join(",")' | tr -d '\r')" || policies=""
+  if [[ "$policies" != "OldestInstance" ]]; then
+    # stderr on purpose: this function runs inside a command substitution, and
+    # a stdout diagnostic would be captured into the caller's IP list.
+    log "WARN: the scaling group's removal policy is '${policies:-unknown}', not exactly OldestInstance; cannot predict which instance a scale-in removes" >&2
+    return 1
+  fi
+  zones="$(scaling_instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .ZoneId] | unique | length' | tr -d '\r')" || zones=""
+  if [[ "$zones" != "1" ]]; then
+    log "WARN: in-service instances span ${zones:-?} zone(s); ESS rebalances zones before removing, so age order does not predict the victim" >&2
+    return 1
+  fi
+  ids="$(scaling_instances_json | jq -r --argjson n "$n" '
+    [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+    | sort_by(.CreatedTime) | .[0:$n] | .[].InstanceId' | tr -d '\r')" || return 1
+  if (( n > 0 )) && [[ -n "$ids" ]]; then
+    boundary="$(scaling_instances_json | jq -r --argjson n "$n" '
+      [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+      | sort_by(.CreatedTime) | if (length > $n) and (.[$n-1].CreatedTime == .[$n].CreatedTime) then .[$n].CreatedTime else empty end' | tr -d '\r')"
+    if [[ -n "$boundary" ]]; then
+      log "WARN: the oldest-$n boundary falls inside a CreatedTime tie ($boundary); the drain set may not match ESS's removal order" >&2
+    fi
+  fi
+  printf '%s\n' "$ids"
+}
+
+# oldest_instance_ips <n> - the private IPs of those instances, resolved by ID.
+oldest_instance_ips() {
+  local n="$1" id
+  oldest_instance_ids "$n" | while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    instance_private_ip "$id"
+  done
 }
 
 # relay_drain_write <comma_ips> - park those relay members: ecs-fleet-sync

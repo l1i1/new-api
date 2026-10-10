@@ -317,13 +317,19 @@ export TOKENESS_TEST_ML_DIGEST="$TEST_ML_DIGEST"
 
 init_ess_state() {
   local dir="$1" log_content="${2:-ready}"
+  # CreatedTime/ZoneId mirror the real DescribeScalingInstances fields the
+  # release's oldest-instance selection sorts and verifies on: second-precision
+  # join time and a single zone. The fixture instance predates every instance
+  # the fake scale-out creates, so it is always the oldest member.
   jq -n \
     --arg image "docker.cnb.cool/imvhb/new-api-cn@$PREV_DIGEST" \
     --arg logContent "$log_content" \
+    --arg created "2026-09-01T00:00:00Z" \
     '{
       desired: 1,
       instances: [{InstanceId: "eci-old", PrivateIpAddress: "10.0.0.207",
-                   HealthStatus: "Healthy", LifecycleState: "InService"}],
+                   HealthStatus: "Healthy", LifecycleState: "InService",
+                   CreatedTime: $created, ZoneId: "cn-shanghai-l"}],
       image: $image,
       envs: [{Key: "SQL_DSN", Value: "postgresql://u:p@db:5432/newapi?sslmode=disable"},
              {Key: "TZ", Value: "Asia/Shanghai"},
@@ -796,7 +802,8 @@ make_conf "$multi_case/nginx.conf"
 init_ess_state "$multi_case/state"
 jq '.desired = 2 | .max_size = 3 | .instances += [{
       InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
-      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+      HealthStatus: "Healthy", LifecycleState: "InService",
+      CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
   "$multi_case/state/state.json" > "$multi_case/state/tmp.json" \
   && mv "$multi_case/state/tmp.json" "$multi_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\n' > "$multi_case/ecs-upstream.conf"
@@ -827,8 +834,8 @@ mkdir -p "$converge_case/state"
 make_conf "$converge_case/nginx.conf"
 init_ess_state "$converge_case/state"
 jq '.desired = 3 | .max_size = 4 | .instances += [
-      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService"},
-      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"},
+      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-03T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
   "$converge_case/state/state.json" > "$converge_case/state/tmp.json" \
   && mv "$converge_case/state/tmp.json" "$converge_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
@@ -958,7 +965,8 @@ make_conf "$race_case/nginx.conf"
 init_ess_state "$race_case/state"
 jq '.desired = 2 | .max_size = 3 | .instances += [{
       InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
-      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+      HealthStatus: "Healthy", LifecycleState: "InService",
+      CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
   "$race_case/state/state.json" > "$race_case/state/tmp.json" \
   && mv "$race_case/state/tmp.json" "$race_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\n' > "$race_case/ecs-upstream.conf"
@@ -981,6 +989,29 @@ jq -e '(.instances | length) == 2
        and ([.instances[].InstanceId] | index("eci-old2") == null)' \
   "$race_case/state/state.json" > /dev/null \
   || fail "the rollout did not retire every pre-existing instance after the race"
+
+# (8b) H1 guard: when the group's removal policy is not exactly OldestInstance,
+# age order does not predict which instance a scale-in removes, so parking the
+# "oldest" would drain instance A while ESS releases B. The batch round must
+# refuse and say why, not park a guess. (deploy-release's first leg does not
+# park yet - that is the ess_rollout gap - so this aims the batch path where
+# parking actually runs.)
+h1_policy_case="$test_root/oldest-policy-refused"
+mkdir -p "$h1_policy_case/state"
+make_conf "$h1_policy_case/nginx.conf"
+init_ess_state "$h1_policy_case/state"
+if run_deploy "$h1_policy_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  TOKENESS_TEST_REMOVAL_POLICY=NewestInstance \
+  rollout-batch 1; then
+  fail "a batch rollout proceeded although the removal policy makes the scale-in victim unpredictable"
+fi
+grep -q "not exactly OldestInstance" "$h1_policy_case/state/output.log" \
+  || fail "the policy refusal did not explain itself"
+# The refusal must happen before the tier moved: the instance set is untouched.
+jq -e '.instances | length == 1' "$h1_policy_case/state/state.json" >/dev/null \
+  || fail "a refused release mutated the tier"
 
 # (9) The entry's relay list is a SECOND ceiling, and the release must respect
 # it: ecs-fleet-sync truncates the list with `head -n MAX_MEMBERS`, so an
@@ -1020,7 +1051,8 @@ make_conf "$relay_clamp_case/nginx.conf"
 init_ess_state "$relay_clamp_case/state"
 jq '.desired = 2 | .max_size = 8 | .instances += [{
       InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
-      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+      HealthStatus: "Healthy", LifecycleState: "InService",
+      CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
   "$relay_clamp_case/state/state.json" > "$relay_clamp_case/state/tmp.json" \
   && mv "$relay_clamp_case/state/tmp.json" "$relay_clamp_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.243:3000;\n' \
@@ -1094,7 +1126,8 @@ make_conf "$external_case/nginx.conf"
 init_ess_state "$external_case/state"
 jq '.desired = 2 | .max_size = 6 | .instances += [{
       InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206",
-      HealthStatus: "Healthy", LifecycleState: "InService"}]' \
+      HealthStatus: "Healthy", LifecycleState: "InService",
+      CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
   "$external_case/state/state.json" > "$external_case/state/tmp.json" \
   && mv "$external_case/state/tmp.json" "$external_case/state/state.json"
 printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.201:3000;\nserver 10.0.0.202:3000;\n' \
