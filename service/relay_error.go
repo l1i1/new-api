@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -128,7 +130,71 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
 		return false
 	}
-	return !(ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()) && anotherCredentialAvailable(c))
+	// Rotation keeps the contract: the next key of the same official channel is
+	// the same official endpoint. Prefer it whenever one is actually left.
+	if ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()) && anotherCredentialAvailable(c) {
+		return false
+	}
+	// Availability escape hatch (2026-10-10 policy change, requested by the
+	// operator): a credential/quota failure means the pinned channel has no
+	// usable key or no remaining balance, so the error it carries is not an
+	// official verdict at all — there is no answer for the fit contract to
+	// protect. Keeping the verdict here only converts "the channel is out of
+	// capacity" into "the customer sees the outage", while failing over can
+	// still serve the request (on a non-official channel, i.e. at the cost of
+	// the fidelity promise). The operator chose success rate over fidelity for
+	// this case: 「必要时可牺牲拟合换成功率」. Rotation already took precedence
+	// above, so a channel with a spare key still keeps serving officially.
+	if isCredentialExhaustedFailure(err) {
+		return false
+	}
+	return true
+}
+
+// credentialExhaustedKeywords are the wordings upstreams use when the channel
+// itself has run out of usable credentials or quota. They are deliberately
+// phrased at the credential/quota level ("no auth available", "usage limit")
+// rather than at the answer level, because the escape hatch above must not fire
+// on errors an official channel can legitimately produce about the request.
+var credentialExhaustedKeywords = []string{
+	"auth_unavailable",
+	"no auth available",
+	"no available auth",
+	"insufficient credits",
+	"credit insufficient",
+	"insufficient balance",
+	"balance insufficient",
+	"insufficient_quota",
+	"insufficient quota",
+	"exceeded your current quota",
+	"usage limit",
+	"quota exceeded",
+	"没有可用的计费资源",
+	"额度不足",
+	"余额不足",
+}
+
+// isCredentialExhaustedFailure reports whether an upstream error means the
+// channel cannot authenticate or has no quota left. Only statuses an upstream
+// uses for that condition qualify, and the wording list above must match, so a
+// generic 5xx (transient overload) still keeps the official verdict.
+func isCredentialExhaustedFailure(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.StatusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
+		http.StatusTooManyRequests, http.StatusServiceUnavailable:
+	default:
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, keyword := range credentialExhaustedKeywords {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // anotherCredentialAvailable reports whether the channel selected for this

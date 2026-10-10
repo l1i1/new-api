@@ -384,3 +384,58 @@ func newPinnedMultiKeyContext(t *testing.T, keys []string, statusList map[int]in
 	}
 	return c, channel.Id
 }
+
+// TestOfficialFitPinCredentialExhaustionFailover pins down the 2026-10-10 policy
+// change: an official-fit pin no longer keeps an upstream verdict that is not an
+// answer at all. Live case this comes from: channel DEF_ysis returned
+//
+//	status_code=503, auth_unavailable: no auth available have reached your weekly
+//	usage limit, upgrade for higher limits … or add usage credits
+//
+// which matched the operator keyword `credits`, so the pin guard stopped the
+// request and 110 streaming requests in 20 minutes reached the paying customer
+// as a 503 instead of failing over. Credential rotation still wins when the
+// pinned channel really has a spare key (covered by
+// TestOfficialFitPinKeepsUpstreamVerdict), so this only changes the case where
+// the pin would otherwise be fatal.
+func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origKeywords := operation_setting.AutomaticRetryKeywords
+	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = origKeywords })
+	operation_setting.AutomaticRetryKeywordsFromString("credits\ninsufficient balance")
+
+	credentialExhausted := types.NewOpenAIError(
+		errors.New("auth_unavailable: no auth available have reached your weekly usage limit, upgrade for higher limits: https://example.com or add usage credits: https://example.com"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusServiceUnavailable,
+	)
+
+	t.Run("unpinned request fails over on the keyword", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		decision := DecideRelayRetry(c, credentialExhausted, 1)
+		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision)
+	})
+
+	t.Run("official-pinned channel out of credentials fails over", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		decision := DecideRelayRetry(c, credentialExhausted, 1)
+		assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}, decision,
+			"a channel with no usable credential carries no official verdict, so the pin must not turn the outage into the customer's answer")
+	})
+
+	t.Run("official-pinned channel out of balance still keeps the verdict", func(t *testing.T) {
+		// A 400 (the shape the existing suite covers) is outside the availability
+		// escape hatch's statuses: only credential/quota statuses qualify, so the
+		// historical contract is untouched where it was already tested.
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		balanceErr := types.NewOpenAIError(
+			errors.New("credit insufficient balance: balance=0 required=114"),
+			types.ErrorCodeBadResponseStatusCode,
+			http.StatusBadRequest,
+		)
+		decision := DecideRelayRetry(c, balanceErr, 1)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+	})
+}
