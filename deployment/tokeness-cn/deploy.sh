@@ -1698,7 +1698,13 @@ suspend_scale_in_guard() {
     # avoid. Better to refuse than to roll the dice.
     die "could not write the shrink guard hold on $MASTER_HOST; refusing to release (a scale-in could race the rollout)"
   fi
-  id="$(scale_in_alarm_id)" || id=""
+  # A FAILED query is not 'no alarm' and not 'disabled': both misreadings let
+  # the release run while a live scale-in alarm may remove instances mid-round
+  # (or permanently skip the restore of an alarm that was on). Only a
+  # SUCCESSFUL query may take the no-alarm branch.
+  if ! id="$(scale_in_alarm_id)"; then
+    die "could not determine whether the scale-in alarm exists; refusing to release without knowing"
+  fi
   if [[ -z "$id" ]]; then
     warn "no scale-in alarm named '$SCALE_IN_ALARM_NAME' on this scaling group; the tier may shed capacity during the rollout"
     return 0
@@ -1706,8 +1712,12 @@ suspend_scale_in_guard() {
   # Remember whether it was enabled BEFORE disabling: an operator may have turned
   # it off deliberately (cpu-in-25 is off today because it cut long streams), and
   # resuming must restore that state rather than switch it back on.
-  if [[ "$(aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
-        | jq -r --arg n "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name==$n) | .Enable' | head -1 | tr -d '\r')" == "true" ]]; then
+  local alarm_state
+  if ! alarm_state="$(aliyun_cmd ess DescribeAlarms --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+        | jq -r --arg n "$SCALE_IN_ALARM_NAME" '.AlarmList.Alarm[]? | select(.Name==$n) | .Enable' | head -1 | tr -d '\r')"; then
+    die "could not read the scale-in alarm's enable state; refusing to release without knowing what to restore"
+  fi
+  if [[ "$alarm_state" == "true" ]]; then
     scale_in_alarm_was_enabled=1
   else
     scale_in_alarm_was_enabled=0
@@ -1728,6 +1738,7 @@ suspend_scale_in_guard() {
 RETIREMENT_PENDING=0
 
 resume_scale_in_guard() {
+  local id="${scale_in_guard_suspended:-}"
   # Never leave a drain marker behind: it keeps a healthy member out of the relay
   # list indefinitely, which reads as lost capacity rather than a failed release.
   # One exception: a removal that timed out mid-flight. The marker's lease is
@@ -1738,32 +1749,52 @@ resume_scale_in_guard() {
   else
     relay_drain_clear >/dev/null 2>&1 || warn "could not clear the relay drain marker"
   fi
-  # The alarm is restored BEFORE the hold is cleared: clearing first lets a
-  # second release acquire the tier, read the alarm as disabled, keep it off -
-  # and then THIS release re-enables the alarm underneath it. Order matters:
-  # while our hold is still fresh, no other release can start.
-  local id="${scale_in_guard_suspended:-}"
-  [[ -n "$id" ]] || { scale_in_hold_written=""; scale_in_guard_suspended=""; shrink_hold_write clear && log "entry shrink guard released"; return 0; }
-  if [[ "${scale_in_alarm_was_enabled:-0}" != "1" ]]; then
-    log "scale-in alarm $id was already disabled before this run; leaving it disabled"
+  # A removal still in flight (#4): the retired member may still be terminating,
+  # so the scale-in alarm stays OFF and the hold STAYS - clearing either would
+  # let the alarm (or the guard) remove another instance while this one is
+  # mid-retirement. The hold goes stale on its own after HOLD_MAX_AGE and the
+  # marker's lease lapses without a heartbeat; an operator re-enables the alarm
+  # by hand once the victim has left the group (the message says so).
+  if (( RETIREMENT_PENDING == 1 )); then
+    log "scale-in alarm ${id:-<not suspended>} left disabled and the shrink hold kept: a retire set is still settling; re-enable it by hand once it leaves the group"
+    return 0
+  fi
+  if [[ -z "$id" || "${scale_in_alarm_was_enabled:-0}" != "1" ]]; then
+    # No alarm was suspended, or it was already off before this release:
+    # nothing to restore. The heartbeat gates go down FIRST (log() heartbeats
+    # while either is set and would re-acquire the hold the cleanup drops).
+    if [[ -n "$id" ]]; then
+      log "scale-in alarm $id was already disabled before this run; leaving it disabled"
+    fi
     scale_in_hold_written=""
     scale_in_guard_suspended=""
     shrink_hold_write clear && log "entry shrink guard released"
     return 0
   fi
-  if aliyun_cmd ess EnableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
-    log "scale-in alarm resumed ($id)"
-  else
-    warn "could not re-enable scale-in alarm $id; re-enable it by hand"
-  fi
-  # Both heartbeat gates go down BEFORE any further log line: log() heartbeats
-  # while either is set, and a heartbeat here would re-acquire the hold the
-  # cleanup is trying to drop (leaving a fresh hold behind a release that has
-  # already exited).
+  # Restore the alarm BEFORE the hold is cleared, gates down first so no
+  # heartbeat interleaves: clearing first would let a second release acquire
+  # the tier, read the alarm as disabled, keep it off - and then THIS release
+  # re-enables it underneath the new release.
   scale_in_hold_written=""
   scale_in_guard_suspended=""
-  shrink_hold_write clear && log "entry shrink guard released"
-  return 0
+  local ok=0 i
+  for i in 1 2 3; do
+    if aliyun_cmd ess EnableAlarm --AlarmTaskId "$id" --region "$ALIYUN_REGION" >/dev/null; then
+      ok=1
+      break
+    fi
+    sleep 3
+  done
+  if (( ok == 1 )); then
+    log "scale-in alarm resumed ($id)"
+    shrink_hold_write clear && log "entry shrink guard released"
+    return 0
+  fi
+  # The restore failed (#3): the hold is the only thing keeping the guard from
+  # shrinking while the alarm is off, so it STAYS (the janitor treats it as
+  # abandoned only after HOLD_MAX_AGE). Fail loudly - this exit path runs from
+  # the EXIT trap, and a non-zero exit records the incident.
+  die "could not re-enable scale-in alarm $id after retries; the shrink hold is left in place - re-enable the alarm by hand, then remove $SHRINK_HOLD_PATH"
 }
 
 # current_desired_capacity - the group's DesiredCapacity right now.

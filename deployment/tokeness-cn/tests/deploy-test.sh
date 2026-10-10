@@ -985,7 +985,17 @@ shared_lock="$mutex_case/shared-marker.lock"
 (
   exec 200>"$shared_lock"
   flock -x 200
-  sleep 1.5
+  # Hold until BOTH contenders have logged their acquire attempt, then a short
+  # beat so both are actually blocked on the lock: a fixed sleep was flaky on
+  # slow machines (the gate could open before either arrived).
+  for _ in $(seq 1 100); do
+    if grep -qs "acquiring the entry shrink guard hold" "$first/state/stdout.log" \
+       && grep -qs "acquiring the entry shrink guard hold" "$second/state/stdout.log"; then
+      break
+    fi
+    sleep 0.2
+  done
+  sleep 0.4
 ) &
 mutex_gate_pid=$!
 run_deploy "$first" \
@@ -1255,6 +1265,51 @@ if grep -q "ess EnableAlarm" "$alarm_pre_disabled_case/state/aliyun-calls.log"; 
 fi
 jq -e '.scale_in_alarm.state == "disabled"' "$alarm_pre_disabled_case/state/state.json" > /dev/null \
   || fail "the alarm's disabled state did not survive the release"
+
+# (10c) The alarm RESTORE failing must not quietly clear the hold: the hold is
+# the only thing keeping the guard from shrinking while the alarm is off. The
+# release exits non-zero, the hold stays, and the incident is spelled out.
+alarm_restore_fail_case="$test_root/scale-in-alarm-restore-fail"
+mkdir -p "$alarm_restore_fail_case/state"
+make_conf "$alarm_restore_fail_case/nginx.conf"
+init_ess_state "$alarm_restore_fail_case/state"
+if run_deploy "$alarm_restore_fail_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_ALARM_ENABLE_FAIL=1 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "a release whose alarm restore failed exited successfully"
+fi
+grep -q "could not re-enable scale-in alarm" "$alarm_restore_fail_case/state/output.log" \
+  || fail "the failed alarm restore did not fail loudly"
+[[ -s "$alarm_restore_fail_case/shrink-hold" ]] \
+  || fail "the hold was cleared although the alarm restore failed (the tier was left unprotected)"
+
+# (10d) A retire set that never settles (wait_retired exhausts its retries
+# while the removal is still Removing) must leave BOTH protections in place:
+# the drain marker parked and the hold kept, with the alarm left off. Clearing
+# either would let the guard or the alarm remove another instance while the
+# first removal is mid-flight.
+retire_pending_case="$test_root/retire-pending"
+mkdir -p "$retire_pending_case/state"
+make_conf "$retire_pending_case/nginx.conf"
+init_ess_state "$retire_pending_case/state"
+if run_deploy "$retire_pending_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=0 \
+  TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3600 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  rollout-all; then
+  fail "a release whose retire set never settled exited successfully"
+fi
+grep -q "timed out waiting for the retired set" "$retire_pending_case/state/output.log" \
+  || fail "the unsettled retire set did not time out"
+grep -q "a retire set is still settling" "$retire_pending_case/state/stdout.log" \
+  || fail "the pending retirement did not keep the alarm off with an explanation"
+[[ -s "$retire_pending_case/shrink-drain" ]] \
+  || fail "the drain marker was cleared although the retirement is still in flight"
+[[ -s "$retire_pending_case/shrink-hold" ]] \
+  || fail "the hold was cleared although the retirement is still in flight"
 # A missing alarm must warn, not abort: the guard is advisory.
 no_alarm_case="$test_root/scale-in-alarm-missing"
 mkdir -p "$no_alarm_case/state"

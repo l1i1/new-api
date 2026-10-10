@@ -328,6 +328,12 @@ case "$cmd" in
     id="$(flag_value --AlarmTaskId "$@" | tr -d '\r')"
     event=disabled
     [[ "$cmd" == "ess EnableAlarm" ]] && event=enabled
+    # Test hook: the RESTORE failing is a distinct failure mode (the release
+    # must keep the hold and fail loudly, not clear everything and exit).
+    if [[ "$cmd" == "ess EnableAlarm" && "${TOKENESS_TEST_ALARM_ENABLE_FAIL:-0}" == 1 ]]; then
+      printf '{"Code":"InternalError"}\n' >&2
+      exit 1
+    fi
     printf '%s\n' "ess $cmd --AlarmTaskId $id" >> "$state_dir/alarm-calls.log"
     state_update --arg e "$event" --arg i "$id" '.scale_in_alarm = {id: $i, state: $e}'
     printf '{"RequestId":"fake"}\n'
