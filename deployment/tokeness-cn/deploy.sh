@@ -1307,7 +1307,11 @@ wait_drain_applied() {
 # mutual exclusion two publishers need (a CNB run and a local one, or two systemd
 # units), because both would otherwise drive the same scaling config and green
 # container. A stale hold is a dead release and is ignored here - the entry's
-# shrink guard uses the same rule.
+# shrink guard uses the same rule. Exit codes: 0 = fresh (a live release owns
+# the tier), 1 = no hold at all, 2 = a hold EXISTS but cannot be parsed. The
+# caller must refuse on 2 as well: an unreadable hold cannot prove nobody is
+# releasing, and treating it as "no hold" is the direction that lets a second
+# release start while the first is still rolling.
 release_hold_is_fresh() {
   local max_age="$1" written age
   written="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" <<'REMOTE_HOLD_AGE' 2>/dev/null
@@ -1318,13 +1322,13 @@ head -1 "$1"
 REMOTE_HOLD_AGE
 )" || return 1
   written="$(printf '%s' "$written" | tr -d ' \r')"
-  [[ -n "$written" ]] || return 1
+  [[ -n "$written" ]] || return 2
   # A timestamp we cannot parse proves nothing: falling back to epoch made age
-  # enormous and reported "nobody is releasing", which is the direction that lets a
-  # second release in. Unparsable or nonsensical now counts as NOT fresh.
+  # enormous and reported "nobody is releasing", which is the direction that
+  # lets a second release in.
   local epoch
-  epoch="$(date -d "$written" +%s 2>/dev/null)" || return 1
-  (( epoch > 0 )) || return 1
+  epoch="$(date -d "$written" +%s 2>/dev/null)" || return 2
+  (( epoch > 0 )) || return 2
   age=$(( $(date +%s) - epoch ))
   (( age >= 0 && age < max_age ))
 }
@@ -1339,13 +1343,44 @@ readonly DRAIN_MARKER_OWNER="release:${RELEASE_OWNER}"
 
 shrink_hold_write() {
   local action="$1"
+  if [[ "$action" == "set" ]]; then
+    # One atomic remote write for both lines (timestamp + owner). The old
+    # two-call sequence (write ts, append owner) left a window in which a
+    # second release saw a fresh-but-ownerless hold, and two releases could
+    # each believe they owned the tier: the loser must be detectable. After
+    # the write the hold is read back and must carry OUR owner - exit 3 means
+    # somebody else won the race and this caller must not proceed.
+    remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$RELEASE_OWNER" <<'REMOTE_HOLD_SET' >/dev/null 2>&1
+#!/usr/bin/env bash
+set -Eeuo pipefail
+path="$1"; owner="$2"
+mkdir -p "$(dirname "$path")"
+tmp="$(mktemp "${path}.tmp.XXXXXX")"
+printf '%s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$owner" >"$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$path"
+REMOTE_HOLD_SET
+    local rc=$?
+    if (( rc != 0 )); then return "$rc"; fi
+    local found
+    found="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" <<'REMOTE_HOLD_VERIFY' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ -r "$1" ]] || exit 1
+sed -n '2p' "$1" | tr -d ' \r'
+REMOTE_HOLD_VERIFY
+    )" || return 1
+    if [[ "$found" != "$RELEASE_OWNER" ]]; then
+      error "another release owns the shrink guard hold ($found); refusing to proceed"
+      return 3
+    fi
+    return 0
+  fi
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$action" "$RELEASE_OWNER" <<'REMOTE_HOLD' >/dev/null 2>&1
 #!/usr/bin/env bash
 set -Eeuo pipefail
 path="$1"; action="$2"
 case "$action" in
-  set)   mkdir -p "$(dirname "$path")" && printf '%s
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$path" ;;
   clear)
     existing="$(sed -n '2p' "$path" 2>/dev/null | tr -d ' \r' || true)"
     if [ -z "$existing" ]; then
@@ -1370,15 +1405,7 @@ case "$action" in
   *)     exit 2 ;;
 esac
 REMOTE_HOLD
-  if [[ "$action" == "set" ]]; then
-    # Line 2 is the owner; line 1 stays the timestamp the entry's guard parses.
-    remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$SHRINK_HOLD_PATH" "$RELEASE_OWNER" <<'REMOTE_OWNER' >/dev/null 2>&1
-#!/usr/bin/env bash
-set -Eeuo pipefail
-printf '%s\n' "$2" >>"$1"
-REMOTE_OWNER
-  fi
-}
+  }
 
 suspend_scale_in_guard() {
   local id
