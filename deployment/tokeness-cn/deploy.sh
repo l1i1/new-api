@@ -1316,10 +1316,19 @@ scale_in_alarm_id() {
   if ! printf '%s' "$resp" | jq -e --arg name "$SCALE_IN_ALARM_NAME" '
       [.AlarmList.Alarm[]? | select(.Name == $name)] as $m
       | if ($m | length) == 0 then true
-        else ($m[0] | type == "object") and ($m[0].AlarmTaskId | type == "string" and length > 0) end' >/dev/null; then
+        else ($m[0] | type == "object")
+          and ($m[0].AlarmTaskId | type == "string")
+          and (($m[0].AlarmTaskId | gsub("[\r\n[:space:]]"; "")) | length > 0) end' >/dev/null; then
+    # A matched record whose id is nothing but CR/LF/whitespace would pass a
+    # plain length check and then normalize to empty - reading as 'no alarm'
+    # while an unmanageable one exists. No match at all is legitimate (true).
     return 1
   fi
   id="$(printf '%s' "$resp" | jq -r --arg name "$SCALE_IN_ALARM_NAME" '[.AlarmList.Alarm[]? | select(.Name == $name) | .AlarmTaskId][0] // empty' | tr -d '\r')"
+  # NOTE: empty output here with a validated shape means NO MATCH - the
+  # legitimate no-alarm path. A matched record whose id normalizes to empty is
+  # refused by the whitespace check in the validation step above, BEFORE this
+  # extraction; re-refusing here would kill the genuine no-alarm case.
   printf '%s\n' "$id"
 }
 
@@ -1706,16 +1715,15 @@ suspend_scale_in_guard() {
   # Tell the entry's shrink guard to stand down for the whole release, whatever
   # happens to the alarm half below.
   if shrink_hold_write set; then
-    log "entry shrink guard held off for the release"
-    # The heartbeat must run from this moment on (see hold_heartbeat): the hold
-    # is written even when the alarm half below never suspends anything.
+    # The heartbeat gate and the cleanup trap go up BEFORE any log line: log()
+    # writes to stdout, a failed write is terminated by set -e, and dying
+    # between the hold write and the trap would leave the hold blocking the
+    # tier's shrink protection for hours. The trap is armed here rather than
+    # by the caller because the alarm queries below die on failure; installing
+    # the same trap again later is a harmless overwrite.
     scale_in_hold_written=1
-    # The cleanup trap is armed HERE, not by the caller after this function
-    # returns: the alarm queries below die on failure, and without a trap a
-    # die on that path left the just-written hold in place for up to the
-    # guard's max-hold age - blocking the tier's own shrink protection for
-    # hours. Re-installing the same trap later is harmless.
     trap 'resume_scale_in_guard' EXIT
+    log "entry shrink guard held off for the release"
   else
     # Fail closed. The guard's only job is to keep the tier from shrinking while a
     # rollout owns it; releasing without that promise means the tier can shed an
