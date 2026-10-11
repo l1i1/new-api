@@ -88,11 +88,17 @@ PORT_A="${MASTER_PORT_A:-3000}"
 PORT_B="${MASTER_PORT_B:-3001}"
 SERVING_PORT_FILE="${MASTER_SERVING_PORT_FILE:-/etc/tokeness-cn/master-serving-port}"
 READY_TIMEOUT="${MASTER_READY_TIMEOUT:-180}"
-# In-flight panel requests on blue are short (no SSE on the panel tier), and
-# docker stop's SIGTERM lets the app drain; the quiet window covers keepalive
-# connections that nginx on the lightweight hosts has already moved off.
-QUIET_SECONDS="${MASTER_QUIET_SECONDS:-15}"
-STOP_TIMEOUT="${MASTER_STOP_TIMEOUT:-60}"
+# The master is not a panel-only process: this host's nginx :80 carries the
+# /v1 LAST-RESORT upstream, and when the relay tier is degraded (or a rollout
+# has parked every relay member) real customer streams can be running on blue.
+# A 15s quiet window plus a 60s stop cuts any /v1 stream longer than ~75s, so
+# the budgets must cover the same long-stream profile the relay drains for:
+# p99 765s, max 2132s. The commit phase below switches the last-resort
+# upstream to green BEFORE the quiet window, so blue receives no new /v1
+# requests during the wait; these budgets then only have to outlast the
+# streams that already started.
+QUIET_SECONDS="${MASTER_V1_QUIET_SECONDS:-765}"
+STOP_TIMEOUT="${MASTER_V1_STOP_TIMEOUT:-2132}"
 # This host's own nginx terminates :80 (the /v1 last resort) and proxies to
 # the master container. Its upstream port must follow the serving one. The
 # file is a symlink into sites-available, so the edit must follow it rather

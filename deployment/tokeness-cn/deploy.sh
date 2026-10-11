@@ -196,12 +196,28 @@ hold_heartbeat() {
   scale_in_hold_refresh="$_now"
   local holdrc=0
   shrink_hold_write set >/dev/null 2>&1 || holdrc=$?
-  if (( holdrc == 3 )); then
+  if (( holdrc == 0 )); then
+    # Track the last SUCCESSFUL write: the staleness test below must measure
+    # how long the tier has gone without proof of life, not when we last tried.
+    scale_in_hold_last_ok="$_now"
+  elif (( holdrc == 3 )); then
     # Losing the lock mid-rollout means another release is now driving the same
     # scaling config and green container: the two must not interleave, so this
     # one aborts (its EXIT trap still runs).
     die "another release took the shrink guard hold mid-rollout; aborting so the two cannot interleave"
-  elif (( holdrc != 0 )); then
+  else
+    # A refresh that fails while our last successful write is still comfortably
+    # fresh is a transient (SSH hiccup) - warn and let the next beat retry. But
+    # once the last PROVEN write is older than half the freshness window, we
+    # can no longer demonstrate that we own the tier: the next release would be
+    # entitled to take over. Abort while the EXIT trap still runs cleanly
+    # instead of rolling on with an ownership we cannot prove (#2).
+    local _last ok_age
+    _last="${scale_in_hold_last_ok:-${scale_in_hold_refresh:-0}}"
+    ok_age=$(( ${RELEASE_HOLD_FRESH_SECONDS:-900} / 2 ))
+    if (( _now - _last >= ok_age )); then
+      die "could not refresh the shrink guard hold for over ${ok_age}s (rc=$holdrc); aborting so a stale hold cannot mask a lost tier - the EXIT trap cleans up"
+    fi
     warn "could not refresh the shrink guard hold (rc=$holdrc)"
   fi
   # Extend our drain marker's lease in the same beat: a marker whose writer was
@@ -710,6 +726,58 @@ curl -fsS --connect-timeout 5 --max-time 10 "http://$1:3000/api/status" | jq -r 
 REMOTE_VERSION
 }
 
+# instance_streams_busy <ip> - best-effort probe for whether the relay on a
+# parked instance still carries in-flight work. Answers busy (exit 0) only on
+# an EXPLICIT in_flight_requests > 0; an unreachable body, an unparseable
+# body, or one without the field answers "cannot tell" (exit 1), which leaves
+# the fixed drain window as the only gate exactly as before. Treating
+# "cannot tell" as busy would turn every field-less deployment into an hour
+# of extensions per drain window - the bug this version fixes.
+instance_streams_busy() {
+  local ip="$1" body n
+  is_valid_ipv4 "$ip" || return 1
+  body="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$ip" <<'REMOTE_BUSY' 2>/dev/null || true
+#!/usr/bin/env bash
+set -Eeuo pipefail
+curl -fsS --connect-timeout 5 --max-time 8 "http://$1:3000/api/status" 2>/dev/null || exit 1
+REMOTE_BUSY
+)"
+  [[ -n "$body" ]] || return 1
+  if printf '%s' "$body" | jq -e 'has("data") and (.data | has("in_flight_requests"))' >/dev/null 2>&1; then
+    n="$(printf '%s' "$body" | jq -r '.data.in_flight_requests // 0' | tr -d '\r')"
+    if [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )); then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# drain_window_with_quiet_check <seconds> <comma_ips> - hold the drain window,
+# then, only where an instance EXPLICITLY reports in-flight work, keep waiting
+# in bounded extensions until it reports none (#1): the fixed 1900s covers
+# p99 (765s) but not max (2132s). Instances without the gauge fall back to
+# the fixed window (the pre-existing contract). A still-busy instance at the
+# end of the extension budget fails the removal rather than cutting it.
+drain_window_with_quiet_check() {
+  local seconds="$1" ips="$2" ext=0 max_ext="${DRAIN_QUIET_MAX_EXTENSIONS:-12}" quiet_needed="${DRAIN_QUIET_SECONDS:-300}" any_busy ip
+  sleep_with_heartbeat "$seconds"
+  while (( ext < max_ext )); do
+    any_busy=0
+    while IFS= read -r ip; do
+      [ -n "$ip" ] || continue
+      if instance_streams_busy "$ip"; then any_busy=1; break; fi
+    done < <(printf '%s\n' "$ips" | tr ',' '\n')
+    if (( any_busy == 0 )); then
+      return 0
+    fi
+    log "drain window elapsed but a parked instance explicitly reports in-flight work; extending by ${quiet_needed}s (extension $(( ext + 1 ))/$max_ext)"
+    sleep_with_heartbeat "$quiet_needed"
+    ext=$(( ext + 1 ))
+  done
+  error "parked instance(s) $ips still report in-flight work after $(( seconds + max_ext * quiet_needed ))s; refusing to finish this removal - retry the release, or drain by hand"
+  return 1
+}
+
 # Print the first fatal startup line in the container log, if any. Rate-limit
 # parse warnings are non-fatal (the app continues with defaults) and must not
 # match; only [FATAL] / Go panics abort the rollout early.
@@ -825,8 +893,8 @@ drain_before_scale_in() {
     return 1
   fi
   log "drain-first: parked the instance(s) a scale-in toward $target_hint would remove: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
-  log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
-  sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+  log "drain-first: holding ${ML_DRAIN_SECONDS}s (plus quiet check) so in-flight streams on the retiring instances finish"
+  drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "$drain_comma"
   # Recompute from the LIVE set after the hold (#5): capacity that joined during
   # the window must survive, and the removal must stay exactly the parked set.
   # Scaling straight to the pre-hold target removed (current - target) members -
@@ -868,8 +936,32 @@ rollback_failed_rollout() {
     fi
   fi
   if [[ -n "$failed_id" ]]; then
-    if ! aliyun_cmd eci DeleteContainerGroup --region "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
-      warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
+    # Drain the failed instance before deleting it. The rollback path used to
+    # call DeleteContainerGroup directly: by the time a rollout fails its final
+    # verify, the new instance has been in the relay and serving for the whole
+    # drain window, so deleting it un-parked cut every stream it carried -
+    # exactly what the release's own gates exist to prevent. Park it, wait for
+    # the entry to actually stop serving it, hold the same drain window, and
+    # only then delete. Any failure is a refusal to delete (the instance keeps
+    # serving; the restored digest lets ESS converge it through the parked-set
+    # protocol below) rather than a cut.
+    local failed_ip=""
+    if failed_ip="$(instance_private_ip "$failed_id" 2>/dev/null)" && is_valid_ipv4 "$failed_ip" \
+       && relay_drain_write "$failed_ip" && wait_drain_applied "$failed_ip"; then
+      log "rollback: parked the failed instance ($failed_ip) and the relay dropped it; holding ${ML_DRAIN_SECONDS}s (plus quiet check) before deleting it"
+      drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "$failed_ip"
+      if ! aliyun_cmd eci DeleteContainerGroup --region "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
+        warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
+      else
+        log "rollback: failed instance deleted after a full drain window"
+      fi
+    else
+      # Do NOT delete: a delete without a proven park cuts live streams. Leave
+      # the instance in place and fail loud; an operator removes it by hand
+      # after draining, or the next release converges it away.
+      relay_drain_clear >/dev/null 2>&1 || true
+      error "rollback could not park the failed instance before deletion; leaving it serving rather than cutting its in-flight streams - drain and remove it by hand"
+      return 1
     fi
   fi
   # Restore the capacity the site actually runs with: a rollout that grew the
@@ -1293,6 +1385,42 @@ scale_group() {
   log "scaling group desired capacity set to $desired"
 }
 
+# scale_group_from_set <retire_ids> <label> - shrink by EXACTLY the parked set
+# computed as close to the Modify call as the API allows, then immediately
+# detect the read-modify race an external scale-out can win (#4): between
+# reading the in-service set and the Modify landing, ESS may add instances the
+# read never saw, and an absolute DesiredCapacity then removes unparked ones.
+# The park set is re-checked right before the Modify (as close as the API
+# allows); after it, the removal is verified against the pre-Modify set and,
+# if more left than were parked, the capacity is immediately restored so ESS
+# replaces what the race deleted and the release fails loud. This cannot
+# un-cut a stream that was already cut, but it bounds the blast radius of the
+# race to the seconds between the re-check and the Modify, instead of the
+# whole drain window.
+scale_group_from_set() {
+  local retire_ids="$1" label="$2" now_ids now_count live target extra_left
+  now_ids="$(in_service_instance_ids)" || { error "$label: could not re-read the in-service set before the scale-in; refusing to shrink"; return 1; }
+  now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
+  live=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
+  done <<<"$retire_ids"
+  target=$(( now_count - live ))
+  local floor_stable="${ROLLOUT_STABLE_CAPACITY:-1}"
+  (( target < floor_stable )) && target="$floor_stable"
+  scale_group "$target" || return 1
+  # Post-Modify witness: instances from the pre-Modify set that are neither
+  # parked nor still in service were removed by the race - restore capacity.
+  if ! verify_no_extra_removals "$now_ids" "$retire_ids" "$label"; then
+    extra_left=$(( now_count - live - target ))
+    warn "$label: the scale-in removed more than the parked set; restoring desired capacity to ${now_count} so ESS replaces the raced-out instances"
+    scale_group "$now_count" || error "$label: capacity restore FAILED - the tier is smaller than before the scale-in; fix by hand"
+    return 1
+  fi
+  return 0
+}
+
 # scale_in_alarm_id - the AlarmTaskId of the tier's scale-in alarm, or empty.
 scale_in_alarm_id() {
   if [[ -n "$SCALE_IN_ALARM_ID" ]]; then
@@ -1489,6 +1617,7 @@ REMOTE_DRAIN_CLEAR
 # the drain protection this release believes it has may no longer exist.
 relay_drain_refresh() {
   local lease=$(( $(date +%s) + SHRINK_DRAIN_LEASE_SECONDS ))
+  local rc=0
   remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
     "$SHRINK_DRAIN_PATH" "$DRAIN_MARKER_OWNER" "$lease" "$MARKER_LOCK_PATH" <<'REMOTE_DRAIN_REFRESH' >/dev/null 2>&1
 #!/usr/bin/env bash
@@ -1496,7 +1625,7 @@ set -Eeuo pipefail
 path="$1"; owner="$2"; lease="$3"; lock="$4"
 exec 200>"$lock"
 flock -x 200
-[ -f "$path" ] || exit 0
+[ -f "$path" ] || exit 4
 found="$(sed -n '1p' "$path" | tr -d ' \r' || true)"
 [ "$found" = "$owner" ] || exit 3
 tmp="$(mktemp "${path}.tmp.XXXXXX")"
@@ -1508,6 +1637,69 @@ tmp="$(mktemp "${path}.tmp.XXXXXX")"
 chmod 0644 "$tmp"
 mv -f -- "$tmp" "$path"
 REMOTE_DRAIN_REFRESH
+  rc=$?
+  # rc 4 = the marker is GONE. The old contract called that "normal between
+  # rounds" and returned 0, but a drain wait that is still counting down to a
+  # removal has exactly one legitimate state: OUR marker, parked. A marker that
+  # vanished mid-window means the consumer recycled it (lease lapse) or an
+  # operator cleared it - either way the victim may be back in the upstream
+  # receiving new requests, and the caller must re-park and restart the window
+  # before it scales anything in. rc 3 = takeover, also fatal for the caller.
+  return "$rc"
+}
+
+# drain_guard_still_holds <ips> <retire_ids> - re-prove the park right before a
+# scale-in: the marker still exists, is ours, and the entry still does not serve
+# any of the parked IPs. This closes the gap where a drain window elapsed, the
+# marker's lease lapsed in the meantime, fleet-sync put the victim back in the
+# upstream, and the release scaled in on a fixed timer anyway.
+drain_guard_still_holds() {
+  local ips="$1" members ip still=0
+  relay_drain_refresh || return 1
+  if ! members="$(ecs_upstream_members)"; then
+    return 1
+  fi
+  while IFS= read -r ip; do
+    [ -n "$ip" ] || continue
+    if printf '%s\n' "$members" | awk -v want="$ip" '{split($1, a, ":"); if (a[1] == want) found=1} END{exit !found}'; then still=$(( still + 1 )); fi
+  done < <(printf '%s\n' "$ips" | tr ',' '\n')
+  (( still == 0 ))
+}
+
+# ecs_upstream_members_running - the members the entry's nginx is ACTUALLY
+# carrying in memory, not what the include file says. `nginx -T` dumps the
+# fully-expanded running-tree configuration (it re-reads the files on disk
+# after the same `nginx -t` fleet-sync's reload requires), which catches the
+# gap where the file was rewritten but the reload never happened (#8): the
+# on-disk gate alone passed while nginx still load-balanced to the parked
+# victim. Where nginx -T is unavailable the caller falls back to the file
+# read - never to a pass.
+ecs_upstream_members_running() {
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" \
+    "$ECS_UPSTREAM_CONF" <<'REMOTE_MEMBERS_RUNNING' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+conf="$1"
+[[ -r "$conf" ]] || { echo "unreadable upstream file $conf" >&2; exit 1; }
+if ! command -v nginx >/dev/null 2>&1; then
+  echo "nginx binary unavailable; cannot prove the running config" >&2
+  exit 1
+fi
+# Dump the expanded tree and lift the same server lines out of the upstream
+# include. A dump that fails is a retry, never a pass.
+if ! expanded="$(nginx -T 2>/dev/null)"; then
+  echo "nginx -T failed" >&2
+  exit 1
+fi
+printf '%s\n' "$expanded" | awk '
+  /^[[:space:]]*#/ { next }
+  /^[[:space:]]*server[[:space:]]/ {
+    line=$0
+    gsub(/;.*/, "", line)
+    for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$/) print $i
+  }
+' | sort -u
+REMOTE_MEMBERS_RUNNING
 }
 
 # wait_drain_applied <comma_ips> - block until the entry's relay upstream no
@@ -1537,8 +1729,27 @@ wait_drain_applied() {
       # matched, so this gate passed while the victim was still served).
       if printf '%s\n' "$members" | awk -v want="$ip" '{split($1, a, ":"); if (a[1] == want) found=1} END{exit !found}'; then still=$(( still + 1 )); fi
     done < <(printf '%s\n' "$ips" | tr ',' '\n')
+    # Cross-check the RUNNING config (#8): the include file saying the victim
+    # is gone does not prove nginx reloaded it. `nginx -T` re-reads the same
+    # tree a reload would; if it still carries the victim, the park is not
+    # applied no matter what the file says. An unavailable -T falls back to
+    # the file verdict - never upgrades it to a pass.
     if (( still == 0 )); then
-      log "drain applied: the relay upstream no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
+      local running_members
+      if running_members="$(ecs_upstream_members_running)"; then
+        local run_still=0
+        while IFS= read -r ip; do
+          [ -n "$ip" ] || continue
+          if printf '%s\n' "$running_members" | awk -v want="$ip" '{split($1, a, ":"); if (a[1] == want) found=1} END{exit !found}'; then run_still=$(( run_still + 1 )); fi
+        done < <(printf '%s\n' "$ips" | tr ',' '\n')
+        if (( run_still > 0 )); then
+          log "drain file dropped the victim but the running nginx config still serves it; waiting for the reload"
+          sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+          i=$(( i + 1 ))
+          continue
+        fi
+      fi
+      log "drain applied: the relay upstream (file and running config) no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
       return 0
     fi
     sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
@@ -1800,6 +2011,20 @@ release_the_hold() {
 
 resume_scale_in_guard() {
   local id="${scale_in_guard_suspended:-}"
+  # Ownership check FIRST (#2): if another release took the tier over (our hold
+  # went stale while we were blocked, it acquired, it disabled the alarm for
+  # ITS run), then OUR EnableAlarm here would re-enable the alarm underneath
+  # the live release - the exact interleaving the alarm suspension exists to
+  # prevent. Re-acquiring proves the hold is still ours; exit 3 means somebody
+  # else owns the tier and we must not touch the alarm at all.
+  if [[ -n "$id" || "${scale_in_alarm_was_enabled:-0}" == "1" ]]; then
+    local ownrc=0
+    shrink_hold_write set >/dev/null 2>&1 || ownrc=$?
+    if (( ownrc == 3 )); then
+      log "scale-in alarm NOT resumed: another release owns the tier now; the new owner manages the alarm for its own run"
+      return 0
+    fi
+  fi
   # Never leave a drain marker behind: it keeps a healthy member out of the relay
   # list indefinitely, which reads as lost capacity rather than a failed release.
   # One exception: a removal that timed out mid-flight. The marker's lease is
@@ -2366,8 +2591,21 @@ ess_rollout() {
     return 1
   fi
   log "drain-first: parked the retiring instance ($retire_ip) in the relay drain file"
-  log "drain-first: holding ${ML_DRAIN_SECONDS}s so in-flight streams (p95 181s, max 461s) finish on the retiring instance"
-  sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+  log "drain-first: holding ${ML_DRAIN_SECONDS}s (plus quiet check) so in-flight streams (p99 765s, max 2132s) finish on the retiring instance"
+  drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "$retire_ip"
+  # Re-prove the park before scaling in (#3): the marker's lease may have
+  # lapsed mid-window (a blocked release stops heartbeating; the consumer
+  # then re-adds the victim to the upstream), so a fixed-timer scale-in could
+  # remove an instance that is back to receiving new requests. If the guard
+  # no longer holds, re-park and restart ONE full window; if it fails again,
+  # refuse - the drain protection this release believes it has does not exist.
+  if ! drain_guard_still_holds "$retire_ip"; then
+    warn "drain marker lost its protection during the window; re-parking $retire_ip and restarting the drain window"
+    relay_drain_write "$retire_ip" || { if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then error "could not re-park the retiring instance and rollback could not be verified"; fi; return 1; }
+    wait_drain_applied "$retire_ip" || { relay_drain_clear >/dev/null 2>&1 || true; if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then error "the relay never dropped the re-parked instance and rollback could not be verified"; fi; return 1; }
+    sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+    drain_guard_still_holds "$retire_ip" || { if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then error "drain protection failed twice; refusing to scale in and rollback could not be verified"; fi; return 1; }
+  fi
   # Scale down by exactly the parked set: remove one (the parked oldest) and
   # KEEP anything that joined meanwhile - an external scale-out during the
   # hold must not be undone by this release, and the removal count must stay
@@ -2382,15 +2620,10 @@ ess_rollout() {
   fi
   scale_in_ok=0
   if [[ -n "$roll_before_ids" ]]; then
-    now_count=$(printf '%s\n' "$roll_before_ids" | grep -c . || true)
-    live=0
-    while IFS= read -r id; do
-      [ -n "$id" ] || continue
-      printf '%s\n' "$roll_before_ids" | grep -qxF "$id" && live=$(( live + 1 ))
-    done <<<"$retire_ids"
-    target=$(( now_count - live ))
-    (( target < stable )) && target="$stable"
-    if scale_group "$target" && wait_retired "$retire_ids" \
+    # Race-tightened scale-in (#4): re-read, compute, Modify, and verify in one
+    # helper instead of computing from a set that may be a full drain window
+    # old by the time the Modify lands.
+    if scale_group_from_set "$retire_ids" "ess rollout" && wait_retired "$retire_ids" \
        && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
       scale_in_ok=1
     fi
@@ -2603,6 +2836,13 @@ rollout_batch() {
     retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
     retire_ids="" drain_ips=""
     if (( retiring > 0 )); then
+      # Victim selection stays with the policy-aware oldest picker: parking
+      # anything other than what ESS's removal policy will actually release
+      # drains instance A while ESS cuts instance B (the H1 guard). The
+      # late-joiner hole (#6) - an old-image instance created between this
+      # run's snapshot and the digest pin, never listed in original_ids - is
+      # closed by the post-loop straggler sweep instead of by biasing the
+      # picker, so the safety invariant and the fix stay independent.
       retire_ids="$(oldest_instance_ids "$retiring" || true)"
       # Fail closed: retiring an instance we could not park (the API failed, or
       # the marker write failed, or fleet-sync never consumed it) cuts that
@@ -2635,35 +2875,35 @@ rollout_batch() {
       fi
       log "round $rounds: parked the retiring instance(s) in the relay drain file: $(printf '%s' "$drain_ips" | tr '\n' ' ')"
     fi
-    log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s so in-flight streams on the retiring instances finish"
-    sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+    log "round $rounds: drain-first hold ${ML_DRAIN_SECONDS}s (plus quiet check) so in-flight streams on the retiring instances finish"
+    drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "${drain_comma:-}"
+    # Re-prove the park before this round's scale-in (#3): a lapsed marker
+    # lease means the consumer may have re-added the victims to the upstream,
+    # and scaling in on the fixed timer would cut them while serving.
+    if [[ -n "$drain_comma" ]] && ! drain_guard_still_holds "$drain_comma"; then
+      warn "round $rounds: drain protection lapsed mid-window; re-parking and restarting the drain window"
+      relay_drain_write "$drain_comma" || { error "round $rounds: could not re-park the retiring set"; rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"; return 1; }
+      wait_drain_applied "$drain_comma" || { relay_drain_clear >/dev/null 2>&1 || true; rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"; return 1; }
+      sleep_with_heartbeat "$ML_DRAIN_SECONDS"
+      drain_guard_still_holds "$drain_comma" || { error "round $rounds: drain protection failed twice; refusing to scale in"; rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"; return 1; }
+    fi
     # Scale back by exactly the parked set and KEEP anything that joined
-    # meanwhile: target = current in-service minus the parked members that are
-    # still there (floored at the steady state). Forcing the group to `base`
-    # instead would remove (current - base) instances - more than were parked
-    # whenever an external scale-out raised the count during the hold - and
-    # unparked members would be cut.
+    # meanwhile. The race-tightened helper (#4) re-reads the set, computes,
+    # Modifies, and verifies as one unit; the empty-parked branch keeps the
+    # plain target form (nothing to park, floor only).
     if [[ -n "$retire_ids" ]]; then
       if ! now_ids="$(in_service_instance_ids)"; then
         error "round $rounds: could not re-read the in-service set; refusing to shrink without one"
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
-      now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
-      live=0
-      while IFS= read -r id; do
-        [ -n "$id" ] || continue
-        printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
-      done <<<"$retire_ids"
-      target=$(( now_count - live ))
-      (( target < base )) && target="$base"
+      if ! scale_group_from_set "$retire_ids" "round $rounds" || ! wait_retired "$retire_ids" \
+         || ! verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
     else
-      target="$base"
-    fi
-    if ! scale_group "$target" || ! wait_retired "$retire_ids" \
-       || ! verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
-      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
-      return 1
+      scale_group "$base" || { rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"; return 1; }
     fi
     # Scaling in is asynchronous: the group keeps reporting the removed
     # instances for a while after ModifyScalingGroup (in Removing state, then
@@ -2676,6 +2916,34 @@ rollout_batch() {
   done
 
   log "batch rollout: retired all ${#original_ids[@]} pre-existing instance(s) in $rounds round(s)"
+  # Sweep for stragglers (#6): an instance created between this run's snapshot
+  # and the digest pin still runs the OLD image but was never listed, and the
+  # loop above can exit green with it alive. Refuse to report success while
+  # any in-service member still reports a version other than the target - the
+  # next release (or an explicit rollout-all) converges it, but THIS one must
+  # not claim the tier is on $digest when it is not.
+  if [[ -n "$expected_version" ]]; then
+    local stray=0 sip sver
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      sip="$(instance_private_ip "$id" 2>/dev/null || true)"
+      [ -n "$sip" ] || { stray=$(( stray + 1 )); continue; }
+      sver="$(app_version_on "$sip" 2>/dev/null || true)"
+      # app_version_on can carry a trailing CR through the remote pipeline;
+      # normalize both sides before comparing or a MATCHING version reads as
+      # a straggler and fails a converged rollout.
+      sver="$(printf '%s' "$sver" | tr -d '[:space:]')"
+      local expected_trim
+      expected_trim="$(printf '%s' "$expected_version" | tr -d '[:space:]')"
+      if [[ -n "$sver" && "$sver" != "$expected_trim" ]]; then
+        error "instance $id ($sip) still reports $sver (target $expected_version); the rollout is incomplete - rerun the release or run rollout-all"
+        stray=$(( stray + 1 ))
+      fi
+    done <<<"$(in_service_instance_ids)"
+    if (( stray > 0 )); then
+      return 1
+    fi
+  fi
   # Report what the tier converged onto rather than asserting it: the version
   # probe is advisory, and an instance that cannot answer it must not fail a
   # rollout whose whole point - retiring the old instances - already happened.

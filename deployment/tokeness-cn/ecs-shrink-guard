@@ -371,6 +371,38 @@ if [[ -f "$HOLD_FILE" ]]; then
   log "release hold present ($HOLD_FILE); not shrinking"; exit 0
 fi
 
+# Alarm witness (#9): a release suspends the scale-in alarm for its whole run
+# and restores it on EXIT. A SIGKILLed release (CNB cancelled two on
+# 2026-10-09) restores nothing, and once its hold has been janitored away the
+# only trace left is an alarm that stays disabled with nobody running. The
+# guard cannot know the pre-suspend state (that lived in the dead process),
+# so it does NOT re-enable anything - it only says so, loudly, every hour,
+# until an operator acts. Fail-visible beats fail-silent here.
+alarm_check() {
+  local id state
+  id="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" \
+    | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then .[0].AlarmTaskId else empty end' 2>/dev/null | tr -d '\r')"
+  [[ -n "$id" ]] || return 0
+  state="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" \
+    | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | .[0].Enable | if . == true then "true" elif . == false then "false" else "invalid" end' 2>/dev/null | tr -d '\r')"
+  if [[ "$state" == "false" ]]; then
+    local last key
+    key="alarm_disabled_notice"
+    last="$(state_get "$key" 2>/dev/null || true)"
+    # Re-announce at most once an hour: the guard runs every 5 minutes, and a
+    # log that repeats every tick trains people to ignore it.
+    now_epoch="$(date +%s)"
+    if [[ -z "$last" ]] || (( now_epoch - last > 3600 )); then
+      log "NOTICE: scale-in alarm '$SCALE_IN_ALARM_NAME' ($id) is disabled and no release hold is present - a killed release may have left it off; re-enable it by hand if that state is not intended"
+      state_set "$key" "$now_epoch"
+    fi
+  else
+    state_set alarm_disabled_notice "" 2>/dev/null || true
+  fi
+  return 0
+}
+alarm_check
+
 # Resume an in-flight drain BEFORE the capacity floor check: the tier is already
 # short one member in the relay list, so finish or undo it. Checking the floor
 # first would strand a drain forever once the tier sat at MIN_KEEP.
