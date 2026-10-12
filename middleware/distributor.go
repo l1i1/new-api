@@ -465,6 +465,12 @@ func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
 		return http.StatusServiceUnavailable, types.ErrorCodeGetChannelFailed
 	case service.ChannelSelectionAccessDenied:
 		return http.StatusForbidden, types.ErrorCodeAccessDenied
+	case service.ChannelSelectionUnprovableExhaustion:
+		// Honest "we could not prove a candidate set was exhausted": the
+		// controller answers with the last real upstream verdict when it has
+		// one, so this mapping only serves the no-upstream-error case (final
+		// review, defect A).
+		return http.StatusInternalServerError, types.ErrorCodeGetChannelFailed
 	default:
 		return http.StatusInternalServerError, types.ErrorCodeGetChannelFailed
 	}

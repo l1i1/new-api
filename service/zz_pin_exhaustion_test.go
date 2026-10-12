@@ -26,5 +26,7 @@ func TestClassifyChannelSelectionFailureRefusesExhaustionUnderOfficialPin(t *tes
 	require.NotNil(t, err)
 	assert.NotEqual(t, ChannelSelectionTemporarilyUnavailable, err.Kind,
 		"a pinned path must not infer candidate exhaustion from the enablement probe")
-	assert.Equal(t, ChannelSelectionInternalError, err.Kind)
+	// The distinct kind is what lets the controller answer with the last real
+	// upstream verdict instead of a fabricated exhaustion answer.
+	assert.Equal(t, ChannelSelectionUnprovableExhaustion, err.Kind)
 }

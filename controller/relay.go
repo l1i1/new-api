@@ -353,6 +353,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
+			// The pre-filtered (pin/fit) path cannot prove exhaustion, so the
+			// routing error must not REPLACE what the last real attempt said:
+			// the client keeps the upstream verdict instead of a fabricated
+			// "exhausted" one (final review, defect A). No retry_no_candidate
+			// row is written here either - that marker belongs to a provable
+			// exhaustion only.
+			var prefiltered *service.ChannelSelectionError
+			if relayInfo.LastError != nil && errors.As(channelErr, &prefiltered) &&
+				prefiltered.Kind == service.ChannelSelectionUnprovableExhaustion {
+				newAPIError = relayInfo.LastError
+				break
+			}
 			// A retry that provably has no candidate left is a routing state, not
 			// an answer about the request. Record it — this branch writes no DB row
 			// of its own, so before this the client-visible get_channel_failed left

@@ -148,7 +148,7 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		// probe cannot prove exhaustion. The kind is therefore an honest internal
 		// selection error, NOT temporarily_unavailable - claiming the latter
 		// rewrote the real upstream error and set the retry_no_candidate marker.
-		require.Equal(t, service.ChannelSelectionInternalError, selectionErr.Kind)
+		require.Equal(t, service.ChannelSelectionUnprovableExhaustion, selectionErr.Kind)
 
 		// The guard must consequently NOT fire: there is no provable candidate
 		// exhaustion to key on, so the client keeps the upstream verdict rather
@@ -159,6 +159,9 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 		require.False(t, retryFoundNoPinnedCandidate(c, channelErr, retryParam),
 			"a pre-filtered empty candidate set is not a provable exhaustion and must not be treated as one")
+		// The controller answers with the last real upstream verdict for this
+		// kind, so the client never receives a fabricated exhaustion answer and
+		// no retry_no_candidate row is written (final review, defect A).
 
 		// Saturation must NOT be lumped in: nothing was tried there, so there may
 		// be no upstream error to report at all, and answering with an older one

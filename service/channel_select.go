@@ -62,6 +62,14 @@ type ChannelSelectionFailureKind string
 const (
 	ChannelSelectionModelNotConfigured     ChannelSelectionFailureKind = "model_not_configured"
 	ChannelSelectionTemporarilyUnavailable ChannelSelectionFailureKind = "temporarily_unavailable"
+	// ChannelSelectionUnprovableExhaustion: the candidate set was pre-filtered
+	// by channel type and capability marks before selection (the pin/fit path),
+	// so an empty result there does NOT prove that no permitted candidate
+	// exists. It is deliberately NOT TemporarilyUnavailable: claiming that
+	// rewrote the real upstream verdict into a fabricated "exhausted" answer and
+	// set the retry_no_candidate marker (final review, defect A). The caller
+	// answers with the last real upstream error when it has one.
+	ChannelSelectionUnprovableExhaustion ChannelSelectionFailureKind = "unprovable_exhaustion"
 	ChannelSelectionInternalError          ChannelSelectionFailureKind = "internal_selection_error"
 	ChannelSelectionAccessDenied           ChannelSelectionFailureKind = "access_denied"
 )
@@ -417,9 +425,13 @@ func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *C
 	// into a fabricated "exhausted" one and set the retry_no_candidate marker
 	// (final review, defect A). Refuse the inference on this path and let the
 	// caller surface an honest internal-selection error instead.
-	if v4OfficialPin(param) || model.FitChannelFilterForRequest(param.Ctx) != nil {
+	// A saturating walk is exempt: "every candidate was busy" IS provable from
+	// the walk itself, keeps its own 429 answer, and must not lose that
+	// semantics to this guard (final review: the first revision regressed it).
+	if (v4OfficialPin(param) || model.FitChannelFilterForRequest(param.Ctx) != nil) &&
+		!(param != nil && param.HasSaturatedChannel()) {
 		return &ChannelSelectionError{
-			Kind:  ChannelSelectionInternalError,
+			Kind:  ChannelSelectionUnprovableExhaustion,
 			Group: selectedGroup,
 			Model: param.ModelName,
 			Err:   errors.New("no candidate satisfied the official pin and capability marks; the availability probe cannot prove candidate exhaustion on this path"),
