@@ -124,6 +124,33 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		// must not widen to an unverified upstream.
 		require.Nil(t, channel)
 	})
+
+	t.Run("the no-candidate failure is what the retry error-fidelity guard keys on", func(t *testing.T) {
+		c, info, retryParam := newRequest(t)
+		attachFitRequirement(c)
+		// The production shape of 2026-10-12: the request was pinned to the
+		// official channel, the retry excluded it after the upstream verdict, and
+		// the exclusion emptied the candidate set.
+		retryParam.ExcludeChannel(2)
+
+		channel, channelErr := getChannel(c, info, retryParam)
+		require.Nil(t, channel)
+		require.NotNil(t, channelErr)
+		require.True(t, isRetryRoutingFailure(channelErr, retryParam),
+			"an empty candidate set must be recognised as a routing failure, or the client keeps the routing error")
+
+		// Saturation must NOT be lumped in: nothing was tried there, so there may
+		// be no upstream error to report at all, and answering with an older one
+		// would describe a failure unrelated to this outcome.
+		saturated := &service.RetryParam{
+			Ctx: c, TokenGroup: "default", ModelName: "deepseek-v4-flash",
+			RequestPath: c.Request.URL.Path, Retry: common.GetPointer(0),
+		}
+		saturated.ExcludeSaturatedChannel(2)
+		require.True(t, saturated.HasSaturatedChannel())
+		require.False(t, isRetryRoutingFailure(channelErr, saturated),
+			"a saturation outcome keeps its own 429 answer")
+	})
 }
 
 // attachFitRequirement puts a policy opinion in the request context exactly as

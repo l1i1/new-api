@@ -353,6 +353,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
+			// A retry that cannot select any channel is a routing state, not an
+			// answer about the request. Record it — this branch writes no DB row
+			// of its own, so before this the client-visible get_channel_failed
+			// left the error log holding only the upstream verdict it displaced,
+			// and the request_id could not be found at all — and, once the
+			// fidelity guard is enforcing, answer with what the last real attempt
+			// said instead of the routing error that replaced it.
+			if isRetryRoutingFailure(channelErr, retryParam) {
+				recordNoCandidateRetryError(c, relayInfo, channelErr)
+				if operation_setting.RetryErrorFidelityEnforces() && relayInfo.LastError != nil {
+					newAPIError = relayInfo.LastError
+				}
+			}
 			break
 		}
 		service.AppendUsedChannel(c, channel.Id)
@@ -966,6 +979,60 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 	retryParam.ExcludeChannel(channel.Id)
 	return false
 }
+
+// isRetryRoutingFailure reports whether a failed re-selection means "the retry
+// found no channel at all", as opposed to "every candidate was busy".
+//
+// The two are both reported with ErrorCodeGetChannelFailed, and they must be
+// told apart: a saturating request may have no upstream error to report at all
+// (nothing was tried), so replacing its 429 with relayInfo.LastError would
+// answer with an older failure that has nothing to do with this outcome. A
+// genuine routing failure — the selection error raised when the candidate set is
+// empty, and the bare "no such channel" case — is the one where the last real
+// attempt is the truer answer.
+func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
+	if channelErr == nil || channelErr.GetErrorCode() != types.ErrorCodeGetChannelFailed {
+		return false
+	}
+	return retryParam == nil || !retryParam.HasSaturatedChannel()
+}
+
+// recordNoCandidateRetryError writes the routing-fidelity error row for a retry
+// that ended because no channel could be selected.
+//
+// Operators diagnosing a "获取分组 … 可用渠道失败" report need both halves of the
+// story: the upstream error that triggered the retry, and the routing failure
+// that replaced it. The upstream half is already written per failed attempt by
+// processChannelError; this is the other half, and it carries the same request_id
+// so the two can be joined.
+func recordNoCandidateRetryError(c *gin.Context, relayInfo *relaycommon.RelayInfo, selectionErr *types.NewAPIError) {
+	if c == nil || selectionErr == nil || !constant.ErrorLogEnabled {
+		return
+	}
+	other := model.NewLogOther()
+	if c.Request != nil && c.Request.URL != nil {
+		other.SetPublic("request_path", c.Request.URL.Path)
+	}
+	other.SetPublic("error_type", "routing_error")
+	other.SetPublic("error_code", string(selectionErr.GetErrorCode()))
+	other.SetPublic("status_code", selectionErr.StatusCode)
+	other.SetPublic("error_source", "local")
+	other.SetPublic("retry_no_candidate", true)
+	other.SetPublic("retry_error_fidelity_mode", operation_setting.RetryErrorFidelityModeOrDefault())
+	if relayInfo != nil && relayInfo.LastError != nil {
+		other.SetPublic("last_upstream_status_code", relayInfo.LastError.StatusCode)
+		other.SetPublic("last_upstream_error", common.LocalLogPreview(relayInfo.LastError.Error()))
+	}
+	service.AppendRelayLogAdminInfo(c, relayInfo, other)
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	model.RecordErrorLog(c, c.GetInt("id"), 0, c.GetString("original_model"), c.GetString("token_name"),
+		selectionErr.MaskSensitiveErrorWithStatusCode(), c.GetInt("token_id"), int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+}
+
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	// A canceled request context means the failure belongs to the disconnect,
 	// not the channel: the request-level error log below still records what the

@@ -497,3 +497,136 @@ func TestDecideRelayRetryStopsWhenRequestContextDone(t *testing.T) {
 	bare, _ := gin.CreateTestContext(httptest.NewRecorder())
 	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}, DecideRelayRetry(bare, apiErr, 8))
 }
+
+// TestRetryErrorFidelityGuard covers the decision the 2026-10-12 production
+// incident needed and did not get. The official GLM channel answered 400
+// ("角色信息不正确", Zhipu error 1214) for a fit-pinned request; the operator's
+// failover list contains 400, so the retry ran, its first act excluded the
+// family's only official channel, the re-selection found nothing, and the client
+// was answered get_channel_failed (500) while the error log held the upstream
+// 400. The keyword branch of DecideRelayRetry already stops a pinned request
+// from failing over; the status-code branch never had that guard.
+//
+// These cases fix both halves of the new guard's contract: the verdicts it
+// stops on, and everything it must leave exactly as it was.
+func TestRetryErrorFidelityGuard(t *testing.T) {
+	// The premise that makes a pinned verdict retryable at all. The compiled
+	// failover default is {100-199, 300-407, 409-503, 505-523, 525-599}, which
+	// contains 400. If that ever changes, the verdict-status half of the guard
+	// stops being reachable and this test should say so rather than pass
+	// silently for a different reason.
+	require.True(t, operation_setting.ShouldRetryByStatusCode(http.StatusBadRequest),
+		"premise: 400 is on the failover list, which is what makes a pinned verdict retryable")
+
+	// The live wording and status the official GLM channel produced for the
+	// reported request. It is a verdict about the request body — every channel
+	// reads the same body, so failing over cannot change the answer.
+	verdict := types.NewOpenAIError(errors.New("角色信息不正确"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+
+	pinned := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		return c
+	}
+
+	for _, test := range []struct {
+		name    string
+		mode    string
+		pin     bool
+		err     *types.NewAPIError
+		want    PolicyDecision
+		comment string
+	}{
+		{
+			name: "on: a pinned request keeps the official verdict instead of failing over",
+			mode: operation_setting.RetryErrorFidelityOn, pin: true, err: verdict,
+			want: PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"},
+		},
+		{
+			name: "shadow: live traffic decides exactly as before",
+			mode: operation_setting.RetryErrorFidelityShadow, pin: true, err: verdict,
+			want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"},
+		},
+		{
+			name: "off: live traffic decides exactly as before",
+			mode: operation_setting.RetryErrorFidelityOff, pin: true, err: verdict,
+			want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"},
+		},
+		{
+			name: "on: an unpinned request still fails over on the same verdict",
+			mode: operation_setting.RetryErrorFidelityOn, pin: false, err: verdict,
+			want:    PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"},
+			comment: "the pin is what makes failover pointless; without it the aggregator verdict is still worth another channel",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withRetryErrorFidelityMode(t, test.mode)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			if test.pin {
+				common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+			}
+			assert.Equal(t, test.want, DecideRelayRetry(c, test.err, 1), test.comment)
+		})
+	}
+
+	// A channel outage is evidence about the channel, not an answer about the
+	// request: failover can still serve it, and the operator's capacity policy
+	// (「必要时可牺牲拟合换成功率」) keeps that path. Asserting only the action
+	// leaves the reason to whichever retry rule matches, which is the point —
+	// this guard must not be the thing that decides them.
+	t.Run("on: an outage is not a verdict, so failover stays available", func(t *testing.T) {
+		withRetryErrorFidelityMode(t, operation_setting.RetryErrorFidelityOn)
+		for _, outage := range []struct {
+			code int
+			text string
+		}{
+			{http.StatusServiceUnavailable, "temporarily_unavailable"},
+			{http.StatusBadGateway, "服务繁忙，请稍后重试。"},
+			{http.StatusTooManyRequests, "rate limit exceeded"},
+		} {
+			err := types.NewOpenAIError(errors.New(outage.text), types.ErrorCodeBadResponseStatusCode, outage.code)
+			decision := DecideRelayRetry(pinned(), err, 1)
+			assert.Equal(t, "retry", decision.Action,
+				"status %d is a channel failure, not a verdict about the request (decision=%+v)", outage.code, decision)
+		}
+
+		// The classification is what excludes an outage, so pin it directly. 408
+		// is excluded here as well as by the failover list, which deliberately
+		// omits it (the legacy "timeout is not retryable" rule); keeping the
+		// exclusion local means an operator who adds 408 back to that list still
+		// does not get a verdict kept on it.
+		assert.False(t, operation_setting.IsVerdictStatusCode(http.StatusRequestTimeout))
+		assert.False(t, operation_setting.IsVerdictStatusCode(http.StatusTooManyRequests))
+		assert.False(t, operation_setting.IsVerdictStatusCode(http.StatusInternalServerError))
+		assert.False(t, operation_setting.IsVerdictStatusCode(http.StatusOK))
+		assert.True(t, operation_setting.IsVerdictStatusCode(http.StatusBadRequest))
+		assert.True(t, operation_setting.IsVerdictStatusCode(http.StatusForbidden))
+
+		// A 408 decided by the platform's own rules must not be attributed to this
+		// guard: were the decision the guard's, the reason would say so.
+		timeout := types.NewOpenAIError(errors.New("upstream timeout"), types.ErrorCodeBadResponseStatusCode, http.StatusRequestTimeout)
+		assert.NotEqual(t, "pinned_official_verdict", DecideRelayRetry(pinned(), timeout, 1).Reason)
+	})
+
+	t.Run("on: the operator credential escape hatch is not overridden", func(t *testing.T) {
+		withRetryErrorFidelityMode(t, operation_setting.RetryErrorFidelityOn)
+		// 2026-10-10 operator policy: a credential/quota failure is not an
+		// official verdict — there is no answer to protect — so a pinned request
+		// may still fail over.
+		drained := types.NewOpenAIError(errors.New("余额不足"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden)
+		decision := DecideRelayRetry(pinned(), drained, 1)
+		assert.NotEqual(t, "pinned_official_verdict", decision.Reason,
+			"a drained credential must still fail over; the guard only keeps real verdicts")
+		assert.Equal(t, "retry", decision.Action)
+	})
+}
+
+// withRetryErrorFidelityMode pins the guard mode for one subtest and restores the
+// process-wide value afterwards, so a case cannot leak into its neighbours or
+// into another test in this package.
+func withRetryErrorFidelityMode(t *testing.T, mode string) {
+	t.Helper()
+	previous := operation_setting.RetryErrorFidelityMode
+	t.Cleanup(func() { operation_setting.RetryErrorFidelityMode = previous })
+	require.NoError(t, operation_setting.SetRetryErrorFidelityMode(mode))
+}

@@ -103,6 +103,9 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// must remain non-retryable even when their status is configured (for
 	// example, HTTP 400).
 	if err.GetErrorType() != types.ErrorTypeNewAPIError && operation_setting.ShouldRetryByStatusCode(code) {
+		if decision, guarded := pinnedOfficialVerdictDecision(c, err); guarded {
+			return decision
+		}
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
@@ -170,6 +173,46 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 		return false
 	}
 	return true
+}
+
+// pinnedOfficialVerdictDecision is the status-code half of the guard the keyword
+// branch applies above. It exists because the same failure the keyword guard was
+// written for is reachable through the failover status list: the operator's list
+// contains 400, and the GLM 5.3 family is pinned by the live policy for every
+// request.
+//
+// A pinned request must not fail over on a verdict. The pin narrows selection to
+// the official-behaving channels and a family may have exactly one, so the retry
+// excludes the only candidate, the re-selection reports temporarily_unavailable,
+// and the routing error replaces the upstream text — the exact opposite of what
+// the pin exists for. Only verdict statuses qualify: a channel outage (5xx, 408,
+// 429) is not an answer, so failover stays available there and the operator's
+// capacity policy (「必要时可牺牲拟合换成功率」) is untouched.
+//
+// The second return value reports whether the guard decided anything; false
+// means the caller keeps its configured failover behaviour, which is also what
+// shadow mode returns after recording what it would have done.
+func pinnedOfficialVerdictDecision(c *gin.Context, err *types.NewAPIError) (PolicyDecision, bool) {
+	if err == nil || !operation_setting.IsVerdictStatusCode(err.StatusCode) {
+		return PolicyDecision{}, false
+	}
+	if !officialFitPinKeepsVerdict(c, err) {
+		return PolicyDecision{}, false
+	}
+	switch operation_setting.RetryErrorFidelityModeOrDefault() {
+	case operation_setting.RetryErrorFidelityOn:
+		return PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, true
+	case operation_setting.RetryErrorFidelityShadow:
+		// Shadow keeps the decision and records the evidence. The row that makes
+		// this reviewable on live traffic is the routing-fidelity error log
+		// written when the retry then finds no candidate
+		// (recordNoCandidateRetryError in controller/relay.go), which carries the
+		// same request_id as the upstream verdict it displaced.
+		logger.LogInfo(c, fmt.Sprintf(
+			"retry-fidelity(shadow): pinned request would keep the upstream verdict instead of failing over (status=%d, code=%s, upstream=%q)",
+			err.StatusCode, err.GetErrorCode(), common.LocalLogPreview(err.Error())))
+	}
+	return PolicyDecision{}, false
 }
 
 // credentialExhaustedKeywords are the wordings upstreams use when the channel
