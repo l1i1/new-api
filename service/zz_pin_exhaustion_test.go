@@ -30,3 +30,22 @@ func TestClassifyChannelSelectionFailureRefusesExhaustionUnderOfficialPin(t *tes
 	// upstream verdict instead of a fabricated exhaustion answer.
 	assert.Equal(t, ChannelSelectionUnprovableExhaustion, err.Kind)
 }
+
+// Final review (round 2): the first revision of this guard swallowed the
+// fit/pin saturation answer as well, turning its 429 into a 500. A saturating
+// walk is exempt because "every candidate was busy" is provable from the walk
+// itself - this test pins that exemption.
+func TestClassifyChannelSelectionFailureKeepsSaturationKindUnderOfficialPin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	common.SetContextKey(ctx, constant.ContextKeyV4OfficialPin, true)
+	param := &RetryParam{Ctx: ctx, TokenGroup: "default", ModelName: "deepseek-v4-flash"}
+	// A saturating walk: nothing was tried, and the busy reason is known.
+	param.ExcludeSaturatedChannel(1)
+	require.True(t, param.HasSaturatedChannel())
+
+	err := classifyChannelSelectionFailure(param, "default")
+	require.NotNil(t, err)
+	assert.NotEqual(t, ChannelSelectionUnprovableExhaustion, err.Kind,
+		"a saturating walk must keep its own answer instead of the unprovable-exhaustion guard")
+}
