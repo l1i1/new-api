@@ -386,7 +386,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			// explicit tool_choice="none": the upstream ignores it and calls
 			// the tool anyway, so the declarations are withheld (see the
 			// helper for the probe evidence).
-			applyGlm53ToolChoiceNone(textRequest)
+			if err := applyGlm53ToolChoiceNone(c, textRequest); err != nil {
+				return nil, err
+			}
 		}
 		mapDeepSeekV4ReasoningEffort(textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
@@ -1610,7 +1612,8 @@ func WriteZhipuBusinessError(c *gin.Context, status int, code, message string) {
 // penalties, logprobs, top_logprobs with or without logprobs, arbitrary tool
 // names, specified tool_choice, json_object without the "json" keyword,
 // explicit default sampling values, and (since the 2026-09-15 live re-check)
-// temperature/top_p outside [0,1] — must pass.
+// temperature/top_p outside [0,1] — must pass. The customer contract adds the
+// orphan-tool rule below as a deliberate exception to upstream tolerance.
 //
 // The sampling-range rejection was retired on 2026-10-12: the 2026-08-28
 // calibration had the endpoint answering 400 for temperature 2.5/-0.1/1.2 and
@@ -1667,32 +1670,37 @@ func compileGlmThinking(raw json.RawMessage) map[string]any {
 // gateway-side state-machine enforcement for the DeepSeek family on 2026-09-01
 // (see validateDeepSeekV4ToolCallChain); the same requirement now covers
 // glm-5.3, so this family emits the canonical sentence too. Only the orphan
-// rule is enforced: Zhipu also accepts the other state-machine shapes
-// (unanswered tool_call_id, insufficient tool messages, a missing
-// tool_call_id) and no buyer check requires deviating there, so the gateway
-// stays as close to the upstream as the failing check allows.
+// rule is enforced, including a second response to an already answered id.
+// Unknown/missing response ids and calls left unanswered at the end of an
+// exchange remain upstream concerns; they must not consume another call and
+// make its subsequent valid response look like an orphan.
 const glm53OrphanToolMessageText = "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
 
 // glm53OrphanToolMessage reports whether the conversation carries a `tool` turn
 // with no pending assistant tool_calls declaration to answer.
 func glm53OrphanToolMessage(messages []dto.Message) bool {
-	pending := 0
+	var pending, answered map[string]bool
 	for i := range messages {
 		msg := &messages[i]
 		switch msg.Role {
 		case "assistant":
 			// The decoder is family-neutral (unparsable or absent tool_calls
 			// yields no pending calls); reuse it instead of duplicating it.
-			pending = len(deepSeekV4ToolCallIDs(msg.ToolCalls))
+			pending = deepSeekV4ToolCallIDs(msg.ToolCalls)
+			answered = make(map[string]bool)
 		case "tool":
-			if pending == 0 {
+			id := strings.TrimSpace(msg.ToolCallId)
+			if len(pending) == 0 || answered[id] {
 				return true
 			}
-			pending--
+			if pending[id] {
+				delete(pending, id)
+				answered[id] = true
+			}
 		default:
 			// A user/system turn closes any open tool exchange, so a `tool`
 			// message after it answers nothing.
-			pending = 0
+			pending, answered = nil, nil
 		}
 	}
 	return false
@@ -1708,23 +1716,72 @@ func glm53OrphanToolMessage(messages []dto.Message) bool {
 // measured on both channels including the streaming shape). tool_choice itself
 // is left as sent: upstream it is inert once the tools are gone (200 on both
 // channels) and it keeps the request recognisable. The caller gates this on the
-// user's fit profile, like every other family contract rule.
-func applyGlm53ToolChoiceNone(request *dto.GeneralOpenAIRequest) {
+// user's fit profile, like every other family contract rule. Clean both the
+// typed request and its replay body: OpenAI-compatible pass-through attempts
+// read the body instead of marshaling the DTO, including on channel retries.
+func applyGlm53ToolChoiceNone(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isGlm53Model(request.Model) {
-		return
+		return nil
 	}
 	strategy, ok := request.ToolChoice.(string)
 	if !ok || !strings.EqualFold(strings.TrimSpace(strategy), "none") {
-		return
+		return nil
 	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return err
+	}
+	// RawMessage preserves unknown provider fields and exact number literals;
+	// re-marshaling only the DTO would silently drop passthrough extensions.
+	var fields map[string]json.RawMessage
+	if err := common.Unmarshal(body, &fields); err != nil {
+		return err
+	}
+	delete(fields, "tools")
+	delete(fields, "functions")
+	delete(fields, "function_call")
+	var messages []map[string]json.RawMessage
+	if raw, ok := fields["messages"]; ok {
+		if err := common.Unmarshal(raw, &messages); err != nil {
+			return err
+		}
+		for _, message := range messages {
+			delete(message, "tools")
+		}
+		fields["messages"], err = common.Marshal(messages)
+		if err != nil {
+			return err
+		}
+	}
+	body, err = common.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	cleanedStorage, err := common.CreateBodyStorage(body)
+	if err != nil {
+		return err
+	}
+	common.CleanupBodyStorage(c)
+	c.Set(common.KeyBodyStorage, cleanedStorage)
+	c.Set(common.KeyRequestBody, nil)
+	c.Request.Body = io.NopCloser(cleanedStorage)
+	c.Request.ContentLength = int64(len(body))
 	request.Tools = nil
 	request.Functions = nil
 	request.FunctionCall = nil
+	for i := range request.Messages {
+		request.Messages[i].Tools = nil
+	}
+	return nil
 }
 
-// IsStrictGlmValidationMessage reports whether an error message carries one
-// of the official Zhipu validation texts; the caller renders the Zhipu wire
-// format ({error:{code,message}}) for them and keeps them byte-identical.
+// IsStrictGlmValidationMessage reports whether an error belongs to the GLM
+// validation contract (official texts plus customer-required checks). The
+// caller renders the Zhipu wire format ({error:{code,message}}) for them.
 func IsStrictGlmValidationMessage(message string) bool {
 	for _, prefix := range []string{
 		glm53ThinkingMessage,
@@ -1733,6 +1790,7 @@ func IsStrictGlmValidationMessage(message string) bool {
 		glm53ModelNotFoundMessage,
 		glm53EmptyMessagesMessage,
 		glm53ReasoningEffortTypeMessage,
+		glm53OrphanToolMessageText,
 	} {
 		if strings.HasPrefix(message, prefix) {
 			return true
