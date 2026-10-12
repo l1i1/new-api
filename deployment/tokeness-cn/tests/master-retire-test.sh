@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # (rsp/rgp swapped, every parallel-retire release failing at the tail) passed
 # CI unnoticed. Cases: pre-flip retire refuses; post-flip retire promotes
 # green and retires blue; retire is idempotent; commit runs flip+retire whole.
-TEST_DIR=/home/vhbs/tokeness/apps/new-api/deployment/tokeness-cn
+TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 root=$(mktemp -d); trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root/bin" "$root/state" "$root/nginx-bak"
 # fake docker: containers tracked in state, name -> port

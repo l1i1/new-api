@@ -1936,10 +1936,18 @@ grep -q "master retire finished: blue retired" "$oneshot_case/state/stdout.log" 
 # absorbs a second-boundary tick between parallel completions (three gates
 # started together complete within one poll interval, but a run starting at
 # X.9s can straddle a tick).
-gate_first="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]\):\([0-9][0-9]\):\([0-9][0-9]\)+08:00\].*/\1\2\3/' | sort | head -1)"
-gate_last="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]\):\([0-9][0-9]\):\([0-9][0-9]\)+08:00\].*/\1\2\3/' | sort | tail -1)"
-[[ -n "$gate_first" && -n "$gate_last" && $(( 10#$gate_last - 10#$gate_first )) -le 2 ]] \
-  || fail "the new-instance gates did not run in parallel (first=$gate_first last=$gate_last; the serial form spans >= 4s)"
+gate_span_sed='s/^.*gate| \[[^T]*T\([0-9][0-9]\):\([0-9][0-9]\):\([0-9][0-9]\)+08:00\].*/\1*3600+\2*60+\3/'
+gate_span_eval() { local e; e="$(sed "$gate_span_sed" <<<"$1")"; echo $(( e )); }
+gate_first=1000000; gate_last=0
+while IFS= read -r line; do
+  t="$(grep 'gate| ' <<<"$line" | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\)+08:00\].*/\1/')"
+  [ -n "$t" ] || continue
+  sod=$(( $(cut -d: -f1 <<<"$t") * 3600 + $(cut -d: -f2 <<<"$t") * 60 + $(cut -d: -f3 <<<"$t") ))
+  (( sod < gate_first )) && gate_first=$sod
+  (( sod > gate_last )) && gate_last=$sod
+done < <(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on')
+[[ "$gate_first" -le "$gate_last" && $(( gate_last - gate_first )) -le 2 ]] \
+  || fail "the new-instance gates did not run in parallel (first=${gate_first}s last=${gate_last}s; the serial form spans >= 4s)"
 
 # (2) A retire-tail failure must fail the release: TOKENESS_TEST_HOST_RETIRE_FAIL
 # makes the fake bootstrap's retire phase fail while everything else succeeds.

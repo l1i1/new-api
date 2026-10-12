@@ -354,7 +354,16 @@ if [ "$PHASE" = retire ] || [ "$PHASE" = commit ]; then
   docker stop -t "$STOP_TIMEOUT" "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   if [ "$green" != "$CONTAINER" ]; then
-    docker rename "$green" "$CONTAINER" >/dev/null
+    if docker rename "$green" "$CONTAINER" >/dev/null 2>&1; then
+      log "retire: renamed $green into $CONTAINER"
+    else
+      # A failed rename must not abort mid-commit (set -e) with green serving
+      # under its temp name and blue already gone: the restart policy keeps
+      # green serving, but the NEXT start would treat it as a stale green and
+      # remove the serving container. Say so loudly instead.
+      err "retire: could not rename $green into $CONTAINER - green still serves on :$rsp under its temp name; fix by hand (docker rename) before the next release"
+      exit 3
+    fi
   fi
   log "retire done: $CONTAINER serves on :$rsp; old image $old_image kept for rollback"
   printf 'SERVING_PORT=%s\n' "$rsp"

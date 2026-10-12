@@ -355,6 +355,8 @@ remote_cmd_on() {
     -o ConnectTimeout=15
     -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=yes
+    -o ServerAliveInterval=30
+    -o ServerAliveCountMax=6
   )
   if [[ -n "$known" ]]; then
     ssh_args+=( -o "UserKnownHostsFile=$known" )
@@ -1374,6 +1376,17 @@ REMOTE_MASTER_VER
   # before the commit and after it (there, the renamed green).
   if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" probe \
       < "$HOST_BOOTSTRAP_SCRIPT" 2>/dev/null)"; then
+    # In flip mode the traffic is ALREADY on green (the flip call above
+    # succeeded and moved nginx + the marker): master_sync_abort's reconcile
+    # assumes the pre-flip or post-commit shape, and feeding it flip-only
+    # state makes it remove the SERVING green (the .48 outage pattern). A
+    # probe is a read; a transient ssh failure here must NOT poison the
+    # cutover. Treat the flip as committed: report, and let the caller's
+    # retire-tail (or a manual retire) finish the job.
+    if [[ "$mode" == "flip" ]]; then
+      error "post-flip: could not probe the ECS serving state (transient?); the flip call itself succeeded - traffic is on green :$green_port. Run bootstrap-master-ecs.sh <image> retire by hand if this release does not complete"
+      return 1
+    fi
     error "post-commit: could not probe the ECS serving state; reconciling via abort"
     master_sync_abort "$image_ref" || true
     return 1
@@ -1381,6 +1394,13 @@ REMOTE_MASTER_VER
   local serving_port
   serving_port="$(sed -n 's/^SERVING_PORT=//p' <<<"$out" | tail -n1)"
   if [[ "$serving_port" != "$green_port" ]]; then
+    # Same reasoning as above: post-flip, a mismatched probe answer means the
+    # marker moved after the flip (an external reconcile), not that our flip
+    # failed - aborting would tear down whatever now serves.
+    if [[ "$mode" == "flip" ]]; then
+      error "post-flip: ECS serves :${serving_port:-?} (expected :$green_port) - the marker moved after our flip; NOT aborting (traffic is live). Run bootstrap-master-ecs.sh <image> probe by hand"
+      return 1
+    fi
     error "post-commit: ECS serves :${serving_port:-?} (expected :$green_port); reconciling via abort"
     master_sync_abort "$image_ref" || true
     return 1
@@ -1483,7 +1503,7 @@ master_retire_bg_wait() {
   wait "$MASTER_RETIRE_PID" || rc=$?
   MASTER_RETIRE_PID=""
   if (( rc != 0 )); then
-    error "the background master retire failed (rc=$rc); the panel serves green but blue's retirement did not complete - run deploy.sh sync-host or bootstrap-master-ecs.sh <image> retire by hand"
+    error "the background master retire failed (rc=$rc); the panel serves green on its new port but blue's retirement did not complete. Do NOT run deploy.sh sync-host yet (in this flip-only state it would remove the serving green) - finish with bootstrap-master-ecs.sh <image> retire by hand first"
     return 1
   fi
   log "master retire finished: blue retired, green holds the canonical name"
@@ -1508,7 +1528,8 @@ master_retire_bg_join_for_rollback() {
   wait "$MASTER_RETIRE_PID" || rc=$?
   MASTER_RETIRE_PID=""
   if (( rc != 0 )); then
-    warn "the background master retire failed (rc=$rc); the master may sit in flip-only state - run bootstrap-master-ecs.sh <image> retire by hand before sync-host"
+    error "the background master retire failed (rc=$rc): the master sits in flip-only state (green serving under its temp name, blue idling). The master rollback is SKIPPED - sync-host would remove the serving green here. Finish by hand: bootstrap-master-ecs.sh <image> retire"
+    return 1
   fi
   return 0
 }
@@ -3745,7 +3766,9 @@ main() {
           # rollback_failed_rollout re-pinned the scaling configuration + ECI to
           # the previous digest; bring the master back in line so node versions
           # never drift after an aborted release.
-          master_retire_bg_join_for_rollback
+          if ! master_retire_bg_join_for_rollback; then
+            die "release rollout failed AND the master retire did not complete - the fleet was rolled back, the master needs a manual bootstrap-master-ecs.sh <image> retire before anything else"
+          fi
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
           fi
@@ -3774,7 +3797,9 @@ main() {
           # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
-          master_retire_bg_join_for_rollback
+          if ! master_retire_bg_join_for_rollback; then
+            die "release batch rollout failed AND the master retire did not complete - the fleet was rolled back, the master needs a manual bootstrap-master-ecs.sh <image> retire before anything else"
+          fi
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
           fi
