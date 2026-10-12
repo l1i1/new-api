@@ -259,9 +259,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			if upstreamErr := service.NormalizeOpenAIStreamError(common.StringToByteSlice(data), resp.StatusCode); upstreamErr != nil {
 				streamErr = upstreamErr
-				if !c.Writer.Written() {
-					c.Status(streamErr.StatusCode)
-				}
+				// 只把错误交回重试循环，**不要**在这里写客户 writer 的状态。
+				// 这一跳仍可能被判为可重试并换道（controller/relay.go 的换道闸门
+				// 此时看到的是 helper.ResponseNotCommitted），而 gin 的 WriteHeader
+				// 只把状态记在 writer 上、直到第一次写正文才真正落盘，于是换道成功
+				// 后的首帧会把这一跳的 5xx 当作响应状态发给客户：客户拿到
+				// 「502 + 完整正文」（自己解析不出内容），我方却记成功并计费。
+				// 2026-10-12 20:29 cdp 投诉即此形态（request_id
+				// 202610121227574862194198268d9d6lEWDlnxW：ch48 流内 502 → ch37 503
+				// → ch19 成功，入口 nginx 记 status=502、body 42,946 字节）。
+				// 真正终局失败时，状态由 controller/relay.go 的错误 defer 统一写出，
+				// 错误本身仍带 StatusCode，可见性不受影响。
 				sr.Stop(streamErr)
 				return
 			}

@@ -127,7 +127,12 @@ func TestOaiStreamHandlerRejectsTopLevelUpstreamErrorEvent(t *testing.T) {
 			require.NotNil(t, err)
 			require.Equal(t, test.wantCode, err.GetErrorCode())
 			require.Empty(t, test.wantBody)
-			require.Equal(t, http.StatusBadGateway, c.Writer.Status())
+			// 这一跳可能被换道重试：错误本身带 502（终局失败时由控制器的错误
+			// defer 写出），但**不得**把状态钉在客户 writer 上 —— gin 的状态
+			// 直到第一次写正文才落盘，钉在这里会被换道成功后的首帧继承。
+			require.Equal(t, http.StatusBadGateway, err.StatusCode)
+			require.False(t, c.Writer.Written())
+			require.Equal(t, http.StatusOK, recorder.Code)
 			require.Empty(t, recorder.Body.String())
 		})
 	}
