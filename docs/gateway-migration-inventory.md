@@ -10,6 +10,7 @@
 - **是**：把 fork 在 new-api 上长出来的**自有行为与问题修复**，按「新网关要不要实现」整理成待审清单。条目内容与判据来自 [FORK-CHANGES.md](../FORK-CHANGES.md) §3–§9；机读锚点来自 [`scripts/fork-invariants/manifest.json`](../scripts/fork-invariants/manifest.json)（发版门禁逐条断言"条目还在树里"）。
 - **不是**：不是新网关的设计文档（那是 `~/tokeness/docs/rebuild/*`：`01-production-inventory.md` 现网清单、`02-requirements.md` 需求、`07-migration-plan.md` 迁移计划）；也**不是第二份事实来源**——条目原文只在 FORK-CHANGES 里，本文只加"迁移处置 + 验收入口"两列。
 - **为什么不复制条目内容**：本仓库的规矩是"表格给人读、manifest 给门禁读"（FORK-CHANGES §10.1）。再抄一份就会出现两个会漂移的真相；所以本文按 **manifest id** 引用条目，用 `jq` 即可展开全文（§6）。
+- **许可边界（与 `~/tokeness/docs/rebuild/README.md` 的前提一致）**：新系统**不得复制 new-api 的任何代码，测试代码同样算**（AGPL 衍生）。本文的"验收入口 / 最小验收集"是**行为等价验收**——判据（什么算通过）可以照搬，测试代码必须在新网关自己的许可边界内重写。清单是行为规格，不是移植指南。
 
 ## 1. 为什么"问题修复"必须进迁移清单
 
