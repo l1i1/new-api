@@ -387,8 +387,20 @@ alarm_check() {
   if ! raw="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" 2>/dev/null)"; then
     return 2
   fi
-  id="$(printf '%s' "$raw" | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then .[0].AlarmTaskId else empty end' 2>/dev/null | tr -d '\r')"
-  [[ -n "$id" ]] || return 0
+  # A parse failure (raw is set but jq yields nothing) must NOT read as
+  # "no alarm": return 2 so the caller logs the probe failure.
+  if ! id="$(printf '%s' "$raw" | jq -er --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then .[0].AlarmTaskId else empty end' 2>/dev/null | tr -d '\r')" || [[ -z "$id" ]]; then
+    if [[ -z "$id" ]]; then
+      # jq -e with an empty result is a legitimate "no such alarm"; a parse
+      # failure of non-empty raw is a probe failure. Distinguish by trying the
+      # count: unparseable raw fails it.
+      if ! printf '%s' "$raw" | jq -e '.AlarmList' >/dev/null 2>&1; then
+        return 2
+      fi
+      return 0
+    fi
+    return 2
+  fi
   state="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" \
     | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | .[0].Enable | if . == true then "true" elif . == false then "false" else "invalid" end' 2>/dev/null | tr -d '\r')"
   if [[ "$state" == "false" ]]; then

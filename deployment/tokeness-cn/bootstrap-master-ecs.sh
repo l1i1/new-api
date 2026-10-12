@@ -327,16 +327,18 @@ done < <(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAIN
 # second -e: docker takes the LAST duplicate, but the overrides loop below
 # replaces only the FIRST match - an appended duplicate silently defeats any
 # operator override (review reproduced override 3000 losing to 2132).
-new_shutdown_env="-e SHUTDOWN_TIMEOUT_SECONDS=${MASTER_V1_STOP_TIMEOUT:-2132}"
+# envs is a FLAT array: "-e" and "KEY=VALUE" are separate elements. Match
+# the PAIR (envs[i]=="-e" and envs[i+1] starts with the key) and replace the
+# value element; otherwise append the pair as two elements.
+new_shutdown_val="SHUTDOWN_TIMEOUT_SECONDS=${MASTER_V1_STOP_TIMEOUT:-2132}"
 replaced_shutdown=0
 for _i in "${!envs[@]}"; do
-  if [[ "${envs[$_i]}" == "-e SHUTDOWN_TIMEOUT_SECONDS="* ]]; then
-    envs[$_i]="$new_shutdown_env"
+  if [[ "${envs[$_i]}" == "-e" && "${envs[$(( _i + 1 ))]}" == "SHUTDOWN_TIMEOUT_SECONDS="* ]]; then
+    envs[$(( _i + 1 ))]="$new_shutdown_val"
     replaced_shutdown=1
-    break
   fi
 done
-(( replaced_shutdown == 1 )) || envs+=("$new_shutdown_env")
+(( replaced_shutdown == 1 )) || { envs+=("-e"); envs+=("$new_shutdown_val"); }
 
 # Optional env overrides, applied ON TOP of the env captured from the running
 # container. The captured env is the master's source of truth (this script

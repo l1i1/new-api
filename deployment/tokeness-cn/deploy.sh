@@ -207,7 +207,10 @@ start_hold_heartbeat_bg() {
       # hold FOREVER and permanently disable the tier's shrink protection
       # (CNB has cancelled releases exactly this way before). Exit as soon as
       # the parent is gone; the hold then ages out for the janitor.
-      kill -0 "$PPID" 2>/dev/null || exit 0
+      # $$ inside a subshell stays the MAIN script's pid; $PPID here is the
+      # CI runner (the script's parent), so a SIGKILLed script under a live
+      # runner kept passing this check and the orphan kept refreshing.
+      kill -0 "$$" 2>/dev/null || exit 0
       rc=0
       shrink_hold_write set >/dev/null 2>&1 || rc=$?
       if (( rc == 3 )); then
@@ -2140,7 +2143,10 @@ resume_scale_in_guard() {
     kill -- "-$HOLD_HB_PID" 2>/dev/null || true
     kill "$HOLD_HB_PID" 2>/dev/null || true
     wait "$HOLD_HB_PID" 2>/dev/null || true
-    sleep 2
+    # Residual: a remote shrink_hold_write dispatched before the group kill
+    # can still land after the clear (network reordering); 5s bounds the
+    # common case, and the janitor covers the rest.
+    sleep 5
     HOLD_HB_PID=""
   fi
   # Ownership check FIRST (#2): if another release took the tier over (our hold
@@ -2780,7 +2786,7 @@ ess_rollout() {
     # pre-scale-in count - "restoring" would then LOWER it, an unparked
     # removal the release never parked (review reproduced desired 3 -> 2).
     local desired_now=-1
-    desired_now="$(desired_count)" || desired_now=-1
+    desired_now="$(current_desired_capacity)" || desired_now=-1
     if (( roll_before_count > 0 && desired_now >= 0 && desired_now < roll_before_count )); then
       warn "scale-in left desired capacity at $desired_now of the $roll_before_count it started from; raising it before the rollback"
       scale_group "$roll_before_count" || warn "capacity raise FAILED - the tier is smaller than the rollout found; fix by hand"

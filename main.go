@@ -299,12 +299,32 @@ func main() {
 		// the whole budget. An already-expired context gives the flush its
 		// immediate timeout while the stop phase still runs.
 		remaining := time.Until(bgDeadline)
-		if remaining <= 0 {
+		exhausted := remaining <= 0
+		if exhausted {
 			common.SysError(fmt.Sprintf("%s shutdown: background drain budget already exhausted; stopping without a flush window", name))
 			remaining = 0
 		}
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), remaining)
 		defer drainCancel()
+		if exhausted {
+			// utils.go's batch shutdown waits <-done UNCONDITIONALLY after
+			// ctx.Done(), and that done fires only when a DB update the
+			// context cannot cancel completes. A zero-budget call could thus
+			// hang forever on one stuck worker and starve every later
+			// shutdown - the exact starvation this rework exists to prevent.
+			// Bound the whole call with a hard cap instead.
+			doneCh := make(chan struct{})
+			go func() {
+				_ = shutdown(drainCtx)
+				close(doneCh)
+			}()
+			select {
+			case <-doneCh:
+			case <-time.After(10 * time.Second):
+				common.SysError(fmt.Sprintf("%s shutdown: stuck past the exhausted budget; moving on to the next drain", name))
+			}
+			return
+		}
 		if err := shutdown(drainCtx); err != nil {
 			common.SysError(fmt.Sprintf("%s shutdown: %v", name, err))
 		}

@@ -279,7 +279,7 @@ func loadOptionsFromDatabase() {
 		// AutomaticRetryStatusCodes can merge against the legacy input
 		// (skipping starved the fold and legacy retry codes silently
 		// disappeared - review regression case).
-		if option.Key != "ForceRetryStatusCodeRanges" {
+		if option.Key != "ForceRetryStatusCodes" {
 			common.OptionMapRWMutex.RLock()
 			currentOpt, seenOpt := common.OptionMap[option.Key]
 			common.OptionMapRWMutex.RUnlock()
