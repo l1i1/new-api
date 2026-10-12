@@ -2514,6 +2514,49 @@
           ]
         }
       ]
+    },
+    {
+      "id": "cn-tied-retirement-budget-and-completion",
+      "title": "大陆平局退役预算与完成证明",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh",
+        "deployment/tokeness-cn/tests/fake-bin/aliyun",
+        "deployment/tokeness-cn/tests/deploy-test.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "budget_left=$(( retire_count - departed ))"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "if (( departed > retire_count )); then"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "if (( count < expected_min )); then"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "if (( departed >= retire_count && new_live == 1 && removing == 0 )); then"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "tie-retirement-budget-",
+            "tie-retirement-external-scaleout-",
+            "tie-retirement-budget-exceeded-",
+            "tie-retirement-overremoved-immediate"
+          ]
+        }
+      ]
     }
   ]
 }

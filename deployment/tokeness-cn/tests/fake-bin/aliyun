@@ -466,6 +466,15 @@ case "$cmd" in
     if [[ "${TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD:-0}" =~ ^[1-9][0-9]*$ ]]        && [[ ! -f "$state_dir/external-hold-done" ]]        && [[ -n "${SHRINK_DRAIN_PATH:-}" && -f "$SHRINK_DRAIN_PATH" ]]; then
       lease_line="$(sed -n '2p' "$SHRINK_DRAIN_PATH" 2>/dev/null | tr -d ' \r' || true)"
       if [[ "$lease_line" =~ ^[0-9]+$ ]] && (( lease_line > $(date +%s) )); then
+        # A parked member can finish leaving during the hold, before this
+        # release asks ESS to shrink. It already consumes the round's budget.
+        departures="${TOKENESS_TEST_PARK_DEPARTURES_HOLD:-0}"
+        if [[ "$departures" =~ ^[1-9][0-9]*$ ]]; then
+          state_update --argjson n "$departures" '
+            .instances = (.instances | sort_by(.CreatedTime) | .[$n:])
+            | .desired = (.desired - $n)'
+          printf 'hold-window parked departures injected: %s\n' "$departures" >> "$state_dir/external-scaleout.log"
+        fi
         k=0
         while (( k < TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD )); do
           e="$(jq '.ext_index // 1' "$state" | tr -d '\r')"
