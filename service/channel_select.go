@@ -406,6 +406,26 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 }
 
 func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *ChannelSelectionError {
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	// A hard official pin, or an active fit policy, pre-filters the candidate set
+	// by channel type and capability marks BEFORE selection (model/ability.go
+	// preferOfficialFitAbilities on the DB path). The enablement probe below
+	// reads group/model availability only, so its "this model is enabled here"
+	// answer does NOT prove that no PERMITTED candidate exists - an eligible
+	// non-official fallback may already have been dropped by that pre-filter.
+	// Reporting temporarily_unavailable from it rewrote the real upstream error
+	// into a fabricated "exhausted" one and set the retry_no_candidate marker
+	// (final review, defect A). Refuse the inference on this path and let the
+	// caller surface an honest internal-selection error instead.
+	if v4OfficialPin(param) || model.FitChannelFilterForRequest(param.Ctx) != nil {
+		return &ChannelSelectionError{
+			Kind:  ChannelSelectionInternalError,
+			Group: selectedGroup,
+			Model: param.ModelName,
+			Err:   errors.New("no candidate satisfied the official pin and capability marks; the availability probe cannot prove candidate exhaustion on this path"),
+		}
+	}
+	// tokeness-fitpolicy:end
 	groups := []string{selectedGroup}
 	if param.TokenGroup == "auto" {
 		groups = GetRequestAutoGroups(param.Ctx, common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup))

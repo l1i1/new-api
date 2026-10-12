@@ -143,18 +143,22 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		var selectionErr *service.ChannelSelectionError
 		require.ErrorAs(t, channelErr, &selectionErr,
 			"the selection kind must reach the caller through getChannel")
-		require.Equal(t, service.ChannelSelectionTemporarilyUnavailable, selectionErr.Kind)
+		// Final review, defect A: on a pinned/fit path the candidate set was
+		// pre-filtered by channel type and capability marks, so the enablement
+		// probe cannot prove exhaustion. The kind is therefore an honest internal
+		// selection error, NOT temporarily_unavailable - claiming the latter
+		// rewrote the real upstream error and set the retry_no_candidate marker.
+		require.Equal(t, service.ChannelSelectionInternalError, selectionErr.Kind)
 
-		// The guard additionally needs the pin, because only the pinned selection
-		// path narrows before tiering — on the default path the request-path filter
-		// runs after the tier is chosen and the same kind can come out while a
-		// usable lower-priority channel still exists. applyFitPolicy writes the
+		// The guard must consequently NOT fire: there is no provable candidate
+		// exhaustion to key on, so the client keeps the upstream verdict rather
+		// than receiving a fabricated "exhausted" answer. applyFitPolicy writes the
 		// requirement and the pin together in production; this fixture sets them
 		// separately on purpose (see the comment above newRequest), so the pin is
 		// added here to state the guard's precondition explicitly.
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
-		require.True(t, retryFoundNoPinnedCandidate(c, channelErr, retryParam),
-			"a pinned empty candidate set must be recognised, or the client keeps the routing error")
+		require.False(t, retryFoundNoPinnedCandidate(c, channelErr, retryParam),
+			"a pre-filtered empty candidate set is not a provable exhaustion and must not be treated as one")
 
 		// Saturation must NOT be lumped in: nothing was tried there, so there may
 		// be no upstream error to report at all, and answering with an older one
