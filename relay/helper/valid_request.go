@@ -382,6 +382,11 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			if err := validateGlm53OfficialFields(textRequest); err != nil {
 				return nil, err
 			}
+			// The GLM contract is stricter than the live Zhipu endpoint for an
+			// explicit tool_choice="none": the upstream ignores it and calls
+			// the tool anyway, so the declarations are withheld (see the
+			// helper for the probe evidence).
+			applyGlm53ToolChoiceNone(textRequest)
 		}
 		mapDeepSeekV4ReasoningEffort(textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
@@ -1631,6 +1636,12 @@ func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			return glm53Error("1210", glm53ThinkingMessage)
 		}
 	}
+	if glm53OrphanToolMessage(request.Messages) {
+		// 1214 is the family's generic invalid-request code (the same one the
+		// empty-messages rule uses); there is no Zhipu code for this class
+		// because Zhipu never rejects it — see glm53OrphanToolMessageText.
+		return glm53Error("1214", glm53OrphanToolMessageText)
+	}
 	return nil
 }
 
@@ -1645,6 +1656,70 @@ func compileGlmThinking(raw json.RawMessage) map[string]any {
 		return nil
 	}
 	return m
+}
+
+// glm53OrphanToolMessageText is the tool-call state-machine text the glm-5.3
+// family emits for a `tool` turn that answers nothing. There is no Zhipu text
+// to mirror: live-probed 2026-10-12 through both the official channel (7) and
+// the aggregator channel (78), the Zhipu endpoint ACCEPTS an orphan tool
+// message with HTTP 200 and runs inference — which is exactly what the
+// customer instruction-check "孤儿 tool 消息校验" fails. The buyer demanded
+// gateway-side state-machine enforcement for the DeepSeek family on 2026-09-01
+// (see validateDeepSeekV4ToolCallChain); the same requirement now covers
+// glm-5.3, so this family emits the canonical sentence too. Only the orphan
+// rule is enforced: Zhipu also accepts the other state-machine shapes
+// (unanswered tool_call_id, insufficient tool messages, a missing
+// tool_call_id) and no buyer check requires deviating there, so the gateway
+// stays as close to the upstream as the failing check allows.
+const glm53OrphanToolMessageText = "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+
+// glm53OrphanToolMessage reports whether the conversation carries a `tool` turn
+// with no pending assistant tool_calls declaration to answer.
+func glm53OrphanToolMessage(messages []dto.Message) bool {
+	pending := 0
+	for i := range messages {
+		msg := &messages[i]
+		switch msg.Role {
+		case "assistant":
+			// The decoder is family-neutral (unparsable or absent tool_calls
+			// yields no pending calls); reuse it instead of duplicating it.
+			pending = len(deepSeekV4ToolCallIDs(msg.ToolCalls))
+		case "tool":
+			if pending == 0 {
+				return true
+			}
+			pending--
+		default:
+			// A user/system turn closes any open tool exchange, so a `tool`
+			// message after it answers nothing.
+			pending = 0
+		}
+	}
+	return false
+}
+
+// applyGlm53ToolChoiceNone honours an explicit tool_choice="none" the upstream
+// will not. Live-probed 2026-10-12: the official Zhipu channel (7) and the
+// aggregator channel (78) both accept tool_choice="none" and still answer with
+// a tool call, so the customer's "tool_choice=none 遵循" check fails on every
+// channel we can route to — routing cannot fix it. Withholding the tool
+// declarations is the only mechanism that makes the declared semantics true
+// (the model then answers in text with finish_reason=stop and no tool_calls,
+// measured on both channels including the streaming shape). tool_choice itself
+// is left as sent: upstream it is inert once the tools are gone (200 on both
+// channels) and it keeps the request recognisable. The caller gates this on the
+// user's fit profile, like every other family contract rule.
+func applyGlm53ToolChoiceNone(request *dto.GeneralOpenAIRequest) {
+	if request == nil || !isGlm53Model(request.Model) {
+		return
+	}
+	strategy, ok := request.ToolChoice.(string)
+	if !ok || !strings.EqualFold(strings.TrimSpace(strategy), "none") {
+		return
+	}
+	request.Tools = nil
+	request.Functions = nil
+	request.FunctionCall = nil
 }
 
 // IsStrictGlmValidationMessage reports whether an error message carries one
