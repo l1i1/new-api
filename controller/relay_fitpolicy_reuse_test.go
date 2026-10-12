@@ -136,6 +136,14 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		channel, channelErr := getChannel(c, info, retryParam)
 		require.Nil(t, channel)
 		require.NotNil(t, channelErr)
+		// The kind must survive the production wrap: without this the guard has to
+		// fall back to "no kind means no candidate", which is exactly the
+		// misreading that answers an internal routing fault with an older upstream
+		// error. Reverting getChannel's %w to %s fails here.
+		var selectionErr *service.ChannelSelectionError
+		require.ErrorAs(t, channelErr, &selectionErr,
+			"the selection kind must reach the caller through getChannel")
+		require.Equal(t, service.ChannelSelectionTemporarilyUnavailable, selectionErr.Kind)
 		require.True(t, isRetryRoutingFailure(channelErr, retryParam),
 			"an empty candidate set must be recognised as a routing failure, or the client keeps the routing error")
 

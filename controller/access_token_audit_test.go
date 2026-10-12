@@ -441,14 +441,13 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			for _, candidate := range []*gorm.DB{db, model.DB, model.LOG_DB} {
-				if candidate == nil {
-					continue
-				}
-				connection, err := candidate.DB()
-				if err == nil {
-					_ = connection.Close()
-				}
+			// Close only the connection this helper created. Closing model.DB /
+			// model.LOG_DB here was wrong twice over: the helper does not own them,
+			// and cleanups run last-in-first-out, so a caller that restores those
+			// globals in its own cleanup has them restored first and closed second —
+			// taking the caller's or an outer test's connection down with it.
+			if connection, err := db.DB(); err == nil {
+				_ = connection.Close()
 			}
 		})
 		return db, path
@@ -497,9 +496,22 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 	require.NoError(t, err)
 	t.Logf("isolated database: %s (%s)", name, kind)
 	t.Cleanup(func() {
-		connection, err := db.DB()
-		if err == nil {
+		if connection, err := db.DB(); err == nil {
 			_ = connection.Close()
+		}
+		// Drop what this helper created. The name carries a timestamp, so nothing
+		// else will ever reclaim the database, and a repeated matrix run would
+		// otherwise leave one behind every time.
+		adminConn, err := gorm.Open(original, &gorm.Config{})
+		if err != nil {
+			t.Logf("could not reopen the admin connection to drop %s: %v", name, err)
+			return
+		}
+		if dropErr := adminConn.Exec("DROP DATABASE " + name).Error; dropErr != nil {
+			t.Logf("could not drop the isolated database %s: %v", name, dropErr)
+		}
+		if sqlAdmin, dbErr := adminConn.DB(); dbErr == nil {
+			_ = sqlAdmin.Close()
 		}
 	})
 	return db, newDSN

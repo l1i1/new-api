@@ -989,24 +989,28 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 // error code.
 //
 // Every routing outcome of getChannel is reported with ErrorCodeGetChannelFailed,
-// so the code alone cannot answer the question, and three of those outcomes must
-// NOT be treated as "no candidate":
+// so the code alone cannot answer the question. Only a selection failure that
+// says so — ChannelSelectionTemporarilyUnavailable, i.e. the group has the model
+// and permitted channels yet nothing is selectable — qualifies, and the kind has
+// to survive getChannel's wrap for that (it wraps with %w).
 //
-//   - a saturating request may have no upstream error to report at all (nothing
-//     was tried), so replacing its 429 with relayInfo.LastError would answer with
-//     an older failure unrelated to this outcome;
-//   - ChannelSelectionInternalError means the platform could not answer the
-//     routing question (a selection/database fault), and
-//     ChannelSelectionModelNotConfigured means the model was never configured for
-//     the group — in both, the previous upstream error describes something else
-//     entirely;
-//   - ChannelSelectionAccessDenied is a policy refusal, not a missing candidate.
+// Everything else must NOT be treated as "no candidate", and the two opposite
+// mistakes are both why:
 //
-// Only ChannelSelectionTemporarilyUnavailable — raised when the group has the
-// model and permitted channels yet nothing is selectable — plus the bare "no such
-// channel" outcome (which carries no structured kind) are routing failures, which
-// is the one case where the last real attempt is the truer answer. The kind
-// survives the wrap because getChannel wraps with %w.
+//   - ChannelSelectionInternalError, ChannelSelectionModelNotConfigured and
+//     ChannelSelectionAccessDenied each have their own answer (a selection fault,
+//     an unconfigured model, a policy refusal); replacing it with an older
+//     upstream error would describe something else entirely;
+//   - an *untyped* get_channel_failed is not evidence of an empty candidate set
+//     either. model/channel.go raises the same code when a polling multi-key
+//     channel cannot read its own credentials, and that internal fault reaches
+//     this branch unchanged through SetupContextForSelectedChannel — answering it
+//     with the previous upstream error, and labelling it retry_no_candidate, is
+//     exactly the class of confusion this change exists to remove. Unknown means
+//     false: "no kind" must never be read as "no candidate".
+//
+// A saturating walk is excluded for the same reason as before — nothing was tried
+// against a busy channel, so there may be no upstream error to report at all.
 func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
 	if channelErr == nil || channelErr.GetErrorCode() != types.ErrorCodeGetChannelFailed {
 		return false
@@ -1015,10 +1019,10 @@ func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.Re
 		return false
 	}
 	var selectionErr *service.ChannelSelectionError
-	if errors.As(channelErr, &selectionErr) {
-		return selectionErr.Kind == service.ChannelSelectionTemporarilyUnavailable
+	if !errors.As(channelErr, &selectionErr) {
+		return false
 	}
-	return true
+	return selectionErr.Kind == service.ChannelSelectionTemporarilyUnavailable
 }
 
 // recordNoCandidateRetryError writes the routing-fidelity error row for a retry

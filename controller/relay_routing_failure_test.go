@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -16,7 +17,9 @@ import (
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestRetryRoutingFailureReadsTheSelectionKind pins the discrimination the retry
@@ -64,13 +67,22 @@ func TestRetryRoutingFailureReadsTheSelectionKind(t *testing.T) {
 		})
 	}
 
-	t.Run("the bare no-such-channel outcome counts", func(t *testing.T) {
-		// getChannel's channel==nil return carries no structured kind; it is the
-		// other genuine "the retry found nothing" outcome.
+	t.Run("an untyped routing error is never taken for a missing candidate", func(t *testing.T) {
+		// getChannel's defensive channel==nil return carries no structured kind,
+		// and neither does the code a polling multi-key channel raises when it
+		// cannot read its own credentials (model/channel.go) — that internal fault
+		// reaches this branch through SetupContextForSelectedChannel. "No kind"
+		// must therefore read as "not a no-candidate outcome".
 		bare := types.NewError(
 			fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", "default", "glm-5.3-flash"),
 			types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		require.True(t, isRetryRoutingFailure(bare, param()))
+		require.False(t, isRetryRoutingFailure(bare, param()))
+
+		pollingFault := types.NewError(
+			errors.New("failed to get available key: sql: database is closed"),
+			types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		require.False(t, isRetryRoutingFailure(pollingFault, param()),
+			"a credential/cache fault is not an empty candidate set")
 	})
 
 	t.Run("a saturating walk keeps its own answer", func(t *testing.T) {
@@ -237,4 +249,64 @@ func noCandidateTestContext(t *testing.T) (*gin.Context, *types.NewAPIError, *re
 		fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: temporarily_unavailable", "default", "glm-5.3-flash"),
 		types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	return c, selectionErr, &relaycommon.RelayInfo{OriginModelName: "glm-5.3-flash", TokenGroup: "default"}
+}
+
+// TestRecordNoCandidateRetryErrorNeedsARequest pins the writer's own guard.
+//
+// RecordErrorLog reads the client address, so a context without a request must
+// return before it rather than panic inside the logger. ErrorLogEnabled and the
+// log handle are forced on for the duration, because with logging off the guard
+// would never be reached and this test would pass for the wrong reason.
+func TestRecordNoCandidateRetryErrorNeedsARequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_, selectionErr, info := noCandidateTestContext(t)
+
+	previousEnabled := constant.ErrorLogEnabled
+	previousLogDB := model.LOG_DB
+	constant.ErrorLogEnabled = true
+	model.LOG_DB = nil
+	t.Cleanup(func() {
+		constant.ErrorLogEnabled = previousEnabled
+		model.LOG_DB = previousLogDB
+	})
+
+	require.NotPanics(t, func() { recordNoCandidateRetryError(nil, info, selectionErr) })
+	requestLess, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.Nil(t, requestLess.Request)
+	require.NotPanics(t, func() { recordNoCandidateRetryError(requestLess, info, selectionErr) },
+		"a request-less context must return before the logger touches ClientIP")
+	require.NotPanics(t, func() { recordNoCandidateRetryError(requestLess, info, nil) })
+}
+
+// TestNewAuditTestDatabaseLeavesTheCallersConnectionsAlone is the regression
+// cover for a real pollution bug in this package's database fixture: its cleanup
+// used to close whatever model.DB and model.LOG_DB pointed at, and because
+// cleanups run last-in-first-out a caller that restored those globals in its own
+// cleanup had them restored first and closed second — so the fixture took an
+// outer connection down with it.
+func TestNewAuditTestDatabaseLeavesTheCallersConnectionsAlone(t *testing.T) {
+	outer, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:outer_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	require.NoError(t, err)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	model.DB, model.LOG_DB = outer, outer
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		if connection, err := outer.DB(); err == nil {
+			_ = connection.Close()
+		}
+	})
+
+	t.Run("fixture", func(t *testing.T) {
+		fixture, _ := newAuditTestDatabase(t, "sqlite", "")
+		previous := model.DB
+		model.DB, model.LOG_DB = fixture, fixture
+		// Registered after the fixture's own cleanup, so LIFO runs this restore
+		// FIRST and the fixture's cleanup second — with the globals already back
+		// on the outer connection. That is the real usage pattern, and it is what
+		// used to hand the outer connection to the fixture's Close.
+		t.Cleanup(func() { model.DB, model.LOG_DB = previous, previous })
+	})
+
+	require.NoError(t, outer.Exec("select 1").Error,
+		"the fixture's cleanup must not close a connection it does not own")
 }

@@ -21,6 +21,10 @@ var legacySensitiveLogOtherKeys = []string{
 	"channel_name",
 	"channel_type",
 	"reject_reason",
+	// Written to the top level by the first revision of the retry error-fidelity
+	// row before it moved to admin_info; the key stays reserved so no future
+	// writer can put third-party upstream text back into the user projection.
+	"last_upstream_error",
 }
 
 type logOtherVisibility int
