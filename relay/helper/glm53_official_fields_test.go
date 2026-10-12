@@ -2,11 +2,15 @@ package helper
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,9 +18,11 @@ import (
 func floatPtr(v float64) *float64 { return &v }
 
 // The rejection matrix is calibrated against the live open.bigmodel.cn
-// api/paas/v4 endpoint (2026-08-28). Only these are rejected: disabled
-// thinking, reasoning_effort outside low/high/max, temperature/top_p outside
-// [0,1], empty messages and unknown model ids.
+// api/paas/v4 endpoint. Since the 2026-09-15 re-check only these are rejected:
+// disabled thinking, reasoning_effort outside low/high/max, empty messages and
+// unknown model ids. temperature/top_p outside [0,1] used to be in this list
+// (2026-08-28) but the live endpoint now answers 200 — see the accept matrix
+// and the function comment.
 func TestGlm53OfficialFieldsReject(t *testing.T) {
 	base := dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: []dto.Message{{Role: "user", Content: "1+1=?"}}}
 	rejected := []struct {
@@ -40,21 +46,6 @@ func TestGlm53OfficialFieldsReject(t *testing.T) {
 			"effort medium",
 			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, ReasoningEffort: "medium"},
 			"1210", glm53ThinkingMessage,
-		},
-		{
-			"temperature above one",
-			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(2.5)},
-			"1210", glm53TemperatureMessage,
-		},
-		{
-			"temperature negative",
-			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(-0.1)},
-			"1210", glm53TemperatureMessage,
-		},
-		{
-			"top_p above one",
-			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(1.5)},
-			"1210", glm53TopPMessage,
 		},
 		{
 			"empty messages",
@@ -92,6 +83,14 @@ func TestGlm53OfficialFieldsAccept(t *testing.T) {
 		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(1.0)},
 		{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(0.1)},
 		{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(0.95)},
+		// The [0,1] range rejection was retired on 2026-10-12: the live
+		// endpoint answers 200 for these (re-measured live 2026-09-15; A/B on
+		// 2026-10-12 with validate off confirmed the official channel accepts
+		// them). Keeping the check made fit mode stricter than the endpoint.
+		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(2.5)},
+		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(-0.1)},
+		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(1.2)},
+		{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(1.5)},
 		{Model: "glm-5.3", Messages: base.Messages, N: intPtr(2)},
 		{Model: "glm-5.3", Messages: base.Messages, PresencePenalty: floatPtr(1.5)},
 		{Model: "glm-5.3", Messages: base.Messages, FrequencyPenalty: floatPtr(1.5)},
@@ -133,4 +132,37 @@ func TestGlm53OfficialModelNames(t *testing.T) {
 	assert.True(t, IsGlm53OfficialModelName("glm-5.3-flash"))
 	assert.False(t, IsGlm53OfficialModelName("glm-5.3x"))
 	assert.False(t, IsGlm53OfficialModelName("glm-5.2"))
+}
+
+// The unknown-model text drifted on 2026-09-15 (was "modelCode：不存在"), and
+// the unknown-model class answers 1211 rather than 1214. The code lives at the
+// distributor call site; this locks the text the family exposes.
+func TestGlm53ModelNotFoundTextMatchesLiveContract(t *testing.T) {
+	assert.Equal(t, "模型不存在，请检查模型代码。", Glm53ModelNotFoundText)
+	assert.NotContains(t, Glm53ModelNotFoundText, "modelCode")
+}
+
+// The official Zhipu business 400 carries no Content-Type header at all
+// (live-measured 2026-09-15). Asserted on the wire rather than on a recorder,
+// because the point of the nil header entry is to suppress net/http's content
+// sniffing — a recorder never sniffs and would not catch a regression there.
+func TestWriteZhipuBusinessErrorOmitsContentTypeOnTheWire(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/t", func(c *gin.Context) {
+		WriteZhipuBusinessError(c, http.StatusBadRequest, "1210", glm53ThinkingMessage)
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/t", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	_, present := resp.Header["Content-Type"]
+	assert.False(t, present, "official Zhipu business 400 sends no Content-Type, got %q", resp.Header.Get("Content-Type"))
+	assert.JSONEq(t, `{"error":{"code":"1210","message":"`+glm53ThinkingMessage+`"}}`, string(body))
 }

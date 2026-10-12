@@ -168,15 +168,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				if isStrictGlmValidation {
 					// Zhipu renders errors without type/param plus their own
-					// numeric code; kept byte-identical including the charset
-					// suffix in the content type.
-					if body, marshalErr := common.Marshal(gin.H{"error": gin.H{
-						"code":    newAPIError.ToOpenAIError().Code,
-						"message": filteredMessage,
-					}}); marshalErr == nil {
-						c.Data(newAPIError.StatusCode, "application/json; charset=UTF-8", body)
-						return
+					// numeric code, and — live re-measured 2026-09-15 — with no
+					// Content-Type header at all (the 2026-08-28 calibration
+					// had application/json; charset=UTF-8). The shared writer
+					// emits the body and suppresses the header.
+					oaiErr := newAPIError.ToOpenAIError()
+					code, _ := oaiErr.Code.(string)
+					if code == "" {
+						code = fmt.Sprint(oaiErr.Code)
 					}
+					helper.WriteZhipuBusinessError(c, newAPIError.StatusCode, code, filteredMessage)
+					return
 				}
 				if isStrictFitValidation {
 					// The official endpoints return validation errors with

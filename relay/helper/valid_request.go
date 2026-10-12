@@ -1108,15 +1108,22 @@ const (
 // GLM-5.3 official validation texts calibrated 2026-08-28 against the live
 // open.bigmodel.cn/api/paas/v4 endpoint. The error wire format differs from
 // OpenAI: {"error":{"code":"1210","message":"..."}} (1210=parameter,
-// 1214=model/input) with Content-Type application/json. GLM-5.3 accepts
+// 1211=unknown model, 1214=input) with NO Content-Type header. GLM-5.3 accepts
 // n, penalties, logprobs, top_logprobs, tool names, specified tool_choice,
 // json_object without the "json" keyword and explicit default sampling
 // values — those must NEVER be rejected locally.
+//
+// Two values drifted after the 2026-08-28 calibration and were re-measured
+// live on 2026-09-15 (MEMORY.md family contracts + glm-v53 coverageNotes):
+//   - unknown model: was "1214 / modelCode：不存在", now "1211 /
+//     模型不存在，请检查模型代码。";
+//   - business 400 media type: was application/json; charset=UTF-8, now the
+//     endpoint sends no Content-Type at all.
 const (
 	glm53ThinkingMessage      = "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"
 	glm53TemperatureMessage   = "temperature参数非法：限制数值范围[0,1]"
 	glm53TopPMessage          = "top_p参数非法：限制数值范围[0,1]"
-	glm53ModelNotFoundMessage = "modelCode：不存在"
+	glm53ModelNotFoundMessage = "模型不存在，请检查模型代码。"
 	glm53EmptyMessagesMessage = "输入不能为空"
 	// glm53ReasoningEffortTypeMessage mirrors the live Zhipu wording for a
 	// non-string reasoning_effort (the numeric probe returned code 1210 with
@@ -1566,13 +1573,48 @@ func isNonEmptyJSONString(raw json.RawMessage) bool {
 	return len(trimmed) > 2 && trimmed[0] == '"'
 }
 
+// WriteZhipuBusinessError renders a Zhipu business rejection the way the live
+// official endpoint does: the body is {"error":{"code","message"}} and the
+// response carries NO Content-Type header at all (live-measured 2026-09-15 —
+// MEMORY.md's family-contract table and the glm-v53 suite's `absent` media
+// class; the 2026-08-28 calibration still had application/json;
+// charset=UTF-8, which is the drift this writer retires).
+//
+// Setting the header entry to nil is deliberate: it both skips gin's render
+// helpers (which would set a JSON type) and suppresses net/http's content
+// sniffing, so the wire really has no Content-Type. Used by the glm-5.3
+// unknown-model rejection in the distributor and by the strict-fit validation
+// branch in the relay controller.
+func WriteZhipuBusinessError(c *gin.Context, status int, code, message string) {
+	body, marshalErr := common.Marshal(gin.H{"error": gin.H{"code": code, "message": message}})
+	if marshalErr != nil {
+		// Unreachable for two string fields; keep the response honest rather
+		// than panicking on a marshal failure.
+		body = []byte(`{"error":{"code":"1210","message":"invalid request"}}`)
+	}
+	c.Writer.Header()["Content-Type"] = nil
+	c.Writer.WriteHeader(status)
+	_, _ = c.Writer.Write(body)
+	c.Abort()
+}
+
 // validateGlm53OfficialFields mirrors the live Zhipu glm-5.3 contract: the
 // endpoint rejects only excluded thinking, a reasoning_effort outside
-// low/high/max (any other string gets the thinking text), temperature/top_p
-// outside [0,1], empty messages and unknown model ids. Everything the
-// official endpoint tolerates — n, penalties, logprobs, top_logprobs with or
-// without logprobs, arbitrary tool names, specified tool_choice, json_object
-// without the "json" keyword, explicit default sampling values — must pass.
+// low/high/max (any other string gets the thinking text), empty messages and
+// unknown model ids. Everything the official endpoint tolerates — n,
+// penalties, logprobs, top_logprobs with or without logprobs, arbitrary tool
+// names, specified tool_choice, json_object without the "json" keyword,
+// explicit default sampling values, and (since the 2026-09-15 live re-check)
+// temperature/top_p outside [0,1] — must pass.
+//
+// The sampling-range rejection was retired on 2026-10-12: the 2026-08-28
+// calibration had the endpoint answering 400 for temperature 2.5/-0.1/1.2 and
+// top_p 1.5, but the live endpoint has accepted them since 2026-09-15 (recorded
+// in MEMORY.md and in the glm-v53 suite's coverageNotes, whose cases
+// GLM-022/023/024/026 expect 200). Keeping the check made fit mode *stricter*
+// than the official endpoint and produced four avoidable SEVERE diffs; a
+// 30-second A/B on 2026-10-12 (validate off, everything else on) confirmed the
+// official channel answers 200 for those values.
 func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if request == nil || !isGlm53Model(request.Model) {
 		return nil
@@ -1583,12 +1625,6 @@ func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" &&
 		!strings.Contains("|low|high|max|", "|"+strings.ToLower(effort)+"|") {
 		return glm53Error("1210", glm53ThinkingMessage)
-	}
-	if request.Temperature != nil && (*request.Temperature < 0 || *request.Temperature > 1) {
-		return glm53Error("1210", glm53TemperatureMessage)
-	}
-	if request.TopP != nil && (*request.TopP < 0 || *request.TopP > 1) {
-		return glm53Error("1210", glm53TopPMessage)
 	}
 	if thinking := compileGlmThinking(request.THINKING); thinking != nil {
 		if t, _ := thinking["type"].(string); !strings.EqualFold(t, "enabled") {

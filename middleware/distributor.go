@@ -489,19 +489,11 @@ func abortOfficialFitMessage(c *gin.Context, status int, message string) {
 }
 
 // abortGlmMessage renders a Zhipu-shaped validation error ({error:{code,
-// message}}) with the official content type; used by the glm-5.3
-// unknown-model rejection before channel selection.
+// message}}) with no Content-Type, per the live official wire (see
+// relayhelper.WriteZhipuBusinessError); used by the glm-5.3 unknown-model
+// rejection before channel selection.
 func abortGlmMessage(c *gin.Context, status int, code, message string) {
-	payload, marshalErr := common.Marshal(gin.H{"error": gin.H{
-		"code":    code,
-		"message": message,
-	}})
-	if marshalErr != nil {
-		abortWithOpenAiMessage(c, status, message)
-		return
-	}
-	c.Data(status, "application/json; charset=UTF-8", payload)
-	c.Abort()
+	relayhelper.WriteZhipuBusinessError(c, status, code, message)
 }
 
 // abortKimiK3NotFound renders the official Moonshot unknown-model rejection:
@@ -780,7 +772,10 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 		return
 	}
 	if isGlm53 && profile.Validate && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {
-		abortGlmMessage(c, http.StatusBadRequest, "1214", relayhelper.Glm53ModelNotFoundText)
+		// Live re-measured 2026-09-15: the unknown-model class answers 1211
+		// with 模型不存在，请检查模型代码。 (the 2026-08-28 calibration used
+		// 1214 / modelCode：不存在).
+		abortGlmMessage(c, http.StatusBadRequest, "1211", relayhelper.Glm53ModelNotFoundText)
 	}
 }
 
