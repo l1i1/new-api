@@ -131,7 +131,9 @@ oldest_victim() {
   # A tie at the oldest boundary is a refusal, not a warning: ESS removes by
   # policy order and may pick a DIFFERENT member of the tie than this sort did,
   # so parking B while ESS removes A is the stream-cut this script exists to
-  # prevent.
+  # prevent. This guard parks one victim and simply skips this tick on a tie:
+  # that is fail-safe and does not block releases, whose rollout parks the
+  # entire boundary tie independently of its retirement count.
   instances_json | jq -r '[.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
     | sort_by(.CreatedTime) | if (length > 1) and (.[0].CreatedTime == .[1].CreatedTime)
       then empty

@@ -1121,6 +1121,108 @@ for r in '2 10.0.0.207' '4 10.0.0.206'; do
   fi
 done
 
+# (8a) CreatedTime boundary tie: ASG batch rebuilds routinely give two active
+# members the same second. Park BOTH possible victims, retire only one, then
+# return the survivor to the relay before the next round. The fake ESS removes
+# the first tied member in join order while Describe reverses that order, so
+# assuming the local sort's first tied ID is the victim would fail this case.
+tie_batch_case="$test_root/rollout-batch-created-time-tie"
+mkdir -p "$tie_batch_case/state"
+make_conf "$tie_batch_case/nginx.conf"
+init_ess_state "$tie_batch_case/state"
+jq '.desired = 3 | .max_size = 4
+    | .instances[0].CreatedTime = "2026-10-11T03:01:45Z"
+    | .instances += [
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-10-11T03:01:45Z", ZoneId: "cn-shanghai-l"},
+      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-10-11T03:02:00Z", ZoneId: "cn-shanghai-l"}]' \
+  "$tie_batch_case/state/state.json" > "$tie_batch_case/state/tmp.json" \
+  && mv "$tie_batch_case/state/tmp.json" "$tie_batch_case/state/state.json"
+cp "$tie_batch_case/state/state.json" "$tie_batch_case/initial-state.json"
+run_deploy "$tie_batch_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  rollout-batch 1
+if grep -q "refusing to retire an ambiguous set" "$tie_batch_case/state/output.log"; then
+  fail "a CreatedTime tie still blocked the batch rollout"
+fi
+grep -qF "boundary tie expanded the park set from 1 to 2 (2 members share CreatedTime 2026-10-11T03:01:45Z)" \
+  "$tie_batch_case/state/output.log" || fail "the tie expansion was not reported on stderr"
+grep -q "scale-in complete: in-service count reached 3" "$tie_batch_case/state/stdout.log" \
+  || fail "the expanded tie did not use the count retirement gate"
+grep -q "retired all 3 pre-existing instance(s) in 3 round(s)" "$tie_batch_case/state/stdout.log" \
+  || fail "the batch rollout did not converge one retirement per round"
+[[ "$(grep -c 'ess ModifyScalingGroup' "$tie_batch_case/state/aliyun-calls.log")" -eq 6 ]] \
+  || fail "the tied batch issued unexpected scaling calls"
+tie_shrink="$tie_batch_case/state/modify-snapshots/modify-2.log"
+for tie_ip in 10.0.0.207 10.0.0.206; do
+  grep -qxF "$tie_ip" "$tie_shrink" || fail "the boundary tie member $tie_ip was not parked"
+  if sed -n '/--- relay upstream ---/,$p' "$tie_shrink" | grep -qF "$tie_ip"; then
+    fail "the boundary tie member $tie_ip was still receiving relay traffic at shrink"
+  fi
+done
+# The next scale-out witnesses the marker was cleared and the tied survivor
+# rejoined the relay; final-state checks alone would miss a survivor stranded
+# for its whole second drain window. The untied member must also still serve.
+tie_next="$tie_batch_case/state/modify-snapshots/modify-3.log"
+grep -qxF '(absent)' "$tie_next" || fail "the tie marker survived the completed removal"
+for carried_ip in 10.0.0.206 10.0.0.205 10.0.0.241; do
+  sed -n '/--- relay upstream ---/,$p' "$tie_next" | grep -qF "server $carried_ip:3000;" \
+    || fail "after the tied shrink the relay did not carry survivor $carried_ip"
+done
+if sed -n '/--- relay upstream ---/,$p' "$tie_next" | grep -qF '10.0.0.207'; then
+  fail "the tied shrink did not retire the fake ESS's chosen member"
+fi
+# Every shrink requests exactly one departure, and each actual victim was
+# parked at its own shrink. New instances survive every round; .205 survives
+# the first two shrinks, so no unparked member was removed by tie expansion.
+for spec in '2 10.0.0.207' '4 10.0.0.206' '6 10.0.0.205'; do
+  set -- $spec
+  tie_snap="$tie_batch_case/state/modify-snapshots/modify-$1.log"
+  grep -qxF 'desired=3 before=4' "$tie_snap" || fail "shrink #$1 removed more than one member"
+  grep -qxF "$2" "$tie_snap" || fail "shrink #$1 removed unparked member $2"
+  if sed -n '/--- relay upstream ---/,$p' "$tie_snap" | grep -qF "$2"; then
+    fail "shrink #$1 removed a member still carried by the relay"
+  fi
+done
+tie_last_out="$tie_batch_case/state/modify-snapshots/modify-5.log"
+for carried_ip in 10.0.0.205 10.0.0.241 10.0.0.242; do
+  sed -n '/--- relay upstream ---/,$p' "$tie_last_out" | grep -qF "server $carried_ip:3000;" \
+    || fail "the second shrink removed unparked member $carried_ip"
+done
+jq -e '.desired == 3 and .pending_removal == null
+       and ([.instances[].InstanceId] | sort) == ["eci-new-1", "eci-new-2", "eci-new-3"]' \
+  "$tie_batch_case/state/state.json" >/dev/null \
+  || fail "the tied rollout removed new capacity or left an old member/removal behind"
+[[ ! -e "$tie_batch_case/shrink-drain" ]] || fail "the completed tied rollout left the park marker behind"
+
+# The production incident happened in ess_rollout, before release convergence
+# calls rollout_batch. Exercise that first leg with the very same tied fleet.
+tie_release_case="$test_root/release-created-time-tie"
+mkdir -p "$tie_release_case/state"
+make_conf "$tie_release_case/nginx.conf"
+cp "$tie_batch_case/initial-state.json" "$tie_release_case/state/state.json"
+run_deploy "$tie_release_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_BATCH=1 deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "ess rollout to $TEST_ML_DIGEST complete" "$tie_release_case/state/stdout.log" \
+  || fail "the release's first leg did not complete with tied CreatedTime"
+grep -q "scale-in complete: in-service count reached 3" "$tie_release_case/state/stdout.log" \
+  || fail "the release's first leg did not use the count retirement gate"
+tie_release_shrink="$tie_release_case/state/modify-snapshots/modify-2.log"
+grep -qxF 'desired=3 before=4' "$tie_release_shrink" || fail "the release's first shrink retired more than one member"
+for tie_ip in 10.0.0.207 10.0.0.206; do
+  grep -qxF "$tie_ip" "$tie_release_shrink" || fail "the release's first leg did not park tie member $tie_ip"
+  if sed -n '/--- relay upstream ---/,$p' "$tie_release_shrink" | grep -qF "$tie_ip"; then
+    fail "the release's first leg still served tie member $tie_ip at shrink"
+  fi
+done
+jq -e '.desired == 3 and .pending_removal == null
+       and ([.instances[].InstanceId] | sort) == ["eci-new-1", "eci-new-2", "eci-new-3"]' \
+  "$tie_release_case/state/state.json" >/dev/null || fail "the tied release did not preserve all new capacity"
+
 # (8b) H1 guard: when the group's removal policy is not exactly OldestInstance,
 # age order does not predict which instance a scale-in removes, so parking the
 # "oldest" would drain instance A while ESS releases B. The batch round must

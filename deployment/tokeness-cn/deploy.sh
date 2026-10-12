@@ -1435,7 +1435,8 @@ scale_group() {
   log "scaling group desired capacity set to $desired"
 }
 
-# scale_group_from_set <retire_ids> <label> - shrink by EXACTLY the parked set
+# scale_group_from_set <park_ids> <label> <retire_count> <target_var> - shrink by
+# the requested retirement count, independently of the size of the park set,
 # computed as close to the Modify call as the API allows, then immediately
 # detect the read-modify race an external scale-out can win (#4): between
 # reading the in-service set and the Modify landing, ESS may add instances the
@@ -1448,7 +1449,7 @@ scale_group() {
 # race to the seconds between the re-check and the Modify, instead of the
 # whole drain window.
 scale_group_from_set() {
-  local retire_ids="$1" label="$2" now_ids now_count live target extra_left
+  local retire_ids="$1" label="$2" retire_count="$3" target_var="$4" now_ids now_count live target
   now_ids="$(in_service_instance_ids)" || { error "$label: could not re-read the in-service set before the scale-in; refusing to shrink"; return 1; }
   now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
   live=0
@@ -1456,14 +1457,17 @@ scale_group_from_set() {
     [ -n "$id" ] || continue
     printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
   done <<<"$retire_ids"
+  # Without a boundary tie live <= retire_count, preserving the exact-set
+  # target. With an expanded tie park, retire only the original n instances.
+  (( live > retire_count )) && live="$retire_count"
   target=$(( now_count - live ))
   local floor_stable="${ROLLOUT_STABLE_CAPACITY:-1}"
   (( target < floor_stable )) && target="$floor_stable"
+  printf -v "$target_var" '%s' "$target"
   scale_group "$target" || return 1
   # Post-Modify witness: instances from the pre-Modify set that are neither
   # parked nor still in service were removed by the race - restore capacity.
   if ! verify_no_extra_removals "$now_ids" "$retire_ids" "$label"; then
-    extra_left=$(( now_count - live - target ))
     warn "$label: the scale-in removed more than the parked set; restoring desired capacity to ${now_count} so ESS replaces the raced-out instances"
     scale_group "$now_count" || error "$label: capacity restore FAILED - the tier is smaller than before the scale-in; fix by hand"
     return 1
@@ -1514,7 +1518,7 @@ scale_in_alarm_id() {
 # duration of a rollout. Both are best-effort: an ESS hiccup here must not abort
 # a release, and a release that fails after suspending still resumes it via the
 # caller's EXIT trap.
-# oldest_instance_ids <n> - instance IDs of the n oldest in-service instances.
+# oldest_instances_snapshot - shared policy/zone-verified victim snapshot.
 #
 # ESS removes by its OldestInstance policy, so the pre-existing instances a
 # round retires are the oldest ones - IF the group really removes that way.
@@ -1526,13 +1530,12 @@ scale_in_alarm_id() {
 #     the victim);
 #   - the sort key is CreatedTime, which carries seconds. CreationTime is
 #     minute-precise, and a batch scale-out joins several instances within the
-#     same minute; when the boundary of the requested set falls inside a tie
-#     the choice is a guess, so that case is warned about, never silent.
+#     same minute. Both pickers check the boundary tie from this snapshot:
+#     oldest_instance_ids refuses ambiguity, oldest_park_ids parks the whole tie.
 # Exits 1 with a warn when a precondition fails: the caller must not park, and
 # must not read the empty result as "nothing to retire".
-oldest_instance_ids() {
-  local n="$1" policies zones ids boundary
-  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
+oldest_instances_snapshot() {
+  local policies zones snapshot
   policies="$(aliyun_cmd ess DescribeScalingGroups --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
     | jq -r '[.ScalingGroups.ScalingGroup[0].RemovalPolicies.RemovalPolicy[]?] | join(",")' | tr -d '\r')" || policies=""
   if [[ "$policies" != "OldestInstance" ]]; then
@@ -1544,7 +1547,6 @@ oldest_instance_ids() {
   # ONE verified snapshot serves zone, sort and tie: this function runs inside
   # $() with || true at the call site, so set -e cannot catch a failed query
   # here - an empty zone count or a swallowed tie check reads as "all clear".
-  local snapshot
   if ! snapshot="$(scaling_instances_json)"; then
     log "WARN: could not read the instance list for victim selection" >&2
     return 1
@@ -1554,6 +1556,14 @@ oldest_instance_ids() {
     log "WARN: in-service instances span ${zones:-?} zone(s); ESS rebalances zones before removing, so age order does not predict the victim" >&2
     return 1
   fi
+  printf '%s\n' "$snapshot"
+}
+
+# oldest_instance_ids <n> - exact n oldest IDs; refuse a boundary tie.
+oldest_instance_ids() {
+  local n="$1" snapshot ids boundary
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
+  snapshot="$(oldest_instances_snapshot)" || return 1
   ids="$(printf '%s' "$snapshot" | jq -r --argjson n "$n" '
     [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
     | sort_by(.CreatedTime) | .[0:$n] | .[].InstanceId' | tr -d '\r')" || return 1
@@ -1571,6 +1581,35 @@ oldest_instance_ids() {
       return 1
     fi
   fi
+  printf '%s\n' "$ids"
+}
+
+# oldest_park_ids <n> - park every possible victim of an oldest-n scale-in.
+# ESS removes all members older than the boundary tie before choosing any
+# members within it. Including the ENTIRE boundary tie therefore guarantees
+# that all n instances ESS removes are in this park set, regardless of which
+# tied IDs it chooses. The park count is not the retirement count.
+oldest_park_ids() {
+  local n="$1" snapshot candidates boundary ids count tied
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
+  snapshot="$(oldest_instances_snapshot)" || return 1
+  candidates="$(printf '%s' "$snapshot" | jq -c '
+    [.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")]
+    | sort_by(.CreatedTime)')" || return 1
+  boundary="$(printf '%s' "$candidates" | jq -r --argjson n "$n" '
+    if (length > $n) and (.[$n-1].CreatedTime == .[$n].CreatedTime)
+    then .[$n].CreatedTime else empty end' | tr -d '\r')" || return 1
+  if [[ -z "$boundary" ]]; then
+    printf '%s' "$candidates" | jq -r --argjson n "$n" '.[0:$n] | .[].InstanceId' | tr -d '\r'
+    return
+  fi
+  ids="$(printf '%s' "$candidates" | jq -r --arg boundary "$boundary" '
+    .[] | select(.CreatedTime <= $boundary) | .InstanceId' | tr -d '\r')" || return 1
+  count=$(printf '%s\n' "$ids" | grep -c . || true)
+  tied="$(printf '%s' "$candidates" | jq -r --arg boundary "$boundary" '
+    [.[] | select(.CreatedTime == $boundary)] | length' | tr -d '\r')" || return 1
+  # stderr: stdout is captured by the caller as the park ID list.
+  log "boundary tie expanded the park set from $n to $count ($tied members share CreatedTime $boundary)" >&2
   printf '%s\n' "$ids"
 }
 
@@ -2352,6 +2391,41 @@ wait_retired() {
   return 1
 }
 
+# wait_retired_count <target> <new_ids> [tries] - only for an expanded park set:
+# surviving tied members must not be waited for by ID. Require the requested
+# in-service count and ALL of this round's fresh instances to remain in service.
+# Also let Removing/Removing:Wait finish before clearing the marker or starting
+# another scale-out, which would supersede an in-flight removal.
+wait_retired_count() {
+  local target="$1" new_ids="$2" tries="${3:-40}" i=0 snapshot current count=-1 removing new_live id
+  while (( i < tries )); do
+    if ! snapshot="$(scaling_instances_json)" \
+       || ! current="$(printf '%s' "$snapshot" | jq -r '
+         .ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .InstanceId' | tr -d '\r')" \
+       || ! removing="$(printf '%s' "$snapshot" | jq -r '
+         [.ScalingInstances.ScalingInstance[]? | select((.LifecycleState // "") | startswith("Removing"))] | length' | tr -d '\r')"; then
+      sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue
+    fi
+    count=$(printf '%s\n' "$current" | grep -c . || true)
+    new_live=1
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      if ! printf '%s\n' "$current" | grep -qxF "$id"; then new_live=0; break; fi
+    done <<<"$new_ids"
+    if (( count == target && new_live == 1 && removing == 0 )); then
+      log "scale-in complete: in-service count reached $target, all new instances remain in service and removals left the group"
+      # Surviving members of the boundary tie return to the relay upstream.
+      relay_drain_clear >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep "$HEALTH_POLL_SECONDS"
+    i=$(( i + 1 ))
+  done
+  error "timed out waiting for scale-in to $target in-service instance(s) with new instances preserved and removals settled (have $count)"
+  RETIREMENT_PENDING=1
+  return 1
+}
+
 # verify_no_extra_removals <before_ids> <retire_ids> <label> - after a removal
 # settled, no member OUTSIDE the parked retire set may have left the group.
 # ModifyScalingGroup carries an absolute capacity, so ESS picks its victims at
@@ -2609,7 +2683,7 @@ wait_drain_converged() {
 # back to the previous digest automatically.
 ess_rollout() {
   local digest="$1" previous_digest="${2:-}" previous_snapshot="${3:-}" attempt
-  local before_ids new_id new_ip stable retire_ids retire_ip roll_before_ids now_count live target scale_in_ok
+  local before_ids new_id new_ip stable retire_ids retire_ip retire_ips id roll_before_ids now_count live target scale_in_ok park_expanded scalein_target
   if ! before_ids="$(in_service_instance_ids)"; then
     error "could not read the current in-service instance set"
     return 1
@@ -2698,14 +2772,16 @@ ess_rollout() {
   # old flow never parked anything here - it only confirmed the NEW instance was
   # carried, slept, and let ESS remove the old one while it still received new
   # requests, so the very first leg of every release cut its in-flight streams.
-  retire_ids="$(oldest_instance_ids 1 || true)"
+  retire_ids="$(oldest_park_ids 1 || true)"
   if [[ -z "$retire_ids" ]]; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "could not resolve the instance to park for drain-first and rollback could not be verified"
     fi
     return 1
   fi
-  retire_ip=""
+  park_expanded=0
+  (( $(printf '%s\n' "$retire_ids" | grep -c . || true) > 1 )) && park_expanded=1
+  retire_ips=""
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     if ! retire_ip="$(instance_private_ip "$id" 2>/dev/null)" || ! is_valid_ipv4 "$retire_ip"; then
@@ -2714,7 +2790,9 @@ ess_rollout() {
       fi
       return 1
     fi
+    retire_ips+="${retire_ips:+,}$retire_ip"
   done <<<"$retire_ids"
+  retire_ip="$retire_ips"
   if ! relay_drain_write "$retire_ip"; then
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "could not park the retiring instance in the relay drain file and rollback could not be verified"
@@ -2744,10 +2822,10 @@ ess_rollout() {
     sleep_with_heartbeat "$ML_DRAIN_SECONDS"
     drain_guard_still_holds "$retire_ip" || { if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then error "drain protection failed twice; refusing to scale in and rollback could not be verified"; fi; return 1; }
   fi
-  # Scale down by exactly the parked set: remove one (the parked oldest) and
+  # Scale down by one, even when the whole boundary tie had to be parked, and
   # KEEP anything that joined meanwhile - an external scale-out during the
-  # hold must not be undone by this release, and the removal count must stay
-  # the count that was parked. Then wait for the set's FULL departure: a
+  # hold must not be undone by this release. Without a tie, wait for the set's
+  # FULL departure; with a tie, wait for the target count and new capacity. A
   # member still in Removing is a removal the next scale-out would supersede.
   if ! roll_before_ids="$(in_service_instance_ids)"; then
     # Fail closed (#4): falling back to a healthy-count gate here let a failed
@@ -2763,8 +2841,14 @@ ess_rollout() {
     # Race-tightened scale-in (#4): re-read, compute, Modify, and verify in one
     # helper instead of computing from a set that may be a full drain window
     # old by the time the Modify lands.
-    if scale_group_from_set "$retire_ids" "ess rollout" && wait_retired "$retire_ids" \
-       && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
+    if (( park_expanded == 1 )); then
+      if scale_group_from_set "$retire_ids" "ess rollout" 1 scalein_target \
+         && wait_retired_count "$scalein_target" "$new_id" \
+         && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
+        scale_in_ok=1
+      fi
+    elif scale_group_from_set "$retire_ids" "ess rollout" 1 scalein_target && wait_retired "$retire_ids" \
+         && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
       scale_in_ok=1
     fi
   fi
@@ -2854,6 +2938,7 @@ ess_rollout() {
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
   local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids drain_ips
+  local park_expanded scalein_target scale_in_ok
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
@@ -2981,8 +3066,9 @@ rollout_batch() {
         return 1
       fi
     done
-    # The retire set is fixed BY ID once, here: the same set is parked, removed
-    # and waited for (H2). Retiring "everything above the steady state" let an
+    # Fix the retirement count and its park set here, before the hold (H2).
+    # A boundary tie expands only the park set, never the retirement count.
+    # Retiring "everything above the steady state" after the hold let an
     # external scale-out during the 1900s hold turn the count-derived removal
     # into MORE instances than were parked - the round then reported success
     # while unparked members were cut - and made the wait condition count
@@ -2996,7 +3082,7 @@ rollout_batch() {
     fi
     scalein_before=$(printf '%s\n' "$scalein_before_ids" | grep -c . || true)
     retiring=$(( scalein_before > base ? scalein_before - base : 0 ))
-    retire_ids="" drain_ips=""
+    retire_ids="" drain_ips="" park_expanded=0
     if (( retiring > 0 )); then
       # Victim selection stays with the policy-aware oldest picker: parking
       # anything other than what ESS's removal policy will actually release
@@ -3005,7 +3091,7 @@ rollout_batch() {
       # run's snapshot and the digest pin, never listed in original_ids - is
       # closed by the post-loop straggler sweep instead of by biasing the
       # picker, so the safety invariant and the fix stay independent.
-      retire_ids="$(oldest_instance_ids "$retiring" || true)"
+      retire_ids="$(oldest_park_ids "$retiring" || true)"
       # Fail closed: retiring an instance we could not park (the API failed, or
       # the marker write failed, or fleet-sync never consumed it) cuts that
       # instance's live streams - the exact failure the drain exists to prevent.
@@ -3015,6 +3101,7 @@ rollout_batch() {
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
+      (( $(printf '%s\n' "$retire_ids" | grep -c . || true) > retiring )) && park_expanded=1
       while IFS= read -r id; do
         [ -n "$id" ] || continue
         if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
@@ -3049,7 +3136,7 @@ rollout_batch() {
       sleep_with_heartbeat "$ML_DRAIN_SECONDS"
       drain_guard_still_holds "$drain_comma" || { error "round $rounds: drain protection failed twice; refusing to scale in"; rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"; return 1; }
     fi
-    # Scale back by exactly the parked set and KEEP anything that joined
+    # Scale back by the original retirement count and KEEP anything that joined
     # meanwhile. The race-tightened helper (#4) re-reads the set, computes,
     # Modifies, and verifies as one unit; the empty-parked branch keeps the
     # plain target form (nothing to park, floor only).
@@ -3059,8 +3146,20 @@ rollout_batch() {
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
-      if ! scale_group_from_set "$retire_ids" "round $rounds" || ! wait_retired "$retire_ids" \
-         || ! verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
+      scale_in_ok=0
+      if (( park_expanded == 1 )); then
+        # The existing verifier already checks departed IDs are a subset of
+        # its second argument; pass the entire park set, including survivors.
+        if scale_group_from_set "$retire_ids" "round $rounds" "$retiring" scalein_target \
+           && wait_retired_count "$scalein_target" "$(printf '%s\n' "${new_ids[@]}")" \
+           && verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
+          scale_in_ok=1
+        fi
+      elif scale_group_from_set "$retire_ids" "round $rounds" "$retiring" scalein_target && wait_retired "$retire_ids" \
+           && verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
+        scale_in_ok=1
+      fi
+      if (( scale_in_ok == 0 )); then
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
@@ -3069,7 +3168,7 @@ rollout_batch() {
     fi
     # Scaling in is asynchronous: the group keeps reporting the removed
     # instances for a while after ModifyScalingGroup (in Removing state, then
-    # gone). The gate below is the exact parked set leaving the group ENTIRELY,
+    # gone). Both gates wait for removals to leave the group ENTIRELY,
     # so the next round's scale-out cannot supersede a removal that is still
     # in flight - the race that killed v1.0.0-rc.40-tokeness-mainland.42.
     if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
