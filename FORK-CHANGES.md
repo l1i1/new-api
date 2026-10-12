@@ -20,7 +20,7 @@
 
 ## 2. 清单的机械来源（每次同步后重跑）
 
-生成时间 2026-09-25（引入 `scripts/fork-invariants` 门禁与 i18n overlay 时复核）；`fork = origin/tokeness/main @ 3bf0d16b3`、`upstream/main @ c2b7a9a9e`、rc.40 锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 0aec08fee`；该范围内自有非 merge 提交 **518 个**（7 月 45 / 8 月 218 / 9 月 255）。
+生成时间 2026-10-12（`rel47-deploy @ dca044b9e` 基线的平局退役 P1 复核，未合并上游）。初次机械清单于 2026-09-25 引入 `scripts/fork-invariants` 门禁与 i18n overlay 时复核：`fork = origin/tokeness/main @ 3bf0d16b3`、`upstream/main @ c2b7a9a9e`、rc.40 锚点 `v1.0.0-rc.40 = 0aec08fee`、`BASE = git merge-base upstream/main origin/tokeness/main = 0aec08fee`；该范围内自有非 merge 提交 **518 个**（7 月 45 / 8 月 218 / 9 月 255）。
 
 > **清单一经登记即由门禁核对**：`node scripts/fork-invariants/main.mjs --check manifest` 按 `scripts/fork-invariants/manifest.json` 逐条断言本文件的条目仍在树里（关键文件、fork 独有符号、测试名）。本文件的表格是给人读的，`manifest.json` 是给门禁读的，两者同批更新（§10）。
 
@@ -128,6 +128,7 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 | 渠道可观测性（多 Key 测试、指标、凭据管理） | `pkg/channel_observability/observability.go`、`controller/channel_credentials.go`、`model/channel_observation_metric.go` | |
 | invoice / wallet / 支付结算加固 | `docs/invoice-tech-spec.md`、`docs/payment-settlement-hardening.md`、`web/src/features/system-settings/integrations/payment-settings-section.tsx` | |
 | 双站发布：`mainland`（CNY + 简体固定）与 `intl`；staged 发布、金丝雀、回滚 | `deployment/tokeness/rollout.sh`、`deployment/tokeness-cn/deploy.sh`、`.cnb.yml`、`.github/workflows/tokeness-publish.yml`、`tokeness-deploy.yml`、`tokeness-upstream-sync.yml` | 版本命名 `v1.0.0-rc.NN-tokeness-<edition>.M` |
+| 大陆平局退役预算与完成证明：替代 `dca044b9e` 中按在役 park 数 clamp、按固定目标容量等待的两项行为；完全离组的 park 成员扣除本轮预算，耗尽时不再 Modify，超预算失败且只上调容量恢复；平局等待证明足量 park 成员离开、Removing 归零及全部新实例在役，低于缩容前在役数减退役数量立即失败，允许外部扩容高于该下限，成功清 marker、超时保留 pending 保护；非平局按 ID 等待不变 | `deployment/tokeness-cn/deploy.sh`、`deployment/tokeness-cn/tests/fake-bin/aliyun` | `deployment/tokeness-cn/tests/deploy-test.sh`：`tie-retirement-budget-{batch,release}`、`tie-retirement-external-scaleout-{batch,release}`（含无 pending/hold/marker 残留）、`tie-retirement-budget-exceeded-desired-{3,5}`、`tie-retirement-overremoved-immediate`；`deployment/tokeness-cn/tests/guard-test.sh` |
 | 部署命令 v2026-10-05.1：拉取前回收无容器关联的镜像（`docker image prune -af`；containerd 存储下 digest 拉取的镜像不算 dangling）并设磁盘下限（低于下限拒绝部署且不改 release.env），切换成功后再次回收；release.env 写入失败绝不用截断文件覆盖已提交的选择 | `deployment/tokeness/remote-command.sh`、`deployment/tokeness/rollout.sh`、`deployment/tokeness/install-remote-command.sh` | `deployment/tokeness/tests/remote-command-test.sh`（磁盘下限、写保护、切换前后各一次回收）；版本号三处必须同批更新并重装到四个节点 |
 | 运营插件（task plugins） | `deployment/tokeness/task-plugins/*`（如 `openai-video-agg`） | 插件契约见 `docs/plugin-api/v1.md` |
 

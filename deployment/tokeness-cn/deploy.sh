@@ -1443,25 +1443,65 @@ scale_group() {
 # read never saw, and an absolute DesiredCapacity then removes unparked ones.
 # The park set is re-checked right before the Modify (as close as the API
 # allows); after it, the removal is verified against the pre-Modify set and,
-# if more left than were parked, the capacity is immediately restored so ESS
+# if more left than the retirement budget, the capacity is restored so ESS
 # replaces what the race deleted and the release fails loud. This cannot
 # un-cut a stream that was already cut, but it bounds the blast radius of the
 # race to the seconds between the re-check and the Modify, instead of the
 # whole drain window.
 scale_group_from_set() {
-  local retire_ids="$1" label="$2" retire_count="$3" target_var="$4" now_ids now_count live target
-  now_ids="$(in_service_instance_ids)" || { error "$label: could not re-read the in-service set before the scale-in; refusing to shrink"; return 1; }
+  local retire_ids="$1" label="$2" retire_count="$3" target_var="$4" snapshot now_ids all_ids now_count live removed_started budget_left target id
+  if ! snapshot="$(scaling_instances_json)" \
+     || ! now_ids="$(printf '%s' "$snapshot" | jq -r '.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .InstanceId' | tr -d '\r')" \
+     || ! all_ids="$(printf '%s' "$snapshot" | jq -r '.ScalingInstances.ScalingInstance[]? | .InstanceId' | tr -d '\r')"; then
+    error "$label: could not re-read the instance set before the scale-in; refusing to shrink"
+    return 1
+  fi
   now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
   live=0
+  # "Budget consumed" means a removal has STARTED, not that it finished: an
+  # instance in Removing is already absent from the InService set, so counting
+  # only fully-gone members let one round shrink twice while the first removal
+  # was still in flight (review P1: A in Removing, the code deleted B too and
+  # then accepted departed=2 >= n=1). all_ids stays for the message only.
+  removed_started=0
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
+    if printf '%s\n' "$now_ids" | grep -qxF "$id"; then live=$(( live + 1 )); else removed_started=$(( removed_started + 1 )); fi
   done <<<"$retire_ids"
-  # Without a boundary tie live <= retire_count, preserving the exact-set
-  # target. With an expanded tie park, retire only the original n instances.
-  (( live > retire_count )) && live="$retire_count"
-  target=$(( now_count - live ))
   local floor_stable="${ROLLOUT_STABLE_CAPACITY:-1}"
+  if (( removed_started > retire_count )); then
+    error "$label: retirement budget exceeded ($removed_started removals started of $retire_count); refusing to scale in again"
+    # Replace the excess departures, but never undo an external scale-out.
+    local restore_target=$(( now_count + removed_started - retire_count )) desired_now=-1
+    (( restore_target < floor_stable )) && restore_target="$floor_stable"
+    desired_now="$(current_desired_capacity)" || desired_now=-1
+    if (( desired_now >= 0 && desired_now < restore_target )); then
+      warn "$label: raising desired capacity from $desired_now to $restore_target after excess retirements"
+      scale_group "$restore_target" || error "$label: capacity raise FAILED - fix by hand"
+    fi
+    return 1
+  fi
+  budget_left=$(( retire_count - removed_started ))
+  if (( budget_left == 0 )); then
+    # The budget is spent, but the tier must still not sit below its stable
+    # floor: when capacity was lost to removals this round did not order
+    # (review P1: stable 3, A and an external C left, 2 in service, desired 2),
+    # the parent restored the floor here. Raise-only, so an external scale-out
+    # is never undone.
+    local floor_desired=-1
+    floor_desired="$(current_desired_capacity)" || floor_desired=-1
+    if (( floor_desired >= 0 && floor_desired < floor_stable )); then
+      warn "$label: retirement budget already consumed ($removed_started of $retire_count) and desired capacity $floor_desired is below the stable floor $floor_stable; raising it"
+      scale_group "$floor_stable" || { error "$label: capacity raise FAILED - fix by hand"; return 1; }
+    fi
+    printf -v "$target_var" '%s' "$now_count"
+    log "$label: retirement budget already consumed (removals started=$removed_started of $retire_count); not scaling in again"
+    return 0
+  fi
+  # A vanished park member already used this round's budget. Surviving tied
+  # members must not consume it a second time, even if capacity joined later.
+  (( live > budget_left )) && live="$budget_left"
+  target=$(( now_count - live ))
   (( target < floor_stable )) && target="$floor_stable"
   printf -v "$target_var" '%s' "$target"
   scale_group "$target" || return 1
@@ -2391,13 +2431,14 @@ wait_retired() {
   return 1
 }
 
-# wait_retired_count <target> <new_ids> [tries] - only for an expanded park set:
-# surviving tied members must not be waited for by ID. Require the requested
-# in-service count and ALL of this round's fresh instances to remain in service.
+# wait_retired_count <park_ids> <retire_count> <new_ids> <expected_min> [tries]
+# Only for an expanded park set: prove the requested departures while allowing
+# surviving tied members and external scale-outs to remain in service.
 # Also let Removing/Removing:Wait finish before clearing the marker or starting
 # another scale-out, which would supersede an in-flight removal.
 wait_retired_count() {
-  local target="$1" new_ids="$2" tries="${3:-40}" i=0 snapshot current count=-1 removing new_live id
+  local park_ids="$1" retire_count="$2" new_ids="$3" expected_min="$4" tries="${5:-40}"
+  local i=0 snapshot current count=-1 removing departed=0 new_live id
   while (( i < tries )); do
     if ! snapshot="$(scaling_instances_json)" \
        || ! current="$(printf '%s' "$snapshot" | jq -r '
@@ -2407,13 +2448,46 @@ wait_retired_count() {
       sleep "$HEALTH_POLL_SECONDS"; i=$(( i + 1 )); continue
     fi
     count=$(printf '%s\n' "$current" | grep -c . || true)
+    if (( count < expected_min )); then
+      error "scale-in removed too much capacity: have $count in-service instance(s), expected at least $expected_min"
+      # In-flight removals must keep their protection: returning without
+      # RETIREMENT_PENDING let the cleanup clear the marker, release the hold
+      # and re-enable the scale-in alarm while members were still leaving
+      # (review P1). With removals running, the pending path is the correct one.
+      if (( removing > 0 )); then
+        warn "keeping the retirement protection: $removing removal(s) are still in flight"
+        RETIREMENT_PENDING=1
+      fi
+      return 1
+    fi
+    departed=0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '%s\n' "$current" | grep -qxF "$id" || departed=$(( departed + 1 ))
+    done <<<"$park_ids"
     new_live=1
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       if ! printf '%s\n' "$current" | grep -qxF "$id"; then new_live=0; break; fi
     done <<<"$new_ids"
-    if (( count == target && new_live == 1 && removing == 0 )); then
-      log "scale-in complete: in-service count reached $target, all new instances remain in service and removals left the group"
+    if (( departed > retire_count )); then
+      # The budget was overshot while we waited: more park members left the
+      # InService set than this round was allowed to retire. Restore capacity
+      # (raise-only) and fail - accepting it here is how the earlier revision
+      # silently retired two members for n=1 (review P1).
+      local over_desired=-1 over_target=$(( count + departed - retire_count ))
+      (( over_target < expected_min )) && over_target="$expected_min"
+      over_desired="$(current_desired_capacity)" || over_desired=-1
+      error "scale-in overshot its budget: $departed removals started for retire_count=$retire_count"
+      if (( over_desired >= 0 && over_desired < over_target )); then
+        warn "raising desired capacity from $over_desired to $over_target after the overshoot"
+        scale_group "$over_target" || error "capacity raise FAILED after the overshoot - fix by hand"
+      fi
+      RETIREMENT_PENDING=1
+      return 1
+    fi
+    if (( departed >= retire_count && new_live == 1 && removing == 0 )); then
+      log "scale-in complete: $departed of $retire_count parked retirements completed, $count in-service instance(s) (minimum $expected_min), all new instances remain in service and removals left the group"
       # Surviving members of the boundary tie return to the relay upstream.
       relay_drain_clear >/dev/null 2>&1 || true
       return 0
@@ -2421,7 +2495,7 @@ wait_retired_count() {
     sleep "$HEALTH_POLL_SECONDS"
     i=$(( i + 1 ))
   done
-  error "timed out waiting for scale-in to $target in-service instance(s) with new instances preserved and removals settled (have $count)"
+  error "timed out waiting for scale-in: $departed of $retire_count parked retirements completed with new instances preserved and removals settled (have $count, minimum $expected_min)"
   RETIREMENT_PENDING=1
   return 1
 }
@@ -2683,7 +2757,7 @@ wait_drain_converged() {
 # back to the previous digest automatically.
 ess_rollout() {
   local digest="$1" previous_digest="${2:-}" previous_snapshot="${3:-}" attempt
-  local before_ids new_id new_ip stable retire_ids retire_ip retire_ips id roll_before_ids now_count live target scale_in_ok park_expanded scalein_target
+  local before_ids new_id new_ip stable retire_ids retire_ip retire_ips id roll_before_ids roll_before_count now_count live target scale_in_ok park_expanded scalein_target
   if ! before_ids="$(in_service_instance_ids)"; then
     error "could not read the current in-service instance set"
     return 1
@@ -2825,7 +2899,7 @@ ess_rollout() {
   # Scale down by one, even when the whole boundary tie had to be parked, and
   # KEEP anything that joined meanwhile - an external scale-out during the
   # hold must not be undone by this release. Without a tie, wait for the set's
-  # FULL departure; with a tie, wait for the target count and new capacity. A
+  # FULL departure; with a tie, prove the budget's departures and new capacity. A
   # member still in Removing is a removal the next scale-out would supersede.
   if ! roll_before_ids="$(in_service_instance_ids)"; then
     # Fail closed (#4): falling back to a healthy-count gate here let a failed
@@ -2843,7 +2917,7 @@ ess_rollout() {
     # old by the time the Modify lands.
     if (( park_expanded == 1 )); then
       if scale_group_from_set "$retire_ids" "ess rollout" 1 scalein_target \
-         && wait_retired_count "$scalein_target" "$new_id" \
+         && wait_retired_count "$retire_ids" 1 "$new_id" "$(( roll_before_count - 1 ))" \
          && verify_no_extra_removals "$roll_before_ids" "$retire_ids" "ess rollout"; then
         scale_in_ok=1
       fi
@@ -2938,7 +3012,7 @@ ess_rollout() {
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
   local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids drain_ips
-  local park_expanded scalein_target scale_in_ok
+  local park_expanded scalein_target scale_in_ok expected_min
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
 
@@ -3148,10 +3222,12 @@ rollout_batch() {
       fi
       scale_in_ok=0
       if (( park_expanded == 1 )); then
+        expected_min=$(printf '%s\n' "$now_ids" | grep -c . || true)
+        expected_min=$(( expected_min - retiring ))
         # The existing verifier already checks departed IDs are a subset of
         # its second argument; pass the entire park set, including survivors.
         if scale_group_from_set "$retire_ids" "round $rounds" "$retiring" scalein_target \
-           && wait_retired_count "$scalein_target" "$(printf '%s\n' "${new_ids[@]}")" \
+           && wait_retired_count "$retire_ids" "$retiring" "$(printf '%s\n' "${new_ids[@]}")" "$expected_min" \
            && verify_no_extra_removals "$now_ids" "$retire_ids" "round $rounds"; then
           scale_in_ok=1
         fi

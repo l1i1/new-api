@@ -1148,7 +1148,7 @@ if grep -q "refusing to retire an ambiguous set" "$tie_batch_case/state/output.l
 fi
 grep -qF "boundary tie expanded the park set from 1 to 2 (2 members share CreatedTime 2026-10-11T03:01:45Z)" \
   "$tie_batch_case/state/output.log" || fail "the tie expansion was not reported on stderr"
-grep -q "scale-in complete: in-service count reached 3" "$tie_batch_case/state/stdout.log" \
+grep -q "scale-in complete: 1 of 1 parked retirements completed, 3 in-service instance(s)" "$tie_batch_case/state/stdout.log" \
   || fail "the expanded tie did not use the count retirement gate"
 grep -q "retired all 3 pre-existing instance(s) in 3 round(s)" "$tie_batch_case/state/stdout.log" \
   || fail "the batch rollout did not converge one retirement per round"
@@ -1209,7 +1209,7 @@ run_deploy "$tie_release_case" \
   ROLLOUT_BATCH=1 deploy-release v1.0.0-rc.33-tokeness-mainland.9
 grep -q "ess rollout to $TEST_ML_DIGEST complete" "$tie_release_case/state/stdout.log" \
   || fail "the release's first leg did not complete with tied CreatedTime"
-grep -q "scale-in complete: in-service count reached 3" "$tie_release_case/state/stdout.log" \
+grep -q "scale-in complete: 1 of 1 parked retirements completed, 3 in-service instance(s)" "$tie_release_case/state/stdout.log" \
   || fail "the release's first leg did not use the count retirement gate"
 tie_release_shrink="$tie_release_case/state/modify-snapshots/modify-2.log"
 grep -qxF 'desired=3 before=4' "$tie_release_shrink" || fail "the release's first shrink retired more than one member"
@@ -1222,6 +1222,136 @@ done
 jq -e '.desired == 3 and .pending_removal == null
        and ([.instances[].InstanceId] | sort) == ["eci-new-1", "eci-new-2", "eci-new-3"]' \
   "$tie_release_case/state/state.json" >/dev/null || fail "the tied release did not preserve all new capacity"
+
+# (8a-P1) A tied park member already gone during the hold spends the retirement
+# budget even when an external scale-out replaces its capacity. Check the NEXT
+# Modify snapshot: the first round must leave all four survivors, including the
+# other tied member, and issue no second shrink. Cover both rollout entry paths.
+for retirement_path in batch release; do
+  budget_case="$test_root/tie-retirement-budget-$retirement_path"
+  mkdir -p "$budget_case/state"
+  make_conf "$budget_case/nginx.conf"
+  jq '.max_size = 6' "$tie_batch_case/initial-state.json" > "$budget_case/state/state.json"
+  retirement_args=(rollout-batch 1)
+  if [[ "$retirement_path" == release ]]; then
+    retirement_args=(deploy-release v1.0.0-rc.33-tokeness-mainland.9)
+  fi
+  run_deploy "$budget_case" \
+    APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+    HEALTH_POLL_SECONDS=1 TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+    TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD=1 TOKENESS_TEST_PARK_DEPARTURES_HOLD=1 \
+    TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+    ROLLOUT_BATCH=1 "${retirement_args[@]}"
+  assert_contains "$budget_case/state/external-scaleout.log" 'hold-window parked departures injected: 1'
+  assert_contains "$budget_case/state/stdout.log" 'retirement budget already consumed (removals started=1 of 1); not scaling in again'
+  [[ "$(grep -c 'ess ModifyScalingGroup' "$budget_case/state/aliyun-calls.log")" -eq 5 ]] \
+    || fail "$retirement_path: consumed retirement budget issued another scale-in"
+  budget_next="$budget_case/state/modify-snapshots/modify-2.log"
+  grep -qxF 'desired=5 before=4' "$budget_next" \
+    || fail "$retirement_path: first round retired more than its one-member budget"
+  grep -qxF '(absent)' "$budget_next" || fail "$retirement_path: completed budget left its park marker behind"
+  # Exactly A departed; B, C, N and the external X are all still carried.
+  for survivor_ip in 10.0.0.206 10.0.0.205 10.0.0.241 10.0.0.201; do
+    assert_contains "$budget_next" "server $survivor_ip:3000;"
+  done
+  assert_not_contains "$budget_next" '10.0.0.207'
+  jq -e '.desired == 4 and .pending_removal == null
+         and ([.instances[] | select(.LifecycleState=="InService") | .InstanceId] | sort)
+           == ["eci-ext-1", "eci-new-1", "eci-new-2", "eci-new-3"]' \
+    "$budget_case/state/state.json" >/dev/null || fail "$retirement_path: budget rollout lost new or external capacity"
+  printf 'PASS: tie-retirement-budget-%s\n' "$retirement_path"
+done
+
+# Scale-in finishes at three, then the autoscaler adds X. The tied gate must
+# prove one departure and accept four, without timeout, rollback or pending
+# retirement protections. The same contract applies to ess_rollout and batches.
+for retirement_path in batch release; do
+  expanded_case="$test_root/tie-retirement-external-scaleout-$retirement_path"
+  mkdir -p "$expanded_case/state"
+  make_conf "$expanded_case/nginx.conf"
+  jq '.max_size = 6' "$tie_batch_case/initial-state.json" > "$expanded_case/state/state.json"
+  retirement_args=(rollout-batch 1)
+  if [[ "$retirement_path" == release ]]; then
+    retirement_args=(deploy-release v1.0.0-rc.33-tokeness-mainland.9)
+  fi
+  run_deploy "$expanded_case" \
+    APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+    HEALTH_POLL_SECONDS=1 TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+    TOKENESS_TEST_EXTERNAL_SCALEOUT=1 \
+    TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+    ROLLOUT_BATCH=1 "${retirement_args[@]}"
+  assert_contains "$expanded_case/state/external-scaleout.log" 'external scale-out injected: 1 instance(s)'
+  assert_contains "$expanded_case/state/stdout.log" 'scale-in complete: 1 of 1 parked retirements completed, 4 in-service instance(s) (minimum 3)'
+  assert_contains "$expanded_case/state/stdout.log" 'retired all 3 pre-existing instance(s)'
+  if [[ "$retirement_path" == release ]]; then
+    assert_contains "$expanded_case/state/stdout.log" 'deployed to the whole ECI tier'
+  fi
+  assert_not_contains "$expanded_case/state/output.log" 'timed out waiting for scale-in'
+  assert_not_contains "$expanded_case/state/output.log" 'rolling back'
+  assert_not_contains "$expanded_case/state/stdout.log" 'a retire set is still settling'
+  jq -e '.pending_removal == null and .scale_in_alarm.state == "enabled"
+         and ([.instances[] | select(.LifecycleState=="InService") | .InstanceId] | sort)
+           == ["eci-ext-1", "eci-new-1", "eci-new-2", "eci-new-3"]' \
+    "$expanded_case/state/state.json" >/dev/null \
+    || fail "$retirement_path: completed scale-in left pending removal or lost new/external capacity"
+  [[ ! -e "$expanded_case/shrink-drain" && ! -e "$expanded_case/shrink-hold" ]] \
+    || fail "$retirement_path: completed scale-in left pending retirement protections"
+  printf 'PASS: tie-retirement-external-scaleout-%s (no pending retirement)\n' "$retirement_path"
+done
+
+# An already exceeded park budget fails before any shrink. Recovery replaces
+# only the excess departure and is raise-only even if desired grew externally.
+for desired_before in 3 5; do
+  exceeded_case="$test_root/tie-retirement-budget-exceeded-$desired_before"
+  mkdir -p "$exceeded_case/state"
+  jq --argjson desired "$desired_before" '.desired = $desired | .max_size = 6
+      | .instances = [.instances[2],
+        {InstanceId: "eci-new-1", PrivateIpAddress: "10.0.0.241", LifecycleState: "InService"},
+        {InstanceId: "eci-ext-1", PrivateIpAddress: "10.0.0.201", LifecycleState: "InService"}]' \
+    "$tie_batch_case/initial-state.json" > "$exceeded_case/state/state.json"
+  env PATH="$bin_dir:$PATH" TOKENESS_TEST_STATE_DIR="$exceeded_case/state" \
+    bash -c '
+      source "$1"
+      ROLLOUT_STABLE_CAPACITY=3
+      park_ids="$(printf "eci-old\neci-old2\n")"
+      if scale_group_from_set "$park_ids" "budget regression" 1 scalein_target; then
+        exit 1
+      fi
+    ' bash "$DEPLOY_SCRIPT" > "$exceeded_case/stdout.log" 2> "$exceeded_case/output.log"
+  assert_contains "$exceeded_case/output.log" 'retirement budget exceeded (2 removals started of 1)'
+  expected_desired="$desired_before"
+  (( expected_desired < 4 )) && expected_desired=4
+  jq -e --argjson desired "$expected_desired" '.desired == $desired and .pending_removal == null
+         and ([.instances[].InstanceId] | index("eci-new-1") != null and index("eci-ext-1") != null)' \
+    "$exceeded_case/state/state.json" >/dev/null || fail "exceeded budget did not preserve capacity raise semantics"
+  if [[ "$desired_before" == 3 ]]; then
+    grep -qxF 'desired=4 before=3' "$exceeded_case/state/modify-snapshots/modify-1.log" \
+      || fail "exceeded budget did not raise capacity to replace the excess departure"
+  else
+    assert_not_contains "$exceeded_case/state/aliyun-calls.log" 'ess ModifyScalingGroup'
+  fi
+  printf 'PASS: tie-retirement-budget-exceeded-desired-%s\n' "$desired_before"
+done
+
+# Fewer than the expected minimum is an immediate failure, even if a parked
+# member departed and the new member is alive. It must not run all 40 polls or
+# mislabel a completed removal as pending.
+overremoved_case="$test_root/tie-retirement-overremoved-immediate"
+mkdir -p "$overremoved_case/state"
+jq '.instances = [.instances[2],
+      {InstanceId: "eci-new-1", PrivateIpAddress: "10.0.0.241", LifecycleState: "InService"}]' \
+  "$tie_batch_case/initial-state.json" > "$overremoved_case/state/state.json"
+env PATH="$bin_dir:$PATH" TOKENESS_TEST_STATE_DIR="$overremoved_case/state" HEALTH_POLL_SECONDS=0 \
+  bash -c '
+    source "$1"
+    park_ids="$(printf "eci-old\neci-old2\n")"
+    if wait_retired_count "$park_ids" 1 eci-new-1 3; then exit 1; fi
+    [[ "$RETIREMENT_PENDING" == 0 ]]
+  ' bash "$DEPLOY_SCRIPT" > "$overremoved_case/stdout.log" 2> "$overremoved_case/output.log"
+assert_contains "$overremoved_case/output.log" 'scale-in removed too much capacity: have 2 in-service instance(s), expected at least 3'
+[[ "$(grep -c 'ess DescribeScalingInstances' "$overremoved_case/state/aliyun-calls.log")" -eq 1 ]] \
+  || fail "excess removal was not rejected on the first snapshot"
+printf 'PASS: tie-retirement-overremoved-immediate\n'
 
 # (8b) H1 guard: when the group's removal policy is not exactly OldestInstance,
 # age order does not predict which instance a scale-in removes, so parking the
