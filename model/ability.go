@@ -272,9 +272,16 @@ func abilitiesAtRetryTier(abilities []Ability, retry int) []Ability {
 // filterAbilitiesByVideoCapability drops channels that have not declared they
 // can read video parts. The declaration lives in the channel's settings JSON,
 // which is loaded by the same query that feeds this filter's callers.
-func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) []Ability {
+//
+// A failed capability read still drops every candidate — an unreadable
+// capability must not route a video request to an upstream that may silently
+// ignore the media — but it reports the failure instead of returning an empty
+// set. An empty set is indistinguishable from "no channel serves this", and the
+// selection layer turns a propagated error into an internal selection fault
+// rather than into that conclusion.
+func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) ([]Ability, error) {
 	if !videoOnly || len(abilities) == 0 {
-		return abilities
+		return abilities, nil
 	}
 	channelIds := make([]int, 0, len(abilities))
 	seen := make(map[int]struct{}, len(abilities))
@@ -287,9 +294,7 @@ func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) []Abi
 	}
 	var channels []*Channel
 	if err := DB.Select("id, settings").Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		// Fail closed: an unreadable capability must not route a video request
-		// to an upstream that may silently ignore the media.
-		return nil
+		return nil, err
 	}
 	capable := make(map[int]struct{}, len(channels))
 	for _, channel := range channels {
@@ -303,7 +308,7 @@ func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) []Abi
 			filtered = append(filtered, ability)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 func GetChannel(group string, model string, retry int, requestPathOrFilters interface{}) (*Channel, error) {
@@ -464,7 +469,14 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
 	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial, fit)
-	abilities = filterAbilitiesByVideoCapability(abilities, videoOnly)
+	abilities, videoErr := filterAbilitiesByVideoCapability(abilities, videoOnly)
+	if videoErr != nil {
+		// Report the fault instead of an empty candidate set: the selection layer
+		// then classifies it as an internal selection error, and a caller that
+		// infers "no channel is left" from an empty set never draws that
+		// conclusion from a failed lookup.
+		return nil, videoErr
+	}
 	if narrowBeforeTiering {
 		abilities = abilitiesAtRetryTier(abilities, retry)
 	}

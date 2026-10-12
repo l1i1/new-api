@@ -815,7 +815,19 @@ func TestIndependentAuditLogStores(t *testing.T) {
 				t.Setenv("LOG_SQL_DSN", isolatedDSN)
 				t.Setenv("LOG_SQL_CLICKHOUSE_TTL_DAYS", "7")
 				require.NoError(t, model.InitLogDB())
+				// InitLogDB builds a new pool and overwrites the handle without
+				// closing the one it replaces (model/main.go), so the pool this line
+				// creates would leak on the next call. A leaked pool keeps the
+				// isolated database open, which is what makes the fixture's DROP
+				// DATABASE fail and the database survive the run.
+				supersededLogDB := model.LOG_DB
 				require.NoError(t, model.InitLogDB())
+				require.NotSame(t, supersededLogDB, model.LOG_DB)
+				t.Cleanup(func() {
+					if sqlDB, err := supersededLogDB.DB(); err == nil {
+						_ = sqlDB.Close()
+					}
+				})
 				if upgrade {
 					var old model.Log
 					require.NoError(t, model.LOG_DB.Where("request_id = ?", "legacy-split-request").Take(&old).Error)

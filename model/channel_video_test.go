@@ -1,14 +1,18 @@
 package model
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // videoChannel builds a channel with the video capability declared or omitted.
@@ -84,4 +88,33 @@ func TestChannelSatisfiesVideoFilter(t *testing.T) {
 	ok, kind = ChannelSatisfiesFilters(blind, "kimi-k3", filter)
 	assert.False(t, ok)
 	assert.Equal(t, dto.FilterVideoRequest, kind)
+}
+
+// TestVideoCapabilityFilterReportsAnUnreadableCapability pins the difference
+// between "no channel declared video support" and "the capability could not be
+// read". Both still drop every candidate — a media-blind upstream would answer a
+// video request from the text alone — but only the first may present itself as an
+// empty candidate set, because callers conclude "this request has no channel
+// left" from an empty set. A database fault reported that way makes the
+// conclusion wrong.
+func TestVideoCapabilityFilterReportsAnUnreadableCapability(t *testing.T) {
+	previousDB := DB
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:video_filter_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	DB = db
+	t.Cleanup(func() { DB = previousDB })
+
+	abilities := []Ability{{ChannelId: 1, Model: "kimi-k3", Group: "default"}}
+
+	filtered, err := filterAbilitiesByVideoCapability(abilities, true)
+	require.Error(t, err, "an unreadable capability must be reported, not turned into an empty candidate set")
+	require.Nil(t, filtered)
+
+	// Without the video restriction no capability is read, so nothing can fail.
+	filtered, err = filterAbilitiesByVideoCapability(abilities, false)
+	require.NoError(t, err)
+	require.Len(t, filtered, 1)
 }
