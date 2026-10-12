@@ -37,6 +37,8 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type Adaptor struct {
@@ -441,6 +443,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	applyDeepSeekV4DisabledThinkingDialect(info, request)
 	applyKimiK3DisabledThinkingDialect(info, request)
+	applyKimiK3EffortDialect(info, request)
 
 	return request, nil
 }
@@ -989,4 +992,155 @@ func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dt
 	// (shouldSuppressReasoningContent exempts the family), and the relay info
 	// keeps the caller's effort separately (reasoningEffortFromRequest).
 	request.THINKING = nil
+}
+
+// kimiK3OfficialDefaultEffort is the tier the official Moonshot endpoint runs
+// for a Kimi K3 request that names no tier of its own: /v1/models declares
+// reasoning_efforts.default_effort=max for kimi-k3, and the live endpoint
+// answered max for an omitted field, for an explicit max and for an
+// unrecognised value (probe 2026-10-13, api.moonshot.cn).
+const kimiK3OfficialDefaultEffort = "max"
+
+// kimiK3OfficialEffortFor maps one caller-named tier onto the tier the official
+// endpoint would actually run, reporting whether the body has to be rewritten
+// before it reaches a non-official upstream.
+//
+// The official endpoint normalises the caller's own vocabulary (probe
+// 2026-10-13): medium runs at high, an absent or unrecognised value runs at the
+// declared default max, and low/high/max run as named. The resellers this pool
+// falls back to do not: they accept the literal low/high/max and answer the
+// WEAKEST tier for everything else — an omitted field included — with a 200, so
+// a caller cannot tell a silent downgrade from success (channel 48, probe
+// 2026-10-12 20:45-21:05: no field, medium and an unknown value all came back at
+// the weakest tier while low/high/max were honoured).
+//
+// "none" and "minimal" are deliberately not mapped: they are the disabled
+// class, whose aggregator dialect kimiK3AggregatorDisabledEffort carries, and a
+// family rule pins that class to an official-behaving channel anyway.
+func kimiK3OfficialEffortFor(effort string) (string, bool) {
+	trimmed := strings.TrimSpace(effort)
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "low", "high", "max":
+		// Already on the official axis; an upper-case spelling is normalised
+		// because the official axis is case-insensitive while a reseller's
+		// whitelist need not be.
+		return lower, trimmed != lower
+	case "medium":
+		return "high", true
+	case "none", "minimal":
+		// Disabled class, owned by the disabled-thinking dialect: its marker
+		// must not be replaced by a tier.
+		return lower, trimmed != lower
+	default:
+		// Includes the empty string: an unnamed tier runs at the official
+		// default, which is exactly what the upstreams below do not do.
+		return kimiK3OfficialDefaultEffort, true
+	}
+}
+
+// kimiK3CallerEffort resolves the tier the CALLER named, across the spellings
+// the OpenAI-compatible surface accepts: the top-level reasoning_effort (which
+// the conversion above may already have lifted out of a model-name effort tail
+// or a nested reasoning object), then the native thinking.effort and the
+// OpenRouter-style reasoning.effort. Empty means the caller named no tier.
+func kimiK3CallerEffort(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) string {
+	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" {
+		return effort
+	}
+	if info != nil {
+		if effort := strings.TrimSpace(info.GetReasoningEffort()); effort != "" {
+			return effort
+		}
+	}
+	for _, raw := range []json.RawMessage{request.THINKING, request.Reasoning} {
+		if len(raw) == 0 {
+			continue
+		}
+		if value := gjson.GetBytes(raw, "effort"); value.Type == gjson.String {
+			if effort := strings.TrimSpace(value.String()); effort != "" {
+				return effort
+			}
+		}
+	}
+	return ""
+}
+
+// kimiK3RewriteNamedEffort replaces an "effort" string inside a raw request
+// fragment, leaving the fragment (and every field that is not an effort string)
+// exactly as it was.
+func kimiK3RewriteNamedEffort(raw json.RawMessage, effort string) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	if !gjson.ParseBytes(raw).IsObject() {
+		return raw
+	}
+	value := gjson.GetBytes(raw, "effort")
+	if value.Type != gjson.String || value.String() == effort {
+		return raw
+	}
+	updated, err := sjson.SetBytes(raw, "effort", effort)
+	if err != nil {
+		return raw
+	}
+	return updated
+}
+
+// applyKimiK3EffortDialect makes a caller's thinking tier reach a non-official
+// Kimi K3 channel as the tier the official endpoint would have run.
+//
+// Why: official behaviour is the product. The same request otherwise means two
+// different things depending on which channel the pool happens to pick — the
+// official tier on the Moonshot channel type, a silently weaker one on the
+// resellers — and the caller sees a 200 either way. Rewriting the tier at the
+// edge, the only layer that knows both the family and which upstream is about
+// to receive the body, makes the caller's request mean the same thing
+// everywhere.
+//
+// The exemptions mirror applyKimiK3DisabledThinkingDialect: the Moonshot
+// channel type and every official-behaving channel already normalise the
+// official axis themselves, other families keep their own handling, and
+// OpenRouter keeps its own dialect (it projects the caller's intent into the
+// nested reasoning object and clears the top-level field). The relay info keeps
+// the caller's own value (reasoningEffortFromRequest), so the request log still
+// reports what the caller asked for rather than what this pass sent upstream.
+func applyKimiK3EffortDialect(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) {
+	if info == nil || request == nil {
+		return
+	}
+	if info.ApiType != constant.APITypeOpenAI {
+		return
+	}
+	if info.ChannelType == constant.ChannelTypeMoonshot || info.ChannelType == constant.ChannelTypeOpenRouter {
+		return
+	}
+	modelName := request.Model
+	if upstream := info.GetUpstreamModelName(); upstream != "" {
+		modelName = upstream
+	}
+	if officialfit.FamilyOf(modelName) != officialfit.FamilyKimiK3 {
+		return
+	}
+	if info.ChannelId != 0 && model.ChannelIsOfficialFitForModel(info.ChannelId, modelName) {
+		return
+	}
+	// The disabled class belongs to the other helper: it has already moved the
+	// caller's disable intent onto reasoning_effort, and that value (the
+	// aggregator's own disable marker) must survive this pass untouched.
+	if kimiK3DisabledThinkingRequest(info, request) {
+		return
+	}
+	canonical, rewrite := kimiK3OfficialEffortFor(kimiK3CallerEffort(info, request))
+	if !rewrite {
+		return
+	}
+	request.ReasoningEffort = canonical
+	// Every spelling of the tier travels in the same body, so a stale one left
+	// behind would still be readable by the upstream: channel 48's param
+	// override copies thinking.effort onto reasoning_effort for the values it
+	// lists, and an unlisted one such as medium would otherwise sit next to the
+	// canonical value untouched.
+	request.THINKING = kimiK3RewriteNamedEffort(request.THINKING, canonical)
+	request.Reasoning = kimiK3RewriteNamedEffort(request.Reasoning, canonical)
 }

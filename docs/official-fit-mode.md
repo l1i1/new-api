@@ -194,6 +194,28 @@
   以审计/一致性套件的实测结果为依据（见 `docs/mainland-v4x-channel-report-*.md`），
   并在上游行为变化后重新验证。写错白名单会让 pin 流量落到非官方行为的渠道。
 
+## Kimi K3 思考档位（effort）对齐（2026-10-13）
+
+官方对 `reasoning_effort` 的归一化（2026-10-13 实测 `api.moonshot.cn`，`/v1/models` 同时声明
+`reasoning_efforts.default_effort=max`）：`medium`→`high`、缺省或无法识别的值→`max`、
+`low`/`high`/`max` 按字面、`minimal`→`low`。**池里的非官方渠道相反**：只认字面三档，其余
+（含整个字段缺省）一律回最弱档并返回 200。证据：2026-10-12 20:45–21:05 的探针逐请求日志
+（token `k`）——除 `none`/`minimal` 被 `k3-thinking-off` 规则钉到 ch8 外，其余全部落 ch48
+（neurvibe），缺省 / `medium` / `banana` / `xhigh` 均为最弱档，`low`/`high`/`max` 按字面。
+即：同一请求落到官方渠道与聚合渠道**含义不同**，而调用方拿到的是同一个 200，看不出降级。
+
+`applyKimiK3EffortDialect`（`relay/channel/openai/adaptor.go`，位置在
+`applyKimiK3DisabledThinkingDialect` 之后、param_override 之前）按上表把档位改写成官方会跑的
+档位；`thinking.effort` 与 OpenRouter 式 `reasoning.effort` 一并改写，避免旧档位随同一 body
+同行。豁免与关闭思考方言一致：官方渠道类型（25）、official-behaving 渠道、其他家族、
+OpenRouter（自带方言）。relay info 保留调用方原值，请求日志仍如实记录调用方所传档位。
+
+代价（这是有意选择的语义）：**不传档位**的请求从此跑 `max`，思考量与成本相对旧行为
+（聚合器默认最弱档）约 2–3×（同题实测 max 274–380 rtok vs 缺省/medium/low 68–157），
+延迟同步上升——与官方一致所必需，但属于客户账单变化。`none`/`minimal` 不在改写范围内
+（`minimal` 是聚合器"关思考"的方言标记，官方 `minimal`→`low` 与聚合器 `minimal`=关思考
+的差异保留待议）。
+
 ## 验收
 
 1. `go build ./...` + `go vet` + `go test ./relay/... ./controller/... ./middleware/... ./model/...`；relaykit `go test ./...`。
