@@ -265,9 +265,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// 只把状态记在 writer 上、直到第一次写正文才真正落盘，于是换道成功
 				// 后的首帧会把这一跳的 5xx 当作响应状态发给客户：客户拿到
 				// 「502 + 完整正文」（自己解析不出内容），我方却记成功并计费。
-				// 2026-10-12 20:29 cdp 投诉即此形态（request_id
-				// 202610121227574862194198268d9d6lEWDlnxW：ch48 流内 502 → ch37 503
-				// → ch19 成功，入口 nginx 记 status=502、body 42,946 字节）。
+				// 2026-10-12 20:29 cdp 投诉即此形态。request_id
+				// 202610121227574862194198268d9d6lEWDlnxW 在平台库有三行：
+				// 20:28:44 type=5 ch48（流内 502 @47.5s）→ 20:29:24 type=5 ch37
+				// （503 @87.4s）→ 20:29:55 type=2 ch19 成功并计费（118s，
+				// 145201/610 tokens）；同期入口哨兵只留聚合计数（「客户可见
+				// 5xx=3」@20:29:42），逐条入口 access log 未归档，故不引用具体日志行。
 				// 真正终局失败时，状态由 controller/relay.go 的错误 defer 统一写出，
 				// 错误本身仍带 StatusCode，可见性不受影响。
 				sr.Stop(streamErr)
