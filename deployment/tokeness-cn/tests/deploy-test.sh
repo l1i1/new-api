@@ -54,7 +54,13 @@ CONF
 }
 
 test_root="$(mktemp -d)"
-trap 'rm -rf -- "$test_root"' EXIT
+# KEEP_CASES=1 keeps the per-case directories after a failure (or a pass) for
+# post-mortem inspection; the default stays self-cleaning.
+if [[ "${KEEP_CASES:-0}" == "1" ]]; then
+  trap 'echo "case dir kept: $test_root" >&2' EXIT
+else
+  trap 'rm -rf -- "$test_root"' EXIT
+fi
 
 # Stand-in for deployment/tokeness-cn/bootstrap-master-ecs.sh: the real script
 # copies the env off the serving master container, pulls the pinned image and
@@ -82,8 +88,14 @@ case "$serving" in 3000) green=3001 ;; 3001) green=3000 ;; *) green=3001 ;; esac
 case "$phase" in
   probe)
     printf 'SERVING_PORT=%s\nBLUE_OK=1\nGREEN_PORT=%s\nGREEN_OK=0\n' "$serving" "$green" ;;
-  commit)
+  commit|flip)
     printf '%s\n' "$green" > "$port_file"
+    printf 'SERVING_PORT=%s\n' "$green" ;;
+  retire)
+    if [[ "${TOKENESS_TEST_HOST_RETIRE_FAIL:-0}" == "1" ]]; then
+      echo "simulated retire failure" >&2
+      exit 1
+    fi
     printf 'SERVING_PORT=%s\n' "$green" ;;
   abort)
     printf 'SERVING_PORT=%s\n' "$serving" ;;
@@ -1842,6 +1854,138 @@ bash -n "$default_bootstrap" \
 if grep -q 'private/scripts/bootstrap-newapi-host.sh' "$DEPLOY_SCRIPT"; then
   fail "deploy.sh still defaults to the private/ bootstrap path"
 fi
+
+# ---- one-shot rotation (ROLLOUT_PRE_ROLL=0) + parallel master retire --------
+# The user-facing contract being pinned here (2026-10-13):
+#   * ROLLOUT_PRE_ROLL=0 hands the WHOLE pre-release set to the batch phase -
+#     no canary round - so with headroom the tier converges in ONE drain
+#     window (one shrink Modify with every pre-existing IP parked in it).
+#   * MASTER_RETIRE_PARALLEL=1 flips the master traffic over and retires blue
+#     in the BACKGROUND: the ECI scale-out must already have happened by the
+#     time the master quiet window ends, and the release must still fail if
+#     the retire tail fails.
+#   * The new-instance gates run in parallel: N instances cost about one
+#     gate's wall time, not N.
+
+# (1) One-shot: 3 pre-existing instances, MaxSize=6, batch covers all three.
+# Expected: exactly ONE shrink Modify call, its snapshot parking all three
+# pre-existing IPs at once, and the master retire (flip path) overlapping the
+# batch - proven by the fake bootstrap's retire invocation coming AFTER the
+# first ECI Modify in the shared ordering log.
+oneshot_case="$test_root/oneshot"
+mkdir -p "$oneshot_case/state"
+make_conf "$oneshot_case/nginx.conf"
+init_ess_state "$oneshot_case/state"
+jq '.max_size = 6 | .desired = 3 | .instances += [
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"},
+      {InstanceId: "eci-old3", PrivateIpAddress: "10.0.0.205", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-03T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
+  "$oneshot_case/state/state.json" > "$oneshot_case/state/tmp.json" \
+  && mv "$oneshot_case/state/tmp.json" "$oneshot_case/state/state.json"
+printf 'server 10.0.0.207:3000;\nserver 10.0.0.206:3000;\nserver 10.0.0.205:3000;\n' > "$oneshot_case/ecs-upstream.conf"
+run_deploy "$oneshot_case" \
+  ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=3 MASTER_RETIRE_PARALLEL=1 \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "one-shot rotation: skipping the canary pre-roll" "$oneshot_case/state/stdout.log" \
+  || fail "one-shot rotation did not announce skipping the canary pre-roll"
+grep -q "retired all 3 pre-existing instance(s) in 1 round(s)" "$oneshot_case/state/stdout.log" \
+  || fail "one-shot rotation did not converge the tier in a single round"
+# Grow-to-6, shrink-to-3: exactly TWO Modify calls, and only the SECOND is a
+# shrink (its snapshot must park all three pre-existing IPs).
+[[ "$(grep -c 'ess ModifyScalingGroup' "$oneshot_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "one-shot rotation issued an unexpected number of scaling calls"
+snap_one="$oneshot_case/state/modify-snapshots/modify-2.log"
+[[ -f "$snap_one" ]] || fail "the fake recorded no snapshot of the one-shot shrink"
+for want_ip in 10.0.0.207 10.0.0.206 10.0.0.205; do
+  grep -qxF "$want_ip" "$snap_one" \
+    || fail "at the one-shot shrink, the drain marker did not park $want_ip"
+  if sed -n '/--- relay upstream ---/,$p' "$snap_one" | grep -q "$want_ip"; then
+    fail "at the one-shot shrink, the relay upstream still carried the parked $want_ip"
+  fi
+done
+jq -e '(.instances | length) == 3
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)
+       and ([.instances[].InstanceId] | index("eci-old3") == null)
+       and .desired == 3' \
+  "$oneshot_case/state/state.json" > /dev/null \
+  || fail "one-shot rotation did not converge the tier onto fresh instances at steady capacity"
+# Master overlap: the retire tail starts right after the flip (before the
+# batch phase begins), so in the shared ordering log the bootstrap's retire
+# invocation must come BEFORE the ECI grow Modify - that ordering is exactly
+# what proves the fleet rotation did not wait for the master's quiet window.
+retire_call_line="$(grep -n 'host-bootstrap' "$oneshot_case/state/aliyun-calls.log" | tail -1 | cut -d: -f1)"
+grow_line="$(grep -n 'ess ModifyScalingGroup' "$oneshot_case/state/aliyun-calls.log" | head -1 | cut -d: -f1)"
+[[ -n "$grow_line" && -n "$retire_call_line" && "$retire_call_line" -lt "$grow_line" ]] \
+  || fail "the master retire tail did not overlap the ECI rotation (retire line $retire_call_line, grow line $grow_line)"
+grep -q "master retire finished: blue retired" "$oneshot_case/state/stdout.log" \
+  || fail "the parallel master retire never reported completion"
+# Parallel gates: all THREE new instances' "app answers" lines must land
+# within the same second - the serial form gated one instance per
+# wait_app_ready round trip, so a regression to it shows up as gates
+# finishing in DISTINCT seconds here (the fake ssh adds real latency per
+# call, so the serial form cannot produce same-second completion of three).
+# The re-emitted lines carry the gate log's own timestamp after "gate| ".
+gate_seconds="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\)+08:00\].*/\1/' | sort -u | wc -l)"
+[[ "$gate_seconds" -le 1 ]] \
+  || fail "the new-instance gates did not run in parallel (${gate_seconds} distinct completion seconds)"
+
+# (2) A retire-tail failure must fail the release: TOKENESS_TEST_HOST_RETIRE_FAIL
+# makes the fake bootstrap's retire phase fail while everything else succeeds.
+retirefail_case="$test_root/oneshot-retire-fail"
+mkdir -p "$retirefail_case/state"
+make_conf "$retirefail_case/nginx.conf"
+init_ess_state "$retirefail_case/state"
+printf 'server 10.0.0.207:3000;\n' > "$retirefail_case/ecs-upstream.conf"
+if run_deploy "$retirefail_case" \
+  ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=2 MASTER_RETIRE_PARALLEL=1 \
+  TOKENESS_TEST_HOST_RETIRE_FAIL=1 \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "a failed master retire tail must fail the release"
+fi
+grep -q 'background master retire failed' "$retirefail_case/state/output.log" \
+  || fail "the failed master retire tail was not reported"
+# The fleet itself converged (the release's failure is the master tail, not
+# the rollout) - assert the tier still landed on the new image.
+jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' \
+  "$retirefail_case/state/state.json" > /dev/null \
+  || fail "the retire-failure case did not keep the fleet on the new image"
+
+# (3) Invalid knobs are refused before anything mutates.
+badknob_case="$test_root/oneshot-badknob"
+mkdir -p "$badknob_case/state"
+make_conf "$badknob_case/nginx.conf"
+init_ess_state "$badknob_case/state"
+if run_deploy "$badknob_case" ROLLOUT_PRE_ROLL=maybe \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "an invalid ROLLOUT_PRE_ROLL must be refused"
+fi
+grep -q 'ROLLOUT_PRE_ROLL must be 0 or 1' "$badknob_case/state/output.log" \
+  || fail "the invalid ROLLOUT_PRE_ROLL refusal was not explained"
+if run_deploy "$badknob_case" MASTER_RETIRE_PARALLEL=sometimes \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "an invalid MASTER_RETIRE_PARALLEL must be refused"
+fi
+grep -q 'MASTER_RETIRE_PARALLEL must be 0 or 1' "$badknob_case/state/output.log" \
+  || fail "the invalid MASTER_RETIRE_PARALLEL refusal was not explained"
+
+# (4) ROLLOUT_PRE_ROLL=0 with ROLLOUT_BATCH=0 is contradictory and refused.
+empty_case="$test_root/oneshot-empty"
+mkdir -p "$empty_case/state"
+make_conf "$empty_case/nginx.conf"
+init_ess_state "$empty_case/state"
+if run_deploy "$empty_case" ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=0 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9 "$TEST_ML_DIGEST"; then
+  fail "ROLLOUT_PRE_ROLL=0 with ROLLOUT_BATCH=0 must be refused"
+fi
+grep -q 'would replace nothing at all on the ECI tier' "$empty_case/state/output.log" \
+  || fail "the contradictory one-shot configuration was not explained"
 
 # The guard shares the drain marker file, the hold and the tier with the
 # release, and it runs from cron where nobody watches it fail - the coverage

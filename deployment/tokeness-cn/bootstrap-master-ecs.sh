@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-# bootstrap-master-ecs <image-ref> [start|commit|abort|probe] - blue-green
+# bootstrap-master-ecs <image-ref> [start|flip|retire|commit|abort|probe] - blue-green
 # re-roll of the master container on the backup entry ECS onto <image-ref>,
 # preserving everything else about it.
 #
@@ -46,9 +46,21 @@ set -Eeuo pipefail
 #   start   create/adopt green on the free port, pull, readiness-gate it.
 #           Blue is NEVER touched. Prints SERVING_PORT=<green> and
 #           PREVIOUS_PORT=<blue> as the last two stdout lines.
-#   commit  point this host's marker + its nginx :80 upstream at green, give
-#           blue a short quiet window, stop+remove blue, rename green to the
-#           canonical name. Prints SERVING_PORT=<green>.
+#   flip    point this host's marker + its nginx :80 upstream at green and
+#           verify the flip took (probe-shaped gate), but LEAVE BLUE RUNNING.
+#           This is the traffic cutover: after it returns, the panel and the
+#           /v1 last resort are on green, and blue only carries whatever
+#           streams already started on it. Prints SERVING_PORT=<green>.
+#           The point of splitting this out of commit: the release can start
+#           the ECI rotation right after the flip while blue drains in the
+#           background (retire below), so the master quiet window no longer
+#           serializes the release.
+#   retire  give blue its quiet window, stop+remove it, rename green to the
+#           canonical name. Idempotent: green already canonical means the
+#           retire already happened (a re-run is a no-op that keeps serving).
+#           Prints SERVING_PORT=<green>. This is the tail of commit.
+#   commit  flip + retire in one call (the original contract: the whole
+#           cutover behind a single phase). Prints SERVING_PORT=<green>.
 #   abort   reconcile after a failed start/gate/pin/commit: if blue is still
 #           alive, restore the :80 upstream to blue (when flipped) and remove
 #           green; if blue is already gone (commit got that far), finish the
@@ -60,10 +72,10 @@ set -Eeuo pipefail
 # Exit codes: 2 usage, 3 docker/definition failure, 4 image pull failure,
 #             5 readiness gate failure (green removed; blue untouched).
 
-: "${1:?usage: bootstrap-master-ecs.sh <image-ref> [start|commit|abort|probe]}"
+: "${1:?usage: bootstrap-master-ecs.sh <image-ref> [start|flip|retire|commit|abort|probe]}"
 IMAGE_REF="$1"
 PHASE="${2:-start}"
-case "$PHASE" in start|commit|abort|probe) ;; *)
+case "$PHASE" in start|flip|retire|commit|abort|probe) ;; *)
   echo "bootstrap-master-ecs: unknown phase '$PHASE'" >&2; exit 2 ;;
 esac
 case "$IMAGE_REF" in
@@ -259,25 +271,64 @@ docker inspect "$CONTAINER" >/dev/null 2>&1 \
   || { err "container $CONTAINER does not exist; refusing to invent a master"; exit 3; }
 old_image="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER")"
 
-# ---- phase: commit ---------------------------------------------------------
-if [ "$PHASE" = commit ]; then
+# ---- phase: flip / retire / commit ------------------------------------------
+# flip and retire share the commit body below. The split exists so a release
+# can cut traffic over (flip) and immediately start the ECI rotation while
+# blue drains in the background (retire), instead of serializing the whole
+# quiet window before the fleet moves. commit keeps the original one-call
+# contract: flip, then retire, in order.
+if [ "$PHASE" = flip ] || [ "$PHASE" = commit ]; then
   green="$(container_on_port "$gp")"
-  [ -n "$green" ] || { err "commit found no green container on :$gp"; exit 3; }
+  [ -n "$green" ] || { err "$PHASE found no green container on :$gp"; exit 3; }
   if ! port_ready "$gp"; then
-    err "commit gate: green on :$gp is not ready; refusing to retire blue"
+    err "$PHASE gate: green on :$gp is not ready; refusing to retire blue"
     exit 5
   fi
   ecs_nginx_point_at "$gp" "$sp" || exit 3
   write_serving_marker "$gp"
-  log "panel is on green (:$gp); giving blue ${QUIET_SECONDS}s to finish in-flight work"
+  log "panel is on green (:$gp); blue left running to finish its in-flight work"
+  printf 'SERVING_PORT=%s\n' "$gp"
+  [ "$PHASE" = flip ] && exit 0
+fi
+
+# ---- phase: retire (also the tail of commit) --------------------------------
+if [ "$PHASE" = retire ] || [ "$PHASE" = commit ]; then
+  # Re-read the serving pair: retire can run long after flip (it IS the
+  # background tail), so the ports may not match the earlier probe anymore.
+  rsp="$(serving_port)"
+  rgp="$(other_port "$rsp")" || exit 3
+  if [ "$PHASE" = retire ]; then
+    # Idempotent guard: green already carrying the canonical name means a
+    # previous retire finished - the panel already serves it, nothing to do.
+    if docker inspect "$CONTAINER" >/dev/null 2>&1 \
+       && [ "$(container_on_port "$rsp")" = "$CONTAINER" ]; then
+      log "retire: green already serves as $CONTAINER on :$rsp; nothing to do"
+      printf 'SERVING_PORT=%s\n' "$rsp"
+      exit 0
+    fi
+    green="$(container_on_port "$rgp")"
+    [ -n "$green" ] || { err "retire found no green container on :$rgp"; exit 3; }
+  else
+    # commit: the flip above just wrote the marker, so green is on $gp; use
+    # the re-read pair only for the safety check below.
+    rgp="$gp"
+  fi
+  # Blue must still be the container on the OLD serving port - which is only
+  # true when flip already moved the marker/nginx. If the marker still names
+  # blue's port, running retire now would stop the SERVING container.
+  if [ "$rsp" != "$rgp" ]; then
+    err "retire: the serving marker still names :$rsp, not green :$rgp - flip has not happened; refusing to stop the serving container"
+    exit 3
+  fi
+  log "giving blue ${QUIET_SECONDS}s to finish in-flight work (green serving on :$rgp)"
   sleep "$QUIET_SECONDS"
   docker stop -t "$STOP_TIMEOUT" "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   if [ "$green" != "$CONTAINER" ]; then
     docker rename "$green" "$CONTAINER" >/dev/null
   fi
-  log "commit done: $CONTAINER serves on :$gp (was :$sp); old image $old_image kept for rollback"
-  printf 'SERVING_PORT=%s\n' "$gp"
+  log "retire done: $CONTAINER serves on :$rgp; old image $old_image kept for rollback"
+  printf 'SERVING_PORT=%s\n' "$rgp"
   exit 0
 fi
 

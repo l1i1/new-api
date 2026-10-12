@@ -1257,7 +1257,13 @@ print(json.dumps(snapshot, ensure_ascii=False))
 '
 }
 
-# sync_master_container <expected_version> [digest] - blue-green re-roll of the
+# sync_master_container <expected_version> [digest] [mode] - blue-green re-roll of the
+# master container. mode "" (default) runs the full cutover: start green, gate,
+# pin, COMMIT (flip + quiet window + retire blue), verify. mode "flip" stops
+# after the traffic cutover (nginx + marker on green, verified) and LEAVES
+# BLUE RUNNING: the caller follows up with master_retire_bg_start/wait, which
+# drains and retires blue in the background while the ECI rotation proceeds -
+# the master quiet window no longer serializes the release.
 # master container (new-api-master on the backup entry ECS) onto the deployed
 # digest, so the panel never sees the old container's recreate window.
 #
@@ -1281,7 +1287,7 @@ print(json.dumps(snapshot, ensure_ascii=False))
 # completes before the ECI tier moves. An empty digest argument means
 # "whatever the scaling configuration now says" (recovery paths).
 sync_master_container() {
-  local expected_version="$1" digest="${2:-}" image_ref out green_port old_port master_version
+  local expected_version="$1" digest="${2:-}" mode="${3:-}" image_ref out green_port old_port master_version
   if [[ -z "$digest" ]]; then
     digest="$(snapshot_config_digest "$(oss_scaling_config_json)")" \
       || { error "could not read the current image digest from the scaling configuration"; return 1; }
@@ -1346,7 +1352,13 @@ REMOTE_MASTER_VER
 
   # Green is reachable and correct; commit on the ECS: :80 last-resort follows,
   # blue drains briefly and is retired, green takes the canonical name.
-  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
+  # flip mode ends the cutover HERE: traffic (panel + /v1 last resort) is on
+  # green and verified, blue keeps running to finish its in-flight streams.
+  # The caller runs the retire tail separately (master_retire_bg_start) so the
+  # ECI rotation can proceed while blue drains.
+  local commit_phase="commit"
+  [[ "$mode" == "flip" ]] && commit_phase="flip"
+  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" "$commit_phase" \
       < "$HOST_BOOTSTRAP_SCRIPT")"; then
     error "blue-green commit failed; reconciling via abort"
     master_sync_abort "$image_ref" || true
@@ -1373,7 +1385,13 @@ REMOTE_MASTER_VER
     master_sync_abort "$image_ref" || true
     return 1
   fi
-  log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retired"
+  if [[ "$mode" == "flip" ]]; then
+    # Traffic is on green and proven; blue still runs (and will be retired by
+    # the background tail). The probe's BLUE_OK covers this state.
+    log "master container flipped: :$old_port -> :$green_port (version $master_version); ECS serves green, blue draining in the background"
+  else
+    log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retired"
+  fi
 }
 
 # master_sync_abort <image-ref> - reconcile after a failed master roll.
@@ -1425,6 +1443,69 @@ master_sync_abort() {
     wait_web_primary_converged "$serving" \
       || warn "abort: panel tier did not converge to finalized :$serving"
   fi
+  return 0
+}
+
+# master_retire_bg_start <image_ref> - start the master blue-retirement (quiet
+# window + stop + rename) as a BACKGROUND job, so the ECI rotation can proceed
+# while blue drains. Writes its own log lines prefixed "master-retire| " into
+# the caller's stdout/stderr. The job id is kept in MASTER_RETIRE_PID; pair
+# every start with master_retire_bg_wait or master_retire_bg_kill.
+master_retire_bg_start() {
+  local image_ref="$1"
+  [[ -z "${MASTER_RETIRE_PID:-}" ]] || { warn "a master retire job is already running (pid $MASTER_RETIRE_PID); not starting another"; return 0; }
+  (
+    # Plain writers only: this subshell must not refresh the shrink-hold
+    # (hold_heartbeat writes over ssh; the main shell owns that) and must not
+    # die() the parent.
+    log()   { printf '[%s] master-retire| %s\n' "$(date --iso-8601=seconds)" "$*"; }
+    warn()  { log "WARN: $*"; }
+    error() { log "ERROR: $*" >&2; }
+    die()   { error "$*"; exit 1; }
+    local out rc=0
+    out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" retire \
+        < "$HOST_BOOTSTRAP_SCRIPT" 2>&1)" || rc=$?
+    while IFS= read -r line; do
+      [ -n "$line" ] && printf '[%s] master-retire| %s\n' "$(date --iso-8601=seconds)" "$line"
+    done <<<"${out:-}"
+    exit "$rc"
+  ) &
+  MASTER_RETIRE_PID=$!
+  log "master retire running in the background (pid $MASTER_RETIRE_PID): quiet window + blue stop overlap the ECI rotation"
+}
+
+# master_retire_bg_wait - join the background retire job. Returns its exit
+# code; a failure here must fail the release (blue never got retired / the
+# rename never landed), so the caller dies loudly after its own rollback.
+master_retire_bg_wait() {
+  [[ -n "${MASTER_RETIRE_PID:-}" ]] || return 0
+  local rc=0
+  wait "$MASTER_RETIRE_PID" || rc=$?
+  MASTER_RETIRE_PID=""
+  if (( rc != 0 )); then
+    error "the background master retire failed (rc=$rc); the panel serves green but blue's retirement did not complete - run deploy.sh sync-host or bootstrap-master-ecs.sh <image> retire by hand"
+    return 1
+  fi
+  log "master retire finished: blue retired, green holds the canonical name"
+  return 0
+}
+
+# master_retire_bg_kill - abort the background retire job without waiting.
+# Used on release failure paths: the rollback's master_sync_abort re-reconciles
+# the panel, and a retire still running would race it (its abort looks at live
+# docker state). Best effort: the kill happens before any rollback call.
+master_retire_bg_kill() {
+  [[ -n "${MASTER_RETIRE_PID:-}" ]] || return 0
+  local pid="$MASTER_RETIRE_PID"
+  MASTER_RETIRE_PID=""
+  # The subshell spawns ssh as its child; kill the subshell's whole process
+  # group so the remote command does not linger (set -m in the release keeps
+  # each background job in its own group ONLY when job control is on; here the
+  # subshell shares the script's group, so kill the subshell and its children
+  # explicitly).
+  kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  warn "background master retire aborted (the rollback's abort phase re-reconciles the panel)"
   return 0
 }
 
@@ -3123,23 +3204,65 @@ rollout_batch() {
       rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
+    # Gate every new instance in PARALLEL (app health + relay pickup), then
+    # join: a batch is only safe if every member of it is, and parallel gates
+    # make n instances cost about one gate's wall time instead of n.
+    #
+    # Subshell discipline: the gate helpers call log()/error(), and log() calls
+    # hold_heartbeat() which refreshes the shrink-hold over ssh and can die().
+    # Two gates doing that concurrently race on the marker write, and a die()
+    # inside a subshell only ends the subshell. So each subshell NEUTERS
+    # log/warn/error/die into plain writers first (the hold keeps refreshing on
+    # the main shell's heartbeat, which is the only writer), and failure
+    # propagates as the subshell's exit status, collected after the join.
+    # Every probe below is a read (ESS state, relay upstream, app readiness);
+    # nothing is parked until all gates have passed.
+    local gate_dir
+    gate_dir="$(mktemp -d "${TMPDIR:-/tmp}/rollout-gates.XXXXXX")" || { error "could not create the gate log directory"; return 1; }
+    local -a gate_pids=() gate_logs=()
+    local gate_rc=0 gate_log
     for id in "${new_ids[@]}"; do
       if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
         error "round $rounds: could not read a valid private IP for new instance $id"
-        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
-      # Gate on the application and then on the relay tier picking it up, one
-      # instance at a time: a batch is only safe if every member of it is.
-      if ! wait_app_ready "$id" "$ip"; then
-        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
-        return 1
-      fi
-      if ! wait_ecs_upstream_converged "$ip"; then
-        rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
-        return 1
+      gate_log="$gate_dir/round${rounds}-${id}.log"
+      gate_logs+=("$gate_log")
+      (
+        log()   { printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"; }
+        warn()  { log "WARN: $*"; }
+        error() { log "ERROR: $*" >&2; }
+        die()   { error "$*"; exit 1; }
+        if ! wait_app_ready "$id" "$ip"; then
+          exit 1
+        fi
+        if ! wait_ecs_upstream_converged "$ip"; then
+          exit 1
+        fi
+      ) > "$gate_log" 2>&1 &
+      gate_pids+=("$!")
+    done
+    gate_rc=0
+    for i in "${!gate_pids[@]}"; do
+      if ! wait "${gate_pids[$i]}"; then
+        gate_rc=1
+        error "round $rounds: the parallel gate for new instance ${new_ids[$i]} failed (see ${gate_logs[$i]})"
       fi
     done
+    if (( gate_rc != 0 )); then
+      rm -rf -- "$gate_dir"
+      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      return 1
+    fi
+    # Re-emit the per-instance gate log lines into the main log so the operator
+    # sees the same evidence the serial form printed inline.
+    for gate_log in "${gate_logs[@]}"; do
+      while IFS= read -r line; do
+        [ -n "$line" ] && log "gate| $line"
+      done < "$gate_log"
+    done
+    rm -rf -- "$gate_dir"
     # Fix the retirement count and its park set here, before the hold (H2).
     # A boundary tie expands only the park set, never the retirement count.
     # Retiring "everything above the steady state" after the hold let an
@@ -3518,9 +3641,13 @@ main() {
         die "no headroom to roll: DesiredCapacity=$pre_stable is already at MaxSize=$pre_max; raise MaxSize or retire capacity before releasing"
       fi
       # Everything below mutates the tier; hold the scale-in alarm off until the
-      # release has finished (the trap fires on the die paths too).
+      # release has finished (the trap fires on the die paths too). The trap
+      # also joins any background master-retire job FIRST: a die between the
+      # flip and the join would otherwise leave the retire racing the exit
+      # cleanup (its remote command re-checks live state, but the alarm must
+      # not resume under a still-draining blue).
       suspend_scale_in_guard
-      trap 'resume_scale_in_guard' EXIT
+      trap 'master_retire_bg_kill; resume_scale_in_guard' EXIT
       local release_tag="$2"
       local release_digest previous_digest previous_snapshot
       if [[ $# -eq 3 ]]; then
@@ -3534,12 +3661,28 @@ main() {
       previous_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
       previous_digest="$(snapshot_config_digest "$previous_snapshot")"
       [[ "$previous_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a release without rollback target"
-      # The fleet as it stood BEFORE this release's single-instance roll. The
-      # batch convergence below retires exactly this set, so it never re-replaces
-      # the instance ess_rollout just brought onto the new image.
+      # The fleet as it stood BEFORE this release replaces anything. The batch
+      # convergence below retires exactly this set, so it never re-replaces the
+      # instance ess_rollout just brought onto the new image.
       local release_before_ids
       release_before_ids="$(in_service_instance_ids)" \
         || die "could not read the in-service instance set before the release"
+      # ROLLOUT_PRE_ROLL=0 skips ess_rollout's canary pre-roll (scale +1, gate,
+      # park, drain, retire one) and hands the WHOLE pre-release set to
+      # rollout_batch instead: with batch >= n the tier converges in ONE drain
+      # window. The canary's job - proving the new image can serve - moves to
+      # the batch's own per-instance gates (every new instance is app-gated
+      # before anything is parked), which is the same fail-closed shape with a
+      # wider first exposure: the new image takes its share of traffic from the
+      # first gated instance onward rather than after a full canary round.
+      local release_pre_roll="${ROLLOUT_PRE_ROLL:-1}"
+      case "$release_pre_roll" in
+        0|1) ;;
+        *) die "ROLLOUT_PRE_ROLL must be 0 or 1 (got '$release_pre_roll')" ;;
+      esac
+      if (( release_pre_roll == 0 && release_batch == 0 )); then
+        die "ROLLOUT_PRE_ROLL=0 with ROLLOUT_BATCH=0 would replace nothing at all on the ECI tier"
+      fi
       if ! apply_ml_digest "$release_digest" "$previous_snapshot"; then
         if ! restore_scaling_config "$previous_snapshot"; then
           die "release update failed and the complete scaling configuration could not be restored"
@@ -3551,7 +3694,18 @@ main() {
       # rolls. Its bootstrap readiness gate + version check double as the
       # canary; a failure here aborts while the ECI tier is still serving the
       # previous image untouched.
-      if ! sync_master_container "$release_tag" "$release_digest"; then
+      # MASTER_RETIRE_PARALLEL=1 splits the master cutover: flip the traffic
+      # over (verified), then retire blue in the BACKGROUND while the ECI
+      # rotation proceeds - the 765s quiet window overlaps the rollout instead
+      # of serializing it. The release joins the retire job before declaring
+      # success; every failure path kills it before rolling the master back.
+      local master_mode=""
+      if [[ "${MASTER_RETIRE_PARALLEL:-0}" == "1" ]]; then
+        master_mode="flip"
+      elif [[ -n "${MASTER_RETIRE_PARALLEL:-}" && "${MASTER_RETIRE_PARALLEL}" != "0" ]]; then
+        die "MASTER_RETIRE_PARALLEL must be 0 or 1 (got '$MASTER_RETIRE_PARALLEL')"
+      fi
+      if ! sync_master_container "$release_tag" "$release_digest" "$master_mode"; then
         if ! restore_scaling_config "$previous_snapshot"; then
           error "master roll failed and the scaling configuration could not be restored"
         fi
@@ -3560,14 +3714,25 @@ main() {
         fi
         die "release aborted: master container failed to converge to $release_tag"
       fi
-      if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
-        # rollback_failed_rollout re-pinned the scaling configuration + ECI to
-        # the previous digest; bring the master back in line so node versions
-        # never drift after an aborted release.
-        if ! sync_master_container ""; then
-          error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+      if [[ "$master_mode" == "flip" ]]; then
+        master_retire_bg_start "$CNB_IMAGE_REPOSITORY@$release_digest"
+      fi
+      if (( release_pre_roll == 1 )); then
+        if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
+          # rollback_failed_rollout re-pinned the scaling configuration + ECI to
+          # the previous digest; bring the master back in line so node versions
+          # never drift after an aborted release.
+          master_retire_bg_kill
+          if ! sync_master_container ""; then
+            error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+          fi
+          die "release rollout failed; rollback was attempted and must be verified before retrying"
         fi
-        die "release rollout failed; rollback was attempted and must be verified before retrying"
+      else
+        # One-shot rotation: no canary round - the batch phase below replaces
+        # the WHOLE pre-release set in as few windows as the batch size allows
+        # (one, with batch >= n and the headroom for it).
+        log "one-shot rotation: skipping the canary pre-roll; the batch phase replaces the whole pre-release set (${release_before_ids//$'\n'/ })"
       fi
       # Converge the WHOLE tier, not just the single instance ess_rollout
       # replaced. Anything the image carries on the ECI tier - the
@@ -3577,6 +3742,8 @@ main() {
       # (panel, migrations, system tasks) pays ~1 drain window per batch round
       # for nothing. The tier then converges on the next default release, or on
       # an explicit `deploy.sh rollout-all`.
+      # With ROLLOUT_PRE_ROLL=0 this phase is the ONLY ECI rotation: the
+      # pre-release set goes through it in one shot.
       if (( release_batch == 0 )); then
         log "release $release_tag -> $release_digest deployed to one instance (batch convergence skipped: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
       else
@@ -3584,12 +3751,19 @@ main() {
           # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
+          master_retire_bg_kill
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
           fi
           die "release batch rollout failed; rollback was attempted and must be verified before retrying"
         fi
         log "release $release_tag -> $release_digest deployed to the whole ECI tier (batches of $release_batch)"
+      fi
+      # Join the background master retire before declaring success: a blue that
+      # never finished retiring (or a rename that never landed) must fail the
+      # release even though the fleet is already on the new image.
+      if ! master_retire_bg_wait; then
+        die "release failed at the master retire tail; the panel serves the new image but the release is incomplete"
       fi
       ;;
     sync-host|sync-master)

@@ -29,6 +29,12 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    - **`ROLLOUT_BATCH=N`** — a demand. `N` above the headroom, or above zero on a group with no headroom at all, aborts the release before the image is pinned.
    - **`ROLLOUT_BATCH=0`** — skip the convergence. Use it for a release that only changes master-served paths (panel, migrations, system tasks); the rest of the tier then converges on the next default release or on an explicit `deploy.sh rollout-all`.
 
+   **One-shot rotation** (`ROLLOUT_PRE_ROLL=0`, 2026-10-13) removes the release's canary round entirely: no `ess_rollout` scale-+1/retire-one first leg — the batch phase replaces the WHOLE pre-release set, so with `ROLLOUT_BATCH >= n` and the headroom for it the tier converges in **one** drain window (`ceil(n/batch)` windows total). The canary's job — proving the new image serves — moves to the batch's own per-instance gates: every new instance is app-gated and relay-gated before anything is parked, exactly the fail-closed shape the canary had, but the new image takes its share of traffic from the first gated instance onward. `ROLLOUT_PRE_ROLL=0` with `ROLLOUT_BATCH=0` is contradictory and refused up front.
+
+   **Parallel master retire** (`MASTER_RETIRE_PARALLEL=1`, 2026-10-13) splits the master blue-green cutover: after the nginx flip is verified (panel and the /v1 last resort on green), the release starts the blue retirement — the quiet window plus the stop — as a **background job** and proceeds to the ECI rotation immediately. The 765s quiet window overlaps the batch drain window instead of serializing ahead of it; the release joins the retire job before declaring success, kills it before every master rollback, and the EXIT trap kills it on any abort path. The retire tail failing still fails the release loudly (the panel serves green, but the release reports the incomplete retirement). Both knobs default to the old serialized behaviour.
+
+   **Parallel instance gates** (always on, 2026-10-13): `rollout_batch` gates all new instances of a round concurrently (app health + relay pickup each), then joins. N instances cost about one gate's wall time, not N — with the one-shot rotation the whole ECI phase (scale-out + gates + park + one drain window) is bounded by the drain window itself. Every probe a gate runs is a read; nothing is parked until every gate has passed, so a gate failure still rolls the round back with nothing user-visible cut.
+
    The snapshot of the pre-release instance set is taken **before** the release's own roll, so the batch step never re-replaces the instance that roll just brought onto the new image; a single-instance site therefore converges in zero batch rounds.
 
 
@@ -57,6 +63,8 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1 sha256:... # pins a pre-certified digest
    ROLLOUT_BATCH=1 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # narrowest convergence
    ROLLOUT_BATCH=0 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one instance only
+   ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=4 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one-shot: one drain window for the whole fleet
+   ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=4 MASTER_RETIRE_PARALLEL=1 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # + master quiet window overlapped
    ```
 
 4. Converge the ECI tier outside a release (the two forms differ only in batch size):
