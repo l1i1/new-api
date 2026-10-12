@@ -292,10 +292,16 @@ func main() {
 	backgroundTotal := time.Duration(common.GetEnvOrDefault("BACKGROUND_DRAIN_TIMEOUT_SECONDS", 30)) * time.Second
 	bgDeadline := time.Now().Add(backgroundTotal)
 	drain := func(name string, shutdown func(context.Context) error) {
+		// An exhausted budget must still CALL the shutdown: these functions
+		// first stop accepting new work, then flush with the context. Skipping
+		// the call entirely starves the later drains (quota, observability,
+		// perf metrics) of even their stop phase whenever the log drain ate
+		// the whole budget. An already-expired context gives the flush its
+		// immediate timeout while the stop phase still runs.
 		remaining := time.Until(bgDeadline)
 		if remaining <= 0 {
-			common.SysError(fmt.Sprintf("%s shutdown: background drain budget already exhausted", name))
-			return
+			common.SysError(fmt.Sprintf("%s shutdown: background drain budget already exhausted; stopping without a flush window", name))
+			remaining = 0
 		}
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), remaining)
 		defer drainCancel()

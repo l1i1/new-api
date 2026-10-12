@@ -379,9 +379,15 @@ fi
 # so it does NOT re-enable anything - it only says so, loudly, every hour,
 # until an operator acts. Fail-visible beats fail-silent here.
 alarm_check() {
-  local id state
-  id="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" \
-    | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then .[0].AlarmTaskId else empty end' 2>/dev/null | tr -d '\r')"
+  local id state raw
+  # Distinguish "no alarm exists" from "the query FAILED": a failed query
+  # leaves id empty and the old code returned 0, so the outer failure log
+  # never fired and a broken probe read as "all clear". Exit 2 on query
+  # failure; the caller logs it without killing the tick.
+  if ! raw="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" 2>/dev/null)"; then
+    return 2
+  fi
+  id="$(printf '%s' "$raw" | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | if length > 0 then .[0].AlarmTaskId else empty end' 2>/dev/null | tr -d '\r')"
   [[ -n "$id" ]] || return 0
   state="$(aliyun_ess DescribeAlarms --ScalingGroupId "$GROUP" \
     | jq -r --arg n "${SCALE_IN_ALARM_NAME:-cpu-in-25}" '[.AlarmList.Alarm[]? | select(.Name==$n)] | .[0].Enable | if . == true then "true" elif . == false then "false" else "invalid" end' 2>/dev/null | tr -d '\r')"

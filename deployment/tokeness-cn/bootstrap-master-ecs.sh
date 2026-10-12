@@ -323,7 +323,20 @@ done < <(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAIN
 # moved nginx off blue first, so the budget only has to outlast streams that
 # already started). Operators can still override it via
 # MASTER_ENV_OVERRIDES, which is applied after this default.
-envs+=(-e "SHUTDOWN_TIMEOUT_SECONDS=${MASTER_V1_STOP_TIMEOUT:-2132}")
+# Replace any captured SHUTDOWN_TIMEOUT_SECONDS in place rather than append a
+# second -e: docker takes the LAST duplicate, but the overrides loop below
+# replaces only the FIRST match - an appended duplicate silently defeats any
+# operator override (review reproduced override 3000 losing to 2132).
+new_shutdown_env="-e SHUTDOWN_TIMEOUT_SECONDS=${MASTER_V1_STOP_TIMEOUT:-2132}"
+replaced_shutdown=0
+for _i in "${!envs[@]}"; do
+  if [[ "${envs[$_i]}" == "-e SHUTDOWN_TIMEOUT_SECONDS="* ]]; then
+    envs[$_i]="$new_shutdown_env"
+    replaced_shutdown=1
+    break
+  fi
+done
+(( replaced_shutdown == 1 )) || envs+=("$new_shutdown_env")
 
 # Optional env overrides, applied ON TOP of the env captured from the running
 # container. The captured env is the master's source of truth (this script

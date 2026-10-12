@@ -194,6 +194,11 @@ start_hold_heartbeat_bg() {
   if [[ -n "${HOLD_HB_PID:-}" ]]; then
     return 0
   fi
+  # set -m gives the background subshell its OWN process group: the loop and
+  # any ssh child it spawns then die together under the group kill below,
+  # while the subshell still inherits this script's functions verbatim
+  # (a `bash -c` child would not, and the loop calls shrink_hold_write).
+  set -m
   (
     while :; do
       sleep "${ROLLOUT_HEARTBEAT_SECONDS:-60}"
@@ -213,6 +218,7 @@ start_hold_heartbeat_bg() {
     done
   ) &
   HOLD_HB_PID=$!
+  set +m
 }
 
 hold_heartbeat() {
@@ -2125,8 +2131,16 @@ resume_scale_in_guard() {
   # B9: the background heartbeat must die BEFORE the hold is cleared, or it
   # re-writes the hold after cleanup and leaves the tier guarded by a ghost.
   if [[ -n "${HOLD_HB_PID:-}" ]]; then
+    # Kill the PROCESS GROUP: the loop shell can have an ssh child in flight
+    # during a refresh, and killing only the leader leaves that child free to
+    # complete its shrink_hold_write AFTER the clear below - the ghost this
+    # cleanup exists to prevent. setsid made the loop its own group, so the
+    # negative PID takes the ssh with it; the settle beat covers a remote
+    # command that was already dispatched.
+    kill -- "-$HOLD_HB_PID" 2>/dev/null || true
     kill "$HOLD_HB_PID" 2>/dev/null || true
     wait "$HOLD_HB_PID" 2>/dev/null || true
+    sleep 2
     HOLD_HB_PID=""
   fi
   # Ownership check FIRST (#2): if another release took the tier over (our hold
@@ -2760,13 +2774,16 @@ ess_rollout() {
     # an unknown count could grow the tier past its ceiling. Skip the restore
     # when the count cannot be proven - the rollback still runs and the release
     # still fails loud.
-    local live_now=-1
-    if live_now_ids="$(in_service_instance_ids)"; then
-      live_now=$(printf '%s\n' "$live_now_ids" | grep -c . || true)
-    fi
-    if (( roll_before_count > 0 && live_now >= 0 && live_now < roll_before_count )); then
-      warn "scale-in left the group at $live_now of the $roll_before_count it started from; restoring desired capacity before the rollback"
-      scale_group "$roll_before_count" || warn "capacity restore FAILED - the tier is smaller than the rollout found; fix by hand"
+    # Judge the restore by DESIRED CAPACITY and make it RAISE-ONLY. Two
+    # failure modes otherwise: a failed member query reads as "0 alive", and
+    # an external scale-out during the drain leaves desired ABOVE the
+    # pre-scale-in count - "restoring" would then LOWER it, an unparked
+    # removal the release never parked (review reproduced desired 3 -> 2).
+    local desired_now=-1
+    desired_now="$(desired_count)" || desired_now=-1
+    if (( roll_before_count > 0 && desired_now >= 0 && desired_now < roll_before_count )); then
+      warn "scale-in left desired capacity at $desired_now of the $roll_before_count it started from; raising it before the rollback"
+      scale_group "$roll_before_count" || warn "capacity raise FAILED - the tier is smaller than the rollout found; fix by hand"
     fi
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "scale-down gate failed and rollback could not be verified"

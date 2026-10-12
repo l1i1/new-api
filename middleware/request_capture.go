@@ -162,15 +162,14 @@ func captureRequestHeaders(c *gin.Context, rule *operation_setting.RequestCaptur
 	redact := map[string]bool{
 		"authorization": true, "x-api-key": true, "api-key": true,
 		"x-goog-api-key": true, "mj-api-secret": true, "cookie": true,
+		// Unconditional: the WebSocket subprotocol header can carry the raw
+		// token in ANY of its values (auth reads Header.Values, all of them),
+		// and a Get()-only presence check would miss a first empty value with
+		// the token in the second. Redact the whole header, always.
+		"sec-websocket-protocol": true,
 	}
 	for _, h := range rule.RedactHeaders {
 		redact[strings.ToLower(strings.TrimSpace(h))] = true
-	}
-	// The WebSocket subprotocol list may carry the raw token among legitimate
-	// protocol names; redact the whole header rather than parse it per value.
-	wsProtocol := "sec-websocket-protocol"
-	if v := c.Request.Header.Get("Sec-WebSocket-Protocol"); v != "" && !redact[wsProtocol] {
-		redact[wsProtocol] = true
 	}
 	for name, values := range c.Request.Header {
 		lower := strings.ToLower(name)

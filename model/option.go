@@ -272,11 +272,20 @@ func loadOptionsFromDatabase() {
 		// on UpdateOption's side effects). A manual DB edit still propagates
 		// here: memory holds the old value, DB differs, the compare fails,
 		// the apply runs.
-		common.OptionMapRWMutex.RLock()
-		currentOpt, seenOpt := common.OptionMap[option.Key]
-		common.OptionMapRWMutex.RUnlock()
-		if seenOpt && currentOpt == option.Value {
-			continue
+		// The legacy force-retry key must NOT be skipped even when unchanged:
+		// FoldLegacyForceRetryStatusCodes (below the loop) clears the runtime
+		// value while OptionMap keeps the raw one, and on a not-yet-migrated
+		// node the fold needs every sync to re-apply it so a later change of
+		// AutomaticRetryStatusCodes can merge against the legacy input
+		// (skipping starved the fold and legacy retry codes silently
+		// disappeared - review regression case).
+		if option.Key != "ForceRetryStatusCodeRanges" {
+			common.OptionMapRWMutex.RLock()
+			currentOpt, seenOpt := common.OptionMap[option.Key]
+			common.OptionMapRWMutex.RUnlock()
+			if seenOpt && currentOpt == option.Value {
+				continue
+			}
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
