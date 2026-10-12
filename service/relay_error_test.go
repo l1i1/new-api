@@ -623,10 +623,12 @@ func TestRetryErrorFidelityGuard(t *testing.T) {
 
 // withRetryErrorFidelityMode pins the guard mode for one subtest and restores the
 // process-wide value afterwards, so a case cannot leak into its neighbours or
-// into another test in this package.
+// into another test in this package. The mode has no exported variable on
+// purpose (it is read on the relay failure path), so the snapshot goes through
+// the getter and the restore through the validated setter.
 func withRetryErrorFidelityMode(t *testing.T, mode string) {
 	t.Helper()
-	previous := operation_setting.RetryErrorFidelityMode
-	t.Cleanup(func() { operation_setting.RetryErrorFidelityMode = previous })
+	previous := operation_setting.RetryErrorFidelityModeOrDefault()
+	t.Cleanup(func() { require.NoError(t, operation_setting.SetRetryErrorFidelityMode(previous)) })
 	require.NoError(t, operation_setting.SetRetryErrorFidelityMode(mode))
 }

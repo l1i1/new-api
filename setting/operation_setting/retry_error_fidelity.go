@@ -3,6 +3,7 @@ package operation_setting
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // RetryErrorFidelityMode values.
@@ -17,19 +18,10 @@ import (
 //     ends with no candidate (see recordNoCandidateRetryError), which is what
 //     makes the flip to "on" reviewable on live traffic.
 //   - on: the guard may change the outcome.
-const (
-	RetryErrorFidelityOff    = "off"
-	RetryErrorFidelityShadow = "shadow"
-	RetryErrorFidelityOn     = "on"
-)
-
-// RetryErrorFidelityMode decides whether a fit-pinned request keeps the official
-// upstream verdict instead of failing over, and whether a retry that runs out of
-// candidates reports the last real upstream error instead of the routing error.
 //
-// Why this exists (2026-10-12, live production): the GLM 5.3 family is narrowed
-// by the live official-fit policy to its single official-type channel. The
-// operator's failover list contains 400, so an upstream 400 ("角色信息不正确",
+// Why this option exists (2026-10-12, live production): the GLM 5.3 family is
+// narrowed by the live official-fit policy to its single official-type channel.
+// The operator's failover list contains 400, so an upstream 400 ("角色信息不正确",
 // Zhipu error code 1214 — a verdict about the request body, which no other
 // channel can change) entered the retry loop; the loop excludes the failed
 // channel first, the exclusion empties the candidate set, the re-selection
@@ -47,15 +39,29 @@ const (
 // the aggregator-style content-filter 400s that failover really rescues look
 // like — keeps retrying exactly as before.
 //
-// Default shadow: the guard is live code but changes no client-visible outcome
-// until an operator flips it, so the evidence can be read off production first.
-var RetryErrorFidelityMode = RetryErrorFidelityShadow
+// The default is shadow: the guard is live code but changes no client-visible
+// outcome until an operator flips it, so the evidence can be read off production
+// first.
+const (
+	RetryErrorFidelityOff    = "off"
+	RetryErrorFidelityShadow = "shadow"
+	RetryErrorFidelityOn     = "on"
+)
 
-// RetryErrorFidelityModeOrDefault normalises the stored value. An unknown or
-// empty string reads as the default rather than as "on": a typo in the option
-// row must not silently change what customers receive.
+// retryErrorFidelityMode holds the effective mode.
+//
+// It is an atomic value rather than an exported variable because the two sides
+// run in different places: SetRetryErrorFidelityMode is called from the option
+// update path, while the readers sit on the relay failure path and in
+// InitOptionMap. A plain global would be a data race, and nothing here is hot
+// enough to be worth one.
+var retryErrorFidelityMode atomic.Value // string
+
+// RetryErrorFidelityModeOrDefault reports the effective mode. An empty or
+// unrecognised value reads as the default rather than as "on": a typo in the
+// option row must not silently change what customers receive.
 func RetryErrorFidelityModeOrDefault() string {
-	mode := strings.ToLower(strings.TrimSpace(RetryErrorFidelityMode))
+	mode, _ := retryErrorFidelityMode.Load().(string)
 	switch mode {
 	case RetryErrorFidelityOff, RetryErrorFidelityShadow, RetryErrorFidelityOn:
 		return mode
@@ -63,12 +69,12 @@ func RetryErrorFidelityModeOrDefault() string {
 	return RetryErrorFidelityShadow
 }
 
-// SetRetryErrorFidelityMode validates an operator-supplied value.
+// SetRetryErrorFidelityMode validates and stores an operator-supplied value.
 func SetRetryErrorFidelityMode(value string) error {
 	mode := strings.ToLower(strings.TrimSpace(value))
 	switch mode {
 	case RetryErrorFidelityOff, RetryErrorFidelityShadow, RetryErrorFidelityOn:
-		RetryErrorFidelityMode = mode
+		retryErrorFidelityMode.Store(mode)
 		return nil
 	}
 	return fmt.Errorf("unsupported RetryErrorFidelityMode %q (want %s, %s or %s)",

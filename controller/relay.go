@@ -880,7 +880,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			selectionErr.Kind != service.ChannelSelectionModelNotConfigured {
 			return nil, newChannelConcurrencySaturatedError(info.OriginModelName)
 		}
-		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		// %w, not %s: the selection failure's kind is what tells a retry that ran
+		// out of candidates apart from a routing fault or an unconfigured model,
+		// and the caller must still be able to read it (see
+		// isRetryRoutingFailure). The rendered message is identical.
+		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %w", selectGroup, info.OriginModelName, err), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
 		if retryParam.HasSaturatedChannel() {
@@ -981,20 +985,40 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 }
 
 // isRetryRoutingFailure reports whether a failed re-selection means "the retry
-// found no channel at all", as opposed to "every candidate was busy".
+// found no channel at all", as opposed to anything else that carries the same
+// error code.
 //
-// The two are both reported with ErrorCodeGetChannelFailed, and they must be
-// told apart: a saturating request may have no upstream error to report at all
-// (nothing was tried), so replacing its 429 with relayInfo.LastError would
-// answer with an older failure that has nothing to do with this outcome. A
-// genuine routing failure — the selection error raised when the candidate set is
-// empty, and the bare "no such channel" case — is the one where the last real
-// attempt is the truer answer.
+// Every routing outcome of getChannel is reported with ErrorCodeGetChannelFailed,
+// so the code alone cannot answer the question, and three of those outcomes must
+// NOT be treated as "no candidate":
+//
+//   - a saturating request may have no upstream error to report at all (nothing
+//     was tried), so replacing its 429 with relayInfo.LastError would answer with
+//     an older failure unrelated to this outcome;
+//   - ChannelSelectionInternalError means the platform could not answer the
+//     routing question (a selection/database fault), and
+//     ChannelSelectionModelNotConfigured means the model was never configured for
+//     the group — in both, the previous upstream error describes something else
+//     entirely;
+//   - ChannelSelectionAccessDenied is a policy refusal, not a missing candidate.
+//
+// Only ChannelSelectionTemporarilyUnavailable — raised when the group has the
+// model and permitted channels yet nothing is selectable — plus the bare "no such
+// channel" outcome (which carries no structured kind) are routing failures, which
+// is the one case where the last real attempt is the truer answer. The kind
+// survives the wrap because getChannel wraps with %w.
 func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
 	if channelErr == nil || channelErr.GetErrorCode() != types.ErrorCodeGetChannelFailed {
 		return false
 	}
-	return retryParam == nil || !retryParam.HasSaturatedChannel()
+	if retryParam != nil && retryParam.HasSaturatedChannel() {
+		return false
+	}
+	var selectionErr *service.ChannelSelectionError
+	if errors.As(channelErr, &selectionErr) {
+		return selectionErr.Kind == service.ChannelSelectionTemporarilyUnavailable
+	}
+	return true
 }
 
 // recordNoCandidateRetryError writes the routing-fidelity error row for a retry
@@ -1005,12 +1029,36 @@ func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.Re
 // that replaced it. The upstream half is already written per failed attempt by
 // processChannelError; this is the other half, and it carries the same request_id
 // so the two can be joined.
+//
+// The upstream text goes to admin_info and through the same masking the error
+// content uses: the user-visible top level of Other is not passed through the
+// operator's message filter, so an upstream wording carrying a URL, an address or
+// a credential would otherwise reach the log owner verbatim. The status code alone
+// stays public — it is already user-visible inside the attempt's own error content.
 func recordNoCandidateRetryError(c *gin.Context, relayInfo *relaycommon.RelayInfo, selectionErr *types.NewAPIError) {
-	if c == nil || selectionErr == nil || !constant.ErrorLogEnabled {
+	// RecordErrorLog reads the client address, so a request-less context cannot be
+	// logged; every relay call site has one, and the guard keeps a future caller
+	// from panicking here instead of failing a request.
+	if c == nil || c.Request == nil || selectionErr == nil || !constant.ErrorLogEnabled {
 		return
 	}
+	other := noCandidateLogOther(c, relayInfo, selectionErr)
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	model.RecordErrorLog(c, c.GetInt("id"), 0, c.GetString("original_model"), c.GetString("token_name"),
+		selectionErr.MaskSensitiveErrorWithStatusCode(), c.GetInt("token_id"), int(time.Since(startTime).Seconds()),
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+}
+
+// noCandidateLogOther builds the metadata for the row above, split out so the
+// scope of every field can be asserted directly: which fields a log owner may
+// read is the whole point of this row, and that is not testable through the
+// writer.
+func noCandidateLogOther(c *gin.Context, relayInfo *relaycommon.RelayInfo, selectionErr *types.NewAPIError) *model.LogOther {
 	other := model.NewLogOther()
-	if c.Request != nil && c.Request.URL != nil {
+	if c != nil && c.Request != nil && c.Request.URL != nil {
 		other.SetPublic("request_path", c.Request.URL.Path)
 	}
 	other.SetPublic("error_type", "routing_error")
@@ -1021,16 +1069,10 @@ func recordNoCandidateRetryError(c *gin.Context, relayInfo *relaycommon.RelayInf
 	other.SetPublic("retry_error_fidelity_mode", operation_setting.RetryErrorFidelityModeOrDefault())
 	if relayInfo != nil && relayInfo.LastError != nil {
 		other.SetPublic("last_upstream_status_code", relayInfo.LastError.StatusCode)
-		other.SetPublic("last_upstream_error", common.LocalLogPreview(relayInfo.LastError.Error()))
+		other.SetAdmin("last_upstream_error", relayInfo.LastError.MaskSensitiveErrorWithStatusCode())
 	}
 	service.AppendRelayLogAdminInfo(c, relayInfo, other)
-	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-	if startTime.IsZero() {
-		startTime = time.Now()
-	}
-	model.RecordErrorLog(c, c.GetInt("id"), 0, c.GetString("original_model"), c.GetString("token_name"),
-		selectionErr.MaskSensitiveErrorWithStatusCode(), c.GetInt("token_id"), int(time.Since(startTime).Seconds()),
-		common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+	return other
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
