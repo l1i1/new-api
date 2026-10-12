@@ -280,9 +280,24 @@ func main() {
 	}
 	cancel()
 
-	backgroundDrainTimeout := time.Duration(common.GetEnvOrDefault("BACKGROUND_DRAIN_TIMEOUT_SECONDS", 30)) * time.Second
+	// B10 fix: ONE total budget for the background drain phase. The four
+	// drains run sequentially and each used to get its own 30s timeout, a
+	// 120s worst case, while the deploy machinery reserves exactly ONE
+	// allowance (APP_BACKGROUND_DRAIN_ALLOWANCE_SECONDS) in the ECI
+	// termination grace - an exit delayed past the grace lost the flushes
+	// this phase exists to guarantee. Each drain now receives the REMAINING
+	// time from a single deadline, so the env stays the contract: it is the
+	// total, and the grace the platform must provide is SHUTDOWN_TIMEOUT_
+	// SECONDS + BACKGROUND_DRAIN_TIMEOUT_SECONDS.
+	backgroundTotal := time.Duration(common.GetEnvOrDefault("BACKGROUND_DRAIN_TIMEOUT_SECONDS", 30)) * time.Second
+	bgDeadline := time.Now().Add(backgroundTotal)
 	drain := func(name string, shutdown func(context.Context) error) {
-		drainCtx, drainCancel := context.WithTimeout(context.Background(), backgroundDrainTimeout)
+		remaining := time.Until(bgDeadline)
+		if remaining <= 0 {
+			common.SysError(fmt.Sprintf("%s shutdown: background drain budget already exhausted", name))
+			return
+		}
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), remaining)
 		defer drainCancel()
 		if err := shutdown(drainCtx); err != nil {
 			common.SysError(fmt.Sprintf("%s shutdown: %v", name, err))

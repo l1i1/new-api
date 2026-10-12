@@ -686,6 +686,17 @@ type relayObservationWriter struct {
 	ctx  *gin.Context
 }
 
+// Unwrap restores the write-deadline path (B3): http.ResponseController digs
+// through Unwrap chains to reach the underlying net.Conn. Embedding
+// gin.ResponseWriter alone hides the original writer, so SetWriteDeadline
+// failed silently and a downstream that stopped reading could block the
+// flush forever, pinning the channel concurrency slot through cleanup's
+// wg.Wait(). No behavior change for normal streams: the wrapper still
+// forwards every write verbatim.
+func (w *relayObservationWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // shouldRecordFirstWrite keeps keep-alive probes out of the downstream-first-byte
 // metric. A non-stream keep-alive writes JSON whitespace while the upstream
 // generates; counting that as content would report time-to-first-byte as the

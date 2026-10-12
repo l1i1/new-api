@@ -260,6 +260,24 @@ func loadOptionsFromDatabase() {
 			passkeyOptions[option.Key] = option.Value
 			continue
 		}
+		// B11 mitigation, sync path only: applying an option writes config
+		// structs in place via reflection while request goroutines read the
+		// same fields through package-level getters with no synchronization,
+		// and this loop re-applies EVERY option on EVERY SYNC_FREQUENCY tick,
+		// so even a quiescent system raced continuously (torn string/slice
+		// headers are a real crash mode). An unchanged value needs no apply:
+		// skipping it turns the race surface from always-on into
+		// only-when-an-admin-actually-changes-something (the admin path keeps
+		// the full apply semantics - some flows pre-write OptionMap and rely
+		// on UpdateOption's side effects). A manual DB edit still propagates
+		// here: memory holds the old value, DB differs, the compare fails,
+		// the apply runs.
+		common.OptionMapRWMutex.RLock()
+		currentOpt, seenOpt := common.OptionMap[option.Key]
+		common.OptionMapRWMutex.RUnlock()
+		if seenOpt && currentOpt == option.Value {
+			continue
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())

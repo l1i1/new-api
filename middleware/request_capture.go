@@ -25,6 +25,13 @@ type captureResponseWriter struct {
 	truncated bool
 }
 
+// Unwrap restores the write-deadline path (B3) when capture is active:
+// http.ResponseController needs the chain to reach net.Conn, or
+// SetWriteDeadline fails silently while a slow downstream blocks the flush.
+func (w *captureResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *captureResponseWriter) WriteHeader(code int) {
 	if w.status == 0 {
 		w.status = code
@@ -145,9 +152,25 @@ func captureRequestHeaders(c *gin.Context, rule *operation_setting.RequestCaptur
 	if c == nil || c.Request == nil {
 		return out
 	}
-	redact := map[string]bool{"authorization": true, "x-api-key": true, "api-key": true}
+	// B1 hardening: redact EVERY credential carrier this platform actually
+	// accepts, not just the three OpenAI-shaped ones. The WebSocket route
+	// authenticates via Sec-WebSocket-Protocol: openai-insecure-api-key.<token>
+	// (auth.go copies it into Authorization but leaves the original header in
+	// place), Gemini accepts x-goog-api-key, MJ carries mj-api-secret, and a
+	// browser-forwarded session cookie is a live credential. A capture that
+	// leaks any of these into a file on disk defeats the reason capture exists.
+	redact := map[string]bool{
+		"authorization": true, "x-api-key": true, "api-key": true,
+		"x-goog-api-key": true, "mj-api-secret": true, "cookie": true,
+	}
 	for _, h := range rule.RedactHeaders {
 		redact[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	// The WebSocket subprotocol list may carry the raw token among legitimate
+	// protocol names; redact the whole header rather than parse it per value.
+	wsProtocol := "sec-websocket-protocol"
+	if v := c.Request.Header.Get("Sec-WebSocket-Protocol"); v != "" && !redact[wsProtocol] {
+		redact[wsProtocol] = true
 	}
 	for name, values := range c.Request.Header {
 		lower := strings.ToLower(name)
@@ -166,6 +189,12 @@ func captureResponseHeaders(w *captureResponseWriter) map[string]string {
 		return out
 	}
 	for name, values := range w.Header() {
+		// Set-Cookie hands the client a session credential (B1): a capture
+		// of response headers must never persist one.
+		if strings.EqualFold(name, "Set-Cookie") {
+			out[name] = "[redacted]"
+			continue
+		}
 		out[name] = strings.Join(values, ", ")
 	}
 	return out

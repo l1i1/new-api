@@ -184,6 +184,31 @@ readonly APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-newapi}"
 # sleep_with_heartbeat never sees (SSH reads, image pulls, the blue-green roll).
 # Without it the hold goes stale during any step longer than the freshness window,
 # which both loses the guard's protection and admits a second release.
+# start_hold_heartbeat_bg - a subshell that refreshes the hold every 60s for
+# as long as the release runs, independent of log() traffic (B9). It only
+# KEEPS THE HOLD FRESH; ownership conflicts still die through the foreground
+# path (a bg subshell cannot safely kill the parent), so a takeover during a
+# blocked operation is caught at the next foreground beat instead of being
+# missed entirely.
+start_hold_heartbeat_bg() {
+  if [[ -n "${HOLD_HB_PID:-}" ]]; then
+    return 0
+  fi
+  (
+    while :; do
+      sleep "${ROLLOUT_HEARTBEAT_SECONDS:-60}"
+      rc=0
+      shrink_hold_write set >/dev/null 2>&1 || rc=$?
+      if (( rc == 3 )); then
+        printf '[%s] WARN: background heartbeat lost the shrink guard hold to another release\n' "$(date --iso-8601=seconds)" >&2
+      elif (( rc != 0 )); then
+        printf '[%s] WARN: background heartbeat could not refresh the shrink guard hold (rc=%s)\n' "$(date --iso-8601=seconds)" "$rc" >&2
+      fi
+    done
+  ) &
+  HOLD_HB_PID=$!
+}
+
 hold_heartbeat() {
   # Refresh as soon as the hold exists - not only once the alarm was suspended:
   # a group with no scale-in alarm returns early from suspend_scale_in_guard,
@@ -949,7 +974,17 @@ rollback_failed_rollout() {
     if failed_ip="$(instance_private_ip "$failed_id" 2>/dev/null)" && is_valid_ipv4 "$failed_ip" \
        && relay_drain_write "$failed_ip" && wait_drain_applied "$failed_ip"; then
       log "rollback: parked the failed instance ($failed_ip) and the relay dropped it; holding ${ML_DRAIN_SECONDS}s (plus quiet check) before deleting it"
-      drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "$failed_ip"
+      # B6 fix: a failed quiet check (extension budget exhausted with the
+      # instance still reporting in-flight work) must STOP the deletion, the
+      # same way a failed park does - the old flow fell through to the delete
+      # on any non-zero return because the call was unchecked. Re-prove the
+      # park too: a marker that lapsed mid-window means the victim may be
+      # back in the upstream, and deleting it then cuts live streams.
+      if ! drain_window_with_quiet_check "$ML_DRAIN_SECONDS" "$failed_ip" || ! drain_guard_still_holds "$failed_ip"; then
+        relay_drain_clear >/dev/null 2>&1 || true
+        error "rollback drain window or park re-verification failed for $failed_ip; NOT deleting $failed_id - drain and remove it by hand, or rerun the release"
+        return 1
+      fi
       if ! aliyun_cmd eci DeleteContainerGroup --region "$ALIYUN_REGION" --ContainerGroupId "$failed_id" >/dev/null; then
         warn "could not delete failed container group $failed_id; ESS may recreate it with the pinned digest"
       else
@@ -1702,6 +1737,50 @@ printf '%s\n' "$expanded" | awk '
 REMOTE_MEMBERS_RUNNING
 }
 
+# nginx_reloaded_after_write <conf> - runtime proof that nginx actually
+# RELOADED after the upstream include was last written (B7). `nginx -T` re-reads
+# the tree from DISK, so it proves what a reload WOULD load, not what the
+# running workers carry. A reload replaces the worker processes; a worker
+# whose start time predates the include file's mtime is a worker that never
+# re-read it. If the youngest worker is older than the file, the reload did
+# not happen and the park is NOT applied, whatever the file says. Exit 0 =
+# a reload happened after the write; 1 = not provable (no workers/readable
+# /proc) or no reload since the write; the caller keeps waiting either way.
+nginx_reloaded_after_write() {
+  remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS"     "$ECS_UPSTREAM_CONF" <<'REMOTE_RELOAD_PROOF' 2>/dev/null
+#!/usr/bin/env bash
+set -Eeuo pipefail
+conf="$1"
+[[ -r "$conf" ]] || exit 1
+file_mtime="$(stat -c %Y "$conf" 2>/dev/null)" || exit 1
+# /proc/uptime and the worker starttimes (field 22 of /proc/<pid>/stat) are
+# both seconds-since-boot; convert to wall clock by boot_time = now - uptime.
+now="$(date +%s)"
+read -r uptime _ < /proc/uptime
+boot=$(( now - ${uptime%.*} ))
+youngest=0
+pids="$(pgrep -x nginx 2>/dev/null || true)"
+if [[ -z "$pids" ]]; then
+  # nginx is not running at all: the dangerous case this proof exists for is
+  # a LIVE nginx still load-balancing to the parked victim on an old worker
+  # set. No nginx means no traffic is being balanced anywhere - and whatever
+  # brings it back reads the current tree, which already dropped the victim.
+  exit 0
+fi
+for pid in $pids; do
+  st="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || continue
+  [[ "$st" =~ ^[0-9]+$ ]] || continue
+  start_abs=$(( boot + st ))
+  (( start_abs > youngest )) && youngest=$start_abs
+done
+# Workers exist but none of them could be dated: we cannot prove a reload
+# happened. Fail CLOSED (return 1): an unprovable park must not start a
+# removal countdown.
+(( youngest > 0 )) || exit 1
+(( youngest >= file_mtime ))
+REMOTE_RELOAD_PROOF
+}
+
 # wait_drain_applied <comma_ips> - block until the entry's relay upstream no
 # longer carries ANY of the parked IPs. Parking is only real once fleet-sync
 # consumed the marker and nginx reloaded; starting the drain timer before that
@@ -1749,8 +1828,20 @@ wait_drain_applied() {
           continue
         fi
       fi
-      log "drain applied: the relay upstream (file and running config) no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
-      return 0
+      # B7 runtime proof: the file and the disk tree both dropped the victim,
+      # but the WORKERS may still carry the old upstream list if the reload
+      # never ran. A reload replaces the workers; the youngest worker being
+      # younger than the include file's mtime is the only cheap proof that
+      # the running config re-read it. Without that proof, keep waiting - a
+      # park that only exists on disk must not start the removal countdown.
+      if nginx_reloaded_after_write; then
+        log "drain applied: the relay upstream (file, expanded tree, and a reload newer than the write) no longer serves $(printf '%s' "$ips" | tr ',' ' ')"
+        return 0
+      fi
+      log "the include dropped the victim but nginx has not reloaded since the write; waiting for the reload to land"
+      sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
+      i=$(( i + 1 ))
+      continue
     fi
     sleep "$ML_DRAIN_CONVERGE_DELAY_SECONDS"
     i=$(( i + 1 ))
@@ -1926,6 +2017,16 @@ suspend_scale_in_guard() {
   # Tell the entry's shrink guard to stand down for the whole release, whatever
   # happens to the alarm half below.
   if shrink_hold_write set; then
+    # B9 fix: record the first SUCCESS, and start a background heartbeat.
+    # The foreground heartbeat only fires from log() and the drain sleeps, so
+    # a release blocked in one long silent operation (image pull, a big SSH
+    # transfer, a stuck cloud API) could let the hold go stale for its whole
+    # duration: a second release would then be entitled to take over, and the
+    # entry's janitor could clean the hold from under this one. The loop is
+    # killed FIRST by resume_scale_in_guard (the EXIT trap) so it can never
+    # re-write the hold after cleanup.
+    scale_in_hold_last_ok="$(date +%s)"
+    start_hold_heartbeat_bg
     # The heartbeat gate and the cleanup trap go up BEFORE any log line: log()
     # writes to stdout, a failed write is terminated by set -e, and dying
     # between the hold write and the trap would leave the hold blocking the
@@ -2011,6 +2112,13 @@ release_the_hold() {
 
 resume_scale_in_guard() {
   local id="${scale_in_guard_suspended:-}"
+  # B9: the background heartbeat must die BEFORE the hold is cleared, or it
+  # re-writes the hold after cleanup and leaves the tier guarded by a ghost.
+  if [[ -n "${HOLD_HB_PID:-}" ]]; then
+    kill "$HOLD_HB_PID" 2>/dev/null || true
+    wait "$HOLD_HB_PID" 2>/dev/null || true
+    HOLD_HB_PID=""
+  fi
   # Ownership check FIRST (#2): if another release took the tier over (our hold
   # went stale while we were blocked, it acquired, it disabled the alarm for
   # ITS run), then OUR EnableAlarm here would re-enable the alarm underneath
@@ -2619,7 +2727,9 @@ ess_rollout() {
     return 1
   fi
   scale_in_ok=0
+  roll_before_count=0
   if [[ -n "$roll_before_ids" ]]; then
+    roll_before_count=$(printf '%s\n' "$roll_before_ids" | grep -c . || true)
     # Race-tightened scale-in (#4): re-read, compute, Modify, and verify in one
     # helper instead of computing from a set that may be a full drain window
     # old by the time the Modify lands.
@@ -2629,6 +2739,21 @@ ess_rollout() {
     fi
   fi
   if (( scale_in_ok == 0 )); then
+    # B8 repair: a removal the race widened (or a gate that failed after the
+    # Modify landed) leaves the group below the count it started from, and the
+    # rollback below re-parks around a SHRUNK tier. Restore the pre-scale-in
+    # capacity first so ESS replaces whatever the race took; the rollback then
+    # works against the shape the rollout found. Best effort: a restore
+    # failure is warned, the rollback still runs, and the release still fails
+    # loud either way.
+    local live_now=0
+    if live_now_ids="$(in_service_instance_ids)"; then
+      live_now=$(printf '%s\n' "$live_now_ids" | grep -c . || true)
+    fi
+    if (( roll_before_count > 0 && live_now < roll_before_count )); then
+      warn "scale-in left the group at $live_now of the $roll_before_count it started from; restoring desired capacity before the rollback"
+      scale_group "$roll_before_count" || warn "capacity restore FAILED - the tier is smaller than the rollout found; fix by hand"
+    fi
     if ! rollback_failed_rollout "$new_id" "$previous_digest" "$previous_snapshot"; then
       error "scale-down gate failed and rollback could not be verified"
     fi

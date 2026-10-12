@@ -314,6 +314,17 @@ while IFS= read -r kv; do
   envs+=(-e "$kv")
 done < <(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER")
 
+# B10 fix: the Docker stop budget is an UPPER BOUND on how long the process is
+# ALLOWED to live; it does not make the app WAIT. main.go drains in-flight
+# requests for SHUTDOWN_TIMEOUT_SECONDS (default 120s) and then exits on its
+# own - so a blue master carrying /v1 last-resort streams still cut them at
+# ~120s no matter what the stop timeout says. Force the app-level budget to
+# the same /v1-aware number the stop timeout uses (the commit phase already
+# moved nginx off blue first, so the budget only has to outlast streams that
+# already started). Operators can still override it via
+# MASTER_ENV_OVERRIDES, which is applied after this default.
+envs+=(-e "SHUTDOWN_TIMEOUT_SECONDS=${MASTER_V1_STOP_TIMEOUT:-2132}")
+
 # Optional env overrides, applied ON TOP of the env captured from the running
 # container. The captured env is the master's source of truth (this script
 # re-passes it verbatim), which made a value change require hand-editing the

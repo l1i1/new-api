@@ -401,7 +401,15 @@ alarm_check() {
   fi
   return 0
 }
-alarm_check
+# S6 fix: the notice is best-effort and must NEVER kill the guard's tick.
+# aliyun_ess already swallows its own stderr, but a non-zero aliyun exit code
+# under `set -Eeuo pipefail` propagates out of the $() substitution (the
+# pipeline's rc is jq's 0 unless jq also fails, and a missing jq binary would
+# abort the whole tick mid-drain-renewal). Run it as a fire-and-forget probe
+# in its own subshell where every failure mode lands in the log, not in the
+# control loop: a notice helper that can kill the drain-renewal it exists to
+# protect is worse than no helper.
+( alarm_check ) 2>/dev/null || log "alarm notice probe failed (non-fatal); scale-in alarm state unverified this tick"
 
 # Resume an in-flight drain BEFORE the capacity floor check: the tier is already
 # short one member in the relay list, so finish or undo it. Checking the floor
