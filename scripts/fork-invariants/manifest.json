@@ -2556,6 +2556,429 @@
           ]
         }
       ]
+    },
+    {
+      "id": "relay-status-commit-fidelity-502",
+      "title": "失败尝试的状态码不得污染客户响应：流内错误只交回重试循环，不在客户 writer 上写状态；换道成功后客户必须拿到 200 + 成功帧，终局失败才由 controller/relay.go 的错误 defer 写出 5xx",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/channel/openai/relay-openai.go",
+        "controller/relay.go",
+        "relay/helper/common.go"
+      ],
+      "anchors": [
+        {
+          "kind": "file",
+          "file": "relay/channel/openai/relay-openai.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/channel/openai/relay-openai.go",
+          "name": "NormalizeOpenAIStreamError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/common.go",
+          "name": "ResponseCommitStateOf"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "relayObservationWriter"
+        },
+        {
+          "kind": "contains",
+          "file": "relay/channel/openai/relay-openai.go",
+          "contains": "只把错误交回重试循环"
+        }
+      ],
+      "tests": [
+        {
+          "file": "relay/channel/openai/stream_status_commit_test.go",
+          "names": [
+            "TestFailedStreamAttemptDoesNotPoisonLaterSuccessfulResponse",
+            "TestInBandStreamErrorStillYieldsTerminal5xxWhenNothingRetries"
+          ]
+        },
+        {
+          "file": "controller/relay_stale_status_e2e_test.go",
+          "names": [
+            "TestE2EStickyStatusRetryLoopServes200AfterInBandError",
+            "TestE2EStickyStatusAllFailuresYield5xx"
+          ]
+        },
+        {
+          "file": "relay/channel/openai/relay_openai_stream_usage_test.go",
+          "names": [
+            "TestOaiStreamHandlerAllowsRetryBeforeAnyUpstreamData"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "retry-error-fidelity-mode-three-states",
+      "title": "重试失败保真三态 RetryErrorFidelityMode（off/shadow/on，默认 shadow；非法值按 shadow）：只有可证明的候选耗尽才用路由错误作答，官方 pin 在场时保留上游裁决，并补写 routing_error 错误行；上游文本只进 admin 可见域且脱敏",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "service/relay_error.go",
+        "setting/operation_setting/retry_error_fidelity.go",
+        "controller/relay.go",
+        "model/log_other.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "RetryErrorFidelityMode"
+        },
+        {
+          "kind": "file",
+          "file": "setting/operation_setting/retry_error_fidelity.go"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "retryFoundNoPinnedCandidate"
+        },
+        {
+          "kind": "contains",
+          "file": "model/log_other.go",
+          "contains": "last_upstream_error"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/relay_error_test.go",
+          "names": [
+            "TestRetryErrorFidelityGuard"
+          ]
+        },
+        {
+          "file": "controller/relay_routing_failure_test.go",
+          "names": [
+            "TestRetryRoutingFailureReadsTheSelectionKind",
+            "TestNoCandidateRetryLogRowKeepsTheUpstreamTextOutOfUserScope"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "provable-channel-exhaustion-under-fit-pin",
+      "title": "「候选耗尽」必须可证明：pin/拟合路径下可用性探测（分组 enabled、DB 预筛、video 能力查询）不足以证明耗尽，返回专用 kind ChannelSelectionUnprovableExhaustion 并透传真实上游裁决；饱和走查豁免、保住 429；video 能力查询失败按错误上报而非空集",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "service/channel_select.go",
+        "controller/relay.go",
+        "middleware/distributor.go",
+        "model/ability.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "ChannelSelectionUnprovableExhaustion"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/channel_select.go",
+          "name": "HasSaturatedChannel"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/ability.go",
+          "name": "filterAbilitiesByVideoCapability"
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "retryFoundNoPinnedCandidate"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/zz_pin_exhaustion_test.go",
+          "names": [
+            "TestClassifyChannelSelectionFailureRefusesExhaustionUnderOfficialPin",
+            "TestClassifyChannelSelectionFailureKeepsSaturationKindUnderOfficialPin"
+          ]
+        },
+        {
+          "file": "model/channel_video_test.go",
+          "names": [
+            "TestVideoCapabilityFilterReportsAnUnreadableCapability"
+          ]
+        },
+        {
+          "file": "controller/relay_fitpolicy_reuse_test.go",
+          "names": [
+            "TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "official-pin-credential-exhaustion-failover",
+      "title": "官方拟合 pin 的判词保护在渠道凭据/额度耗尽类失败上不成立（可用性优先，允许换渠道）；同渠道仍先轮换 Key；泛化 5xx 与本地计费 403 不触发",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 3. 计费与配额",
+      "files": [
+        "service/relay_error.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "isCredentialExhaustedFailure"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "officialFitPinKeepsVerdict"
+        },
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "anotherCredentialAvailable"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/relay_error_test.go",
+          "names": [
+            "TestOfficialFitPinCredentialExhaustionFailover",
+            "TestOfficialFitPinKeepsUpstreamVerdict"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "request-context-done-stops-the-retry-chain",
+      "title": "上下文取消（客户断开 / DeadlineExceeded / 服务端关连接）后停链：不再消耗尝试预算、不把剩余渠道打满 context canceled；错误行保留最后一次真实上游错误；跳过亲和驱逐与自动禁用判定，渠道观测记独立错误类 request_context_done",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "service/relay_error.go",
+        "controller/relay.go",
+        "pkg/channel_observability/observability.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "service/relay_error.go",
+          "name": "request_context_done"
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/channel_observability/observability.go",
+          "name": "RecordAttempt"
+        }
+      ],
+      "tests": [
+        {
+          "file": "service/relay_error_test.go",
+          "names": [
+            "TestDecideRelayRetryStopsWhenRequestContextDone"
+          ]
+        },
+        {
+          "file": "relay/channel/openai/relay_openai_stream_usage_test.go",
+          "names": [
+            "TestOaiStreamHandlerTreatsClientGoneAsNonError"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "glm-group-contract-and-cdp-instruction-following",
+      "title": "GLM 组契约与 cdp 指令遵循：孤儿 tool 结果拒 400 且用智谱报文形状；tool_choice=none 不投递工具声明也绝不调用工具；采样区间不再本地误拒；未知模型错误码/文案按官方；GLM 业务 400 不发 Content-Type",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "relay/helper/valid_request.go",
+        "middleware/distributor.go",
+        "controller/relay.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "WriteZhipuBusinessError"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "validateGlm53OfficialFields"
+        },
+        {
+          "kind": "file",
+          "file": "relay/helper/glm53_customer_contract_test.go"
+        }
+      ],
+      "tests": [
+        {
+          "file": "relay/helper/glm53_customer_contract_test.go",
+          "names": [
+            "TestGlm53OrphanToolMessageRejected",
+            "TestGlm53OrphanErrorUsesZhipuWireShape",
+            "TestGlm53ToolChoiceNoneWithholdsToolDeclarations"
+          ]
+        },
+        {
+          "file": "relay/helper/glm53_official_fields_test.go",
+          "names": [
+            "TestGlm53OfficialFieldsAccept",
+            "TestGlm53ModelNotFoundTextMatchesLiveContract",
+            "TestWriteZhipuBusinessErrorOmitsContentTypeOnTheWire"
+          ]
+        },
+        {
+          "file": "relay/helper/deepseek_v4_logprobs_test.go",
+          "names": [
+            "TestKimiK3NamedToolChoiceAcceptedWithThinkingOff"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "response-writer-unwrap-chain",
+      "title": "写截止期链必须完整：relayObservationWriter / captureResponseWriter / keepAliveGuardedWriter / auditResponseWriter 四层包装器都要实现 Unwrap()，否则 http.ResponseController.SetWriteDeadline 静默失效，慢下游可永久占住渠道并发槽",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "controller/relay.go",
+        "middleware/request_capture.go",
+        "middleware/audit.go",
+        "relay/helper/nonstream_keepalive.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "relayObservationWriter"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/request_capture.go",
+          "name": "captureResponseWriter"
+        },
+        {
+          "kind": "symbol",
+          "file": "middleware/audit.go",
+          "name": "auditResponseWriter"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/nonstream_keepalive.go",
+          "name": "keepAliveGuardedWriter"
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/relay_observation_writer_test.go",
+          "names": [
+            "TestObservationWriterSetWriteDeadlineReachesConn"
+          ]
+        },
+        {
+          "file": "middleware/response_writer_unwrap_test.go",
+          "names": [
+            "TestCaptureWriterSetWriteDeadlineReachesConn",
+            "TestAuditWriterSetWriteDeadlineReachesConn"
+          ]
+        },
+        {
+          "file": "relay/helper/keepalive_unwrap_test.go",
+          "names": [
+            "TestKeepAliveGuardedWriterSetWriteDeadlineReachesConn"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "capture-redaction-defaults",
+      "title": "请求/响应捕获的默认脱敏：x-goog-api-key、mj-api-secret、Cookie、Sec-WebSocket-Protocol（多值头全量，不只看 Header.Get 首值）与响应 Set-Cookie 一律遮蔽；只影响副本，认证与转发字节不变",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "middleware/request_capture.go",
+        "middleware/audit.go"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "middleware/request_capture.go",
+          "contains": "x-goog-api-key"
+        },
+        {
+          "kind": "contains",
+          "file": "middleware/request_capture.go",
+          "contains": "mj-api-secret"
+        },
+        {
+          "kind": "contains",
+          "file": "middleware/request_capture.go",
+          "contains": "Set-Cookie"
+        }
+      ],
+      "tests": [
+        {
+          "file": "middleware/request_capture_test.go",
+          "names": [
+            "TestCaptureRequestHeadersRedactCredentialsByDefault"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "master-shutdown-budget-is-shared",
+      "title": "master 停止预算：bootstrap 强制注入 SHUTDOWN_TIMEOUT_SECONDS=2132，四个后台排空共享一份总预算且预算耗尽仍要调用 shutdown（零预算不饿死后续阶段），单个卡死 worker 由 10s 硬顶兜底",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "main.go",
+        "deployment/tokeness-cn/bootstrap-master-ecs.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "main.go",
+          "contains": "SHUTDOWN_TIMEOUT_SECONDS"
+        },
+        {
+          "kind": "contains",
+          "file": "main.go",
+          "contains": "background drain budget already exhausted"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+          "contains": "SHUTDOWN_TIMEOUT_SECONDS"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "option-periodic-sync-skips-unchanged-values",
+      "title": "选项周期同步路径「值未变即跳过」（管理员写入路径保持全语义）：竞争面从每 2s 全量反射重写缩到仅管理员变更时；ForceRetryStatusCodes 之类的 legacy 键即使未变也不得跳过",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "model/option.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "model/option.go",
+          "name": "loadOptionsFromDatabase"
+        },
+        {
+          "kind": "contains",
+          "file": "model/option.go",
+          "contains": "ForceRetryStatusCodes"
+        }
+      ],
+      "tests": []
     }
   ]
 }
