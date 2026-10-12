@@ -689,3 +689,37 @@ Explicitly **not verified**:
   functions passing (25 in `regression_test.go`, 1 in `report_test.go`), and `go test -race` = ok.
   `TestR12SingleRoundIsUnchangedAndIsTheDefault` (`scripts/fit-probe/regression_test.go:1575`) and
   `TestR13ThreeRoundMajorityIsEncoded` (`:1654`) for the rounds contract.
+
+---
+
+## 9. Revision note — glm-5.3 family extension (2026-10-11)
+
+The glm-5.3 family was extended from the single `family.whole` mark to the same
+per-shape narrowing kimi-k3 has (live policy v6/v7, see
+`~/tokeness/docs/channels/glm-group-4.5-20261011.md`). Two local edits were needed
+to make those marks measurable, and this copy is therefore **not** the revision
+pinned in §1:
+
+| file | md5 (after the edit) | change |
+|---|---|---|
+| `spec.go` | `cd7462d393a0095d372ff398f8b074cf` | five `glm-5.3` expectation rows: `usage.thinking_counting` / `tools.choice_semantics` / `response_format.json` (structural), `history.assistant_first` / `tools.dynamic_names` (`prompt_tokens`, need a measured baseline) |
+| `probe.go` | `11563ae38a3c48e8962705dbc275d76e` | the `usage.thinking_counting` probe now builds `thinking:{type:"enabled"}` for `glm-5.3` as well as `deepseek-v4`; kimi-k3 keeps the thinking-OFF branch |
+
+Why the thinking probe is thinking-ON for glm: the official model always thinks
+and rejects `thinking.type=disabled` with 400/1210, so the mark means "returns
+reasoning like the official endpoint" and must be probed with the shape that
+actually asks for it.
+
+**Known limitation of that probe, learned while using it:** its request is
+`"hi"` with `max_tokens: 8`. A channel whose thinking depends on the request
+shape passes it while still returning no reasoning for real prompts — ch78
+(neurvibe) measured 12/12 reasoning on `"hi"` but **0/12** on a normal reasoning
+prompt (12/12 for ch77 and the official channel). The mark decided from that
+probe was therefore **not written** for ch78; do not treat a `consistent`
+thinking row as sufficient evidence on this family without a shape-varying
+re-check.
+
+Baseline note: with no official Zhipu key on this machine, the measured baseline
+was taken through the relay with a channel-pinned key (`sk-<key>-7`, i.e. the
+official channel as the reference), which is the same path the customer uses.
+The tool records that in `baseline.source = "measured"`.

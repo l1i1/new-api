@@ -171,8 +171,13 @@ var probeSpecs = map[string]ProbeSpec{
 		Fields:    []string{"thinking", "reasoning_effort", "reasoning", "usage"},
 		Build: func(family, model string) map[string]any {
 			body := chatBody(model, []map[string]any{userMessage("hi")}, 8)
-			if family == "deepseek-v4" {
+			if family == "deepseek-v4" || family == "glm-5.3" {
 				// DeepSeek V4 requires counting for thinking-expected requests.
+				// glm-5.3 is the same shape: the official model always thinks and
+				// rejects thinking.type=disabled (400/1210), so the mark means
+				// "returns reasoning like the official endpoint", which must be
+				// probed with thinking ON. Added 2026-10-11 with the glm family
+				// policy extension; kimi-k3 keeps the thinking-OFF branch.
 				body["thinking"] = map[string]any{"type": "enabled"}
 			} else {
 				// kimi-k3 requires it for thinking-disabled requests: the pool

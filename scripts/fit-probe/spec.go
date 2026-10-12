@@ -169,6 +169,69 @@ var officialExpectations = []Expectation{
 			"pkg/fitpolicy/decide.go (the requirement carries the policy mark verbatim)",
 		},
 	},
+	// --- glm-5.3 家族（2026-10-11 扩展；此前只有 family.whole 一行）---
+	//
+	// 官方 GLM-5.3 的行为基线来自 2026-10-10 的 cdp-bench glm-v53 实测（32 例）与
+	// 探针复测：官方「始终思考」（thinking.type=disabled 报 400/1210，故本族的
+	// usage.thinking_counting 用 thinking ON 形状探测，与 deepseek-v4 同形），支持
+	// tool_choice=required、支持 response_format=json_object。三条都只有结构类判据，
+	// 无需外部官方 key 即可判定；history.assistant_first / tools.dynamic_names 的判据
+	// 只有 prompt_tokens，必须配实测官方基线才能判定。
+	{
+		Family:         "glm-5.3",
+		Behavior:       fitpolicy.BehaviorThinkingCounting,
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v6) rule glm-thinking requires usage.thinking_counting",
+			"docs/cdp/… 实测：官方 glm-5.3-flash 始终思考，thinking.type=disabled → 400 code 1210",
+			"workos/scratch/glm78-test2-think.json（ch7 reasoning_content 非空 12/12；ch78 0/12）",
+		},
+	},
+	{
+		Family:         "glm-5.3",
+		Behavior:       fitpolicy.BehaviorToolsChoiceSemantics,
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v6) rule glm-tool-choice",
+			"cdp-bench glm-v53 GLM-050/051：官方接受 tool_choice 指定函数对象",
+		},
+	},
+	{
+		Family:         "glm-5.3",
+		Behavior:       fitpolicy.BehaviorResponseFormatJSON,
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v6) rule glm-response-format",
+			"cdp-bench glm-v53 GLM-060：官方接受 json_object",
+		},
+	},
+	{
+		Family:         "glm-5.3",
+		Behavior:       fitpolicy.BehaviorHistoryAssistantFirst,
+		Official:       expectSupported,
+		Discriminators: []string{discPromptTokens},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v6) rule glm-history",
+			"cdp-bench glm-v53 工具循环轮次：官方接受 assistant 起始历史",
+		},
+	},
+	{
+		Family:         "glm-5.3",
+		Behavior:       fitpolicy.BehaviorToolsDynamicNames,
+		Official:       expectSupported,
+		Discriminators: []string{discPromptTokens},
+		BasisKind:      "doc",
+		Basis: []string{
+			"official_fit.policy (live v6) rule glm-dynamic-tools",
+		},
+	},
 	{
 		Family:         "glm-5.3",
 		Behavior:       fitpolicy.BehaviorFamilyWhole,
