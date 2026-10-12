@@ -1,4 +1,13 @@
 {
   "$comment": "Paths the merge-divergence check must not fail on: the merge took upstream's side over a fork-modified path on purpose. Every entry needs a reason. Allowlisted paths stay VISIBLE in the gate output (they are counted as acknowledged), so this file records decisions instead of hiding them. Remove an entry when the fork behaviour moves back into the file.",
-  "paths": []
+  "paths": [
+    {
+      "path": "relay/channel/openai/relay-openai.go",
+      "reason": "2026-10-12 merge 26998b80e: 上游侧提交 0d1f999d1/baf4273c1（失败尝试的状态码不再污染客户响应）有意取代了本 fork 分支快照里的旧写法——旧代码在流内错误处直接 c.Status(streamErr.StatusCode) 写客户 writer，换道重试成功后的首帧会把这一跳的 5xx 当作客户响应状态发出（cdp 2026-10-12 20:29 投诉形态：客户收到 502+完整正文，我方记成功）。新写法不再写 writer，终局失败时由 controller/relay.go 的错误 defer 统一写出，错误本身仍带 StatusCode。测试同步改为断言 err.StatusCode 且 c.Writer.Written()==false / recorder.Code==200。行为已移入上游侧实现，故登记为已确认取代。"
+    },
+    {
+      "path": "relay/channel/openai/relay_openai_stream_usage_test.go",
+      "reason": "2026-10-12 merge 26998b80e: 上游侧提交 0d1f999d1/baf4273c1（失败尝试的状态码不再污染客户响应）有意取代了本 fork 分支快照里的旧写法——旧代码在流内错误处直接 c.Status(streamErr.StatusCode) 写客户 writer，换道重试成功后的首帧会把这一跳的 5xx 当作客户响应状态发出（cdp 2026-10-12 20:29 投诉形态：客户收到 502+完整正文，我方记成功）。新写法不再写 writer，终局失败时由 controller/relay.go 的错误 defer 统一写出，错误本身仍带 StatusCode。测试同步改为断言 err.StatusCode 且 c.Writer.Written()==false / recorder.Code==200。行为已移入上游侧实现，故登记为已确认取代。"
+    }
+  ]
 }
