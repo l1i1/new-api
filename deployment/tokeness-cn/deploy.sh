@@ -197,6 +197,12 @@ start_hold_heartbeat_bg() {
   (
     while :; do
       sleep "${ROLLOUT_HEARTBEAT_SECONDS:-60}"
+      # Zombie guard: a SIGKILLed release never runs the EXIT trap, so nobody
+      # would ever kill this loop - an orphaned heartbeat would refresh the
+      # hold FOREVER and permanently disable the tier's shrink protection
+      # (CNB has cancelled releases exactly this way before). Exit as soon as
+      # the parent is gone; the hold then ages out for the janitor.
+      kill -0 "$PPID" 2>/dev/null || exit 0
       rc=0
       shrink_hold_write set >/dev/null 2>&1 || rc=$?
       if (( rc == 3 )); then
@@ -2746,11 +2752,15 @@ ess_rollout() {
     # works against the shape the rollout found. Best effort: a restore
     # failure is warned, the rollback still runs, and the release still fails
     # loud either way.
-    local live_now=0
+    # A FAILED member query must not read as "0 alive": restoring capacity on
+    # an unknown count could grow the tier past its ceiling. Skip the restore
+    # when the count cannot be proven - the rollback still runs and the release
+    # still fails loud.
+    local live_now=-1
     if live_now_ids="$(in_service_instance_ids)"; then
       live_now=$(printf '%s\n' "$live_now_ids" | grep -c . || true)
     fi
-    if (( roll_before_count > 0 && live_now < roll_before_count )); then
+    if (( roll_before_count > 0 && live_now >= 0 && live_now < roll_before_count )); then
       warn "scale-in left the group at $live_now of the $roll_before_count it started from; restoring desired capacity before the rollback"
       scale_group "$roll_before_count" || warn "capacity restore FAILED - the tier is smaller than the rollout found; fix by hand"
     fi
