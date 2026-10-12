@@ -1759,11 +1759,15 @@ set -Eeuo pipefail
 conf="$1"
 [[ -r "$conf" ]] || exit 1
 file_mtime="$(stat -c %Y "$conf" 2>/dev/null)" || exit 1
-# /proc/uptime and the worker starttimes (field 22 of /proc/<pid>/stat) are
-# both seconds-since-boot; convert to wall clock by boot_time = now - uptime.
+# /proc/uptime is seconds-since-boot, but the process starttimes (field 22 of
+# /proc/<pid>/stat) are CLOCK TICKS since boot (CLK_TCK, 100/s on x86_64).
+# Divide before adding to the boot epoch: adding raw ticks would inflate every
+# start time ~100x and make this proof pass for any worker started within the
+# last ~99% of uptime, i.e. prove nothing (review catch on the B7 batch).
 now="$(date +%s)"
 read -r uptime _ < /proc/uptime
 boot=$(( now - ${uptime%.*} ))
+clk_tck="$(getconf CLK_TCK 2>/dev/null || printf 100)"
 youngest=0
 pids="$(pgrep -x nginx 2>/dev/null || true)"
 if [[ -z "$pids" ]]; then
@@ -1776,7 +1780,7 @@ fi
 for pid in $pids; do
   st="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || continue
   [[ "$st" =~ ^[0-9]+$ ]] || continue
-  start_abs=$(( boot + st ))
+  start_abs=$(( boot + st / clk_tck ))
   (( start_abs > youngest )) && youngest=$start_abs
 done
 # Workers exist but none of them could be dated: we cannot prove a reload

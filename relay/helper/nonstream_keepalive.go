@@ -282,6 +282,17 @@ func (w *keepAliveGuardedWriter) WriteString(s string) (int, error) {
 	return w.ResponseWriter.WriteString(s)
 }
 
+// Unwrap restores the write-deadline path while the guard is installed (B3
+// gap, review catch): the non-stream keep-alive path extends the connection
+// write deadline on every probe beat (sendKeepAliveProbe ->
+// helper.ExtendWriteDeadline), and http.ResponseController needs this hop to
+// reach gin's writer, which itself unwraps to the net/http writer that owns
+// the deadline. Without it the deadline silently fails and a slow client can
+// block exactly the probe write the guard exists to bound.
+func (w *keepAliveGuardedWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // WriteHeader stops the keep-alive before the response is rendered. This is the
 // path gin takes before it touches the content type (Context.Render calls
 // c.Status first), so it closes the window in which a probe could read the header

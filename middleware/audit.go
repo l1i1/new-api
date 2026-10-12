@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,6 +37,14 @@ func (w *auditResponseWriter) Write(b []byte) (int, error) {
 
 func (w *auditResponseWriter) WriteString(s string) (int, error) {
 	return w.Write([]byte(s))
+}
+
+// Unwrap keeps the http.ResponseController write-deadline chain intact while
+// audit capture wraps the writer (B3): no admin path sets a write deadline
+// today, but a wrapper that silently breaks the chain would turn any future
+// ResponseController use on these routes into a no-op.
+func (w *auditResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // auditRouteActions 将「METHOD + 路由模板」映射为语言无关的操作标识 action。
