@@ -292,43 +292,72 @@ if [ "$PHASE" = flip ] || [ "$PHASE" = commit ]; then
 fi
 
 # ---- phase: retire (also the tail of commit) --------------------------------
+# Post-flip state this phase expects: the serving marker names GREEN's port,
+# green (still named $GREEN) serves on it, blue ($CONTAINER, canonical name)
+# idles on the OTHER port. Retire = quiet window, stop+remove blue, rename
+# green into the canonical name.
 if [ "$PHASE" = retire ] || [ "$PHASE" = commit ]; then
-  # Re-read the serving pair: retire can run long after flip (it IS the
-  # background tail), so the ports may not match the earlier probe anymore.
   rsp="$(serving_port)"
   rgp="$(other_port "$rsp")" || exit 3
   if [ "$PHASE" = retire ]; then
-    # Idempotent guard: green already carrying the canonical name means a
-    # previous retire finished - the panel already serves it, nothing to do.
-    if docker inspect "$CONTAINER" >/dev/null 2>&1 \
-       && [ "$(container_on_port "$rsp")" = "$CONTAINER" ]; then
+    # Idempotent guard: a COMPLETED retire renamed green into $CONTAINER on the
+    # serving port and left no $GREEN behind. Checking only "canonical name on
+    # the serving port" would also match the pre-flip state (blue is canonical
+    # and serving), so the absence of $GREEN is what disambiguates the two.
+    if [ "$(container_on_port "$rsp")" = "$CONTAINER" ] \
+       && ! docker inspect "$GREEN" >/dev/null 2>&1; then
       log "retire: green already serves as $CONTAINER on :$rsp; nothing to do"
       printf 'SERVING_PORT=%s\n' "$rsp"
       exit 0
     fi
-    green="$(container_on_port "$rgp")"
-    [ -n "$green" ] || { err "retire found no green container on :$rgp"; exit 3; }
+    # Pre-flip refusal: the marker names blue's port, so blue (canonical) sits
+    # on the serving port and green on the other. Retiring now would stop the
+    # SERVING container - refuse loudly instead of silently no-oping.
+    if [ "$(container_on_port "$rsp")" = "$CONTAINER" ]; then
+      err "retire: the serving container on :$rsp is still $CONTAINER (blue) - flip has not happened; refusing to stop the serving container"
+      exit 3
+    fi
+    # The cutover shape: blue (canonical) must be the one idling on the other
+    # port, green the one serving. Anything else is an unexpected state.
+    if [ "$(container_on_port "$rgp")" != "$CONTAINER" ]; then
+      err "retire: expected $CONTAINER (blue) on :$rgp, found '$(container_on_port "$rgp" || true)'; unexpected state, refusing"
+      exit 3
+    fi
+    green="$(container_on_port "$rsp")"
+    [ -n "$green" ] || { err "retire found no serving container on :$rsp"; exit 3; }
   else
-    # commit: the flip above just wrote the marker, so green is on $gp; use
-    # the re-read pair only for the safety check below.
+    # commit: the flip block above just wrote the marker, so the serving port
+    # is $gp and green was captured there; only the safety check below runs.
     rgp="$gp"
   fi
-  # Blue must still be the container on the OLD serving port - which is only
-  # true when flip already moved the marker/nginx. If the marker still names
-  # blue's port, running retire now would stop the SERVING container.
-  if [ "$rsp" != "$rgp" ]; then
-    err "retire: the serving marker still names :$rsp, not green :$rgp - flip has not happened; refusing to stop the serving container"
+  # Final shape check (commit only): the serving marker must name the port the
+  # flip block selected ($gp). retire already established the same fact in its
+  # guards above (rsp names green, rgp names blue - they are a pair, not equal
+  # by construction), so re-testing equality here would refuse every correct
+  # retire.
+  if [ "$PHASE" = commit ] && [ "$rsp" != "$rgp" ]; then
+    err "commit: the serving marker names :$rsp, not green :$rgp - flip has not happened; refusing to stop the serving container"
     exit 3
   fi
-  log "giving blue ${QUIET_SECONDS}s to finish in-flight work (green serving on :$rgp)"
+  log "giving blue ${QUIET_SECONDS}s to finish in-flight work (green serving on :$rsp)"
   sleep "$QUIET_SECONDS"
+  # Re-verify after the quiet window: a release that aborted while this script
+  # slept may have re-pointed the marker at blue (its abort path restores the
+  # serving port). Stopping $CONTAINER then would stop the container the panel
+  # is actually using - the exact outage the .48 incident taught us about. The
+  # marker is the live answer to "what serves", so re-read it and stand down
+  # when it no longer names this cutover's green port.
+  if [ "$(serving_port)" != "$rsp" ]; then
+    err "retire: the serving marker moved to :$(serving_port) during the quiet window (an abort/reconcile ran); standing down without touching blue"
+    exit 3
+  fi
   docker stop -t "$STOP_TIMEOUT" "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   if [ "$green" != "$CONTAINER" ]; then
     docker rename "$green" "$CONTAINER" >/dev/null
   fi
-  log "retire done: $CONTAINER serves on :$rgp; old image $old_image kept for rollback"
-  printf 'SERVING_PORT=%s\n' "$rgp"
+  log "retire done: $CONTAINER serves on :$rsp; old image $old_image kept for rollback"
+  printf 'SERVING_PORT=%s\n' "$rsp"
   exit 0
 fi
 

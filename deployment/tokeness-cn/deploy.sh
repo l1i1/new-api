@@ -1490,22 +1490,39 @@ master_retire_bg_wait() {
   return 0
 }
 
-# master_retire_bg_kill - abort the background retire job without waiting.
-# Used on release failure paths: the rollback's master_sync_abort re-reconciles
-# the panel, and a retire still running would race it (its abort looks at live
-# docker state). Best effort: the kill happens before any rollback call.
+# master_retire_bg_join_for_rollback - after a successful flip, the only safe
+# rollback shape is a COMPLETED retire. Killing the background job mid-flight
+# leaves flip-only state (green serving under its temp name, blue idling on
+# the other port), and every reconcile path (sync_master_container "",
+# master_sync_abort) assumes the post-commit shape - feeding it flip-only
+# state makes it remove the SERVING green (the .48 outage pattern). The remote
+# quiet window is not cancellable anyway (kill only drops the local ssh
+# client), so waiting for the retire to finish both restores the state the
+# reconcile paths expect and prevents the orphaned script from acting on a
+# state its parent already abandoned. The quiet window here is the price of
+# having flipped traffic before the fleet rotation had proven itself.
+master_retire_bg_join_for_rollback() {
+  [[ -n "${MASTER_RETIRE_PID:-}" ]] || return 0
+  local rc=0
+  log "flip already happened: waiting for the background master retire to finish before rolling back (killing it mid-flight would leave an unreconcilable state)"
+  wait "$MASTER_RETIRE_PID" || rc=$?
+  MASTER_RETIRE_PID=""
+  if (( rc != 0 )); then
+    warn "the background master retire failed (rc=$rc); the master may sit in flip-only state - run bootstrap-master-ecs.sh <image> retire by hand before sync-host"
+  fi
+  return 0
+}
+
+# master_retire_bg_kill - abort the background retire job. Only valid BEFORE
+# the flip (it is the EXIT-trap cleanup); after a successful flip the caller
+# must use master_retire_bg_join_for_rollback instead.
 master_retire_bg_kill() {
   [[ -n "${MASTER_RETIRE_PID:-}" ]] || return 0
   local pid="$MASTER_RETIRE_PID"
   MASTER_RETIRE_PID=""
-  # The subshell spawns ssh as its child; kill the subshell's whole process
-  # group so the remote command does not linger (set -m in the release keeps
-  # each background job in its own group ONLY when job control is on; here the
-  # subshell shares the script's group, so kill the subshell and its children
-  # explicitly).
-  kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  warn "background master retire aborted (the rollback's abort phase re-reconciles the panel)"
+  warn "background master retire aborted before its remote quiet window could do harm; the remote command (if one was in flight) re-verifies the serving marker before stopping anything"
   return 0
 }
 
@@ -3224,6 +3241,12 @@ rollout_batch() {
     for id in "${new_ids[@]}"; do
       if ! ip="$(instance_private_ip "$id")" || ! is_valid_ipv4 "$ip"; then
         error "round $rounds: could not read a valid private IP for new instance $id"
+        # Tear down the gates already spawned: they are read-only probes, but
+        # leaving them probing a round that is about to roll back (and writing
+        # into a gate_dir nobody will read again) is pointless litter.
+        local gp
+        for gp in "${gate_pids[@]}"; do kill "$gp" 2>/dev/null || true; done
+        rm -rf -- "$gate_dir"
         rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
@@ -3722,7 +3745,7 @@ main() {
           # rollback_failed_rollout re-pinned the scaling configuration + ECI to
           # the previous digest; bring the master back in line so node versions
           # never drift after an aborted release.
-          master_retire_bg_kill
+          master_retire_bg_join_for_rollback
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
           fi
@@ -3751,7 +3774,7 @@ main() {
           # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
-          master_retire_bg_kill
+          master_retire_bg_join_for_rollback
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
           fi

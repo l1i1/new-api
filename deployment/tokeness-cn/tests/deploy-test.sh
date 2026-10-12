@@ -90,11 +90,19 @@ case "$phase" in
     printf 'SERVING_PORT=%s\nBLUE_OK=1\nGREEN_PORT=%s\nGREEN_OK=0\n' "$serving" "$green" ;;
   commit|flip)
     printf '%s\n' "$green" > "$port_file"
+    printf '%s\n' flip-done > "$state_dir/flipped"
     printf 'SERVING_PORT=%s\n' "$green" ;;
   retire)
     if [[ "${TOKENESS_TEST_HOST_RETIRE_FAIL:-0}" == "1" ]]; then
       echo "simulated retire failure" >&2
       exit 1
+    fi
+    # Real retire semantics: refuse when the marker still names blue's port
+    # (flip has not happened) - the P0 regression the state-blind stub could
+    # not catch. State: serving-port still names blue's port -> exit 3.
+    if [[ ! -f "$state_dir/flipped" ]]; then
+      echo "retire: the serving container on :$serving is still blue - flip has not happened; refusing" >&2
+      exit 3
     fi
     printf 'SERVING_PORT=%s\n' "$green" ;;
   abort)
@@ -1921,15 +1929,17 @@ grow_line="$(grep -n 'ess ModifyScalingGroup' "$oneshot_case/state/aliyun-calls.
   || fail "the master retire tail did not overlap the ECI rotation (retire line $retire_call_line, grow line $grow_line)"
 grep -q "master retire finished: blue retired" "$oneshot_case/state/stdout.log" \
   || fail "the parallel master retire never reported completion"
-# Parallel gates: all THREE new instances' "app answers" lines must land
-# within the same second - the serial form gated one instance per
-# wait_app_ready round trip, so a regression to it shows up as gates
-# finishing in DISTINCT seconds here (the fake ssh adds real latency per
-# call, so the serial form cannot produce same-second completion of three).
-# The re-emitted lines carry the gate log's own timestamp after "gate| ".
-gate_seconds="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\)+08:00\].*/\1/' | sort -u | wc -l)"
-[[ "$gate_seconds" -le 1 ]] \
-  || fail "the new-instance gates did not run in parallel (${gate_seconds} distinct completion seconds)"
+# Parallel gates: the three new instances' "app answers" lines must land
+# within a ~2s span - the serial form gated one instance per wait_app_ready
+# round trip, and with APP_READY_POLL_SECONDS=2 the serial form needs at least
+# one poll interval per instance (>=4s span for three). The 2s allowance
+# absorbs a second-boundary tick between parallel completions (three gates
+# started together complete within one poll interval, but a run starting at
+# X.9s can straddle a tick).
+gate_first="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]\):\([0-9][0-9]\):\([0-9][0-9]\)+08:00\].*/\1\2\3/' | sort | head -1)"
+gate_last="$(grep 'gate| ' "$oneshot_case/state/stdout.log" | grep 'app answers on' | sed 's/^.*gate| \[[^T]*T\([0-9][0-9]\):\([0-9][0-9]\):\([0-9][0-9]\)+08:00\].*/\1\2\3/' | sort | tail -1)"
+[[ -n "$gate_first" && -n "$gate_last" && $(( 10#$gate_last - 10#$gate_first )) -le 2 ]] \
+  || fail "the new-instance gates did not run in parallel (first=$gate_first last=$gate_last; the serial form spans >= 4s)"
 
 # (2) A retire-tail failure must fail the release: TOKENESS_TEST_HOST_RETIRE_FAIL
 # makes the fake bootstrap's retire phase fail while everything else succeeds.
@@ -1992,5 +2002,9 @@ grep -q 'would replace nothing at all on the ECI tier' "$empty_case/state/output
 # gap the 2026-10-10 review called out. Run it as part of this suite so a
 # guard regression fails the same gate as a release regression.
 bash "$TEST_DIR/guard-test.sh" || fail "ecs-shrink-guard tests failed"
+
+# The master bootstrap's flip/retire phases need stateful coverage the stub in
+# this file cannot give (see the header of master-retire-test.sh).
+bash "$TEST_DIR/master-retire-test.sh" || fail "master retire state tests failed"
 
 printf 'Tokeness China deployment tests passed\n'
