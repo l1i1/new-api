@@ -2813,6 +2813,21 @@
           "name": "validateGlm53OfficialFields"
         },
         {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "glm53OrphanToolMessage"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "applyGlm53ToolChoiceNone"
+        },
+        {
+          "kind": "symbol",
+          "file": "relay/helper/valid_request.go",
+          "name": "IsStrictGlmValidationMessage"
+        },
+        {
           "kind": "file",
           "file": "relay/helper/glm53_customer_contract_test.go"
         }
@@ -2822,6 +2837,7 @@
           "file": "relay/helper/glm53_customer_contract_test.go",
           "names": [
             "TestGlm53OrphanToolMessageRejected",
+            "TestGlm53OrphanRuleProfileGate",
             "TestGlm53OrphanErrorUsesZhipuWireShape",
             "TestGlm53ToolChoiceNoneWithholdsToolDeclarations"
           ]
@@ -2979,6 +2995,385 @@
         }
       ],
       "tests": []
+    },
+    {
+      "id": "cn-release-mutex-fail-closed-reads",
+      "title": "发版互斥：hold 即锁（flock 下 check-and-acquire、三态退出码、fresh 外来 hold 拒绝、不可解析拒绝发布），所有远端读 fail-closed，守卫与发布同协议",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh",
+        "deployment/tokeness-cn/ecs-shrink-guard",
+        "deployment/tokeness-cn/tests/deploy-test.sh",
+        "deployment/tokeness-cn/tests/guard-test.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "MARKER_LOCK_PATH"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "release_hold_is_fresh"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "RELEASE_OWNER"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "suspend_scale_in_guard"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "shrink_hold_write"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "verify_no_extra_removals"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/ecs-shrink-guard",
+          "name": "DRAIN_OWNER"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/ecs-shrink-guard",
+          "name": "shrink_section"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "release-mutex",
+            "release-no-headroom"
+          ]
+        },
+        {
+          "file": "deployment/tokeness-cn/tests/guard-test.sh",
+          "names": [
+            "an idle tier above the floor did not park a drain marker",
+            "a live foreign drain marker was deleted while a release held the tier"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cn-scale-in-alarm-lifecycle-fail-closed",
+      "title": "scale-in 告警生命周期端到端 fail-closed：查询失败≠无告警、恢复失败重试后保留 hold、退役 pending 时告警保持关闭",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh",
+        "deployment/tokeness-cn/tests/fake-bin/aliyun"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "scale_in_alarm_id"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "resume_scale_in_guard"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "contains": "RETIREMENT_PENDING"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "scale-in-alarm-restore-fail",
+            "retire-pending",
+            "scale-in-alarm-missing",
+            "scale-in-alarm-pre-disabled"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deploy-relay-drain-park-before-hold",
+      "title": "relay 排空 park 协议：先 park 再排空、marker 为 owner+lease v2、按 ID 等全量离场才清、回滚走同一 park 协议",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh",
+        "deployment/tokeness-cn/tests/fake-bin/ssh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "oldest_instance_ips"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "relay_drain_write"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "relay_drain_refresh"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "wait_drain_applied"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "drain_before_scale_in"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "rollout-all-scale-in-race",
+            "parked the retiring instance",
+            "a relay drain marker was left behind after the release"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cn-drain-victim-selection-refuses-unpredictable",
+      "title": "ESS 受害者选择不可预测就不猜：秒级 CreatedTime 取整 n 个、边界平局拒绝、策略非 OldestInstance 拒绝、平局 park 整个 tie 集合",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "oldest_instance_ids"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "oldest_park_ids"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "oldest-policy-refused",
+            "not exactly OldestInstance",
+            "rollout-batch-created-time-tie"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cn-zero-cut-rotation-gates",
+      "title": "零切流旋转闸门：nginx -T 交叉验证上游成员、排空窗静默检查、removed_started 计入在途退役",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/deploy.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "instance_streams_busy"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "drain_window_with_quiet_check"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "ecs_upstream_members_running"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "scale_group_from_set"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "release-registry-digest-confirmed-before-deploy",
+      "title": "registry digest 先对账再部署（本机构建、.cnb.yml tag_push 与发布两段均复核）",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/release-local.sh",
+        "deployment/tokeness-cn/deploy.sh",
+        ".cnb.yml"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/release-local.sh",
+          "contains": "imagetools inspect"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/release-local.sh",
+          "name": "registry_digest"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/deploy-test.sh",
+          "names": [
+            "release-certified-digest"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "release-check-accepts-registry-401-and-proves-pull-auth",
+      "title": "release --check 的 registry 探针接受 401 为可达（-f 会把 401 误报为不可达），可选 tag 转 docker manifest inspect 证明拉取授权",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/release-on-master.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/release-on-master.sh",
+          "contains": "grep -qE '200|401'"
+        },
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/release-on-master.sh",
+          "contains": "docker manifest inspect"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "release-local-dirty-tree-and-immutable-tag",
+      "title": "本机构建：dirty 树拒绝（untracked 仅 warn）、重复 tag 拒绝、VERSION 构建时写+trap 恢复、GOPROXY 默认官方走参数覆盖",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/release-local.sh",
+        "Dockerfile.tokeness"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "deployment/tokeness-cn/release-local.sh",
+          "contains": "--untracked-files=no"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/release-local.sh",
+          "name": "restore_version"
+        },
+        {
+          "kind": "contains",
+          "file": "Dockerfile.tokeness",
+          "contains": "ARG GOPROXY="
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "merge-allowlist-visible-supersession",
+      "title": "merge-divergence 的有意取代必须可见登记：allowlist 条目强制 reason，且在门禁输出中计数为 acknowledged 而非隐藏",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "scripts/fork-invariants/merge-allowlist.json"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "scripts/fork-invariants/merge-allowlist.json",
+          "contains": "\"reason\""
+        }
+      ],
+      "tests": [
+        {
+          "file": "scripts/fork-invariants/main.test.mjs",
+          "names": [
+            "an allowlisted path stops failing but stays visible"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "audit-test-fixture-owns-its-connections",
+      "title": "审计测试夹具只关自有连接（不误关被测外层连接），不迁移但需 fork 侧回归",
+      "risk": "low",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "controller/access_token_audit_test.go",
+        "controller/relay_routing_failure_test.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/access_token_audit_test.go",
+          "name": "newAuditTestDatabase"
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/relay_routing_failure_test.go",
+          "names": [
+            "TestNewAuditTestDatabaseLeavesTheCallersConnectionsAlone",
+            "TestRecordNoCandidateRetryErrorNeedsARequest"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fit-probe-glm53-expectation-rows",
+      "title": "fit-probe 的 glm-5.3 期望行（5 条新增 + 既有 family.whole）与 thinking-ON 探测分支",
+      "risk": "low",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "scripts/fit-probe/spec.go",
+        "scripts/fit-probe/probe.go"
+      ],
+      "anchors": [
+        {
+          "kind": "contains",
+          "file": "scripts/fit-probe/spec.go",
+          "contains": "Family:         \"glm-5.3\""
+        },
+        {
+          "kind": "contains",
+          "file": "scripts/fit-probe/probe.go",
+          "contains": "family == \"deepseek-v4\" || family == \"glm-5.3\""
+        }
+      ],
+      "tests": [
+        {
+          "file": "scripts/fit-probe/regression_test.go",
+          "names": [
+            "TestR20DeepSeekProbesPinTheThinkingState"
+          ]
+        }
+      ]
     }
   ]
 }
