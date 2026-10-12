@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "Tắt để chỉ kiểm tra các nhóm đã liệt kê.",
     "Disable to restrict checks to listed models or patterns.": "Tắt để chỉ kiểm tra các mô hình hoặc mẫu đã liệt kê.",
     "Disabled / deleted": "Disabled / deleted",
-    "Disabled {{count}} keys": "Đã tắt {{count}} khóa",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "Hiển thị bên dưới Thêm tiền. Hỗ trợ HTML; để trống sẽ dùng văn bản mặc định.",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "Hiển thị trong hộp thoại liên hệ của ví. Hỗ trợ HTML và Markdown.",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "Không đóng trang thanh toán sau khi trả tiền. Hãy chờ hệ thống tự động chuyển bạn quay lại.",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "Khoảng thời gian thử tải lại",
     "Edit the document": "Chỉnh sửa tài liệu",
-    "Email address is already in use": "Địa chỉ email này đã được sử dụng.",
     "Email on flagged request": "Gửi email khi yêu cầu bị gắn cờ",
     "Enable content moderation": "Bật kiểm duyệt nội dung",
     "Enable discovery compliance": "Bật tuân thủ cho API khám phá",
@@ -723,6 +721,8 @@
   "overrides": {
     "Model square visibility": "Hiển thị trong kho mô hình",
     "Updated At": "Cập nhật lúc",
-    "Well-Known URL": "URL đã biết"
+    "Well-Known URL": "URL đã biết",
+    "Disabled {{count}} keys": "Đã tắt {{count}} khóa",
+    "Email address is already in use": "Địa chỉ email này đã được sử dụng."
   }
 }

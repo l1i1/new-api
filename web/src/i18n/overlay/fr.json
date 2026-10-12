@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "Désactiver pour limiter les contrôles aux groupes listés.",
     "Disable to restrict checks to listed models or patterns.": "Désactiver pour limiter les contrôles aux modèles ou motifs listés.",
     "Disabled / deleted": "Disabled / deleted",
-    "Disabled {{count}} keys": "{{count}} clés désactivées",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "Affiché sous Ajouter des fonds. HTML pris en charge ; vide, le texte par défaut est utilisé.",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "Affiché dans la boîte de dialogue de contact du portefeuille. HTML et Markdown sont pris en charge.",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "Ne fermez pas la page de paiement après avoir payé. Attendez la redirection automatique.",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "Intervalle entre les tentatives de téléchargement",
     "Edit the document": "Modifier le document",
-    "Email address is already in use": "Cette adresse e-mail est déjà utilisée.",
     "Email on flagged request": "Envoyer un e-mail en cas de signalement",
     "Enable content moderation": "Activer la modération du contenu",
     "Enable discovery compliance": "Activer la conformité des réponses de découverte",
@@ -726,6 +724,8 @@
     "Model square visibility": "Visibilité dans la galerie",
     "Updated At": "Mis à jour le",
     "Well-Known URL": "URL bien connue",
-    "Well-Known URL must start with http:// or https://": "L'URL bien connue doit commencer par http:// ou https://"
+    "Well-Known URL must start with http:// or https://": "L'URL bien connue doit commencer par http:// ou https://",
+    "Disabled {{count}} keys": "{{count}} clés désactivées",
+    "Email address is already in use": "Cette adresse e-mail est déjà utilisée."
   }
 }

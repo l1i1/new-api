@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "Отключите, чтобы проверять только указанные группы.",
     "Disable to restrict checks to listed models or patterns.": "Отключите, чтобы проверять только указанные модели или шаблоны.",
     "Disabled / deleted": "Отключено / удалено",
-    "Disabled {{count}} keys": "Отключено ключей: {{count}}",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "Отображается под «Добавить средства». Поддерживается HTML; при пустом значении используется текст по умолчанию.",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "Отображается в диалоге контактов кошелька. Поддерживаются HTML и Markdown.",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "Не закрывайте страницу оплаты после платежа. Дождитесь автоматического возврата.",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "Интервал повторной загрузки",
     "Edit the document": "Редактировать документ",
-    "Email address is already in use": "Этот адрес электронной почты уже используется.",
     "Email on flagged request": "Отправлять письмо при срабатывании",
     "Enable content moderation": "Включить модерацию контента",
     "Enable discovery compliance": "Включить фильтрацию обнаружения",
@@ -725,6 +723,8 @@
     "Model square visibility": "Видимость в каталоге моделей",
     "Not used yet": "Ещё не использовано",
     "Updated At": "Обновлено",
-    "Well-Known URL": "Известный эксперт"
+    "Well-Known URL": "Известный эксперт",
+    "Disabled {{count}} keys": "Отключено ключей: {{count}}",
+    "Email address is already in use": "Этот адрес электронной почты уже используется."
   }
 }

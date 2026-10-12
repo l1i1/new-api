@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "關閉後只審核列出的群組。",
     "Disable to restrict checks to listed models or patterns.": "關閉後只審核列出的模型或比對模式。",
     "Disabled / deleted": "已停用 / 已刪除",
-    "Disabled {{count}} keys": "已停用 {{count}} 個金鑰",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "顯示在「新增資金」下方，支援 HTML；留空使用預設文字。",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "顯示在錢包聯絡方式彈窗中，支援 HTML 和 Markdown。",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "付款後請勿關閉付款頁面，請等待自動跳轉返回。",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "下載重試間隔",
     "Edit the document": "編輯文件",
-    "Email address is already in use": "電郵地址已被使用",
     "Email on flagged request": "命中請求時寄送電子郵件",
     "Enable content moderation": "啟用內容審核",
     "Enable discovery compliance": "啟用探索介面合規過濾",
@@ -729,6 +727,8 @@
     "Model square visibility": "模型廣場顯示",
     "Not used yet": "暫未使用",
     "Playground": "模型對話",
-    "Start a playground chat": "開始一場模型對話"
+    "Start a playground chat": "開始一場模型對話",
+    "Disabled {{count}} keys": "已停用 {{count}} 個金鑰",
+    "Email address is already in use": "電郵地址已被使用"
   }
 }

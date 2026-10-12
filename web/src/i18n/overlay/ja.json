@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "無効にすると、一覧にあるグループだけを検査します。",
     "Disable to restrict checks to listed models or patterns.": "無効にすると、一覧のモデルまたはパターンだけを検査します。",
     "Disabled / deleted": "無効化 / 削除",
-    "Disabled {{count}} keys": "{{count}}個のキーを無効化しました",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "「資金を追加」の下に表示します。HTML に対応し、空欄ではデフォルトの文言を使用します。",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "ウォレットのお問い合わせダイアログに表示します。HTML と Markdown に対応しています。",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "支払い後は決済ページを閉じず、自動的に戻るまでお待ちください。",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "ダウンロード再試行間隔",
     "Edit the document": "ドキュメントを編集",
-    "Email address is already in use": "このメールアドレスはすでに使用されています。",
     "Email on flagged request": "検知時にメールを送信",
     "Enable content moderation": "コンテンツモデレーションを有効化",
     "Enable discovery compliance": "ディスカバリーのコンプライアンスを有効化",
@@ -722,6 +720,8 @@
   },
   "overrides": {
     "Model square visibility": "モデル広場での表示",
-    "Well-Known URL": "よく知られたURL"
+    "Well-Known URL": "よく知られたURL",
+    "Disabled {{count}} keys": "{{count}}個のキーを無効化しました",
+    "Email address is already in use": "このメールアドレスはすでに使用されています。"
   }
 }

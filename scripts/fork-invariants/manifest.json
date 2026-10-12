@@ -2070,8 +2070,7 @@
             "TestChannelDeletesRemoveCapabilities",
             "TestFitCapabilityWriteRejectsUnknownChannel",
             "TestFitMarksGoStaleWhenThePolicyBindingChanges",
-            "TestFitMarkExpiryIsHonoredWithoutARebuild",
-            "TestSuiteResultHonorsItsOwnExpiry"
+            "TestFitMarkBindingIsHonoredWithoutARebuild"
           ]
         },
         {
@@ -2528,7 +2527,7 @@
         {
           "kind": "symbol",
           "file": "deployment/tokeness-cn/deploy.sh",
-          "name": "budget_left=$(( retire_count - departed ))"
+          "name": "budget_left=$(( retire_count - removed_started ))"
         },
         {
           "kind": "symbol",

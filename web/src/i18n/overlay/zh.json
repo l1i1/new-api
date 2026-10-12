@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "关闭后仅审核列出的分组。",
     "Disable to restrict checks to listed models or patterns.": "关闭后仅审核列出的模型或匹配模式。",
     "Disabled / deleted": "已禁用 / 已删除",
-    "Disabled {{count}} keys": "已禁用 {{count}} 个密钥",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "显示在“添加资金”下方，支持 HTML；留空使用默认文本。",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "显示在钱包联系方式弹窗中，支持 HTML 和 Markdown。",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "付款后请勿关闭支付页面，请等待自动跳转回来。",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "下载重试间隔",
     "Edit the document": "编辑文档",
-    "Email address is already in use": "邮箱地址已被占用",
     "Email on flagged request": "命中请求时发送邮件",
     "Enable content moderation": "启用内容审核",
     "Enable discovery compliance": "启用发现接口合规过滤",
@@ -729,6 +727,8 @@
     "Not used yet": "暂未使用",
     "Playground": "模型对话",
     "Playground and chat functions": "模型对话和聊天功能",
-    "Start a playground chat": "开始一场模型对话"
+    "Start a playground chat": "开始一场模型对话",
+    "Disabled {{count}} keys": "已禁用 {{count}} 个密钥",
+    "Email address is already in use": "邮箱地址已被占用"
   }
 }

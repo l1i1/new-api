@@ -117,14 +117,12 @@
     "Disable to restrict checks to listed groups.": "Disable to restrict checks to listed groups.",
     "Disable to restrict checks to listed models or patterns.": "Disable to restrict checks to listed models or patterns.",
     "Disabled / deleted": "Disabled / deleted",
-    "Disabled {{count}} keys": "Disabled {{count}} keys",
     "Displayed below Add Funds. Supports HTML; empty uses the default text.": "Displayed below Add Funds. Supports HTML; empty uses the default text.",
     "Displayed in the wallet contact dialog. Supports HTML and Markdown.": "Displayed in the wallet contact dialog. Supports HTML and Markdown.",
     "Do not close the payment page after paying. Wait to be redirected back automatically.": "Do not close the payment page after paying. Wait to be redirected back automatically.",
     "DoubaoVideo": "DoubaoVideo",
     "Download retry interval": "Download retry interval",
     "Edit the document": "Edit the document",
-    "Email address is already in use": "Email address is already in use",
     "Email on flagged request": "Email on flagged request",
     "Enable content moderation": "Enable content moderation",
     "Enable discovery compliance": "Enable discovery compliance",
@@ -720,5 +718,8 @@
     "{{quota}} quota": "{{quota}} quota",
     "{{size}} / page": "{{size}} / page"
   },
-  "overrides": {}
+  "overrides": {
+    "Disabled {{count}} keys": "Disabled {{count}} keys",
+    "Email address is already in use": "Email address is already in use"
+  }
 }
