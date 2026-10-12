@@ -1449,7 +1449,7 @@ scale_group() {
 # race to the seconds between the re-check and the Modify, instead of the
 # whole drain window.
 scale_group_from_set() {
-  local retire_ids="$1" label="$2" retire_count="$3" target_var="$4" snapshot now_ids all_ids now_count live departed budget_left target id
+  local retire_ids="$1" label="$2" retire_count="$3" target_var="$4" snapshot now_ids all_ids now_count live removed_started budget_left target id
   if ! snapshot="$(scaling_instances_json)" \
      || ! now_ids="$(printf '%s' "$snapshot" | jq -r '.ScalingInstances.ScalingInstance[]? | select(.LifecycleState=="InService") | .InstanceId' | tr -d '\r')" \
      || ! all_ids="$(printf '%s' "$snapshot" | jq -r '.ScalingInstances.ScalingInstance[]? | .InstanceId' | tr -d '\r')"; then
@@ -1458,17 +1458,21 @@ scale_group_from_set() {
   fi
   now_count=$(printf '%s\n' "$now_ids" | grep -c . || true)
   live=0
-  departed=0
+  # "Budget consumed" means a removal has STARTED, not that it finished: an
+  # instance in Removing is already absent from the InService set, so counting
+  # only fully-gone members let one round shrink twice while the first removal
+  # was still in flight (review P1: A in Removing, the code deleted B too and
+  # then accepted departed=2 >= n=1). all_ids stays for the message only.
+  removed_started=0
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    printf '%s\n' "$now_ids" | grep -qxF "$id" && live=$(( live + 1 ))
-    printf '%s\n' "$all_ids" | grep -qxF "$id" || departed=$(( departed + 1 ))
+    if printf '%s\n' "$now_ids" | grep -qxF "$id"; then live=$(( live + 1 )); else removed_started=$(( removed_started + 1 )); fi
   done <<<"$retire_ids"
   local floor_stable="${ROLLOUT_STABLE_CAPACITY:-1}"
-  if (( departed > retire_count )); then
-    error "$label: retirement budget exceeded ($departed departed of $retire_count); refusing to scale in again"
+  if (( removed_started > retire_count )); then
+    error "$label: retirement budget exceeded ($removed_started removals started of $retire_count); refusing to scale in again"
     # Replace the excess departures, but never undo an external scale-out.
-    local restore_target=$(( now_count + departed - retire_count )) desired_now=-1
+    local restore_target=$(( now_count + removed_started - retire_count )) desired_now=-1
     (( restore_target < floor_stable )) && restore_target="$floor_stable"
     desired_now="$(current_desired_capacity)" || desired_now=-1
     if (( desired_now >= 0 && desired_now < restore_target )); then
@@ -1477,10 +1481,21 @@ scale_group_from_set() {
     fi
     return 1
   fi
-  budget_left=$(( retire_count - departed ))
+  budget_left=$(( retire_count - removed_started ))
   if (( budget_left == 0 )); then
+    # The budget is spent, but the tier must still not sit below its stable
+    # floor: when capacity was lost to removals this round did not order
+    # (review P1: stable 3, A and an external C left, 2 in service, desired 2),
+    # the parent restored the floor here. Raise-only, so an external scale-out
+    # is never undone.
+    local floor_desired=-1
+    floor_desired="$(current_desired_capacity)" || floor_desired=-1
+    if (( floor_desired >= 0 && floor_desired < floor_stable )); then
+      warn "$label: retirement budget already consumed ($removed_started of $retire_count) and desired capacity $floor_desired is below the stable floor $floor_stable; raising it"
+      scale_group "$floor_stable" || { error "$label: capacity raise FAILED - fix by hand"; return 1; }
+    fi
     printf -v "$target_var" '%s' "$now_count"
-    log "$label: retirement budget already consumed (departed=$departed of $retire_count); not scaling in again"
+    log "$label: retirement budget already consumed (removals started=$removed_started of $retire_count); not scaling in again"
     return 0
   fi
   # A vanished park member already used this round's budget. Surviving tied
@@ -2435,6 +2450,14 @@ wait_retired_count() {
     count=$(printf '%s\n' "$current" | grep -c . || true)
     if (( count < expected_min )); then
       error "scale-in removed too much capacity: have $count in-service instance(s), expected at least $expected_min"
+      # In-flight removals must keep their protection: returning without
+      # RETIREMENT_PENDING let the cleanup clear the marker, release the hold
+      # and re-enable the scale-in alarm while members were still leaving
+      # (review P1). With removals running, the pending path is the correct one.
+      if (( removing > 0 )); then
+        warn "keeping the retirement protection: $removing removal(s) are still in flight"
+        RETIREMENT_PENDING=1
+      fi
       return 1
     fi
     departed=0
@@ -2447,6 +2470,22 @@ wait_retired_count() {
       [ -n "$id" ] || continue
       if ! printf '%s\n' "$current" | grep -qxF "$id"; then new_live=0; break; fi
     done <<<"$new_ids"
+    if (( departed > retire_count )); then
+      # The budget was overshot while we waited: more park members left the
+      # InService set than this round was allowed to retire. Restore capacity
+      # (raise-only) and fail - accepting it here is how the earlier revision
+      # silently retired two members for n=1 (review P1).
+      local over_desired=-1 over_target=$(( count + departed - retire_count ))
+      (( over_target < expected_min )) && over_target="$expected_min"
+      over_desired="$(current_desired_capacity)" || over_desired=-1
+      error "scale-in overshot its budget: $departed removals started for retire_count=$retire_count"
+      if (( over_desired >= 0 && over_desired < over_target )); then
+        warn "raising desired capacity from $over_desired to $over_target after the overshoot"
+        scale_group "$over_target" || error "capacity raise FAILED after the overshoot - fix by hand"
+      fi
+      RETIREMENT_PENDING=1
+      return 1
+    fi
     if (( departed >= retire_count && new_live == 1 && removing == 0 )); then
       log "scale-in complete: $departed of $retire_count parked retirements completed, $count in-service instance(s) (minimum $expected_min), all new instances remain in service and removals left the group"
       # Surviving members of the boundary tie return to the relay upstream.

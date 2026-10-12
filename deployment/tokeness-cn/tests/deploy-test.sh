@@ -1243,7 +1243,7 @@ for retirement_path in batch release; do
     TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
     ROLLOUT_BATCH=1 "${retirement_args[@]}"
   assert_contains "$budget_case/state/external-scaleout.log" 'hold-window parked departures injected: 1'
-  assert_contains "$budget_case/state/stdout.log" 'retirement budget already consumed (departed=1 of 1); not scaling in again'
+  assert_contains "$budget_case/state/stdout.log" 'retirement budget already consumed (removals started=1 of 1); not scaling in again'
   [[ "$(grep -c 'ess ModifyScalingGroup' "$budget_case/state/aliyun-calls.log")" -eq 5 ]] \
     || fail "$retirement_path: consumed retirement budget issued another scale-in"
   budget_next="$budget_case/state/modify-snapshots/modify-2.log"
@@ -1318,7 +1318,7 @@ for desired_before in 3 5; do
         exit 1
       fi
     ' bash "$DEPLOY_SCRIPT" > "$exceeded_case/stdout.log" 2> "$exceeded_case/output.log"
-  assert_contains "$exceeded_case/output.log" 'retirement budget exceeded (2 departed of 1)'
+  assert_contains "$exceeded_case/output.log" 'retirement budget exceeded (2 removals started of 1)'
   expected_desired="$desired_before"
   (( expected_desired < 4 )) && expected_desired=4
   jq -e --argjson desired "$expected_desired" '.desired == $desired and .pending_removal == null
