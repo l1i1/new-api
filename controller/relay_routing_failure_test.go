@@ -23,16 +23,27 @@ import (
 )
 
 // TestRetryRoutingFailureReadsTheSelectionKind pins the discrimination the retry
-// error-fidelity guard depends on.
+// TestRetryRoutingFailureReadsTheSelectionKind pins what the retry
+// error-fidelity guard is allowed to conclude from a failed re-selection.
 //
 // Every routing outcome of getChannel is reported with ErrorCodeGetChannelFailed,
-// so the code alone cannot say "the retry found no candidate". The kind has to
-// survive getChannel's wrap (it wraps with %w for this reason) and only
-// temporarily_unavailable — plus the bare "no such channel" outcome, which
-// carries no kind — may be treated as a routing failure. Getting this wrong makes
-// the guard answer with an older upstream error when the platform actually failed
-// to answer the routing question, or when the model was never configured.
+// the selection kind has to survive getChannel's wrap (it wraps with %w for this
+// reason), and even the no-candidate kind is only proof when the official-fit pin
+// made the selector narrow before tiering. The cases below cover each way the
+// conclusion could be drawn wrongly: a wrong kind, no kind at all, a saturating
+// walk, and the unpinned selector defect that returns the no-candidate kind while
+// a usable lower-priority channel still exists.
 func TestRetryRoutingFailureReadsTheSelectionKind(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	pinned := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		return c
+	}
+	unpinned := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		return c
+	}
 	param := func() *service.RetryParam {
 		return &service.RetryParam{
 			TokenGroup: "default", ModelName: "glm-5.3-flash",
@@ -62,10 +73,21 @@ func TestRetryRoutingFailureReadsTheSelectionKind(t *testing.T) {
 		{service.ChannelSelectionAccessDenied, false},
 	} {
 		t.Run(string(test.kind), func(t *testing.T) {
-			require.Equal(t, test.want, isRetryRoutingFailure(wrapped(test.kind), param()),
+			require.Equal(t, test.want, retryFoundNoPinnedCandidate(pinned(), wrapped(test.kind), param()),
 				"kind %q must not be mistaken for a missing candidate", test.kind)
 		})
 	}
+
+	t.Run("without the pin the no-candidate kind proves nothing", func(t *testing.T) {
+		// The selector defect: on the default path the request-path filter runs
+		// after the tier has been chosen, so a top-tier channel that does not serve
+		// this path shadows a usable lower-priority one and the selector returns
+		// nil with a candidate still available. The same kind comes out, so the
+		// conclusion needs the pin — the path that narrows before tiering.
+		require.False(t, retryFoundNoPinnedCandidate(unpinned(),
+			wrapped(service.ChannelSelectionTemporarilyUnavailable), param()),
+			"an unpinned empty result may be a selector defect, not an exhausted candidate set")
+	})
 
 	t.Run("an untyped routing error is never taken for a missing candidate", func(t *testing.T) {
 		// getChannel's defensive channel==nil return carries no structured kind,
@@ -76,12 +98,12 @@ func TestRetryRoutingFailureReadsTheSelectionKind(t *testing.T) {
 		bare := types.NewError(
 			fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", "default", "glm-5.3-flash"),
 			types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		require.False(t, isRetryRoutingFailure(bare, param()))
+		require.False(t, retryFoundNoPinnedCandidate(pinned(), bare, param()))
 
 		pollingFault := types.NewError(
 			errors.New("failed to get available key: sql: database is closed"),
 			types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		require.False(t, isRetryRoutingFailure(pollingFault, param()),
+		require.False(t, retryFoundNoPinnedCandidate(pinned(), pollingFault, param()),
 			"a credential/cache fault is not an empty candidate set")
 	})
 
@@ -90,18 +112,21 @@ func TestRetryRoutingFailureReadsTheSelectionKind(t *testing.T) {
 		saturated := param()
 		saturated.ExcludeSaturatedChannel(7)
 		require.True(t, saturated.HasSaturatedChannel())
-		require.False(t, isRetryRoutingFailure(selectionErr, saturated),
+		require.False(t, retryFoundNoPinnedCandidate(pinned(), selectionErr, saturated),
 			"nothing was tried against a busy channel, so there is no upstream error to answer with")
 	})
 
 	t.Run("another error code never qualifies", func(t *testing.T) {
 		other := types.NewError(errors.New("upstream said no"), types.ErrorCodeBadResponseStatusCode, types.ErrOptionWithSkipRetry())
-		require.False(t, isRetryRoutingFailure(other, param()))
+		require.False(t, retryFoundNoPinnedCandidate(pinned(), other, param()))
 	})
 
 	t.Run("a nil selection failure or param is handled", func(t *testing.T) {
-		require.False(t, isRetryRoutingFailure(nil, param()))
-		require.True(t, isRetryRoutingFailure(wrapped(service.ChannelSelectionTemporarilyUnavailable), nil))
+		require.False(t, retryFoundNoPinnedCandidate(pinned(), nil, param()))
+		require.False(t, retryFoundNoPinnedCandidate(nil, wrapped(service.ChannelSelectionTemporarilyUnavailable), param()),
+			"a nil context cannot carry the pin, so nothing is proven")
+		require.True(t, retryFoundNoPinnedCandidate(pinned(),
+			wrapped(service.ChannelSelectionTemporarilyUnavailable), nil))
 	})
 }
 

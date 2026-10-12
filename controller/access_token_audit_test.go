@@ -489,19 +489,16 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		createSQL += " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 	}
 	require.NoError(t, admin.Exec(createSQL).Error)
-	sqlDB, err := admin.DB()
-	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
-	db, err := gorm.Open(isolated, &gorm.Config{})
-	require.NoError(t, err)
-	t.Logf("isolated database: %s (%s)", name, kind)
+	// Register the reclamation before anything else can fail. From here the
+	// database exists, and the connection opened below can still fail (a server
+	// that only accepts connections to the admin database, for one) — leaving a
+	// database nothing would ever reclaim, since the name carries a timestamp.
+	//
+	// A failed drop is logged rather than failed: some callers open further pools
+	// from the same DSN without registering a close (see the audit initialisation
+	// tests below), and their leftovers would otherwise turn this shared fixture
+	// red. Closing those pools is a separate, pre-existing gap.
 	t.Cleanup(func() {
-		if connection, err := db.DB(); err == nil {
-			_ = connection.Close()
-		}
-		// Drop what this helper created. The name carries a timestamp, so nothing
-		// else will ever reclaim the database, and a repeated matrix run would
-		// otherwise leave one behind every time.
 		adminConn, err := gorm.Open(original, &gorm.Config{})
 		if err != nil {
 			t.Logf("could not reopen the admin connection to drop %s: %v", name, err)
@@ -512,6 +509,19 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		}
 		if sqlAdmin, dbErr := adminConn.DB(); dbErr == nil {
 			_ = sqlAdmin.Close()
+		}
+	})
+	sqlDB, err := admin.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	db, err := gorm.Open(isolated, &gorm.Config{})
+	require.NoError(t, err)
+	t.Logf("isolated database: %s (%s)", name, kind)
+	// Registered after the drop above, so last-in-first-out closes this
+	// connection before the database is dropped.
+	t.Cleanup(func() {
+		if connection, err := db.DB(); err == nil {
+			_ = connection.Close()
 		}
 	})
 	return db, newDSN

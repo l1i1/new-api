@@ -353,14 +353,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
-			// A retry that cannot select any channel is a routing state, not an
-			// answer about the request. Record it — this branch writes no DB row
-			// of its own, so before this the client-visible get_channel_failed
-			// left the error log holding only the upstream verdict it displaced,
-			// and the request_id could not be found at all — and, once the
-			// fidelity guard is enforcing, answer with what the last real attempt
-			// said instead of the routing error that replaced it.
-			if isRetryRoutingFailure(channelErr, retryParam) {
+			// A retry that provably has no candidate left is a routing state, not
+			// an answer about the request. Record it — this branch writes no DB row
+			// of its own, so before this the client-visible get_channel_failed left
+			// the error log holding only the upstream verdict it displaced, and the
+			// request_id could not be found at all — and, once the fidelity guard is
+			// enforcing, answer with what the last real attempt said instead of the
+			// routing error that replaced it.
+			if retryFoundNoPinnedCandidate(c, channelErr, retryParam) {
 				recordNoCandidateRetryError(c, relayInfo, channelErr)
 				if operation_setting.RetryErrorFidelityEnforces() && relayInfo.LastError != nil {
 					newAPIError = relayInfo.LastError
@@ -883,7 +883,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		// %w, not %s: the selection failure's kind is what tells a retry that ran
 		// out of candidates apart from a routing fault or an unconfigured model,
 		// and the caller must still be able to read it (see
-		// isRetryRoutingFailure). The rendered message is identical.
+		// retryFoundNoPinnedCandidate). The rendered message is identical.
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %w", selectGroup, info.OriginModelName, err), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
@@ -984,35 +984,41 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 	return false
 }
 
-// isRetryRoutingFailure reports whether a failed re-selection means "the retry
-// found no channel at all", as opposed to anything else that carries the same
-// error code.
+// retryFoundNoPinnedCandidate reports whether a failed re-selection *proves* the
+// request has no candidate left.
 //
-// Every routing outcome of getChannel is reported with ErrorCodeGetChannelFailed,
-// so the code alone cannot answer the question. Only a selection failure that
-// says so — ChannelSelectionTemporarilyUnavailable, i.e. the group has the model
-// and permitted channels yet nothing is selectable — qualifies, and the kind has
-// to survive getChannel's wrap for that (it wraps with %w).
+// The proof needs the evidence, not just the error code, and this is the only
+// case where the evidence exists:
 //
-// Everything else must NOT be treated as "no candidate", and the two opposite
-// mistakes are both why:
+//   - every routing outcome of getChannel is reported with
+//     ErrorCodeGetChannelFailed, and ChannelSelectionTemporarilyUnavailable only
+//     says "the group has the model and permitted channels, yet the selector
+//     returned nothing" — which a selector defect can produce as well;
+//   - that defect is real. On the default selection path the request-path filter
+//     runs AFTER the priority tier has been chosen (model/ability.go: the tiered
+//     query, then filterAbilitiesByRequestPathAndModel), so a top-tier channel
+//     that does not serve this path shadows a usable lower-priority one: the
+//     selector returns nil while a candidate still exists, and the same kind is
+//     produced. It is not this guard's to guess about, so without the pin the
+//     request keeps the routing error it gets today.
 //
-//   - ChannelSelectionInternalError, ChannelSelectionModelNotConfigured and
-//     ChannelSelectionAccessDenied each have their own answer (a selection fault,
-//     an unconfigured model, a policy refusal); replacing it with an older
-//     upstream error would describe something else entirely;
-//   - an *untyped* get_channel_failed is not evidence of an empty candidate set
-//     either. model/channel.go raises the same code when a polling multi-key
-//     channel cannot read its own credentials, and that internal fault reaches
-//     this branch unchanged through SetupContextForSelectedChannel — answering it
-//     with the previous upstream error, and labelling it retry_no_candidate, is
-//     exactly the class of confusion this change exists to remove. Unknown means
-//     false: "no kind" must never be read as "no candidate".
+// With the official-fit pin set the inference is sound, because that path narrows
+// before tiering (model/ability.go: path filter, blocked channels, official-fit
+// preference and video filter all run on the full set, and only then does
+// abilitiesAtRetryTier choose a tier). An empty result there really does mean no
+// permitted, path-compatible official channel is left — which is exactly the
+// single-official-channel shape this guard was written for.
 //
-// A saturating walk is excluded for the same reason as before — nothing was tried
-// against a busy channel, so there may be no upstream error to report at all.
-func isRetryRoutingFailure(channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
+// ChannelSelectionInternalError, ChannelSelectionModelNotConfigured and
+// ChannelSelectionAccessDenied are excluded for the reason they always were: each
+// has its own answer, and an older upstream error would describe something else.
+// A saturating walk is excluded too — nothing was tried against a busy channel, so
+// there may be no upstream error to report at all.
+func retryFoundNoPinnedCandidate(c *gin.Context, channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
 	if channelErr == nil || channelErr.GetErrorCode() != types.ErrorCodeGetChannelFailed {
+		return false
+	}
+	if c == nil || !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
 		return false
 	}
 	if retryParam != nil && retryParam.HasSaturatedChannel() {

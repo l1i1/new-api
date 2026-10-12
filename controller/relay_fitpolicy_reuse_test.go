@@ -144,8 +144,17 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		require.ErrorAs(t, channelErr, &selectionErr,
 			"the selection kind must reach the caller through getChannel")
 		require.Equal(t, service.ChannelSelectionTemporarilyUnavailable, selectionErr.Kind)
-		require.True(t, isRetryRoutingFailure(channelErr, retryParam),
-			"an empty candidate set must be recognised as a routing failure, or the client keeps the routing error")
+
+		// The guard additionally needs the pin, because only the pinned selection
+		// path narrows before tiering — on the default path the request-path filter
+		// runs after the tier is chosen and the same kind can come out while a
+		// usable lower-priority channel still exists. applyFitPolicy writes the
+		// requirement and the pin together in production; this fixture sets them
+		// separately on purpose (see the comment above newRequest), so the pin is
+		// added here to state the guard's precondition explicitly.
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		require.True(t, retryFoundNoPinnedCandidate(c, channelErr, retryParam),
+			"a pinned empty candidate set must be recognised, or the client keeps the routing error")
 
 		// Saturation must NOT be lumped in: nothing was tried there, so there may
 		// be no upstream error to report at all, and answering with an older one
@@ -156,7 +165,7 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		}
 		saturated.ExcludeSaturatedChannel(2)
 		require.True(t, saturated.HasSaturatedChannel())
-		require.False(t, isRetryRoutingFailure(channelErr, saturated),
+		require.False(t, retryFoundNoPinnedCandidate(c, channelErr, saturated),
 			"a saturation outcome keeps its own 429 answer")
 	})
 }
