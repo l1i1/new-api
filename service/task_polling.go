@@ -16,6 +16,7 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -733,11 +734,16 @@ func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor
 			return true
 		}
 		if result.Clamp != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 表达式结算额度发生饱和: %+v", task.TaskID, result.Clamp))
+			// 饱和本身就是异常：不按钳位值（MaxQuota）实收，按 0 结算，预扣全额退还。
+			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 表达式结算额度发生饱和，按 0 结算: %s", task.TaskID, result.Clamp.Error()))
+			RecalculateTaskQuota(ctx, task, 0, "任务用量表达式结算（饱和按 0）", result.Clamp, billingAnomalyMarker(billingexpr.SaturationAnomaly(result.Clamp)))
+			bc.TieredSnapshot.UsageFacts = usageFacts
+			bc.TieredSnapshot.EstimatedTier = result.MatchedTier
+			return true
 		}
 		bc.TieredSnapshot.UsageFacts = usageFacts
 		bc.TieredSnapshot.EstimatedTier = result.MatchedTier
-		RecalculateTaskQuota(ctx, task, result.ActualQuotaAfterGroup, "任务用量表达式结算", result.Clamp)
+		RecalculateTaskQuota(ctx, task, result.ActualQuotaAfterGroup, "任务用量表达式结算")
 		return true
 	}
 	// 按次计费的成功任务保持预扣；失败任务由调用方全额退款。

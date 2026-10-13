@@ -79,6 +79,18 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 	}
 	appendTaskLogInfo(task, other)
 	attachQuotaSaturation(c, info, other)
+	// 异常计费（垃圾 usage / 额度饱和）不实收：消费行 quota 按 0 记，并写入
+	// billing_anomaly 标记供管理员审计。原始计费参数已在上面的 usage_facts /
+	// OtherRatios 里，不重复保存 raw。
+	if info.BillingAnomaly != nil {
+		info.PriceData.Quota = 0
+		task.Quota = 0
+		marker := info.BillingAnomaly.AuditMap()
+		marker["action"] = "zeroed"
+		other.SetAdmin("billing_anomaly", marker)
+		logger.LogWarn(c, fmt.Sprintf("billing anomaly on task submit log, charge zeroed: kind=%s field=%s value=%g threshold=%g user=%d model=%s",
+			info.BillingAnomaly.Kind, info.BillingAnomaly.Field, info.BillingAnomaly.Value, info.BillingAnomaly.Threshold, info.UserId, info.OriginModelName))
+	}
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
 		ModelName: info.OriginModelName,
@@ -307,11 +319,25 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	return true
 }
 
+// billingAnomalyMarker wraps a UsageAnomaly so it can ride the variadic
+// clamps channel of RecalculateTaskQuota and be attached to the task billing
+// log's admin_info.billing_anomaly.
+type billingAnomalyClamp struct {
+	anomaly *billingexpr.UsageAnomaly
+}
+
+func (b billingAnomalyClamp) Error() string { return b.anomaly.Error() }
+
+// billingAnomalyMarker adapts an anomaly for the clamps channel.
+func billingAnomalyMarker(anomaly *billingexpr.UsageAnomaly) billingAnomalyClamp {
+	return billingAnomalyClamp{anomaly: anomaly}
+}
+
 // RecalculateTaskQuota 通用的异步差额结算。
 // actualQuota 是任务完成后的实际应扣额度，与预扣额度 (task.Quota) 做差额结算。
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
-// clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
-func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+// clamps 可选：若计算 actualQuota 时发生额度饱和或计费输入异常，将其记入日志 admin_info（仅管理员可见）。
+func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...any) {
 	if actualQuota < 0 {
 		return
 	}
@@ -363,8 +389,21 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	other.SetPublic("task_id", task.TaskID)
 	other.SetPublic("pre_consumed_quota", preConsumedQuota)
 	other.SetPublic("actual_quota", actualQuota)
-	for _, clamp := range clamps {
-		attachQuotaSaturationToOther(other, clamp)
+	var anomaly *billingexpr.UsageAnomaly
+	for _, extra := range clamps {
+		switch v := extra.(type) {
+		case *common.QuotaClamp:
+			attachQuotaSaturationToOther(other, v)
+		case billingAnomalyClamp:
+			anomaly = v.anomaly
+			marker := v.anomaly.AuditMap()
+			marker["action"] = "zeroed"
+			marker["raw"] = map[string]any{"p": preConsumedQuota}
+			other.SetAdmin("billing_anomaly", marker)
+		}
+	}
+	if anomaly != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 计费异常按 0 结算: %s", task.TaskID, anomaly.Error()))
 	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    task.UserId,
@@ -427,6 +466,19 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 
 	// 计算实际应扣费额度: totalTokens * modelRatio * groupRatio * otherMultiplier（饱和转换，防止溢出成负数）
 	actualQuota, clamp := common.QuotaFromFloatChecked(float64(totalTokens) * modelRatio * finalGroupRatio * otherMultiplier)
+
+	// 异常计费闸门：垃圾 token 数（超过单字段合理上限）或额度饱和都不按钳位值实收，按 0 结算。
+	// 预扣额度会通过差额结算全额退还；原始值保留在日志的 billing_anomaly 标记里。
+	if anomaly := billingexpr.CheckTokenParamsSanity(billingexpr.TokenParams{P: float64(totalTokens)}); anomaly != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 计费输入异常，按 0 结算: %s", task.TaskID, anomaly.Error()))
+		RecalculateTaskQuota(ctx, task, 0, fmt.Sprintf("token重算（异常按 0）：%s", anomaly.Error()), billingAnomalyMarker(anomaly))
+		return true
+	}
+	if clamp != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 计费额度饱和，按 0 结算: %s", task.TaskID, clamp.Error()))
+		RecalculateTaskQuota(ctx, task, 0, fmt.Sprintf("token重算（饱和按 0）：%s", clamp.Error()), clamp, billingAnomalyMarker(billingexpr.SaturationAnomaly(clamp)))
+		return true
+	}
 
 	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, otherMultiplier)
 	RecalculateTaskQuota(ctx, task, actualQuota, reason, clamp)

@@ -206,6 +206,12 @@ type RelayInfo struct {
 	// It is surfaced onto the consume/task log's admin_info for auditing.
 	QuotaClamp *common.QuotaClamp
 
+	// BillingAnomaly is set (non-nil) when a settlement input failed the usage
+	// sanity gate or a quota conversion saturated: the request is billed as
+	// zero (gateway absorbs it, client response is untouched) and the anomaly
+	// is surfaced on the consume log's admin_info for auditing.
+	BillingAnomaly *billingexpr.UsageAnomaly
+
 	// TieredBillingSnapshot captures tiered billing rules at pre-consume time.
 	// Auto-group retries refresh its group-dependent fields before each attempt
 	// and again before settlement. Non-nil only when billing mode is "tiered_expr".

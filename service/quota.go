@@ -205,6 +205,25 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		quota = tieredQuota
 	}
 
+	// Billing-input sanity gate for the legacy ratio path (the tiered path is
+	// gated inside TryTieredSettle). Garbage usage or a saturated conversion
+	// bills as zero; raw counts survive only in the anomaly marker.
+	rawUsage := rawRealtimeUsageMap(usage)
+	if relayInfo.BillingAnomaly == nil {
+		noteBillingAnomaly(relayInfo, billingexpr.CheckTokenParamsSanity(billingexpr.TokenParams{
+			P: float64(usage.InputTokens), C: float64(usage.OutputTokens),
+			CR: float64(usage.InputTokenDetails.CachedTokens),
+			AI: float64(usage.InputTokenDetails.AudioTokens), AO: float64(usage.OutputTokenDetails.AudioTokens),
+		}))
+	}
+	if clamp != nil && relayInfo.BillingAnomaly == nil {
+		noteBillingAnomaly(relayInfo, billingexpr.SaturationAnomaly(clamp))
+	}
+	if relayInfo.BillingAnomaly != nil {
+		quota = 0
+		usage = &dto.RealtimeUsage{}
+	}
+
 	totalTokens := usage.TotalTokens
 	var logContent string
 	if !usePrice {
@@ -241,6 +260,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachBillingAnomaly(ctx, relayInfo, other, rawUsage)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.InputTokens,
@@ -342,6 +362,26 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		quota = tieredQuota
 	}
 
+	// Billing-input sanity gate for the legacy ratio path (the tiered path is
+	// gated inside TryTieredSettle). Garbage usage or a saturated conversion
+	// bills as zero; raw counts survive only in the anomaly marker.
+	rawUsage := rawUsageMap(usage)
+	if usage != nil && relayInfo.BillingAnomaly == nil {
+		noteBillingAnomaly(relayInfo, billingexpr.CheckTokenParamsSanity(billingexpr.TokenParams{
+			P: float64(usage.PromptTokens), C: float64(usage.CompletionTokens),
+			CR: float64(usage.PromptTokensDetails.CachedTokens), CC: float64(usage.PromptTokensDetails.CacheCreationTokensTotal()),
+			CC1h: float64(usage.ClaudeCacheCreation1hTokens), Img: float64(usage.PromptTokensDetails.ImageTokens),
+			AI: float64(usage.PromptTokensDetails.AudioTokens), AO: float64(usage.CompletionTokenDetails.AudioTokens),
+		}))
+	}
+	if clamp != nil && relayInfo.BillingAnomaly == nil {
+		noteBillingAnomaly(relayInfo, billingexpr.SaturationAnomaly(clamp))
+	}
+	if relayInfo.BillingAnomaly != nil {
+		quota = 0
+		usage = &dto.Usage{}
+	}
+
 	totalTokens := usage.TotalTokens
 	var logContent string
 	if !usePrice {
@@ -378,6 +418,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachBillingAnomaly(ctx, relayInfo, other, rawUsage)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,

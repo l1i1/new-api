@@ -404,6 +404,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			settlement, facts, err := service.EvaluateTaskCompletionUsage(snap, parsed.Immediate.UsageFacts)
 			if err != nil {
 				logger.LogWarn(c, fmt.Sprintf("task immediate usage settlement failed; retaining reserved quota: %v", err))
+			} else if settlement.Clamp != nil {
+				// 饱和本身就是异常：不按钳位值（MaxQuota）实收，按 0 结算（提交阶段的预扣会在结算时全额退还）。
+				noteTaskQuotaClamp(info, settlement.Clamp)
+				noteTaskBillingAnomaly(info, billingexpr.SaturationAnomaly(settlement.Clamp))
+				finalQuota = 0
+				snap.UsageFacts = facts
+				snap.EstimatedTier = settlement.MatchedTier
 			} else {
 				finalQuota = settlement.ActualQuotaAfterGroup
 				snap.UsageFacts = facts
@@ -460,6 +467,18 @@ func noteTaskQuotaClamp(info *relaycommon.RelayInfo, clamp *common.QuotaClamp) {
 	}
 	if info.QuotaClamp == nil {
 		info.QuotaClamp = clamp
+	}
+}
+
+// noteTaskBillingAnomaly records a billing anomaly (usage out of range or
+// quota saturation) onto the task's RelayInfo so LogTaskConsumption can
+// surface it on the submit log's admin_info.billing_anomaly.
+func noteTaskBillingAnomaly(info *relaycommon.RelayInfo, anomaly *billingexpr.UsageAnomaly) {
+	if anomaly == nil || info == nil {
+		return
+	}
+	if info.BillingAnomaly == nil {
+		info.BillingAnomaly = anomaly
 	}
 }
 

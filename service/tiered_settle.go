@@ -208,6 +208,15 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 		return false, 0, nil
 	}
 
+	// Billing-input sanity gate (2026-10-13 kimi-k3 incident: upstream reported
+	// prompt_tokens=1.39e15 and the settlement clamped to MaxQuota but still
+	// charged it). Garbage usage means the request bills as zero — the gateway
+	// absorbs it and the client response is untouched.
+	if anomaly := billingexpr.CheckTokenParamsSanity(params); anomaly != nil {
+		noteBillingAnomaly(relayInfo, anomaly)
+		return true, 0, nil
+	}
+
 	requestInput := billingexpr.RequestInput{}
 	if relayInfo.BillingRequestInput != nil {
 		requestInput = *relayInfo.BillingRequestInput
@@ -231,6 +240,13 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	// consume log records it under admin_info, regardless of which caller
 	// (text, audio, WSS) consumes the returned quota. First non-nil wins.
 	noteQuotaClamp(relayInfo, tr.Clamp)
+
+	// A saturated settlement is itself an anomaly: never charge the clamped
+	// value (MaxQuota ≈ ¥4,294 at quota_per_unit=500,000). Bill zero instead.
+	if tr.Clamp != nil {
+		noteBillingAnomaly(relayInfo, billingexpr.SaturationAnomaly(tr.Clamp))
+		return true, 0, &tr
+	}
 
 	return true, tr.ActualQuotaAfterGroup, &tr
 }

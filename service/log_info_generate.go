@@ -47,6 +47,80 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.GetBillingModelName()))
 }
 
+// noteBillingAnomaly records the first billing anomaly (usage out of range or
+// quota saturation) onto relayInfo. The settlement path that detects it bills
+// the request as zero; the marker is surfaced later on the consume log's
+// admin_info.billing_anomaly. First non-nil wins, mirroring noteQuotaClamp.
+func noteBillingAnomaly(relayInfo *relaycommon.RelayInfo, anomaly *billingexpr.UsageAnomaly) {
+	if anomaly == nil || relayInfo == nil {
+		return
+	}
+	if relayInfo.BillingAnomaly == nil {
+		relayInfo.BillingAnomaly = anomaly
+	}
+}
+
+// rawUsageMap renders the upstream-reported usage as the raw inputs preserved
+// inside the billing_anomaly marker. The original counts stay auditable there
+// after the consume-log token columns are zeroed.
+func rawUsageMap(usage *dto.Usage) map[string]any {
+	if usage == nil {
+		return nil
+	}
+	return map[string]any{
+		"p":     usage.PromptTokens,
+		"c":     usage.CompletionTokens,
+		"total": usage.TotalTokens,
+		"cr":    usage.PromptTokensDetails.CachedTokens,
+		"cc":    usage.PromptTokensDetails.CacheCreationTokensTotal(),
+		"cc1h":  usage.ClaudeCacheCreation1hTokens,
+		"img":   usage.PromptTokensDetails.ImageTokens,
+		"ai":    usage.PromptTokensDetails.AudioTokens,
+	}
+}
+
+// attachBillingAnomaly nests the request's billing anomaly (if any) under
+// other.admin_info.billing_anomaly, including the raw settlement inputs so
+// the garbage usage stays auditable after the logged counts are zeroed, and
+// emits a request-correlated backend warn line for on-call discovery. Called
+// right before RecordConsumeLog alongside attachQuotaSaturation.
+func attachBillingAnomaly(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther, raw map[string]any) {
+	if relayInfo == nil {
+		return
+	}
+	anomaly := relayInfo.BillingAnomaly
+	if anomaly == nil {
+		return
+	}
+	marker := anomaly.AuditMap()
+	marker["action"] = "zeroed"
+	marker["raw"] = raw
+	other.SetAdmin("billing_anomaly", marker)
+	if ctx != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("billing anomaly, charge zeroed: kind=%s field=%s value=%g threshold=%g user=%d model=%s",
+			anomaly.Kind, anomaly.Field, anomaly.Value, anomaly.Threshold, relayInfo.UserId, relayInfo.GetBillingModelName()))
+	} else {
+		common.SysError(fmt.Sprintf("billing anomaly, charge zeroed: kind=%s field=%s value=%g threshold=%g user=%d model=%s",
+			anomaly.Kind, anomaly.Field, anomaly.Value, anomaly.Threshold, relayInfo.UserId, relayInfo.GetBillingModelName()))
+	}
+}
+
+// rawRealtimeUsageMap is the realtime (WSS) counterpart of rawUsageMap,
+// preserving the upstream-reported counts inside the anomaly marker.
+func rawRealtimeUsageMap(usage *dto.RealtimeUsage) map[string]any {
+	if usage == nil {
+		return nil
+	}
+	return map[string]any{
+		"p":     usage.InputTokens,
+		"c":     usage.OutputTokens,
+		"total": usage.TotalTokens,
+		"cr":    usage.InputTokenDetails.CachedTokens,
+		"ai":    usage.InputTokenDetails.AudioTokens,
+		"ao":    usage.OutputTokenDetails.AudioTokens,
+	}
+}
+
 func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if other == nil {
 		return

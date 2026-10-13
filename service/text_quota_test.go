@@ -1156,8 +1156,10 @@ func TestComposeTieredTextQuotaErrorFallbackUsesPreConsumedQuota(t *testing.T) {
 }
 
 // TestTryTieredSettleRecordsClampOnOverflow guards that an oversized tiered
-// settlement both saturates the quota and records the clamp on RelayInfo, so
-// every consume path (text, audio, WSS) can surface it under admin_info.
+// settlement is treated as a billing anomaly: it bills zero (never the
+// clamped MaxQuota, never a wrapped negative), records the clamp on RelayInfo
+// and marks the anomaly so every consume path (text, audio, WSS) can surface
+// it under admin_info.
 func TestTryTieredSettleRecordsClampOnOverflow(t *testing.T) {
 	// exprOutput = p * 1e12; quotaBeforeGroup = p*1e12 / 1e6 * 5e5 far exceeds
 	// the supported single-request range and must saturate.
@@ -1173,13 +1175,15 @@ func TestTryTieredSettleRecordsClampOnOverflow(t *testing.T) {
 		},
 	}
 
-	ok, quota, result := TryTieredSettle(relayInfo, billingexpr.TokenParams{P: 1_000_000_000})
+	ok, quota, result := TryTieredSettle(relayInfo, billingexpr.TokenParams{P: 1_000_000})
 
 	require.True(t, ok)
 	require.NotNil(t, result)
-	require.Equal(t, common.MaxQuota, quota, "oversized settlement must clamp, never wrap negative")
+	require.Zero(t, quota, "a saturated settlement must bill zero, never the clamped MaxQuota")
 	require.NotNil(t, relayInfo.QuotaClamp, "clamp must be recorded on RelayInfo for admin auditing")
 	require.Equal(t, common.QuotaClampOverflow, relayInfo.QuotaClamp.Kind)
+	require.NotNil(t, relayInfo.BillingAnomaly, "saturation must mark the request as a billing anomaly")
+	require.Equal(t, billingexpr.UsageAnomalyQuotaSaturation, relayInfo.BillingAnomaly.Kind)
 }
 
 // TestTryTieredSettleNoClampInRange confirms an in-range settlement leaves

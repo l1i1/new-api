@@ -460,6 +460,24 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 
+	// Legacy ratio-path sanity gate: even without tiered billing, garbage usage
+	// (negative or beyond MaxPlausibleTokensPerField) or a saturated quota
+	// conversion must not be charged. Bill zero and keep the raw counts only in
+	// the anomaly marker (this also protects the dashboard's hourly buckets,
+	// whose token_used sums the consume-log token columns).
+	if billingUsage != nil && relayInfo.BillingAnomaly == nil {
+		noteBillingAnomaly(relayInfo, billingexpr.CheckTokenParamsSanity(BuildTieredTokenParams(billingUsage, summary.IsClaudeUsageSemantic, nil)))
+	}
+	if relayInfo.BillingAnomaly != nil {
+		// An anomalous settlement bills as zero (gateway absorbs it); the token
+		// columns are zeroed too so dashboard hourly buckets stay clean, while
+		// the raw upstream counts survive inside the billing_anomaly marker.
+		summary.Quota = 0
+		summary.PromptTokens = 0
+		summary.CompletionTokens = 0
+		summary.TotalTokens = 0
+	}
+
 	for _, item := range summary.ToolSurchargeItems {
 		q := decimal.NewFromFloat(item.Price).
 			Mul(decimal.NewFromInt(int64(item.Count))).
@@ -582,6 +600,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachBillingAnomaly(ctx, relayInfo, other, rawUsageMap(billingUsage))
 
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
