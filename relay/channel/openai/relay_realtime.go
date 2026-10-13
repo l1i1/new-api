@@ -190,7 +190,11 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					localUsage.OutputTokenDetails.AudioTokens += audioToken
 				}
 
-				err = helper.WssString(c, clientConn, string(message))
+				// Client-bound copy only: an implausible usage in the upstream
+				// event must not reach the client (see
+				// service.SanitizeClientUsageJSON). The upstream-bound write
+				// above deliberately stays verbatim.
+				err = helper.WssString(c, clientConn, string(service.SanitizeClientUsageJSON(message)))
 				if err != nil {
 					errChan <- fmt.Errorf("error writing to client: %v", err)
 					return

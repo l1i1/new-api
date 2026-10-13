@@ -794,7 +794,9 @@ func (s *responsesWSSession) writeClient(kind int, message []byte) error {
 	if err := s.client.SetWriteDeadline(time.Now().Add(responsesWSWriteTimeout)); err != nil {
 		return err
 	}
-	return s.client.WriteMessage(kind, message)
+	// Client-bound frames only: an implausible usage in a relayed upstream
+	// event is reported as zeros (see service.SanitizeClientUsageJSON).
+	return s.client.WriteMessage(kind, service.SanitizeClientUsageJSON(message))
 }
 
 func (s *responsesWSSession) sendError(eventID, streamID string, apiErr *types.NewAPIError) {

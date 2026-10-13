@@ -2,6 +2,7 @@ package helper
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -209,4 +210,175 @@ func TestStreamAndTextResponseForClientZeroed(t *testing.T) {
 	if text.Usage.PromptTokens != 1388347719831046 {
 		t.Error("text response source usage was mutated")
 	}
+}
+
+// kitchenSinkUsage sets every modelled count of the OpenAI shape to a value
+// that must never reach a client, so the generic assertion below fails if any
+// single dimension is forgotten.
+func kitchenSinkUsage() *dto.Usage {
+	big := 1388347719831046
+	small := 424242
+	return &dto.Usage{
+		PromptTokens:                big,
+		CompletionTokens:            big,
+		TotalTokens:                 big,
+		PromptCacheHitTokens:        big,
+		InputTokens:                 big,
+		OutputTokens:                big,
+		ClaudeCacheCreation5mTokens: big,
+		ClaudeCacheCreation1hTokens: big,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         big,
+			CachedCreationTokens: big,
+			CacheWriteTokens:     big,
+			TextTokens:           big,
+			ImageTokens:          big,
+			AudioTokens:          big,
+			CachedTokensDetails: &dto.CachedTokenDetails{
+				TextTokens:  intPtr(small),
+				ImageTokens: intPtr(small),
+				AudioTokens: intPtr(small),
+			},
+		},
+		CompletionTokenDetails: dto.OutputTokenDetails{
+			TextTokens:      big,
+			AudioTokens:     big,
+			ImageTokens:     big,
+			ReasoningTokens: big,
+		},
+		InputTokensDetails: &dto.InputTokenDetails{
+			CachedTokens:         big,
+			CachedCreationTokens: big,
+			CacheWriteTokens:     big,
+			TextTokens:           big,
+			ImageTokens:          big,
+			AudioTokens:          big,
+		},
+		OutputTokensDetails: &dto.OutputTokenDetails{
+			TextTokens:      big,
+			AudioTokens:     big,
+			ImageTokens:     big,
+			ReasoningTokens: big,
+		},
+	}
+}
+
+// assertEveryUsageNumberIsZero walks a marshalled client payload and fails on
+// any non-zero number inside a usage object. It is deliberately generic: a
+// field added to the usage shapes later cannot silently escape sanitation.
+func assertEveryUsageNumberIsZero(t *testing.T, payload []byte, label string) {
+	t.Helper()
+	var document any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatalf("%s: payload is not JSON: %v (%s)", label, err, payload)
+	}
+	var walk func(path string, value any)
+	walk = func(path string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, item := range typed {
+				if key == "usage" || key == "usageMetadata" {
+					assertUsageObjectAllZero(t, path+"."+key, item)
+					continue
+				}
+				walk(path+"."+key, item)
+			}
+		case []any:
+			for i, item := range typed {
+				walk(fmt.Sprintf("%s[%d]", path, i), item)
+			}
+		}
+	}
+	walk("$", document)
+}
+
+func assertUsageObjectAllZero(t *testing.T, path string, value any) {
+	t.Helper()
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s is not an object: %v", path, value)
+	}
+	var walk func(string, any)
+	walk = func(inner string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, item := range typed {
+				if key == "billing_usage" {
+					t.Errorf("%s.%s must never cross the client boundary", inner, key)
+					continue
+				}
+				walk(inner+"."+key, item)
+			}
+		case []any:
+			for i, item := range typed {
+				walk(fmt.Sprintf("%s[%d]", inner, i), item)
+			}
+		case float64:
+			if typed != 0 {
+				t.Errorf("%s = %v, want 0", inner, typed)
+			}
+		}
+	}
+	walk(path, object)
+}
+
+func TestClientUsageViewsZeroEveryModelledField(t *testing.T) {
+	openAIClient, err := json.Marshal(UsageForClient(kitchenSinkUsage()))
+	if err != nil {
+		t.Fatalf("marshal openai client usage: %v", err)
+	}
+	assertEveryUsageNumberIsZero(t, openAIClient, "openai")
+
+	textClient, err := json.Marshal(OpenAITextResponseForClient(&dto.OpenAITextResponse{
+		Id:    "chatcmpl-sink",
+		Usage: *kitchenSinkUsage(),
+	}))
+	if err != nil {
+		t.Fatalf("marshal text client response: %v", err)
+	}
+	assertEveryUsageNumberIsZero(t, textClient, "openai-text")
+
+	claudeClient, err := json.Marshal(ClaudeResponseForClient(&dto.ClaudeResponse{
+		Type: "message_delta",
+		Usage: &dto.ClaudeUsage{
+			InputTokens:                 1388347719831046,
+			OutputTokens:                1388347719831046,
+			CacheCreationInputTokens:    1388347719831046,
+			CacheReadInputTokens:        1388347719831046,
+			ClaudeCacheCreation5mTokens: 1388347719831046,
+			ClaudeCacheCreation1hTokens: 1388347719831046,
+			CacheCreation: &dto.ClaudeCacheCreationUsage{
+				Ephemeral5mInputTokens: 1388347719831046,
+				Ephemeral1hInputTokens: 1388347719831046,
+			},
+			ServerToolUse: &dto.ClaudeServerToolUse{
+				WebSearchRequests:     999,
+				WebFetchRequests:      999,
+				CodeExecutionRequests: 999,
+				ToolSearchRequests:    999,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("marshal claude client response: %v", err)
+	}
+	assertEveryUsageNumberIsZero(t, claudeClient, "claude")
+
+	geminiClient, err := json.Marshal(GeminiResponseForClient(&dto.GeminiChatResponse{
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:           1388347719831046,
+			ToolUsePromptTokenCount:    1388347719831046,
+			CandidatesTokenCount:       1388347719831046,
+			TotalTokenCount:            1388347719831046,
+			ThoughtsTokenCount:         1388347719831046,
+			CachedContentTokenCount:    1388347719831046,
+			PromptTokensDetails:        []dto.GeminiPromptTokensDetails{{Modality: "TEXT", TokenCount: 1388347719831046}},
+			ToolUsePromptTokensDetails: []dto.GeminiPromptTokensDetails{{Modality: "TEXT", TokenCount: 1388347719831046}},
+			CandidatesTokensDetails:    []dto.GeminiPromptTokensDetails{{Modality: "TEXT", TokenCount: 1388347719831046}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("marshal gemini client response: %v", err)
+	}
+	assertEveryUsageNumberIsZero(t, geminiClient, "gemini")
 }

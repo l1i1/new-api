@@ -194,8 +194,9 @@ func zeroUsageCounts(usage *dto.Usage) {
 		usage.InputTokensDetails = &details
 	}
 	if usage.OutputTokensDetails != nil {
-		details := *usage.OutputTokensDetails
-		usage.OutputTokensDetails = &details
+		// Presence is preserved (the client may branch on the object being
+		// there); every count inside it is zero.
+		usage.OutputTokensDetails = &dto.OutputTokenDetails{}
 	}
 	// Cost (OpenRouter-shaped) is a billing figure we cannot vouch for when the
 	// token counts themselves were garbage.

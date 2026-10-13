@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -96,5 +97,57 @@ func TestSanitizeClientUsageJSONCoversEveryShape(t *testing.T) {
 				t.Errorf("%s: garbage value %s survived: %s", tc.name, raw, got)
 			}
 		}
+	}
+}
+
+// usageKitchenSinkBody is the union of every count name the platform or its
+// upstreams put in a usage object, including keys this fork does not model
+// (completion_thinking_tokens, prompt_cache_write_tokens, credit, ...). The
+// generic assertion below fails if any single number survives.
+const usageKitchenSinkBody = `{"id":"chatcmpl-sink","created":1710000000123456789,"choices":[],"usage":{"prompt_tokens":1388347719831046,"completion_tokens":1388347719831046,"total_tokens":1388347719831046,"prompt_cache_hit_tokens":1388347719831046,"input_tokens":1388347719831046,"output_tokens":1388347719831046,"claude_cache_creation_5_m_tokens":1388347719831046,"claude_cache_creation_1_h_tokens":1388347719831046,"completion_thinking_tokens":1388347719831046,"prompt_cache_write_tokens":1388347719831046,"cache_read_input_tokens":1388347719831046,"credit":1388347719831046,"cost":0.000123,"usage_semantic":"anthropic","prompt_tokens_details":{"cached_tokens":1388347719831046,"cached_creation_tokens":1388347719831046,"cache_write_tokens":1388347719831046,"text_tokens":1388347719831046,"image_tokens":1388347719831046,"audio_tokens":1388347719831046,"cached_tokens_details":{"text_tokens":11,"image_tokens":22,"audio_tokens":33},"unmodelled_detail":1388347719831046},"completion_tokens_details":{"text_tokens":1388347719831046,"audio_tokens":1388347719831046,"image_tokens":1388347719831046,"reasoning_tokens":1388347719831046},"input_tokens_details":{"cached_tokens":1388347719831046},"output_tokens_details":{"reasoning_tokens":1388347719831046}}}`
+
+func TestSanitizeClientUsageJSONZeroesEveryNumberInUsage(t *testing.T) {
+	patched := SanitizeClientUsageJSON([]byte(usageKitchenSinkBody))
+	if bytes.Equal(patched, []byte(usageKitchenSinkBody)) {
+		t.Fatal("garbage body was not rewritten")
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal(patched, &document); err != nil {
+		t.Fatalf("patched body is not JSON: %v (%s)", err, patched)
+	}
+	usage, ok := document["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage object lost: %s", patched)
+	}
+	var walk func(string, any)
+	walk = func(path string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, item := range typed {
+				walk(path+"."+key, item)
+			}
+		case []any:
+			for i, item := range typed {
+				walk(path+"."+fmt.Sprintf("%d", i), item)
+			}
+		case float64:
+			if typed != 0 {
+				t.Errorf("%s = %v, want 0", path, typed)
+			}
+		}
+	}
+	walk("usage", usage)
+
+	// Shape and non-count data survive: strings stay, and a number outside the
+	// usage object keeps its exact digits (json.Number, not float64).
+	if got := usage["usage_semantic"]; got != "anthropic" {
+		t.Errorf("usage_semantic = %v, want anthropic", got)
+	}
+	if _, ok := usage["prompt_tokens_details"].(map[string]any); !ok {
+		t.Error("prompt_tokens_details lost its shape")
+	}
+	if got := patched; !bytes.Contains(got, []byte(`"created":1710000000123456789`)) {
+		t.Errorf("a number outside usage lost precision: %s", got)
 	}
 }
