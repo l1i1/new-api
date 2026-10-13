@@ -105,6 +105,31 @@ func attachBillingAnomaly(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, ot
 	}
 }
 
+// attachUsageDeviation runs the L2-A usage-deviation guard on one settlement
+// and nests the verdict under other.admin_info.usage_deviation (same shape as
+// billing_anomaly). Alarm-only by design: the marker plus the backend warn are
+// the entire effect, quota and token columns are untouched. The baselines come
+// from the request itself — the client's declared output budget (set by
+// PrepareRequestBilling) and the platform's local prompt estimate — so the
+// guard never needs the upstream to cooperate.
+func attachUsageDeviation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther, usage *dto.Usage) {
+	if relayInfo == nil || other == nil || usage == nil {
+		return
+	}
+	deviation := billingexpr.CheckUsageDeviation(
+		float64(usage.PromptTokens),
+		float64(usage.CompletionTokens),
+		float64(usage.PromptTokensDetails.CachedTokens),
+		float64(relayInfo.GetEstimatePromptTokens()),
+		float64(relayInfo.ClientMaxTokens),
+	)
+	if deviation == nil {
+		return
+	}
+	other.SetAdmin("usage_deviation", deviation.AuditMap())
+	billingexpr.ReportUsageDeviation(ctx, deviation, relayInfo.UserId, relayInfo.GetBillingModelName())
+}
+
 // rawRealtimeUsageMap is the realtime (WSS) counterpart of rawUsageMap,
 // preserving the upstream-reported counts inside the anomaly marker.
 func rawRealtimeUsageMap(usage *dto.RealtimeUsage) map[string]any {

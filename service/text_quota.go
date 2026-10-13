@@ -601,6 +601,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 	attachBillingAnomaly(ctx, relayInfo, other, rawUsageMap(billingUsage))
+	// L2-A usage-deviation guard (alarm-only): flag upstream usage that
+	// exceeds what the request itself allows (client budget / local prompt
+	// estimate / cache k-fingerprint). Billing is NOT changed — phase A only
+	// calibrates the false-positive rate before phase B dares to reprice.
+	attachUsageDeviation(ctx, relayInfo, other, billingUsage)
 
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,

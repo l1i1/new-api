@@ -32,12 +32,29 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		switch request := info.Request.(type) {
 		case *dto.GeneralOpenAIRequest:
 			meta.MaxTokens = int(max(lo.FromPtr(request.MaxTokens), lo.FromPtr(request.MaxCompletionTokens)))
+			info.ClientMaxTokens = meta.MaxTokens
 		case *dto.OpenAIResponsesRequest:
 			meta.MaxTokens = int(lo.FromPtr(request.MaxOutputTokens))
+			info.ClientMaxTokens = meta.MaxTokens
 		case *dto.ClaudeRequest:
 			meta.MaxTokens = int(lo.FromPtr(request.MaxTokens))
+			info.ClientMaxTokens = meta.MaxTokens
 		case *dto.ImageRequest:
 			meta = request.GetTokenCountMeta()
+		}
+	}
+	if info.ClientMaxTokens == 0 {
+		// The tokenizer branch above (CountToken on) fills meta via
+		// GetTokenCountMeta without telling us the budget directly; recover it
+		// from the same request shapes so the deviation guard keeps its
+		// baseline in every configuration.
+		switch request := info.Request.(type) {
+		case *dto.GeneralOpenAIRequest:
+			info.ClientMaxTokens = int(max(lo.FromPtr(request.MaxTokens), lo.FromPtr(request.MaxCompletionTokens)))
+		case *dto.OpenAIResponsesRequest:
+			info.ClientMaxTokens = int(lo.FromPtr(request.MaxOutputTokens))
+		case *dto.ClaudeRequest:
+			info.ClientMaxTokens = int(lo.FromPtr(request.MaxTokens))
 		}
 	}
 

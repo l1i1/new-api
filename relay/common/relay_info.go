@@ -218,6 +218,12 @@ type RelayInfo struct {
 	TieredBillingSnapshot *billingexpr.BillingSnapshot
 	BillingRequestInput   *billingexpr.RequestInput
 	BillingImageCount     *int
+	// ClientMaxTokens is the output budget the request declared
+	// (max_tokens / max_completion_tokens / max_output_tokens, whichever the
+	// format carries). The L2-A usage-deviation guard compares the
+	// upstream-reported completion_tokens against it: output can never
+	// legitimately exceed the budget the requester asked for. 0 = undeclared.
+	ClientMaxTokens int
 	// ImageRequestCount is the effective quantity sent on the current attempt;
 	// ImageQuotaBeforeGroup is the frozen legacy estimate before request ratios.
 	ImageRequestCount     int

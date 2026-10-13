@@ -396,3 +396,110 @@ func setupAnomalyLogDB(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.Task{}))
 	require.NoError(t, logDB.AutoMigrate(&model.Log{}))
 }
+
+// TestPostTextConsumeQuotaUsageDeviationMarker: an accumulated (k-times)
+// usage through the text path must carry the usage_deviation marker under
+// admin_info while the quota column still bills the accumulated value —
+// phase A is alarm-only, the billing effect waits for phase B.
+func TestPostTextConsumeQuotaUsageDeviationMarker(t *testing.T) {
+	setupAnomalyLogDB(t)
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	user := model.User{Username: "deviation_accum", Quota: 100_000_000, Status: common.UserStatusEnabled}
+	require.NoError(t, model.DB.Create(&user).Error)
+	token := model.Token{UserId: user.Id, Key: "deviation-accum-test", Name: "deviation", RemainQuota: 100_000_000, Status: common.TokenStatusEnabled}
+	require.NoError(t, model.DB.Create(&token).Error)
+	channel := model.Channel{Name: "deviation-accum", Key: "unused", Status: common.ChannelStatusEnabled}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	t.Cleanup(func() {
+		require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Delete(&model.Log{}).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&token).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&user).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&channel).Error)
+	})
+
+	exprStr := `tier("base", p * 2 + c * 8)`
+	relayInfo := newAnomalyTestRelayInfo(exprStr, 1)
+	relayInfo.UserId = user.Id
+	relayInfo.TokenId = token.Id
+	relayInfo.ChannelMeta = &relaycommon.ChannelMeta{ChannelId: channel.Id}
+	relayInfo.UserGroup = "default"
+	relayInfo.UsingGroup = "default"
+	relayInfo.RelayFormat = types.RelayFormatOpenAI
+	relayInfo.UserSetting = dto.UserSetting{BillingPreference: "wallet_only"}
+	// The request declared a 100-token budget and the platform's local
+	// estimate for the prompt was 2700; the upstream reported the
+	// accumulated shape from the incident (row 540085 of the CSV):
+	// prompt 33984 (12x estimate), completion 85, cache 33792 = 12x2816.
+	relayInfo.ClientMaxTokens = 100
+	relayInfo.SetEstimatePromptTokens(2700)
+
+	accumulated := &dto.Usage{
+		PromptTokens: 33984, CompletionTokens: 85, TotalTokens: 34069,
+		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 33792},
+	}
+	PostTextConsumeQuota(ctx, relayInfo, accumulated, nil)
+
+	var log model.Log
+	require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Take(&log).Error)
+	// Phase A: the accumulated value is STILL billed (only flagged).
+	assert.Equal(t, 33984, log.PromptTokens)
+	assert.NotZero(t, log.Quota, "phase A bills the accumulated value unchanged")
+
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	adminInfo, ok := other["admin_info"].(map[string]any)
+	require.True(t, ok)
+	deviation, ok := adminInfo["usage_deviation"].(map[string]any)
+	require.True(t, ok, "usage_deviation marker must be present for accumulated usage")
+	assert.Equal(t, "prompt_exceeded_estimate", deviation["kind"])
+	assert.Equal(t, "observed", deviation["action"])
+	// The sanity gate did not fire: these values are plausible.
+	assert.NotContains(t, adminInfo, "billing_anomaly")
+}
+
+// TestPostTextConsumeQuotaNoDeviationMarkerOnNormalUsage: a normal request
+// within its budget and estimate must produce no marker (false-positive
+// regression for phase A calibration).
+func TestPostTextConsumeQuotaNoDeviationMarkerOnNormalUsage(t *testing.T) {
+	setupAnomalyLogDB(t)
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	user := model.User{Username: "deviation_normal", Quota: 100_000_000, Status: common.UserStatusEnabled}
+	require.NoError(t, model.DB.Create(&user).Error)
+	token := model.Token{UserId: user.Id, Key: "deviation-normal-test", Name: "deviation", RemainQuota: 100_000_000, Status: common.TokenStatusEnabled}
+	require.NoError(t, model.DB.Create(&token).Error)
+	channel := model.Channel{Name: "deviation-normal", Key: "unused", Status: common.ChannelStatusEnabled}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	t.Cleanup(func() {
+		require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Delete(&model.Log{}).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&token).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&user).Error)
+		require.NoError(t, model.DB.Unscoped().Delete(&channel).Error)
+	})
+
+	relayInfo := newAnomalyTestRelayInfo(`tier("base", p * 2 + c * 8)`, 1)
+	relayInfo.UserId = user.Id
+	relayInfo.TokenId = token.Id
+	relayInfo.ChannelMeta = &relaycommon.ChannelMeta{ChannelId: channel.Id}
+	relayInfo.UserGroup = "default"
+	relayInfo.UsingGroup = "default"
+	relayInfo.RelayFormat = types.RelayFormatOpenAI
+	relayInfo.UserSetting = dto.UserSetting{BillingPreference: "wallet_only"}
+	relayInfo.ClientMaxTokens = 500
+	relayInfo.SetEstimatePromptTokens(2700)
+
+	PostTextConsumeQuota(ctx, relayInfo, &dto.Usage{PromptTokens: 2707, CompletionTokens: 100, TotalTokens: 2807}, nil)
+
+	var log model.Log
+	require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Take(&log).Error)
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	if adminInfo, ok := other["admin_info"].(map[string]any); ok {
+		assert.NotContains(t, adminInfo, "usage_deviation", "normal usage must not be flagged")
+	}
+}
