@@ -85,14 +85,25 @@ var tokenParamFields = []struct {
 // A nil return means the inputs are plausible and billing proceeds normally.
 func CheckTokenParamsSanity(params TokenParams) *UsageAnomaly {
 	for _, field := range tokenParamFields {
-		v := field.value(params)
-		if v < 0 || v > MaxPlausibleTokensPerField || math.IsNaN(v) {
-			return &UsageAnomaly{
-				Kind:      UsageAnomalyOutOfRange,
-				Field:     field.name,
-				Value:     v,
-				Threshold: MaxPlausibleTokensPerField,
-			}
+		if anomaly := CheckTokenCount(field.name, field.value(params)); anomaly != nil {
+			return anomaly
+		}
+	}
+	return nil
+}
+
+// CheckTokenCount applies the shared plausibility bound to one token
+// dimension. It is the single source of truth for "this count cannot be real":
+// the settlement gate and the client-view sanitation both use it, so the count
+// a customer is shown and the count we bill from can never disagree about what
+// is garbage. field is the wire name recorded in the audit marker.
+func CheckTokenCount(field string, value float64) *UsageAnomaly {
+	if value < 0 || value > MaxPlausibleTokensPerField || math.IsNaN(value) {
+		return &UsageAnomaly{
+			Kind:      UsageAnomalyOutOfRange,
+			Field:     field,
+			Value:     value,
+			Threshold: MaxPlausibleTokensPerField,
 		}
 	}
 	return nil

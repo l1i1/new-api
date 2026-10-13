@@ -12,6 +12,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -138,18 +139,28 @@ func ClaudeResponseForClient(resp *dto.ClaudeResponse) *dto.ClaudeResponse {
 	}
 	clientResponse := *resp
 	if resp.Usage != nil {
-		clientUsage := *resp.Usage
-		clientUsage.BillingUsage = nil
-		clientResponse.Usage = &clientUsage
+		clientResponse.Usage = claudeUsageForClient(resp.Usage)
 	}
 	if resp.Message != nil && resp.Message.Usage != nil {
 		clientMessage := *resp.Message
-		clientUsage := *resp.Message.Usage
-		clientUsage.BillingUsage = nil
-		clientMessage.Usage = &clientUsage
+		clientMessage.Usage = claudeUsageForClient(resp.Message.Usage)
 		clientResponse.Message = &clientMessage
 	}
 	return &clientResponse
+}
+
+// claudeUsageForClient strips the internal billing extension and zeroes the
+// counts when the upstream reported an implausible usage (see client_usage.go).
+func claudeUsageForClient(usage *dto.ClaudeUsage) *dto.ClaudeUsage {
+	if usage == nil {
+		return nil
+	}
+	if claudeUsageCountAnomaly(usage) != nil {
+		return sanitizedClaudeUsageForClient(usage)
+	}
+	clientUsage := *usage
+	clientUsage.BillingUsage = nil
+	return &clientUsage
 }
 
 func GeminiResponseForClient(resp *dto.GeminiChatResponse) *dto.GeminiChatResponse {
@@ -157,13 +168,31 @@ func GeminiResponseForClient(resp *dto.GeminiChatResponse) *dto.GeminiChatRespon
 		return nil
 	}
 	clientResponse := *resp
-	clientResponse.UsageMetadata.BillingUsage = nil
+	clientResponse.UsageMetadata = geminiUsageForClient(resp.UsageMetadata)
 	return &clientResponse
 }
 
+// geminiUsageForClient strips the internal billing extension and zeroes the
+// counts when the upstream reported an implausible usage.
+func geminiUsageForClient(usage dto.GeminiUsageMetadata) dto.GeminiUsageMetadata {
+	if geminiUsageCountAnomaly(&usage) != nil {
+		return sanitizedGeminiUsageForClient(usage)
+	}
+	cloned := usage
+	cloned.BillingUsage = nil
+	return cloned
+}
+
+// UsageForClient renders the usage an OpenAI-shaped client sees: the internal
+// billing extension is stripped, and an implausible upstream usage is reported
+// as zeros instead of forwarding numbers that can break the client's own
+// accounting (see client_usage.go).
 func UsageForClient(usage *dto.Usage) *dto.Usage {
 	if usage == nil {
 		return nil
+	}
+	if UsageCountAnomaly(usage) != nil {
+		return sanitizedUsageForClient(usage)
 	}
 	clientUsage := *usage
 	clientUsage.BillingUsage = nil
@@ -175,7 +204,7 @@ func OpenAITextResponseForClient(resp *dto.OpenAITextResponse) *dto.OpenAITextRe
 		return nil
 	}
 	clientResponse := *resp
-	clientResponse.Usage.BillingUsage = nil
+	clientResponse.Usage = *UsageForClient(&resp.Usage)
 	return &clientResponse
 }
 
@@ -252,6 +281,10 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
+	// Shared Responses SSE writer: scan the event for an implausible usage the
+	// same way StringData does (see service.SanitizeClientUsageJSON).
+	data = string(service.SanitizeClientUsageJSON(common.StringToByteSlice(data)))
+
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
 	return FlushWriter(c)
@@ -265,6 +298,11 @@ func StringData(c *gin.Context, str string) error {
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
+
+	// Shared SSE writer: a chunk forwarded verbatim still has to be scanned for
+	// an implausible usage (see service.SanitizeClientUsageJSON). The scan is
+	// gated on a substring check, so ordinary content chunks are untouched.
+	str = string(service.SanitizeClientUsageJSON(common.StringToByteSlice(str)))
 
 	if err := (common.CustomEvent{Data: "data: " + str}).Render(c.Writer); err != nil {
 		return fmt.Errorf("write stream data failed: %w", err)

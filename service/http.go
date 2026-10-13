@@ -62,6 +62,11 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) erro
 		}
 	}
 
+	// Last line of defense for the client's copy of the numbers: a verbatim
+	// upstream body in any relay format has its usage zeroed when it carries an
+	// implausible count (see SanitizeClientUsageJSON).
+	data = SanitizeClientUsageJSON(data)
+
 	body := io.NopCloser(bytes.NewBuffer(data))
 
 	// We shouldn't set the header before we parse the response body, because the parse part may fail.

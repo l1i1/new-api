@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -262,6 +263,14 @@ type kimiK3UsageView struct {
 func kimiK3UsageJSON(usage *dto.Usage, cacheWrite int) (json.RawMessage, error) {
 	if usage == nil {
 		return json.RawMessage("null"), nil
+	}
+	// The client view of an implausible usage is zero. The cache-write count
+	// rides prompt_cache_write_tokens, a field this shape does not model and
+	// the sanity gate therefore cannot vouch for, so it is zeroed with it
+	// (see relay/helper/client_usage.go).
+	if helper.UsageCountAnomaly(usage) != nil {
+		usage = helper.UsageForClient(usage)
+		cacheWrite = 0
 	}
 	normalized := *usage
 	if normalized.PromptTokens < 0 {

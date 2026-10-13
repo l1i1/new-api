@@ -103,11 +103,22 @@ func patchStreamUsageData(data string, usage *dto.Usage) (string, error) {
 	}
 	delete(usagePayload, "billing_usage")
 
-	clientUsage := *usage
-	clientUsage.BillingUsage = nil
-	encodedUsage, err := common.Marshal(clientUsage)
+	// UsageForClient strips the internal billing extension and reports an
+	// implausible upstream usage as zeros (see relay/helper/client_usage.go).
+	encodedUsage, err := common.Marshal(helper.UsageForClient(usage))
 	if err != nil {
 		return data, err
+	}
+	if helper.UsageCountAnomaly(usage) != nil {
+		// The upstream object can carry counts this shape does not model, so a
+		// merge would forward those raw values beside our zeros. When the usage
+		// is garbage the whole object is replaced instead.
+		payload["usage"] = encodedUsage
+		patched, err := common.Marshal(payload)
+		if err != nil {
+			return data, err
+		}
+		return string(patched), nil
 	}
 	var mergedUsagePayload map[string]json.RawMessage
 	if err := common.Unmarshal(encodedUsage, &mergedUsagePayload); err != nil {
