@@ -3742,7 +3742,9 @@ main() {
       # over (verified), then retire blue in the BACKGROUND while the ECI
       # rotation proceeds - the 765s quiet window overlaps the rollout instead
       # of serializing it. The release joins the retire job before declaring
-      # success; every failure path kills it before rolling the master back.
+      # success; every failure path WAITS for it (join_for_rollback) before
+      # rolling the master back, because killing it mid-flight would leave a
+      # flip-only state no reconcile path understands.
       local master_mode=""
       if [[ "${MASTER_RETIRE_PARALLEL:-0}" == "1" ]]; then
         master_mode="flip"

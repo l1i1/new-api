@@ -6,7 +6,7 @@ The Chengdu lightweight tier (two hosts) retired on 2026-10-05: it no longer run
 
 ## Release Gate (tag is version)
 
-The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-rc.37-tokeness-mainland.1`). Pushing such a tag triggers a CNB `tag_push` build that bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere.
+The version identity is the tag name: `v<semver>-tokeness-mainland.<N>` (e.g. `v1.0.0-rc.37-tokeness-mainland.1`). `release-local.sh` bakes the tag into `VERSION` and publishes an immutable `ml-<tag>` image. No manual version or digest input anywhere. **Keep the tag local** — pushing it to a remote still triggers the legacy CNB chain (see step 2 below).
 
 **The `<semver>` base tracks the upstream release the branch is currently synced to, and is re-aligned on every upstream sync — the same rule the overseas line follows.** Both sites are built from one `tokeness/main`, so a shared base keeps the two version labels directly comparable instead of implying that the mainland build is derived from an older upstream than it is. Keep the base in step with the overseas label whenever an upstream sync lands, and let only `<N>` advance for releases that carry no new upstream base.
 
@@ -15,14 +15,24 @@ Examples of a correct re-alignment: the rc37 sync re-bases the line at `v1.0.0-r
 Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh` only pin the `-tokeness-mainland.<N>` suffix, so a stale base is accepted silently — nothing in the pipeline will catch a base that was not re-aligned. The re-alignment is a naming convention only: it changes the tag, the baked `VERSION` and the app's reported version, never the code or the digest.
 
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
-2. Create a release tag `v<semver>-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
-3. The chained deploy runs the same gated release as the manual button:
+2. **Do not push the release tag to a remote.** Since `.49` (2026-10-12) the deploy no longer rides the CNB `tag_push` chain: a tag push would still auto-trigger the CNB build + chained deploy, which cannot be cancelled via the API and requires the tag commit to be reachable from `tokeness/main`. The release path is local instead — `release-local.sh` builds and publishes the image from the tag, `release-on-master.sh` deploys it from the entry ECS (see the example commands under the `ROLLOUT_BATCH` section below). The tag stays local-only.
+3. The gated release then runs on the entry ECS:
 
    - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
    - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
-   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_batch`, which retires the rest of the pre-release set that many at a time, each batch taking one drain window. A release therefore costs `1 + ceil(n/batch)` drain windows instead of one — with six instances and the default batch of 2 that is one roll plus three batch rounds, roughly two and a half hours end to end. That is why the deploy stages in `.cnb.yml` declare `timeout: 4h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds.
+   `deploy-release` converges the **whole** ECI tier, not one instance. In the default mode it rolls one instance first (master-first, then `ess_rollout`), then calls `rollout_batch`, which retires the rest of the pre-release set that many at a time, each batch taking one drain window — `1 + ceil(n/batch)` drain windows end to end. With the one-shot knobs below and `ROLLOUT_BATCH >= n` the whole tier converges in **one** drain window.
+
+   Measured on the 2-instance production fleet (the `.49` release, 2026-10-12):
+
+   | Phase | Default mode (measured) | One-shot mode (expected) |
+   | --- | --- | --- |
+   | deploy-release start → panel on the new version | ~6s | ~6s |
+   | → first new ECI instance gated and serving (new LLM traffic on the new version) | **~14 min** (the master 765s quiet window serializes ahead of the ECI phase) | **~2 min** (flip returns immediately; scale-out + parallel gates ≈ 90s) |
+   | → whole tier converged, release complete | ~81 min | ~32 min (one drain window + retire tail, overlapped) |
+
+   That is why the deploy stages in `.cnb.yml` declare `timeout: 4h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds.
 
    `ROLLOUT_BATCH` sets the batch size and is read **before anything mutates**:
    - **unset** (default 2) — a preference. It is clamped to the group's headroom, and on a group with `MaxSize == DesiredCapacity` it degrades to the one-at-a-time roll with a warning rather than failing the release. A release must never fail because of the shape of its scaling group.
@@ -38,11 +48,9 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    The snapshot of the pre-release instance set is taken **before** the release's own roll, so the batch step never re-replaces the instance that roll just brought onto the new image; a single-instance site therefore converges in zero batch rounds.
 
 
-   The deploy pipeline is triggered with `cnb:trigger` rather than `cnb:apply` on purpose: `cnb:apply` runs the applied pipeline in the **tag** context, where `CNB_BRANCH` is the tag name, and the key repo authorizes imports by `allow_branches` matched against `CNB_BRANCH` — so the import was refused during Prepare and no stage ever ran. `cnb:trigger` pins the run to `tokeness/main` (keeping the credential boundary unchanged) and carries the version in `RELEASE_TAG`, with `sha` set to the tagged commit so the deploy tooling matches the image.
+   **The CNB deploy pipeline is historical** (kept for reference; the local path above replaced it for `.49`): it was triggered with `cnb:trigger` rather than `cnb:apply` because `cnb:apply` ran the pipeline in the **tag** context, where `CNB_BRANCH` is the tag name and the key repo's `allow_branches` refused the import during Prepare. The manual `cn-production` button (`.cnb/tag_deploy.yml`) was subject to the same rule.
 
-   The manual `cn-production` deploy button (`.cnb/tag_deploy.yml`, owner/master only) still exists as an approval-gated alternative and runs the identical stages; it is also subject to the same tag-context import rule, so use the tag push or a direct `api_trigger` on `tokeness/main`.
-
-   Credentials live in the **imvhb/tokeness-secrets key repo** (CNB's native secret store — it has no repo-settings secrets; key repos are Web-edit-only, watermark-audited, and cannot be cloned). The pipeline imports `cnb-tokeness-secrets.yml` from it, and the file's `allow_slugs`/`allow_events`/`allow_branches` headers restrict the import to exactly this pipeline on `tokeness/main`; the import fails closed when those rules or the file do not match. Values it provides:
+   The pipeline's credentials lived in the **imvhb/tokeness-secrets key repo** (CNB's native secret store): `cnb-tokeness-secrets.yml` with `allow_slugs`/`allow_events`/`allow_branches` headers pinning the import to that pipeline on `tokeness/main`. The local path needs none of them — `release-local.sh` uses the `cnb` registry credential and `release-on-master.sh` uses the entry's own aliyun credentials plus the deploy SSH set. Values the old pipeline required:
 
    | Key | Content | Least-privilege guidance |
    | --- | --- | --- |
@@ -50,13 +58,13 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    | `CNB_SWAS_SSH_KEY_B64` | base64 of the `swas-ml` private key — the **entry ECS's** key since the lightweight tier retired (the secret name is kept for the Web-only key repo) | Key is limited to the entry ECS and the (retired) lightweight hosts |
    | `CNB_SWAS_KNOWN_HOSTS_B64` | base64 of the `ssh-keyscan` output for the **entry ECS** (`8.133.244.241` since the 2026-10-09 migration, previously `47.101.40.104`) and the (retired) lightweight hosts | One pinned file covers every host the deploy SSHes to (`StrictHostKeyChecking=yes`); the master-first step rolls the ECS master container, so an ECS entry is required or the release aborts at that step |
 
-   All four are mandatory: the release stage fails closed (`:?` expansions) when any is missing, so a misconfigured import aborts before touching anything.
+   All four were mandatory on the CNB path (fail-closed `:?` expansions); the local path needs none of them.
 
    Any failure before convergence triggers an automatic rollback: the previous digest is re-pinned, the failed container is deleted so ESS recreates it from the pinned image, the verify loop must pass (the old instance keeps serving throughout the pre-scale-down window), and the master container is re-rolled from the restored configuration so node versions never drift.
 
    The master re-roll is **blue-green** (2026-09-29): the replacement container starts on the other port of the `3000`/`3001` pair and passes its own readiness + version gates before the panel tier is moved onto it, so the panel no longer sees the old container's recreate window (previously a few seconds, stretched by nginx's `fail_timeout=10s` failover). During the gate window two master containers coexist — explicitly authorized; migrations still never run twice at once because they fire at container *start*, so only the green container migrates, and the old container keeps serving against the migrated schema exactly as the relay tier already does during every master-first rollout.
 
-   The local path remains available as a break-glass fallback (WSL or Linux only; Windows Git Bash is refused):
+   The local `deploy.sh deploy-release` form (WSL or Linux only; Windows Git Bash is refused) remains the fallback when the entry ECS itself cannot run the release:
 
    ```bash
    bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1            # resolves the digest itself
@@ -66,6 +74,19 @@ Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh`
    ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=4 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # one-shot: one drain window for the whole fleet
    ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=4 MASTER_RETIRE_PARALLEL=1 bash deployment/tokeness-cn/deploy.sh deploy-release v1.0.0-tokeness-mainland.1  # + master quiet window overlapped
    ```
+
+   The on-entry path (used since `.49`, the CNB pipeline being retired for deploys) is the same knobs on `release-on-master.sh`:
+
+   ```bash
+   # build (needs the cnb registry credential):
+   bash tools/secrets-broker/broker.sh exec --cred cnb -- \
+     bash deployment/tokeness-cn/release-local.sh v1.0.0-rc.40-tokeness-mainland.50
+   # release from the entry ECS (needs the deploy credentials; image pre-pulled by release-on-master itself):
+   ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=4 MASTER_RETIRE_PARALLEL=1 \
+     bash /usr/local/lib/tokeness/deployment/tokeness-cn/release-on-master.sh v1.0.0-rc.40-tokeness-mainland.50 sha256:<digest>
+   ```
+
+   Prerequisites for the one-shot mode: `ROLLOUT_BATCH` must fit the growth headroom (`MaxSize - DesiredCapacity`, and the relay member cap) — an over-large batch is refused before anything mutates, exactly like an explicit `ROLLOUT_BATCH` today; `ROLLOUT_PRE_ROLL=0` with `ROLLOUT_BATCH=0` is contradictory and refused; and the entry's `ecs-shrink-guard` must be the release-matched version (the v2 marker protocol — an older guard deletes the release's drain marker mid-window, which is what prolonged the `.49` release).
 
 4. Converge the ECI tier outside a release (the two forms differ only in batch size):
 
@@ -110,8 +131,9 @@ The master container (`new-api-master` on the backup ECS) serves the panel and i
 
 1. `start` — a green container comes up on the **other** port of the `3000`/`3001` pair (`docker pull` first; blue is never touched) and must answer `/health/ready`.
 2. `gate` — green's `/api/status` version must equal the release.
-3. `commit` — on the ECS: the local `:80` last-resort upstream and `/etc/tokeness-cn/master-serving-port` follow green, blue gets a short quiet window, then `docker stop` → `rm` → green is renamed to `new-api-master`.
-4. `probe` — the deploy asks the bootstrap which port the panel is actually served from and requires green's. `BLUE_OK` is not consulted: the bootstrap names the container on the *serving* port "blue", so after the commit that is the renamed green.
+3. `flip` — on the ECS: the local `:80` last-resort upstream and `/etc/tokeness-cn/master-serving-port` follow green, verified. Blue **keeps running** (its in-flight streams finish there). With `MASTER_RETIRE_PARALLEL=1` the release returns here and starts the ECI rotation while blue drains in the background.
+4. `retire` — blue's quiet window (`MASTER_V1_QUIET_SECONDS`, 765s), then `docker stop` → `rm` → green is renamed to `new-api-master`. Idempotent (a completed retire is a no-op), refuses if the marker still names blue's port, and re-verifies the marker after the quiet window so an orphaned retire stands down instead of stopping a container an abort restored. `commit` remains the one-call form: flip then retire.
+5. `probe` — the deploy asks the bootstrap which port the panel is actually served from and requires green's. `BLUE_OK` is not consulted: the bootstrap names the container on the *serving* port "blue", so after the commit that is the renamed green.
 
 With `SWAS_PANEL_TIER=1` the retired step returns: `deploy.sh` wrote `/etc/ml-sync/web-primary-port` on both lightweight hosts and ml-sync (30s cron) rewrote the `newapi_web` primary line **only while the pinned port answered `/health/ready`**, with the deploy waiting for both hosts to carry it. That path is dead while the hosts are gone and fails closed.
 
@@ -149,16 +171,15 @@ Before releasing again: restore `DesiredCapacity` to 6 (the cancelled `.41` left
 
 Both causes found tonight are fixed and covered: the asynchronous scale-in race (`rollout-all-scale-in-race`) and the relay-list cap (`relay-cap-explicit`, `relay-cap-clamp`). No release should be attempted while traffic is spiking.
 
-## Releasing when CNB cannot build (2026-10-10)
+## The local release path (standing since 2026-10-10)
 
-CNB ran out of build quota: every build after 16:57 UTC failed in the `Prepare`
-stage in under five seconds, with `validate release tag`, `build immutable
-release image`, `push immutable release image` and `deploy to production` all
-skipped. A tag push therefore no longer produces an image, and `.44` sat
-unbuilt while the code side was ready.
-
-The deploy half never needed CNB - `deploy.sh` talks to Aliyun and to the hosts
-directly - so the mainland release path is now **local build first**:
+CNB ran out of build quota (every build after 16:57 UTC failed in `Prepare`
+within five seconds), and the chained auto-deploy could not be cancelled via
+the API — `.46` died on a CreatedTime tie and `.47` on a tag not reachable
+from `tokeness/main` before the path moved off CNB entirely. The deploy half
+never needed CNB - `deploy.sh` talks to Aliyun and to the hosts directly -
+so the mainland release path is **local build first** (and, since `.49`,
+local deploy from the entry ECS too):
 
 ```bash
 bash tools/secrets-broker/broker.sh exec --cred cnb -- \
@@ -220,9 +241,9 @@ resumes the alarm. If the guard was mid-drain when the hold appeared, it release
 that drain instead of leaving the victim out of the relay for the whole release
 and then shrinking a group the release had already resized.
 
-## Troubleshooting the pipeline
+## Troubleshooting the pipeline (historical CNB path, plus defects the test suite still guards)
 
-The unattended path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokeness-mainland.16`/`.17`). Four defects kept every earlier CI release from ever reaching production; all four are now fixed and covered by the deploy test suite:
+The unattended CNB path was verified end to end on 2026-09-09 (`v1.0.0-rc.33-tokeness-mainland.16`/`.17`). Four defects kept every earlier CI release from ever reaching production; all four are fixed and still covered by the deploy test suite (the last three apply equally to the local path):
 
 | Symptom | Root cause | Fix |
 | --- | --- | --- |
