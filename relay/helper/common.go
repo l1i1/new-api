@@ -271,6 +271,14 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 		return
 	}
 
+	// Claude-native SSE writer: scan the event for an implausible usage the
+	// same way StringData does (see service.SanitizeClientUsageJSON). The
+	// typed patch above only rewrites the fields this fork models; a Claude
+	// event forwarded verbatim can still carry garbage counts in keys the
+	// model does not know (found by the .52 matrix: message_start /
+	// message_delta forwarded 1.39e15 verbatim).
+	data = string(service.SanitizeClientUsageJSON(common.StringToByteSlice(data)))
+
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
 	_ = FlushWriter(c)
