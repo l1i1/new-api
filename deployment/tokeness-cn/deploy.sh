@@ -1384,8 +1384,12 @@ REMOTE_MASTER_VER
     # cutover. Treat the flip as committed: report, and let the caller's
     # retire-tail (or a manual retire) finish the job.
     if [[ "$mode" == "flip" ]]; then
-      error "post-flip: could not probe the ECS serving state (transient?); the flip call itself succeeded - traffic is on green :$green_port. Run bootstrap-master-ecs.sh <image> retire by hand if this release does not complete"
-      return 1
+      # rc=3 tells the caller the flip LANDED (traffic on green) but could not
+      # be verified. The caller must finish the retire and only then roll back;
+      # the generic rc=1 handling would run sync_master_container "" against
+      # flip-only state and remove the serving green.
+      error "post-flip: could not probe the ECS serving state (transient?); the flip call itself succeeded - traffic is on green :$green_port"
+      return 3
     fi
     error "post-commit: could not probe the ECS serving state; reconciling via abort"
     master_sync_abort "$image_ref" || true
@@ -1398,8 +1402,8 @@ REMOTE_MASTER_VER
     # marker moved after the flip (an external reconcile), not that our flip
     # failed - aborting would tear down whatever now serves.
     if [[ "$mode" == "flip" ]]; then
-      error "post-flip: ECS serves :${serving_port:-?} (expected :$green_port) - the marker moved after our flip; NOT aborting (traffic is live). Run bootstrap-master-ecs.sh <image> probe by hand"
-      return 1
+      error "post-flip: ECS serves :${serving_port:-?} (expected :$green_port) - the marker moved after our flip; NOT aborting (traffic is live)"
+      return 3
     fi
     error "post-commit: ECS serves :${serving_port:-?} (expected :$green_port); reconciling via abort"
     master_sync_abort "$image_ref" || true
@@ -3288,15 +3292,31 @@ rollout_batch() {
       gate_pids+=("$!")
     done
     gate_rc=0
+    local gate_failed_id=""
     for i in "${!gate_pids[@]}"; do
       if ! wait "${gate_pids[$i]}"; then
         gate_rc=1
         error "round $rounds: the parallel gate for new instance ${new_ids[$i]} failed (see ${gate_logs[$i]})"
+        # Remember the FIRST failure for the rollback's drain-and-delete path:
+        # the serial form passed the failed id, and dropping it (parallel
+        # rewrite regression, third-review P1) left a known-bad instance in
+        # the serving tier while the capacity restore retired healthy old
+        # ones. rollback_failed_rollout takes one id; the first failure gets
+        # the full park->drain->delete, the rest converge via the restored
+        # digest exactly like instances whose gates never ran.
+        [[ -z "$gate_failed_id" ]] && gate_failed_id="${new_ids[$i]}"
       fi
     done
     if (( gate_rc != 0 )); then
+      # The gate logs are the only record of WHY each gate failed - re-emit
+      # them before the cleanup so the operator can read them.
+      for gate_log in "${gate_logs[@]}"; do
+        while IFS= read -r line; do
+          [ -n "$line" ] && log "gate-fail| $line"
+        done < "$gate_log"
+      done
       rm -rf -- "$gate_dir"
-      rollback_failed_rollout "" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+      rollback_failed_rollout "$gate_failed_id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
       return 1
     fi
     # Re-emit the per-instance gate log lines into the main log so the operator
@@ -3686,10 +3706,12 @@ main() {
       fi
       # Everything below mutates the tier; hold the scale-in alarm off until the
       # release has finished (the trap fires on the die paths too). The trap
-      # also joins any background master-retire job FIRST: a die between the
-      # flip and the join would otherwise leave the retire racing the exit
-      # cleanup (its remote command re-checks live state, but the alarm must
-      # not resume under a still-draining blue).
+      # also stops any background master-retire job: a die after the flip
+      # cannot wait out the retire's 765s quiet window, so the local job is
+      # killed instead - the orphaned remote script re-verifies the serving
+      # marker after its sleep and stands down (or completes the retire
+      # benignly) on its own. The alarm resume is safe because the scale-in
+      # alarm governs the ECI tier, not the master container.
       suspend_scale_in_guard
       trap 'master_retire_bg_kill; resume_scale_in_guard' EXIT
       local release_tag="$2"
@@ -3751,9 +3773,24 @@ main() {
       elif [[ -n "${MASTER_RETIRE_PARALLEL:-}" && "${MASTER_RETIRE_PARALLEL}" != "0" ]]; then
         die "MASTER_RETIRE_PARALLEL must be 0 or 1 (got '$MASTER_RETIRE_PARALLEL')"
       fi
-      if ! sync_master_container "$release_tag" "$release_digest" "$master_mode"; then
+      local master_roll_rc=0
+      sync_master_container "$release_tag" "$release_digest" "$master_mode" || master_roll_rc=$?
+      if (( master_roll_rc != 0 )); then
         if ! restore_scaling_config "$previous_snapshot"; then
           error "master roll failed and the scaling configuration could not be restored"
+        fi
+        if (( master_roll_rc == 3 )); then
+          # The flip LANDED but could not be verified (rc=3): traffic is on
+          # green, blue idles. Syncing "" now would run against flip-only
+          # state and remove the SERVING green, so finish the retire FIRST -
+          # foreground, because the background job was never started (it
+          # starts only after a fully verified flip) - and only then roll the
+          # master back through the normal commit-shaped state.
+          log "flip landed but unverified; finishing the master retire in the foreground before the rollback"
+          if ! remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$CNB_IMAGE_REPOSITORY@$release_digest" retire \
+              < "$HOST_BOOTSTRAP_SCRIPT" >/dev/null 2>&1; then
+            die "release aborted: master flip landed but the retire did not complete - run bootstrap-master-ecs.sh <image> retire by hand, then sync-host"
+          fi
         fi
         if ! sync_master_container ""; then
           error "master container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"

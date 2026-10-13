@@ -87,6 +87,10 @@ serving="$(cat "$port_file" 2>/dev/null || echo 3000)"
 case "$serving" in 3000) green=3001 ;; 3001) green=3000 ;; *) green=3001 ;; esac
 case "$phase" in
   probe)
+    if [[ "${TOKENESS_TEST_HOST_PROBE_FAIL:-0}" == "1" ]]; then
+      echo "simulated probe failure" >&2
+      exit 1
+    fi
     printf 'SERVING_PORT=%s\nBLUE_OK=1\nGREEN_PORT=%s\nGREEN_OK=0\n' "$serving" "$green" ;;
   commit|flip)
     printf '%s\n' "$green" > "$port_file"
@@ -1971,6 +1975,31 @@ grep -q 'background master retire failed' "$retirefail_case/state/output.log" \
 jq -e '.image == "docker.cnb.cool/imvhb/new-api-cn@'"$TEST_ML_DIGEST"'"' \
   "$retirefail_case/state/state.json" > /dev/null \
   || fail "the retire-failure case did not keep the fleet on the new image"
+
+# (2b) The flip-mode probe failure (rc=3 path): the flip landed, the probe
+# could not verify it. The release must finish the retire in the foreground
+# and only then roll the master back - the naive generic handling ran
+# sync_master_container "" against flip-only state, which removes the SERVING
+# green (third-review P0).
+probefail_case="$test_root/oneshot-probe-fail"
+mkdir -p "$probefail_case/state"
+make_conf "$probefail_case/nginx.conf"
+init_ess_state "$probefail_case/state"
+printf 'server 10.0.0.207:3000;\n' > "$probefail_case/ecs-upstream.conf"
+if run_deploy "$probefail_case" \
+  ROLLOUT_PRE_ROLL=0 ROLLOUT_BATCH=2 MASTER_RETIRE_PARALLEL=1 \
+  TOKENESS_TEST_HOST_PROBE_FAIL=1 \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9; then
+  fail "a failed post-flip probe must fail the release"
+fi
+grep -q 'flip landed but unverified; finishing the master retire in the foreground' "$probefail_case/state/stdout.log" \
+  || fail "the flip-landed path did not finish the retire before rolling back"
+# The bootstrap log must show a retire invocation between the flip and the
+# restore's start - i.e. the retire ran, and only then the rollback sync.
+grep -q 'phase=retire' "$probefail_case/state/host-bootstrap.log" \
+  || fail "the flip-landed path never invoked the bootstrap retire"
 
 # (3) Invalid knobs are refused before anything mutates.
 badknob_case="$test_root/oneshot-badknob"
