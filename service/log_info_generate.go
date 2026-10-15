@@ -117,6 +117,7 @@ func attachUsageDeviation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, ot
 		return
 	}
 	deviation := billingexpr.CheckUsageDeviation(
+		relayInfo.GetBillingModelName(),
 		float64(usage.PromptTokens),
 		float64(usage.CompletionTokens),
 		float64(usage.PromptTokensDetails.CachedTokens),

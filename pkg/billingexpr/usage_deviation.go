@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,7 +23,23 @@ import (
 // upstream's number SMALLER, never larger, and tokenizers differ by a few
 // percent, so 20% headroom (plan §2.2 criterion 1) keeps honest traffic
 // quiet. Zero local estimate disables the check (no baseline, no verdict).
+//
+// The 20% band was calibrated on the kimi-k3 incident traffic and on the
+// kimi-k3 tokenizer, which is why criterion 1 is scoped to that family (see
+// CheckUsageDeviation): on other families the local estimator is known to be
+// systematically biased (glm-5.3 measures ~0.695 of the upstream's count on
+// large contexts, incident-20261014 night audit), so the same band reports
+// estimator bias instead of accumulation.
 const DeviationPromptTolerance = 0.20
+
+// DeviationPromptAbsoluteFloor is the minimum absolute excess (upstream
+// prompt_tokens minus the local estimate) criterion 1 requires. A pure ratio
+// test fires on healthy short requests whose tokenizer difference is a
+// handful of tokens (measured: upstream 13 vs local 9 on glm-5.3, ratio 1.44),
+// which is estimator noise, not accumulation. Every accumulation observed in
+// INC-20261013-02 carries thousands of surplus tokens, so the floor removes
+// the noise without touching the signal.
+const DeviationPromptAbsoluteFloor = 1024
 
 // UsageDeviationKind identifies which guard criterion fired.
 type UsageDeviationKind string
@@ -81,10 +98,18 @@ func (d *UsageDeviation) Error() string {
 // customer's payload family (INC-02 §1.2 S3). A cache value that is an exact
 // multiple (k>=2) of one of these with the small-completion shape is the
 // accumulation fingerprint. Values outside this family simply never match.
+//
+// The family is a property of that one customer's kimi-k3 payload shape, not
+// a universal constant: glm-5.3 upstreams report cache in 3584-token blocks,
+// so an ordinary single-round glm call reports cache=7168 = 2 × 3584 and
+// trips the fingerprint on 100% of its rows. Criterion 3 is therefore scoped
+// to the kimi-k3 family (see CheckUsageDeviation).
 var cachePrefixFamily = []float64{2560, 16384, 11008, 2816, 3584, 4096}
 
 // CheckUsageDeviation evaluates the guard against one settlement input.
 //
+//   - modelName: the billing model name; it decides which criteria apply (see
+//     the scoping note below);
 //   - promptTokens / completionTokens / cacheTokens: the upstream-reported
 //     usage the settlement is about to bill;
 //   - localPromptEstimate: the platform's own tokenization of the request
@@ -93,13 +118,26 @@ var cachePrefixFamily = []float64{2560, 16384, 11008, 2816, 3584, 4096}
 //     (max_tokens / max_completion_tokens / max_output_tokens, whichever the
 //     format carries); 0 disables criterion 2.
 //
+// Scoping. Criteria 1 and 3 were calibrated on INC-20261013-02, a kimi-k3
+// incident, and both are comparing against a baseline that only holds for
+// that family: the local estimator's bias and the payload's cache block
+// granularity. Applied to every model they measure the estimator and the
+// upstream's cache block size instead of accumulation — in production that
+// produced a permanent ~100% false-positive rate on glm-5.3-flash (cache
+// 7168 = 2 × 3584 on every row) and ~1.4x ratio noise on glm-5.3, which
+// drowned the guard's alarm in noise. Both are now restricted to the kimi-k3
+// family. Criterion 2 (output above the client's declared budget) is a
+// format invariant that holds for every model and stays global.
+//
 // The first matching criterion wins; nil means no deviation was observed and
 // billing proceeds (and, in phase A, would also proceed when a deviation IS
 // observed — the guard only flags).
-func CheckUsageDeviation(promptTokens, completionTokens, cacheTokens, localPromptEstimate, clientMaxTokens float64) *UsageDeviation {
+func CheckUsageDeviation(modelName string, promptTokens, completionTokens, cacheTokens, localPromptEstimate, clientMaxTokens float64) *UsageDeviation {
+	kimiK3 := officialfit.FamilyOf(modelName) == officialfit.FamilyKimiK3
 	// Criterion 2 — the cleanest: output above the client's declared budget
 	// can only be accumulation. Applies to both stream and non-stream (the
-	// incident proved both amplify).
+	// incident proved both amplify), and to every model — it is a property of
+	// the request format, not of one upstream's accounting.
 	if clientMaxTokens > 0 && completionTokens > clientMaxTokens {
 		return &UsageDeviation{
 			Kind:     DeviationCompletionOverBudget,
@@ -111,8 +149,11 @@ func CheckUsageDeviation(promptTokens, completionTokens, cacheTokens, localPromp
 	// Criterion 1 — upstream prompt exceeds the local estimate beyond the
 	// tokenizer-difference headroom. Cache hits only ever shrink the
 	// upstream's number, so a large positive gap means internal rounds were
-	// accumulated into prompt_tokens.
-	if localPromptEstimate > 0 && promptTokens > localPromptEstimate*(1+DeviationPromptTolerance) {
+	// accumulated into prompt_tokens. kimi-k3 only (see the scoping note):
+	// both the ratio band and the absolute floor are calibrated for its
+	// estimator.
+	if kimiK3 && localPromptEstimate > 0 && promptTokens > localPromptEstimate*(1+DeviationPromptTolerance) &&
+		promptTokens-localPromptEstimate >= DeviationPromptAbsoluteFloor {
 		return &UsageDeviation{
 			Kind:     DeviationPromptExceeded,
 			Field:    "p",
@@ -122,8 +163,10 @@ func CheckUsageDeviation(promptTokens, completionTokens, cacheTokens, localPromp
 	}
 	// Criterion 3 — cache k-fingerprint. Only meaningful together with the
 	// small-completion shape (the trigger condition of the incident); a long
-	// completion legitimately carries large cache values.
-	if cacheTokens > 0 && completionTokens > 0 && completionTokens <= 300 {
+	// completion legitimately carries large cache values. kimi-k3 only (see
+	// the scoping note): the prefix family is that payload's cache block
+	// granularity, and other upstreams' block sizes land on it by chance.
+	if kimiK3 && cacheTokens > 0 && completionTokens > 0 && completionTokens <= 300 {
 		for _, prefix := range cachePrefixFamily {
 			k := cacheTokens / prefix
 			if k >= 2 && k == float64(int64(k)) {
