@@ -394,3 +394,73 @@ func TestChatCompletionsStreamChoiceRoundTripKeepsUsage(t *testing.T) {
 		t.Errorf("a chunk without choice usage must not gain one: %s", plainEncoded)
 	}
 }
+
+// kimiK3DeltaKeysOf is the fitted delta object of a stream event, as a map.
+func kimiK3DeltaKeysOf(t *testing.T, patched string) map[string]json.RawMessage {
+	t.Helper()
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(patched), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var choices []map[string]json.RawMessage
+	if err := json.Unmarshal(got["choices"], &choices); err != nil {
+		t.Fatalf("choices: %v", err)
+	}
+	var delta map[string]json.RawMessage
+	if err := json.Unmarshal(choices[0]["delta"], &delta); err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	return delta
+}
+
+// A reasoning event from the aggregator channels carries empty content and an
+// empty tool_calls array beside every reasoning token. Official sends only
+// reasoning_content there, and the empty pair is what fragments a client's
+// thinking stream ([] is truthy in JavaScript), so the fit drops both.
+func TestFitKimiK3StreamEventDropsEmptyReasoningDeltaFields(t *testing.T) {
+	chunk := `{"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{"content":"","reasoning_content":"The","tool_calls":[]},"finish_reason":null}]}`
+	patched, err := fitKimiK3StreamEvent(chunk, nil, false, false)
+	if err != nil {
+		t.Fatalf("fit: %v", err)
+	}
+	delta := kimiK3DeltaKeysOf(t, patched)
+	if _, present := delta["content"]; present {
+		t.Errorf("empty content beside reasoning must be dropped: %s", patched)
+	}
+	if _, present := delta["tool_calls"]; present {
+		t.Errorf("empty tool_calls must be dropped: %s", patched)
+	}
+	if string(delta["reasoning_content"]) != `"The"` {
+		t.Errorf("reasoning_content = %s, want \"The\"", delta["reasoning_content"])
+	}
+}
+
+// The official role event does carry "content":"", so an event with no
+// reasoning keeps it: byte-level shape is what this layer reproduces.
+func TestFitKimiK3StreamEventKeepsOfficialRoleEvent(t *testing.T) {
+	chunk := `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`
+	patched, err := fitKimiK3StreamEvent(chunk, nil, false, false)
+	if err != nil {
+		t.Fatalf("fit: %v", err)
+	}
+	delta := kimiK3DeltaKeysOf(t, patched)
+	if _, present := delta["content"]; !present {
+		t.Errorf("the role event keeps content:%s", patched)
+	}
+}
+
+// A real tool call must survive: only the empty array is noise.
+func TestFitKimiK3StreamEventKeepsRealToolCalls(t *testing.T) {
+	chunk := `{"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3",` +
+		`"choices":[{"index":0,"delta":{"content":"","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`
+	patched, err := fitKimiK3StreamEvent(chunk, nil, false, false)
+	if err != nil {
+		t.Fatalf("fit: %v", err)
+	}
+	delta := kimiK3DeltaKeysOf(t, patched)
+	if _, present := delta["tool_calls"]; !present {
+		t.Errorf("a real tool call must be kept: %s", patched)
+	}
+}

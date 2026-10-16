@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -357,6 +358,66 @@ func cacheWriteFromRows(payload map[string]json.RawMessage) int {
 	return value
 }
 
+// kimiK3DeltaKeys returns the delta key set for one stream event, narrowed when
+// the upstream filled a key with nothing.
+//
+// Official omits a key it has nothing to report for: a reasoning event carries
+// only `reasoning_content`, and a tools-enabled request that produces no call
+// carries no `tool_calls` key at all (live-probed 2026-10-16 against the
+// official K3 endpoint). Aggregator channels fill both in on every reasoning
+// event, which makes the same logical stream look different depending on the
+// channel that served it. That is not cosmetic: `[]` is truthy in JavaScript
+// and `""` is a present key, so a client that branches on them starts a fresh
+// tool-call or content block on every reasoning token — the thinking stream
+// arrives fragmented into single tokens.
+//
+// Empty `content` is dropped only beside non-empty reasoning, because the
+// official role event does carry `"content":""` and byte-level shape is what
+// this layer exists to reproduce.
+func kimiK3DeltaKeys(rawDelta json.RawMessage) map[string]struct{} {
+	pairs, _, err := parseTopLevelPairs(rawDelta)
+	if err != nil {
+		return kimiK3OfficialDeltaKeys
+	}
+	dropContent, dropToolCalls, hasReasoning := false, false, false
+	for i := range pairs {
+		value := rawDelta[pairs[i].valueStart:pairs[i].valueEnd]
+		switch pairs[i].key {
+		case "content":
+			dropContent = isEmptyJSONString(value)
+		case "tool_calls":
+			dropToolCalls = isEmptyJSONArray(value)
+		case "reasoning_content":
+			hasReasoning = !isEmptyJSONString(value)
+		}
+	}
+	dropContent = dropContent && hasReasoning
+	if !dropContent && !dropToolCalls {
+		return kimiK3OfficialDeltaKeys
+	}
+	narrowed := make(map[string]struct{}, len(kimiK3OfficialDeltaKeys))
+	for key := range kimiK3OfficialDeltaKeys {
+		if dropContent && key == "content" {
+			continue
+		}
+		if dropToolCalls && key == "tool_calls" {
+			continue
+		}
+		narrowed[key] = struct{}{}
+	}
+	return narrowed
+}
+
+func isEmptyJSONString(value []byte) bool {
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) == 2 && trimmed[0] == '"' && trimmed[1] == '"'
+}
+
+func isEmptyJSONArray(value []byte) bool {
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) == 2 && trimmed[0] == '[' && trimmed[1] == ']'
+}
+
 // fitKimiK3Choices rewrites the choices array: keep only official choice keys,
 // keep only official message/delta keys, and (stream, final) leave usage in
 // place. streamChoice drops the upstream's blanket logprobs key unless the
@@ -399,7 +460,11 @@ func fitKimiK3Choices(rawChoices json.RawMessage, stream bool, keepLogprobs bool
 			if !present {
 				continue
 			}
-			stripped, ok := deleteNonAllowedTopLevelKeys(element[found.valueStart:found.valueEnd], pair.allowed)
+			allowed := pair.allowed
+			if stream && pair.key == "delta" {
+				allowed = kimiK3DeltaKeys(element[found.valueStart:found.valueEnd])
+			}
+			stripped, ok := deleteNonAllowedTopLevelKeys(element[found.valueStart:found.valueEnd], allowed)
 			if !ok {
 				return nil, false
 			}
