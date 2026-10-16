@@ -196,6 +196,9 @@ func TestGlm53ToolChoiceNoneWithholdsToolDeclarations(t *testing.T) {
 		stream       bool
 		declarations string
 		messages     string
+		// temperature is the literal sent in the body; empty means 0. kimi-k3
+		// pins a different value per thinking state, so its case sends 1.
+		temperature string
 	}{
 		{name: "flash none with validation only", model: "glm-5.3-flash", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, wantClear: true},
 		{name: "plain model", model: "glm-5.3", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, wantClear: true},
@@ -212,7 +215,7 @@ func TestGlm53ToolChoiceNoneWithholdsToolDeclarations(t *testing.T) {
 		{name: "absent", model: "glm-5.3-flash", profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "empty string", model: "glm-5.3-flash", choice: `""`, profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "DeepSeek with validation enabled", model: "deepseek-v4-flash", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}},
-		{name: "Kimi with validation enabled", model: "kimi-k3", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}},
+		{name: "Kimi with validation enabled", model: "kimi-k3", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, temperature: "1"},
 		{name: "GLM 5.2 with wildcard validation enabled", model: "glm-5.2", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "authenticated user without fit", model: "glm-5.3-flash", choice: `"none"`, noFit: true},
 		{name: "profile present but validation disabled", model: "glm-5.3-flash", choice: `"none"`},
@@ -232,11 +235,15 @@ func TestGlm53ToolChoiceNoneWithholdsToolDeclarations(t *testing.T) {
 			if tt.stream {
 				stream = "true"
 			}
+			temperature := tt.temperature
+			if temperature == "" {
+				temperature = "0"
+			}
 			messageBody := tt.messages
 			if messageBody == "" {
 				messageBody = `[{"role":"system","tools":[{"type":"function","function":{"name":"dynamic_weather"}}]},{"role":"user","content":"weather?","client_message_extension":false}]`
 			}
-			body := `{"model":"` + tt.model + `","stream":` + stream + `,"max_tokens":32,"temperature":0,` + declarations + choice + `,"client_extension":{"integer":9007199254740993,"zero":0,"flag":false},"messages":` + messageBody + `}`
+			body := `{"model":"` + tt.model + `","stream":` + stream + `,"max_tokens":32,"temperature":` + temperature + `,` + declarations + choice + `,"client_extension":{"integer":9007199254740993,"zero":0,"flag":false},"messages":` + messageBody + `}`
 			setting := &dto.UserSetting{}
 			if !tt.noFit {
 				setting.OfficialFit = &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{"*": tt.profile}}

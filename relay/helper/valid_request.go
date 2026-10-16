@@ -1162,16 +1162,17 @@ func isKimiK3Model(model string) bool {
 // narrow: every rule below was observed on the endpoint, and the fields it
 // does not inspect (reasoning_effort strings, the K2.x thinking field,
 // max_completion_tokens, tool parameters, strict=false) are tolerated there.
-// kimiK3TemperatureAllowedWhileThinking reports whether a temperature is one the endpoint accepts
-// with thinking enabled. Measured against the upstream's own vendor verifier, which requires 0.0,
-// 0.6 and 1.0 each to be accepted and 1.1, 2.0 and -0.1 each to be rejected.
+//
+// kimiK3TemperatureAllowedWhileThinking reports whether a temperature is one
+// the endpoint accepts with thinking enabled. Re-probed live 2026-10-16
+// through the official upstream (same key pinned to the official channel):
+// 1.0 is accepted, while 0.0, 0.6 and 1.1 are each rejected with
+// kimiK3TemperatureThinkingMessage. The upstream's own vendor verifier instead
+// requires 0.0 to be accepted, which the live endpoint does not honour -
+// following the verifier here made the gateway answer 200 where the official
+// endpoint answers 400 (cdp suite case K3-021), so the live contract wins.
 func kimiK3TemperatureAllowedWhileThinking(value float64) bool {
-	for _, allowed := range []float64{0.0, 0.6, 1.0} {
-		if math.Abs(value-allowed) <= 1e-9 {
-			return true
-		}
-	}
-	return false
+	return math.Abs(value-1.0) <= 1e-9
 }
 
 func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
@@ -1180,10 +1181,10 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	}
 	thinkingEnabled := kimiK3ThinkingEnabled(request)
 	if request.Temperature != nil {
-		// The endpoint accepts a small fixed set per thinking state: 0.0, 0.6 and 1.0 while
-		// thinking, 0.6 alone when it is off. The rejection text kept for the thinking case still
-		// names only 1.0, which is the endpoint's own wording - the upstream vendor verifier sends
-		// all three accepted values and reads the text only as a rejection marker.
+		// The endpoint pins one value per thinking state: 1.0 while thinking, 0.6 alone when
+		// it is off (re-probed live 2026-10-16). Each rejection text names that same value,
+		// which is the endpoint's own wording; the vendor verifier's additional 0.0
+		// expectation is not part of the live contract.
 		if thinkingEnabled && !kimiK3TemperatureAllowedWhileThinking(*request.Temperature) {
 			return kimiK3Error(kimiK3TemperatureThinkingMessage)
 		}

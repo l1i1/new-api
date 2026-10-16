@@ -17,7 +17,9 @@ import (
 // The rejection matrix is calibrated against the live api.moonshot.cn API
 // (re-probed 2026-09-21): the fixed temperature follows the thinking state,
 // logprobs=true is accepted, and the tool-call chain, dynamic tools,
-// response_format and tool_choice each carry their own texts.
+// response_format and tool_choice each carry their own texts. The temperature
+// set was re-probed again on 2026-10-16 against the official upstream, which
+// accepts 1.0 while thinking (not 0.0/0.6) and 0.6 while thinking is off.
 func TestKimiK3OfficialFieldsReject(t *testing.T) {
 	thinkingDisabled := json.RawMessage(`{"type":"disabled"}`)
 	message := func(role, content string) dto.Message {
@@ -59,10 +61,20 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 		message string
 	}{
 		{
-			// The endpoint accepts 0.0/0.6/1.0 while thinking (the upstream verifier sends all
-			// three); 2.0 is outside the set and is rejected with the same text as before.
+			// The endpoint accepts 1.0 alone while thinking: 0.0 and 0.6 are rejected
+			// exactly like 2.0 (re-probed live 2026-10-16).
 			"temperature 2.0 with thinking enabled",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(2.0)},
+			kimiK3TemperatureThinkingMessage,
+		},
+		{
+			"temperature 0.6 with thinking enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0.6)},
+			kimiK3TemperatureThinkingMessage,
+		},
+		{
+			"temperature 0.0 with thinking enabled",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(0.0)},
 			kimiK3TemperatureThinkingMessage,
 		},
 		{
@@ -146,10 +158,18 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 		},
 		{
 			// K1: an explicit thinking type outranks the effort field, so this request is in the
-			// thinking state - where 0.6 is accepted along with 0.0 and 1.0.
+			// thinking state - where 1.0 alone is accepted.
 			"temperature at the thinking-off pin while thinking is explicitly enabled",
 			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"enabled"}`),
 				ReasoningEffort: "none", Temperature: floatPtr(2.0)},
+			kimiK3TemperatureThinkingMessage,
+		},
+		{
+			// K1 at the boundary: the same precedence makes 0.6 illegal here even though
+			// effort "none" on its own would pin exactly that value.
+			"thinking-off pin under an explicit thinking type",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", THINKING: json.RawMessage(`{"type":"enabled"}`),
+				ReasoningEffort: "none", Temperature: floatPtr(0.6)},
 			kimiK3TemperatureThinkingMessage,
 		},
 		{
@@ -368,12 +388,6 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "low"},
 		{Model: "kimi-k3", Messages: base.Messages, ReasoningEffort: "max"},
 		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(1.0)},
-		// The upstream verifier requires each of these to be accepted while thinking is on.
-		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(0.6)},
-		{Model: "kimi-k3", Messages: base.Messages, Temperature: floatPtr(0.0)},
-		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled"}`), Temperature: floatPtr(0.6)},
-		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled"}`),
-			ReasoningEffort: "none", Temperature: floatPtr(0.6)},
 		{Model: "kimi-k3", Messages: base.Messages, THINKING: json.RawMessage(`{"type":"enabled","effort":"high"}`), Temperature: floatPtr(1.0)},
 		{Model: "kimi-k3", Messages: base.Messages, TopP: floatPtr(0.95)},
 		{Model: "kimi-k3", Messages: base.Messages, N: intPtr(1)},
