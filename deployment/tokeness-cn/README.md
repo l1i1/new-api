@@ -29,7 +29,7 @@ bash deployment/tokeness-cn/deploy.sh deploy-release v<semver>-tokeness-mainland
   sha256:<digest>
 ```
 
-`release-local.sh` refuses a dirty tracked tree or a tag/HEAD mismatch, bakes `VERSION` (restored afterwards), builds with the newest `ml-*` image as `--cache-from`, pushes `ml-<tag>` and prints the digest; a release tag is immutable (`ALLOW_TAG_OVERWRITE=1` overrides). `deploy-release` is the server-side update: the same gated master-first + ECI convergence the CNB deploy stage runs, costing `1 + ceil(n/batch)` drain windows (~2.5 h for six instances), and it needs the deploy credentials (RAM AK, entry-ECS SSH key, `CNB_REGISTRY_TOKEN` for the digest re-check).
+`release-local.sh` refuses a dirty tracked tree or a tag/HEAD mismatch, bakes `VERSION` (restored afterwards), builds with the newest `ml-*` image as `--cache-from`, pushes `ml-<tag>` and prints the digest; a release tag is immutable (`ALLOW_TAG_OVERWRITE=1` overrides). `deploy-release` is the server-side update: the same gated master-first + ECI convergence the CNB deploy stage runs. By default it replaces the **whole steady fleet in one round**, so it costs one master roll plus **one** ECI drain window (the relay tier is at 2x while that window lasts); when `MaxSize` or the entry's relay cap cannot carry 2x the steady fleet, the batch is clamped to the headroom and the release falls back to `1 + ceil(n/batch)` windows. It needs the deploy credentials (RAM AK, entry-ECS SSH key, `CNB_REGISTRY_TOKEN` for the digest re-check).
 
 Do **not** push the release tag to `origin` before the local rollout is done: a tag push still triggers the CNB `tag_push` build and its chained deploy — that is the consent-gated route, not a bookkeeping step. Keep the tag local until the release is finished.
 
@@ -41,10 +41,10 @@ Do **not** push the release tag to `origin` before the local rollout is done: a 
    - **release to production**: re-pins the ESS scaling configuration to that digest and runs the same master-first `deploy.sh deploy-release <tag> <digest>` used locally (SSH key and known-hosts materialize from the imported key-repo values into a `chmod 600` tmpfs path at run time);
    - **postcheck**: asserts the public `/api/status` version, the rendered head, and the 401 on `/v1/models`.
 
-   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_batch`, which retires the rest of the pre-release set that many at a time, each batch taking one drain window. A release therefore costs `1 + ceil(n/batch)` drain windows instead of one — with six instances and the default batch of 2 that is one roll plus three batch rounds, roughly two and a half hours end to end. That is why the deploy stages in `.cnb.yml` declare `timeout: 4h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds.
+   `deploy-release` converges the **whole** ECI tier, not one instance. It rolls one instance as before (master-first, then `ess_rollout`), then calls `rollout_batch`, which retires the rest of the pre-release set that many at a time, each batch taking one drain window. **The default batch is the whole steady fleet** (2026-10-18): the release starts as many replacement instances as the tier currently serves, cuts them all over together, drains the old set in one window and leaves the relay tier at 2x for that window. A release therefore normally costs one master roll plus one ECI drain window (~30 min); when `MaxSize` or the relay cap cannot carry 2x the steady fleet, the batch is clamped to the headroom, and the cost becomes `1 + ceil(n/batch)` windows (that is the pre-2026-10-18 default of 2, kept as the fallback). That clamp is why the deploy stages in `.cnb.yml` declare `timeout: 4h`: the job default is 2 hours, and declaring a timeout also lifts the 10-minute no-output limit off the long drain holds.
 
    `ROLLOUT_BATCH` sets the batch size and is read **before anything mutates**:
-   - **unset** (default 2) — a preference. It is clamped to the group's headroom, and on a group with `MaxSize == DesiredCapacity` it degrades to the one-at-a-time roll with a warning rather than failing the release. A release must never fail because of the shape of its scaling group.
+   - **unset** (default: the whole steady fleet) — a preference. It is clamped to the group's headroom, and on a group with `MaxSize == DesiredCapacity` it degrades to the one-at-a-time roll with a warning rather than failing the release. A release must never fail because of the shape of its scaling group.
    - **`ROLLOUT_BATCH=N`** — a demand. `N` above the headroom, or above zero on a group with no headroom at all, aborts the release before the image is pinned.
    - **`ROLLOUT_BATCH=0`** — skip the convergence. Use it for a release that only changes master-served paths (panel, migrations, system tasks); the rest of the tier then converges on the next default release or on an explicit `deploy.sh rollout-all`.
 
@@ -81,7 +81,7 @@ Do **not** push the release tag to `origin` before the local rollout is done: a 
 4. Converge the ECI tier outside a release (the two forms differ only in batch size):
 
    ```bash
-   bash deployment/tokeness-cn/deploy.sh rollout-batch [N] [tag] [sha256:...]  # N per drain window (default 2)
+   bash deployment/tokeness-cn/deploy.sh rollout-batch [N] [tag] [sha256:...]  # N per drain window (default: all headroom)
    bash deployment/tokeness-cn/deploy.sh rollout-all [tag] [sha256:...]        # every slot MaxSize allows
    ```
 
@@ -144,6 +144,8 @@ Recorded so a later reader is not misled by a tier that does not match the newes
 | Scale-in alarm | `cpu-in-25`: `EciPodCpuUtilization <= 25%` for 30 minutes -> `scale-in-cpu25` (-1 instance), floored by `MinSize` (2). Suspended by every mutating verb for the duration of a rollout |
 | Relay cap | `/usr/local/sbin/ecs-fleet-sync` on the entry: `MAX_MEMBERS=10` (raised from 8 on 2026-10-09; it must stay >= the group's `MaxSize`) |
 | Entry nginx | `/v1/dashboard/*` routes to `newapi_web` (the master), so the account endpoints answer from one build while the tier rolls |
+
+The default release rotates the whole steady fleet in one round, so it needs room for **2x the steady fleet**: both `MaxSize` and the relay `MAX_MEMBERS` must be at least `2 * DesiredCapacity` (2026-10-18: steady 4, both caps 10, so 8 is allowed). If capacity grows past that, `resolve_release_batch` clamps the batch to the headroom and the release falls back to multi-round convergence — raise the two caps together, or explicitly pass a smaller `ROLLOUT_BATCH`.
 
 **Capacity now trims itself.** Until 2026-10-10 the group had only a scale-out alarm, so capacity ratcheted up and stayed: a cancelled release left `DesiredCapacity` at 7 and nothing brought it back. `cpu-in-25` closes that loop, and `deploy.sh` suspends it while a release rolls so it cannot retire an instance a round is still gating on (see `scale-in-alarm-guard` in the tests). It floors at the group's `MinSize`, currently **2** — raise `MinSize` to 3 if the tier should never run below three instances.
 

@@ -3370,17 +3370,22 @@ resolve_release_batch() {
     case "$requested" in
       *[!0-9]*) error "ROLLOUT_BATCH must be a non-negative integer (0 disables the batch convergence)"; return 1 ;;
     esac
-  fi
-  if [[ -z "$requested" ]]; then
-    batch=2
-  else
     batch="$requested"
-  fi
-  if (( batch == 0 )); then
-    printf '0\n'
-    return 0
+    if (( batch == 0 )); then
+      printf '0\n'
+      return 0
+    fi
   fi
   stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
+  if [[ -z "$requested" ]]; then
+    # Default: rotate the WHOLE steady fleet in one round. The release starts as
+    # many replacement instances as the tier currently serves, cuts them all over
+    # together and drains the old set in a single window, so the relay tier is at
+    # 2x for the duration of that window. The owner accepted the capacity spike
+    # (2026-10-18); the headroom clamp below still bounds it by MaxSize and the
+    # entry's relay cap, and degrades gracefully on a group that cannot batch.
+    batch="$stable"
+  fi
   max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
   # The entry's relay list is the second ceiling (see relay_member_cap): the
   # release's own single-instance roll needs stable+1 members carried, so a cap
