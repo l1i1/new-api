@@ -127,21 +127,6 @@ func TestGlm53ValidationMessageRecognized(t *testing.T) {
 	assert.False(t, IsStrictFitValidationMessage(glm53ThinkingMessage))
 }
 
-func TestGlm53OfficialModelNames(t *testing.T) {
-	assert.True(t, IsGlm53OfficialModelName("glm-5.3"))
-	assert.True(t, IsGlm53OfficialModelName("glm-5.3-flash"))
-	assert.False(t, IsGlm53OfficialModelName("glm-5.3x"))
-	assert.False(t, IsGlm53OfficialModelName("glm-5.2"))
-}
-
-// The unknown-model text drifted on 2026-09-15 (was "modelCode：不存在"), and
-// the unknown-model class answers 1211 rather than 1214. The code lives at the
-// distributor call site; this locks the text the family exposes.
-func TestGlm53ModelNotFoundTextMatchesLiveContract(t *testing.T) {
-	assert.Equal(t, "模型不存在，请检查模型代码。", Glm53ModelNotFoundText)
-	assert.NotContains(t, Glm53ModelNotFoundText, "modelCode")
-}
-
 // The official Zhipu business 400 carries no Content-Type header at all
 // (live-measured 2026-09-15). Asserted on the wire rather than on a recorder,
 // because the point of the nil header entry is to suppress net/http's content

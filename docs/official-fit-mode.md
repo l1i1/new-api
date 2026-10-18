@@ -34,25 +34,22 @@
     tool_choice 指定函数对象 → 400。注意：实测官方**不**校验 reasoning_effort 字符串枚举
     （"ultra" 也 200）、**接受** K2.x 的 thinking 字段（静默忽略）、max_completion_tokens
     也不做 1M 硬校验——这些本地一律不拦截）。
-    - **未知模型名的本地拦截（2026-10-18 起接受已发布的 dated snapshot id）**：`validate` 开启时，
-      DeepSeek V4 的非官方模型名会在**选渠道之前**被本地拒绝（`middleware/distributor.go`
-      的 `markV4OfficialPinFromDistributor`），回官方 `The supported API model names are
-      deepseek-flash, deepseek-v4-pro, but you passed <model>.` 原文——平台自己的
-      `model_not_configured` 文案与官方不同，不能透出。**渠道级 `model_mapping` 在这之后才
-      生效，救不了这道校验**，所以平台发布的上游快照名（官方 id + 数字后缀，如
-      `deepseek-v4.1-flash-1017`）必须由校验本身放行：
-      `relay/helper/valid_request.go` 的 `IsOfficialFitDatedSnapshotModelName` 认"官方 id +
-      `-<数字>`"（三族通用），再由 `middleware/distributor.go` 的
-      `officialFitSnapshotPublished` 要求该精确名在**请求路由组内已发布**（token 组优先、
-      回退用户组，`auto` 组按选择器的展开规则；判据与选渠道诊断同一份 ability 探测：
-      configured + enabled + 未被组策略 blocked）。
-      **发布门禁是必须的**：未发布的快照名没有 ability 可路由，放行它会让请求穿过校验、
-      随后在官方 pin 预筛处失败，把平台内部
-      `no candidate satisfied the official pin…cannot prove candidate exhaustion` 500
-      透给保真客户（2026-10-18 全面实测发现）。未发布的快照名与其余非官方名
-      （`deepseek-v4.1-pro`、`deepseek-v4-notexist`、`deepseek-v4.1-flash-vision-exp`）仍回
-      官方 400；kimi-k3 / glm-5.3 用同一套 dated 规则与发布门禁，回各自的官方原文
-      （Moonshot 404 / Zhipu 1211）。
+    - **模型 id 不参与本地校验（2026-10-18 起）**：`validate` 不再按模型名拦截任何请求，
+      未知 id 原样交给渠道选择，由平台统一回 `model_not_configured`（400）——与未开拟合的
+      账户行为一致。此前 `validate` 会在选渠道之前伪造各家族官方未知模型原文
+      （DS `The supported API model names are deepseek-flash, deepseek-v4-pro, but you
+      passed <model>.` 400 / K3 404 / Zhipu 1211），2026-10-18 客户报障（CDP 账户调用平台
+      发布的上游快照 id `deepseek-v4.1-flash-1017` 被误拒）后按用户指示整体删除：官方
+      可接受/不可接受的 id 集合随官方目录变化，写进校验意味着每上一个新模型就要改一次
+      代码。渠道级 `model_mapping` 仍负责把平台发布的别名改写成上游 id，但它在**选定
+      渠道后**才生效，本来就不该参与前置校验。kimi-k3 / glm-5.3 的未知 id 同样改为平台
+      400（不再伪装 Moonshot 404 / Zhipu 1211）。
+      **附带修复**：未知/未发布 id 若落在 pin（官方保真路由）路径上，曾在官方预筛处失败并
+      把内部 `no candidate satisfied the official pin…cannot prove candidate exhaustion`
+      500 透给保真客户；现由 `service/channel_select.go` 的
+      `classifyChannelSelectionFailure` 在该 id 于路由组内完全没有 ability 时返回
+      `model_not_configured`（组内确实有 ability、只是被 pin/预筛排除时仍保留 honest
+      internal error，见「defect A」）。
   - `errors`：校验错误消息保持官方原文（不附加网关 request id、以官方 Content-Type 返回）。
   - `shape`：响应形态拟合（DS 官方 7 键 usage、流式 usage 单次拼接、剥离聚合器扩展字段、
     SSE Content-Type 镜像；K3 暂无非官方形状可处理，保持透传）。

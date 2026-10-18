@@ -21,7 +21,6 @@ import (
 	"github.com/QuantumNous/new-api/officialfit"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -476,51 +475,6 @@ func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
 	}
 }
 
-// abortOfficialFitMessage renders an official-fit validation error exactly
-// like the controller's strict-fit path: the official text, no gateway
-// request ID suffix and Content-Type application/octet-stream.
-func abortOfficialFitMessage(c *gin.Context, status int, message string) {
-	payload, marshalErr := common.Marshal(gin.H{"error": types.OpenAIError{
-		Message: message,
-		Type:    "invalid_request_error",
-		Param:   nil,
-		Code:    "invalid_request_error",
-	}})
-	if marshalErr != nil {
-		abortWithOpenAiMessage(c, status, message)
-		return
-	}
-	c.Data(status, "application/octet-stream", payload)
-	c.Abort()
-}
-
-// abortGlmMessage renders a Zhipu-shaped validation error ({error:{code,
-// message}}) with no Content-Type, per the live official wire (see
-// relayhelper.WriteZhipuBusinessError); used by the glm-5.3 unknown-model
-// rejection before channel selection.
-func abortGlmMessage(c *gin.Context, status int, code, message string) {
-	relayhelper.WriteZhipuBusinessError(c, status, code, message)
-}
-
-// abortKimiK3NotFound renders the official Moonshot unknown-model rejection:
-// 404 with application/json and exactly {error:{message,type}}, where type is
-// resource_not_found_error (live-probed 2026-09-21). The shared OpenAIError
-// struct always renders param/code, so the two fields are mapped explicitly.
-// The platform's own unknown-model path answers 400 model_not_configured,
-// which is a documented divergence for this family.
-func abortKimiK3NotFound(c *gin.Context, message string) {
-	payload, marshalErr := common.Marshal(gin.H{"error": gin.H{
-		"message": message,
-		"type":    "resource_not_found_error",
-	}})
-	if marshalErr != nil {
-		abortWithOpenAiMessage(c, relayhelper.K3ModelNotFoundStatus, message)
-		return
-	}
-	c.Data(relayhelper.K3ModelNotFoundStatus, "application/json", payload)
-	c.Abort()
-}
-
 func tokenModelLimitAllowsExact(tokenModelLimit map[string]bool, modelName string) bool {
 	return tokenModelLimit[modelName] || tokenModelLimit[ratio_setting.FormatMatchingModelName(modelName)]
 }
@@ -731,9 +685,6 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if fitFamily == "" {
 		return
 	}
-	isDeepSeekV4 := fitFamily == officialfit.FamilyDeepSeekV4
-	isKimiK3 := fitFamily == officialfit.FamilyKimiK3
-	isGlm53 := fitFamily == officialfit.FamilyGlm53
 	var profile dto.OfficialFitProfile
 	if setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
 		profile, _ = setting.OfficialFitProfileFor(pinRequest.Model)
@@ -762,84 +713,6 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// about keeps the normal routing it always had.
 	applyFitPolicy(c, pinRequest, profile.Route)
 	// tokeness-fitpolicy:end
-	// Official-fit DeepSeek V4 requests reject a non-official model id with
-	// the official text BEFORE channel selection: the platform's
-	// model_not_configured wording differs from the official "supported API
-	// model names" 400. Dated snapshot ids (official id + "-<digits>", e.g.
-	// deepseek-v4.1-flash-1017) are accepted only while the exact spelling is
-	// published for the request's routing group: the platform publishes
-	// upstream snapshots under that spelling and the selected channel's
-	// model_mapping rewrites them to the vendor id, so the gate must not treat
-	// them as unknown — but an unpublished snapshot id has neither an ability
-	// to route through nor a mapping to rewrite it, and letting it through
-	// would replace the official answer with the platform's internal
-	// no-candidate error. Everything else in the family keeps the official
-	// 400. kimi-k3 has exactly one official id, so the same rejection applies
-	// with Moonshot's own 404 resource_not_found_error. The glm-5.3 family is
-	// enumerable (glm-5.3 / glm-5.3-flash) and uses the Zhipu 1211 wire shape.
-	if profile.Validate {
-		if isDeepSeekV4 && !relayhelper.IsDeepSeekV4OfficialModelName(pinRequest.Model) {
-			if !relayhelper.IsDeepSeekV4FitAcceptedModelName(pinRequest.Model) ||
-				!officialFitSnapshotPublished(c, pinRequest.Model) {
-				abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(pinRequest.Model))
-				return
-			}
-		}
-		if isKimiK3 && !relayhelper.IsKimiK3OfficialModelName(pinRequest.Model) {
-			if !relayhelper.IsOfficialFitDatedSnapshotModelName(pinRequest.Model) ||
-				!officialFitSnapshotPublished(c, pinRequest.Model) {
-				abortKimiK3NotFound(c, relayhelper.K3ModelNotFoundText(pinRequest.Model))
-				return
-			}
-		}
-		if isGlm53 && !relayhelper.IsGlm53OfficialModelName(pinRequest.Model) {
-			if !relayhelper.IsOfficialFitDatedSnapshotModelName(pinRequest.Model) ||
-				!officialFitSnapshotPublished(c, pinRequest.Model) {
-				// Live re-measured 2026-09-15: the unknown-model class answers 1211
-				// with 模型不存在，请检查模型代码。 (the 2026-08-28 calibration used
-				// 1214 / modelCode：不存在).
-				abortGlmMessage(c, http.StatusBadRequest, "1211", relayhelper.Glm53ModelNotFoundText)
-				return
-			}
-		}
-	}
-}
-
-// officialFitSnapshotPublished reports whether modelName is published as a
-// servable ability in the group the request routes in. The official-fit
-// Validate gate uses it so a dated snapshot id is accepted only when routing
-// can actually honour it: an unpublished spelling would pass the gate, lose
-// the official-pin candidate prefilter and surface the platform's internal
-// "cannot prove candidate exhaustion" error to a fidelity customer instead of
-// the official unknown-model answer. It reuses the same availability probe as
-// channel selection's own diagnosis, with the selector's group and blocked-
-// channel semantics (token group first, then user group; the "auto" group
-// expands exactly as selection expands it).
-func officialFitSnapshotPublished(c *gin.Context, modelName string) bool {
-	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-	group := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
-	if group == "" {
-		group = userGroup
-	}
-	if group == "" {
-		return false
-	}
-	groups := []string{group}
-	if group == "auto" {
-		groups = service.GetRequestAutoGroups(c, userGroup)
-	}
-	blockedChannels := service.GroupAccessPolicyBlockedChannels(c)
-	for _, candidateGroup := range groups {
-		configured, enabled, permittedEnabled, err := model.GetGroupModelAvailabilityForPath(
-			candidateGroup, modelName, c.Request.URL.Path, blockedChannels)
-		if err != nil {
-			return false
-		}
-		if configured && enabled && permittedEnabled {
-			return true
-		}
-	}
-	return false
 }
 
 // officialPinAllowsAffinity reports whether an affinity-cached channel may be

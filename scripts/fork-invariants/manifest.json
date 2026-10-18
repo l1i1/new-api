@@ -3,26 +3,16 @@
   "upstreamRef": "upstream/main",
   "entries": [
     {
-      "id": "official-fit-deepseek-v4-本地未知模型名拦截接受-dated-snapshot-id",
-      "title": "official-fit：本地未知模型名拦截接受 dated snapshot id（官方 id + 数字后缀），但仅当该精确名在请求路由组内已发布；未发布名仍回各家族官方原文",
+      "id": "official-fit-validate-不再按模型-id-拦截",
+      "title": "official-fit：validate 不再按模型 id 拦截；未知 id 交给路由回平台 model_not_configured（附带修复 pin 路径把未知名变成内部 500 的泄漏）",
       "source": "FORK-CHANGES.md › 5. 路由与可靠性",
       "files": [
         "middleware/distributor.go",
+        "service/channel_select.go",
         "relay/helper/valid_request.go",
-        "docs/official-fit-mode.md",
-        "middleware/distributor_official_fit_snapshot_test.go"
+        "docs/official-fit-mode.md"
       ],
       "anchors": [
-        {
-          "kind": "symbol",
-          "file": "relay/helper/valid_request.go",
-          "name": "IsOfficialFitDatedSnapshotModelName"
-        },
-        {
-          "kind": "symbol",
-          "file": "relay/helper/valid_request.go",
-          "name": "IsDeepSeekV4FitAcceptedModelName"
-        },
         {
           "kind": "symbol",
           "file": "middleware/distributor.go",
@@ -30,29 +20,23 @@
         },
         {
           "kind": "symbol",
-          "file": "middleware/distributor.go",
-          "name": "officialFitSnapshotPublished"
+          "file": "service/channel_select.go",
+          "name": "classifyChannelSelectionFailure"
         }
       ],
       "tests": [
         {
-          "file": "relay/helper/deepseek_v4_official_model_names_test.go",
-          "names": [
-            "TestIsDeepSeekV4FitAcceptedModelName",
-            "TestIsOfficialFitDatedSnapshotModelName"
-          ]
-        },
-        {
-          "file": "middleware/distributor_official_fit_snapshot_test.go",
-          "names": [
-            "TestMarkV4OfficialPinFromDistributorDatedSnapshotNeedsPublication",
-            "TestMarkV4OfficialPinFromDistributorDatedSnapshotKimi"
-          ]
-        },
-        {
           "file": "middleware/distributor_official_fit_test.go",
           "names": [
-            "TestMarkV4OfficialPinFromDistributorUnknownModel"
+            "TestMarkV4OfficialPinFromDistributorDoesNotGateModelIds"
+          ]
+        },
+        {
+          "file": "service/zz_pin_exhaustion_test.go",
+          "names": [
+            "TestClassifyChannelSelectionFailureRefusesExhaustionUnderOfficialPin",
+            "TestClassifyChannelSelectionFailureKeepsSaturationKindUnderOfficialPin",
+            "TestClassifyChannelSelectionFailureUnknownModelUnderPinIsNotConfigured"
           ]
         }
       ]

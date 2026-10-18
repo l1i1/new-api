@@ -70,8 +70,8 @@ const (
 	// set the retry_no_candidate marker (final review, defect A). The caller
 	// answers with the last real upstream error when it has one.
 	ChannelSelectionUnprovableExhaustion ChannelSelectionFailureKind = "unprovable_exhaustion"
-	ChannelSelectionInternalError          ChannelSelectionFailureKind = "internal_selection_error"
-	ChannelSelectionAccessDenied           ChannelSelectionFailureKind = "access_denied"
+	ChannelSelectionInternalError        ChannelSelectionFailureKind = "internal_selection_error"
+	ChannelSelectionAccessDenied         ChannelSelectionFailureKind = "access_denied"
 )
 
 type ChannelSelectionError struct {
@@ -428,15 +428,8 @@ func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *C
 	// A saturating walk is exempt: "every candidate was busy" IS provable from
 	// the walk itself, keeps its own 429 answer, and must not lose that
 	// semantics to this guard (final review: the first revision regressed it).
-	if (v4OfficialPin(param) || model.FitChannelFilterForRequest(param.Ctx) != nil) &&
-		!(param != nil && param.HasSaturatedChannel()) {
-		return &ChannelSelectionError{
-			Kind:  ChannelSelectionUnprovableExhaustion,
-			Group: selectedGroup,
-			Model: param.ModelName,
-			Err:   errors.New("no candidate satisfied the official pin and capability marks; the availability probe cannot prove candidate exhaustion on this path"),
-		}
-	}
+	pinned := (v4OfficialPin(param) || model.FitChannelFilterForRequest(param.Ctx) != nil) &&
+		!(param != nil && param.HasSaturatedChannel())
 	// tokeness-fitpolicy:end
 	groups := []string{selectedGroup}
 	if param.TokenGroup == "auto" {
@@ -447,6 +440,7 @@ func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *C
 	configured := false
 	enabled := false
 	accessDenied := false
+	permitted := false
 	for _, group := range groups {
 		routingModel, _ := model.ResolveCompactModelAliasForGroupPathWithBlockedChannels(group, param.ModelName, param.RequestPath, blockedChannels)
 		if policyLoaded && (policy.BlocksGroup(group) || policy.BlocksModel(routingModel)) {
@@ -459,9 +453,29 @@ func classifyChannelSelectionFailure(param *RetryParam, selectedGroup string) *C
 		}
 		configured = configured || groupConfigured
 		enabled = enabled || groupEnabled
-		if permittedEnabled {
-			return &ChannelSelectionError{Kind: ChannelSelectionTemporarilyUnavailable, Group: group, Model: param.ModelName}
+		permitted = permitted || permittedEnabled
+	}
+	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
+	if pinned {
+		// The prefilter can only have dropped candidates for a model that the
+		// routing group actually publishes. When nothing is configured (or
+		// blocked by policy) the model name is simply unknown here: answer the
+		// platform's normal model_not_configured 400 - the same answer the
+		// unpinned path gives - instead of the internal "cannot prove candidate
+		// exhaustion" wording, which must never reach a client.
+		if !configured && !accessDenied {
+			return &ChannelSelectionError{Kind: ChannelSelectionModelNotConfigured, Group: selectedGroup, Model: param.ModelName}
 		}
+		return &ChannelSelectionError{
+			Kind:  ChannelSelectionUnprovableExhaustion,
+			Group: selectedGroup,
+			Model: param.ModelName,
+			Err:   errors.New("no candidate satisfied the official pin and capability marks; the availability probe cannot prove candidate exhaustion on this path"),
+		}
+	}
+	// tokeness-fitpolicy:end
+	if permitted {
+		return &ChannelSelectionError{Kind: ChannelSelectionTemporarilyUnavailable, Group: selectedGroup, Model: param.ModelName}
 	}
 	if enabled {
 		return &ChannelSelectionError{Kind: ChannelSelectionAccessDenied, Group: selectedGroup, Model: param.ModelName}

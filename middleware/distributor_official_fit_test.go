@@ -2,82 +2,51 @@ package middleware
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
-	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
+// A model id is not validation material: the vendor's accepted set changes
+// without notice (the /v1/models wording is not an inventory) and every new
+// snapshot spelling used to need a code change here. Model ids therefore fall
+// through to routing untouched; an unknown name is answered by channel
+// selection with the platform's model_not_configured 400.
+func TestMarkV4OfficialPinFromDistributorDoesNotGateModelIds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	newContext := func(body string) (*gin.Context, *httptest.ResponseRecorder) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
-		c.Request.Header.Set("Content-Type", "application/json")
-		common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
-			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
-				"deepseek-v4-": {Validate: true, Route: true},
-			}},
+	for _, model := range []string{
+		"deepseek-v4-notexist",
+		"deepseek-v4.1-pro",
+		"deepseek-v4.1-flash-1017",
+		"deepseek-v4-flash-vision-exp",
+		"kimi-k3-20250101",
+		"glm-5.3-20250101",
+	} {
+		t.Run(model, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			common.SetContextKey(c, constant.ContextKeyUserSetting, dto.UserSetting{
+				OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{
+					"deepseek-v4-": {Validate: true},
+					"kimi-k3":      {Validate: true},
+					"glm-5.3":      {Validate: true},
+				}},
+			})
+			markV4OfficialPinFromDistributor(c)
+			assert.False(t, c.IsAborted(), "model id %q must reach channel selection", model)
 		})
-		return c, w
 	}
-
-	t.Run("unknown deepseek model aborts with official text", func(t *testing.T) {
-		c, w := newContext(`{"model":"deepseek-v4-notexist","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.True(t, c.IsAborted())
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Equal(t, "application/octet-stream", c.Writer.Header().Get("Content-Type"))
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Type    string `json:"type"`
-			} `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
-		assert.Equal(t, relayhelper.DeepSeekV4UnknownModelMessage("deepseek-v4-notexist"), payload.Error.Message)
-		assert.Equal(t, "invalid_request_error", payload.Error.Type)
-		assert.False(t, strings.Contains(payload.Error.Message, "request id"))
-	})
-
-	t.Run("official model name passes through", func(t *testing.T) {
-		c, _ := newContext(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.False(t, c.IsAborted())
-	})
-
-	// Dated snapshot ids ("<official-id>-<digits>") are how the platform
-	// publishes upstream snapshots; the channel model_mapping rewrites them to
-	// the vendor id, so the Validate gate lets them through. Publication is
-	// required as well — this fixture has no abilities, so the id stays
-	// unpublished here and must keep the official unknown-model 400; the
-	// published branch is covered by
-	// TestMarkV4OfficialPinFromDistributorDatedSnapshotNeedsPublication.
-	t.Run("unpublished dated snapshot model name keeps the official 400", func(t *testing.T) {
-		c, w := newContext(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
-		markV4OfficialPinFromDistributor(c)
-		assert.True(t, c.IsAborted())
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
-		assert.Equal(t, relayhelper.DeepSeekV4UnknownModelMessage("deepseek-v4.1-flash-1017"), payload.Error.Message)
-	})
 }
 
 // requireLiveBuiltinPolicy installs the shipped policy in live mode. Which shapes

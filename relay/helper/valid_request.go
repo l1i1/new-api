@@ -467,13 +467,6 @@ const (
 	// (live-probed 2026-09-01; conversations ending on a user turn and
 	// tool-free conversations are exempt).
 	deepSeekV4ReasoningPassbackText = "The `reasoning_content` in the thinking mode must be passed back to the API."
-	// deepSeekV4UnknownModelMessagePrefix is the official unknown-model text.
-	// The model list it names is the endpoint's own wording, not an accurate
-	// inventory of accepted ids (live probe 2026-09-11: the list omits
-	// deepseek-v4-flash / deepseek-v4-flash-vision-exp / deepseek-v4.1-flash,
-	// all of which the endpoint accepts). Mirror it verbatim; never derive the
-	// accepted set from it — use DeepSeekV4OfficialModelNames.
-	deepSeekV4UnknownModelMessagePrefix = "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed "
 	// deepSeekV4ReasoningEffortTypeErrorMessage mirrors the official wording for
 	// a non-string reasoning_effort: the endpoint's own parser fails the type
 	// before any enum check. The live response appends " at line 1 column N",
@@ -526,86 +519,6 @@ func deepSeekV4StopArrayLength(stop any) (int, bool) {
 // fails before the range check (the [0, 20] range text applies to 21 and up).
 func deepSeekV4TopLogprobsDeserMessage(value int) string {
 	return fmt.Sprintf("Failed to deserialize the JSON body into the target type: top_logprobs: invalid value: integer `%d`, expected u8", value)
-}
-
-// DeepSeekV4OfficialModelNames is the exact model-id list the official
-// api.deepseek.com endpoint accepts. The accepted set is probed, not read from
-// /v1/models: the public list omits ids the endpoint still serves (live probe
-// 2026-09-11 accepted deepseek-v4.1-flash while rejecting deepseek-v4.1-pro).
-// The family table owns the list; this alias keeps the DeepSeek spelling its
-// callers and tests use.
-var DeepSeekV4OfficialModelNames = officialfit.Models(officialfit.FamilyDeepSeekV4)
-
-// IsDeepSeekV4OfficialModelName reports whether model is one of the exact
-// official DeepSeek V4 model ids.
-func IsDeepSeekV4OfficialModelName(model string) bool {
-	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyDeepSeekV4
-}
-
-// IsDeepSeekV4FitAcceptedModelName reports whether model may pass the
-// official-fit DeepSeek V4 model validation gate. The exact official ids pass,
-// and so does a dated snapshot id derived from one of them — official id plus
-// a numeric suffix ("-<digits>"), e.g. deepseek-v4.1-flash-1017: the platform
-// publishes upstream snapshots under that spelling and the channel
-// model_mapping rewrites them to the vendor id before dispatch, so official-fit
-// accounts must be able to call them. Requiring digits keeps non-dated
-// variants (deepseek-v4.1-flash-vision-exp) and unknown family members
-// (deepseek-v4.1-pro, deepseek-v4-notexist) on the official 400. Callers that
-// own the request context additionally require the exact spelling to be
-// published for the routing group (see middleware.officialFitSnapshotPublished):
-// an unpublished snapshot id has no ability to route through and no channel
-// model_mapping to rewrite it, so the official unknown-model answer is still
-// the honest one.
-func IsDeepSeekV4FitAcceptedModelName(model string) bool {
-	if IsDeepSeekV4OfficialModelName(model) {
-		return true
-	}
-	return officialfit.FamilyOf(strings.ToLower(strings.TrimSpace(model))) == officialfit.FamilyDeepSeekV4 &&
-		IsOfficialFitDatedSnapshotModelName(model)
-}
-
-// IsOfficialFitDatedSnapshotModelName reports whether model is a dated snapshot
-// spelling of one of its own family's official ids: the official id plus a
-// numeric suffix ("-<digits>"). It is family-agnostic so every official-fit
-// family gets the same dated-snapshot spelling rule (deepseek-v4.1-flash-1017,
-// kimi-k3-20250101, glm-5.3-20250101), while non-dated variants such as
-// deepseek-v4.1-flash-vision-exp and ids outside the registry stay unknown.
-// Whether such a name is actually servable is a routing question, answered by
-// the distributor via the group's abilities, not here.
-func IsOfficialFitDatedSnapshotModelName(model string) bool {
-	name := strings.ToLower(strings.TrimSpace(model))
-	if name == "" {
-		return false
-	}
-	family := officialfit.FamilyOf(name)
-	if family == "" {
-		return false
-	}
-	for _, official := range officialfit.Models(family) {
-		suffix, ok := strings.CutPrefix(name, official+"-")
-		if ok && isDecimalDigits(suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-// isDecimalDigits reports whether s is a non-empty run of ASCII digits.
-func isDecimalDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// DeepSeekV4UnknownModelMessage renders the official unknown-model error text.
-func DeepSeekV4UnknownModelMessage(model string) string {
-	return deepSeekV4UnknownModelMessagePrefix + model + "."
 }
 
 // officialFitEffortTypeError maps a JSON type error on reasoning_effort to the
@@ -1861,20 +1774,6 @@ func IsStrictGlmValidationMessage(message string) bool {
 	return false
 }
 
-// Glm53ModelNotFoundText mirrors the official unknown-model text so the
-// distributor can render it without importing package-internal constants.
-var Glm53ModelNotFoundText = glm53ModelNotFoundMessage
-
-// Glm53OfficialModelNames is the exact model-id list of the glm-5.3 family
-// (glm-5.2 and older are not part of this fit family).
-var Glm53OfficialModelNames = officialfit.Models(officialfit.FamilyGlm53)
-
-// IsGlm53OfficialModelName reports whether model is one of the glm-5.3
-// family ids the official endpoint accepts.
-func IsGlm53OfficialModelName(model string) bool {
-	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyGlm53
-}
-
 // kimiK3FunctionNameMaxLength is the longest tool name the official endpoint
 // accepts. Live-probed 2026-09-22 on both declaration positions: 128 characters
 // pass (and a forced call with such a name works), 129 is rejected with the same
@@ -1915,23 +1814,6 @@ func kimiK3Error(message string) error {
 		Type:    "invalid_request_error",
 		Code:    "invalid_request_error",
 	}, http.StatusBadRequest)
-}
-
-// K3ModelNotFoundStatus is the status the official endpoint returns for an
-// unknown model id (live-probed 2026-09-21), distinctly lower than the 400 the
-// platform's own unknown-model path uses.
-const K3ModelNotFoundStatus = http.StatusNotFound
-
-// K3ModelNotFoundText mirrors the official unknown-model text so the
-// distributor can render it without duplicating the wording.
-func K3ModelNotFoundText(model string) string {
-	return "Not found the model " + model + " or Permission denied"
-}
-
-// IsKimiK3OfficialModelName reports whether model is one of the exact model ids
-// the kimi-k3 family accepts.
-func IsKimiK3OfficialModelName(model string) bool {
-	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyKimiK3
 }
 
 // StrictFitContentType reports the wire content type the official endpoint
