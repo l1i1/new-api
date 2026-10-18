@@ -517,7 +517,7 @@
         {
           "kind": "symbol",
           "file": "middleware/distributor.go",
-          "name": "abortOfficialFitMessage"
+          "name": "abortWithOpenAiMessage"
         },
         {
           "kind": "symbol",
@@ -861,7 +861,7 @@
         {
           "kind": "symbol",
           "file": "middleware/distributor.go",
-          "name": "abortOfficialFitMessage"
+          "name": "abortWithOpenAiMessage"
         }
       ],
       "tests": []
@@ -2832,7 +2832,7 @@
     },
     {
       "id": "glm-group-contract-and-cdp-instruction-following",
-      "title": "GLM 组契约与 cdp 指令遵循：孤儿 tool 结果拒 400 且用智谱报文形状；tool_choice=none 不投递工具声明也绝不调用工具；采样区间不再本地误拒；未知模型错误码/文案按官方；GLM 业务 400 不发 Content-Type",
+      "title": "GLM 组契约与 cdp 指令遵循：孤儿 tool 结果拒 400 且用智谱报文形状；tool_choice=none 不投递工具声明也绝不调用工具；采样区间不再本地误拒；未知模型 id 不再本地拦截（交给平台路由）；GLM 业务 400 不发 Content-Type",
       "risk": "medium",
       "source": "FORK-CHANGES.md › 5. 路由与可靠性",
       "files": [
@@ -2885,7 +2885,6 @@
           "file": "relay/helper/glm53_official_fields_test.go",
           "names": [
             "TestGlm53OfficialFieldsAccept",
-            "TestGlm53ModelNotFoundTextMatchesLiveContract",
             "TestWriteZhipuBusinessErrorOmitsContentTypeOnTheWire"
           ]
         },
