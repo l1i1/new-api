@@ -542,6 +542,46 @@ func IsDeepSeekV4OfficialModelName(model string) bool {
 	return officialfit.IsOfficialModelName(model) && officialfit.FamilyOf(model) == officialfit.FamilyDeepSeekV4
 }
 
+// IsDeepSeekV4FitAcceptedModelName reports whether model may pass the
+// official-fit DeepSeek V4 model validation gate. The exact official ids pass,
+// and so does a dated snapshot id derived from one of them — official id plus
+// a numeric suffix ("-<digits>"), e.g. deepseek-v4.1-flash-1017: the platform
+// publishes upstream snapshots under that spelling and the channel
+// model_mapping rewrites them to the vendor id before dispatch, so official-fit
+// accounts must be able to call them. Requiring digits keeps non-dated
+// variants (deepseek-v4.1-flash-vision-exp) and unknown family members
+// (deepseek-v4.1-pro, deepseek-v4-notexist) on the official 400, and the gate
+// stays DeepSeek-V4-only: the kimi-k3 and glm-5.3 validations are untouched.
+func IsDeepSeekV4FitAcceptedModelName(model string) bool {
+	if IsDeepSeekV4OfficialModelName(model) {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return false
+	}
+	for _, official := range DeepSeekV4OfficialModelNames {
+		suffix, ok := strings.CutPrefix(name, official+"-")
+		if ok && isDecimalDigits(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDecimalDigits reports whether s is a non-empty run of ASCII digits.
+func isDecimalDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // DeepSeekV4UnknownModelMessage renders the official unknown-model error text.
 func DeepSeekV4UnknownModelMessage(model string) string {
 	return deepSeekV4UnknownModelMessagePrefix + model + "."

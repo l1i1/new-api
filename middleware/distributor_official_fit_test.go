@@ -57,6 +57,16 @@ func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
 		markV4OfficialPinFromDistributor(c)
 		assert.False(t, c.IsAborted())
 	})
+
+	// Dated snapshot ids ("<official-id>-<digits>") are how the platform
+	// publishes upstream snapshots; the channel model_mapping rewrites them to
+	// the vendor id, so the Validate gate must let them through instead of
+	// aborting with the official unknown-model 400.
+	t.Run("dated snapshot model name passes through", func(t *testing.T) {
+		c, _ := newContext(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
+		markV4OfficialPinFromDistributor(c)
+		assert.False(t, c.IsAborted())
+	})
 }
 
 // requireLiveBuiltinPolicy installs the shipped policy in live mode. Which shapes

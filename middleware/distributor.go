@@ -765,11 +765,15 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	// Official-fit DeepSeek V4 requests reject a non-official model id with
 	// the official text BEFORE channel selection: the platform's
 	// model_not_configured wording differs from the official "supported API
-	// model names" 400. kimi-k3 has exactly one official id, so the same
-	// rejection applies with Moonshot's own 404 resource_not_found_error. The
-	// glm-5.3 family is enumerable (glm-5.3 / glm-5.3-flash) and uses the
-	// Zhipu 1214 wire shape.
-	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4OfficialModelName(pinRequest.Model) {
+	// model names" 400. Dated snapshot ids (official id + "-<suffix>", e.g.
+	// deepseek-v4.1-flash-1017) are accepted: the platform publishes upstream
+	// snapshots under that spelling and the selected channel's model_mapping
+	// rewrites them to the vendor id, so the gate must not treat them as
+	// unknown. Everything else in the family keeps the official 400. kimi-k3
+	// has exactly one official id, so the same rejection applies with
+	// Moonshot's own 404 resource_not_found_error. The glm-5.3 family is
+	// enumerable (glm-5.3 / glm-5.3-flash) and uses the Zhipu 1214 wire shape.
+	if isDeepSeekV4 && profile.Validate && !relayhelper.IsDeepSeekV4FitAcceptedModelName(pinRequest.Model) {
 		abortOfficialFitMessage(c, http.StatusBadRequest, relayhelper.DeepSeekV4UnknownModelMessage(pinRequest.Model))
 		return
 	}

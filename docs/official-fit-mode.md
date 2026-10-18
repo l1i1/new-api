@@ -34,6 +34,16 @@
     tool_choice 指定函数对象 → 400。注意：实测官方**不**校验 reasoning_effort 字符串枚举
     （"ultra" 也 200）、**接受** K2.x 的 thinking 字段（静默忽略）、max_completion_tokens
     也不做 1M 硬校验——这些本地一律不拦截）。
+    - **未知模型名的本地拦截（2026-10-18 起接受 dated snapshot id）**：`validate` 开启时，
+      DeepSeek V4 的非官方模型名会在**选渠道之前**被本地拒绝（`middleware/distributor.go`
+      的 `markV4OfficialPinFromDistributor`），回官方 `The supported API model names are
+      deepseek-flash, deepseek-v4-pro, but you passed <model>.` 原文——平台自己的
+      `model_not_configured` 文案与官方不同，不能透出。**渠道级 `model_mapping` 在这之后才
+      生效，救不了这道校验**，所以平台发布的上游快照名（官方 id + 数字后缀，如
+      `deepseek-v4.1-flash-1017`）必须由校验本身放行：
+      `relay/helper/valid_request.go` 的 `IsDeepSeekV4FitAcceptedModelName` 放行"官方 id +
+      `-<数字>`"，其余非官方名（`deepseek-v4.1-pro`、`deepseek-v4-notexist`、
+      `deepseek-v4.1-flash-vision-exp`）仍回官方 400；kimi-k3 / glm-5.3 的未知名校验不受影响。
   - `errors`：校验错误消息保持官方原文（不附加网关 request id、以官方 Content-Type 返回）。
   - `shape`：响应形态拟合（DS 官方 7 键 usage、流式 usage 单次拼接、剥离聚合器扩展字段、
     SSE Content-Type 镜像；K3 暂无非官方形状可处理，保持透传）。

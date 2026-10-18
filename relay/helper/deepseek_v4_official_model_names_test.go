@@ -33,6 +33,39 @@ func TestIsDeepSeekV4OfficialModelName(t *testing.T) {
 	}
 }
 
+// The official-fit Validate gate accepts dated snapshot ids built from an
+// official id: the platform publishes upstream snapshots as
+// "<official-id>-<suffix>" (e.g. deepseek-v4.1-flash-1017) and the channel
+// model_mapping rewrites them to the vendor id at dispatch time, so official-fit
+// accounts must be able to call them. Unknown family members still keep the
+// official 400.
+func TestIsDeepSeekV4FitAcceptedModelName(t *testing.T) {
+	accepted := []string{
+		"deepseek-v4-pro",
+		"deepseek-v4.1-flash",
+		"deepseek-v4.1-flash-1017",
+		"deepseek-v4-flash-1017",
+		"deepseek-v4-pro-20261017",
+		" DeepSeek-V4.1-Flash-1017 ",
+	}
+	for _, model := range accepted {
+		assert.True(t, IsDeepSeekV4FitAcceptedModelName(model), model)
+	}
+
+	rejected := []string{
+		"deepseek-v4.1-pro",
+		"deepseek-v4-notexist",
+		"deepseek-v4.1-flash-vision-exp",
+		"deepseek-v4.1-flash-",
+		"deepseek-v4.1-flash-abc",
+		"",
+		"deepseek-flash",
+	}
+	for _, model := range rejected {
+		assert.False(t, IsDeepSeekV4FitAcceptedModelName(model), model)
+	}
+}
+
 // The unknown-model error must be byte-identical to the live official text.
 // The accepted-id set is probed separately; the message's own model list is
 // the endpoint's wording and deliberately not used as the accepted set.
