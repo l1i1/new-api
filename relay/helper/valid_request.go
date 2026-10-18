@@ -550,17 +550,38 @@ func IsDeepSeekV4OfficialModelName(model string) bool {
 // model_mapping rewrites them to the vendor id before dispatch, so official-fit
 // accounts must be able to call them. Requiring digits keeps non-dated
 // variants (deepseek-v4.1-flash-vision-exp) and unknown family members
-// (deepseek-v4.1-pro, deepseek-v4-notexist) on the official 400, and the gate
-// stays DeepSeek-V4-only: the kimi-k3 and glm-5.3 validations are untouched.
+// (deepseek-v4.1-pro, deepseek-v4-notexist) on the official 400. Callers that
+// own the request context additionally require the exact spelling to be
+// published for the routing group (see middleware.officialFitSnapshotPublished):
+// an unpublished snapshot id has no ability to route through and no channel
+// model_mapping to rewrite it, so the official unknown-model answer is still
+// the honest one.
 func IsDeepSeekV4FitAcceptedModelName(model string) bool {
 	if IsDeepSeekV4OfficialModelName(model) {
 		return true
 	}
+	return officialfit.FamilyOf(strings.ToLower(strings.TrimSpace(model))) == officialfit.FamilyDeepSeekV4 &&
+		IsOfficialFitDatedSnapshotModelName(model)
+}
+
+// IsOfficialFitDatedSnapshotModelName reports whether model is a dated snapshot
+// spelling of one of its own family's official ids: the official id plus a
+// numeric suffix ("-<digits>"). It is family-agnostic so every official-fit
+// family gets the same dated-snapshot spelling rule (deepseek-v4.1-flash-1017,
+// kimi-k3-20250101, glm-5.3-20250101), while non-dated variants such as
+// deepseek-v4.1-flash-vision-exp and ids outside the registry stay unknown.
+// Whether such a name is actually servable is a routing question, answered by
+// the distributor via the group's abilities, not here.
+func IsOfficialFitDatedSnapshotModelName(model string) bool {
 	name := strings.ToLower(strings.TrimSpace(model))
 	if name == "" {
 		return false
 	}
-	for _, official := range DeepSeekV4OfficialModelNames {
+	family := officialfit.FamilyOf(name)
+	if family == "" {
+		return false
+	}
+	for _, official := range officialfit.Models(family) {
 		suffix, ok := strings.CutPrefix(name, official+"-")
 		if ok && isDecimalDigits(suffix) {
 			return true

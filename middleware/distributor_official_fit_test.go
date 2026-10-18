@@ -60,12 +60,23 @@ func TestMarkV4OfficialPinFromDistributorUnknownModel(t *testing.T) {
 
 	// Dated snapshot ids ("<official-id>-<digits>") are how the platform
 	// publishes upstream snapshots; the channel model_mapping rewrites them to
-	// the vendor id, so the Validate gate must let them through instead of
-	// aborting with the official unknown-model 400.
-	t.Run("dated snapshot model name passes through", func(t *testing.T) {
-		c, _ := newContext(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
+	// the vendor id, so the Validate gate lets them through. Publication is
+	// required as well — this fixture has no abilities, so the id stays
+	// unpublished here and must keep the official unknown-model 400; the
+	// published branch is covered by
+	// TestMarkV4OfficialPinFromDistributorDatedSnapshotNeedsPublication.
+	t.Run("unpublished dated snapshot model name keeps the official 400", func(t *testing.T) {
+		c, w := newContext(`{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":16}`)
 		markV4OfficialPinFromDistributor(c)
-		assert.False(t, c.IsAborted())
+		assert.True(t, c.IsAborted())
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
+		assert.Equal(t, relayhelper.DeepSeekV4UnknownModelMessage("deepseek-v4.1-flash-1017"), payload.Error.Message)
 	})
 }
 

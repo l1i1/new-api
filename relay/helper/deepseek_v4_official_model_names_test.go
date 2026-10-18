@@ -66,6 +66,39 @@ func TestIsDeepSeekV4FitAcceptedModelName(t *testing.T) {
 	}
 }
 
+// The dated-snapshot spelling rule is family-agnostic: every official-fit
+// family accepts its own official ids plus a numeric suffix, so a snapshot the
+// platform chooses to publish under a dated name is callable through the same
+// gate. Non-dated variants and ids outside the registry stay unknown.
+func TestIsOfficialFitDatedSnapshotModelName(t *testing.T) {
+	accepted := []string{
+		"deepseek-v4.1-flash-1017",
+		"deepseek-v4-pro-20261017",
+		"kimi-k3-20250101",
+		"glm-5.3-20250101",
+		"glm-5.3-flash-20261017",
+		" DeepSeek-V4.1-Flash-1017 ",
+	}
+	for _, model := range accepted {
+		assert.True(t, IsOfficialFitDatedSnapshotModelName(model), model)
+	}
+
+	rejected := []string{
+		"deepseek-v4.1-flash",
+		"kimi-k3",
+		"glm-5.3",
+		"deepseek-v4.1-flash-vision-exp",
+		"deepseek-v4.1-flash-abc",
+		"deepseek-v4.1-flash-",
+		"deepseek-flash-1017",
+		"kimi-k3.5-20250101",
+		"",
+	}
+	for _, model := range rejected {
+		assert.False(t, IsOfficialFitDatedSnapshotModelName(model), model)
+	}
+}
+
 // The unknown-model error must be byte-identical to the live official text.
 // The accepted-id set is probed separately; the message's own model list is
 // the endpoint's wording and deliberately not used as the accepted set.
