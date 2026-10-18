@@ -1,6 +1,6 @@
 # Tokeness China Production Deployment
 
-The China site uses an Alibaba Cloud ECI fleet behind the Shanghai entry ECS's nginx and EdgeOne. A Git push builds images only. It never changes production.
+The China site uses an Alibaba Cloud ECI fleet behind the Shanghai entry ECS's nginx and EdgeOne. A Git push builds images only. It never changes production. Release images are built **locally** by default (2026-10-18, see "Build path: local build first" below); a CNB pipeline build runs only with the user's explicit approval.
 
 The Chengdu lightweight tier (two hosts) retired on 2026-10-05: it no longer runs nginx or ml-sync, nothing resolves to it, and every role it held — EdgeOne origin, panel tier, relay entry, drain pinning — belongs to the entry ECS now. The release paths that used it are kept behind `SWAS_PANEL_TIER=1` (the hosts' ml-sync was stopped, not deleted) and fail closed if enabled while the hosts are gone; the default path never contacts them.
 
@@ -14,8 +14,27 @@ Examples of a correct re-alignment: the rc37 sync re-bases the line at `v1.0.0-r
 
 Note the validation regexes in `.cnb.yml` and `deployment/tokeness-cn/deploy.sh` only pin the `-tokeness-mainland.<N>` suffix, so a stale base is accepted silently — nothing in the pipeline will catch a base that was not re-aligned. The re-alignment is a naming convention only: it changes the tag, the baked `VERSION` and the app's reported version, never the code or the digest.
 
+### Build path: local build first (2026-10-18)
+
+The default release builds the image **on the release host**, pushes it to the CNB registry and then triggers the server-side update. A CNB `tag_push` build (the route described by the numbered steps below) is opt-in: it spends CI quota and chains an unattended production deploy, so it runs only after the user has explicitly approved it.
+
+```bash
+# 1. tag the release commit locally (tag commit == HEAD, tracked tree clean)
+git tag -a v<semver>-tokeness-mainland.<N> -m "release v<semver>-tokeness-mainland.<N>"
+# 2. build + push the immutable image; the script prints the registry-confirmed digest
+bash tools/secrets-broker/broker.sh exec --cred cnb -- \
+  bash deployment/tokeness-cn/release-local.sh v<semver>-tokeness-mainland.<N>
+# 3. trigger the server-side update with that digest
+bash deployment/tokeness-cn/deploy.sh deploy-release v<semver>-tokeness-mainland.<N> \
+  sha256:<digest>
+```
+
+`release-local.sh` refuses a dirty tracked tree or a tag/HEAD mismatch, bakes `VERSION` (restored afterwards), builds with the newest `ml-*` image as `--cache-from`, pushes `ml-<tag>` and prints the digest; a release tag is immutable (`ALLOW_TAG_OVERWRITE=1` overrides). `deploy-release` is the server-side update: the same gated master-first + ECI convergence the CNB deploy stage runs, costing `1 + ceil(n/batch)` drain windows (~2.5 h for six instances), and it needs the deploy credentials (RAM AK, entry-ECS SSH key, `CNB_REGISTRY_TOKEN` for the digest re-check).
+
+Do **not** push the release tag to `origin` before the local rollout is done: a tag push still triggers the CNB `tag_push` build and its chained deploy — that is the consent-gated route, not a bookkeeping step. Keep the tag local until the release is finished.
+
 1. Push `tokeness/main` to the internal `origin`. The mirror syncs the commit to CNB and GitHub.
-2. Create a release tag `v<semver>-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
+2. **[CNB pipeline build — opt-in, only with the user's approval; prefer the local path above.]** Create a release tag `v<semver>-tokeness-mainland.<N>` at the checked-out commit and push it. That single push is the whole release: the CNB `tag_push` pipeline validates the format, writes the tag as `VERSION`, publishes the immutable `ml-<tag>` image, and then chains into the gated deploy pipeline itself (`api_trigger`, `cnb:trigger` with `sync: true`). No button, no local machine, and a failed deploy fails the tag build instead of leaving a green tag behind.
 3. The chained deploy runs the same gated release as the manual button:
 
    - **certify**: resolves the immutable `ml-<tag>` digest from the registry and re-checks it against the certified value between stages;
