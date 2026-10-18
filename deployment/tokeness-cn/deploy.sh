@@ -2346,6 +2346,11 @@ current_max_size() {
 # RELAY_MAX_MEMBERS overrides the lookup (the tests use it). When the value
 # cannot be read the caller proceeds on the ESS ceiling alone and says so: a
 # failed lookup must not block a release - only a KNOWN too-small cap does.
+#
+# 2026-10-18: the entry's cap was raised 10 -> 64, deliberately far above the
+# group's MaxSize, so the relay list can never be what limits a rollout (a
+# full-fleet rotation runs the tier at 2x for one drain window). The lookup
+# stays: it still catches an entry that was left on an old/small cap.
 relay_member_cap() {
   if [[ -n "${RELAY_MAX_MEMBERS:-}" ]]; then
     case "$RELAY_MAX_MEMBERS" in
