@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	channelconstant "github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/payloadnorm"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -93,7 +95,19 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	// (calibrated 2026-08-28) — the old >=1 -> 0.99 rewrite is a
 	// compatibility hack that would change sampling behavior for
 	// official-fit traffic; do not re-add it.
-	return requestOpenAI2Zhipu(*request), nil
+	requestForUpstream := request
+	if info != nil {
+		// One atomic load of the installed snapshot: a concurrent reload cannot change the
+		// scope midway through this request, and the snapshot is immutable, so no locking is
+		// needed on the relay hot path.
+		normalized, decision := payloadnorm.Apply(payloadnorm.CurrentConfig(), info.TokenId, info.ChannelId, request)
+		if decision.Apply {
+			requestForUpstream = normalized
+			logger.LogDebug(c.Request.Context(), "payload_normalize applied: token=%d channel=%d reason=%s",
+				info.TokenId, info.ChannelId, decision.Reason)
+		}
+	}
+	return requestOpenAI2Zhipu(*requestForUpstream), nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {

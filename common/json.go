@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -65,6 +66,26 @@ func DecodeJsonWithValidation(reader io.Reader, v any) error {
 
 func Marshal(v any) ([]byte, error) {
 	return kitutil.Marshal(v)
+}
+
+// UnmarshalStrict decodes exactly one JSON value into v and rejects both a field that has no
+// matching destination field and trailing data after the value.
+//
+// It exists for configuration documents, where a misspelled or half-read scope is a real
+// hazard: Unmarshal would silently drop the unknown field and apply the rest. The decoder
+// behaviour is not exposed by the swappable codec (kitutil), so this one helper stays on
+// encoding/json on purpose; everything that does not need strict decoding keeps using
+// Unmarshal so a codec swap still applies.
+func UnmarshalStrict(data []byte, v any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return errors.New("json: trailing data after the value")
+	}
+	return nil
 }
 
 // CompactJson removes insignificant whitespace without normalizing number
