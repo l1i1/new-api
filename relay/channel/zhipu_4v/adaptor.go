@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	channelconstant "github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/payloadnorm"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -14,6 +16,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -93,7 +96,32 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	// (calibrated 2026-08-28) — the old >=1 -> 0.99 rewrite is a
 	// compatibility hack that would change sampling behavior for
 	// official-fit traffic; do not re-add it.
-	return requestOpenAI2Zhipu(*request), nil
+	requestForUpstream := request
+	if info != nil {
+		normalized, decision := payloadnorm.Apply(payloadNormalizeConfig(), info.TokenId, info.ChannelId, request)
+		if decision.Apply {
+			requestForUpstream = normalized
+			logger.LogDebug(c.Request.Context(), "payload_normalize applied: token=%d channel=%d reason=%s",
+				info.TokenId, info.ChannelId, decision.Reason)
+		}
+	}
+	return requestOpenAI2Zhipu(*requestForUpstream), nil
+}
+
+// payloadNormalizeConfig mirrors the operator setting into the pure rewrite config. Keeping
+// the conversion here means the pure package cannot depend on the settings layer, and the
+// setting stays a plain serializable struct.
+func payloadNormalizeConfig() payloadnorm.Config {
+	setting := operation_setting.GetPayloadNormalizeSetting()
+	return payloadnorm.Config{
+		Enabled:           setting.Enabled,
+		TokenIDs:          setting.TokenIDs,
+		ChannelIDs:        setting.ChannelIDs,
+		MinUserChars:      setting.MinUserChars,
+		FingerprintChars:  setting.FingerprintChars,
+		FingerprintSHA256: setting.FingerprintSHA256,
+		DocumentChars:     setting.DocumentChars,
+	}
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
