@@ -109,6 +109,26 @@ const logprobsProbeMaxTokens = 8
 // cost of this one probe moves from 16 to 96 completion tokens and nothing else.
 const toolsChoiceSemanticsProbeMaxTokens = 96
 
+// stopSequencesProbeMaxTokens must outlast the stop point: an upstream that
+// honours `stop` ends at the sequence (finish_reason=stop after a handful of
+// tokens), while one that ignores it runs to the cap and reports
+// finish_reason=length. The probe therefore asks for a long enumeration so the
+// difference cannot come from the model happening to finish early. 64 tokens
+// cover counting to 40 with headroom. Production evidence for the failure this
+// measures: on 2026-10-19 an aggregation channel answered a stop-requested
+// request by emitting the requested stop word and its tail anyway
+// (apps/new-api production log id=6086335).
+const stopSequencesProbeMaxTokens = 64
+
+// StoppedOnSequence reports whether the upstream ended generation at a stop
+// sequence. The raw finish_reason stays unexported (it never leaves the
+// process); this is the only bit the stop probe needs, and it is deliberately
+// not a content comparison: a channel that ignores `stop` can emit the same
+// prefix, so only the reason separates "cut where asked" from "ran on".
+func (s signature) StoppedOnSequence() bool {
+	return s.HasFinishReason && s.finishReason == "stop"
+}
+
 // probeSpecs is keyed by behaviour name. A behaviour with no entry cannot be
 // measured by a minimal probe and is reported as such rather than guessed.
 var probeSpecs = map[string]ProbeSpec{
@@ -231,6 +251,57 @@ var probeSpecs = map[string]ProbeSpec{
 				shapes = append(shapes, "tool_call_names official="+strings.Join(base.ToolCallNames, ",")+" channel="+strings.Join(channel.ToolCallNames, ","))
 			}
 			return shapes
+		},
+	},
+	// stop.sequences: the official DeepSeek endpoint honours an explicit stop
+	// sequence; the aggregation backends in the pool ignore it and run on
+	// (2026-10-19 production reconciliation). The discriminating fact is the
+	// finish reason, not the text: both sides can start with the same prefix.
+	fitpolicy.BehaviorStopSequences: {
+		Behavior:  fitpolicy.BehaviorStopSequences,
+		Path:      chatPath,
+		MaxTokens: stopSequencesProbeMaxTokens,
+		Fields:    []string{"stop"},
+		Build: func(family, model string) map[string]any {
+			body := chatBody(model, []map[string]any{
+				userMessage("Count from 1 to 40 in ascending order separated by single spaces, then keep going."),
+			}, stopSequencesProbeMaxTokens)
+			// The leading space is part of the sequence so the match cannot land
+			// inside a longer number the model might invent ("117").
+			body["stop"] = []string{" 17"}
+			if family == "deepseek-v4" {
+				// Same state the buyer's failing traffic used: thinking off is
+				// what routes ordinary tool/stop requests, so it is the state
+				// the mark must describe.
+				body["thinking"] = map[string]any{"type": "disabled"}
+			}
+			return body
+		},
+		StructuralAbsenceIsDivergence: true,
+		EvidenceIsGeneratedOutput:     true,
+		StructuralCompare: func(base, channel signature) []string {
+			if base.StoppedOnSequence() != channel.StoppedOnSequence() {
+				return []string{"stopped_on_sequence official=" + boolText(base.StoppedOnSequence()) + " channel=" + boolText(channel.StoppedOnSequence())}
+			}
+			return nil
+		},
+	},
+	// empty_content.accepted: the official endpoint answers a body with no
+	// renderable content with 200; the aggregation backends reject it with their
+	// own provider error (2026-10-19). Only acceptance is compared — there is no
+	// structural field to diff — so this row can only ever reach acceptance
+	// strength.
+	fitpolicy.BehaviorEmptyContentAccepted: {
+		Behavior:  fitpolicy.BehaviorEmptyContentAccepted,
+		Path:      chatPath,
+		MaxTokens: 8,
+		Fields:    []string{"messages", "content"},
+		Build: func(family, model string) map[string]any {
+			body := chatBody(model, []map[string]any{{"role": "user", "content": ""}}, 8)
+			if family == "deepseek-v4" {
+				body["thinking"] = map[string]any{"type": "disabled"}
+			}
+			return body
 		},
 	},
 	fitpolicy.BehaviorResponseFormatJSON: {
@@ -864,6 +935,10 @@ func structuralEvidence(spec ProbeSpec, channel signature) (known, present bool)
 		return true, channel.HasLogprobs
 	case fitpolicy.BehaviorThinkingCounting:
 		return true, channel.HasReasoningContent || channel.ReasoningTokens >= 0
+	case fitpolicy.BehaviorStopSequences:
+		// The presence of the stop *behaviour* is the finish reason: an upstream
+		// that ignored `stop` runs to the cap and reports length.
+		return true, channel.StoppedOnSequence()
 	default:
 		return false, false
 	}

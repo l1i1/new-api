@@ -260,9 +260,10 @@ func TestR2BaselineIsMeasuredPerBehaviourRequest(t *testing.T) {
 	if len(badAuth) > 0 {
 		t.Fatalf("unexpected credentials on fake probe requests: %v", badAuth)
 	}
-	// 3 deepseek-v4 marks + 5 kimi-k3 marks + 1 glm-5.3 mark.
-	if len(relayBodies) != 9 {
-		t.Fatalf("relay saw %d distinct probe bodies, want 9", len(relayBodies))
+	// 6 deepseek-v4 marks (logprobs/image/thinking/tool_choice/stop/empty
+	// content) + 5 kimi-k3 marks + 1 glm-5.3 mark.
+	if len(relayBodies) != 12 {
+		t.Fatalf("relay saw %d distinct probe bodies, want 12", len(relayBodies))
 	}
 
 	var report fitpolicy.SuiteReport

@@ -96,6 +96,58 @@ var officialExpectations = []Expectation{
 		},
 	},
 	{
+		// Added 2026-10-19 with the ds-tool-choice rule. The official endpoint
+		// answers a forcing tool_choice with tool_calls (verified on the pinned
+		// official channel the same day), while the aggregator answered the same
+		// request with plain text and finish_reason=stop, so the presence of
+		// tool_calls is structural and needs no external official key.
+		Family:         "deepseek-v4",
+		Behavior:       fitpolicy.BehaviorToolsChoiceSemantics,
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"pkg/fitpolicy/builtin.go:53",
+			"docs/official-fit-mode.md:77",
+			"docs/official-fit-mode.md:80",
+		},
+	},
+	{
+		// Added 2026-10-19 with the two new deepseek-v4 pin rules. The official
+		// expectation is documented (docs/official-fit-mode.md:77-82) and the
+		// aggregator divergence is measured in production, so the structural
+		// discriminator (finish_reason=stop vs length) decides this row without
+		// an external official key.
+		Family:         "deepseek-v4",
+		Behavior:       fitpolicy.BehaviorStopSequences,
+		Official:       expectSupported,
+		Discriminators: []string{discStructure},
+		BasisKind:      "doc",
+		Basis: []string{
+			"pkg/fitpolicy/builtin.go:54",
+			"docs/official-fit-mode.md:78",
+			"docs/official-fit-mode.md:81",
+			"pkg/fitpolicy/request.go:207",
+		},
+	},
+	{
+		// The official endpoint accepts a contentless body with 200 while the
+		// aggregation backends reject it with their own provider error, so the
+		// only available discriminator is acceptance and this row is capped at
+		// acceptance strength (see pkg/fitpolicy/builtin.go:152-160).
+		Family:         "deepseek-v4",
+		Behavior:       fitpolicy.BehaviorEmptyContentAccepted,
+		Official:       expectSupported,
+		Discriminators: []string{discAcceptance},
+		BasisKind:      "doc",
+		Basis: []string{
+			"pkg/fitpolicy/builtin.go:52",
+			"pkg/fitpolicy/builtin.go:159",
+			"pkg/fitpolicy/request.go:115",
+			"docs/official-fit-mode.md:77",
+		},
+	},
+	{
 		Family:         "kimi-k3",
 		Behavior:       fitpolicy.BehaviorThinkingCounting,
 		Official:       expectSupported,

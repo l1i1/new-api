@@ -43,18 +43,18 @@ for models whose id maps to a selected family.
 
 | family | model prefixes / official ids | marks the shipped policy can require | count |
 |---|---|---|---|
-| `deepseek-v4` | `deepseek-v4*` (`deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`, `deepseek-v4.1-flash`) | `logprobs.dual_path`, `image.parts`, `usage.thinking_counting` | 3 |
+| `deepseek-v4` | `deepseek-v4*` (`deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`, `deepseek-v4.1-flash`) | `logprobs.dual_path`, `image.parts`, `usage.thinking_counting`, `empty_content.accepted`, `tools.choice_semantics`, `stop.sequences` | 6 |
 | `kimi-k3` | `kimi-k3*` (`kimi-k3`) | `usage.thinking_counting`, `tools.choice_semantics`, `response_format.json`, `history.assistant_first`, `tools.dynamic_names` | 5 |
 | `glm-5.3` | `glm-5.3*` (`glm-5.3`, `glm-5.3-flash`) | `family.whole` | 1 |
 
-Requirement lists: `pkg/fitpolicy/builtin.go:35-48` (deepseek-v4), `:50-67` (kimi-k3), `:69-77`
-(glm-5.3).
+Requirement lists: `pkg/fitpolicy/builtin.go:49-54` (deepseek-v4), kimi-k3 and glm-5.3 unchanged.
 
-### 1.2 The eight capability marks
+### 1.2 The nine capability marks
 
-Eight distinct mark names exist (`pkg/fitpolicy/builtin.go:117-124`); `usage.thinking_counting` is
-required by two families, so a channel that serves one model per family yields **9 probe rows**
-(3 + 5 + 1). Every probe is `POST /v1/chat/completions` with `stream:false` and a four-field
+Nine distinct mark names exist (`pkg/fitpolicy/builtin.go:145-160`); `usage.thinking_counting` and
+`tools.choice_semantics` are each required by two families, so a channel that serves one model per
+family yields **12 probe rows** (6 + 5 + 1). Every probe is `POST /v1/chat/completions` with
+`stream:false` and a four-field
 skeleton plus the mark's own fields (`scripts/fit-probe/probe.go:61-70`).
 
 | mark | family(ies) | probe shape | discriminator tier | decidable with no measured baseline? |
@@ -62,6 +62,9 @@ skeleton plus the mark's own fields (`scripts/fit-probe/probe.go:61-70`).
 | `logprobs.dual_path` | deepseek-v4 | `logprobs:true`, `top_logprobs:1`, `thinking.type=disabled`, cap 8 | structural | yes: logprob data present ⇒ consistent, absent ⇒ divergence (`scripts/fit-probe/probe.go:115-153`, `:775-800`, `:823-836`) |
 | `image.parts` | deepseek-v4 | text part + 1×1 PNG data URI, cap 8 | acceptance | yes, but only acceptance-tier: an accepted response (`scripts/fit-probe/probe.go:154-166`, `:810-813`) |
 | `usage.thinking_counting` (deepseek) | deepseek-v4 | `thinking.type=enabled`, cap 8 | structural | yes: `reasoning_content` present or a reported reasoning-token field ⇒ consistent (`scripts/fit-probe/probe.go:167-204`, `:832`) |
+| `tools.choice_semantics` (deepseek) | deepseek-v4 | `tools:[ping]`, `tool_choice:"required"`, `thinking.type=disabled`, cap 96 | structural | yes: `tool_calls` present ⇒ consistent, absent below the cap ⇒ divergence (added 2026-10-19, `scripts/fit-probe/probe.go:230-254`, `:913-916`) |
+| `stop.sequences` | deepseek-v4 | `stop:[" 17"]` + count-to-40 prompt, `thinking.type=disabled`, cap 64 | structural | yes: `finish_reason=stop` ⇒ consistent, ran to the cap ⇒ divergence (added 2026-10-19, `scripts/fit-probe/probe.go:117-135`, `:256-290`, `:940-941`) |
+| `empty_content.accepted` | deepseek-v4 | `messages:[{role:"user",content:""}]`, `thinking.type=disabled`, cap 8 | acceptance | yes, but only acceptance-tier: an accepted response (added 2026-10-19, `scripts/fit-probe/probe.go:291-305`) |
 | `usage.thinking_counting` (kimi) | kimi-k3 | `thinking.type=disabled`, cap 8 | acceptance (`prompt_tokens` only) | **no** — inconclusive without a baseline (`scripts/fit-probe/spec.go:98-108`, `scripts/fit-probe/probe.go:801-803`) |
 | `tools.choice_semantics` | kimi-k3 | `tools:[ping]`, `tool_choice:"required"`, cap 96 | structural | yes: `tool_calls` present ⇒ consistent, absent below the cap ⇒ divergence (`scripts/fit-probe/probe.go:205-230`, `:827-828`) |
 | `response_format.json` | kimi-k3 | `response_format.json_object`, prompt contains the word `json`, cap 16 | structural | partly: JSON-object content ⇒ consistent; absent content ⇒ inconclusive, never divergence (`scripts/fit-probe/probe.go:231-254`) |
@@ -405,6 +408,9 @@ spec and the body; the other six repeat the literal in both places.
 | `history.assistant_first` | **1** | `scripts/fit-probe/probe.go:239` (spec) and `:246` (body) | The compared quantity is the request's `prompt_tokens` against a measured baseline, and the response reports `usage` regardless of how much output was generated; acceptance needs only content or a finish reason, either of which a 1-token answer provides (`scripts/fit-probe/probe.go:335-342`, `:367`, `scripts/fit-probe/spec.go:133-143`). The source records no other rationale for 1 — **not verified** beyond that. |
 | `tools.dynamic_names` | **1** | `scripts/fit-probe/probe.go:252` (spec) and `:261` (body) | Same as above: `prompt_tokens`-only discriminator, so the generation budget does not matter (`scripts/fit-probe/spec.go:144-155`). |
 | `family.whole` | **1** | `scripts/fit-probe/probe.go:267` (spec) and `:269` (body) | Acceptance-only mark: one accepted response is the entire structural claim, so one token is enough (`scripts/fit-probe/spec.go:156-168`). |
+| `tools.choice_semantics` (deepseek) | **96** | `scripts/fit-probe/probe.go:230-254` | Shares the kimi budget for the same reason: the probe asks the model to call a function and the answer needs room for the call. `thinking.type=disabled` is added for deepseek-v4 because that is the state the affected buyer traffic used. |
+| `stop.sequences` | **64** | `scripts/fit-probe/probe.go:117-135` (`stopSequencesProbeMaxTokens`) | Must outlast the stop point so a channel that ignores `stop` can be caught running to the cap (`finish_reason=length`) instead of the honest `finish_reason=stop`. 64 tokens cover "count to 40" with headroom (added 2026-10-19). |
+| `empty_content.accepted` | **8** | `scripts/fit-probe/probe.go:291-305` | Acceptance-only probe; the empty `usage` reply needs no generation budget, 8 matches the other small probes (added 2026-10-19). |
 
 **Truncation is handled fail-closed, not by a bigger cap alone.** `looksTruncated` can only demote an
 absence-derived divergence to inconclusive, never promote anything, and it decides differently for
