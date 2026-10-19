@@ -126,6 +126,11 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	} else {
+		// Channel-agnostic payload normalization: move a long document from the last
+		// user message into the system message before ANY adaptor sees the request,
+		// so every OpenAI-format channel (official and aggregator alike) gets the
+		// cache-friendly shape. See normalizePayloadForUpstream.
+		request = normalizePayloadForUpstream(c, info, request)
 		convertedRequest, err := adaptor.ConvertOpenAIRequest(c, info, request)
 		if err != nil {
 			return newConvertRequestFailedError(c, info, err)

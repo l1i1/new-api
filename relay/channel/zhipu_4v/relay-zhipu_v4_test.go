@@ -61,10 +61,12 @@ func TestRequestOpenAI2ZhipuCoercesStopShapes(t *testing.T) {
 	}
 }
 
-// TestConvertOpenAIRequestAppliesInstalledPayloadNormalizeScope is the wiring contract: the
-// adaptor reads the installed snapshot once per request and forwards the rewritten body for a
-// scoped token, while a token outside the scope keeps its original message layout.
-func TestConvertOpenAIRequestAppliesInstalledPayloadNormalizeScope(t *testing.T) {
+// TestConvertOpenAIRequestLeavesPayloadLayoutAlone is the single-owner contract: payload
+// normalization moved to relay.compatibleHandler (relay/payload_normalize_hook.go) so that
+// every OpenAI-format channel is rewritten identically. This adaptor must therefore forward
+// the message layout untouched even when the installed option would scope the token and
+// channel, otherwise the same request could be rewritten twice or only for official traffic.
+func TestConvertOpenAIRequestLeavesPayloadLayoutAlone(t *testing.T) {
 	const systemPrompt = "你是一个专业的文档助手，总结文章并输出32token左右的内容。"
 	const tail = "RAG/工作流真实对话场景"
 	document := strings.Repeat("The lake remembers every winter it has seen. ", 200)
@@ -75,30 +77,21 @@ func TestConvertOpenAIRequestAppliesInstalledPayloadNormalizeScope(t *testing.T)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	call := func(tokenID int) *dto.GeneralOpenAIRequest {
-		systemMessage := dto.Message{Role: "system"}
-		systemMessage.SetStringContent(systemPrompt)
-		userMessage := dto.Message{Role: "user"}
-		userMessage.SetStringContent(document + tail)
-		request := &dto.GeneralOpenAIRequest{Model: "glm-5.3-flash", Messages: []dto.Message{systemMessage, userMessage}}
+	systemMessage := dto.Message{Role: "system"}
+	systemMessage.SetStringContent(systemPrompt)
+	userMessage := dto.Message{Role: "user"}
+	userMessage.SetStringContent(document + tail)
+	request := &dto.GeneralOpenAIRequest{Model: "glm-5.3-flash", Messages: []dto.Message{systemMessage, userMessage}}
 
-		out, err := (&Adaptor{}).ConvertOpenAIRequest(ctx, &relaycommon.RelayInfo{
-			TokenId:     tokenID,
-			ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 7},
-		}, request)
-		require.NoError(t, err)
-		converted, ok := out.(*dto.GeneralOpenAIRequest)
-		require.True(t, ok)
-		return converted
-	}
+	out, err := (&Adaptor{}).ConvertOpenAIRequest(ctx, &relaycommon.RelayInfo{
+		TokenId:     88,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 7},
+	}, request)
+	require.NoError(t, err)
+	converted, ok := out.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
 
-	scoped := call(88)
-	require.Len(t, scoped.Messages, 2)
-	require.Equal(t, systemPrompt+"\n\n"+document, scoped.Messages[0].Content)
-	require.Equal(t, tail, scoped.Messages[1].Content)
-
-	unscoped := call(99)
-	require.Len(t, unscoped.Messages, 2)
-	require.Equal(t, systemPrompt, unscoped.Messages[0].Content)
-	require.Equal(t, document+tail, unscoped.Messages[1].Content)
+	require.Len(t, converted.Messages, 2)
+	require.Equal(t, systemPrompt, converted.Messages[0].Content)
+	require.Equal(t, document+tail, converted.Messages[1].Content)
 }
