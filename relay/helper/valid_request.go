@@ -1110,6 +1110,12 @@ const (
 	// non-string reasoning_effort (the numeric probe returned code 1210 with
 	// the enum-list text, unlike string values which get the thinking text).
 	glm53ReasoningEffortTypeMessage = "reasoning_effort 参数值非法，可选值为：none、minimal、low、medium、high、xhigh、max"
+	// glm53MaxTokensRangeMessage mirrors the official wording for a max_tokens
+	// outside the [1, 131072] model limit (128K = 131072, live-probed 2026-10-19
+	// against open.bigmodel.cn/api/paas/v4: 131072 is accepted with 200; 0 and
+	// 131073 return HTTP 400 with code 1210 and this message).
+	glm53MaxTokensRangeMessage = "max_tokens参数非法：限制数值范围[1,131072]"
+	glm53MaxTokensUpperLimit   = 131072
 )
 
 func isGlm53Model(model string) bool {
@@ -1614,6 +1620,9 @@ func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			return glm53Error("1210", glm53ThinkingMessage)
 		}
 	}
+	if request.MaxTokens != nil && (*request.MaxTokens == 0 || *request.MaxTokens > glm53MaxTokensUpperLimit) {
+		return glm53Error("1210", glm53MaxTokensRangeMessage)
+	}
 	if glm53OrphanToolMessage(request.Messages) {
 		// 1214 is the family's generic invalid-request code (the same one the
 		// empty-messages rule uses); there is no Zhipu code for this class
@@ -1765,6 +1774,7 @@ func IsStrictGlmValidationMessage(message string) bool {
 		glm53ModelNotFoundMessage,
 		glm53EmptyMessagesMessage,
 		glm53ReasoningEffortTypeMessage,
+		glm53MaxTokensRangeMessage,
 		glm53OrphanToolMessageText,
 	} {
 		if strings.HasPrefix(message, prefix) {

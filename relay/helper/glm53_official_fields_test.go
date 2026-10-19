@@ -16,13 +16,14 @@ import (
 )
 
 func floatPtr(v float64) *float64 { return &v }
+func uintPtr(v uint) *uint        { return &v }
 
 // The rejection matrix is calibrated against the live open.bigmodel.cn
 // api/paas/v4 endpoint. Since the 2026-09-15 re-check only these are rejected:
-// disabled thinking, reasoning_effort outside low/high/max, empty messages and
-// unknown model ids. temperature/top_p outside [0,1] used to be in this list
-// (2026-08-28) but the live endpoint now answers 200 — see the accept matrix
-// and the function comment.
+// disabled thinking, reasoning_effort outside low/high/max, max_tokens outside
+// [1, 131072], empty messages and unknown model ids. temperature/top_p outside
+// [0,1] used to be in this list (2026-08-28) but the live endpoint now answers
+// 200 — see the accept matrix and the function comment.
 func TestGlm53OfficialFieldsReject(t *testing.T) {
 	base := dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: []dto.Message{{Role: "user", Content: "1+1=?"}}}
 	rejected := []struct {
@@ -46,6 +47,21 @@ func TestGlm53OfficialFieldsReject(t *testing.T) {
 			"effort medium",
 			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, ReasoningEffort: "medium"},
 			"1210", glm53ThinkingMessage,
+		},
+		{
+			"max_tokens zero",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(0)},
+			"1210", glm53MaxTokensRangeMessage,
+		},
+		{
+			"max_tokens above 128K limit on glm-5.3",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(131073)},
+			"1210", glm53MaxTokensRangeMessage,
+		},
+		{
+			"max_tokens above 128K limit on glm-5.3-flash",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3-flash", Messages: base.Messages, MaxTokens: uintPtr(131073)},
+			"1210", glm53MaxTokensRangeMessage,
 		},
 		{
 			"empty messages",
@@ -79,6 +95,9 @@ func TestGlm53OfficialFieldsAccept(t *testing.T) {
 		{Model: "glm-5.3", Messages: base.Messages, ReasoningEffort: "low"},
 		{Model: "glm-5.3", Messages: base.Messages, ReasoningEffort: "high"},
 		{Model: "glm-5.3", Messages: base.Messages, ReasoningEffort: "max"},
+		{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(1)},
+		{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(131072)},
+		{Model: "glm-5.3-flash", Messages: base.Messages, MaxTokens: uintPtr(131072)},
 		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(0)},
 		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(1.0)},
 		{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(0.1)},
@@ -119,6 +138,8 @@ func TestGlm53ValidationMessageRecognized(t *testing.T) {
 		glm53TopPMessage,
 		glm53ModelNotFoundMessage,
 		glm53EmptyMessagesMessage,
+		glm53ReasoningEffortTypeMessage,
+		glm53MaxTokensRangeMessage,
 	} {
 		assert.True(t, IsStrictGlmValidationMessage(msg), "%q", msg)
 	}
