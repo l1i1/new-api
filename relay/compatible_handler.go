@@ -82,6 +82,16 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	adaptor.Init(info)
 
 	passThroughRequestBody := shouldPassThroughOpenAIRequestBody(info)
+	// Channel-agnostic payload normalization: move a long document from the last
+	// user message into the system message before ANY adaptor sees the request,
+	// so every OpenAI-format channel (official and aggregator alike) gets the
+	// cache-friendly shape. Placed ahead of the chat→Responses branch below so a
+	// scoped request converted to the Responses API is rewritten too, and gated
+	// on chat-completions so the legacy /v1/completions path (which carries no
+	// messages) never reaches it. See normalizePayloadForUpstream.
+	if shouldNormalizeChatPayload(info, passThroughRequestBody) {
+		request = normalizePayloadForUpstream(c, info, request)
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		!passThroughRequestBody &&
 		service.ShouldChatCompletionsUseResponsesGlobal(info.ChannelId, info.ChannelType, info.OriginModelName) {
@@ -126,11 +136,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
 	} else {
-		// Channel-agnostic payload normalization: move a long document from the last
-		// user message into the system message before ANY adaptor sees the request,
-		// so every OpenAI-format channel (official and aggregator alike) gets the
-		// cache-friendly shape. See normalizePayloadForUpstream.
-		request = normalizePayloadForUpstream(c, info, request)
+		// Payload normalization already ran above, before the endpoint branch:
+		// one owner, every OpenAI-format path.
 		convertedRequest, err := adaptor.ConvertOpenAIRequest(c, info, request)
 		if err != nil {
 			return newConvertRequestFailedError(c, info, err)

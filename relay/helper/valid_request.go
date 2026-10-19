@@ -1620,8 +1620,16 @@ func validateGlm53OfficialFields(request *dto.GeneralOpenAIRequest) error {
 			return glm53Error("1210", glm53ThinkingMessage)
 		}
 	}
-	if request.MaxTokens != nil && (*request.MaxTokens == 0 || *request.MaxTokens > glm53MaxTokensUpperLimit) {
-		return glm53Error("1210", glm53MaxTokensRangeMessage)
+	// Validate the value the adaptor actually forwards, not one field: the Zhipu
+	// conversion forwards request.GetMaxTokens(), which prefers
+	// max_completion_tokens over max_tokens (relay/channel/zhipu_4v/relay-zhipu_v4.go:72-76).
+	// Checking max_tokens alone let {"max_completion_tokens": 131073} through to
+	// the upstream, whose 400 was then retried and answered 200 by the fallback
+	// channel — the exact failover this rule exists to prevent.
+	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
+		if effective := request.GetMaxTokens(); effective == 0 || effective > glm53MaxTokensUpperLimit {
+			return glm53Error("1210", glm53MaxTokensRangeMessage)
+		}
 	}
 	if glm53OrphanToolMessage(request.Messages) {
 		// 1214 is the family's generic invalid-request code (the same one the

@@ -64,6 +64,25 @@ func TestGlm53OfficialFieldsReject(t *testing.T) {
 			"1210", glm53MaxTokensRangeMessage,
 		},
 		{
+			// The adaptor forwards GetMaxTokens(), which prefers the alias, so
+			// the alias alone is enough to reach the upstream with 131073.
+			"max_completion_tokens above the limit",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, MaxCompletionTokens: uintPtr(131073)},
+			"1210", glm53MaxTokensRangeMessage,
+		},
+		{
+			"max_completion_tokens zero",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, MaxCompletionTokens: uintPtr(0)},
+			"1210", glm53MaxTokensRangeMessage,
+		},
+		{
+			// Both fields present: the forwarded value is the alias, so a small
+			// max_tokens does not make an oversized alias acceptable.
+			"oversized max_completion_tokens beside a small max_tokens",
+			&dto.GeneralOpenAIRequest{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(8), MaxCompletionTokens: uintPtr(131073)},
+			"1210", glm53MaxTokensRangeMessage,
+		},
+		{
 			"empty messages",
 			&dto.GeneralOpenAIRequest{Model: "glm-5.3"},
 			"1214", glm53EmptyMessagesMessage,
@@ -98,6 +117,10 @@ func TestGlm53OfficialFieldsAccept(t *testing.T) {
 		{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(1)},
 		{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(131072)},
 		{Model: "glm-5.3-flash", Messages: base.Messages, MaxTokens: uintPtr(131072)},
+		{Model: "glm-5.3", Messages: base.Messages, MaxCompletionTokens: uintPtr(131072)},
+		// GetMaxTokens() returns the alias when it is non-zero, so this request
+		// is forwarded as max_tokens=8 and is legitimate.
+		{Model: "glm-5.3", Messages: base.Messages, MaxTokens: uintPtr(131073), MaxCompletionTokens: uintPtr(8)},
 		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(0)},
 		{Model: "glm-5.3", Messages: base.Messages, Temperature: floatPtr(1.0)},
 		{Model: "glm-5.3", Messages: base.Messages, TopP: floatPtr(0.1)},

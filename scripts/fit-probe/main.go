@@ -427,7 +427,7 @@ func run(ctx context.Context, opts options, stdout, stderr io.Writer) error {
 				sig, attempts, transport := probeChannel(ctx, api, target, spec, body)
 				annotateErrorField(&sig, spec.Fields)
 				exp := expectationFor(target.Family, target.Behavior)
-				verdictValue, strength, basis, shape := classify(spec, exp, baseline, sig)
+				verdictValue, strength, basis, shape := classify(spec, exp, baseline, sig, target.Family)
 				samples[index] = append(samples[index], roundRecord{
 					Round:      round,
 					Verdict:    verdictValue,

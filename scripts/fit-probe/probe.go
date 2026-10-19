@@ -63,9 +63,41 @@ type ProbeSpec struct {
 	// generation budget, so the probe's own cap cannot explain their absence and
 	// only a length cut that emitted no token at all may downgrade them.
 	EvidenceIsGeneratedOutput bool
+	// MaxTokensForFamily overrides MaxTokens for a family whose Build sends a
+	// different generation budget. The truncation clause must reason about the
+	// cap the upstream actually saw: glm-5.3's usage.thinking_counting probe
+	// asks for a tool call and spends glmThinkingCountingProbeMaxTokens, so a
+	// finished 20-token answer that carries no reasoning is a divergence, not a
+	// cut at the spec's nominal 8.
+	MaxTokensForFamily map[string]int
+	// RequiresExercise, when set, reports whether the response drove the path
+	// the mark describes. A probe that never reached that path says nothing
+	// either way (glm-5.3's thinking mark is about replaying reasoning on a
+	// tool-call turn, so an answer with no tool call is not evidence).
+	RequiresExercise func(family string, channel signature) (bool, string)
+	// NegativeEvidence, when set, reports a response that exercised the path
+	// and contradicts the behaviour — a divergence that the truncation clause
+	// must not excuse (reasoning accounting with nothing to replay; a stop
+	// sequence that leaked into the output). It is checked before the
+	// structural-absence branch for exactly that reason.
+	NegativeEvidence func(family string, channel signature) (bool, string)
+}
+
+// budgetFor is the generation cap Build puts in the body for this family.
+func (s ProbeSpec) budgetFor(family string) int {
+	if budget, ok := s.MaxTokensForFamily[family]; ok && budget > 0 {
+		return budget
+	}
+	return s.MaxTokens
 }
 
 const chatPath = "/v1/chat/completions"
+
+// stopSequenceProbeText is the stop sequence the stop.sequences probe asks the
+// model to stop at, and the text it looks for in the answer. The leading space
+// keeps the match from landing inside a longer number the model might invent
+// ("117").
+const stopSequenceProbeText = " 17"
 
 func chatBody(model string, messages []map[string]any, maxTokens int) map[string]any {
 	return map[string]any{
@@ -145,6 +177,14 @@ func (s signature) StoppedOnSequence() bool {
 	return s.HasFinishReason && s.finishReason == "stop"
 }
 
+// LeakedStopSequence reports whether the answer contains the stop sequence the
+// probe asked for. Leakage is evidence against the channel regardless of the
+// finish reason it reports: an upstream that ignores `stop` emits the sequence
+// and keeps going.
+func (s signature) LeakedStopSequence() bool {
+	return strings.Contains(s.contentText, stopSequenceProbeText)
+}
+
 // probeSpecs is keyed by behaviour name. A behaviour with no entry cannot be
 // measured by a minimal probe and is reported as such rather than guessed.
 var probeSpecs = map[string]ProbeSpec{
@@ -204,7 +244,31 @@ var probeSpecs = map[string]ProbeSpec{
 		Behavior:  fitpolicy.BehaviorThinkingCounting,
 		Path:      chatPath,
 		MaxTokens: 8,
-		Fields:    []string{"thinking", "reasoning_effort", "reasoning", "usage", "tools", "tool_choice"},
+		// glm-5.3 asks for a tool call, so the request carries a larger budget
+		// than the 8 the other families keep.
+		MaxTokensForFamily: map[string]int{"glm-5.3": glmThinkingCountingProbeMaxTokens},
+		Fields:             []string{"thinking", "reasoning_effort", "reasoning", "usage", "tools", "tool_choice"},
+		RequiresExercise: func(family string, channel signature) (bool, string) {
+			if family != "glm-5.3" {
+				return true, ""
+			}
+			if !channel.HasToolCalls {
+				return false, "the probe offered a tool but the answer carried no tool call, so the thinking-replay path was not exercised"
+			}
+			return true, ""
+		},
+		NegativeEvidence: func(family string, channel signature) (bool, string) {
+			if family != "glm-5.3" {
+				// deepseek-v4 / kimi-k3 are judged on the accounting field: their
+				// probes do not offer a tool, so a missing content field is not a
+				// contradiction for them.
+				return false, ""
+			}
+			if channel.HasReasoningContent {
+				return false, ""
+			}
+			return true, "the answer carried a tool call but no reasoning_content to replay (reasoning_tokens=" + itoa(channel.ReasoningTokens) + ")"
+		},
 		Build: func(family, model string) map[string]any {
 			body := chatBody(model, []map[string]any{userMessage("hi")}, 8)
 			switch family {
@@ -310,7 +374,7 @@ var probeSpecs = map[string]ProbeSpec{
 			}, stopSequencesProbeMaxTokens)
 			// The leading space is part of the sequence so the match cannot land
 			// inside a longer number the model might invent ("117").
-			body["stop"] = []string{" 17"}
+			body["stop"] = []string{stopSequenceProbeText}
 			if family == "deepseek-v4" {
 				// Same state the buyer's failing traffic used: thinking off is
 				// what routes ordinary tool/stop requests, so it is the state
@@ -321,6 +385,18 @@ var probeSpecs = map[string]ProbeSpec{
 		},
 		StructuralAbsenceIsDivergence: true,
 		EvidenceIsGeneratedOutput:     true,
+		RequiresExercise: func(family string, channel signature) (bool, string) {
+			if channel.LeakedStopSequence() || channel.StoppedOnSequence() {
+				return true, ""
+			}
+			return false, "the answer ended before reaching the stop sequence, so the probe did not exercise it"
+		},
+		NegativeEvidence: func(family string, channel signature) (bool, string) {
+			if !channel.LeakedStopSequence() {
+				return false, ""
+			}
+			return true, "the requested stop sequence appeared in the output, so the channel ran past it"
+		},
 		StructuralCompare: func(base, channel signature) []string {
 			if base.StoppedOnSequence() != channel.StoppedOnSequence() {
 				return []string{"stopped_on_sequence official=" + boolText(base.StoppedOnSequence()) + " channel=" + boolText(channel.StoppedOnSequence())}
@@ -477,6 +553,12 @@ type signature struct {
 	// only (to recognise a length cut) and never serialized; HasFinishReason
 	// remains the fact that leaves the process.
 	finishReason string
+
+	// contentText is the assistant text of a successful answer, kept in-process
+	// only: the stop.sequences mark is decided by whether the requested
+	// sequence appears in it, and finish_reason cannot separate "stopped where
+	// asked" from "finished on its own". It is never serialized.
+	contentText string
 }
 
 // extractSignature derives the signature from one HTTP response. body may be
@@ -515,6 +597,7 @@ func extractSignature(status int, body []byte) signature {
 				text, isJSONObject := messageContent(message["content"])
 				sig.HasContent = strings.TrimSpace(text) != ""
 				sig.ContentIsJSONObject = isJSONObject
+				sig.contentText = text
 				if reasoning, ok := message["reasoning_content"].(string); ok && strings.TrimSpace(reasoning) != "" {
 					sig.HasReasoningContent = true
 				}
@@ -838,7 +921,11 @@ func (sig signature) looksTruncated(maxTokens int, evidenceIsGeneratedOutput boo
 // doc-derived expectation is known. In that mode a dimension whose only
 // discriminator is prompt_tokens can never be called consistent, because
 // equality of a token count cannot be observed without the reference count.
-func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel signature) (verdict, string, string, string) {
+func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel signature, family ...string) (verdict, string, string, string) {
+	familyName := ""
+	if len(family) > 0 {
+		familyName = family[0]
+	}
 	if channel.Status == 0 {
 		return verdictInconclusive, strengthAcceptance, "probe was not executed (transport error)", ""
 	}
@@ -881,6 +968,22 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 
 	// Both sides accepted (or only the channel, with a doc expectation).
 	strength := strengthFor(exp)
+
+	// Exercise gate: a probe that never drove the path the mark describes has
+	// nothing to say about it, whatever a baseline comparison would report.
+	if spec.RequiresExercise != nil {
+		if exercised, why := spec.RequiresExercise(familyName, channel); !exercised {
+			return verdictInconclusive, strength, why, ""
+		}
+	}
+	// Direct negative evidence: the path was exercised and the answer
+	// contradicts the behaviour. Checked before the absence branch so the
+	// truncation clause cannot excuse a contradiction as "ran out of room".
+	if spec.NegativeEvidence != nil {
+		if negative, why := spec.NegativeEvidence(familyName, channel); negative {
+			return verdictDivergence, strengthStructural, why, "structure contradicted: " + spec.Behavior
+		}
+	}
 	if hasMeasuredBaseline && spec.StructuralCompare != nil {
 		if shapes := spec.StructuralCompare(*baseline, channel); len(shapes) > 0 {
 			return verdictDivergence, strengthStructural, "structural fields differ from the measured official baseline", strings.Join(shapes, "; ")
@@ -917,7 +1020,7 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 	// dimension whose only discriminator is prompt_tokens (kimi-k3
 	// usage.thinking_counting, spec.go:103), writing supported=false on every
 	// accepted probe.
-	evidenceKnown, evidencePresent := structuralEvidence(spec, channel)
+	evidenceKnown, evidencePresent := structuralEvidence(spec, channel, familyName)
 	if strength == strengthStructural && evidenceKnown && evidencePresent {
 		return verdictConsistent, strengthStructural,
 			"channel produced the dimension's structural evidence; the expectation table marks the official endpoint as " + exp.Official, ""
@@ -934,9 +1037,10 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 		// for generated-output evidence; for an envelope mark the probe budget
 		// explains the absence only when the cut emitted no token at all. Both
 		// cases are what looksTruncated decides.
-		if channel.looksTruncated(spec.MaxTokens, spec.EvidenceIsGeneratedOutput) {
+		budget := spec.budgetFor(familyName)
+		if channel.looksTruncated(budget, spec.EvidenceIsGeneratedOutput) {
 			return verdictInconclusive, strength,
-				"channel accepted the request but the response looks truncated at the probe's own token cap (max_tokens=" + itoa(spec.MaxTokens) + ", completion_tokens=" + itoa(channel.CompletionTokens) + "), so the absent structure is explained by the probe budget rather than by the channel",
+				"channel accepted the request but the response looks truncated at the probe's own token cap (max_tokens=" + itoa(budget) + ", completion_tokens=" + itoa(channel.CompletionTokens) + "), so the absent structure is explained by the probe budget rather than by the channel",
 				""
 		}
 		return verdictDivergence, strengthStructural,
@@ -965,7 +1069,11 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 // behaviour, so neither presence nor absence may be treated as evidence: the
 // fail-closed answer for an unmodelled mark is "no verdict", never a written
 // mark.
-func structuralEvidence(spec ProbeSpec, channel signature) (known, present bool) {
+func structuralEvidence(spec ProbeSpec, channel signature, family ...string) (known, present bool) {
+	familyName := ""
+	if len(family) > 0 {
+		familyName = family[0]
+	}
 	switch spec.Behavior {
 	case fitpolicy.BehaviorLogprobsDualPath:
 		return true, channel.HasLogprobs
@@ -976,11 +1084,19 @@ func structuralEvidence(spec ProbeSpec, channel signature) (known, present bool)
 	case "logprobs.present":
 		return true, channel.HasLogprobs
 	case fitpolicy.BehaviorThinkingCounting:
+		if familyName == "glm-5.3" {
+			// glm-5.3 must return reasoning the caller can replay. Token
+			// accounting alone is not evidence: an aggregator reported
+			// reasoning_tokens=213 with an empty reasoning_content, which is
+			// exactly the shape this mark has to reject.
+			return true, channel.HasReasoningContent
+		}
 		return true, channel.HasReasoningContent || channel.ReasoningTokens >= 0
 	case fitpolicy.BehaviorStopSequences:
-		// The presence of the stop *behaviour* is the finish reason: an upstream
-		// that ignored `stop` runs to the cap and reports length.
-		return true, channel.StoppedOnSequence()
+		// finish_reason alone cannot carry this mark — a model that simply
+		// finished early also reports "stop" — so the evidence is the text: the
+		// requested sequence must not appear in the answer.
+		return true, channel.StoppedOnSequence() && !channel.LeakedStopSequence()
 	default:
 		return false, false
 	}

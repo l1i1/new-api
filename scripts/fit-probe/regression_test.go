@@ -2471,3 +2471,109 @@ func TestGlmThinkingCountingProbeExercisesTheToolPath(t *testing.T) {
 		t.Fatalf("kimi-k3 usage.thinking_counting thinking.type = %v, want disabled", thinking["type"])
 	}
 }
+
+// TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall pins the
+// 2026-10-20 correction: the mark is about replaying reasoning on a tool-call
+// turn (the shape the glm53_preserve_thinking probe exercises). An answer that
+// carries reasoning *accounting* but nothing to replay must be a divergence,
+// and an answer that never called the tool must be inconclusive rather than
+// evidence either way.
+func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorThinkingCounting]
+	exp := expectationFor("glm-5.3", fitpolicy.BehaviorThinkingCounting)
+
+	base := signature{
+		Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+		PromptTokens: 12, HasFinishReason: true, finishReason: "tool_calls", HasToolCalls: true,
+	}
+
+	accountingOnly := base
+	accountingOnly.CompletionTokens = 264
+	accountingOnly.ReasoningTokens = 213
+	verdict, strength, basis, _ := classify(spec, exp, nil, accountingOnly, "glm-5.3")
+	if verdict != verdictDivergence || strength != strengthStructural {
+		t.Fatalf("accounting without reasoning: verdict=%q strength=%q basis=%q, want divergence/structural", verdict, strength, basis)
+	}
+	if !strings.Contains(basis, "no reasoning_content") || !strings.Contains(basis, "213") {
+		t.Fatalf("divergence basis does not name the missing content and the reported count: %q", basis)
+	}
+
+	// Same accounting, but no tool call: the replay path never ran.
+	notExercised := accountingOnly
+	notExercised.HasToolCalls = false
+	verdict, _, basis, _ = classify(spec, exp, nil, notExercised, "glm-5.3")
+	if verdict != verdictInconclusive || !strings.Contains(basis, "thinking-replay path was not exercised") {
+		t.Fatalf("no tool call: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
+	}
+
+	// A tool call with replayable reasoning satisfies the mark.
+	replayable := base
+	replayable.CompletionTokens = 258
+	replayable.ReasoningTokens = 214
+	replayable.HasReasoningContent = true
+	if verdict, _, basis, _ = classify(spec, exp, nil, replayable, "glm-5.3"); verdict != verdictConsistent {
+		t.Fatalf("tool call with reasoning_content: verdict=%q basis=%q, want consistent", verdict, basis)
+	}
+
+	// deepseek-v4 / kimi-k3 keep the accounting-based contract: their probes do
+	// not offer a tool, so a missing content field must not become a divergence.
+	deepseekExp := expectationFor("deepseek-v4", fitpolicy.BehaviorThinkingCounting)
+	accountingDeepseek := accountingOnly
+	accountingDeepseek.HasToolCalls = false
+	if verdict, _, basis, _ = classify(spec, deepseekExp, nil, accountingDeepseek, "deepseek-v4"); verdict != verdictConsistent {
+		t.Fatalf("deepseek accounting: verdict=%q basis=%q, want consistent", verdict, basis)
+	}
+}
+
+// TestProbeBudgetFollowsTheFamily pins finding 4: classification must reason
+// about the generation cap the upstream actually saw, not the spec's nominal 8.
+func TestProbeBudgetFollowsTheFamily(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorThinkingCounting]
+	if got := spec.budgetFor("glm-5.3"); got != glmThinkingCountingProbeMaxTokens {
+		t.Fatalf("glm-5.3 budget = %d, want %d", got, glmThinkingCountingProbeMaxTokens)
+	}
+	for _, family := range []string{"deepseek-v4", "kimi-k3", ""} {
+		if got := spec.budgetFor(family); got != spec.MaxTokens {
+			t.Fatalf("%s budget = %d, want the spec's %d", family, got, spec.MaxTokens)
+		}
+	}
+}
+
+// TestStopSequenceEvidenceIsTheOutput pins the second half of finding 2:
+// finish_reason=="stop" alone does not establish the mark (a model that simply
+// finished early reports it too), and a leaked stop sequence is evidence
+// against the channel whatever finish_reason it reports.
+func TestStopSequenceEvidenceIsTheOutput(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorStopSequences]
+	exp := expectationFor("deepseek-v4", fitpolicy.BehaviorStopSequences)
+
+	answer := func(reason string, completion int, text string) signature {
+		return signature{
+			Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+			PromptTokens: 20, CompletionTokens: completion, ReasoningTokens: -1,
+			HasContent: true, contentText: text,
+			HasFinishReason: true, finishReason: reason,
+		}
+	}
+
+	if verdict, _, basis, _ := classify(spec, exp, nil, answer("stop", 16, "1 2 3 ... 16"), "deepseek-v4"); verdict != verdictConsistent {
+		t.Fatalf("honoured stop: verdict=%q basis=%q, want consistent", verdict, basis)
+	}
+
+	verdict, _, basis, _ := classify(spec, exp, nil, answer("stop", 40, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
+		t.Fatalf("leaked stop: verdict=%q basis=%q, want divergence naming the leak", verdict, basis)
+	}
+
+	// Leaked *and* cut at the cap: the truncation clause must not excuse it.
+	verdict, _, basis, _ = classify(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
+		t.Fatalf("leaked stop at the cap: verdict=%q basis=%q, want divergence (not a truncation excuse)", verdict, basis)
+	}
+
+	// Never reached the sequence: nothing to say about `stop`.
+	verdict, _, basis, _ = classify(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3"), "deepseek-v4")
+	if verdict != verdictInconclusive || !strings.Contains(basis, "did not exercise") {
+		t.Fatalf("stop never reached: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
+	}
+}
