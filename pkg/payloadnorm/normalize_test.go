@@ -1,7 +1,9 @@
 package payloadnorm
 
 import (
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -476,9 +478,12 @@ func TestReadBoundariesReturnFreshSlices(t *testing.T) {
 }
 
 // TestInstallAndReadAreSafeForConcurrentUse is the regression guard for the reload race: the
-// request path loads one immutable snapshot while an admin update installs the next one. The
-// goroutines are released together so the loops genuinely overlap; the assertion that matters
-// runs under `go test -race`.
+// request path loads one immutable snapshot while an admin update installs the next one.
+//
+// A test cannot prove that two loops overlapped, so the shape makes overlap the norm rather
+// than the exception: all sides are released together, one goroutine keeps installing while
+// two keep reading, and every iteration yields. The assertion that matters runs under
+// `go test -race`, which reports any actual concurrent access.
 func TestInstallAndReadAreSafeForConcurrentUse(t *testing.T) {
 	t.Cleanup(InstallDisabled)
 
@@ -494,21 +499,32 @@ func TestInstallAndReadAreSafeForConcurrentUse(t *testing.T) {
 	go func() {
 		<-start
 		var firstErr error
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 500; i++ {
 			if err := InstallSettingJSON(documents[i%len(documents)]); err != nil && firstErr == nil {
 				firstErr = err
 			}
+			runtime.Gosched()
 		}
 		installErrors <- firstErr
 	}()
 
-	close(start)
-	for i := 0; i < 500; i++ {
-		config := CurrentConfig()
-		// Touch what the request path touches; a torn read would surface under -race.
-		_ = len(config.TokenIDs)
-		_ = config.DocumentChars
+	var readers sync.WaitGroup
+	for reader := 0; reader < 2; reader++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			for i := 0; i < 2000; i++ {
+				config := CurrentConfig()
+				// Touch what the request path touches; a torn read would surface under -race.
+				_ = len(config.TokenIDs)
+				_ = config.DocumentChars
+				runtime.Gosched()
+			}
+		}()
 	}
 
+	close(start)
+	readers.Wait()
 	require.NoError(t, <-installErrors)
 }
