@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
@@ -50,13 +51,13 @@ type Config struct {
 	TokenIDs   []int
 	ChannelIDs []int
 
-	// MinUserChars is the minimum length of the user message.
+	// MinUserChars is the minimum length of the user message, counted in characters.
 	MinUserChars int
 	// FingerprintChars and FingerprintSHA256 identify the workload by the leading characters
 	// of the user message. An empty digest disables the fingerprint check.
 	FingerprintChars  int
 	FingerprintSHA256 string
-	// DocumentChars is where the stable block ends inside the user message. Zero (or a value
+	// DocumentChars is where the stable block ends inside the user message, counted in characters. Zero (or a value
 	// outside the message) moves the whole user message and keeps the original system text
 	// as the user turn.
 	DocumentChars int
@@ -105,7 +106,7 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 	}
 	systemText, _ := system.Content.(string)
 	userText, _ := user.Content.(string)
-	if len(userText) < cfg.minUserChars() {
+	if utf8.RuneCountInString(userText) < cfg.minUserChars() {
 		return reject("user message below the size floor")
 	}
 	if !cfg.fingerprintMatches(userText) {
@@ -113,10 +114,15 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 	}
 
 	split := cfg.DocumentChars
-	if split <= 0 || split >= len(userText) {
+	if split <= 0 || split >= utf8.RuneCountInString(userText) {
 		// Whole-content mode: the entire user message becomes the system body and the
 		// original system text becomes the user turn. No knowledge of where the stable
 		// block ends is needed, which is what makes this mode usable for a first cut.
+		if systemText == "" {
+			// Moving everything would leave an empty user turn, which some upstreams reject.
+			// The rewrite must never turn a working request into a failing one.
+			return reject("whole-content mode needs a non-empty system prompt")
+		}
 		out := cloneRequest(req)
 		out.Messages[0].SetStringContent(joinSystem(systemText, userText))
 		out.Messages[1].SetStringContent(systemText)
@@ -125,10 +131,13 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 
 	// Split mode: the configured prefix is the stable block, the remainder stays the user
 	// turn. This preserves the client's instruction/content order, which is the least
-	// surprising layout for the model.
+	// surprising layout for the model. DocumentChars counts characters, so the offset is
+	// resolved to a byte boundary here - slicing a byte index would corrupt a multi-byte
+	// character and change the text the model sees.
+	byteSplit := byteIndexAfterRunes(userText, split)
 	out := cloneRequest(req)
-	out.Messages[0].SetStringContent(joinSystem(systemText, userText[:split]))
-	out.Messages[1].SetStringContent(userText[split:])
+	out.Messages[0].SetStringContent(joinSystem(systemText, userText[:byteSplit]))
+	out.Messages[1].SetStringContent(userText[byteSplit:])
 	return &out, Decision{Apply: true, Reason: "moved stable block into system"}
 }
 
@@ -138,9 +147,7 @@ func Fingerprint(userText string, fingerprintChars int) string {
 	if fingerprintChars <= 0 {
 		fingerprintChars = DefaultFingerprintChars
 	}
-	if fingerprintChars < len(userText) {
-		userText = userText[:fingerprintChars]
-	}
+	userText = userText[:byteIndexAfterRunes(userText, fingerprintChars)]
 	sum := sha256.Sum256([]byte(userText))
 	return hex.EncodeToString(sum[:])
 }
@@ -191,6 +198,23 @@ func cloneRequest(req *dto.GeneralOpenAIRequest) dto.GeneralOpenAIRequest {
 	out.Messages = make([]dto.Message, len(req.Messages))
 	copy(out.Messages, req.Messages)
 	return out
+}
+
+// byteIndexAfterRunes returns the byte offset of the n-th character, or len(s) when the
+// string has fewer than n characters. All configured lengths count characters rather than
+// bytes so that a non-ASCII document is measured the way an operator reads it.
+func byteIndexAfterRunes(s string, runes int) int {
+	if runes <= 0 {
+		return 0
+	}
+	count := 0
+	for index := range s {
+		if count == runes {
+			return index
+		}
+		count++
+	}
+	return len(s)
 }
 
 func containsInt(values []int, want int) bool {

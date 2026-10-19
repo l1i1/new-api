@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
@@ -235,4 +236,55 @@ func withMessages(req *dto.GeneralOpenAIRequest, role, content string) *dto.Gene
 	msg.SetStringContent(content)
 	req.Messages = append(req.Messages, msg)
 	return req
+}
+
+// TestApplySplitModeNeverSplitsAUTF8Character guards the real mainland workload: a Chinese
+// document is multi-byte, so a split expressed in characters must land on a rune boundary.
+// A broken boundary would relay invalid UTF-8 and change the text the model sees.
+func TestApplySplitModeNeverSplitsAUTF8Character(t *testing.T) {
+	document := strings.Repeat("湖记得它见过的每一个冬天。", 900)
+	const tail = "RAG/工作流真实对话场景"
+	cfg := scopedConfig(document)
+	cfg.MinUserChars = 100
+	cfg.DocumentChars = 300 // characters, not bytes
+	cfg.FingerprintSHA256 = ""
+
+	out, decision := Apply(cfg, 88, 7, buildRequest(testSystemPrompt, document+tail))
+	if !decision.Apply {
+		t.Fatalf("rewrite not applied: %s", decision.Reason)
+	}
+	systemText := messageText(t, out.Messages[0])
+	userText := messageText(t, out.Messages[1])
+	if !utf8.ValidString(systemText) || !utf8.ValidString(userText) {
+		t.Fatalf("rewrite produced invalid UTF-8")
+	}
+	moved := strings.TrimPrefix(systemText, testSystemPrompt+"\n\n")
+	if moved+userText != document+tail {
+		t.Fatalf("rewrite changed the text: moved+user does not reassemble the input")
+	}
+	if got := utf8.RuneCountInString(moved); got != 300 {
+		t.Fatalf("moved %d characters, want 300", got)
+	}
+}
+
+// TestApplyRejectsWholeModeWithoutSystemPrompt: moving the whole user turn would leave an
+// empty user message, which some upstreams reject. The rewrite must fail closed instead.
+func TestApplyRejectsWholeModeWithoutSystemPrompt(t *testing.T) {
+	document := testDocument(200)
+	cfg := scopedConfig(document)
+	cfg.FingerprintSHA256 = ""
+
+	if _, decision := Apply(cfg, 88, 7, buildRequest("", document)); decision.Apply {
+		t.Fatalf("whole-content mode must not apply without a system prompt")
+	}
+}
+
+// TestApplyCountsCharactersForTheSizeFloor: 2,000 Chinese characters are 6,000 bytes, so a
+// byte-counted floor would fire on a message that is far shorter than the operator intended.
+func TestApplyCountsCharactersForTheSizeFloor(t *testing.T) {
+	document := strings.Repeat("湖", 2000)
+	cfg := Config{Enabled: true, TokenIDs: []int{88}, MinUserChars: 3000}
+	if _, decision := Apply(cfg, 88, 7, buildRequest(testSystemPrompt, document)); decision.Apply {
+		t.Fatalf("byte length must not satisfy a character floor")
+	}
 }

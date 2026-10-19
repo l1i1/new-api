@@ -18,19 +18,22 @@ import "github.com/QuantumNous/new-api/setting/config"
 type PayloadNormalizeSetting struct {
 	Enabled bool `json:"enabled"`
 	// TokenIDs and ChannelIDs are allowlists. Both empty means no request matches.
-	TokenIDs   []int `json:"token_ids,omitempty"`
-	ChannelIDs []int `json:"channel_ids,omitempty"`
-	// MinUserChars is the size floor of the user message (default 100000).
-	MinUserChars int `json:"min_user_chars,omitempty"`
+	TokenIDs   []int `json:"token_ids"`
+	ChannelIDs []int `json:"channel_ids"`
+	// Tags must stay bare: model.handleConfigUpdate looks the json tag up verbatim, so a
+	// ",omitempty" suffix makes a runtime option update silently do nothing.
+	//
+	// MinUserChars is the size floor of the user message in characters (default 100000).
+	MinUserChars int `json:"min_user_chars"`
 	// FingerprintChars is how many leading characters of the user message the fingerprint
 	// covers (default 4096). FingerprintSHA256 is the hex sha256 of that prefix; an empty
 	// digest disables the check and leaves the allowlists as the only guard.
-	FingerprintChars  int    `json:"fingerprint_chars,omitempty"`
-	FingerprintSHA256 string `json:"fingerprint_sha256,omitempty"`
+	FingerprintChars  int    `json:"fingerprint_chars"`
+	FingerprintSHA256 string `json:"fingerprint_sha256"`
 	// DocumentChars marks where the stable block ends inside the user message. Zero moves the
 	// whole user message into the system message and keeps the original system text as the
 	// user turn.
-	DocumentChars int `json:"document_chars,omitempty"`
+	DocumentChars int `json:"document_chars"`
 }
 
 var payloadNormalizeSetting = PayloadNormalizeSetting{
