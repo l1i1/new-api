@@ -214,6 +214,27 @@ func (r *GeneralOpenAIRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	for _, message := range r.Messages {
 		tokenCountMeta.MessagesCount++
 		texts = append(texts, message.Role)
+		// Replayed reasoning and tool calls are part of the prompt the
+		// upstream tokenizes — for thinking models a large part of it. They
+		// were missing from this estimate, so the local count disagreed with
+		// the upstream by 1.2–5.9x on kimi-k3 conversations that echo
+		// reasoning_content back (INC-20261019-01: the L2-A usage-deviation
+		// alarm fired on ~35% of consumption rows for a purely estimator-side
+		// reason, with no billing effect).
+		if rc := message.GetReasoningContent(); rc != "" {
+			texts = append(texts, rc)
+		}
+		if len(message.ToolCalls) > 0 {
+			var toolCalls []ToolCallRequest
+			if err := kitutil.Unmarshal(message.ToolCalls, &toolCalls); err == nil {
+				for _, call := range toolCalls {
+					texts = append(texts, call.Function.Name)
+					if call.Function.Arguments != "" {
+						texts = append(texts, call.Function.Arguments)
+					}
+				}
+			}
+		}
 		if len(message.Tools) > 0 {
 			// Kimi K3 dynamic tool loading: tools declared on a message are
 			// visible to the model and are counted like top-level tools.
