@@ -659,11 +659,13 @@ type v4OfficialPinRequest struct {
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
 // distributor time — channel selection runs in this middleware, before the
-// relay parses the request. The pin is controlled solely by the user's
-// official-fit Route dimension: requests from a Route-enabled user pin the
-// whole family to the official channel, everyone else keeps normal
-// aggregator routing regardless of sampling parameters. Failure to read the
-// body leaves the pin unset, matching the unpinned default.
+// relay parses the request. The pin itself is produced by the fit policy
+// (pkg/fitpolicy + official_fit.policy): the predicates below are the retired
+// compiled-in era's reference implementation, kept only so
+// fitpolicy_equivalence_test.go can prove the shipped document reproduces them.
+// Requests the live policy has no opinion about keep ordinary aggregator
+// routing regardless of sampling parameters. Failure to read the body leaves
+// the pin unset, matching the unpinned default.
 func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if c == nil || c.Request == nil || c.Request.Body == nil {
 		return
@@ -753,11 +755,21 @@ func officialPinAllowsAffinity(pinActive bool, officialType int, preferredType i
 // the one shape that may route to cheaper channels. Malformed thinking values
 // classify as thinking-expected — the relay's official validation 400s them
 // locally before any upstream call, so over-pinning costs nothing.
+//
+// Contentless turns (2026-10-19, live-probed) are a second class with no
+// faithful aggregator behavior: the official V4 endpoint answers an
+// empty-text message body with 200, while every backend in the pool replied
+// with a provider error. That difference cannot be normalized without
+// fabricating a success, so the class pins to the official fleet. Tool-call
+// chains are not contentless (see messagesHaveNoRenderableContent).
 func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 	if req.LogProbs != nil && *req.LogProbs {
 		return true
 	}
 	if messagesContainImagePart(req.Messages) {
+		return true
+	}
+	if messagesHaveNoRenderableContent(req.Messages) {
 		return true
 	}
 	return !officialFitThinkingDisabled(req)
@@ -889,6 +901,34 @@ func messagesContainImagePart(messages []dto.Message) bool {
 		}
 	}
 	return false
+}
+
+
+// messagesHaveNoRenderableContent reports whether every message is a bare role
+// turn: empty or absent text, no media part and no tool call chain. It mirrors
+// fitpolicy.RequestView.EmptyContent — the equivalence test keeps the two in
+// lockstep, so the compiled policy and this reference predicate always agree on
+// the contentless-turn class.
+func messagesHaveNoRenderableContent(messages []dto.Message) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	for i := range messages {
+		message := &messages[i]
+		if trimmed := bytes.TrimSpace(message.ToolCalls); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+			return false
+		}
+		if strings.TrimSpace(message.StringContent()) != "" {
+			return false
+		}
+		for _, part := range message.ParseContent() {
+			if !strings.EqualFold(strings.TrimSpace(part.Type), "text") ||
+				strings.TrimSpace(part.Text) != "" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // getModelFromRequest 从请求中读取模型信息

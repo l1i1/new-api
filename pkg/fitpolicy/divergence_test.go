@@ -69,7 +69,9 @@ func TestDefaultPolicyDecidesLikeTheShippedPredicates(t *testing.T) {
 	}
 	thinkingOn := []byte(`{"type":"enabled"}`)
 	thinkingOff := []byte(`{"type":"disabled"}`)
-	userOnly := []dto.Message{{Role: "user"}}
+	// A normal turn carries text: the contentless-turn class is a separate
+	// fixture below, and an empty message is exactly that class.
+	userOnly := []dto.Message{{Role: "user", Content: "hi"}}
 
 	cases := []struct {
 		name  string
@@ -84,6 +86,10 @@ func TestDefaultPolicyDecidesLikeTheShippedPredicates(t *testing.T) {
 		{
 			name: "ds thinking off does not pin", model: "deepseek-v4-flash", want: false,
 			view: RequestView{Model: "deepseek-v4-flash", Thinking: thinkingOff, Messages: userOnly},
+		},
+		{
+			name: "ds contentless turn pins despite thinking off", model: "deepseek-v4.1-flash-1017", want: true,
+			view: RequestView{Model: "deepseek-v4.1-flash-1017", Thinking: thinkingOff, Messages: []dto.Message{{Role: "user", Content: ""}}},
 		},
 		{
 			name: "k3 ordinary thinking stays on the priority channel", model: "kimi-k3", want: false,
@@ -187,7 +193,9 @@ func TestDivergenceFromBuiltinNamesWhatMoved(t *testing.T) {
 			continue
 		}
 		rules := reordered.Families[i].Rules
-		reordered.Families[i].Rules = []Rule{rules[1], rules[0], rules[2]}
+		swapped := append([]Rule(nil), rules...)
+		swapped[0], swapped[1] = swapped[1], swapped[0]
+		reordered.Families[i].Rules = swapped
 	}
 	if diff := DivergenceFromBuiltin(reordered); !strings.Contains(diff, "family deepseek-v4: rule order changed") {
 		t.Fatalf("a reordered rule list must be reported as such, got %q", diff)

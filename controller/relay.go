@@ -146,6 +146,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			originalModel := strings.ToLower(strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyOriginalModel)))
 			fitErrors := relayFormat == types.RelayFormatOpenAI && officialFitErrorsEnabled(c, originalModel)
 			wireShape := officialfit.WireShapeOf(originalModel)
+			// An official-fit user's remote-image request rejected by an
+			// aggregation backend carries that backend's own provider wording
+			// (a 502 "Model provider request failed", a JSON business error
+			// asking the caller to replace the image, a generic 400). The
+			// official endpoint would have answered the official
+			// download-failure text, so normalize the message and status here.
+			// The helper refuses account-level verdicts and non-DeepSeek-V4
+			// surfaces; see FitDeepSeekV4ImageDownloadError.
+			if fitErrors && officialfit.FamilyOf(originalModel) == officialfit.FamilyDeepSeekV4 {
+				if officialMessage, normalized := helper.FitDeepSeekV4ImageDownloadError(c, newAPIError.StatusCode, filteredMessage); normalized {
+					newAPIError = types.WithOpenAIError(types.OpenAIError{
+						Message: officialMessage,
+						Type:    "invalid_request_error",
+					}, http.StatusBadRequest)
+					filteredMessage = officialMessage
+				}
+			}
 			// Zhipu GLM validation errors use their own wire shape: the error
 			// object carries {code: "1210"/"1214", message} and
 			// Content-Type application/json; charset=UTF-8.

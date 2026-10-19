@@ -48,7 +48,10 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example/a.png"}},
 		},
 	}
-	userOnly := []dto.Message{{Role: "user"}}
+	// A normal request carries text on purpose: the contentless-turn fixtures
+	// below are explicit, so this shared fixture keeps meaning "an ordinary
+	// user turn" for every family.
+	userOnly := []dto.Message{{Role: "user", Content: "hi"}}
 	thinkingOn := json.RawMessage(`{"type":"enabled"}`)
 	thinkingOff := json.RawMessage(`{"type":"disabled"}`)
 
@@ -160,6 +163,24 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 		{
 			name: "ds dotted model id pins", family: "deepseek-v4", want: true,
 			req: v4OfficialPinRequest{Model: "deepseek-v4.1-flash", THINKING: thinkingOn, Messages: userOnly},
+		},
+		{
+			name: "ds contentless turn pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4.1-flash-1017", THINKING: thinkingOff, Messages: []dto.Message{{Role: "user", Content: ""}}},
+		},
+		{
+			name: "ds whitespace-only text parts pin", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Messages: []dto.Message{
+				{Role: "system", Content: ""},
+				{Role: "user", Content: []any{map[string]any{"type": "text", "text": "  "}}},
+			}},
+		},
+		{
+			name: "ds tool chain is not contentless", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Messages: []dto.Message{
+				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]`)},
+				{Role: "tool", ToolCallId: "call_1"},
+			}},
 		},
 	}
 

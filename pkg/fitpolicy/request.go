@@ -99,6 +99,41 @@ func (v RequestView) HasImagePart() bool {
 	return false
 }
 
+
+// EmptyContent reports whether the request carries no renderable content at
+// all: every message is a bare role turn with empty or absent text, no media
+// part and no tool call chain.
+//
+// DeepSeek V4's official endpoint accepts such a body with 200 (live-probed
+// 2026-10-19: {messages:[{role:"user",content:""}],max_completion_tokens:256}
+// → 200), while every aggregation backend in the pool answered it with its own
+// provider error (ch86 400 "Model provider request failed"). Fabricating a 200
+// from an upstream 400 is not acceptable, so the request class is pinned to the
+// official fleet instead. Messages carrying tool_calls stay out of the class:
+// a tool chain has arguments and continuation state the upstream renders, and
+// pinning every tool turn would move ordinary traffic off the pool.
+func (v RequestView) EmptyContent() bool {
+	if len(v.Messages) == 0 {
+		return false
+	}
+	for i := range v.Messages {
+		message := &v.Messages[i]
+		if raw := trimJSON(message.ToolCalls); len(raw) > 0 {
+			return false
+		}
+		if strings.TrimSpace(message.StringContent()) != "" {
+			return false
+		}
+		for _, part := range message.ParseContent() {
+			if !strings.EqualFold(strings.TrimSpace(part.Type), "text") ||
+				strings.TrimSpace(part.Text) != "" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // HistoryBeginsWithUserTurn mirrors historyBeginsWithUserTurn: the first
 // non-system message is a user turn. No messages at all counts as "begins with
 // user" so a request local validation will reject is not classified as a

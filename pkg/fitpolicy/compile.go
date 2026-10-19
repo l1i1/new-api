@@ -25,6 +25,7 @@ func (e *evalEnv) ThinkingDisabled() bool              { return e.View.ThinkingD
 func (e *evalEnv) ReasoningEffortIs(value string) bool { return e.View.ReasoningEffortIs(value) }
 func (e *evalEnv) LogprobsRequested() bool             { return e.View.LogprobsRequested() }
 func (e *evalEnv) HasImagePart() bool                  { return e.View.HasImagePart() }
+func (e *evalEnv) EmptyContent() bool                  { return e.View.EmptyContent() }
 func (e *evalEnv) HistoryBeginsWithUserTurn() bool     { return e.View.HistoryBeginsWithUserTurn() }
 func (e *evalEnv) MessagesCarryDynamicTools() bool     { return e.View.MessagesCarryDynamicTools() }
 func (e *evalEnv) ResponseFormatNotText() bool         { return e.View.ResponseFormatNotText() }
