@@ -798,3 +798,60 @@ func TestBaselineFlowsFromThePolicyIntoTheDecision(t *testing.T) {
 		t.Fatal("changing the baseline must change the policy hash")
 	}
 }
+
+// TestDecideContentlessTurnPinsToTheOfficialFleet covers the DS-063 class: the
+// official DeepSeek V4 endpoint accepts a body made only of contentless turns
+// (200, live-probed 2026-10-19), while every aggregation backend in the pool
+// answered it with a provider error. Fabricating a success would not be a fit,
+// so the policy declares the class and the narrowing falls back to the
+// official-behaviour channels — the same path an unsatisfiable mark takes.
+func TestDecideContentlessTurnPinsToTheOfficialFleet(t *testing.T) {
+	// DefaultPolicy is the live (non-shadow) document; shadow decisions never
+	// narrow, so the fallback can only be asserted against the live form.
+	snapshot, err := Compile(DefaultPolicy())
+	if err != nil {
+		t.Fatalf("default policy must compile: %v", err)
+	}
+	request := RequestView{
+		Model:    "deepseek-v4.1-flash-1017",
+		Thinking: json.RawMessage(`{"type":"disabled"}`),
+		Messages: []dto.Message{{Role: "user", Content: ""}},
+	}
+	requirement := snapshot.Decide("deepseek-v4", true, request)
+	if !requirement.HasOpinion() {
+		t.Fatal("a contentless turn must carry a requirement")
+	}
+	found := false
+	for _, mark := range requirement.Marks {
+		if mark == BehaviorEmptyContentAccepted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("marks = %v, want %q", requirement.Marks, BehaviorEmptyContentAccepted)
+	}
+	// The class must be pinned by the rule the release ships, not by an
+	// incidental overlap with another rule.
+	ruleMatched := false
+	for _, rule := range requirement.Rules {
+		if rule == "ds-empty-content" {
+			ruleMatched = true
+		}
+	}
+	if !ruleMatched {
+		t.Fatalf("rules = %v, want ds-empty-content", requirement.Rules)
+	}
+
+	// Candidates are the official fleet plus two aggregator channels.
+	narrowing := requirement.Narrow(
+		[]int{84, 86, 88},
+		func(channel int) bool { return channel == 84 },
+		func(int) bool { return false },
+	)
+	if !narrowing.Applied || narrowing.PermittedByMarks {
+		t.Fatalf("narrowing = %+v, want an official fallback driven by unsatisfied marks", narrowing)
+	}
+	if len(narrowing.Channels) != 1 || narrowing.Channels[0] != 84 {
+		t.Fatalf("narrowed channels = %v, want [84]", narrowing.Channels)
+	}
+}

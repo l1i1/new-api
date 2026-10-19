@@ -628,3 +628,15 @@ func narrow(candidates, fit) []Channel:
 - **观测**：`fitpolicy narrow` 日志新增 `fallback_to_priority=%t`；measured 族空池仍记 `measured admission kept no candidate` 告警（回退不消除测量故障本身）。
 - **回滚**：per-family 把 `empty_match_policy` 改回 `legacy_hard_pin_then_existing_error`（epoch 生效，无需发版）；全量回滚 = 代码 revert。
 - **验收**：`pkg/fitpolicy/fitpolicy_test.go`（strict vs 默认）、`model/channel_fit_admission_test.go`、`model/fitpolicy_filter_test.go`、`model/fitpolicy_db_tier_test.go`（DB 路径）、`controller/relay_fitpolicy_reuse_test.go`（重试期回退）。
+
+## 20. 空正文轮次（`empty_content.accepted`，2026-10-19）
+
+**事实**（live probe 2026-10-19）：官方 DeepSeek V4 端点接受"只有角色、没有可渲染内容"的请求体（`{messages:[{role:"user",content:""}],max_completion_tokens:256}` → 200）；DeepSeek-S 池里的聚合后端全部以各自 provider 错误拒绝（ch86 400 "Model provider request failed" 等）。把上游 400 伪装成 200 不是拟合，所以该请求类**钉到官方行为渠道**。
+
+**实现**：
+
+- 表达式契约新增 predicate `EmptyContent()`（`pkg/fitpolicy/request.go`）：`len(messages)>0`，且每条消息都没有 `tool_calls` 链、`StringContent()` 为空、所有 content part 都是空文本。带 tool 链的消息**不算**空正文（避免把普通工具轮次钉死到官方）。
+- 内置策略 deepseek-v4 家族新增规则 `ds-empty-content`，要求行为 `empty_content.accepted`（`ClassVerdict`）。该行为**没有 probe**：fit-probe 会把它按"未测量"跳过，因此没有任何渠道持有该标记 → 两阶段收窄的第一阶段为空，按 `empty_match_policy=fallthrough_priority` 落到官方集合（官方渠道类型 43）。等未来有 probe 能测量该行为时，无需改 schema。
+- `middleware/distributor.go` 的参考 predicate `messagesHaveNoRenderableContent` 与表达式实现逐条对齐，由 `TestFitPolicyBuiltinMatchesShippedPredicates` 锁死（新增 3 条 fixture：空正文 pin、纯空白文本 pin、tool 链不 pin）。
+
+**上线顺序（硬约束）**：新 predicate 只存在于新版本二进制里。必须**先发版、等全部节点就绪**，再热更新 `official_fit.policy` 文档（加 behavior + rule）。旧节点编译新文档会失败（unknown function），写入口会拒绝，不会静默关层。

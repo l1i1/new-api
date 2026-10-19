@@ -46,11 +46,13 @@ func BuiltinPolicy() Policy {
 					{ID: "ds-logprobs", When: "LogprobsRequested()", Require: []string{BehaviorLogprobsDualPath}},
 					{ID: "ds-image-part", When: "HasImagePart()", Require: []string{BehaviorImageParts}},
 					{ID: "ds-thinking-expected", When: "!ThinkingDisabled()", Require: []string{BehaviorThinkingCounting}},
+					{ID: "ds-empty-content", When: "EmptyContent()", Require: []string{BehaviorEmptyContentAccepted}},
 				},
 				Behaviors: map[string]Behavior{
-					BehaviorLogprobsDualPath: {Class: ClassVerdict},
-					BehaviorImageParts:       {Class: ClassVerdict},
-					BehaviorThinkingCounting: {Class: ClassVerdict},
+					BehaviorLogprobsDualPath:       {Class: ClassVerdict},
+					BehaviorImageParts:             {Class: ClassVerdict},
+					BehaviorThinkingCounting:       {Class: ClassVerdict},
+					BehaviorEmptyContentAccepted:   {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
 				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
@@ -139,4 +141,12 @@ const (
 	BehaviorLogprobsDualPath      = "logprobs.dual_path"
 	BehaviorImageParts            = "image.parts"
 	BehaviorFamilyWhole           = "family.whole"
+	// BehaviourEmptyContentAccepted marks the DeepSeek V4 contentless-turn
+	// contract: the official endpoint answers such a body with 200, while every
+	// aggregation backend rejects it with a provider error (live-probed
+	// 2026-10-19). No probe measures it yet, so no channel carries this mark —
+	// the rule therefore always falls back to the official-behaviour set. It
+	// exists as a declared requirement (instead of a hard-coded pin) so a future
+	// probe can start measuring the class without another policy schema change.
+	BehaviorEmptyContentAccepted = "empty_content.accepted"
 )
