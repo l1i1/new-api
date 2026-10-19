@@ -225,6 +225,21 @@ gp="$(other_port "$sp")" || exit 3
 # ---- phase: abort ----------------------------------------------------------
 if [ "$PHASE" = abort ]; then
   blue="$(container_on_port "$sp")"
+  # The commit flips nginx and the marker BEFORE its quiet window, and renames
+  # green only at the end. If we are aborted inside that window the serving
+  # port already carries $GREEN; removing it (the pre-commit branch below)
+  # leaves :80 pointing at a dead port, which is exactly what happened on
+  # 2026-10-19. Finalize it instead: the commit had effectively landed.
+  if [ -n "$blue" ] && [ "$blue" = "$GREEN" ]; then
+    write_serving_marker "$sp"
+    if [ "$blue" != "$CONTAINER" ]; then
+      docker rename "$blue" "$CONTAINER" >/dev/null 2>&1 \
+        || err "WARN: could not rename $blue to $CONTAINER"
+    fi
+    log "abort finalized the commit that had already flipped: green serving on :$sp"
+    printf 'SERVING_PORT=%s\n' "$sp"
+    exit 0
+  fi
   if [ -n "$blue" ]; then
     # Pre-commit (or commit failed before blue was retired): blue serves.
     ecs_nginx_point_at "$sp" "$gp" || err "WARN: :80 upstream restore to :$sp failed; check $ECS_NGINX_CONF"

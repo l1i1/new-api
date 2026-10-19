@@ -355,6 +355,13 @@ remote_cmd_on() {
     -o ConnectTimeout=15
     -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=yes
+    # The master commit deliberately stays silent for MASTER_V1_QUIET_SECONDS
+    # (765s by default). A silent session is the one middleboxes and host
+    # firewalls reap first: the 2026-10-19 .58 attempt was reset at 300s of
+    # silence, mid-commit. Keepalives make the session look alive without
+    # touching the drain budget.
+    -o ServerAliveInterval=30
+    -o ServerAliveCountMax=10
   )
   if [[ -n "$known" ]]; then
     ssh_args+=( -o "UserKnownHostsFile=$known" )
