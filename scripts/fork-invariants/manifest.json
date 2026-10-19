@@ -3532,6 +3532,55 @@
           ]
         }
       ]
+    },
+    {
+      "id": "master-blue-green-transition-backup-1",
+      "title": "master 蓝绿：过渡期 nginx backup（primary=green，backup=blue），abort 清理 marker 行",
+      "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+      "files": [
+        "deployment/tokeness-cn/lib/master-nginx-upstream.sh",
+        "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+        "deployment/tokeness-cn/deploy.sh",
+        "deployment/tokeness-cn/tests/master-nginx-upstream-test.sh"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/lib/master-nginx-upstream.sh",
+          "name": "master_nginx_rewrite_file"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+          "name": "ecs_nginx_flip_with_backup"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+          "name": "ecs_nginx_apply"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/deploy.sh",
+          "name": "master_bootstrap_stdin"
+        },
+        {
+          "kind": "symbol",
+          "file": "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+          "name": "blue-green-transition-backup"
+        }
+      ],
+      "tests": [
+        {
+          "file": "deployment/tokeness-cn/tests/master-nginx-upstream-test.sh",
+          "names": [
+            "flip: transition backup points at blue 3000",
+            "settle: transition backup removed",
+            "unknown port: rewrite refused",
+            "master-nginx-upstream-test: PASS"
+          ]
+        }
+      ]
     }
   ]
 }

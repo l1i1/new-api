@@ -15,6 +15,13 @@ set -Eeuo pipefail
 # blue). The panel never sees a dead primary: the switch is an nginx upstream
 # port change against an already-healthy container, not a container restart.
 #
+# A single nginx primary still leaves one hole: after the switch the
+# still-alive blue is no longer in the config, so a green crash inside the
+# quiet window leaves :80 with nothing to fall back to (2026-10-19: an abort
+# removed the promoted green and the panel answered 30 502s). The transition
+# therefore lists blue as an nginx `backup` server until it is retired; nginx
+# consults backup servers only after every primary has failed.
+#
 # Port ping-pong: the serving port alternates 3000 <-> 3001 per release. The
 # source of truth for "which port serves" on this host is $SERVING_PORT_FILE
 # (absent = 3000, the pre-blue-green bootstrap value). deploy.sh pins the same
@@ -46,8 +53,9 @@ set -Eeuo pipefail
 #   start   create/adopt green on the free port, pull, readiness-gate it.
 #           Blue is NEVER touched. Prints SERVING_PORT=<green> and
 #           PREVIOUS_PORT=<blue> as the last two stdout lines.
-#   commit  point this host's marker + its nginx :80 upstream at green, give
-#           blue a short quiet window, stop+remove blue, rename green to the
+#   commit  point this host's marker + its nginx :80 upstream at green, keep
+#           blue listed as an nginx `backup` server, give blue a short quiet
+#           window, drop that backup, stop+remove blue, rename green to the
 #           canonical name. Prints SERVING_PORT=<green>.
 #   abort   reconcile after a failed start/gate/pin/commit: if blue is still
 #           alive, restore the :80 upstream to blue (when flipped) and remove
@@ -122,6 +130,17 @@ err() { printf 'bootstrap-master-ecs: %s\n' "$*" >&2; }
 
 command -v docker >/dev/null 2>&1 || { err "docker not found"; exit 3; }
 
+# The nginx rewrite helper lives in lib/master-nginx-upstream.sh. deploy.sh
+# prepends that file to this script on stdin because only one stream reaches
+# the ECS; a direct run from a checkout sources the sibling file instead.
+if ! declare -F master_nginx_rewrite_file >/dev/null 2>&1; then
+  _bs_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+  if [ -n "$_bs_dir" ] && [ -r "$_bs_dir/lib/master-nginx-upstream.sh" ]; then
+    . "$_bs_dir/lib/master-nginx-upstream.sh"
+  fi
+  unset _bs_dir
+fi
+
 serving_port() { # -> the port currently serving (marker wins, else PORT_A)
   local p=""
   if [ -r "$SERVING_PORT_FILE" ]; then
@@ -169,10 +188,12 @@ write_serving_marker() { # <port> - atomic (tmp + rename): ml-sync/deploy never 
   mv -f -- "$tmp" "$SERVING_PORT_FILE"
 }
 
-# ecs_nginx_point_at <port> <old_port> - move this host's :80 last-resort
-# upstream to the given master port. Verified (nginx -t + reload + Host-pinned
-# probe) and reverted on failure, exactly like ml-sync treats the lightweight
-# hosts.
+# ecs_nginx_apply <target_port> <from_port> [<add_backup_port>] - move this
+# host's :80 panel/last-resort upstream to the given master port. Verified
+# (nginx -t + reload + Host-pinned probe) and reverted on failure, exactly like
+# ml-sync treats the lightweight hosts. With <add_backup_port> the old port is
+# kept as an nginx `backup` server, so the retired-but-alive blue can still
+# answer a request if green dies inside the quiet window.
 #
 # Two traps this function exists to avoid (both hit on 2026-09-30's first
 # rehearsal):
@@ -184,28 +205,25 @@ write_serving_marker() { # <port> - atomic (tmp + rename): ml-sync/deploy never 
 #      the LINK, not the file - a "backup" that changes whenever the live file
 #      does. So: resolve the target once, edit the target, back up a regular
 #      copy of it.
-ecs_nginx_point_at() {
-  local port="$1" old_port="$2" bak target
+ecs_nginx_apply() {
+  local port="$1" old_port="$2" add_backup="${3:-}" bak target
   target="$(readlink -f "$ECS_NGINX_CONF" 2>/dev/null || printf '%s' "$ECS_NGINX_CONF")"
   [ -f "$target" ] || { err "ECS nginx conf not found (resolved: $target)"; return 1; }
-  if ! grep -q "$SERVE_IP:$old_port" "$target"; then
-    if grep -q "$SERVE_IP:$port" "$target"; then
-      log "ECS nginx already points at :$port (idempotent)"
-      return 0
-    fi
-    err "ECS nginx conf references neither :$old_port nor :$port; refusing to guess"
+  if ! declare -F master_nginx_rewrite_file >/dev/null 2>&1; then
+    err "nginx rewrite helper missing (deploy.sh prepends lib/master-nginx-upstream.sh; direct runs need the sibling lib)"
     return 1
   fi
   install -d -m 0700 "$ECS_NGINX_BAK_DIR"
   bak="$ECS_NGINX_BAK_DIR/$(basename "$target").$(date +%s)"
   cp -a "$target" "$bak" || { err "could not back up $target"; return 1; }
-  # Only master pointers are rewritten (anchored to the serving address); a
-  # comment mentioning the port is cosmetic and harmless.
-  sed -i "s/${SERVE_IP//./\\.}:${old_port}\b/${SERVE_IP}:${port}/g" "$target"
-  if grep -q "$SERVE_IP:$old_port" "$target"; then
-    err "port substitution had no effect on $target; restoring from $bak"
+  if ! master_nginx_rewrite_file "$target" "$SERVE_IP" "$port" "$old_port" "$add_backup"; then
+    err "could not rewrite the :80 upstream in $target; restoring $bak"
     cp -a "$bak" "$target"
     return 1
+  fi
+  if cmp -s "$bak" "$target"; then
+    log "ECS nginx already points at :$port (idempotent)"
+    return 0
   fi
   if ! nginx -t >/dev/null 2>&1; then
     err "nginx -t failed after :80 upstream flip; restoring $bak"
@@ -220,8 +238,20 @@ ecs_nginx_point_at() {
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     return 1
   fi
-  log "ECS nginx :80 last-resort now upstreams $SERVE_IP:$port (probe 200 via :80; backup $bak)"
+  if [ -n "$add_backup" ]; then
+    log "ECS nginx :80 panel upstream: primary $SERVE_IP:$port, backup $SERVE_IP:$add_backup (probe 200; backup $bak)"
+  else
+    log "ECS nginx :80 last-resort now upstreams $SERVE_IP:$port (probe 200 via :80; backup $bak)"
+  fi
 }
+
+# ecs_nginx_point_at <port> <old_port> - single-target rewrite. Also removes any
+# transition-backup line left by a flip, which is what abort/settle need.
+ecs_nginx_point_at() { ecs_nginx_apply "$1" "$2"; }
+
+# ecs_nginx_flip_with_backup <new_port> <old_port> - flip the panel to green and
+# keep blue as the nginx backup for the quiet window.
+ecs_nginx_flip_with_backup() { ecs_nginx_apply "$1" "$2" "$2"; }
 
 # ---- phase: probe ----------------------------------------------------------
 if [ "$PHASE" = probe ]; then
@@ -265,6 +295,8 @@ if [ "$PHASE" = abort ]; then
       docker rename "$blue" "$CONTAINER" >/dev/null 2>&1 \
         || err "WARN: could not rename $blue to $CONTAINER"
     fi
+    ecs_nginx_point_at "$sp" "$gp" \
+      || err "WARN: could not drop the :$gp transition backup; check $ECS_NGINX_CONF"
     log "abort finalized the commit that had already flipped: green serving on :$sp"
     printf 'SERVING_PORT=%s\n' "$sp"
     exit 0
@@ -320,9 +352,9 @@ if [ "$PHASE" = commit ]; then
     err "commit gate: green on :$gp is not ready; refusing to retire blue"
     exit 5
   fi
-  ecs_nginx_point_at "$gp" "$sp" || exit 3
+  ecs_nginx_flip_with_backup "$gp" "$sp" || exit 3
   write_serving_marker "$gp"
-  log "panel is on green (:$gp); giving blue ${QUIET_SECONDS}s to finish in-flight work"
+  log "panel is on green (:$gp); blue (:$sp) stays an nginx backup while it finishes in-flight work (${QUIET_SECONDS}s)"
   # Print progress every <=30s: a silent 765s session is what middleboxes reap
   # first (2026-10-19 the commit was reset after 300s of silence).
   slept=0
@@ -333,6 +365,11 @@ if [ "$PHASE" = commit ]; then
     slept=$(( slept + chunk ))
     log "draining blue: ${slept}/${QUIET_SECONDS}s"
   done
+  # The quiet window is over, so no new connection should reach blue any more:
+  # drop it from nginx BEFORE stopping it (a backup entry pointing at a dead
+  # container would only add a misleading fallback target).
+  ecs_nginx_point_at "$gp" "$sp" \
+    || err "WARN: could not drop the :$sp transition backup; check $ECS_NGINX_CONF"
   docker stop -t "$STOP_TIMEOUT" "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   if [ "$green" != "$CONTAINER" ]; then

@@ -36,6 +36,9 @@ readonly SWAS2_SSH_KNOWN_HOSTS="${SWAS2_SSH_KNOWN_HOSTS:-}"
 # credential (the CNB registry serves this image anonymously).
 # HOST_BOOTSTRAP_SCRIPT still overrides it for local experiments.
 readonly HOST_BOOTSTRAP_SCRIPT="${HOST_BOOTSTRAP_SCRIPT:-$SCRIPT_DIR/bootstrap-master-ecs.sh}"
+# The bootstrap is streamed to the ECS on stdin, so its nginx-upstream helper
+# library has to travel in the same stream (see master_bootstrap_stdin).
+readonly MASTER_NGINX_LIB="${MASTER_NGINX_LIB:-$SCRIPT_DIR/lib/master-nginx-upstream.sh}"
 readonly MASTER_HOST="${MASTER_HOST:-8.133.244.241}"
 readonly MASTER_SSH_KEY_PATH="${MASTER_SSH_KEY_PATH:-$SWAS_SSH_KEY_PATH}"
 # Inherits the SWAS known-hosts file on purpose: the pipeline materializes one
@@ -367,6 +370,17 @@ remote_cmd_on() {
     ssh_args+=( -o "UserKnownHostsFile=$known" )
   fi
   ssh "${ssh_args[@]}" "root@$host" -- bash -s -- "$@"
+}
+
+# master_bootstrap_stdin - the bootstrap script preceded by its nginx-upstream
+# helper library. remote_cmd_on hands the remote bash a single stream, so the
+# library is prepended here instead of being sourced on the host. Keeping it in
+# its own file lets the deploy tests exercise the rewrite without docker/nginx.
+master_bootstrap_stdin() {
+  if [[ -r "$MASTER_NGINX_LIB" ]]; then
+    cat "$MASTER_NGINX_LIB"
+  fi
+  cat "$HOST_BOOTSTRAP_SCRIPT"
 }
 
 remote_cmd() {
@@ -1298,12 +1312,12 @@ sync_master_container() {
     return 1
   fi
   image_ref="$CNB_IMAGE_REPOSITORY@$digest"
-  [[ -r "$HOST_BOOTSTRAP_SCRIPT" ]] \
-    || die "master sync impossible: bootstrap script not readable at $HOST_BOOTSTRAP_SCRIPT"
+  [[ -r "$HOST_BOOTSTRAP_SCRIPT" && -r "$MASTER_NGINX_LIB" ]] \
+    || die "master sync impossible: bootstrap script or nginx lib not readable ($HOST_BOOTSTRAP_SCRIPT, $MASTER_NGINX_LIB)"
 
   log "blue-green master roll ($MASTER_HOST): starting green onto $image_ref"
   if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" start \
-      < "$HOST_BOOTSTRAP_SCRIPT")"; then
+      < <(master_bootstrap_stdin))"; then
     error "green master failed to start or pass readiness; the serving master was never touched"
     return 1
   fi
@@ -1354,7 +1368,7 @@ REMOTE_MASTER_VER
   # Green is reachable and correct; commit on the ECS: :80 last-resort follows,
   # blue drains briefly and is retired, green takes the canonical name.
   if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
-      < "$HOST_BOOTSTRAP_SCRIPT")"; then
+      < <(master_bootstrap_stdin))"; then
     error "blue-green commit failed; reconciling via abort"
     master_sync_abort "$image_ref" || true
     return 1
@@ -1368,7 +1382,7 @@ REMOTE_MASTER_VER
   # the bootstrap names the *serving* port's container "blue", so it is 1 both
   # before the commit and after it (there, the renamed green).
   if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" probe \
-      < "$HOST_BOOTSTRAP_SCRIPT" 2>/dev/null)"; then
+      < <(master_bootstrap_stdin) 2>/dev/null)"; then
     error "post-commit: could not probe the ECS serving state; reconciling via abort"
     master_sync_abort "$image_ref" || true
     return 1
@@ -1393,7 +1407,7 @@ REMOTE_MASTER_VER
 master_sync_abort() {
   local image_ref="$1" out probe_out serving blue_ok
   probe_out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" probe \
-      < "$HOST_BOOTSTRAP_SCRIPT" 2>/dev/null)" || {
+      < <(master_bootstrap_stdin) 2>/dev/null)" || {
     warn "abort: could not even probe $MASTER_HOST; leaving pins untouched (green was healthy when pinned)"
     return 1
   }
@@ -1415,7 +1429,7 @@ master_sync_abort() {
     fi
   fi
   out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" abort \
-      < "$HOST_BOOTSTRAP_SCRIPT" 2>&1)" || {
+      < <(master_bootstrap_stdin) 2>&1)" || {
     warn "abort phase failed on $MASTER_HOST; manual check required: $out"
     return 1
   }
