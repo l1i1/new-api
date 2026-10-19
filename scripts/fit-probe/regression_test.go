@@ -2490,7 +2490,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	accountingOnly := base
 	accountingOnly.CompletionTokens = 264
 	accountingOnly.ReasoningTokens = 213
-	verdict, strength, basis, _ := classify(spec, exp, nil, accountingOnly, "glm-5.3")
+	verdict, strength, basis, _ := classifyForFamily(spec, exp, nil, accountingOnly, "glm-5.3")
 	if verdict != verdictDivergence || strength != strengthStructural {
 		t.Fatalf("accounting without reasoning: verdict=%q strength=%q basis=%q, want divergence/structural", verdict, strength, basis)
 	}
@@ -2501,7 +2501,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	// Same accounting, but no tool call: the replay path never ran.
 	notExercised := accountingOnly
 	notExercised.HasToolCalls = false
-	verdict, _, basis, _ = classify(spec, exp, nil, notExercised, "glm-5.3")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, notExercised, "glm-5.3")
 	if verdict != verdictInconclusive || !strings.Contains(basis, "thinking-replay path was not exercised") {
 		t.Fatalf("no tool call: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
 	}
@@ -2511,7 +2511,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	replayable.CompletionTokens = 258
 	replayable.ReasoningTokens = 214
 	replayable.HasReasoningContent = true
-	if verdict, _, basis, _ = classify(spec, exp, nil, replayable, "glm-5.3"); verdict != verdictConsistent {
+	if verdict, _, basis, _ = classifyForFamily(spec, exp, nil, replayable, "glm-5.3"); verdict != verdictConsistent {
 		t.Fatalf("tool call with reasoning_content: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 
@@ -2520,7 +2520,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	deepseekExp := expectationFor("deepseek-v4", fitpolicy.BehaviorThinkingCounting)
 	accountingDeepseek := accountingOnly
 	accountingDeepseek.HasToolCalls = false
-	if verdict, _, basis, _ = classify(spec, deepseekExp, nil, accountingDeepseek, "deepseek-v4"); verdict != verdictConsistent {
+	if verdict, _, basis, _ = classifyForFamily(spec, deepseekExp, nil, accountingDeepseek, "deepseek-v4"); verdict != verdictConsistent {
 		t.Fatalf("deepseek accounting: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 }
@@ -2556,23 +2556,23 @@ func TestStopSequenceEvidenceIsTheOutput(t *testing.T) {
 		}
 	}
 
-	if verdict, _, basis, _ := classify(spec, exp, nil, answer("stop", 16, "1 2 3 ... 16"), "deepseek-v4"); verdict != verdictConsistent {
+	if verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 16, "1 2 3 ... 16"), "deepseek-v4"); verdict != verdictConsistent {
 		t.Fatalf("honoured stop: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 
-	verdict, _, basis, _ := classify(spec, exp, nil, answer("stop", 40, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 40, "1 2 3 ... 17 18 19"), "deepseek-v4")
 	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
 		t.Fatalf("leaked stop: verdict=%q basis=%q, want divergence naming the leak", verdict, basis)
 	}
 
 	// Leaked *and* cut at the cap: the truncation clause must not excuse it.
-	verdict, _, basis, _ = classify(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3 ... 17 18 19"), "deepseek-v4")
 	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
 		t.Fatalf("leaked stop at the cap: verdict=%q basis=%q, want divergence (not a truncation excuse)", verdict, basis)
 	}
 
 	// Never reached the sequence: nothing to say about `stop`.
-	verdict, _, basis, _ = classify(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3"), "deepseek-v4")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3"), "deepseek-v4")
 	if verdict != verdictInconclusive || !strings.Contains(basis, "did not exercise") {
 		t.Fatalf("stop never reached: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
 	}

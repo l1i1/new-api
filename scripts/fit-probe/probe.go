@@ -921,11 +921,15 @@ func (sig signature) looksTruncated(maxTokens int, evidenceIsGeneratedOutput boo
 // doc-derived expectation is known. In that mode a dimension whose only
 // discriminator is prompt_tokens can never be called consistent, because
 // equality of a token count cannot be observed without the reference count.
-func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel signature, family ...string) (verdict, string, string, string) {
-	familyName := ""
-	if len(family) > 0 {
-		familyName = family[0]
-	}
+// classify judges one response without a family context.
+func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel signature) (verdict, string, string, string) {
+	return classifyForFamily(spec, exp, baseline, channel, "")
+}
+
+// classifyForFamily judges one response against the expectation for a known
+// official family. The family selects the evidence rule (see
+// structuralEvidenceForFamily) and the generation budget the probe actually used.
+func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, channel signature, familyName string) (verdict, string, string, string) {
 	if channel.Status == 0 {
 		return verdictInconclusive, strengthAcceptance, "probe was not executed (transport error)", ""
 	}
@@ -1020,7 +1024,7 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 	// dimension whose only discriminator is prompt_tokens (kimi-k3
 	// usage.thinking_counting, spec.go:103), writing supported=false on every
 	// accepted probe.
-	evidenceKnown, evidencePresent := structuralEvidence(spec, channel, familyName)
+	evidenceKnown, evidencePresent := structuralEvidenceForFamily(spec, channel, familyName)
 	if strength == strengthStructural && evidenceKnown && evidencePresent {
 		return verdictConsistent, strengthStructural,
 			"channel produced the dimension's structural evidence; the expectation table marks the official endpoint as " + exp.Official, ""
@@ -1069,11 +1073,16 @@ func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel sign
 // behaviour, so neither presence nor absence may be treated as evidence: the
 // fail-closed answer for an unmodelled mark is "no verdict", never a written
 // mark.
-func structuralEvidence(spec ProbeSpec, channel signature, family ...string) (known, present bool) {
-	familyName := ""
-	if len(family) > 0 {
-		familyName = family[0]
-	}
+// structuralEvidence answers the spec's evidence question without a family
+// context. Family-specific measurement rules live in structuralEvidenceForFamily.
+func structuralEvidence(spec ProbeSpec, channel signature) (known, present bool) {
+	return structuralEvidenceForFamily(spec, channel, "")
+}
+
+// structuralEvidenceForFamily is structuralEvidence for a known official family.
+// The family matters where the mark's wording is stronger than the accounting
+// field: glm-5.3 promises reasoning the caller can replay, not just a count.
+func structuralEvidenceForFamily(spec ProbeSpec, channel signature, familyName string) (known, present bool) {
 	switch spec.Behavior {
 	case fitpolicy.BehaviorLogprobsDualPath:
 		return true, channel.HasLogprobs
