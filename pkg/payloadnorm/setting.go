@@ -1,15 +1,14 @@
 package payloadnorm
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync/atomic"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // OptionKey is the single option row that carries the whole setting document.
@@ -47,11 +46,14 @@ type Setting struct {
 }
 
 // Config mirrors the setting into the rewrite scope the pure Apply consumes.
+//
+// The allowlists are copied: Config is an external read boundary, and a caller that mutates
+// the returned slices must not be able to change the live scope.
 func (s Setting) Config() Config {
 	return Config{
 		Enabled:           s.Enabled,
-		TokenIDs:          s.TokenIDs,
-		ChannelIDs:        s.ChannelIDs,
+		TokenIDs:          cloneInts(s.TokenIDs),
+		ChannelIDs:        cloneInts(s.ChannelIDs),
 		MinUserChars:      s.MinUserChars,
 		FingerprintChars:  s.FingerprintChars,
 		FingerprintSHA256: s.FingerprintSHA256,
@@ -59,20 +61,32 @@ func (s Setting) Config() Config {
 	}
 }
 
+// clone returns a copy that shares no backing array with s.
+func (s Setting) clone() Setting {
+	s.TokenIDs = cloneInts(s.TokenIDs)
+	s.ChannelIDs = cloneInts(s.ChannelIDs)
+	return s
+}
+
+func cloneInts(values []int) []int {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]int, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
 // ParseSetting decodes and validates a setting document without installing it, so the write
 // path can reject a malformed scope before it reaches the database.
 //
-// Unknown fields are rejected: a misspelled field would otherwise be silently ignored and the
-// operator would be left with a document that does not mean what it says.
+// Decoding is strict (common.UnmarshalStrict): unknown fields and trailing data are rejected,
+// because a misspelled field would otherwise be silently ignored and the operator would be
+// left with a document that does not mean what it says.
 func ParseSetting(raw []byte) (Setting, error) {
 	var setting Setting
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&setting); err != nil {
+	if err := common.UnmarshalStrict(raw, &setting); err != nil {
 		return Setting{}, fmt.Errorf("payload normalize setting: %w", err)
-	}
-	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		return Setting{}, errors.New("payload normalize setting: trailing data after the document")
 	}
 	if err := setting.validate(); err != nil {
 		return Setting{}, err
@@ -127,16 +141,22 @@ var current atomic.Pointer[Setting]
 
 // Current returns the installed document. Never nil after the first install; the zero value
 // (disabled) governs an unconfigured process and an unparseable document alike.
+//
+// The returned value owns its slices: mutating them cannot reach the snapshot.
 func Current() Setting {
 	if snapshot := current.Load(); snapshot != nil {
-		return *snapshot
+		return snapshot.clone()
 	}
 	return Setting{}
 }
 
-// CurrentConfig is the rewrite scope implied by the installed document.
+// CurrentConfig is the rewrite scope implied by the installed document. Each call returns a
+// value whose slices the caller owns.
 func CurrentConfig() Config {
-	return Current().Config()
+	if snapshot := current.Load(); snapshot != nil {
+		return snapshot.Config()
+	}
+	return Config{}
 }
 
 // ValidateSettingJSON checks a document before it is persisted. A blank value is the
@@ -168,9 +188,12 @@ func InstallSettingJSON(value string) error {
 	return nil
 }
 
-// InstallSetting publishes a document that was already parsed and validated.
+// InstallSetting publishes a document that was already parsed and validated. The published
+// snapshot owns its slices, so the caller keeping or mutating the argument cannot change the
+// live scope afterwards.
 func InstallSetting(setting Setting) {
-	current.Store(&setting)
+	snapshot := setting.clone()
+	current.Store(&snapshot)
 }
 
 // InstallDisabled takes the rewrite out of service.

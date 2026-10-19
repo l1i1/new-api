@@ -234,3 +234,33 @@ func TestHostJSONCodecConformance(t *testing.T) {
 		assert.JSONEq(t, gjson.GetBytes(raw, "messages.1.tool_calls").Raw, messages[1].Get("tool_calls").Raw)
 	})
 }
+
+// TestUnmarshalStrict covers the configuration-document decoder: it must reject exactly the
+// two inputs Unmarshal would accept and silently half-apply (an unknown field and trailing
+// data), while behaving like Unmarshal for a well-formed document.
+func TestUnmarshalStrict(t *testing.T) {
+	type scope struct {
+		Enabled bool `json:"enabled"`
+	}
+
+	t.Run("accepts one document", func(t *testing.T) {
+		var got scope
+		require.NoError(t, UnmarshalStrict([]byte(`{"enabled":true}`), &got))
+		assert.True(t, got.Enabled)
+	})
+
+	t.Run("rejects unknown fields", func(t *testing.T) {
+		var got scope
+		require.ErrorContains(t, UnmarshalStrict([]byte(`{"enabled":true,"extra":1}`), &got), "unknown field")
+	})
+
+	t.Run("rejects trailing data", func(t *testing.T) {
+		var got scope
+		require.ErrorContains(t, UnmarshalStrict([]byte(`{"enabled":true} {}`), &got), "trailing data")
+	})
+
+	t.Run("rejects an incomplete document", func(t *testing.T) {
+		var got scope
+		require.Error(t, UnmarshalStrict([]byte(`{"enabled":`), &got))
+	})
+}

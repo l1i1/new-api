@@ -1,7 +1,6 @@
 package payloadnorm
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -147,9 +146,9 @@ func TestApplyRejectsEveryToolSurface(t *testing.T) {
 	document := testDocument(200)
 	cfg := scopedConfig(document)
 
-	documentJSON, err := json.Marshal(document)
+	documentJSON, err := common.Marshal(document)
 	require.NoError(t, err)
-	systemJSON, err := json.Marshal(testSystemPrompt)
+	systemJSON, err := common.Marshal(testSystemPrompt)
 	require.NoError(t, err)
 
 	messagesOpen := `"messages":[{"role":"system","content":` + string(systemJSON) + `},{"role":"user","content":` + string(documentJSON)
@@ -198,11 +197,10 @@ func TestApplyRejectsEveryToolSurface(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var req dto.GeneralOpenAIRequest
-			require.NoError(t, json.Unmarshal([]byte(test.body), &req), "fixture must decode: %s", test.body)
+			require.NoError(t, common.Unmarshal([]byte(test.body), &req), "fixture must decode: %s", test.body)
 			require.Len(t, req.Messages, 2)
-			if _, decision := Apply(cfg, 88, 7, &req); decision.Apply {
-				t.Fatalf("request with %s must not be rewritten", test.name)
-			}
+			_, decision := Apply(cfg, 88, 7, &req)
+			require.False(t, decision.Apply, "request with %s must not be rewritten", test.name)
 		})
 	}
 }
@@ -441,9 +439,46 @@ func TestCurrentConfigMirrorsTheSetting(t *testing.T) {
 	require.Equal(t, 42, config.DocumentChars)
 }
 
+// TestInstallSettingCopiesTheAllowlists is the immutability contract on the write boundary:
+// the published snapshot must not share a backing array with the caller's value, otherwise a
+// later edit of the caller's slice would silently change the live scope.
+func TestInstallSettingCopiesTheAllowlists(t *testing.T) {
+	t.Cleanup(InstallDisabled)
+
+	tokens := []int{88}
+	channels := []int{7}
+	InstallSetting(Setting{Enabled: true, TokenIDs: tokens, ChannelIDs: channels})
+	tokens[0] = 99
+	channels[0] = 9
+
+	require.Equal(t, []int{88}, CurrentConfig().TokenIDs)
+	require.Equal(t, []int{7}, CurrentConfig().ChannelIDs)
+}
+
+// TestReadBoundariesReturnFreshSlices covers the other half of the same contract: a caller
+// that mutates what it read back must not change the live scope.
+func TestReadBoundariesReturnFreshSlices(t *testing.T) {
+	t.Cleanup(InstallDisabled)
+	require.NoError(t, InstallSettingJSON(`{"enabled":true,"token_ids":[88],"channel_ids":[7]}`))
+
+	current := Current()
+	current.TokenIDs[0] = 99
+	current.ChannelIDs[0] = 9
+
+	config := CurrentConfig()
+	config.TokenIDs[0] = 99
+	config.ChannelIDs[0] = 9
+
+	require.Equal(t, []int{88}, Current().TokenIDs)
+	require.Equal(t, []int{7}, Current().ChannelIDs)
+	require.Equal(t, []int{88}, CurrentConfig().TokenIDs)
+	require.Equal(t, []int{7}, CurrentConfig().ChannelIDs)
+}
+
 // TestInstallAndReadAreSafeForConcurrentUse is the regression guard for the reload race: the
 // request path loads one immutable snapshot while an admin update installs the next one. The
-// assertion that matters runs under `go test -race`; the loops stay small on purpose.
+// goroutines are released together so the loops genuinely overlap; the assertion that matters
+// runs under `go test -race`.
 func TestInstallAndReadAreSafeForConcurrentUse(t *testing.T) {
 	t.Cleanup(InstallDisabled)
 
@@ -454,10 +489,12 @@ func TestInstallAndReadAreSafeForConcurrentUse(t *testing.T) {
 		`{"enabled":true,"token_ids":[88]}`,
 	}
 
+	start := make(chan struct{})
 	installErrors := make(chan error, 1)
 	go func() {
+		<-start
 		var firstErr error
-		for i := 0; i < 50; i++ {
+		for i := 0; i < 100; i++ {
 			if err := InstallSettingJSON(documents[i%len(documents)]); err != nil && firstErr == nil {
 				firstErr = err
 			}
@@ -465,7 +502,8 @@ func TestInstallAndReadAreSafeForConcurrentUse(t *testing.T) {
 		installErrors <- firstErr
 	}()
 
-	for i := 0; i < 200; i++ {
+	close(start)
+	for i := 0; i < 500; i++ {
 		config := CurrentConfig()
 		// Touch what the request path touches; a torn read would surface under -race.
 		_ = len(config.TokenIDs)
