@@ -87,6 +87,12 @@ readonly CAPTURE_CONTAINER_DIR="${CAPTURE_CONTAINER_DIR:-/data/request-captures}
 PORT_A="${MASTER_PORT_A:-3000}"
 PORT_B="${MASTER_PORT_B:-3001}"
 SERVING_PORT_FILE="${MASTER_SERVING_PORT_FILE:-/etc/tokeness-cn/master-serving-port}"
+# A commit phase can outlive its SSH session (the 2026-10-19 outage:
+# the client was reset at 300s of silence, the remote commit kept
+# running and tore down blue after an abort had already removed
+# green). The pidfile lets a second phase see a live commit and
+# defer instead of racing it.
+COMMIT_LOCK="${MASTER_COMMIT_LOCK:-/run/tokeness-cn/master-commit.pid}"
 READY_TIMEOUT="${MASTER_READY_TIMEOUT:-180}"
 # The master is not a panel-only process: this host's nginx :80 carries the
 # /v1 LAST-RESORT upstream, and when the relay tier is degraded (or a rollout
@@ -122,6 +128,16 @@ serving_port() { # -> the port currently serving (marker wins, else PORT_A)
     p="$(tr -d '[:space:]' < "$SERVING_PORT_FILE" 2>/dev/null || true)"
   fi
   case "$p" in "$PORT_A"|"$PORT_B") printf '%s\n' "$p" ;; *) printf '%s\n' "$PORT_A" ;; esac
+}
+
+commit_in_flight() { # -> pid of a live commit phase, nothing otherwise
+  local pid
+  [ -r "$COMMIT_LOCK" ] || return 1
+  pid="$(tr -dc '0-9' < "$COMMIT_LOCK" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q ' commit' || return 1
+  printf '%s\n' "$pid"
 }
 
 other_port() { # <port> -> the other port of the pair
@@ -224,6 +240,13 @@ gp="$(other_port "$sp")" || exit 3
 
 # ---- phase: abort ----------------------------------------------------------
 if [ "$PHASE" = abort ]; then
+  if pid="$(commit_in_flight)"; then
+    log "abort deferred: a commit phase is still running (pid $pid); leaving serving state untouched"
+    printf 'SERVING_PORT=%s\n' "$sp"
+    printf 'COMMIT_IN_FLIGHT=1\n'
+    exit 0
+  fi
+  rm -f "$COMMIT_LOCK" 2>/dev/null || true
   blue="$(container_on_port "$sp")"
   # The commit flips nginx and the marker BEFORE its quiet window, and renames
   # green only at the end. If we are aborted inside that window the serving
@@ -233,6 +256,12 @@ if [ "$PHASE" = abort ]; then
   if [ -n "$blue" ] && [ "$blue" = "$GREEN" ]; then
     write_serving_marker "$sp"
     if [ "$blue" != "$CONTAINER" ]; then
+      if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+        # The retired blue still owns the canonical name; it is not serving
+        # (:80 points at green), so dropping it cannot break the panel.
+        docker rm -f "$CONTAINER" >/dev/null 2>&1 \
+          || err "WARN: could not remove retired $CONTAINER"
+      fi
       docker rename "$blue" "$CONTAINER" >/dev/null 2>&1 \
         || err "WARN: could not rename $blue to $CONTAINER"
     fi
@@ -267,6 +296,11 @@ if [ "$PHASE" = abort ]; then
 fi
 
 # ---- shared: capture the serving container's definition --------------------
+if pid="$(commit_in_flight)"; then
+  err "a master commit phase is still running (pid $pid); refusing to start another roll"
+  exit 6
+fi
+rm -f "$COMMIT_LOCK" 2>/dev/null || true
 serve_c="$(container_on_port "$sp")"
 [ -n "$serve_c" ] || { err "no running container publishes $SERVE_IP:$sp; refusing to invent a master"; exit 3; }
 docker inspect "$CONTAINER" >/dev/null 2>&1 || docker rename "$serve_c" "$CONTAINER" >/dev/null 2>&1 || true
@@ -276,6 +310,10 @@ old_image="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER")"
 
 # ---- phase: commit ---------------------------------------------------------
 if [ "$PHASE" = commit ]; then
+  install -d -m 0755 "$(dirname "$COMMIT_LOCK")" 2>/dev/null || true
+  printf '%s\n' "$$" > "$COMMIT_LOCK" 2>/dev/null \
+    || err "WARN: could not write $COMMIT_LOCK; an abort may race this commit"
+  trap 'rm -f "$COMMIT_LOCK"' EXIT
   green="$(container_on_port "$gp")"
   [ -n "$green" ] || { err "commit found no green container on :$gp"; exit 3; }
   if ! port_ready "$gp"; then
@@ -285,7 +323,16 @@ if [ "$PHASE" = commit ]; then
   ecs_nginx_point_at "$gp" "$sp" || exit 3
   write_serving_marker "$gp"
   log "panel is on green (:$gp); giving blue ${QUIET_SECONDS}s to finish in-flight work"
-  sleep "$QUIET_SECONDS"
+  # Print progress every <=30s: a silent 765s session is what middleboxes reap
+  # first (2026-10-19 the commit was reset after 300s of silence).
+  slept=0
+  while [ "$slept" -lt "$QUIET_SECONDS" ]; do
+    chunk=$(( QUIET_SECONDS - slept ))
+    [ "$chunk" -gt 30 ] && chunk=30
+    sleep "$chunk"
+    slept=$(( slept + chunk ))
+    log "draining blue: ${slept}/${QUIET_SECONDS}s"
+  done
   docker stop -t "$STOP_TIMEOUT" "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   if [ "$green" != "$CONTAINER" ]; then
