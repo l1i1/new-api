@@ -40,6 +40,7 @@ type RequestView struct {
 	Thinking        json.RawMessage
 	ToolChoice      json.RawMessage
 	ResponseFormat  json.RawMessage
+	Stop            json.RawMessage
 	Messages        []dto.Message
 }
 
@@ -98,7 +99,6 @@ func (v RequestView) HasImagePart() bool {
 	}
 	return false
 }
-
 
 // EmptyContent reports whether the request carries no renderable content at
 // all: every message is a bare role turn with empty or absent text, no media
@@ -195,6 +195,33 @@ func (v RequestView) ToolChoiceForcesOfficial() bool {
 	}
 	// Not a string: the named-function object (or a malformed value the local
 	// validator rejects). Both are forcing shapes.
+	return true
+}
+
+// StopRequested mirrors the DeepSeek V4 stop-sequence clause: the priority pool
+// ignores `stop` and emits the stop text and its tail (measured 2026-10-19), so
+// a request that asks for one pins. The wire form is a bare string or an array
+// of strings; an empty string, an empty array and null all mean "no stop". An
+// unparseable value counts as asking for one — local validation answers the
+// malformed shape before any upstream call, so over-selecting costs nothing.
+func (v RequestView) StopRequested() bool {
+	raw := trimJSON(v.Stop)
+	if len(raw) == 0 {
+		return false
+	}
+	var single string
+	if err := common.Unmarshal(raw, &single); err == nil {
+		return strings.TrimSpace(single) != ""
+	}
+	var list []string
+	if err := common.Unmarshal(raw, &list); err == nil {
+		for _, sequence := range list {
+			if strings.TrimSpace(sequence) != "" {
+				return true
+			}
+		}
+		return false
+	}
 	return true
 }
 

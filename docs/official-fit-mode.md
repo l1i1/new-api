@@ -70,14 +70,19 @@
     Moonshot 官方 24h 内 0 请求）。K3 的 Route 现为整族收窄；DeepSeek V4 仍按其形状谓词选择。
     **`route` 这个字段名是历史遗留**（早期语义确为「整族 pin 到官方渠道」），为免迁移已存
     用户配置而保留；界面标签用 **Fidelity routing / 保真路由**。
-    - DeepSeek V4：仅三类请求 pin——① `logprobs=true`（聚合器无法复刻官方双路
+    - DeepSeek V4：以下五类请求 pin——① `logprobs=true`（聚合器无法复刻官方双路
       logprobs）；② messages 含 `image_url` part（聚合器兼容性未验证；且 2026-09-06 实测
       官方已接受文本模型传图，旧 400 契约不复存在）；③ 思考输出类请求（缺省 / enabled /
       adaptive / effort≠none——实测聚合器池会**非确定性**丢失 `reasoning_content`，
-      CN 实测 DS-001/090/091 因此失败）。唯一不 pin 的思考形态是**显式关闭思考**
-      （`thinking.type=disabled` 或无 thinking 对象时 `reasoning_effort=none`）：官方返回
-      `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
-      "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
+      CN 实测 DS-001/090/091 因此失败）；④ **强制型 `tool_choice`**（`required`、`none`、
+      指定函数对象；`auto` 与缺省不 pin）；⑤ **显式 `stop` 序列**（字符串或非空数组）。
+      ④⑤ 来自 2026-10-19 买家指令遵循评测按生产日志逐条对账：优先聚合渠把
+      `required`/指定函数答成 `finish_reason=stop` 的纯文本、把 `none` 答成工具调用，
+      且忽略 `stop` 照常输出停止词及其后的尾巴。唯一不 pin 的形态是**显式关闭思考的
+      普通对话**（`thinking.type=disabled`，无 `stop`，`tool_choice` 为 auto/缺省）：
+      官方返回 `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形
+      thinking / tool_choice / stop 值按「需要 pin」分类（relay 校验会在进渠道前按官方
+      文案本地 400，多 pin 零成本）。
     - kimi-k3：**整族 pin 到官方行为渠道**（2026-10-02 收紧）。
       普通 `max`、关闭思考、流式、非流式及 tool continuation 全部只允许官方行为候选。原先的五类形状选择性规则无法覆盖 reseller 的 `reasoning_tokens`/`reasoning_content` 不一致，因此不再作为 K3 的路由边界。**候选耗尽时自 2026-10-19 起按可用性优先回退普通优先级池**，见下面的「官渠不可用时的可用性回退」。
     - GLM 5.3：**保持整族 pin**（尚无实测出来的选择性谓词）。

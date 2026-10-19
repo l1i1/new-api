@@ -134,6 +134,7 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled bool)
 		Thinking:        req.THINKING,
 		ToolChoice:      req.ToolChoice,
 		ResponseFormat:  req.ResponseFormat,
+		Stop:            req.Stop,
 		Messages:        req.Messages,
 	})
 	if !requirement.HasOpinion() {

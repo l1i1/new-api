@@ -18,8 +18,11 @@ package fitpolicy
 // equivalence test measures.
 //
 // Family-specific notes, all carried over from middleware/distributor.go:
-//   - DeepSeek V4 pins logprobs, image parts and thinking-output requests; the
-//     one class the pool serves faithfully is explicit thinking-off.
+//   - DeepSeek V4 pins logprobs, image parts, thinking-output requests and — as
+//     measured on 2026-10-19 (buyer instruction suite) — every shape the
+//     priority aggregator provably mis-serves: any forcing tool_choice value
+//     and any explicit stop sequence. The one class the pool still serves
+//     faithfully is plain explicit thinking-off chat.
 //   - kimi-k3 narrows per shape. The family moved to measured admission on
 //     2026-10-03: a channel qualifies by passing the five behaviour probes
 //     below, so a request is only pinned when its own shape is one the
@@ -47,12 +50,16 @@ func BuiltinPolicy() Policy {
 					{ID: "ds-image-part", When: "HasImagePart()", Require: []string{BehaviorImageParts}},
 					{ID: "ds-thinking-expected", When: "!ThinkingDisabled()", Require: []string{BehaviorThinkingCounting}},
 					{ID: "ds-empty-content", When: "EmptyContent()", Require: []string{BehaviorEmptyContentAccepted}},
+					{ID: "ds-tool-choice", When: "ToolChoiceForcesOfficial()", Require: []string{BehaviorToolsChoiceSemantics}},
+					{ID: "ds-stop", When: "StopRequested()", Require: []string{BehaviorStopSequences}},
 				},
 				Behaviors: map[string]Behavior{
-					BehaviorLogprobsDualPath:       {Class: ClassVerdict},
-					BehaviorImageParts:             {Class: ClassVerdict},
-					BehaviorThinkingCounting:       {Class: ClassVerdict},
-					BehaviorEmptyContentAccepted:   {Class: ClassVerdict},
+					BehaviorLogprobsDualPath:     {Class: ClassVerdict},
+					BehaviorImageParts:           {Class: ClassVerdict},
+					BehaviorThinkingCounting:     {Class: ClassVerdict},
+					BehaviorEmptyContentAccepted: {Class: ClassVerdict},
+					BehaviorToolsChoiceSemantics: {Class: ClassVerdict},
+					BehaviorStopSequences:        {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
 				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
@@ -140,6 +147,7 @@ const (
 	BehaviorToolsDynamicNames     = "tools.dynamic_names"
 	BehaviorLogprobsDualPath      = "logprobs.dual_path"
 	BehaviorImageParts            = "image.parts"
+	BehaviorStopSequences         = "stop.sequences"
 	BehaviorFamilyWhole           = "family.whole"
 	// BehaviourEmptyContentAccepted marks the DeepSeek V4 contentless-turn
 	// contract: the official endpoint answers such a body with 200, while every

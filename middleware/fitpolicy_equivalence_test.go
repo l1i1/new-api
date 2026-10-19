@@ -20,6 +20,7 @@ func toRequestView(req v4OfficialPinRequest) fitpolicy.RequestView {
 		Thinking:        req.THINKING,
 		ToolChoice:      req.ToolChoice,
 		ResponseFormat:  req.ResponseFormat,
+		Stop:            req.Stop,
 		Messages:        req.Messages,
 	}
 }
@@ -181,6 +182,42 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]`)},
 				{Role: "tool", ToolCallId: "call_1"},
 			}},
+		},
+		{
+			name: "ds stop string pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Stop: json.RawMessage(`"\u6a58\u5b50"`), Messages: userOnly},
+		},
+		{
+			name: "ds stop array pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Stop: json.RawMessage(`["a","b"]`), Messages: userOnly},
+		},
+		{
+			name: "ds empty stop does not pin", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Stop: json.RawMessage(`""`), Messages: userOnly},
+		},
+		{
+			name: "ds empty stop array does not pin", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Stop: json.RawMessage(`[]`), Messages: userOnly},
+		},
+		{
+			name: "ds null stop does not pin", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, Stop: json.RawMessage(`null`), Messages: userOnly},
+		},
+		{
+			name: "ds tool_choice none pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`"none"`), Messages: userOnly},
+		},
+		{
+			name: "ds tool_choice required pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`"required"`), Messages: userOnly},
+		},
+		{
+			name: "ds named-function tool_choice pins despite thinking off", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`{"type":"function","function":{"name":"f"}}`), Messages: userOnly},
+		},
+		{
+			name: "ds tool_choice auto does not pin", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`"auto"`), Messages: userOnly},
 		},
 	}
 

@@ -655,6 +655,9 @@ type v4OfficialPinRequest struct {
 	// only needs the type discriminator, and it must not reject a shape the
 	// relay's own validation answers with the official 400.
 	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	// Stop stays raw because the wire allows a bare string, an array of strings
+	// or null, and the pin predicate must see every form.
+	Stop json.RawMessage `json:"stop,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -750,13 +753,18 @@ func officialPinAllowsAffinity(pinActive bool, officialType int, preferredType i
 // the aggregator mix): aggregator pools nondeterministically drop
 // reasoning_content on thinking-output requests (the official default) and
 // never reproduce official dual-path logprobs; image parts have no verified
-// aggregator compatibility. Explicitly disabled thinking is the only class
-// the aggregator mix serves faithfully (official reasoning: null), so it is
-// the one shape that may route to cheaper channels. Malformed thinking values
-// classify as thinking-expected — the relay's official validation 400s them
-// locally before any upstream call, so over-pinning costs nothing.
+// aggregator compatibility. Two further divergence classes were measured on
+// 2026-10-19 (buyer instruction suite, seq "1017-test"): the priority
+// aggregator ignores `stop` and every forcing `tool_choice` value — it emits
+// the stop token and its tail, and answers `required`/named-function calls with
+// plain text while answering `none` with a tool call. Both shapes therefore pin.
+// Explicitly disabled thinking stays the class the aggregator mix serves
+// faithfully (official reasoning: null), so plain thinking-off chat may still
+// route to cheaper channels. Malformed thinking values classify as
+// thinking-expected — the relay's official validation 400s them locally before
+// any upstream call, so over-pinning costs nothing.
 //
-// Contentless turns (2026-10-19, live-probed) are a second class with no
+// Contentless turns (2026-10-19, live-probed) are another class with no
 // faithful aggregator behavior: the official V4 endpoint answers an
 // empty-text message body with 200, while every backend in the pool replied
 // with a provider error. That difference cannot be normalized without
@@ -772,7 +780,39 @@ func deepSeekV4RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 	if messagesHaveNoRenderableContent(req.Messages) {
 		return true
 	}
+	if toolChoiceNeedsOfficial(req.ToolChoice) {
+		return true
+	}
+	if stopSequenceRequested(req.Stop) {
+		return true
+	}
 	return !officialFitThinkingDisabled(req)
+}
+
+// stopSequenceRequested reports whether the request asks the upstream to stop at
+// a sequence. The field is a bare string or an array of strings on the wire;
+// an empty string, an empty array and null all mean "no stop". An unparseable
+// value counts as asking for one: local validation answers the malformed shape
+// before any upstream call, so over-selecting costs nothing.
+func stopSequenceRequested(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	var single string
+	if err := common.Unmarshal(trimmed, &single); err == nil {
+		return strings.TrimSpace(single) != ""
+	}
+	var list []string
+	if err := common.Unmarshal(trimmed, &list); err == nil {
+		for _, sequence := range list {
+			if strings.TrimSpace(sequence) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // kimiK3RequestNeedsOfficial is retained as the legacy equivalence hook for
@@ -784,11 +824,11 @@ func kimiK3RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 	return officialfit.FamilyOf(req.Model) == officialfit.FamilyKimiK3
 }
 
-// kimiK3ToolChoiceNeedsOfficial reports whether the tool_choice value obliges
-// the pool to behave in a way it does not reproduce. "auto" and an absent field
-// stay servable; "required", "none", the named-function object and any
-// unparseable value do not.
-func kimiK3ToolChoiceNeedsOfficial(raw json.RawMessage) bool {
+// toolChoiceNeedsOfficial reports whether the tool_choice value obliges the
+// upstream to behave in a way the priority pool does not reproduce. "auto" and
+// an absent field stay servable; "required", "none", the named-function object
+// and any unparseable value do not. Both selective families read it.
+func toolChoiceNeedsOfficial(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return false
@@ -800,6 +840,12 @@ func kimiK3ToolChoiceNeedsOfficial(raw json.RawMessage) bool {
 	// Not a string: the named-function object (or a malformed value the local
 	// validator rejects). Both are forcing shapes.
 	return true
+}
+
+// kimiK3ToolChoiceNeedsOfficial is the reference spelling used by the policy
+// package's documentation and the equivalence fixtures.
+func kimiK3ToolChoiceNeedsOfficial(raw json.RawMessage) bool {
+	return toolChoiceNeedsOfficial(raw)
 }
 
 // kimiK3ResponseFormatNeedsOfficial reports whether response_format asks for a
@@ -902,7 +948,6 @@ func messagesContainImagePart(messages []dto.Message) bool {
 	}
 	return false
 }
-
 
 // messagesHaveNoRenderableContent reports whether every message is a bare role
 // turn: empty or absent text, no media part and no tool call chain. It mirrors
