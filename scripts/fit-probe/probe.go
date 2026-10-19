@@ -116,6 +116,15 @@ const logprobsProbeMaxTokens = 8
 // cost of this one probe moves from 16 to 96 completion tokens and nothing else.
 const toolsChoiceSemanticsProbeMaxTokens = 96
 
+// glmThinkingCountingProbeMaxTokens is the generation budget of the glm-5.3
+// usage.thinking_counting probe. It is larger than the other thinking probes
+// because the glm branch asks for a tool call: a real call plus the reasoning
+// that must precede it costs 30-80 completion tokens (the measured range that
+// raised toolsChoiceSemanticsProbeMaxTokens to 96), so an 8-token budget would
+// cut the answer off before reasoning could appear and turn this probe's own
+// cap into a supported=false mark.
+const glmThinkingCountingProbeMaxTokens = 256
+
 // stopSequencesProbeMaxTokens must outlast the stop point: an upstream that
 // honours `stop` ends at the sequence (finish_reason=stop after a handful of
 // tokens), while one that ignores it runs to the cap and reports
@@ -195,18 +204,36 @@ var probeSpecs = map[string]ProbeSpec{
 		Behavior:  fitpolicy.BehaviorThinkingCounting,
 		Path:      chatPath,
 		MaxTokens: 8,
-		Fields:    []string{"thinking", "reasoning_effort", "reasoning", "usage"},
+		Fields:    []string{"thinking", "reasoning_effort", "reasoning", "usage", "tools", "tool_choice"},
 		Build: func(family, model string) map[string]any {
 			body := chatBody(model, []map[string]any{userMessage("hi")}, 8)
-			if family == "deepseek-v4" || family == "glm-5.3" {
-				// DeepSeek V4 requires counting for thinking-expected requests.
-				// glm-5.3 is the same shape: the official model always thinks and
-				// rejects thinking.type=disabled (400/1210), so the mark means
-				// "returns reasoning like the official endpoint", which must be
-				// probed with thinking ON. Added 2026-10-11 with the glm family
-				// policy extension; kimi-k3 keeps the thinking-OFF branch.
+			switch family {
+			case "glm-5.3":
+				// glm-5.3: the official model always thinks and rejects
+				// thinking.type=disabled (400/1210), so the mark means "returns
+				// reasoning like the official endpoint", which must be probed
+				// with thinking ON. Added 2026-10-11 with the glm family policy
+				// extension; kimi-k3 keeps the thinking-OFF branch.
+				//
+				// The probe must walk the tool-call path rather than a bare
+				// "hi". On 2026-10-20 ch78 reported reasoning_tokens=213 for
+				// "hi" but surfaced no reasoning_content at all as soon as a
+				// tool was offered — the exact shape the customer's
+				// thinking-replay test drives — so the cheap non-tool sample let
+				// an aggregating channel earn this mark and then win prio 160
+				// over the official channel. Asking for the call keeps the
+				// sample inside the workload the mark is about.
+				body = chatBody(model, []map[string]any{userMessage("Call the ping function.")}, glmThinkingCountingProbeMaxTokens)
 				body["thinking"] = map[string]any{"type": "enabled"}
-			} else {
+				body["tools"] = []map[string]any{functionTool("ping")}
+				// "required" is rejected by deepseek-v4 while thinking; on glm
+				// the forcing choice is a separate mark, so this probe stays at
+				// "auto" and only needs the model to be offered the tool.
+				body["tool_choice"] = "auto"
+			case "deepseek-v4":
+				// DeepSeek V4 requires counting for thinking-expected requests.
+				body["thinking"] = map[string]any{"type": "enabled"}
+			default:
 				// kimi-k3 requires it for thinking-disabled requests: the pool
 				// reports the thinking-on prompt count there.
 				body["thinking"] = map[string]any{"type": "disabled"}

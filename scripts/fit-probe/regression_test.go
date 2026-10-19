@@ -2418,3 +2418,56 @@ func TestR20DeepSeekProbesPinTheThinkingState(t *testing.T) {
 		}
 	})
 }
+
+// R30: the glm-5.3 usage.thinking_counting probe must walk the tool-call path.
+//
+// On 2026-10-20 the customer's thinking-replay test failed with "the first
+// streaming turn carried tool_calls but no reasoning_content", and the replay
+// showed why: through ch7 the same request produced 23 reasoning deltas, while
+// ch78 produced none. ch78 had nevertheless earned this mark, because the probe
+// sampled a bare "hi" — where ch78 does report reasoning_tokens=213 — and the
+// mark then let prio 160 take every glm request while the official channel sat
+// idle. A mark whose whole purpose is "reasoning appears the way the official
+// endpoint produces it" has to be sampled from the shape where that is claimed:
+// a tool is offered, so the answer is a tool call that must be preceded by
+// reasoning.
+func TestGlmThinkingCountingProbeExercisesTheToolPath(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorThinkingCounting]
+
+	body := spec.Build("glm-5.3", "glm-5.3-flash")
+	tools, _ := body["tools"].([]map[string]any)
+	if len(tools) != 1 {
+		t.Fatalf("glm-5.3 usage.thinking_counting offers %d tool(s), want 1: without a tool an aggregating channel that drops reasoning on tool calls keeps passing the mark (ch78 did, 2026-10-19)", len(tools))
+	}
+	if got, _ := body["tool_choice"].(string); got != "auto" {
+		t.Fatalf("glm-5.3 usage.thinking_counting tool_choice = %q, want %q: forcing the call is tools.choice_semantics' job, and deepseek-v4 rejects a forcing choice while thinking", got, "auto")
+	}
+	if got, ok := body["max_tokens"].(int); !ok || got != glmThinkingCountingProbeMaxTokens {
+		t.Fatalf("glm-5.3 usage.thinking_counting max_tokens = %v, want %d: a tool call plus its reasoning costs 30-80 tokens, so a smaller cap would hide the reasoning behind the probe's own cut (the 8-token arm of the original probe is exactly that artefact)", body["max_tokens"], glmThinkingCountingProbeMaxTokens)
+	}
+	if thinking, _ := body["thinking"].(map[string]any); thinking["type"] != "enabled" {
+		t.Fatalf("glm-5.3 usage.thinking_counting thinking.type = %v, want enabled: glm-5.3 always thinks and answers 400/1210 for disabled", thinking["type"])
+	}
+	if body["stream"] != false {
+		t.Fatalf("glm-5.3 usage.thinking_counting stream = %v, want false: the probe compares finished responses, and the streaming arm of the customer test is reproduced by the tool shape here", body["stream"])
+	}
+	if msgs, _ := body["messages"].([]map[string]any); len(msgs) != 1 {
+		t.Fatalf("glm-5.3 usage.thinking_counting sends %d message(s), want 1", len(msgs))
+	}
+
+	// The other families keep the shape their marks were measured with.
+	deepseek := spec.Build("deepseek-v4", "deepseek-v4-flash")
+	if deepseek["tools"] != nil {
+		t.Fatal("deepseek-v4 usage.thinking_counting gained tools; its mark was measured without them and the shape must not move")
+	}
+	if got, _ := deepseek["max_tokens"].(int); got != 8 {
+		t.Fatalf("deepseek-v4 usage.thinking_counting max_tokens = %v, want 8: only the glm branch needs the tool budget", deepseek["max_tokens"])
+	}
+	kimi := spec.Build("kimi-k3", "kimi-k3")
+	if kimi["tools"] != nil {
+		t.Fatal("kimi-k3 usage.thinking_counting gained tools; it probes the thinking-off prompt count")
+	}
+	if thinking, _ := kimi["thinking"].(map[string]any); thinking["type"] != "disabled" {
+		t.Fatalf("kimi-k3 usage.thinking_counting thinking.type = %v, want disabled", thinking["type"])
+	}
+}

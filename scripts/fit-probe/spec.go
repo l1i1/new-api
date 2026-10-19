@@ -229,6 +229,16 @@ var officialExpectations = []Expectation{
 	// tool_choice=required、支持 response_format=json_object。三条都只有结构类判据，
 	// 无需外部官方 key 即可判定；history.assistant_first / tools.dynamic_names 的判据
 	// 只有 prompt_tokens，必须配实测官方基线才能判定。
+	//
+	// 2026-10-20 修正 usage.thinking_counting 的采样形状：官方「始终思考」的承诺只在
+	// 工具调用这类工作负载上被检验，而旧探针发的是裸「hi」。裸「hi」上 ch78 会回
+	// usage.completion_tokens_details.reasoning_tokens=213（看着合规），但同一个
+	// channel 一旦被提供 tools 就完全不回 reasoning_content —— 客户 2026-10-20 的
+	// thinking-replay 用例正是这么失败的（同一条 stream+tools+thinking 请求：ch7 出
+	// 23 段 reasoning delta，ch78 出 0 段）。旧形状因此把这个标记假判成 supported，
+	// 之后 prio 160 的 ch78 接管了全部 glm 流量。现在 glm 分支用 tools +
+	// tool_choice=auto + 「Call the ping function.」采样，预算提到
+	// glmThinkingCountingProbeMaxTokens（工具调用连同推理要 30-80 token）。
 	{
 		Family:         "glm-5.3",
 		Behavior:       fitpolicy.BehaviorThinkingCounting,
@@ -239,6 +249,8 @@ var officialExpectations = []Expectation{
 			"official_fit.policy (live v6) rule glm-thinking requires usage.thinking_counting",
 			"docs/cdp/… 实测：官方 glm-5.3-flash 始终思考，thinking.type=disabled → 400 code 1210",
 			"workos/scratch/glm78-test2-think.json（ch7 reasoning_content 非空 12/12；ch78 0/12）",
+			"2026-10-20 客户 thinking-replay 实测：同一条 stream+tools+thinking 请求 ch7 出 23 段 reasoning delta、ch78 出 0 段",
+			"workos/scratch/fit-probe-ch78-toolpath.json（工具形状下 ch78 usage.thinking_counting divergence 3/3）与 fit-probe-ch7-toolpath.json（ch7 consistent 6/6）",
 		},
 	},
 	{
