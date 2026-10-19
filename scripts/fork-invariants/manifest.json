@@ -3566,7 +3566,7 @@
         },
         {
           "kind": "symbol",
-          "file": "deployment/tokeness-cn/bootstrap-master-ecs.sh",
+          "file": "deployment/tokeness-cn/lib/master-nginx-upstream.sh",
           "name": "blue-green-transition-backup"
         }
       ],
