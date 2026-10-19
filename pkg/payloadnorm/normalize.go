@@ -57,9 +57,10 @@ type Config struct {
 	// of the user message. An empty digest disables the fingerprint check.
 	FingerprintChars  int
 	FingerprintSHA256 string
-	// DocumentChars is where the stable block ends inside the user message, counted in characters. Zero (or a value
-	// outside the message) moves the whole user message and keeps the original system text
-	// as the user turn.
+	// DocumentChars is where the stable block ends inside the user message, counted in
+	// characters. Zero moves the whole user message and keeps the original system text as the
+	// user turn; a positive value must leave a non-empty moved block and a non-empty user
+	// tail, otherwise the rewrite is rejected rather than guessing what the operator meant.
 	DocumentChars int
 }
 
@@ -98,11 +99,16 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 	if !system.IsStringContent() || !user.IsStringContent() {
 		return reject("non-string content")
 	}
-	if len(req.Tools) > 0 || req.ToolChoice != nil || req.FunctionCall != nil {
+	// Every tool surface the OpenAI-compatible DTOs carry is checked, including the legacy
+	// functions/function_call fields and the message-level tools/tool_calls: a rewritten tool
+	// request can break the caller's contract even when the text itself looks harmless.
+	if len(req.Tools) > 0 || req.ToolChoice != nil || len(req.Functions) > 0 || len(req.FunctionCall) > 0 {
 		return reject("tool request")
 	}
-	if len(system.ToolCalls) > 0 || len(user.ToolCalls) > 0 || user.ToolCallId != "" {
-		return reject("tool message")
+	for _, message := range req.Messages {
+		if len(message.ToolCalls) > 0 || message.ToolCallId != "" || len(message.Tools) > 0 {
+			return reject("tool message")
+		}
 	}
 	systemText, _ := system.Content.(string)
 	userText, _ := user.Content.(string)
@@ -114,7 +120,12 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 	}
 
 	split := cfg.DocumentChars
-	if split <= 0 || split >= utf8.RuneCountInString(userText) {
+	if split < 0 {
+		// Only an explicit zero may choose the whole-message rewrite; a negative value is a
+		// configuration error and must not silently become the most aggressive mode.
+		return reject("negative document length")
+	}
+	if split == 0 {
 		// Whole-content mode: the entire user message becomes the system body and the
 		// original system text becomes the user turn. No knowledge of where the stable
 		// block ends is needed, which is what makes this mode usable for a first cut.
@@ -127,6 +138,12 @@ func Apply(cfg Config, tokenID, channelID int, req *dto.GeneralOpenAIRequest) (*
 		out.Messages[0].SetStringContent(joinSystem(systemText, userText))
 		out.Messages[1].SetStringContent(systemText)
 		return &out, Decision{Apply: true, Reason: "moved whole user message into system"}
+	}
+	if split >= utf8.RuneCountInString(userText) {
+		// A positive length that reaches the end of the message would leave an empty user
+		// turn and a "stable block" that is the whole message - i.e. the aggressive mode
+		// chosen by accident. Fail closed; the operator can write 0 to mean it on purpose.
+		return reject("document length covers the whole user message")
 	}
 
 	// Split mode: the configured prefix is the stable block, the remainder stays the user

@@ -13,6 +13,9 @@ import (
 	// tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
 	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	// tokeness-fitpolicy:end
+	// tokeness-payloadnorm:begin （上游 merge 后请保留；见 docs/payload-normalize-prototype.md）
+	"github.com/QuantumNous/new-api/pkg/payloadnorm"
+	// tokeness-payloadnorm:end
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -252,6 +255,12 @@ func loadOptionsFromDatabase() {
 		}
 	}()
 	// tokeness-fitpolicy:end
+	// tokeness-payloadnorm:begin （上游 merge 后请保留；见 docs/payload-normalize-prototype.md）
+	// Same reasoning as the fit-policy defer above: this function backs startup, the
+	// config-epoch reload and the periodic sync, so it is the one place that must reinstate
+	// the installed scope (and take it out of service if the row is gone or unreadable).
+	defer refreshPayloadNormalizeSnapshot()
+	// tokeness-payloadnorm:end
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
@@ -339,6 +348,13 @@ func validateOptionValue(key string, value string) error {
 		return ValidateFitPolicyOption(value)
 	}
 	// tokeness-fitpolicy:end
+	// tokeness-payloadnorm:begin （上游 merge 后请保留；见 docs/payload-normalize-prototype.md）
+	// A scope that cannot be parsed is rejected here, before the database commit, so a
+	// malformed document never reaches the fleet's reload path.
+	if key == payloadnorm.OptionKey {
+		return ValidatePayloadNormalizeOption(value)
+	}
+	// tokeness-payloadnorm:end
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	}
@@ -389,6 +405,13 @@ func UpdateOption(key string, value string) error {
 		}
 	}
 	// tokeness-fitpolicy:end
+	// tokeness-payloadnorm:begin （上游 merge 后请保留；见 docs/payload-normalize-prototype.md）
+	// Install on the writer immediately for the same reason: NotifyConfigChanged only reaches
+	// other nodes through Redis, and a node that lost Redis must not keep a retired scope live.
+	if key == payloadnorm.OptionKey {
+		refreshPayloadNormalizeSnapshot()
+	}
+	// tokeness-payloadnorm:end
 	NotifyConfigChanged()
 	return nil
 }
@@ -461,6 +484,11 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 	// tokeness-fitpolicy:end
+	// tokeness-payloadnorm:begin （上游 merge 后请保留；见 docs/payload-normalize-prototype.md）
+	if _, ok := values[payloadnorm.OptionKey]; ok {
+		refreshPayloadNormalizeSnapshot()
+	}
+	// tokeness-payloadnorm:end
 	if policySnapshot != nil {
 		requestPolicySnapshot.Store(policySnapshot)
 	}
