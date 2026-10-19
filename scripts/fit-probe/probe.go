@@ -16,7 +16,14 @@ import (
 
 // 1x1 transparent PNG. A data URI keeps the probe self-contained: an image
 // probe must not depend on an external host being reachable from this machine.
-const onePixelPNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+//
+// The bytes matter: the previous constant (a 1x1 greyscale PNG) was rejected by
+// the official DeepSeek endpoint with "You have uploaded an unsupported image"
+// (2026-10-19, HTTP 400 .messages[0].image[0]), which made every image.parts row
+// inconclusive: the rejection was the probe's own artefact, not the channel's.
+// This is the RGB form of the same 1x1 transparent PNG and is accepted (probed
+// 2026-10-19 on channel 84: 200, content "ok").
+const onePixelPNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
 // ProbeSpec is the minimal request for one behaviour and the comparison rule.
 type ProbeSpec struct {
@@ -238,6 +245,14 @@ var probeSpecs = map[string]ProbeSpec{
 			// "required" is accepted in both thinking states on kimi-k3
 			// (relay/helper/valid_request.go:1234).
 			body["tool_choice"] = "required"
+			if family == "deepseek-v4" {
+				// deepseek-v4 does not accept a forcing tool_choice while
+				// thinking: relay/helper/valid_request.go:686-709 answers it
+				// locally with 400, so a thinking-on probe measures the relay's
+				// own validator instead of the channel. Thinking off is also the
+				// state the buyer's affected traffic used.
+				body["thinking"] = map[string]any{"type": "disabled"}
+			}
 			return body
 		},
 		StructuralAbsenceIsDivergence: true,
