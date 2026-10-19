@@ -894,6 +894,57 @@ jq -e '(.instances | length) == 3
 jq -e '.desired == 3' "$converge_case/state/state.json" > /dev/null \
   || fail "the converging release did not restore the steady-state capacity"
 
+# (4b) Default one-shot: a group that can hold the 2x set replaces the WHOLE
+# steady fleet in ONE drain window - no canary instance, one scale-out, one
+# relay cutover, one scale-in. MaxSize=6 against a steady state of 2 is exactly
+# the 2x the default asks for; a canary roll would add two more scaling calls
+# (up to 3, then back to 2) and a second mixed relay list, which is what the
+# one-shot path exists to remove.
+oneshot_case="$test_root/release-one-shot"
+mkdir -p "$oneshot_case/state"
+make_conf "$oneshot_case/nginx.conf"
+init_ess_state "$oneshot_case/state"
+jq '.desired = 2 | .max_size = 6 | .instances += [
+      {InstanceId: "eci-old2", PrivateIpAddress: "10.0.0.206", HealthStatus: "Healthy", LifecycleState: "InService", CreatedTime: "2026-09-02T00:00:00Z", ZoneId: "cn-shanghai-l"}]' \
+  "$oneshot_case/state/state.json" > "$oneshot_case/state/tmp.json" \
+  && mv "$oneshot_case/state/tmp.json" "$oneshot_case/state/state.json"
+printf 'server 10.0.0.207:3000;\nserver 10.0.0.206:3000;\n' > "$oneshot_case/ecs-upstream.conf"
+run_deploy "$oneshot_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "one-shot cutover: replacing all 2 serving instance(s) in ONE round and ONE drain window" "$oneshot_case/state/stdout.log" \
+  || fail "the default release did not plan a single-window cutover"
+if grep -q "ess rollout to" "$oneshot_case/state/stdout.log"; then
+  fail "the one-shot release still ran the canary instance roll"
+fi
+grep -q "batch rollout: 2 instance(s) to retire, up to 2 per round" "$oneshot_case/state/stdout.log" \
+  || fail "the one-shot release did not hand the whole pre-release set to the cutover round"
+grep -q "retired all 2 pre-existing instance(s) in 1 round(s)" "$oneshot_case/state/stdout.log" \
+  || fail "the one-shot release did not replace the whole fleet in one round"
+grep -q "deployed to the whole ECI tier in ONE drain window (one-shot)" "$oneshot_case/state/stdout.log" \
+  || fail "the one-shot release did not report the single window"
+# Two ESS calls: up to 2x the steady fleet, then back to it. A canary roll adds
+# two more (desired+1, then desired).
+[[ "$(grep -c 'ess ModifyScalingGroup' "$oneshot_case/state/aliyun-calls.log")" -eq 2 ]] \
+  || fail "the one-shot release issued an unexpected number of scaling calls"
+snap_shrink="$oneshot_case/state/modify-snapshots/modify-2.log"
+[[ -f "$snap_shrink" ]] || fail "the fake recorded no snapshot of the cutover shrink"
+for want_ip in 10.0.0.207 10.0.0.206; do
+  grep -qxF "$want_ip" "$snap_shrink" \
+    || fail "at the cutover, the drain marker did not park $want_ip"
+  if sed -n '/--- relay upstream ---/,$p' "$snap_shrink" | grep -q "$want_ip"; then
+    fail "at the cutover, the relay upstream still carried the parked $want_ip"
+  fi
+done
+jq -e '(.instances | length) == 2
+       and ([.instances[].InstanceId] | index("eci-old") == null)
+       and ([.instances[].InstanceId] | index("eci-old2") == null)' \
+  "$oneshot_case/state/state.json" > /dev/null \
+  || fail "the one-shot release left a pre-existing instance serving"
+jq -e '.desired == 2' "$oneshot_case/state/state.json" > /dev/null \
+  || fail "the one-shot release did not return to steady-state capacity"
+
 # (5) ROLLOUT_BATCH=0 keeps the old one-at-a-time behaviour for a release that
 # only touches master-served paths, and an invalid value is refused rather than
 # silently treated as "on".
@@ -1607,12 +1658,17 @@ printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.201:3000
 # exercised too. The old variant injected only after the shrink had already
 # removed members, which tested neither the hold window nor the read-to-Modify
 # gap.
+# Forced two-phase (ROLLOUT_BATCH=1): this case asserts the two-window shape -
+# the canary leg's shrink parks .207 and the batch round's shrink parks .206
+# while carrying the capacity the alarm added in between. The one-shot variant
+# of the same threat is case (11b).
 run_deploy "$external_case" \
   APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
   HEALTH_POLL_SECONDS=1 \
   TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
   TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD=2 \
   TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  ROLLOUT_BATCH=1 \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 grep -q "hold-window external scale-out injected" "$external_case/state/external-scaleout.log" 2>/dev/null \
   || fail "the hold-window injection never fired (the case no longer tests the window)"
@@ -1656,6 +1712,39 @@ done
 for ext_ip in 10.0.0.201 10.0.0.202; do
   sed -n '/--- relay upstream ---/,$p' "$ext_snap" | grep -q "$ext_ip" \
     || fail "at the shrink, the external capacity $ext_ip was not carried by the upstream"
+done
+
+# (11b) One-shot cutover + an external scale-out landing inside its single drain
+# window. The cutover retires only the set it snapshotted before it started, so
+# the capacity the alarm added must survive, and the single window must still
+# complete instead of rolling back.
+oneshot_external_case="$test_root/release-one-shot-external"
+mkdir -p "$oneshot_external_case/state"
+make_conf "$oneshot_external_case/nginx.conf"
+init_ess_state "$oneshot_external_case/state"
+printf 'server 10.0.0.241:3000;\nserver 10.0.0.242:3000;\nserver 10.0.0.201:3000;\nserver 10.0.0.202:3000;\n' \
+  > "$oneshot_external_case/ecs-upstream.conf"
+run_deploy "$oneshot_external_case" \
+  APP_READY_TIMEOUT_SECONDS=10 APP_READY_POLL_SECONDS=2 \
+  HEALTH_POLL_SECONDS=1 \
+  TOKENESS_TEST_SCALE_IN_LAG_SECONDS=3 \
+  TOKENESS_TEST_EXTERNAL_SCALEOUT_HOLD=2 \
+  TOKENESS_TEST_HOST_VERSION=v1.0.0-rc.33-tokeness-mainland.9 \
+  deploy-release v1.0.0-rc.33-tokeness-mainland.9
+grep -q "hold-window external scale-out injected" "$oneshot_external_case/state/external-scaleout.log" 2>/dev/null \
+  || fail "the one-shot case's hold-window injection never fired"
+grep -q "deployed to the whole ECI tier in ONE drain window (one-shot)" "$oneshot_external_case/state/stdout.log" \
+  || fail "the one-shot release did not complete its single window"
+if grep -q "ERROR: release one-shot cutover failed" "$oneshot_external_case/state/stdout.log"; then
+  fail "an external scale-out made the one-shot cutover roll back"
+fi
+jq -e '([.instances[].InstanceId] | index("eci-ext-1")) != null
+       and ([.instances[].InstanceId] | index("eci-ext-2")) != null' \
+  "$oneshot_external_case/state/state.json" > /dev/null \
+  || fail "the one-shot cutover removed the external scale-out's instances"
+for ext_ip in 10.0.0.201 10.0.0.202; do
+  grep -q "server $ext_ip:3000" "$oneshot_external_case/ecs-upstream.conf" \
+    || fail "the external capacity $ext_ip was missing from the relay upstream after the cutover"
 done
 
 # CRLF regression: a Windows-side aliyun CLI (CRLF line endings) and a Windows
@@ -1772,7 +1861,7 @@ remove_line="$(grep -n '^ssh 8.133.172.195 marker-remove$' "$drain_log" | head -
   || fail "the relay tier was pinned only after the scale-down (write=$write_line/$write2_line scaledown=$scaledown_line)"
 (( remove_line > scaledown_line )) \
   || fail "the drain marker was cleared before the scale-down, so ml-sync could put the retiring instance back in rotation"
-grep -q 'drain-first: holding' "$drain_case/state/stdout.log" \
+grep -Eq 'drain-first: holding|drain-first hold' "$drain_case/state/stdout.log" \
   || fail "the rollout did not hold the relay tier while in-flight streams finished"
 grep -q 'rollout drain still active' "$drain_case/state/stdout.log" \
   || fail "the long drain did not emit a CNB watchdog heartbeat"

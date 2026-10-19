@@ -3037,7 +3037,7 @@ ess_rollout() {
 #     the drain hold plus the ECI termination grace, not by a pin.
 rollout_batch() {
   local digest="$1" expected_version="${2:-}" previous_digest="${3:-}" previous_snapshot="${4:-}" retire_ids="${5:-}" requested_batch="${6:-}"
-  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids drain_ips
+  local stable max relay_cap ceiling batch rounds=0 round_limit current_ids id ip want retiring base current_count scalein_before roll_before_ids drain_ips first_new_ip='' first_new_id=''
   local park_expanded scalein_target scale_in_ok expected_min
   local -a original_ids=() remaining=() new_ids=()
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { error "rollout-batch needs a sha256:<64 hex> digest"; return 1; }
@@ -3165,7 +3165,21 @@ rollout_batch() {
         rollback_failed_rollout "$id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
         return 1
       fi
+      [ -n "$first_new_ip" ] || { first_new_ip="$ip"; first_new_id="$id"; }
     done
+    # SWAS_PANEL_TIER=1 (retired panel path): the EdgeOne origins are the two
+    # lightweight hosts, and ess_rollout is the only place that pins them.
+    # One-shot skips ess_rollout, so pin them here to the round's first new
+    # instance before anything is parked or scaled in; the ml_drain_end at the
+    # end of the round releases it. Failing to pin fails closed, exactly like
+    # ess_rollout: an unpinned lightweight tier would keep sending new requests
+    # to the instances this round retires.
+    if [[ "$SWAS_PANEL_TIER" == "1" ]]; then
+      if ! ml_drain_begin "$first_new_ip" || ! wait_drain_converged "$first_new_ip"; then
+        rollback_failed_rollout "$first_new_id" "$previous_digest" "$previous_snapshot" || warn "rollback could not be verified"
+        return 1
+      fi
+    fi
     # Fix the retirement count and its park set here, before the hold (H2).
     # A boundary tie expands only the park set, never the retirement count.
     # Retiring "everything above the steady state" after the hold let an
@@ -3379,16 +3393,33 @@ rollout_verb() {
   log "batch rollout: the ECI tier now serves $digest"
 }
 
-# resolve_release_batch - how many instances a release's batch convergence may
-# replace per drain window. Prints 0 to skip convergence entirely.
+# resolve_release_plan - decide HOW a release replaces the ECI tier, before
+# anything mutates: which mode (one-shot single-window cutover vs. the older
+# canary-then-batches two-phase) and how many instances one round may replace.
+# Stores the answer in RELEASE_MODE ("oneshot" or "batch") and RELEASE_BATCH
+# (0 = keep the canary and skip convergence entirely).
 #
-# The distinction that matters here: an EXPLICIT ROLLOUT_BATCH is a demand, so an
-# impossible one is refused (the caller does this before anything mutates); the
-# built-in default is a preference, so it is clamped to the group's headroom and
-# degrades to "skip" on a group that cannot batch at all. A release must never
-# fail because of the shape of its scaling group.
-resolve_release_batch() {
+# Default (ROLLOUT_BATCH unset): one-shot. The whole steady fleet is replaced in
+# ONE round. N replacement instances start together and EVERY one of them is
+# gated (app readiness + relay membership) before anything is parked; then every
+# pre-release instance is parked in the SAME relay write, and that single reload
+# is the cutover point. The old set drains in ONE window and the tier scales back
+# in one step, so the relay list is never mixed old/new for the duration of a
+# window (the previous default claimed this but still ran a canary instance
+# first, which cost a second window and a second mixed relay list). The cutover
+# needs room for 2x the steady fleet while the old set drains - accepted by the
+# owner on 2026-10-18. A group whose MaxSize or entry relay cap cannot carry the
+# 2x set degrades to the two-phase path with a WARN instead of failing: a release
+# must never fail because of the shape of its scaling group.
+#
+# An EXPLICIT ROLLOUT_BATCH is a demand, so an impossible one is refused (the
+# caller does this before anything mutates): N>0 keeps the canary-then-batches
+# path with N instances per drain window, 0 keeps the canary and skips the batch
+# convergence.
+resolve_release_plan() {
   local requested="${ROLLOUT_BATCH-}" batch stable max headroom relay_cap
+  RELEASE_MODE="batch"
+  RELEASE_BATCH="0"
   # Empty means "unset" and takes the built-in default; anything non-numeric is
   # an operator error. The two must not share a case branch: an unset variable is
   # the normal case, and failing on it would break every release.
@@ -3397,25 +3428,12 @@ resolve_release_batch() {
       *[!0-9]*) error "ROLLOUT_BATCH must be a non-negative integer (0 disables the batch convergence)"; return 1 ;;
     esac
     batch="$requested"
-    if (( batch == 0 )); then
-      printf '0\n'
-      return 0
-    fi
   fi
   stable="$(current_desired_capacity)" || { error "could not read the scaling group's desired capacity"; return 1; }
-  if [[ -z "$requested" ]]; then
-    # Default: rotate the WHOLE steady fleet in one round. The release starts as
-    # many replacement instances as the tier currently serves, cuts them all over
-    # together and drains the old set in a single window, so the relay tier is at
-    # 2x for the duration of that window. The owner accepted the capacity spike
-    # (2026-10-18); the headroom clamp below still bounds it by MaxSize and the
-    # entry's relay cap, and degrades gracefully on a group that cannot batch.
-    batch="$stable"
-  fi
   max="$(current_max_size)" || { error "could not read the scaling group's MaxSize"; return 1; }
-  # The entry's relay list is the second ceiling (see relay_member_cap): the
-  # release's own single-instance roll needs stable+1 members carried, so a cap
-  # at or below the steady state cannot serve ANY rollout.
+  # The entry's relay list is the second ceiling (see relay_member_cap): even a
+  # one-instance roll needs stable+1 members carried, so a cap at or below the
+  # steady state cannot serve ANY rollout.
   if relay_cap="$(relay_member_cap)"; then
     if (( relay_cap < stable + 1 )); then
       error "the relay upstream can carry $relay_cap member(s) but the tier runs $stable: raise MAX_MEMBERS on the entry (or lower DesiredCapacity) before releasing - the new instance would never reach the relay tier"
@@ -3424,27 +3442,51 @@ resolve_release_batch() {
     (( relay_cap < max )) && max="$relay_cap"
   fi
   headroom=$(( max - stable ))
-  if (( headroom < 1 )); then
-    if [[ -n "$requested" ]]; then
-      error "ROLLOUT_BATCH=$batch cannot run: MaxSize=$max DesiredCapacity=$stable leaves no headroom (use ROLLOUT_BATCH=0 to release one instance at a time)"
-      return 1
+  if [[ -z "$requested" ]]; then
+    # Default: the single-window cutover. Size it from the LIVE in-service set,
+    # not from DesiredCapacity: a group that was left with extra instances (an
+    # aborted release, a scale-out alarm that fired earlier) still has to be
+    # replaced in one round, and a round can only park the members it has room
+    # to replace at once.
+    local in_service_ids in_service_count base
+    in_service_ids="$(in_service_instance_ids)" || { error "could not read the in-service instance set"; return 1; }
+    in_service_count="$(printf '%s\n' "$in_service_ids" | grep -c . || true)"
+    (( in_service_count < 1 )) && in_service_count=1
+    base="$stable"
+    (( in_service_count > base )) && base="$in_service_count"
+    if (( base + in_service_count <= max )); then
+      RELEASE_MODE="oneshot"
+      RELEASE_BATCH="$in_service_count"
+      return 0
     fi
-    # stderr, not stdout: this function's stdout is the batch size the caller
-    # captures, and log()/warn() write to stdout by design. A WARN here once got
-    # parsed as part of the value and turned a graceful skip into a failed
-    # release.
-    warn "no batch headroom (MaxSize=$max DesiredCapacity=$stable): releasing one instance and leaving the rest of the tier on the one-at-a-time path" >&2
-    printf '0\n'
+    # stderr, not stdout: a WARN written to stdout has been parsed as part of
+    # this decision's value before.
+    warn "not enough headroom for a single-window cutover (replacing $in_service_count in-service instance(s) against DesiredCapacity=$stable needs $(( base + in_service_count )) slots, MaxSize=$max): falling back to the canary + batch path" >&2
+    if (( headroom < 1 )); then
+      warn "no batch headroom (MaxSize=$max DesiredCapacity=$stable): releasing one instance and leaving the rest of the tier on the one-at-a-time path" >&2
+      RELEASE_BATCH="0"
+      return 0
+    fi
+    batch="$stable"
+    (( batch > headroom )) && batch="$headroom"
+    RELEASE_BATCH="$batch"
     return 0
   fi
-  if (( batch > headroom )); then
-    if [[ -n "$requested" ]]; then
-      error "ROLLOUT_BATCH=$batch exceeds the growth ceiling (relay cap=${relay_cap:-unknown}, MaxSize=$max, DesiredCapacity=$stable, so at most $headroom)"
-      return 1
-    fi
-    batch="$headroom"
+  # Explicit demand: validate it rather than silently clamping it.
+  if (( batch == 0 )); then
+    RELEASE_BATCH="0"
+    return 0
   fi
-  printf '%s\n' "$batch"
+  if (( headroom < 1 )); then
+    error "ROLLOUT_BATCH=$batch cannot run: MaxSize=$max DesiredCapacity=$stable leaves no headroom (use ROLLOUT_BATCH=0 to release one instance at a time)"
+    return 1
+  fi
+  if (( batch > headroom )); then
+    error "ROLLOUT_BATCH=$batch exceeds the growth ceiling (relay cap=${relay_cap:-unknown}, MaxSize=$max, DesiredCapacity=$stable, so at most $headroom)"
+    return 1
+  fi
+  RELEASE_BATCH="$batch"
+  return 0
 }
 
 # postcheck - post-deployment public verification: version identity, the
@@ -3479,6 +3521,10 @@ Usage:
   deploy.sh nginx-update <ECI_PRIVATE_IP>
   deploy.sh image-ref <sha256:DIGEST>
   deploy.sh deploy-release <tag> [sha256:DIGEST]
+                     # master-first, then replace the WHOLE ECI tier in ONE
+                     # drain window (2x capacity while it drains). ROLLOUT_BATCH=N
+                     # keeps the canary-then-batches path, 0 keeps the canary and
+                     # skips the batch convergence
   deploy.sh rollout-all [tag] [sha256:DIGEST]
                      # converge the WHOLE ECI tier now, using every slot
                      # MaxSize allows (manual emergency form)
@@ -3535,8 +3581,10 @@ main() {
       # Resolve the convergence switch before anything mutates: an operator typo,
       # or a batch size this group cannot serve, must not be discovered after the
       # tier has already started moving.
-      local release_batch
-      release_batch="$(resolve_release_batch)" || die "the release's batch convergence is not usable as configured"
+      local release_mode release_batch
+      resolve_release_plan || die "the release's rollout plan is not usable as configured"
+      release_mode="$RELEASE_MODE"
+      release_batch="$RELEASE_BATCH"
       # Headroom gate BEFORE anything mutates: every roll path scales the tier to
       # at least desired+1 while the old instance still serves, and ESS rejects a
       # DesiredCapacity above MaxSize. Refusing after the config pin and the
@@ -3545,7 +3593,7 @@ main() {
       local pre_stable pre_max
       pre_stable="$(current_desired_capacity)" || die "could not read the scaling group's desired capacity before the release"
       pre_max="$(current_max_size)" || die "could not read the scaling group's MaxSize before the release"
-      if (( pre_stable + 1 > pre_max )); then
+      if [[ "$release_mode" != "oneshot" ]] && (( pre_stable + 1 > pre_max )); then
         die "no headroom to roll: DesiredCapacity=$pre_stable is already at MaxSize=$pre_max; raise MaxSize or retire capacity before releasing"
       fi
       # Everything below mutates the tier; hold the scale-in alarm off until the
@@ -3565,12 +3613,27 @@ main() {
       previous_snapshot="$(oss_scaling_config_json)" || die "failed to snapshot the current scaling configuration"
       previous_digest="$(snapshot_config_digest "$previous_snapshot")"
       [[ "$previous_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "current scaling configuration image is not a valid digest; refusing a release without rollback target"
-      # The fleet as it stood BEFORE this release's single-instance roll. The
-      # batch convergence below retires exactly this set, so it never re-replaces
-      # the instance ess_rollout just brought onto the new image.
+      # The fleet as it stood BEFORE this release touched the tier. The batch
+      # convergence below retires exactly this set, so it never re-replaces an
+      # instance that an earlier step of this release already moved.
       local release_before_ids
       release_before_ids="$(in_service_instance_ids)" \
         || die "could not read the in-service instance set before the release"
+      if [[ "$release_mode" == "oneshot" ]]; then
+        # The one-shot round must replace the WHOLE live set in one go, so its
+        # batch size is that set's size and the capacity it needs is
+        # max(DesiredCapacity, live) + live. Re-checked here on the same read
+        # the round will retire from: capacity may have moved since the plan.
+        local release_before_count base
+        release_before_count="$(printf '%s\n' "$release_before_ids" | grep -c . || true)"
+        (( release_before_count < 1 )) && die "no in-service ECI instance to replace"
+        base="$pre_stable"
+        (( release_before_count > base )) && base="$release_before_count"
+        if (( base + release_before_count > pre_max )); then
+          die "no headroom for a single-window cutover: replacing $release_before_count in-service instance(s) against DesiredCapacity=$pre_stable needs $(( base + release_before_count )) slots, but MaxSize=$pre_max; raise MaxSize or pass ROLLOUT_BATCH=0 to use the one-at-a-time path"
+        fi
+        release_batch="$release_before_count"
+      fi
       if ! apply_ml_digest "$release_digest" "$previous_snapshot"; then
         if ! restore_scaling_config "$previous_snapshot"; then
           die "release update failed and the complete scaling configuration could not be restored"
@@ -3591,36 +3654,57 @@ main() {
         fi
         die "release aborted: master container failed to converge to $release_tag"
       fi
-      if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
-        # rollback_failed_rollout re-pinned the scaling configuration + ECI to
-        # the previous digest; bring the master back in line so node versions
-        # never drift after an aborted release.
-        if ! sync_master_container ""; then
-          error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
-        fi
-        die "release rollout failed; rollback was attempted and must be verified before retrying"
-      fi
-      # Converge the WHOLE tier, not just the single instance ess_rollout
-      # replaced. Anything the image carries on the ECI tier - the
-      # OpenAI-compatible billing endpoints, for one - would otherwise serve
-      # only 1/n of its traffic until n releases accumulate.
-      # ROLLOUT_BATCH=0 opts out: a release that only changes master-served paths
-      # (panel, migrations, system tasks) pays ~1 drain window per batch round
-      # for nothing. The tier then converges on the next default release, or on
-      # an explicit `deploy.sh rollout-all`.
-      if (( release_batch == 0 )); then
-        log "release $release_tag -> $release_digest deployed to one instance (batch convergence skipped: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
-      else
+      if [[ "$release_mode" == "oneshot" ]]; then
+        # Single-window cutover: no canary instance and no second drain window.
+        # Every replacement instance starts together and is gated (app
+        # readiness + relay membership) BEFORE anything is parked; then ONE
+        # relay write moves the whole tier onto the new set - that reload is
+        # the cutover point - and ONE drain window lets the old set finish its
+        # in-flight streams. The master blue-green above is still the app
+        # canary.
+        log "one-shot cutover: replacing all $release_batch serving instance(s) in ONE round and ONE drain window (the tier runs at up to $(( release_batch * 2 )) instances until it drains)"
         if ! rollout_batch "$release_digest" "$release_tag" "$previous_digest" "$previous_snapshot" "$release_before_ids" "$release_batch"; then
           # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
           if ! sync_master_container ""; then
-            error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
+            error "master container could not be restored after the failed one-shot cutover; manual intervention required (deploy.sh sync-host)"
           fi
-          die "release batch rollout failed; rollback was attempted and must be verified before retrying"
+          die "release one-shot cutover failed; rollback was attempted and must be verified before retrying"
         fi
-        log "release $release_tag -> $release_digest deployed to the whole ECI tier (batches of $release_batch)"
+        log "release $release_tag -> $release_digest deployed to the whole ECI tier in ONE drain window (one-shot)"
+      else
+        if ! ess_rollout "$release_digest" "$previous_digest" "$previous_snapshot"; then
+          # rollback_failed_rollout re-pinned the scaling configuration + ECI to
+          # the previous digest; bring the master back in line so node versions
+          # never drift after an aborted release.
+          if ! sync_master_container ""; then
+            error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
+          fi
+          die "release rollout failed; rollback was attempted and must be verified before retrying"
+        fi
+        # Converge the WHOLE tier, not just the single instance ess_rollout
+        # replaced. Anything the image carries on the ECI tier - the
+        # OpenAI-compatible billing endpoints, for one - would otherwise serve
+        # only 1/n of its traffic until n releases accumulate.
+        # ROLLOUT_BATCH=0 opts out: a release that only changes master-served
+        # paths (panel, migrations, system tasks) pays ~1 drain window per batch
+        # round for nothing. The tier then converges on the next default release,
+        # or on an explicit `deploy.sh rollout-all`.
+        if (( release_batch == 0 )); then
+          log "release $release_tag -> $release_digest deployed to one instance (batch convergence skipped: the rest of the tier keeps its current image until the next default release or an explicit rollout-all)"
+        else
+          if ! rollout_batch "$release_digest" "$release_tag" "$previous_digest" "$previous_snapshot" "$release_before_ids" "$release_batch"; then
+            # rollout_batch already restored the scaling configuration and the
+            # steady-state capacity on every failure path; keep the master on
+            # that same (previous) digest so node versions never drift.
+            if ! sync_master_container ""; then
+              error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
+            fi
+            die "release batch rollout failed; rollback was attempted and must be verified before retrying"
+          fi
+          log "release $release_tag -> $release_digest deployed to the whole ECI tier (batches of $release_batch)"
+        fi
       fi
       ;;
     sync-host|sync-master)
