@@ -351,33 +351,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				newAPIError = relayInfo.LastError
 				continue
 			}
-			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
-			// The pre-filtered (pin/fit) path cannot prove exhaustion, so the
-			// routing error must not REPLACE what the last real attempt said:
-			// the client keeps the upstream verdict instead of a fabricated
-			// "exhausted" one (final review, defect A). No retry_no_candidate
-			// row is written here either - that marker belongs to a provable
-			// exhaustion only.
-			var prefiltered *service.ChannelSelectionError
-			if relayInfo.LastError != nil && errors.As(channelErr, &prefiltered) &&
-				prefiltered.Kind == service.ChannelSelectionUnprovableExhaustion {
-				newAPIError = relayInfo.LastError
-				break
-			}
-			// A retry that provably has no candidate left is a routing state, not
-			// an answer about the request. Record it — this branch writes no DB row
-			// of its own, so before this the client-visible get_channel_failed left
-			// the error log holding only the upstream verdict it displaced, and the
-			// request_id could not be found at all — and, once the fidelity guard is
-			// enforcing, answer with what the last real attempt said instead of the
-			// routing error that replaced it.
-			if retryFoundNoPinnedCandidate(c, channelErr, retryParam) {
-				recordNoCandidateRetryError(c, relayInfo, channelErr)
-				if operation_setting.RetryErrorFidelityEnforces() && relayInfo.LastError != nil {
-					newAPIError = relayInfo.LastError
-				}
-			}
+			newAPIError = answerRetrySelectionFailure(c, relayInfo, retryParam, channelErr)
 			break
 		}
 		service.AppendUsedChannel(c, channel.Id)
@@ -996,6 +970,36 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 	return false
 }
 
+// answerRetrySelectionFailure turns a failed re-selection into the error the
+// client receives.
+//
+// A retry only runs after a real attempt failed, so when the next selection also
+// fails, the last attempt's error is the answer to the request: it carries the
+// upstream status code and body. The routing error (get_channel_failed, a 500
+// saying 获取分组 … 可用渠道失败（retry）) is platform bookkeeping — it is logged,
+// and a provable pin exhaustion also gets an error-log row — but it must never
+// replace the upstream answer (2026-10-19 operator policy). The failover list
+// contains 400, so the usual case is a client parameter error that the first
+// channel reported honestly; masking it made the client believe the platform had
+// broken.
+//
+// The routing error is returned only when no attempt reached an upstream at all
+// (for example the model was disabled between attempts), which is the one case
+// where it is the most truthful answer available.
+func answerRetrySelectionFailure(c *gin.Context, relayInfo *relaycommon.RelayInfo, retryParam *service.RetryParam, channelErr *types.NewAPIError) *types.NewAPIError {
+	if channelErr == nil {
+		return nil
+	}
+	logger.LogError(c, channelErr.Error())
+	if retryFoundNoPinnedCandidate(c, channelErr, retryParam) {
+		recordNoCandidateRetryError(c, relayInfo, channelErr)
+	}
+	if relayInfo != nil && relayInfo.LastError != nil {
+		return relayInfo.LastError
+	}
+	return channelErr
+}
+
 // retryFoundNoPinnedCandidate reports whether a failed re-selection *proves* the
 // request has no candidate left.
 //
@@ -1011,8 +1015,10 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 //     query, then filterAbilitiesByRequestPathAndModel), so a top-tier channel
 //     that does not serve this path shadows a usable lower-priority one: the
 //     selector returns nil while a candidate still exists, and the same kind is
-//     produced. It is not this guard's to guess about, so without the pin the
-//     request keeps the routing error it gets today.
+//     produced. The marker written here claims a missing candidate, so it needs
+//     the pin's proof; the client-visible answer does not depend on it — a retry
+//     that ends in selection failure always prefers the last upstream error when
+//     one exists (see answerRetrySelectionFailure).
 //
 // With the official-fit pin set the inference is sound, because that path narrows
 // before tiering (model/ability.go: path filter, blocked channels, official-fit
@@ -1025,10 +1031,13 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 // channel is left to answer.
 //
 // ChannelSelectionInternalError, ChannelSelectionModelNotConfigured and
-// ChannelSelectionAccessDenied are excluded for the reason they always were: each
-// has its own answer, and an older upstream error would describe something else.
-// A saturating walk is excluded too — nothing was tried against a busy channel, so
-// there may be no upstream error to report at all.
+// ChannelSelectionAccessDenied are excluded because none of them is a
+// no-candidate outcome: writing the marker for them would claim an exhaustion that
+// did not happen. They still answer with the last upstream error when one exists,
+// through answerRetrySelectionFailure.
+// A saturating walk is excluded too — the retry ended on a busy channel rather
+// than on an empty candidate set — even though an earlier attempt's upstream error
+// may still be the answer the client sees.
 func retryFoundNoPinnedCandidate(c *gin.Context, channelErr *types.NewAPIError, retryParam *service.RetryParam) bool {
 	if channelErr == nil || channelErr.GetErrorCode() != types.ErrorCodeGetChannelFailed {
 		return false
@@ -1051,7 +1060,9 @@ func retryFoundNoPinnedCandidate(c *gin.Context, channelErr *types.NewAPIError, 
 //
 // Operators diagnosing a "获取分组 … 可用渠道失败" report need both halves of the
 // story: the upstream error that triggered the retry, and the routing failure
-// that replaced it. The upstream half is already written per failed attempt by
+// that ended it. The client receives the former (answerRetrySelectionFailure), so
+// this row is the only place the latter survives. The upstream half is already
+// written per failed attempt by
 // processChannelError; this is the other half, and it carries the same request_id
 // so the two can be joined.
 //

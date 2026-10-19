@@ -335,3 +335,82 @@ func TestNewAuditTestDatabaseLeavesTheCallersConnectionsAlone(t *testing.T) {
 	require.NoError(t, outer.Exec("select 1").Error,
 		"the fixture's cleanup must not close a connection it does not own")
 }
+
+// TestRetrySelectionFailureAnswersWithTheLastUpstreamError pins the client-visible
+// rule added 2026-10-19: a retry that runs out of candidates answers with what the
+// last real attempt said — upstream status code and body — never with the
+// platform's routing error. The failover list contains 400, so the usual case is a
+// client parameter error that the first channel reported honestly; masking it made
+// the client believe the platform had broken.
+func TestRetrySelectionFailureAnswersWithTheLastUpstreamError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return c
+	}
+	param := func() *service.RetryParam {
+		return &service.RetryParam{TokenGroup: "default", ModelName: "glm-5.3-flash", RequestPath: "/v1/chat/completions"}
+	}
+	routing := func(kind service.ChannelSelectionFailureKind) *types.NewAPIError {
+		return types.NewError(
+			fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %w", "default", "glm-5.3-flash",
+				&service.ChannelSelectionError{Kind: kind, Group: "default", Model: "glm-5.3-flash", Err: errors.New("selection detail")}),
+			types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	upstream400 := func() *types.NewAPIError {
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: "角色信息不正确",
+			Type:    "invalid_request_error",
+			Code:    "1214",
+		}, http.StatusBadRequest)
+	}
+
+	t.Run("an unpinned retry that ran out of candidates answers the upstream 400", func(t *testing.T) {
+		upstream := upstream400()
+		answer := answerRetrySelectionFailure(newContext(), &relaycommon.RelayInfo{LastError: upstream}, param(),
+			routing(service.ChannelSelectionTemporarilyUnavailable))
+		require.Same(t, upstream, answer)
+		require.Equal(t, http.StatusBadRequest, answer.StatusCode)
+		oaiErr := answer.ToOpenAIError()
+		require.Equal(t, "角色信息不正确", oaiErr.Message)
+		require.Equal(t, "invalid_request_error", oaiErr.Type)
+		require.Equal(t, "1214", oaiErr.Code)
+	})
+
+	t.Run("a pinned provable exhaustion answers the verdict as well", func(t *testing.T) {
+		c := newContext()
+		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+		previous := constant.ErrorLogEnabled
+		constant.ErrorLogEnabled = false
+		t.Cleanup(func() { constant.ErrorLogEnabled = previous })
+		upstream := upstream400()
+		answer := answerRetrySelectionFailure(c, &relaycommon.RelayInfo{LastError: upstream}, param(),
+			routing(service.ChannelSelectionTemporarilyUnavailable))
+		require.Same(t, upstream, answer)
+	})
+
+	t.Run("an upstream 5xx is passed through when it is the last real answer", func(t *testing.T) {
+		upstream := types.NewErrorWithStatusCode(errors.New("upstream unavailable"),
+			types.ErrorCodeBadResponseStatusCode, http.StatusServiceUnavailable)
+		answer := answerRetrySelectionFailure(newContext(), &relaycommon.RelayInfo{LastError: upstream}, param(),
+			routing(service.ChannelSelectionInternalError))
+		require.Same(t, upstream, answer)
+		require.Equal(t, http.StatusServiceUnavailable, answer.StatusCode)
+	})
+
+	t.Run("even a routing fault answers the upstream error when one exists", func(t *testing.T) {
+		upstream := upstream400()
+		answer := answerRetrySelectionFailure(newContext(), &relaycommon.RelayInfo{LastError: upstream}, param(),
+			routing(service.ChannelSelectionModelNotConfigured))
+		require.Same(t, upstream, answer)
+		require.NotContains(t, answer.Error(), "可用渠道失败")
+	})
+
+	t.Run("without any upstream answer the routing error is the honest one", func(t *testing.T) {
+		routingErr := routing(service.ChannelSelectionTemporarilyUnavailable)
+		answer := answerRetrySelectionFailure(newContext(), &relaycommon.RelayInfo{}, param(), routingErr)
+		require.Same(t, routingErr, answer)
+		require.Equal(t, types.ErrorCodeGetChannelFailed, answer.GetErrorCode())
+	})
+}

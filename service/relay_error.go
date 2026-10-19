@@ -131,7 +131,11 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 // answers in its own wording — the exact opposite of what the pin exists for
 // (the fit contract promises the official verdict passes through verbatim).
 // Stopping keeps that verdict intact; availability fallback applies to channel
-// outages, not to answers.
+// outages, not to answers. A retry that does run out of candidates answers with
+// this upstream error rather than a routing error
+// (controller/relay.go:answerRetrySelectionFailure), so the verdict still reaches
+// the client; what this guard prevents is a *successful* non-official answer in
+// another upstream's wording.
 //
 // The marker is written by the fit-policy layer alone
 // (middleware.applyFitPolicy, reached through
@@ -188,7 +192,9 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 // official channel (same verdict contract) or, since the 2026-10-19 empty-match
 // policy, falls through to the ordinary priority pool and replaces the official
 // verdict with an unverified answer — the exact opposite of what the pin exists
-// for. Only verdict statuses qualify: a channel outage (5xx, 408, 429) is not an
+// for. (If the retry instead runs out of candidates it answers with the official
+// verdict itself, so the case this guard removes is the successful fallback.)
+// Only verdict statuses qualify: a channel outage (5xx, 408, 429) is not an
 // answer, so failover stays available there and the operator's capacity policy
 // (「必要时可牺牲拟合换成功率」) is untouched.
 //

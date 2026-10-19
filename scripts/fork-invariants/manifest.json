@@ -3496,6 +3496,42 @@
           ]
         }
       ]
+    },
+    {
+      "id": "relay-retry-selection-failure-answers-upstream-1",
+      "title": "relay 重试选路失败不再覆盖最后上游错误（2026-10-19 用户政策）：get_channel_failed 的路由错误只进日志，客户收到 relayInfo.LastError 的上游状态码与错误体；仅当没有任何上游回答时才回本地路由错误。上游 5xx 原样透传，不重写状态码。",
+      "risk": "medium",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "controller/relay.go",
+        "setting/operation_setting/retry_error_fidelity.go",
+        "service/relay_error.go"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "func answerRetrySelectionFailure("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay.go",
+          "name": "newAPIError = answerRetrySelectionFailure("
+        },
+        {
+          "kind": "symbol",
+          "file": "controller/relay_routing_failure_test.go",
+          "name": "func TestRetrySelectionFailureAnswersWithTheLastUpstreamError("
+        }
+      ],
+      "tests": [
+        {
+          "file": "controller/relay_routing_failure_test.go",
+          "names": [
+            "TestRetrySelectionFailureAnswersWithTheLastUpstreamError"
+          ]
+        }
+      ]
     }
   ]
 }

@@ -30,6 +30,11 @@ import (
 // nothing about the real cause, while the upstream 400 was recorded in the error
 // log — the two records disagree and the routing error wins.
 //
+// Since 2026-10-19 controller/relay.go answers such a retry with the last
+// upstream error (answerRetrySelectionFailure), so the routing error no longer
+// wins on the client side; the mode below still governs whether a pinned verdict
+// stops failover at all.
+//
 // The keyword branch of DecideRelayRetry already stops a pinned request from
 // failing over (officialFitPinKeepsVerdict); the status-code branch never got
 // that guard, because the guard's author believed production excludes 400 from
