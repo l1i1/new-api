@@ -511,12 +511,16 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 // official pin, mirroring the memory-cache path. A channel qualifies when it
 // carries the family's official channel type (the official_fit_models
 // allowlist is retired) or passes the admission battery for a measured family:
-// family's official channel type. The pin is HARD: when no official candidate
-// remains (including the retry path, where the failed official channel is
-// excluded), the candidate set is emptied so the request fails honestly.
-// An aggregator fallback would silently violate byte-level fit — the
-// aggregator pool nondeterministically drops reasoning_content and never
-// reproduces official dual-path logprobs.
+// family's official channel type. When no official candidate remains
+// (including the retry path, where the failed official channel is excluded),
+// the family's empty-match policy decides (2026-10-19): best-effort (the
+// default) keeps the ordinary ability set so an unavailable official fleet does
+// not fail the request, while the strict legacy value empties the set and the
+// request fails honestly. An aggregator fallback can violate byte-level fit —
+// the aggregator pool nondeterministically drops reasoning_content and never
+// reproduces official dual-path logprobs — which is why the degradation is a
+// deliberate availability trade-off, recorded in the narrow log line, not a
+// silent widening.
 func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial bool, fit *FitChannelFilter) []Ability {
 	if OfficialFitChannelType(model) == 0 || len(abilities) == 0 {
 		return abilities
@@ -547,7 +551,9 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 	// same reason as the memory path: the policy may demand official behaviour
 	// for a shape the shipped predicate leaves unpinned. Every candidate here is
 	// already official, so the official predicate is constant. With no mark data
-	// (step A) the result is the official set, i.e. today's behaviour.
+	// (step A) the result is the official set, i.e. today's behaviour. An empty
+	// official set is the empty-match policy's call; best-effort returns the
+	// ordinary ability set below.
 	if fit != nil {
 		candidates := make([]int, 0, len(abilities))
 		for _, ability := range abilities {
@@ -556,7 +562,22 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 			}
 		}
 		result := fit.Requirement.Narrow(candidates, func(int) bool { return true }, fit.MarkSatisfied)
+		// The DB path pre-filters the candidates to the official set, so an empty
+		// official fleet arrives here as an empty candidate list, which Narrow
+		// cannot read as a fallback. Decide it with the same policy method: the
+		// default best-effort reading keeps the ordinary abilities, while the
+		// strict legacy value keeps the empty set. Official fitting is not
+		// absolute; availability wins (2026-10-19).
+		if len(result.Channels) == 0 && len(abilities) > 0 && fit.Requirement.FallthroughOnEmptyMatch() {
+			result.FallbackToPriority = true
+		}
 		reportFitNarrowing(model, candidates, result)
+		if result.FallbackToPriority {
+			// Best-effort official fitting (2026-10-19): no official-behaving
+			// candidate is available and the family's policy is fallthrough, so
+			// keep the ordinary ability set instead of emptying it.
+			return abilities
+		}
 		if result.Applied {
 			permitted := make(map[int]struct{}, len(result.Channels))
 			for _, channelID := range result.Channels {
@@ -576,7 +597,11 @@ func preferOfficialFitAbilities(abilities []Ability, model string, pinOfficial b
 		return abilities
 	}
 	if len(officialIDs) == 0 {
-		return nil
+		// No policy opinion is present (otherwise the narrowing above would have
+		// decided), so the legacy reading is best-effort by default: keep the
+		// ordinary abilities instead of emptying the set. Official fitting is not
+		// absolute; availability wins (2026-10-19).
+		return abilities
 	}
 	official := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {

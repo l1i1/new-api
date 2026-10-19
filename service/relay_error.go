@@ -122,14 +122,16 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 // Why this is needed: the operator keyword list is written for aggregator
 // traffic, where one upstream's wording is a channel capability gap that another
 // channel can serve — that is the entire point of the list. An official-fit
-// request is a different kind of traffic. Its pin is hard: channel selection
-// keeps only channels that are official-behaving for the model
+// request is a different kind of traffic. The pin narrows channel selection to
+// the channels that are official-behaving for the model
 // (model.preferOfficialFitChannels), and a family may have a single such channel
-// (Kimi K3, GLM 5.3). Failing over there cannot reach a second candidate, so the
-// retry re-pins, excludes the only official channel, and the request dies with a
-// routing error that REPLACES the official text — the exact opposite of what the
-// pin exists for (the fit contract promises the official verdict passes through
-// verbatim). Stopping keeps that verdict intact.
+// (Kimi K3, GLM 5.3). The official channel answered with a verdict, so this is
+// not an outage: a retry may now fall through to the ordinary priority pool
+// (the 2026-10-19 empty-match policy), which is an unverified upstream that
+// answers in its own wording — the exact opposite of what the pin exists for
+// (the fit contract promises the official verdict passes through verbatim).
+// Stopping keeps that verdict intact; availability fallback applies to channel
+// outages, not to answers.
 //
 // The marker is written by the fit-policy layer alone
 // (middleware.applyFitPolicy, reached through
@@ -181,13 +183,14 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 // contains 400, and the GLM 5.3 family is pinned by the live policy for every
 // request.
 //
-// A pinned request must not fail over on a verdict. The pin narrows selection to
-// the official-behaving channels and a family may have exactly one, so the retry
-// excludes the only candidate, the re-selection reports temporarily_unavailable,
-// and the routing error replaces the upstream text — the exact opposite of what
-// the pin exists for. Only verdict statuses qualify: a channel outage (5xx, 408,
-// 429) is not an answer, so failover stays available there and the operator's
-// capacity policy (「必要时可牺牲拟合换成功率」) is untouched.
+// A pinned request must not fail over on a verdict. The official channel
+// answered, so the pin is not out of capacity: retrying either reaches a second
+// official channel (same verdict contract) or, since the 2026-10-19 empty-match
+// policy, falls through to the ordinary priority pool and replaces the official
+// verdict with an unverified answer — the exact opposite of what the pin exists
+// for. Only verdict statuses qualify: a channel outage (5xx, 408, 429) is not an
+// answer, so failover stays available there and the operator's capacity policy
+// (「必要时可牺牲拟合换成功率」) is untouched.
 //
 // The second return value reports whether the guard decided anything; false
 // means the caller keeps its configured failover behaviour, which is also what

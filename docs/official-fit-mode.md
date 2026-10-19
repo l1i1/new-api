@@ -79,8 +79,16 @@
       `reasoning: null`，聚合器池实测可稳定复现，走廉价渠道。畸形 thinking 值按
       "思考输出"分类（relay 校验会在进渠道前按官方文案本地 400，多 pin 零成本）。
     - kimi-k3：**整族 pin 到官方行为渠道**（2026-10-02 收紧）。
-      普通 `max`、关闭思考、流式、非流式及 tool continuation 全部只允许官方行为候选；候选耗尽时硬失败，不降级到聚合池。原先的五类形状选择性规则无法覆盖 reseller 的 `reasoning_tokens`/`reasoning_content` 不一致，因此不再作为 K3 的路由边界。
+      普通 `max`、关闭思考、流式、非流式及 tool continuation 全部只允许官方行为候选。原先的五类形状选择性规则无法覆盖 reseller 的 `reasoning_tokens`/`reasoning_content` 不一致，因此不再作为 K3 的路由边界。**候选耗尽时自 2026-10-19 起按可用性优先回退普通优先级池**，见下面的「官渠不可用时的可用性回退」。
     - GLM 5.3：**保持整族 pin**（尚无实测出来的选择性谓词）。
+    **官渠不可用时的可用性回退（2026-10-19 用户政策）**：route 的收窄是
+    **尽可能**而不是硬保证。官方行为集合为空时——官渠全部停用/被重试排除、
+    measured 电池当下无人准入——选路保留原候选集按 priority 正常选路，请求不再
+    以「无候选」失败（日志 `fitpolicy narrow: ... fallback_to_priority=true`）。
+    需要严格保真的单个模型族可把策略文档里该族的 `empty_match_policy` 显式写成
+    `legacy_hard_pin_then_existing_error`，恢复「无候选即失败、不降级」。
+    边界：这只影响**选路**；官方给出的判决类错误（4xx，408/429 除外）在
+    `retry_error_fidelity=on` 时仍不会换渠道——「官方说错」与「官渠不可用」是两条路径。
     **route 仍是唯一 pin 触发源**（2026-09-05 起）：早先的"极端采样自动 pin"
     （temperature>1.5 / top_p<0.3 / penalty>1.0 / thinking 字段 / logprobs=true 自动
     钉到官方渠道）已删除——它会在官方渠道不可用时反复清掉渠道粘性缓存，导致
@@ -218,5 +226,5 @@
    logprobs 硬校验门控、错误原文门控、管理员接口审计、**渠道白名单**
    （`relaykit/dto`: 归一化/去重/上限/空条目/JSON round-trip；`model`:
    `IsOfficialFitChannelForModel` 按模型生效、缓存索引查询、pin 候选窄化压过高优先级
-   非官方渠道、无候选时硬失败；`middleware`: 亲和判定 pin/未 pin 不对称——未 pin 的
+   非官方渠道、无候选时默认回退普通优先级池（strict 文档下硬失败）；`middleware`: 亲和判定 pin/未 pin 不对称——未 pin 的
    白名单聚合器保留亲和；web: `official-fit-models.test.ts` 表单 round-trip）。

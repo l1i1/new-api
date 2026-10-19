@@ -214,10 +214,12 @@ func TestNarrowChannelsUnderMeasuredAdmission(t *testing.T) {
 	assert.ElementsMatch(t, []int{8}, declared,
 		"declared is the type-only set now that the allowlist is retired")
 
-	// A measured family whose battery admits no candidate empties the set so
-	// the caller fails honestly — the availability cliff is deliberate and the
-	// narrowing must not soften it. The family's official type stays admitted
-	// by identity, so the empty case is evaluated over the aggregators alone.
+	// A measured family whose battery admits no candidate and whose official type
+	// is absent from the candidate set is the default best-effort case
+	// (2026-10-19): the official set is empty, so the ordinary candidates are
+	// kept instead of failing the request. The family's official type stays
+	// admitted by identity, so the empty case is evaluated over the aggregators
+	// alone.
 	emptyFilter := &FitChannelFilter{
 		Requirement: fitpolicy.Requirement{
 			Family: "kimi-k3", Model: "kimi-k3",
@@ -226,10 +228,28 @@ func TestNarrowChannelsUnderMeasuredAdmission(t *testing.T) {
 		},
 	}
 	channelSyncLock.RLock()
-	empty, appliedEmpty := emptyFilter.narrowChannels([]int{41, 37}, "kimi-k3")
+	fallback, appliedFallback := emptyFilter.narrowChannels([]int{41, 37}, "kimi-k3")
+	channelSyncLock.RUnlock()
+	require.True(t, appliedFallback)
+	assert.ElementsMatch(t, []int{41, 37}, fallback,
+		"best-effort keeps the ordinary candidates when no official candidate is available")
+
+	// The strict per-family policy is the rollback lever and keeps the old
+	// availability cliff: an empty set so the caller reports its existing
+	// selection error.
+	strictFilter := &FitChannelFilter{
+		Requirement: fitpolicy.Requirement{
+			Family: "kimi-k3", Model: "kimi-k3",
+			Marks:            []string{fitpolicy.BehaviorFamilyWhole},
+			Admission:        admissionMeasured("logprobs.dual_path"),
+			EmptyMatchPolicy: fitpolicy.EmptyMatchLegacyHardPin,
+		},
+	}
+	channelSyncLock.RLock()
+	empty, appliedEmpty := strictFilter.narrowChannels([]int{41, 37}, "kimi-k3")
 	channelSyncLock.RUnlock()
 	require.True(t, appliedEmpty)
-	assert.Empty(t, empty, "measured admission with no qualifying candidate keeps the empty set")
+	assert.Empty(t, empty, "the strict policy keeps the empty set and fails honestly")
 }
 
 // TestChannelIsOfficialFitForModelMeasuredDBPath covers the public predicate on

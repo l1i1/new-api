@@ -143,7 +143,14 @@ func (f *FitChannelFilter) narrowChannels(channels []int, model string) ([]int, 
 	reportFitAdmissionShadow(model, channels, admission, isOfficial)
 	reportFitNarrowing(model, channels, result)
 	if result.Applied && admission.Measured() && len(result.Channels) == 0 {
-		alertMeasuredAdmissionEmpty(model, channels, admission)
+		alertMeasuredAdmissionEmpty(model, channels, admission, result.FallbackToPriority)
+	}
+	if result.FallbackToPriority {
+		// Best-effort official fitting (2026-10-19): no official-behaving
+		// candidate is available, so the request keeps the ordinary priority pool
+		// it started with instead of failing. The narrow line above records the
+		// degradation.
+		return channels, true
 	}
 	if !result.Applied {
 		return channels, false
@@ -185,18 +192,23 @@ func reportFitAdmissionShadow(model string, channels []int, admission fitpolicy.
 }
 
 // alertMeasuredAdmissionEmpty reports the one state a measured family must
-// never reach silently: the battery admitted no candidate at all. Every
-// consequence is a hard failure (the narrowing keeps the empty set so the
-// request fails honestly instead of degrading to an unverified aggregator), so
-// the line names the rollback — the admission source is a document edit.
-func alertMeasuredAdmissionEmpty(model string, channels []int, admission fitpolicy.Admission) {
+// never reach silently: the battery admitted no candidate at all. What happens
+// next depends on the family's empty-match policy: best-effort (the default
+// since 2026-10-19) falls through to the ordinary priority pool, so requests are
+// served unverified instead of failing; the strict policy keeps the empty set
+// and the request fails honestly. Either way the line names the rollback — the
+// admission source is a document edit.
+func alertMeasuredAdmissionEmpty(model string, channels []int, admission fitpolicy.Admission, fallback bool) {
 	if !fitAdmissionEmptyLog.Allow() {
 		return
 	}
+	consequence := "pinned requests fail honestly until marks refresh or the family's admission_source returns to declared"
+	if fallback {
+		consequence = "empty_match_policy is best-effort, so requests fall through to priority routing (unverified upstream) until marks refresh or the family's admission_source returns to declared"
+	}
 	common.SysError(fmt.Sprintf(
-		"fitpolicy: measured admission kept no candidate for model=%q (candidates=%v, battery=%v, policy_hash=%s); "+
-			"pinned requests fail honestly until marks refresh or the family's admission_source returns to declared",
-		model, channels, admission.Battery, admission.PolicyHash))
+		"fitpolicy: measured admission kept no candidate for model=%q (candidates=%v, battery=%v, policy_hash=%s); %s",
+		model, channels, admission.Battery, admission.PolicyHash, consequence))
 }
 
 // reportFitNarrowing records how one narrowing decision came out. An empty result
@@ -237,6 +249,6 @@ func reportFitNarrowing(model string, channels []int, result fitpolicy.Narrowing
 	common.SysLog(fmt.Sprintf(
 		// %q for the model id: it comes from the request body, so a newline in it
 		// would otherwise forge a second log line.
-		"fitpolicy narrow: model=%q candidates=%v applied=%t official_and_permitted=%t kept=%v marks=%v",
-		model, channels, result.Applied, result.PermittedByMarks, result.Channels, verdicts))
+		"fitpolicy narrow: model=%q candidates=%v applied=%t official_and_permitted=%t fallback_to_priority=%t kept=%v marks=%v",
+		model, channels, result.Applied, result.PermittedByMarks, result.FallbackToPriority, result.Channels, verdicts))
 }

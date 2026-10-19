@@ -28,9 +28,11 @@ import (
 // both halves:
 //
 //  1. the reuse half returns the context channel verbatim, and
-//  2. once that channel is excluded, the fall-through selection is constrained
-//     by the fit requirement — it fails rather than handing back an official
-//     aggregator.
+//  2. once that channel is excluded, the fall-through selection is still
+//     constrained by the fit requirement: with no official candidate left the
+//     2026-10-19 best-effort policy falls through to the ordinary priority pool
+//     (never silently widening while an official candidate exists), and the
+//     strict policy keeps the old availability cliff.
 //
 // The scenario is built with the legacy pin OFF and only a policy requirement
 // attached, because that is the case where the fit layer is the sole constraint:
@@ -108,30 +110,36 @@ func TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel(t *testing.T) 
 		require.Equal(t, 1, channel.Id, "control: the fall-through would otherwise pick the aggregator")
 	})
 
-	t.Run("fall-through stays constrained once the official channel is excluded", func(t *testing.T) {
+	t.Run("fall-through degrades to priority once the official channel is excluded", func(t *testing.T) {
 		c, info, retryParam := newRequest(t)
 		attachFitRequirement(c)
 
+		// The policy requirement (default best-effort since 2026-10-19) has no
+		// official candidate left after the exclusion, so the ordinary pool is
+		// kept: availability wins over the unattainable pin. This is the
+		// deliberate degradation, not a silent widening while an official
+		// candidate still exists (that case is covered by the reuse subtest).
 		retryParam.ExcludeChannel(2)
 
 		channel, channelErr := getChannel(c, info, retryParam)
-		if channelErr == nil {
-			require.NotEqual(t, 1, channel.Id,
-				"the fall-through must never hand back the aggregator while a fit requirement demands official behaviour")
-			t.Fatalf("expected selection to fail with no official candidate, got channel %d", channel.Id)
+		if channelErr != nil {
+			t.Fatalf("getChannel failed: type=%T detail=%+v", channelErr, channelErr)
 		}
-		// Failing to find an official candidate is the honest outcome: the layer
-		// must not widen to an unverified upstream.
-		require.Nil(t, channel)
+		require.NotNil(t, channel)
+		require.Equal(t, 1, channel.Id,
+			"with the official set empty the best-effort policy hands the request to the ordinary priority pool")
 	})
 
 	t.Run("the no-candidate failure is what the retry error-fidelity guard keys on", func(t *testing.T) {
 		c, info, retryParam := newRequest(t)
 		attachFitRequirement(c)
-		// The production shape of 2026-10-12: the request was pinned to the
-		// official channel, the retry excluded it after the upstream verdict, and
-		// the exclusion emptied the candidate set.
+		// The shape that reaches this branch after the 2026-10-19 best-effort
+		// policy: the whole candidate set is gone (every channel was tried and
+		// excluded), so the fallback has nothing to keep either. Before that policy
+		// a single excluded official channel was enough; production still hits this
+		// branch when the fleet has no surviving channel at all.
 		retryParam.ExcludeChannel(2)
+		retryParam.ExcludeChannel(1)
 
 		channel, channelErr := getChannel(c, info, retryParam)
 		require.Nil(t, channel)

@@ -109,8 +109,34 @@ func TestFitAwareSelectionFailsClosedWhenNoMarkedChannel(t *testing.T) {
 		require.NotEqual(t, 3, selected.Id, "an unsatisfied mark must fall back to official channels, never to the aggregator")
 	}
 
-	// An empty marked set combined with an empty official set fails with the
-	// existing nil result rather than degrading.
+	// Best-effort (2026-10-19): when the marked set is empty AND the official set
+	// is empty, the ordinary candidate set is kept instead of returning nil. The
+	// fixture's only candidate here is the aggregator, which the marks rule out.
+	fallbackFit := &FitChannelFilter{
+		Requirement:   fitpolicy.Requirement{Marks: []string{"usage.thinking_counting"}},
+		MarkSatisfied: func(int) bool { return false },
+	}
+	channelSyncLock.RLock()
+	kept := preferOfficialFitChannels([]int{3}, "deepseek-v4-flash", true, fallbackFit)
+	channelSyncLock.RUnlock()
+	require.Equal(t, []int{3}, kept,
+		"best-effort keeps the ordinary pool when no official candidate exists")
+
+	// The strict per-family policy keeps the old behaviour: the empty set so the
+	// caller reports its existing selection error.
+	strictFit := &FitChannelFilter{
+		Requirement: fitpolicy.Requirement{
+			Marks:            []string{"usage.thinking_counting"},
+			EmptyMatchPolicy: fitpolicy.EmptyMatchLegacyHardPin,
+		},
+		MarkSatisfied: func(int) bool { return false },
+	}
+	channelSyncLock.RLock()
+	strictKept := preferOfficialFitChannels([]int{3}, "deepseek-v4-flash", true, strictFit)
+	channelSyncLock.RUnlock()
+	require.Empty(t, strictKept, "the strict policy keeps the empty set")
+
+	// No candidate at all is still nil: nothing can be selected either way.
 	emptyOfficial := &FitChannelFilter{Requirement: fitpolicy.Requirement{Marks: []string{"usage.thinking_counting"}}}
 	selected, err := GetRandomSatisfiedChannelPinnedWithFit("default", "deepseek-v4-pro", 0, "", nil, true, false, emptyOfficial)
 	require.NoError(t, err)

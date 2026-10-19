@@ -428,9 +428,15 @@ func ChannelIsOfficialFitForModel(channelID int, model string) bool {
 // that are official-behaving for the model when the request is marked for the
 // official pin. The candidate is kept when it carries the family's official
 // channel type or, for a measured family, passes the admission battery.
-// The pin is HARD: when no official candidate remains (including retries where
-// the failed official channel is excluded), the set is emptied so the request
-// fails honestly instead of silently degrading to a fit-violating aggregator.
+//
+// What happens when no official candidate remains (including retries where the
+// failed official channel is excluded) is the family's empty-match policy
+// (2026-10-19): the default is best-effort — the ordinary priority pool is kept
+// so an unavailable official fleet does not fail the request — and the strict
+// legacy value keeps the empty set so the request fails honestly. When a policy
+// opinion is present the narrowing in pkg/fitpolicy.Narrow decides this; the
+// legacy branch below applies the same best-effort reading, so a pin without a
+// policy cannot become the only availability cliff.
 //
 // tokeness-fitpolicy:begin （上游 merge 后请保留；见 docs/fitpolicy-tech-spec.md）
 // When fit carries a policy opinion, the two-phase narrowing replaces the plain
@@ -463,7 +469,11 @@ func preferOfficialFitChannels(channels []int, model string, pinOfficial bool, f
 		}
 	}
 	if len(official) == 0 {
-		return nil
+		// No policy opinion is present (otherwise the narrowing above would have
+		// decided), so the legacy reading is best-effort by default: keep the
+		// caller's ordinary candidates instead of emptying the set. Official
+		// fitting is not absolute; availability wins (2026-10-19).
+		return channels
 	}
 	return official
 }
@@ -504,7 +514,9 @@ func GetRandomSatisfiedChannelPinned(group string, model string, retry int, requ
 //
 // The two-phase order lives in pkg/fitpolicy.Narrow: candidates that satisfy
 // every required behaviour win; otherwise the official set is used unchanged;
-// otherwise the set stays empty so the caller reports its existing error.
+// when that set is empty too, the family's empty-match policy decides —
+// best-effort (the default) keeps the ordinary priority pool, the strict legacy
+// value keeps the empty set so the caller reports its existing error.
 func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry int, requestPath string, blockedChannels map[int]struct{}, pinOfficial bool, videoOnly bool, fit *FitChannelFilter) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {

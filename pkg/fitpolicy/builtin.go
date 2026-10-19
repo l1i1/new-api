@@ -28,6 +28,12 @@ package fitpolicy
 //     what the per-shape rules exist to avoid.
 //   - glm-5.3 has no measured selective predicate yet, so the whole family
 //     pins.
+//
+// Every family names empty_match_policy=fallthrough_priority (2026-10-19): the
+// shipped default is best-effort official fitting, so an unavailable official
+// fleet falls through to the ordinary priority pool instead of failing the
+// request. A family can be flipped back to the strict hard pin by editing the
+// document; see pkg/fitpolicy/narrow.go.
 func BuiltinPolicy() Policy {
 	return Policy{
 		Version: 1,
@@ -47,7 +53,7 @@ func BuiltinPolicy() Policy {
 					BehaviorThinkingCounting: {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
-				EmptyMatchPolicy:  EmptyMatchLegacyHardPin,
+				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
 			},
 			{
 				ID: familyKimiK3,
@@ -66,7 +72,7 @@ func BuiltinPolicy() Policy {
 					BehaviorToolsDynamicNames:     {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
-				EmptyMatchPolicy:  EmptyMatchLegacyHardPin,
+				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
 				AdmissionSource:   AdmissionSourceMeasured,
 				AdmissionBattery: []string{
 					BehaviorThinkingCounting,
@@ -85,7 +91,7 @@ func BuiltinPolicy() Policy {
 					BehaviorFamilyWhole: {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
-				EmptyMatchPolicy:  EmptyMatchLegacyHardPin,
+				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
 			},
 		},
 	}

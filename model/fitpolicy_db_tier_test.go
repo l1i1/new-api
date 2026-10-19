@@ -120,4 +120,38 @@ func TestFitNarrowingFiltersBeforeTieringOnTheDBPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, withOpinion)
 	assert.Equal(t, 9002, withOpinion.Id)
+
+	// Best-effort fallback (2026-10-19): a group whose only channel is an
+	// aggregator has an empty official-behaviour set on the DB path too. The pin
+	// must keep the ordinary abilities instead of emptying the set, so an
+	// unavailable official fleet does not fail the request.
+	const fallbackGroup = "fit-fallback"
+	require.NoError(t, DB.Create(&Channel{Id: 9004, Type: 1, Name: "fit-fallback-aggregator", Status: 1, Models: "kimi-k3", Group: fallbackGroup, Priority: &high}).Error)
+	require.NoError(t, DB.Create(&Ability{Group: fallbackGroup, Model: "kimi-k3", ChannelId: 9004, Enabled: true, Priority: &high}).Error)
+
+	fallbackChannel, err := GetChannelWithBlockedChannelsPinnedWithFit(fallbackGroup, "kimi-k3", 0, "", nil, true, false, filter)
+	require.NoError(t, err)
+	require.NotNil(t, fallbackChannel)
+	assert.Equal(t, 9004, fallbackChannel.Id,
+		"best-effort keeps the ordinary ability set when no official channel exists")
+
+	strict := &FitChannelFilter{
+		Requirement: fitpolicy.Requirement{
+			Family: "kimi-k3", Model: "kimi-k3",
+			Marks:            []string{fitpolicy.BehaviorToolsChoiceSemantics},
+			EmptyMatchPolicy: fitpolicy.EmptyMatchLegacyHardPin,
+		},
+		MarkSatisfied: func(int) bool { return true },
+	}
+	strictChannel, err := GetChannelWithBlockedChannelsPinnedWithFit(fallbackGroup, "kimi-k3", 0, "", nil, true, false, strict)
+	require.NoError(t, err)
+	assert.Nil(t, strictChannel, "the strict policy keeps the empty set")
+
+	// The legacy pin without a policy opinion follows the same best-effort
+	// reading, so a pin can never become the only availability cliff.
+	legacyFallback, err := GetChannelWithBlockedChannelsPinnedWithFit(fallbackGroup, "kimi-k3", 0, "", nil, true, false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, legacyFallback)
+	assert.Equal(t, 9004, legacyFallback.Id,
+		"a pin without a policy opinion must not become an availability cliff")
 }

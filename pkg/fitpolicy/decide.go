@@ -43,8 +43,10 @@ type Requirement struct {
 	// not have to re-read the snapshot (which may have been replaced).
 	//
 	// UnknownMarkPolicy is read: it turns an absent mark into "not disproven"
-	// instead of "not supported". EmptyMatchPolicy is not read, because v1 has a
-	// single legal value and the narrowing implements exactly that behaviour.
+	// instead of "not supported". EmptyMatchPolicy is read too (since
+	// 2026-10-19): an empty official-behaviour set either falls through to the
+	// ordinary priority pool (best-effort, the default) or keeps the existing
+	// selection error (strict hard pin).
 	EmptyMatchPolicy  string
 	UnknownMarkPolicy string
 	// Admission is the family's admission rule bound to this decision: which

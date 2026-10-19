@@ -106,7 +106,7 @@ func TestDecideReportsPolicyIdentity(t *testing.T) {
 	if got.UnknownMarkPolicy != UnknownMarkConservative {
 		t.Fatalf("unknown mark policy = %q", got.UnknownMarkPolicy)
 	}
-	if got.EmptyMatchPolicy != EmptyMatchLegacyHardPin {
+	if got.EmptyMatchPolicy != EmptyMatchFallthroughPriority {
 		t.Fatalf("empty match policy = %q", got.EmptyMatchPolicy)
 	}
 	if got.Behaviors[BehaviorThinkingCounting] != ClassVerdict {
@@ -214,7 +214,7 @@ func TestPolicyValidationRejects(t *testing.T) {
 		"empty rule id":           func(p *Policy) { p.Families[0].Rules[0].ID = "" },
 		"invalid class":           func(p *Policy) { p.Families[0].Behaviors["b"] = Behavior{Class: "nope"} },
 		"invalid unknown policy":  func(p *Policy) { p.Families[0].UnknownMarkPolicy = "yolo" },
-		"unsupported empty match": func(p *Policy) { p.Families[0].EmptyMatchPolicy = "fallthrough_priority" },
+		"unsupported empty match": func(p *Policy) { p.Families[0].EmptyMatchPolicy = "yolo_fallback" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -466,13 +466,14 @@ func TestNarrowTwoPhase(t *testing.T) {
 	lowIDs := func(id int) bool { return id < 10 }
 
 	cases := []struct {
-		name        string
-		requirement Requirement
-		candidates  []int
-		satisfies   func(int) bool
-		wantApplied bool
-		want        []int
-		wantMatched bool
+		name         string
+		requirement  Requirement
+		candidates   []int
+		satisfies    func(int) bool
+		wantApplied  bool
+		want         []int
+		wantMatched  bool
+		wantFallback bool
 	}{
 		{
 			name:        "no opinion leaves the caller alone",
@@ -531,12 +532,34 @@ func TestNarrowTwoPhase(t *testing.T) {
 			want:        []int{2, 4},
 		},
 		{
-			name:        "no marked candidate and no official fallback yields an empty set",
-			requirement: opinion,
+			// The strict policy is the per-family rollback lever: it keeps the
+			// empty set so the caller reports its existing selection error.
+			name:        "strict policy keeps the empty set when no official fallback exists",
+			requirement: Requirement{Marks: []string{"m"}, EmptyMatchPolicy: EmptyMatchLegacyHardPin},
 			candidates:  []int{1, 3, 5},
 			satisfies:   func(int) bool { return false },
 			wantApplied: true,
 			want:        nil,
+		},
+		{
+			// The default since 2026-10-19: official fitting is best-effort, so
+			// an unavailable official fleet falls through to the ordinary
+			// priority pool instead of failing the request.
+			name:         "best-effort falls through to the ordinary candidates when no official fallback exists",
+			requirement:  opinion,
+			candidates:   []int{1, 3, 5},
+			satisfies:    func(int) bool { return false },
+			wantApplied:  true,
+			want:         nil,
+			wantFallback: true,
+		},
+		{
+			name:         "best-effort named explicitly falls through to the ordinary candidates",
+			requirement:  Requirement{Marks: []string{"m"}, EmptyMatchPolicy: EmptyMatchFallthroughPriority},
+			candidates:   []int{1, 3, 5},
+			satisfies:    func(int) bool { return false },
+			wantApplied:  true,
+			wantFallback: true,
 		},
 		{
 			name:        "empty candidate list yields an empty applied set",
@@ -568,6 +591,12 @@ func TestNarrowTwoPhase(t *testing.T) {
 			if got.PermittedByMarks != testCase.wantMatched {
 				t.Fatalf("PermittedByMarks = %v, want %v", got.PermittedByMarks, testCase.wantMatched)
 			}
+			if got.FallbackToPriority != testCase.wantFallback {
+				t.Fatalf("FallbackToPriority = %v, want %v", got.FallbackToPriority, testCase.wantFallback)
+			}
+			if got.FallbackToPriority && len(got.Channels) != 0 {
+				t.Fatalf("a fallback result must not carry a narrowed set, got %v", got.Channels)
+			}
 		})
 	}
 }
@@ -575,8 +604,46 @@ func TestNarrowTwoPhase(t *testing.T) {
 // TestNarrowMatchesLegacyOfficialPin proves the wiring cannot change routing
 // before the capability table exists: with no mark data the narrowed set is
 // exactly the official subset the legacy pin already selects.
+// TestNarrowEmptyMatchPolicyDefaultsToFallthrough pins the 2026-10-19 policy:
+// a requirement that names no empty-match policy is best-effort, so an empty
+// official-behaviour set hands the ordinary candidates back to the selector.
+func TestNarrowEmptyMatchPolicyDefaultsToFallthrough(t *testing.T) {
+	even := func(id int) bool { return id%2 == 0 }
+	requirement := Requirement{Marks: []string{"m"}}
+	if !requirement.FallthroughOnEmptyMatch() {
+		t.Fatal("the zero empty_match_policy must read as best-effort")
+	}
+	got := requirement.Narrow(
+		[]int{1, 3, 5}, even, func(int) bool { return false })
+	if !got.Applied || !got.FallbackToPriority {
+		t.Fatalf("Applied = %v, FallbackToPriority = %v; want true/true", got.Applied, got.FallbackToPriority)
+	}
+	if len(got.Channels) != 0 {
+		t.Fatalf("a fallback result must not carry a narrowed set, got %v", got.Channels)
+	}
+}
+
+// TestNarrowEmptyMatchPolicyStrictKeepsTheEmptySet pins the per-family rollback
+// lever: legacy_hard_pin_then_existing_error still empties the set so the caller
+// reports its existing selection error.
+func TestNarrowEmptyMatchPolicyStrictKeepsTheEmptySet(t *testing.T) {
+	even := func(id int) bool { return id%2 == 0 }
+	requirement := Requirement{Marks: []string{"m"}, EmptyMatchPolicy: EmptyMatchLegacyHardPin}
+	if requirement.FallthroughOnEmptyMatch() {
+		t.Fatal("the strict value must not read as best-effort")
+	}
+	got := requirement.Narrow(
+		[]int{1, 3, 5}, even, func(int) bool { return false })
+	if !got.Applied || got.FallbackToPriority {
+		t.Fatalf("Applied = %v, FallbackToPriority = %v; want true/false", got.Applied, got.FallbackToPriority)
+	}
+	if len(got.Channels) != 0 {
+		t.Fatalf("the strict policy must keep the empty set, got %v", got.Channels)
+	}
+}
+
 func TestNarrowMatchesLegacyOfficialPin(t *testing.T) {
-	opinion := Requirement{Marks: []string{"m"}}
+	opinion := Requirement{Marks: []string{"m"}, EmptyMatchPolicy: EmptyMatchLegacyHardPin}
 	candidates := []int{1, 2, 3, 4, 5, 6}
 	isOfficial := func(id int) bool { return id%2 == 0 }
 

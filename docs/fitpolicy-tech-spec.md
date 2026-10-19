@@ -187,7 +187,7 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
         "tools.dynamic_names":      {"class": "verdict"}
       },
       "unknown_mark_policy": "conservative",
-      "empty_match_policy": "legacy_hard_pin_then_existing_error"
+      "empty_match_policy": "fallthrough_priority"
     }
   ]
 }
@@ -197,7 +197,10 @@ out of scope (WS/任务/显式 pin/其他协议) ─► 完全不走 fitpolicy�
 - `rules[*].when`：expr 表达式，命中即表示"本请求需要 `require` 里的行为"（§6.3）。
 - `behaviors[*].class`：`verdict`（判决类：宁失败不失真）/ `capability`（能力类：换渠道即可）/ `courtesy`（体感类：可降级并标注）。**v1 三个值都接受、都校验、都随决策传递，但没有任何消费者按 class 分支**：写 `capability` 或 `courtesy` 不会改变失败处理方式，收窄对所有 require 一视同仁。当前文档里每个行为都是 `verdict`。写策略的人不要把 class 当成开关。
 - `unknown_mark_policy`：无标记的渠道如何处理——`conservative`（视为不支持，**标记当承诺用**）/ `permissive`（视为未知，即"未被证伪"）。v1 默认 conservative；该默认值在 shadow 阶段冻结，未经单独验收不得改。注意 `permissive` 下"未被证伪"不等于"已验证"：没有任何实测数据的渠道也会进入阶段 1，因此观测字段叫 `PermittedByMarks`（不是 MatchedMarks）。
-- `empty_match_policy`：收窄后为空时的口径。v1 只允许也**只实现** `legacy_hard_pin_then_existing_error`：先沿用现有 `official_fit_models ∪ 官方渠道类型` 硬 pin 集合；该集合为空时保留现有选择失败/官方错误语义，禁止回到普通未标记优先级池，禁止 fitpolicy 自造 4xx/5xx。因为只有一个合法值，决策期不读该字段（读它没有可分支的语义）；`fail_verbatim` / `fallthrough_priority` 不属于 v1，未来若启用必须另立指标、回滚演练和用户确认，并在 `pkg/fitpolicy/narrow.go` 里真正接上。
+- `empty_match_policy`：收窄后为空时的口径，**2026-10-19 修订**（用户决策：官方拟合不是绝对、是尽可能，可用性优先）。两个合法值：
+  - `fallthrough_priority`（**默认**）：官方行为集合为空时保留原候选集，按 priority 在普通池内正常选路，不失败。收益是官渠全不可用（全停用、重试全排除、measured 电池无人准入）时请求仍可用；代价是该请求可能落到未经官方行为验证的上游。日志 `fitpolicy narrow: ... fallback_to_priority=true`，measured 族同时保留空池告警。
+  - `legacy_hard_pin_then_existing_error`（**strict 回滚杠杆**，per-family）：保持 2026-10-19 前语义——空集保留现有选择失败/官方错误语义，禁止回到普通未标记优先级池，禁止 fitpolicy 自造 4xx/5xx。
+  两者都只影响**选路**：判决类错误（verdict）是否换渠道仍由 `retry_error_fidelity` 三态守卫决定（on 时 4xx 不换渠道），因此「官方说错」与「官渠不可用」仍是两条路径。`fail_verbatim` 仍不支持，未来若启用必须另立指标和回滚演练，并在 `pkg/fitpolicy/narrow.go` 里真正接上。
 - `admission_source`（§19，2026-10-03 新增）：`declared`（默认，字段出现前的唯一行为）或 `measured`。它选择**非官方类型渠道**如何获得官方行为资格：`declared` 读渠道自己的声明（`official_fit_models` 白名单）；`measured` 读 admission battery。族官方渠道类型（Moonshot 直连等）在两种 source 下都按身份准入——它是基线本身，不需要靠测量自证。**per-family**，因此 kimi-k3 可以先行、deepseek-v4 保持 declared；回滚 = 改文档（epoch 秒级）。
 - `admission_battery`（§19）：构成该族"官方等价"的完整行为集。仅当 `admission_source: measured` 时被读为准入条件；declared 模式下被携带用于 **shadow-admission** 日志（等价窗口的数据）。校验：每项必须在 `behaviors` 词汇表内（typo 不能静默缩小电池）、去重、上限 64 项；`measured` 必须带非空 battery。battery **永远按 conservative 语义评估**（unknown/stale/failed = 不准入），与族 `unknown_mark_policy` 无关：`permissive` 存在的意义是让阶段 1 不排除未测量渠道，从来不是让未测量渠道准入——准入是承诺。
 - **文档缺省 vs 显式清空**：选项从未写过时，节点装载**内置默认文档**（`fitpolicy.DefaultPolicy()`：内置规则 + `shadow:false`），使"没人配置过"的部署也走等价性测试证明过的那套规则；选项被显式清空（值为空串）时才是"无意见"的卸载杠杆。两者的区别由 `model/fitpolicy_option.go` 的 loader 保留，装载后由一行日志说明当前是哪一种；管理员文档与内置默认的差异每次装载都会记一条 `fitpolicy: the live document differs from the shipped default`（允许偏离，但不允许无声）。
@@ -468,7 +471,7 @@ func narrow(candidates, fit) []Channel:
 | 2 | v1 只覆盖精确 `POST /v1/chat/completions` + OpenAI chat relay；`/pg`、`/v1/completions`、`/v1/messages`、`/v1/responses/compact`、Gemini/embedding/audio/rerank、realtime WS、任务插件一律 no-op |
 | 3 | Responses WebSocket 不在 v1 范围，只做“不介入”非回归测试 |
 | 4 | 显式 `ChannelPin`（token/origin-task）与 token-specific 固定渠道短路 FitRequirement，保持现有 filter/policy/error/retry |
-| 5 | 空集策略 = `legacy_hard_pin_then_existing_error`：marked 优先 → official 等价结果 → 现有 nil/error；永不落普通聚合池 |
+| 5 | 空集策略 **（2026-10-19 修订）** = `fallthrough_priority`（默认，可用性优先：官方集合空时回退普通优先级池）；`legacy_hard_pin_then_existing_error` 保留为 per-family strict 回滚杠杆（marked 优先 → official 等价结果 → 现有 nil/error） |
 | 6 | `unknown_mark_policy = conservative`（v1 固定） |
 | 7 | 机制注册表边界：family id / channel type / wire shape / exact model names 仍是代码事实；新增族必须改代码 |
 | 8 | 显式启动注册（`main.go`）+ `sync.Once`，不依赖 `init()` 自注册 |
@@ -601,12 +604,13 @@ func narrow(candidates, fit) []Channel:
 1. **发布含本节的版本**（默认 declared，行为零变化；divergence 报告开始显示 admission 字段差异）。
 2. **写文档**：kimi-k3 声明 battery（declared source）。文档 hash 变化 → **此时才重跑套件**，marks 绑定新 hash——先武装再换 hash 等于白跑一遍。提交 `POST /api/fit-capability/report`（报告必须带新 policy_version/policy_hash，`ValidateSuiteReport` 强制校验）。
 3. **等价窗口 ≥48h**：消费 `fitpolicy admission shadow` 日志，确认 measured 集与 declared 集的差分符合预期（哪些渠道合格、哪些因 stale/缺行为出局）。
-4. **翻转**：kimi-k3 的 `admission_source` 改 `measured`（文档编辑，epoch 生效）。回滚 = 改回 declared。**翻转必然产生重武装间隙**：文档一改 policy hash 即变，既有 marks 全部 stale（绑定规则是安全特性，不能绕），battery 短暂谁都不准 → measured 池 = type 地板；ch8 停用时 = 空池，此间隙内 pinned 请求**诚实失败**。因此翻转的前置条件是**间隙期没有 route-on 的客户流量**（cdp route 保持关闭、仅剩自身探测 token），且翻转后**立即重跑套件**把 marks 绑到新 hash（工具自动从 /api/fit-policy 取 live binding，逐行为限速约 10 分钟）。顺序：写 v3 → 重武装 → 验证 battery 准入集 → 观察 measured-empty 告警应为无。
+4. **翻转**：kimi-k3 的 `admission_source` 改 `measured`（文档编辑，epoch 生效）。回滚 = 改回 declared。**翻转必然产生重武装间隙**：文档一改 policy hash 即变，既有 marks 全部 stale（绑定规则是安全特性，不能绕），battery 短暂谁都不准 → measured 池 = type 地板；ch8 停用时 = 空池，此间隙内 pinned 请求自 2026-10-19 起**回退普通优先级池**（不再硬失败，但会落到未验证上游）。因此翻转的前置条件仍是**间隙期没有 route-on 的客户流量**（cdp route 保持关闭、仅剩自身探测 token），且翻转后**立即重跑套件**把 marks 绑到新 hash（工具自动从 /api/fit-policy 取 live binding，逐行为限速约 10 分钟）。顺序：写 v3 → 重武装 → 验证 battery 准入集 → 观察 measured-empty 告警应为无。
 5. **deprecate `official_fit_models`**：分两步走完，最终状态（2026-10-03 深夜用户令"旧的都删掉，免得干扰"）是**整机制删除而非渐进弃用**。第一步（`.20`）曾按条件式落地（仅 measured 族新写入拒绝、携带放行、UI 条件隐藏）；第二步（`.21`）按用户令**彻底删除**：DTO 字段与 Normalize/Validate、`channel2officialFitModels` 缓存索引、谓词的 whitelist 分支、写闸本体、克隆路径接线、web 表单字段与 4 条 i18n 键（×7 语种）全部移除；`declared` 语义固化为**族官方类型直连**（未武装 battery 的族只有官方类型渠道可选——deepseek/glm 的 pinned 池=各自官方类型；删除前核实 deepseek route 用户仅休眠测试账号、glm 无 route 用户）；渠道 settings 里的存量键成为被 Go 解析器忽略的死 JSON（DB 残留在部署后清除）。历史决策依据仍有效：删除时 kimi-k3 已 measured、41/19 白名单残留已清、无 route-on 客户流量受影响。
 
 ### 19.4 接受的残余风险（写给签字的人）
 
 - **新鲜度 = 可用性（2026-10-05 修订）**：时间窗移除后，套件不必再为"续期"而跑；渠道仍会因**绑定变化**（策略文档或 baseline 改动）整体出局，届时需要重测来重新取得标记。套件停摆的后果因此从"30 天斜坡逐步出局"变成"下一次文档/baseline 变更时一次性出局"——风险更集中，应在改文档前安排重测。
+- **可用性回退的保真折损（2026-10-19 新增）**：官渠不可用时 pinned 请求默认按 priority 回退普通池，客户拿到的是可用但可能未经官方行为验证的上游；该路径在日志 `fallback_to_priority=true` 中可数，但不会阻断请求。需要严格保真的族把 `empty_match_policy` 写回 `legacy_hard_pin_then_existing_error`。
 - **电池覆盖缺口**：电池外的行为（计费一致性、罕见错误类）无人验证。缓解：电池只增不减、行为词汇表扩展走 spec。白名单时代同样有此缺口（ch41 在册照样 400），且不可观测。
 - **上游漂移**：官方端改行为后、基线文档更新前，旧基线绑定的 marks 仍"fresh"。与现状相同，不因本节恶化。
 - 探测成本 = 渠道数 × 电池大小 × 频率（真实请求计费）。kimi-k3 两渠道可忽略；规模化后是真实账单。
@@ -614,4 +618,13 @@ func narrow(candidates, fit) []Channel:
 ### 19.5 验收（已实现部分）
 
 - `pkg/fitpolicy/admission_test.go`：schema 校验（measured 需 battery、词汇表外拒绝、去重、上限）、`Decide` 携带 Admission（battery 拷贝不别名）、`Snapshot.AdmissionFor`、**DefaultPolicy 不含 admission 字段**（policy hash 对存量文档不变，兼容性闸门）、divergence 报告含 admission 差异、battery 重排不报差异、未知字段拒绝（rollout 契约）。
-- `model/channel_fit_admission_test.go`：declared 与旧谓词逐例等价（含 legacy wrapper）；measured 从 marks 准入（fresh ✓ / stale-hash ✗ / 部分满足 ✗ / measured-failed ✗ / 类型地板 ✓）；battery 保守语义（无 marks 不准入，无视 permissive）；收窄集成为 type∪battery、declared 不变、空集诚实失败；DB 路径（无内存缓存）装真实快照读 capability index。
+- `model/channel_fit_admission_test.go`：declared 与旧谓词逐例等价（含 legacy wrapper）；measured 从 marks 准入（fresh ✓ / stale-hash ✗ / 部分满足 ✗ / measured-failed ✗ / 类型地板 ✓）；battery 保守语义（无 marks 不准入，无视 permissive）；收窄集成为 type∪battery、declared 不变、空集默认回退普通池（strict 下诚实失败）；DB 路径（无内存缓存）装真实快照读 capability index。
+
+## 20. 2026-10-19 修订：空集策略改为可用性优先（best-effort）
+
+- **决策来源**：用户 2026-10-19 明确「官方拟合不是绝对，是尽可能；优先还是要保证可用性」。此前 v1 的硬 pin 会让官渠全不可用时 pinned 请求直接失败（单官渠族尤其明显）。
+- **实现**：`empty_match_policy` 默认改为 `fallthrough_priority`。`pkg/fitpolicy/narrow.go` 在官方行为集合为空且候选非空时返回 `FallbackToPriority=true` 且不携带收窄集；`model/fitpolicy_filter.go`、`model/channel_cache.go`（内存缓存路径）与 `model/ability.go`（DB 路径）保留原候选集；显式 `legacy_hard_pin_then_existing_error` 仍保留空集。
+- **不变**：判决类错误的重试守卫（`retry_error_fidelity` off/shadow/on）不变——官方 4xx 裁决在 on 下仍不换渠道；5xx/408/429 等可用性故障本来就可换渠。亲和门/亲和写入仍把 pinned 请求当作官方约束，回退不会让 pinned 请求写亲和绑定。
+- **观测**：`fitpolicy narrow` 日志新增 `fallback_to_priority=%t`；measured 族空池仍记 `measured admission kept no candidate` 告警（回退不消除测量故障本身）。
+- **回滚**：per-family 把 `empty_match_policy` 改回 `legacy_hard_pin_then_existing_error`（epoch 生效，无需发版）；全量回滚 = 代码 revert。
+- **验收**：`pkg/fitpolicy/fitpolicy_test.go`（strict vs 默认）、`model/channel_fit_admission_test.go`、`model/fitpolicy_filter_test.go`、`model/fitpolicy_db_tier_test.go`（DB 路径）、`controller/relay_fitpolicy_reuse_test.go`（重试期回退）。

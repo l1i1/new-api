@@ -1,5 +1,7 @@
 package fitpolicy
 
+import "strings"
+
 // Narrowing order.
 //
 // A policy opinion does not pick a channel; it narrows the candidates the
@@ -10,7 +12,9 @@ package fitpolicy
 //
 //	phase 1  candidates ∩ satisfied-marks                          (preferred)
 //	phase 2  candidates ∩ official-behaviour                        (fallback)
-//	phase 3  neither leaves anything                               (existing error)
+//	phase 3  phase 1 and 2 both empty:
+//	           strict      → the caller's existing selection error  (hard pin)
+//	           best-effort → the caller's ordinary candidate set    (availability)
 //
 // Phase 1 judges every candidate by the behaviours THIS request requires, not
 // only the officials: the caller's selector then decides by priority among
@@ -18,9 +22,18 @@ package fitpolicy
 // wins and the next one steps in when it does not. Phase 2 covers the case no
 // candidate carries the required behaviours: the family's official-behaviour
 // set (official channel type plus, for a measured family, the admission
-// battery) serves as the fallback, and an empty fallback keeps the empty set so
-// the caller reports its existing selection error rather than silently serving
-// from the ordinary pool.
+// battery) serves as the fallback.
+//
+// Phase 3 is the empty-match policy (2026-10-19). The default is best-effort:
+// when no official-behaving candidate exists — every official channel disabled,
+// the last one excluded after a failed attempt, the admission battery stale —
+// the selector keeps the candidate set it started with, so priority routing
+// serves the request instead of a selection failure. Official fitting is not
+// absolute; it is applied as far as it is achievable and availability wins. The
+// strict legacy policy keeps the empty set so the caller reports its existing
+// selection error; it remains available as the per-family rollback lever. Both
+// paths are reported (FallbackToPriority and the narrow log line), so a
+// degradation is visible rather than silent.
 //
 // With no capability data — the state before the first suite run, and the state
 // a node is in when its index is unavailable — phase 1 is empty and the result
@@ -32,11 +45,17 @@ type Narrowing struct {
 	// Applied reports whether the requirement constrained the candidates. When
 	// it is false the caller must keep its existing behaviour.
 	Applied bool
-	// Channels is the permitted candidate set when Applied is true. An empty
-	// set means no candidate satisfies the requirement, which the caller must
-	// surface through its existing selection error — never by widening the
-	// candidate set.
+	// Channels is the permitted candidate set when Applied is true and
+	// FallbackToPriority is false. An empty set means the strict empty-match
+	// policy kept the official set empty, which the caller must surface through
+	// its existing selection error — never by widening the candidate set.
 	Channels []int
+	// FallbackToPriority reports that the empty-match policy is best-effort and
+	// the official-behaviour set was empty: the caller must keep the ordinary
+	// priority pool it passed in. Channels is nil in this case and must not be
+	// read as "no candidates". This is the default since 2026-10-19; it is what
+	// makes official fitting best-effort instead of a hard availability cliff.
+	FallbackToPriority bool
 	// PermittedByMarks reports whether phase 1 produced the result (at least one
 	// candidate was not ruled out by the required behaviours). It distinguishes
 	// "narrowed by the marks" from "fell back to the official set" for
@@ -74,7 +93,7 @@ func (n Narrowing) Matched(channelID int) bool {
 	return false
 }
 
-// Narrow applies the two-phase narrowing.
+// Narrow applies the two-phase narrowing and the empty-match policy.
 //
 // isOfficial reports whether a candidate belongs to the family's
 // official-behaviour set (the official channel type, plus the admission
@@ -93,8 +112,12 @@ func (n Narrowing) Matched(channelID int) bool {
 // win when it measurably handles this request, and the next channel by
 // priority step in when it does not. Only when no candidate carries the
 // required behaviours does the official-behaviour set take over as the
-// fallback; an empty fallback keeps the empty set so the caller reports its
-// existing selection error rather than serving from the ordinary pool.
+// fallback.
+//
+// When the fallback is empty too, the family's empty-match policy decides
+// (2026-10-19). The default is best-effort: FallbackToPriority is set and the
+// caller keeps its ordinary candidate set. The strict value keeps the empty set
+// so the caller reports its existing selection error.
 func (r Requirement) Narrow(candidates []int, isOfficial func(int) bool, satisfiesMarks func(int) bool) Narrowing {
 	if !r.HasOpinion() || r.Shadow || isOfficial == nil {
 		return Narrowing{}
@@ -114,9 +137,29 @@ func (r Requirement) Narrow(candidates []int, isOfficial func(int) bool, satisfi
 		// empty Satisfied slice is carried on purpose: it says "the marks were
 		// evaluated and none carried them", which is what separates a failed
 		// mark from data that never existed.
-		return Narrowing{Applied: true, Channels: officialCandidates(candidates, isOfficial), Satisfied: marked}
+		return r.narrowToOfficial(candidates, officialCandidates(candidates, isOfficial), marked)
 	}
-	return Narrowing{Applied: true, Channels: officialCandidates(candidates, isOfficial)}
+	return r.narrowToOfficial(candidates, officialCandidates(candidates, isOfficial), nil)
+}
+
+// narrowToOfficial finishes a narrowing whose per-request gate did not decide.
+// An empty official set is the empty-match policy's call: best-effort reports
+// the fallback so the caller keeps its ordinary set, while the strict policy
+// keeps the empty set for the caller's existing error.
+func (r Requirement) narrowToOfficial(candidates, official, satisfied []int) Narrowing {
+	if len(official) == 0 && len(candidates) > 0 && r.FallthroughOnEmptyMatch() {
+		return Narrowing{Applied: true, FallbackToPriority: true, Satisfied: satisfied}
+	}
+	return Narrowing{Applied: true, Channels: official, Satisfied: satisfied}
+}
+
+// FallthroughOnEmptyMatch reports whether an empty official-behaviour set is
+// served from the ordinary priority pool instead of failing the request. The
+// zero value is the best-effort default, so a requirement built by hand (tests,
+// future callers) behaves like a document that names no policy; the strict
+// value is the only opt-out.
+func (r Requirement) FallthroughOnEmptyMatch() bool {
+	return strings.TrimSpace(r.EmptyMatchPolicy) != EmptyMatchLegacyHardPin
 }
 
 // officialCandidates keeps the candidates isOfficial admits, preserving the

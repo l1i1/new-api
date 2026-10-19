@@ -1017,9 +1017,12 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 // With the official-fit pin set the inference is sound, because that path narrows
 // before tiering (model/ability.go: path filter, blocked channels, official-fit
 // preference and video filter all run on the full set, and only then does
-// abilitiesAtRetryTier choose a tier). An empty result there really does mean no
-// permitted, path-compatible official channel is left — which is exactly the
-// single-official-channel shape this guard was written for.
+// abilitiesAtRetryTier choose a tier). Since the 2026-10-19 empty-match policy an
+// empty pinned selection normally falls through to the ordinary priority pool
+// inside model.preferOfficialFitChannels, so reaching this branch means the
+// fallback could not help either: the family opted into the strict hard pin or
+// the whole candidate set is gone. Either way no permitted, path-compatible
+// channel is left to answer.
 //
 // ChannelSelectionInternalError, ChannelSelectionModelNotConfigured and
 // ChannelSelectionAccessDenied are excluded for the reason they always were: each

@@ -85,12 +85,18 @@ type FamilyPolicy struct {
 	// EmptyMatchPolicy decides what happens when requirement narrowing leaves no
 	// candidate.
 	//
-	// v1 only allows legacy_hard_pin_then_existing_error, which is also the only
-	// behaviour implemented (see pkg/fitpolicy/narrow.go): phase 2 falls back to
-	// the official set and an empty official set keeps the caller's existing
-	// selection error. The field is validated so a document cannot ask for a
-	// fallback the code does not have; it is not yet read at decision time
-	// because there is exactly one legal value.
+	// "legacy_hard_pin_then_existing_error" keeps the pin hard: phase 2 falls
+	// back to the official set and an empty official set keeps the caller's
+	// existing selection error. "fallthrough_priority" (the default since
+	// 2026-10-19) makes official fitting best-effort: when the official set is
+	// empty the caller keeps the ordinary priority pool it started with, so a
+	// completely unavailable official fleet degrades to priority routing instead
+	// of failing the request. The operator's policy is explicit: official
+	// fitting is not absolute but as much as possible, and availability still
+	// comes first.
+	//
+	// The strict value stays legal on purpose: it is the per-family rollback
+	// lever, a document edit away, with no release needed.
 	EmptyMatchPolicy string `json:"empty_match_policy"`
 }
 
@@ -136,8 +142,15 @@ const (
 const (
 	// EmptyMatchLegacyHardPin falls back to today's official-behaviour candidate
 	// set and, when that is empty too, to the existing selection error. It never
-	// falls back to the ordinary priority pool.
+	// falls back to the ordinary priority pool. Kept as the per-family strict
+	// rollback lever.
 	EmptyMatchLegacyHardPin = "legacy_hard_pin_then_existing_error"
+	// EmptyMatchFallthroughPriority makes official fitting best-effort: when the
+	// official-behaviour fallback is empty too, the caller keeps the ordinary
+	// priority pool it started with instead of failing the request. This is the
+	// default for a family that names no policy (2026-10-19 operator policy:
+	// official fitting is not absolute, availability comes first).
+	EmptyMatchFallthroughPriority = "fallthrough_priority"
 )
 
 const (
@@ -244,8 +257,8 @@ func (f FamilyPolicy) validate() error {
 		}
 	}
 	if switchValue := strings.TrimSpace(f.EmptyMatchPolicy); switchValue != "" {
-		if switchValue != EmptyMatchLegacyHardPin {
-			return fmt.Errorf("%w: family %q empty_match_policy %q is not supported in v1", ErrPolicyInvalid, id, switchValue)
+		if switchValue != EmptyMatchLegacyHardPin && switchValue != EmptyMatchFallthroughPriority {
+			return fmt.Errorf("%w: family %q empty_match_policy %q is not supported", ErrPolicyInvalid, id, switchValue)
 		}
 	}
 	if len(f.Rules) > MaxRulesPerFamily {
@@ -333,12 +346,16 @@ func (f FamilyPolicy) UnknownMarkPolicyOrDefault() string {
 	return UnknownMarkConservative
 }
 
-// EmptyMatchPolicyOrDefault returns the family's policy or the v1 default.
+// EmptyMatchPolicyOrDefault returns the family's policy or the default. The
+// default is fallthrough_priority: official fitting is best-effort, so an
+// unavailable official fleet degrades to priority routing instead of failing
+// the request. legacy_hard_pin_then_existing_error is the per-family strict
+// opt-out and the rollback lever.
 func (f FamilyPolicy) EmptyMatchPolicyOrDefault() string {
 	if value := strings.TrimSpace(f.EmptyMatchPolicy); value != "" {
 		return value
 	}
-	return EmptyMatchLegacyHardPin
+	return EmptyMatchFallthroughPriority
 }
 
 // AdmissionSourceOrDefault returns the family's admission source or the

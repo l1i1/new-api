@@ -3412,6 +3412,90 @@
           ]
         }
       ]
+    },
+    {
+      "id": "official-fit-空官渠回退按优先级-1",
+      "title": "official-fit：空官渠回退按优先级（2026-10-19 用户政策）——族级 empty_match_policy 第三阶段，默认 fallthrough_priority：官方行为集合为空（官渠全停用/被重试排除/measured 电池无候选）时保留调用方普通候选集按 priority 选路；legacy_hard_pin_then_existing_error 保留为每族严格回滚杠杆。verdict 守卫不变（4xx 除 408/429 原样透传），回退仅覆盖可用性故障；narrow 日志 fallback_to_priority=%t 记录降级",
+      "risk": "high",
+      "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+      "files": [
+        "pkg/fitpolicy/narrow.go",
+        "pkg/fitpolicy/policy.go",
+        "pkg/fitpolicy/builtin.go",
+        "pkg/fitpolicy/decide.go",
+        "model/channel_cache.go",
+        "model/ability.go",
+        "model/fitpolicy_filter.go",
+        "controller/relay.go",
+        "service/relay_error.go",
+        "docs/official-fit-mode.md",
+        "docs/fitpolicy-tech-spec.md"
+      ],
+      "anchors": [
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/narrow.go",
+          "name": "func (r Requirement) FallthroughOnEmptyMatch("
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/policy.go",
+          "name": "EmptyMatchFallthroughPriority = \"fallthrough_priority\""
+        },
+        {
+          "kind": "symbol",
+          "file": "pkg/fitpolicy/narrow.go",
+          "name": "FallbackToPriority bool"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/fitpolicy_filter.go",
+          "name": "result.FallbackToPriority"
+        },
+        {
+          "kind": "symbol",
+          "file": "model/ability.go",
+          "name": "func preferOfficialFitAbilities("
+        },
+        {
+          "kind": "symbol",
+          "file": "model/channel_cache.go",
+          "name": "func preferOfficialFitChannels("
+        }
+      ],
+      "tests": [
+        {
+          "file": "pkg/fitpolicy/fitpolicy_test.go",
+          "names": [
+            "TestNarrowEmptyMatchPolicyDefaultsToFallthrough",
+            "TestNarrowEmptyMatchPolicyStrictKeepsTheEmptySet"
+          ]
+        },
+        {
+          "file": "model/channel_fit_admission_test.go",
+          "names": [
+            "TestNarrowChannelsUnderMeasuredAdmission"
+          ]
+        },
+        {
+          "file": "model/fitpolicy_filter_test.go",
+          "names": [
+            "TestFitAwareSelectionFailsClosedWhenNoMarkedChannel"
+          ]
+        },
+        {
+          "file": "model/fitpolicy_db_tier_test.go",
+          "names": [
+            "TestFitNarrowingFiltersBeforeTieringOnTheDBPath"
+          ]
+        },
+        {
+          "file": "controller/relay_fitpolicy_reuse_test.go",
+          "names": [
+            "TestGetChannelReuseBranchCannotIntroduceUnconstrainedChannel"
+          ]
+        }
+      ]
     }
   ]
 }
