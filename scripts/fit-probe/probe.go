@@ -134,6 +134,21 @@ func functionTool(name string) map[string]any {
 // changes from 1 to 8 completion tokens and nothing else moves.
 const logprobsProbeMaxTokens = 8
 
+// referenceProbeMaxTokens is the budget of the bare reference request that
+// normalizes the prompt_tokens discriminator (classifyForFamily). One token is
+// enough: the reference is read for its prompt accounting only.
+const referenceProbeMaxTokens = 1
+
+// referenceBody is the bare single-turn request used as the per-channel and
+// per-official prompt-accounting reference. Its messages are the same "hi" turn
+// every prompt_tokens probe starts from, so the difference between a probe's
+// prompt_tokens and this reference is the accounting the mark is about, with
+// the channel's own tokenizer/billing offset cancelled out. See
+// classifyForFamily.
+func referenceBody(model string) map[string]any {
+	return chatBody(model, []map[string]any{userMessage("hi")}, referenceProbeMaxTokens)
+}
+
 // toolsChoiceSemanticsProbeMaxTokens is the generation budget of the
 // tools.choice_semantics probe. It must stay above the cost of a real tool
 // call: at the original 16-token cap the eight kimi-k3 rows that produced no
@@ -923,13 +938,13 @@ func (sig signature) looksTruncated(maxTokens int, evidenceIsGeneratedOutput boo
 // equality of a token count cannot be observed without the reference count.
 // classify judges one response without a family context.
 func classify(spec ProbeSpec, exp Expectation, baseline *signature, channel signature) (verdict, string, string, string) {
-	return classifyForFamily(spec, exp, baseline, channel, "")
+	return classifyForFamily(spec, exp, baseline, channel, "", nil, nil)
 }
 
 // classifyForFamily judges one response against the expectation for a known
 // official family. The family selects the evidence rule (see
 // structuralEvidenceForFamily) and the generation budget the probe actually used.
-func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, channel signature, familyName string) (verdict, string, string, string) {
+func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, channel signature, familyName string, baselineRef, channelRef *signature) (verdict, string, string, string) {
 	if channel.Status == 0 {
 		return verdictInconclusive, strengthAcceptance, "probe was not executed (transport error)", ""
 	}
@@ -990,6 +1005,17 @@ func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, cha
 	}
 	if hasMeasuredBaseline && spec.StructuralCompare != nil {
 		if shapes := spec.StructuralCompare(*baseline, channel); len(shapes) > 0 {
+			// A generated-output difference on an answer the probe's own budget
+			// cut short is not attributable to the channel: the official side
+			// had room to emit the structure and this side may not have. The
+			// budget is the family's own (MaxTokensForFamily), because Build
+			// sends that value rather than the spec's nominal one.
+			budget := spec.budgetFor(familyName)
+			if spec.EvidenceIsGeneratedOutput && channel.looksTruncated(budget, spec.EvidenceIsGeneratedOutput) {
+				return verdictInconclusive, strength,
+					"structural fields differ from the measured official baseline, but the channel's answer looks truncated at the probe's own token cap (max_tokens=" + itoa(budget) + ", completion_tokens=" + itoa(channel.CompletionTokens) + "), so the difference cannot be attributed to the channel",
+					strings.Join(shapes, "; ")
+			}
 			return verdictDivergence, strengthStructural, "structural fields differ from the measured official baseline", strings.Join(shapes, "; ")
 		}
 	}
@@ -1002,6 +1028,25 @@ func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, cha
 		switch {
 		case baseline.PromptTokens < 0 || channel.PromptTokens < 0:
 			return verdictInconclusive, strength, "prompt_tokens missing on one side; the doc-derived discriminator cannot be checked", ""
+		case baselineRef != nil && channelRef != nil && baselineRef.PromptTokens >= 0 && channelRef.PromptTokens >= 0:
+			// Compare the delta from the bare reference, not the absolute
+			// count: two upstreams may report different prompt accounting for
+			// byte-identical requests (different tokenizer/billing base), and
+			// an absolute comparison then writes a divergence for a channel
+			// that behaves exactly like the official endpoint (measured
+			// 2026-10-21 on glm-5.3: ch17 reports a constant +26 and ch79 a
+			// constant -9 against the official count while the assistant-turn
+			// increment matched official on both). The reference cancels that
+			// offset; a channel that really drops the shape still diverges.
+			officialDelta := baseline.PromptTokens - baselineRef.PromptTokens
+			channelDelta := channel.PromptTokens - channelRef.PromptTokens
+			if absInt(channelDelta-officialDelta) > promptTokensTolerance(officialDelta) {
+				return verdictDivergence, strength,
+					"prompt_tokens delta differs from the measured official baseline",
+					"delta official=" + signedItoa(officialDelta) + " channel=" + signedItoa(channelDelta) +
+						" (absolute official " + itoa(baselineRef.PromptTokens) + "->" + itoa(baseline.PromptTokens) +
+						", channel " + itoa(channelRef.PromptTokens) + "->" + itoa(channel.PromptTokens) + ")"
+			}
 		case baseline.PromptTokens != channel.PromptTokens:
 			return verdictDivergence, strength,
 				"prompt_tokens differ from the measured official baseline",
@@ -1065,6 +1110,40 @@ func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, cha
 			"channel accepted the shape; the expectation table marks the official endpoint as " + exp.Official + " (acceptance-level evidence only)", ""
 	}
 	return verdictInconclusive, strength, "no structural evidence and no measured baseline to confirm acceptance", ""
+}
+
+// promptTokensTolerance is how far a channel's prompt-token delta may differ
+// from the official delta before it counts as diverging. The bare reference
+// cancels a constant tokenizer/billing offset; what remains is small accounting
+// noise between implementations (message framing, system/role overhead). An
+// official delta that is itself large (kimi's documented thinking-on delta)
+// tolerates proportionally more; a single-token delta accepts one token of
+// slack, which is the resolution the glm-5.3 tools probes can offer.
+func promptTokensTolerance(officialDelta int) int {
+	if officialDelta < 0 {
+		officialDelta = -officialDelta
+	}
+	tolerance := officialDelta / 8
+	if tolerance < 1 {
+		tolerance = 1
+	}
+	return tolerance
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+// signedItoa renders a delta with an explicit sign so a report line cannot be
+// misread as an absolute count.
+func signedItoa(value int) string {
+	if value < 0 {
+		return "-" + itoa(-value)
+	}
+	return "+" + itoa(value)
 }
 
 // structuralEvidence reports whether this tool knows how to test the mark's

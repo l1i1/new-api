@@ -404,6 +404,16 @@ func run(ctx context.Context, opts options, stdout, stderr io.Writer) error {
 		samples := make([][]roundRecord, len(targets))
 		for round := 1; round <= rounds; round++ {
 			baselines := map[string]*signature{}
+			// The bare reference is measured once per channel/model and once
+			// per family/model in each round and shared by every
+			// prompt_tokens-discriminated row. It is what lets that comparison
+			// be a delta instead of an absolute count (classifyForFamily): the
+			// channel's own tokenizer/billing offset cancels against its own
+			// reference, and the official offset against the official
+			// reference. Everything else still compares the identical
+			// marshalled body sent to both sides.
+			channelRefs := map[referenceKey]*signature{}
+			familyRefs := map[string]*signature{}
 			for index, target := range targets {
 				if !probeable[index] {
 					continue
@@ -427,7 +437,25 @@ func run(ctx context.Context, opts options, stdout, stderr io.Writer) error {
 				sig, attempts, transport := probeChannel(ctx, api, target, spec, body)
 				annotateErrorField(&sig, spec.Fields)
 				exp := expectationFor(target.Family, target.Behavior)
-				verdictValue, strength, basis, shape := classifyForFamily(spec, exp, baseline, sig, target.Family)
+				var baselineRef, channelRef *signature
+				if baseline != nil && hasDiscriminator(exp, discPromptTokens) {
+					refBody := referenceBody(target.Model)
+					refKey := referenceKey{channelID: target.ChannelID, model: target.Model}
+					if ref, ok := channelRefs[refKey]; ok {
+						channelRef = ref
+					} else {
+						channelRef = probeRelaySignature(ctx, api, target.ChannelID, refBody)
+						channelRefs[refKey] = channelRef
+					}
+					famKey := target.Family + "\x00" + target.Model
+					if ref, ok := familyRefs[famKey]; ok {
+						baselineRef = ref
+					} else {
+						baselineRef = probeOfficialSignature(ctx, api, opts, target.Family, refBody)
+						familyRefs[famKey] = baselineRef
+					}
+				}
+				verdictValue, strength, basis, shape := classifyForFamily(spec, exp, baseline, sig, target.Family, baselineRef, channelRef)
 				samples[index] = append(samples[index], roundRecord{
 					Round:      round,
 					Verdict:    verdictValue,
@@ -827,6 +855,53 @@ func probeOfficialBaseline(ctx context.Context, api *client, opts options, tgt t
 		return nil
 	}
 	sig := extractSignature(status, payload)
+	return &sig
+}
+
+// referenceKey identifies one channel's bare prompt-accounting reference.
+type referenceKey struct {
+	channelID int
+	model     string
+}
+
+// probeRelaySignature sends one bare reference request to one pinned channel.
+// The reference is not a mark: it only carries prompt_tokens, and a failed
+// reference leaves the prompt_tokens comparison on its absolute path rather
+// than inventing a delta.
+func probeRelaySignature(ctx context.Context, api *client, channelID int, body map[string]any) *signature {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	status, response, err := api.probeRelay(ctx, channelID, chatPath, payload)
+	if err != nil {
+		return nil
+	}
+	sig := extractSignature(status, response)
+	return &sig
+}
+
+// probeOfficialSignature is probeRelaySignature's official leg, with the same
+// family lookup probeOfficialBaseline uses.
+func probeOfficialSignature(ctx context.Context, api *client, opts options, family string, body map[string]any) *signature {
+	base := lookupFamilyValue(opts.officialURL, family)
+	keyEnv := lookupFamilyValue(opts.officialKeyEnv, family)
+	if base == "" || keyEnv == "" {
+		return nil
+	}
+	key := strings.TrimSpace(os.Getenv(keyEnv))
+	if key == "" {
+		return nil
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	status, response, err := api.probeOfficial(ctx, base, key, chatPath, payload)
+	if err != nil {
+		return nil
+	}
+	sig := extractSignature(status, response)
 	return &sig
 }
 

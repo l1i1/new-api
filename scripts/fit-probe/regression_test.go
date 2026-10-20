@@ -262,8 +262,11 @@ func TestR2BaselineIsMeasuredPerBehaviourRequest(t *testing.T) {
 	}
 	// 6 deepseek-v4 marks (logprobs/image/thinking/tool_choice/stop/empty
 	// content) + 5 kimi-k3 marks + 1 glm-5.3 mark.
-	if len(relayBodies) != 12 {
-		t.Fatalf("relay saw %d distinct probe bodies, want 12", len(relayBodies))
+	// The 12 mark bodies plus the two bare prompt-accounting references the
+	// prompt_tokens discriminators need in this scope (kimi-k3 and glm-5.3;
+	// deepseek-v4 has no prompt_tokens-only mark here).
+	if len(relayBodies) != 14 {
+		t.Fatalf("relay saw %d distinct bodies, want 14 (12 mark bodies + 2 references)", len(relayBodies))
 	}
 
 	var report fitpolicy.SuiteReport
@@ -2490,7 +2493,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	accountingOnly := base
 	accountingOnly.CompletionTokens = 264
 	accountingOnly.ReasoningTokens = 213
-	verdict, strength, basis, _ := classifyForFamily(spec, exp, nil, accountingOnly, "glm-5.3")
+	verdict, strength, basis, _ := classifyForFamily(spec, exp, nil, accountingOnly, "glm-5.3", nil, nil)
 	if verdict != verdictDivergence || strength != strengthStructural {
 		t.Fatalf("accounting without reasoning: verdict=%q strength=%q basis=%q, want divergence/structural", verdict, strength, basis)
 	}
@@ -2501,7 +2504,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	// Same accounting, but no tool call: the replay path never ran.
 	notExercised := accountingOnly
 	notExercised.HasToolCalls = false
-	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, notExercised, "glm-5.3")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, notExercised, "glm-5.3", nil, nil)
 	if verdict != verdictInconclusive || !strings.Contains(basis, "thinking-replay path was not exercised") {
 		t.Fatalf("no tool call: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
 	}
@@ -2511,7 +2514,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	replayable.CompletionTokens = 258
 	replayable.ReasoningTokens = 214
 	replayable.HasReasoningContent = true
-	if verdict, _, basis, _ = classifyForFamily(spec, exp, nil, replayable, "glm-5.3"); verdict != verdictConsistent {
+	if verdict, _, basis, _ = classifyForFamily(spec, exp, nil, replayable, "glm-5.3", nil, nil); verdict != verdictConsistent {
 		t.Fatalf("tool call with reasoning_content: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 
@@ -2520,7 +2523,7 @@ func TestGlmThinkingCountingRequiresReplayableReasoningOnAToolCall(t *testing.T)
 	deepseekExp := expectationFor("deepseek-v4", fitpolicy.BehaviorThinkingCounting)
 	accountingDeepseek := accountingOnly
 	accountingDeepseek.HasToolCalls = false
-	if verdict, _, basis, _ = classifyForFamily(spec, deepseekExp, nil, accountingDeepseek, "deepseek-v4"); verdict != verdictConsistent {
+	if verdict, _, basis, _ = classifyForFamily(spec, deepseekExp, nil, accountingDeepseek, "deepseek-v4", nil, nil); verdict != verdictConsistent {
 		t.Fatalf("deepseek accounting: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 }
@@ -2556,24 +2559,95 @@ func TestStopSequenceEvidenceIsTheOutput(t *testing.T) {
 		}
 	}
 
-	if verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 16, "1 2 3 ... 16"), "deepseek-v4"); verdict != verdictConsistent {
+	if verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 16, "1 2 3 ... 16"), "deepseek-v4", nil, nil); verdict != verdictConsistent {
 		t.Fatalf("honoured stop: verdict=%q basis=%q, want consistent", verdict, basis)
 	}
 
-	verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 40, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	verdict, _, basis, _ := classifyForFamily(spec, exp, nil, answer("stop", 40, "1 2 3 ... 17 18 19"), "deepseek-v4", nil, nil)
 	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
 		t.Fatalf("leaked stop: verdict=%q basis=%q, want divergence naming the leak", verdict, basis)
 	}
 
 	// Leaked *and* cut at the cap: the truncation clause must not excuse it.
-	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3 ... 17 18 19"), "deepseek-v4")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3 ... 17 18 19"), "deepseek-v4", nil, nil)
 	if verdict != verdictDivergence || !strings.Contains(basis, "ran past it") {
 		t.Fatalf("leaked stop at the cap: verdict=%q basis=%q, want divergence (not a truncation excuse)", verdict, basis)
 	}
 
 	// Never reached the sequence: nothing to say about `stop`.
-	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3"), "deepseek-v4")
+	verdict, _, basis, _ = classifyForFamily(spec, exp, nil, answer("length", spec.MaxTokens, "1 2 3"), "deepseek-v4", nil, nil)
 	if verdict != verdictInconclusive || !strings.Contains(basis, "did not exercise") {
 		t.Fatalf("stop never reached: verdict=%q basis=%q, want inconclusive naming the unexercised path", verdict, basis)
+	}
+}
+
+// R21: the prompt_tokens discriminator was compared as an absolute count. Two
+// upstreams may report different prompt accounting for byte-identical requests
+// (measured 2026-10-21 on glm-5.3: ch17 reports a constant +26 and ch79 a
+// constant -9 against the official count), so a channel whose accounting moved
+// exactly like the official endpoint's was written as supported=false. With a
+// bare reference measured on both sides the comparison is a delta and that
+// offset cancels; a channel that really differs still diverges.
+func TestR21PromptTokensCompareCancelsPerUpstreamOffset(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorHistoryAssistantFirst]
+	exp := expectationFor("glm-5.3", fitpolicy.BehaviorHistoryAssistantFirst)
+
+	if body := referenceBody("glm-5.3-flash"); body["max_tokens"] != referenceProbeMaxTokens {
+		t.Fatalf("reference body max_tokens = %v, want %d: the reference must be the cheapest prompt-accounting read", body["max_tokens"], referenceProbeMaxTokens)
+	}
+
+	officialRef := &signature{Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true, PromptTokens: 13}
+	official := &signature{Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true, PromptTokens: 18} // +5 for the assistant turn
+
+	// ch79: constant -9 offset, the same +5 increment as official.
+	channelRef := &signature{Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true, PromptTokens: 4}
+	channel := &signature{Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true, PromptTokens: 9}
+	if verdict, strength, basis, shape := classifyForFamily(spec, exp, official, *channel, "glm-5.3", officialRef, channelRef); verdict != verdictConsistent || strength != strengthAcceptance {
+		t.Fatalf("tokenizer-offset channel = (%q, %q) (%s; %s), want (%q, %q): its delta matches official, the offset is its own tokenizer", verdict, strength, basis, shape, verdictConsistent, strengthAcceptance)
+	}
+
+	// A channel that does not count the assistant turn diverges: delta 0 where
+	// official is +5 (measured on ch78).
+	dropped := &signature{Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true, PromptTokens: 13}
+	if verdict, _, basis, shape := classifyForFamily(spec, exp, official, *dropped, "glm-5.3", officialRef, channelRef); verdict != verdictDivergence {
+		t.Fatalf("a channel that does not count the assistant turn = %q (%s; %s), want divergence", verdict, basis, shape)
+	}
+
+	// Without both references the comparison stays on the old absolute path.
+	if verdict, _, _, _ := classifyForFamily(spec, exp, official, *channel, "glm-5.3", nil, nil); verdict != verdictDivergence {
+		t.Fatalf("without references the absolute comparison must stay in force, got %q", verdict)
+	}
+}
+
+// R22: a generated-output difference against a measured baseline used to be
+// returned as divergence before the truncation guard ran. Measured 2026-10-21:
+// a glm-5.3 channel that answered a real reasoning prompt with content only was
+// cut at the probe's own cap, and only the budget differed from the official
+// leg. The difference cannot be attributed to the channel, so it must stay
+// undecided rather than become supported=false.
+func TestR22TruncatedGeneratedDifferenceWithBaselineIsInconclusive(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorToolsChoiceSemantics]
+	exp := expectationFor("kimi-k3", fitpolicy.BehaviorToolsChoiceSemantics)
+	budget := spec.budgetFor("kimi-k3")
+	baseline := &signature{
+		Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+		HasContent: true, HasToolCalls: true, HasFinishReason: true,
+		PromptTokens: 23, CompletionTokens: 5, finishReason: "stop",
+	}
+	truncated := signature{
+		Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+		HasContent: false, HasToolCalls: false, HasFinishReason: true,
+		PromptTokens: 23, CompletionTokens: budget, finishReason: finishReasonLength,
+	}
+	if verdict, _, basis, shape := classifyForFamily(spec, exp, baseline, truncated, "kimi-k3", nil, nil); verdict != verdictInconclusive {
+		t.Fatalf("a truncated answer at the probe's own cap = %q (%s; %s), want inconclusive: the budget decided, not the channel", verdict, basis, shape)
+	}
+
+	// The same channel at a finish below the budget is a real difference.
+	finished := truncated
+	finished.CompletionTokens = budget / 2
+	finished.finishReason = "stop"
+	if verdict, _, basis, _ := classifyForFamily(spec, exp, baseline, finished, "kimi-k3", nil, nil); verdict != verdictDivergence {
+		t.Fatalf("a finished answer without tool_calls under a measured baseline = %q (%s), want divergence", verdict, basis)
 	}
 }

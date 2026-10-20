@@ -491,10 +491,17 @@ What configuring an official baseline changes:
   (`scripts/fit-probe/main.go:411-427`, `scripts/fit-probe/client.go:194-206`).
 - A baseline that the official endpoint itself rejects or does not accept is unusable and the row
   stays inconclusive (`scripts/fit-probe/probe.go:686-690`).
-- With an accepted baseline, the mark's structural comparison runs, and the `prompt_tokens`
-  discriminator is checked: equal counts on a `prompt_tokens`-only mark ⇒ consistent, a difference ⇒
-  divergence — both at that mark's own tier, so both land behind `--acceptance-marks`
-  (`scripts/fit-probe/probe.go:720-742`, `scripts/fit-probe/report.go:178-186`).
+- With an accepted baseline, the mark's structural comparison runs. A generated-output difference
+  is first checked against the probe's own budget: an answer that looks cut off at the cap stays
+  inconclusive instead of becoming `supported=false` (the family's own cap is used, because
+  `MaxTokensForFamily` is what `Build` sends).
+- The `prompt_tokens` discriminator is compared as a **delta from a bare reference**, not as an
+  absolute count: one plain `hi`/cap-1 request is measured per (channel, model) and per
+  (official family, model) in every round, and the channel delta must match the official delta
+  within `promptTokensTolerance(officialDelta)` (`max(1, |officialDelta|/8)`). Without both
+  references the comparison falls back to absolute equality. The reference adds one relay and one
+  official request per distinct (channel/ family, model) per round. Both directions stay at the
+  mark's own tier, so both land behind `--acceptance-marks`.
 - The baseline is re-measured every round, so it is part of the per-round cost
   (`scripts/fit-probe/main.go:396-403`, `scripts/fit-probe/rounds.go:28-30`).
 - `--explain` reports what was actually used: `baseline.source` is `docs` for the table or `measured`
@@ -729,3 +736,40 @@ Baseline note: with no official Zhipu key on this machine, the measured baseline
 was taken through the relay with a channel-pinned key (`sk-<key>-7`, i.e. the
 official channel as the reference), which is the same path the customer uses.
 The tool records that in `baseline.source = "measured"`.
+
+---
+
+## 10. Revision note — prompt-accounting normalization (2026-10-21)
+
+Completing the glm-5.3-flash marks at policy v13 (`dd231db0…`) surfaced one
+further artefact on top of the review fixes that introduced
+`MaxTokensForFamily`/`RequiresExercise`/`NegativeEvidence`:
+
+**Absolute prompt-token comparison compared tokenizers, not behaviour.** With a
+measured official baseline, the official leg counts a plain `hi` at 13 prompt
+tokens, ch17 at 39 (constant +26) and ch79 at 4 (constant −9). Every
+`prompt_tokens`-only mark therefore diverged on the offset alone — including
+`history.assistant_first`, where the increment matched official exactly (+5 on
+all three channels). The comparison is now a delta against a bare `<hi, cap 1>`
+reference measured on both legs in the same round (`referenceBody`,
+`promptTokensTolerance`); a channel that drops the assistant turn still
+diverges (ch78: +0 against official +5). The family-aware structural
+comparison also runs through the truncation guard now, so a short answer is
+inconclusive rather than `supported=false`.
+
+Measured outcome (official Zhipu ch7 as the reference, `--rounds 3`):
+
+| channel | family.whole | thinking | tool_choice | json | history | dynamic |
+|---|---|---|---|---|---|---|
+| ch17 `DEF_zz-3` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| ch78 `DEF_neurvibe` | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
+| ch79 `DEF_YJ-WB-Pro` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+
+The thinking rows are the same conclusion the earlier `hi`-probe note in §9
+predicted: none of the reseller backends reproduces official reasoning. They
+answer a real reasoning prompt with `content` only (ch17/ch79 emit a few
+reasoning tokens only at `reasoning_effort=high`; ch78 none at all), while the
+official channel returns `reasoning_content`. With those marks written, no
+reseller passes glm-5.3's measured admission battery, so official-fit GLM
+requests fall back to the official channel — verified live: traffic moved to
+ch7 within a minute of the write (01:54, 46 requests/min).
