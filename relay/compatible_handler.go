@@ -112,17 +112,26 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return nil
 	}
 
-	// Internal-stream mode (dto.ChannelSettings.InternalStreamForNonStream): the
-	// client asked for one JSON body, but this channel is served by calling the
-	// upstream with stream=true and buffering the deltas back into a single
-	// response - see relay/channel/openai.OaiChatBufferedStreamHandler for why.
+	// Internal-stream mode: the client asked for one JSON body, but this
+	// channel's upstream is called with stream=true and the deltas are buffered
+	// back into a single response - see
+	// relay/channel/openai.OaiChatBufferedStreamHandler.
+	//
+	// Two channel flags select it, for two different reasons:
+	//   - ChannelSettings.InternalStreamForNonStream (setting column): a
+	//     non-streaming request would otherwise be bounded by
+	//     RELAY_RESPONSE_HEADER_TIMEOUT;
+	//   - ChannelOtherSettings.StreamOnlyUpstream (settings column): the
+	//     upstream rejects stream=false outright (WorkBuddy, HTTP 400 code
+	//     11101), so streaming is the only request shape it accepts.
 	//
 	// info.IsStream is deliberately left false here. It gates
 	// relay/channel/api_request.go's SetEventStreamHeaders, and the client must
 	// still receive a plain JSON body; the streaming happens only on the upstream
 	// leg. Pass-through channels are excluded because their body is forwarded
 	// verbatim and cannot be rewritten.
-	internalStreamForNonStream := info.ChannelSetting.InternalStreamForNonStream &&
+	internalStreamForNonStream := (info.ChannelSetting.InternalStreamForNonStream ||
+		info.ChannelOtherSettings.StreamOnlyUpstream) &&
 		!info.IsStream &&
 		!passThroughRequestBody &&
 		info.RelayMode == relayconstant.RelayModeChatCompletions &&

@@ -876,6 +876,17 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	} else if len(rewritten) > 0 {
 		responseBody = rewritten
 	}
+	// Opt-in per channel: return a stable field set even when the upstream omits
+	// optional fields on some responses. Runs after the override so the
+	// configured client shape is the one being stabilized.
+	if info.RelayFormat == types.RelayFormatOpenAI && info.ChannelOtherSettings.NormalizeResponseShape {
+		normalized, normalizeErr := NormalizeResponseShape(responseBody)
+		if normalizeErr != nil {
+			logger.LogDebug(c, "response shape normalization skipped for channel #%d: %v", info.ChannelId, normalizeErr)
+		} else {
+			responseBody = normalized
+		}
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil

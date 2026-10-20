@@ -1,8 +1,8 @@
 package oaichat
 
 import (
-	"strings"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"

@@ -41,10 +41,10 @@ func TestUsageForClientZeroesImplausibleUsage(t *testing.T) {
 	}
 
 	for name, got := range map[string]int{
-		"prompt_tokens":                 client.PromptTokens,
-		"completion_tokens":             client.CompletionTokens,
-		"total_tokens":                  client.TotalTokens,
-		"prompt_tokens_details.cached":  client.PromptTokensDetails.CachedTokens,
+		"prompt_tokens":                  client.PromptTokens,
+		"completion_tokens":              client.CompletionTokens,
+		"total_tokens":                   client.TotalTokens,
+		"prompt_tokens_details.cached":   client.PromptTokensDetails.CachedTokens,
 		"completion_tokens_details.reas": client.CompletionTokenDetails.ReasoningTokens,
 	} {
 		if got != 0 {

@@ -33,8 +33,9 @@ import (
 // leaves the client response uncommitted - so the ordinary retry loop fails over
 // instead of surfacing a 30-minute dead end.
 //
-// Enabled per channel via internal_stream_for_nonstream; the caller has already
-// rewritten the outbound body to stream=true (+ include_usage).
+// Enabled per channel via internal_stream_for_nonstream (the setting column) or
+// stream_only_upstream (the settings column); the caller has already rewritten
+// the outbound body to stream=true (+ include_usage).
 func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -114,7 +115,19 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
 
-	final := accumulator.BuildResponse(helper.GetResponseID(c), info.UpstreamModelName, time.Now().Unix())
+	responseModel := info.UpstreamModelName
+	if info.ChannelOtherSettings.StreamOnlyUpstream && info.OriginModelName != "" {
+		// stream_only_upstream exists so a non-streaming client can keep using
+		// the model id it asked for while the gateway talks SSE to an upstream
+		// that only accepts streaming. The upstream's chunk may carry the
+		// upstream-mapped name (or its own vendor name), so pin the identity to
+		// the client's request instead of leaking the channel's mapping.
+		responseModel = info.OriginModelName
+	}
+	final := accumulator.BuildResponse(helper.GetResponseID(c), responseModel, time.Now().Unix())
+	if info.ChannelOtherSettings.StreamOnlyUpstream && info.OriginModelName != "" {
+		final.Model = info.OriginModelName
+	}
 	if len(final.Choices) == 0 {
 		// A well-formed empty answer for a non-streaming client: choices must not
 		// be an empty array, so state one empty completion rather than a shape no
@@ -145,6 +158,16 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	responseBody, err := common.Marshal(final)
 	if err != nil {
 		return usage, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+	}
+	// The aggregated body is typed, so it only contains the fields the upstream
+	// actually produced; the opt-in normalization gives the client the same
+	// stable field set as the direct non-streaming path.
+	if info.ChannelOtherSettings.NormalizeResponseShape {
+		normalized, normalizeErr := NormalizeResponseShape(responseBody)
+		if normalizeErr != nil {
+			return usage, types.NewOpenAIError(normalizeErr, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+		}
+		responseBody = normalized
 	}
 	// The upstream answered with SSE; a non-streaming client must not inherit that
 	// content type, and IOCopyBytesGracefully copies upstream headers verbatim.

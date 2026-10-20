@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
@@ -173,4 +175,95 @@ func TestOaiChatBufferedStreamHandlerRejectsUnfinishedChoiceEvenWithDone(t *test
 	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
 	require.NotNil(t, err, "[DONE] with an unfinished choice is still an incomplete answer")
 	require.Zero(t, recorder.Body.Len())
+}
+
+// stream_only_upstream aggregation: one SSE stream carrying content deltas,
+// reasoning deltas, two interleaved tool calls, a terminal usage frame and
+// [DONE] must come back as the single chat.completion body a non-streaming
+// client expects - every field the acceptance criteria name.
+func TestOaiChatBufferedStreamHandlerAggregatesContentReasoningToolCallsAndUsage(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	// The channel declared itself stream-only, and the client asked for the
+	// model below; the upstream reports its own vendor model name.
+	info.ChannelOtherSettings.StreamOnlyUpstream = true
+	info.OriginModelName = "workbuddy-chat"
+	info.UpstreamModelName = "WorkBuddy-1"
+
+	sse := strings.Join([]string{
+		`data: {"id":"chatcmpl-wb","object":"chat.completion.chunk","created":1700000001,"model":"WorkBuddy-1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}`,
+		`data: {"id":"chatcmpl-wb","object":"chat.completion.chunk","created":1700000001,"model":"WorkBuddy-1","choices":[{"index":0,"delta":{"content":"lo "}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"reasoning_content":"thin"}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"reasoning_content":"king"}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"search","arguments":"{\"q\":"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"calc","arguments":"{\"x\":"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"1}"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19,"prompt_tokens_details":{"cached_tokens":5,"cache_write_tokens":3}}}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	usage, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 19, usage.TotalTokens)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, "data:", "the client asked for JSON, not SSE")
+	require.NotContains(t, body, "chat.completion.chunk")
+
+	var response dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal([]byte(body), &response))
+	require.Equal(t, "chatcmpl-wb", response.Id)
+	require.Equal(t, "chat.completion", response.Object)
+	require.EqualValues(t, 1700000001, response.Created)
+	// stream_only_upstream pins the response model to the client's request; the
+	// upstream's vendor name must not leak into a non-streaming body.
+	require.Equal(t, "workbuddy-chat", response.Model)
+
+	require.Len(t, response.Choices, 1)
+	choice := response.Choices[0]
+	require.Equal(t, 0, choice.Index)
+	require.Equal(t, "tool_calls", choice.FinishReason)
+	require.Equal(t, "Hello ", choice.Message.Content)
+	require.NotNil(t, choice.Message.ReasoningContent)
+	require.Equal(t, "thinking", *choice.Message.ReasoningContent)
+
+	require.NotEmpty(t, choice.Message.ToolCalls)
+	var calls []dto.ToolCallResponse
+	require.NoError(t, common.Unmarshal(choice.Message.ToolCalls, &calls))
+	require.Len(t, calls, 2)
+	require.Equal(t, "call_a", calls[0].ID)
+	require.Equal(t, "search", calls[0].Function.Name)
+	require.Equal(t, `{"q":"go"}`, calls[0].Function.Arguments)
+	require.Equal(t, "call_b", calls[1].ID)
+	require.Equal(t, "calc", calls[1].Function.Name)
+	require.Equal(t, `{"x":1}`, calls[1].Function.Arguments)
+
+	require.Equal(t, 12, response.Usage.PromptTokens)
+	require.Equal(t, 7, response.Usage.CompletionTokens)
+	require.Equal(t, 19, response.Usage.TotalTokens)
+	require.Equal(t, 5, response.Usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 3, response.Usage.PromptTokensDetails.CacheWriteTokens)
+}
+
+// No usage frame at all is not a failure: the platform estimates usage so the
+// response is still well-formed and billable. [DONE] terminates the stream.
+func TestOaiChatBufferedStreamHandlerWithoutUsageFrameEstimatesUsage(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sse := strings.Join([]string{
+		`data: {"id":"chatcmpl-nousage","model":"kimi-k3","choices":[{"index":0,"delta":{"role":"assistant","content":"partial answer without usage"}}]}`,
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	usage, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, err)
+	require.NotNil(t, usage, "a missing usage frame must still return an estimated usage")
+	require.Greater(t, usage.TotalTokens, 0)
+
+	var response dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal([]byte(recorder.Body.String()), &response))
+	require.Equal(t, "partial answer without usage", response.Choices[0].Message.Content)
+	require.Equal(t, "stop", response.Choices[0].FinishReason)
+	require.Greater(t, response.Usage.TotalTokens, 0)
 }
