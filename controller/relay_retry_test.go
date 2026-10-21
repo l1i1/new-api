@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -641,24 +640,4 @@ func TestShouldRetryContextOverflowStopsFailover(t *testing.T) {
 		types.ErrorCodeBadResponseStatusCode,
 		http.StatusBadRequest,
 	), 1))
-}
-
-// A bounded non-stream attempt (RELAY_NONSTREAM_TIMEOUT) fails with
-// context.DeadlineExceeded wrapped in ErrorCodeDoRequestFailed. That must fail
-// over to the next channel: the upstream stalled, the client is still waiting
-// and can still be served. A client that is already gone stays non-retryable
-// through the request_context_done branch.
-func TestShouldRetryUpstreamTimeoutOfBoundedAttempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	timeoutErr := types.NewError(context.DeadlineExceeded, types.ErrorCodeDoRequestFailed)
-
-	live, _ := gin.CreateTestContext(httptest.NewRecorder())
-	live.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	require.True(t, shouldRetry(live, timeoutErr, 1), "an upstream timeout on a live request must fail over")
-
-	gone, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	gone.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
-	require.False(t, shouldRetry(gone, timeoutErr, 1), "a client that is gone must not consume another channel")
 }

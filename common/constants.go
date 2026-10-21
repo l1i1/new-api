@@ -165,23 +165,6 @@ var BatchUpdateInterval int
 
 var RelayTimeout int // unit is second
 
-// RelayNonStreamTimeout bounds one non-stream upstream attempt, in seconds.
-// Default 120; 0 disables the bound (the previous behaviour: wait for the
-// upstream forever).
-//
-// A non-stream client receives nothing until the whole response body arrives,
-// so a stalled upstream holds the request open for as long as it takes. Two
-// measured buyer requests waited 262s and 314s for a 31-token "hi" on one
-// upstream (2026-10-21), and a 40-request sample reproduced two more waits at
-// 190s/185s. With this bound the attempt fails instead, and the retry loop
-// moves the request to the next channel like any other failed attempt.
-//
-// Streaming requests are deliberately not bounded by this: their duration is
-// the answer itself, and cutting them would break live responses instead of
-// failing over. RelayResponseHeaderTimeout covers the "upstream never answers"
-// case for streams.
-var RelayNonStreamTimeout int
-
 var RelayIdleConnTimeout int // unit is second
 
 // RelayResponseHeaderTimeout limits how long the relay transport waits for the
