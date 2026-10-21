@@ -201,6 +201,15 @@ func officialFitPinKeepsVerdict(c *gin.Context, err *types.NewAPIError) bool {
 	if ShouldRotateMultiKeyCredentialOn(err.StatusCode, err.Error()) && anotherCredentialAvailable(c) {
 		return false
 	}
+	// A capability gap is a statement about THIS channel (it cannot convert or
+	// serve the shape), not a verdict about the request: another channel may
+	// serve it, so the pin must not turn the gap into the customer's answer.
+	// The keyword list explicitly carries these wordings for that reason; this
+	// exemption keeps them working in `on` mode as well, where the guard is
+	// enforced.
+	if isChannelCapabilityGap(err) {
+		return false
+	}
 	// Availability escape hatch (2026-10-10 policy change, requested by the
 	// operator): a credential/quota failure means the pinned channel has no
 	// usable key or no remaining balance, so the error it carries is not an
@@ -258,6 +267,22 @@ func pinnedOfficialVerdictDecision(c *gin.Context, err *types.NewAPIError) (Poli
 			err.StatusCode, err.GetErrorCode(), common.LocalLogPreview(err.Error())))
 	}
 	return PolicyDecision{}, false
+}
+
+// isChannelCapabilityGap reports an error that says "this channel cannot do
+// this" rather than "the request is invalid". Failover may find a channel that
+// can, so the official-fit guard must not preserve it as a verdict.
+func isChannelCapabilityGap(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeConvertRequestFailed,
+		types.ErrorCodeChannelUnsupportedEndpoint,
+		types.ErrorCodeChannelUnsupportedFeature:
+		return true
+	}
+	return false
 }
 
 // credentialExhaustedKeywords are the wordings upstreams use when the channel

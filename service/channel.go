@@ -66,6 +66,29 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 	}
 }
 
+// transientChannelErrors are channel-level failures that may clear on their own:
+// every key of a multi-key channel has just failed, a transport timeout, a
+// client error from a cloud SDK. Disabling the channel for one of them removes
+// capacity permanently in this deployment (AutomaticEnableChannelEnabled is
+// off), while a failover already moved the request elsewhere — so the
+// availability-first reading is to keep the channel enabled and let a later
+// request try it again. The two capability codes stay exempt for the same
+// reason: another channel may serve the shape, and this channel is not broken.
+var transientChannelErrors = map[types.ErrorCode]struct{}{
+	types.ErrorCodeChannelNoAvailableKey:       {},
+	types.ErrorCodeChannelUnsupportedEndpoint:  {},
+	types.ErrorCodeChannelUnsupportedFeature:   {},
+	types.ErrorCodeChannelResponseTimeExceeded: {},
+}
+
+func shouldDisableForChannelError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	_, transient := transientChannelErrors[err.GetErrorCode()]
+	return !transient
+}
+
 func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if !common.AutomaticDisableChannelEnabled {
 		return false
@@ -74,8 +97,7 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 		return false
 	}
 	if types.IsChannelError(err) {
-		if err.GetErrorCode() == types.ErrorCodeChannelUnsupportedEndpoint ||
-			err.GetErrorCode() == types.ErrorCodeChannelUnsupportedFeature {
+		if !shouldDisableForChannelError(err) {
 			return false
 		}
 		return true

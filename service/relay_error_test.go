@@ -110,7 +110,7 @@ func TestProcessChannelErrorMasksDisableReasonAndNotification(t *testing.T) {
 	notifyLimitStore.Delete(notifyKey)
 	t.Cleanup(func() { notifyLimitStore.Delete(notifyKey) })
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	apiErr := types.NewErrorWithStatusCode(errors.New("upstream https://private.example.com/path?token=review-token api_key:review-secret"), types.ErrorCodeChannelNoAvailableKey, http.StatusUnauthorized)
+	apiErr := types.NewErrorWithStatusCode(errors.New("upstream https://private.example.com/path?token=review-token api_key:review-secret"), types.ErrorCodeChannelInvalidKey, http.StatusUnauthorized)
 	ProcessChannelError(c, types.ChannelError{ChannelId: channel.Id, ChannelName: channel.Name, AutoBan: true}, apiErr, nil)
 	var notification WebhookPayload
 	select {
@@ -680,4 +680,40 @@ func TestOfficialFitPinDoesNotBlockFailoverOnPoolExhaustion(t *testing.T) {
 	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"},
 		DecideRelayRetry(kept, verdict, 1),
 		"a 4xx verdict must still keep the pinned official answer in on mode")
+}
+
+// A capability gap ("this channel cannot serve this shape") is not a verdict
+// about the request; in `on` mode the keyword branch must still fail over so a
+// capable channel can answer.
+func TestOfficialFitPinDoesNotKeepVerdictOnCapabilityGap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousMode := operation_setting.RetryErrorFidelityModeOrDefault()
+	previousKeywords := operation_setting.AutomaticRetryKeywords
+	t.Cleanup(func() {
+		_ = operation_setting.SetRetryErrorFidelityMode(previousMode)
+		operation_setting.AutomaticRetryKeywords = previousKeywords
+	})
+	require.NoError(t, operation_setting.SetRetryErrorFidelityMode(operation_setting.RetryErrorFidelityOn))
+	operation_setting.AutomaticRetryKeywordsFromString("endpoint not supported\ncapability not supported")
+
+	pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(pinned, constant.ContextKeyV4OfficialPin, true)
+
+	convertGap := types.NewErrorWithStatusCode(
+		errors.New("codex channel: endpoint not supported"),
+		types.ErrorCodeConvertRequestFailed,
+		http.StatusBadRequest,
+		types.ErrOptionWithSkipRetry(),
+	)
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"},
+		DecideRelayRetry(pinned, convertGap, 1),
+		"a conversion capability gap must fail over even in on mode")
+
+	featureGap := types.NewErrorWithStatusCode(
+		errors.New("capability not supported"),
+		types.ErrorCodeChannelUnsupportedFeature,
+		http.StatusBadRequest,
+	)
+	assert.Equal(t, "retry", DecideRelayRetry(pinned, featureGap, 1).Action,
+		"an unsupported-feature channel error must not keep the pin")
 }
