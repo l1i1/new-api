@@ -3607,6 +3607,11 @@
      "kind": "contains",
      "file": "controller/relay.go",
      "contains": "func relayValidationError"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/helper/valid_request.go",
+     "contains": "func deepSeekV4ValidationError"
     }
    ],
    "tests": [
@@ -3621,6 +3626,12 @@
      "file": "controller/relay_validation_status_test.go",
      "names": [
       "TestRelayValidationErrorKeepsTheValidatorsStatus"
+     ]
+    },
+    {
+     "file": "relay/helper/deepseek_v4_validation_status_test.go",
+     "names": [
+      "deepSeekV4OfficialStatus"
      ]
     }
    ]

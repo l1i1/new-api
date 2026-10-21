@@ -97,7 +97,7 @@ func TestDeepSeekV4LogprobsValidationMatchesOfficialErrors(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			require.Equal(t, deepSeekV4OfficialStatus(tt.message), apiErr.StatusCode)
 			oaiErr := apiErr.ToOpenAIError()
 			assert.Equal(t, tt.message, oaiErr.Message)
 			assert.Equal(t, "invalid_request_error", oaiErr.Type)
@@ -139,7 +139,8 @@ func TestDeepSeekV4EffortEnumMatchesOfficial(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode,
+				"the serde class is 422, not 400")
 			// The official text carries the byte location of the offending
 			// value; the column follows the request this test builds.
 			column := 104 + len(effort) - len("extreme")
@@ -236,7 +237,7 @@ func TestKimiK3NamedToolChoiceAcceptedWithThinkingOff(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			assert.Equal(t, deepSeekV4OfficialStatus(tt.wantErr), apiErr.StatusCode)
 			assert.Equal(t, tt.wantErr, apiErr.ToOpenAIError().Message)
 		})
 	}
@@ -275,7 +276,7 @@ func TestDeepSeekV4ToolChoiceMatchesOfficial(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			assert.Equal(t, deepSeekV4OfficialStatus(tt.wantErr), apiErr.StatusCode)
 			assert.Equal(t, tt.wantErr, apiErr.ToOpenAIError().Message)
 		})
 	}

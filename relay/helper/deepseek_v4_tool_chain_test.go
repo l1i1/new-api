@@ -138,7 +138,7 @@ func TestDeepSeekV4ReasoningPassbackRule(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+			require.Equal(t, deepSeekV4OfficialStatus(tt.wantErr), apiErr.StatusCode)
 			assert.Equal(t, tt.wantErr, apiErr.ToOpenAIError().Message)
 		})
 	}
@@ -224,12 +224,12 @@ func TestDeepSeekV4ToolCallChainValidation(t *testing.T) {
 			require.Error(t, err)
 			var apiErr *types.NewAPIError
 			require.True(t, errors.As(err, &apiErr))
-			require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
 			oaiErr := apiErr.ToOpenAIError()
 			want := *tt.wantErr
 			if tt.wantID != "" {
 				want += tt.wantID
 			}
+			require.Equal(t, deepSeekV4OfficialStatus(want), apiErr.StatusCode)
 			assert.Equal(t, want, oaiErr.Message)
 			assert.Equal(t, "invalid_request_error", oaiErr.Type)
 			assert.Equal(t, "invalid_request_error", oaiErr.Code)
