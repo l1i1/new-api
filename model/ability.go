@@ -468,7 +468,11 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 	if len(blockedChannels) > 0 {
 		abilities = filterAbilitiesByBlockedChannels(abilities, blockedChannels)
 	}
-	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial, fit)
+	// Video capability is a hard requirement applied before the fit narrowing
+	// (see the memory-cache path): narrowing first could drop the only channel
+	// that can read the request's media, leaving an empty set that the pin path
+	// reports as unprovable exhaustion.
+	hadCandidates := len(abilities) > 0
 	abilities, videoErr := filterAbilitiesByVideoCapability(abilities, videoOnly)
 	if videoErr != nil {
 		// Report the fault instead of an empty candidate set: the selection layer
@@ -476,6 +480,15 @@ func GetChannelWithBlockedChannelsPinnedWithFit(group string, model string, retr
 		// infers "no channel is left" from an empty set never draws that
 		// conclusion from a failed lookup.
 		return nil, videoErr
+	}
+	videoEmptied := videoOnly && hadCandidates && len(abilities) == 0
+	abilities = preferOfficialFitAbilities(abilities, model, pinOfficial, fit)
+	if len(abilities) == 0 {
+		if videoEmptied {
+			// A definite capability gap, not an unprovable exhaustion.
+			return nil, ErrNoVideoCapableChannel
+		}
+		return nil, nil
 	}
 	if narrowBeforeTiering {
 		abilities = abilitiesAtRetryTier(abilities, retry)

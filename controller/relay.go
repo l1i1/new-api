@@ -246,12 +246,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
 	if err != nil {
-		// Map "request body too large" to 413 so clients can handle it correctly
-		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
-			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-		} else {
-			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
-		}
+		newAPIError = relayValidationError(err)
 		return
 	}
 
@@ -1759,4 +1754,24 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 // routing every decision through decideTaskRetry.
 func shouldRetryTaskRelay(c *gin.Context, channelID int, taskErr *taskdto.TaskError, retryTimes int) bool {
 	return decideTaskRetry(c, taskErr, retryTimes).Action == "retry"
+}
+
+// relayValidationError maps a GetAndValidateRequest failure onto the error the
+// response writer renders.
+//
+// A validator may answer with the official status code, which is not always 400:
+// the DeepSeek content-part enum failure is 422 (live-probed 2026-10-21). The
+// NewAPIError constructor's 500 default is what "the validator chose no status"
+// looks like here, so every other status is kept as is. Plain errors and the
+// no-status wrappers keep the historical 400.
+func relayValidationError(err error) *types.NewAPIError {
+	// Map "request body too large" to 413 so clients can handle it correctly.
+	if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+		return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+	}
+	var validationErr *types.NewAPIError
+	if errors.As(err, &validationErr) && validationErr.StatusCode != http.StatusInternalServerError {
+		return validationErr
+	}
+	return types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
 }

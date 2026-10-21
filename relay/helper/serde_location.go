@@ -101,6 +101,27 @@ func (l *serdeLocation) withContainerLocation(message string, path ...any) strin
 	return message + serdeColumnSuffix(valueEnd)
 }
 
+// withVariantLocation appends the location serde reports for an unknown variant
+// of an internally tagged enum (a content part's `type`). The deserializer
+// stops as soon as it has read the tag value, so the reported column is the
+// position of the variant's last character — one byte before the column
+// locateJSONValue returns for the string value (it returns the offset just past
+// the closing quote). Live-probed 2026-10-21 against api.deepseek.com with
+// video_url / video / audio_url parts.
+//
+// When the value cannot be located the message is rendered without a suffix:
+// a missing location is an honest omission, a wrong one is a deviation.
+func (l *serdeLocation) withVariantLocation(message string, messageIndex, partIndex int) string {
+	if l == nil {
+		return message
+	}
+	valueEnd, ok := locateJSONValue(l.body, []any{"messages", messageIndex, "content", partIndex, "type"})
+	if !ok {
+		return message
+	}
+	return message + serdeColumnSuffix(valueEnd-1)
+}
+
 func serdeColumnSuffix(offset int) string {
 	if offset <= 0 {
 		return ""

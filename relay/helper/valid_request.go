@@ -445,6 +445,7 @@ const (
 	// standard deserialization text listing five variants, latest_reminder
 	// included.
 	deepSeekV4RoleDeserMessagePrefix            = "Failed to deserialize the JSON body into the target type: messages["
+	deepSeekV4ContentPartDeserPrefix            = "Failed to deserialize the JSON body into the target type: messages["
 	deepSeekV4ToolChoiceDeserMessage            = "Failed to deserialize the JSON body into the target type: tool_choice: expected one of `none`, `auto`, `required` or a tool"
 	deepSeekV4ReasoningEffortDeserMessagePrefix = "Failed to deserialize the JSON body into the target type: reasoning_effort: unknown variant"
 	deepSeekV4ReasoningEffortDeserMessageSuffix = ", expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
@@ -724,6 +725,15 @@ func validateDeepSeekV4ToolChoice(request *dto.GeneralOpenAIRequest, loc *serdeL
 // V4 model: live-probed 2026-09-06, official renders them 200 even on
 // text-only pro/flash (the pre-2026-09 "This model does not support image"
 // 400 no longer exists), so the parts forward to the upstream untouched.
+//
+// The content-part enum is internally tagged by `type` and admits exactly
+// text/image_url/file (live-probed 2026-10-21 against api.deepseek.com): any
+// other variant — video_url above all, which multi-modal clients send to every
+// model — is a deserialization failure the official endpoint reports as HTTP
+// 422, not 400. Rejecting it here keeps the official status and text instead of
+// letting the request fall through to channel selection, where the video part
+// narrowed the candidate set to nothing and the client received the gateway's
+// internal "cannot prove exhaustion" 500.
 func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest, loc *serdeLocation) error {
 	if len(request.Messages) == 0 {
 		return deepSeekV4ToolChainError(deepSeekV4EmptyMessagesMessage)
@@ -737,6 +747,54 @@ func validateDeepSeekV4Messages(request *dto.GeneralOpenAIRequest, loc *serdeLoc
 				"].role: unknown variant `" + role + "`, expected one of `system`, `user`, `assistant`, `tool`, `latest_reminder`"
 			return deepSeekV4ToolChainError(loc.withLocation(message, "messages", i, "role"))
 		}
+		if err := validateDeepSeekV4ContentParts(request.Messages[i], i, loc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deepSeekV4ContentPartTypes is the official content-part enum for the V4
+// models. `file` is part of it even though the docs do not advertise it; the
+// live endpoint lists it among the expected variants, so it must not be
+// rejected here.
+var deepSeekV4ContentPartTypes = map[string]bool{
+	"text":      true,
+	"image_url": true,
+	"file":      true,
+}
+
+// validateDeepSeekV4ContentParts rejects an unknown content-part type the way
+// the official endpoint does: the deserialization text names the *message*
+// index (not the part index) and the status is 422.
+func validateDeepSeekV4ContentParts(message dto.Message, messageIndex int, loc *serdeLocation) error {
+	// The raw array is walked instead of ParseContent(): that helper keeps only
+	// the part types the gateway itself understands, so an unknown variant (the
+	// thing this rule exists to reject) never survives it. Content is a plain
+	// interface here because the request body is decoded generically, but a
+	// pre-parsed list is honoured too so the rule cannot be bypassed by another
+	// entry point.
+	raw, ok := message.Content.([]any)
+	if !ok {
+		return nil
+	}
+	for partIndex, item := range raw {
+		part, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		partType, ok := part["type"].(string)
+		if !ok || partType == "" || deepSeekV4ContentPartTypes[partType] {
+			continue
+		}
+		text := deepSeekV4ContentPartDeserPrefix + strconv.Itoa(messageIndex) +
+			"]: unknown variant `" + partType + "`, expected one of `text`, `image_url`, `file`"
+		return types.WithOpenAIError(types.OpenAIError{
+			Message: loc.withVariantLocation(text, messageIndex, partIndex),
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    "invalid_request_error",
+		}, http.StatusUnprocessableEntity)
 	}
 	return nil
 }
@@ -1887,6 +1945,7 @@ func IsStrictFitValidationMessage(message string) bool {
 		deepSeekV4EmptyMessagesMessage,
 		deepSeekV4ImageUnsupportedMessage,
 		deepSeekV4RoleDeserMessagePrefix,
+		deepSeekV4ContentPartDeserPrefix,
 		"Failed to deserialize the JSON body into the target type: thinking.type: unknown variant",
 		"Failed to deserialize the JSON body into the target type: thinking: missing field",
 		"Failed to deserialize the JSON body into the target type: thinking: invalid type:",

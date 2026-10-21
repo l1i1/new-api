@@ -598,6 +598,19 @@ func SelectRandomChannelForRequest(c *gin.Context, modelName string, retry *Retr
 	for {
 		channel, selectGroup, err := CacheGetRandomSatisfiedChannel(retry)
 		if err != nil {
+			// A video request whose every candidate lacks the declared capability
+			// is a definite gap, not an internal selection failure. Answer it the
+			// same way the pinned and filter paths do (400 + video_request):
+			// letting it fall through to the generic wrapper produced the pin's
+			// "cannot prove exhaustion" 500 and leaked an internal message.
+			if errors.Is(err, model.ErrNoVideoCapableChannel) {
+				return nil, selectGroup, &ChannelSelectError{
+					StatusCode: http.StatusBadRequest, Code: types.ErrorCode(dto.FilterVideoRequest),
+					MessageID:  i18n.MsgDistributorNoAvailableChannel,
+					Params:     map[string]any{"Group": usingGroup, "Model": modelName},
+					FilterKind: dto.FilterVideoRequest, Err: err,
+				}
+			}
 			showGroup := usingGroup
 			if usingGroup == "auto" {
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)

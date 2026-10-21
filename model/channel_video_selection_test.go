@@ -60,7 +60,10 @@ func TestSelectChannelPrefersVideoCapableOnlyWhenRequested(t *testing.T) {
 
 // TestSelectChannelVideoRequestFailsWhenNothingDeclaresVideo pins the honest
 // failure mode: with no declared channel the video request finds no candidate
-// rather than being served by an upstream that ignores the media.
+// rather than being served by an upstream that ignores the media. The empty set
+// is reported as a definite capability gap (ErrNoVideoCapableChannel) so the
+// caller answers with the designed video_request rejection instead of the
+// pin path's internal "cannot prove exhaustion" 500.
 func TestSelectChannelVideoRequestFailsWhenNothingDeclaresVideo(t *testing.T) {
 	previousDB := DB
 	previousMemoryCacheEnabled := common.MemoryCacheEnabled
@@ -82,7 +85,7 @@ func TestSelectChannelVideoRequestFailsWhenNothingDeclaresVideo(t *testing.T) {
 	}).Error)
 
 	selected, err := GetChannelWithBlockedChannelsPinned("default", modelName, 0, "", nil, false, true)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNoVideoCapableChannel, "a declared-capability gap must be reported, not silently emptied")
 	assert.Nil(t, selected, "no declared channel must mean no candidate, not a blind upstream")
 }
 

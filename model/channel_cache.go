@@ -532,19 +532,36 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
+	// Video capability is a hard requirement and is applied BEFORE the fit
+	// narrowing on purpose. The narrowing keeps only channels that prove the
+	// requested behaviour, which may exclude the only channel that can read the
+	// request's media; filtering the narrowed slice afterwards then produced an
+	// empty candidate set and the pin path reported its internal "cannot prove
+	// exhaustion" error. Narrowing inside the video-capable set instead lets the
+	// genuinely capable channel (the official one, routinely the lowest
+	// priority) serve the request.
+	channels, videoEmptied := narrowVideoCandidates(channels, videoOnly)
 	channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
-	channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.RoutingMatchModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
+		normalizedEmptied := false
+		channels, normalizedEmptied = narrowVideoCandidates(channels, videoOnly)
+		videoEmptied = videoEmptied || normalizedEmptied
 		channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
-		channels = filterChannelIDsByVideoCapability(channels, videoOnly)
 	}
 
 	if len(channels) == 0 {
+		if videoEmptied {
+			// Definite capability gap, not an unprovable exhaustion: the model is
+			// published for this group but no candidate declares it can read
+			// video. Callers answer with the video_request rejection instead of
+			// the internal selection error.
+			return nil, ErrNoVideoCapableChannel
+		}
 		return nil, nil
 	}
 
@@ -767,6 +784,24 @@ func filterChannelIDsByVideoCapability(channels []int, videoOnly bool) []int {
 		}
 	}
 	return filtered
+}
+
+// ErrNoVideoCapableChannel reports a definite capability gap: the group does
+// publish the model, but not a single candidate declares it can read video.
+// It is deliberately distinct from an empty selection (nil, nil), which means
+// "no candidate at all" and keeps its existing model-not-configured handling.
+var ErrNoVideoCapableChannel = errors.New("no candidate declares video capability for this model")
+
+// narrowVideoCandidates applies the hard video-capability requirement and
+// reports whether it removed every candidate. The flag is what lets the caller
+// tell a capability gap from an empty group/model: an empty input stays empty
+// with the flag false, so nothing is inferred from absent candidates.
+func narrowVideoCandidates(channels []int, videoOnly bool) ([]int, bool) {
+	if !videoOnly || len(channels) == 0 {
+		return channels, false
+	}
+	filtered := filterChannelIDsByVideoCapability(channels, videoOnly)
+	return filtered, len(filtered) == 0
 }
 
 func CacheGetChannel(id int) (*Channel, error) {
