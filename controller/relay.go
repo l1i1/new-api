@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -413,6 +414,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// releases it before the loop proceeds.
 		newAPIError = func() *types.NewAPIError {
 			defer releaseSlot()
+			if restore := boundNonStreamAttempt(c, relayInfo.IsStream); restore != nil {
+				defer restore()
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				return relay.WssHelper(c, relayInfo)
@@ -947,6 +951,34 @@ func decideHTTPRelayRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTim
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	return decideHTTPRelayRetry(c, openaiErr, retryTimes).Action == "retry"
+}
+
+// boundNonStreamAttempt gives one non-stream attempt a bounded lifetime when
+// RELAY_NONSTREAM_TIMEOUT is configured, and returns a restore function for the
+// request it replaced (nil when nothing was changed).
+//
+// Why this exists: a non-stream client sees nothing until the full body
+// arrives, so a stalled upstream keeps the request open for as long as the
+// upstream takes. Measured 2026-10-21, two buyer requests for a 31-token "hi"
+// waited 262s and 314s on one channel, and a 40-request sample reproduced two
+// more waits at 190s/185s. Bounding the attempt turns that wait into a normal
+// failed attempt, which the retry loop already answers by excluding the channel
+// and selecting the next one.
+//
+// Streaming attempts are deliberately untouched: their duration is the answer
+// itself, and RelayResponseHeaderTimeout already bounds the "upstream never
+// answers" case without truncating a live stream.
+func boundNonStreamAttempt(c *gin.Context, isStream bool) func() {
+	if c == nil || c.Request == nil || isStream || common.RelayNonStreamTimeout <= 0 {
+		return nil
+	}
+	original := c.Request
+	ctx, cancel := context.WithTimeout(original.Context(), time.Duration(common.RelayNonStreamTimeout)*time.Second)
+	c.Request = original.WithContext(ctx)
+	return func() {
+		cancel()
+		c.Request = original
+	}
 }
 
 // shouldSkipRetryAfterAffinity keeps an affinity-pinned channel in place: a

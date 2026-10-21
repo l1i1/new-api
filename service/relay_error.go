@@ -1,7 +1,10 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -93,6 +96,14 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if types.IsSkipRetryError(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
+	// An upstream that stalls past the bounded attempt (RELAY_NONSTREAM_TIMEOUT)
+	// or its own timeout is a dead channel, not a client cancellation — a client
+	// that is gone was already caught by RelayRequestContextDone above. Fail over
+	// to the next channel instead of surfacing a request that waited minutes for
+	// a 31-token answer (measured 2026-10-21: 262s/314s, reproduced 190s/185s).
+	if isUpstreamTimeoutError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_timeout", Source: "system"}
+	}
 	if code >= 200 && code < 300 {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
 	}
@@ -109,6 +120,21 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
+}
+
+// isUpstreamTimeoutError reports whether the attempt failed because the
+// upstream ran out of time, as opposed to a request-level rejection. The error
+// chain is preserved by NewError, so a bounded attempt's context.DeadlineExceeded
+// and a transport timeout both match.
+func isUpstreamTimeoutError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err.Err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err.Err, &netErr) && netErr.Timeout()
 }
 
 func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
