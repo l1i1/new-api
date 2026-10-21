@@ -80,21 +80,33 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if code >= 100 && code <= 599 && operation_setting.IsNeverRetryStatusCode(code) {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
 	}
+	// A locally generated *final* refusal (the platform's own quota/billing
+	// check) is not evidence about a channel: the relay never asked one, and no
+	// other channel can serve it. Stop before the keyword list, whose wording
+	// deliberately contains the platform's own billing text (额度/余额) so that
+	// it reaches this path at all; otherwise a platform 403 would enter the
+	// retry loop in shadow mode. A local *conversion* refusal is deliberately
+	// NOT final here: adaptors report channel-capability gaps through it, and the
+	// keyword list is what lets those fail over to a capable channel.
+	if err.GetErrorType() == types.ErrorTypeNewAPIError && isLocalFinalRefusal(err) {
+		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
+	}
 	// A malformed upstream response can succeed on another channel. Local
 	// conversion failures carry an explicit skip-retry marker instead.
 	// An operator-configured keyword is an explicit channel capability signal;
 	// it takes precedence over a generic skip-retry marker.
 	if operation_setting.MatchesAutomaticRetryKeywords(err.Error()) {
-		// Availability first (operator policy): the keyword list describes
-		// transient upstream wording, and a non-verdict status (5xx, 408, 429) is
-		// not an answer the official-fit promise needs to preserve. Keeping the
-		// pin on one of those turns "the channel pool is exhausted" into a
-		// client-visible 503 even when another qualifying channel could serve the
-		// request - measured 2026-10-21: "all accounts are temporarily
-		// unavailable" (503) matched the keyword list, the guard kept the pin,
-		// and 194 buyer requests failed that a failover could have served.
-		if operation_setting.IsVerdictStatusCode(err.StatusCode) && officialFitPinKeepsVerdict(c, err) {
-			return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
+		// Availability first (operator policy). The keyword list describes
+		// upstream wording, and only a verdict-shaped status may keep the pin;
+		// the decision itself goes through the same mode-aware guard as the
+		// status-code branch so a keyword match and a status-code match can never
+		// disagree (the keyword branch used to ignore RetryErrorFidelityMode and
+		// stop in shadow mode). Measured 2026-10-21: "all accounts are
+		// temporarily unavailable" (503) matched the keyword list, the guard kept
+		// the pin, and 194 buyer requests failed that a failover could have
+		// served.
+		if decision, guarded := pinnedOfficialVerdictDecision(c, err); guarded {
+			return decision
 		}
 		return PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}
 	}
@@ -117,6 +129,22 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
+}
+
+// isLocalFinalRefusal reports whether a locally generated error is the
+// platform's own final answer (billing/quota bookkeeping), as opposed to a
+// conversion error that may describe a channel capability gap.
+func isLocalFinalRefusal(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeInsufficientUserQuota,
+		types.ErrorCodePreConsumeTokenQuotaFailed,
+		types.ErrorCodeUpdateDataError:
+		return true
+	}
+	return false
 }
 
 func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {

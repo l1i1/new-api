@@ -2,6 +2,7 @@ package operation_setting
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 )
@@ -94,18 +95,38 @@ func RetryErrorFidelityEnforces() bool {
 // IsVerdictStatusCode reports whether an upstream status is a verdict about the
 // request rather than evidence about the channel.
 //
-// The distinction is what keeps the guard narrow. A 4xx (except the two below)
-// says the upstream read the request and refused it; every channel reads the
-// same request, so failing over cannot produce a different answer, and on a
-// pinned request the refusal IS the answer the fit contract promises to pass
-// through verbatim. A 5xx, a 408 or a 429 is about the channel or its transport
-// instead — there is no answer to protect — and the failover list decides those
-// on its own terms: it omits 408 entirely (the legacy "timeout is not retryable"
-// rule) and keeps 429 retryable so a saturated channel can be escaped.
+// The distinction is what keeps the guard narrow: a verdict says every channel
+// reads the same request and refuses it, so failing over cannot produce a
+// different answer, and the refusal IS the answer a fit contract passes through
+// verbatim. Everything else is availability evidence and must stay failover
+// eligible (operator policy: availability first, official fitting best effort).
+//
+// Only statuses that describe the request qualify: 400 (validation), 401/402/403
+// (authentication / quota / permission — the credential escape hatch decides the
+// upstream-credential subset of those), 412 (precondition), 413 (payload too
+// large), 422 (unprocessable) and 451 (legal).
+//
+// The rest of the 4xx range is deliberately NOT a verdict here:
+//   - 404/405/406/407/415 are channel-capability answers (endpoint unsupported,
+//     method/media not accepted by this backend) that another channel may well
+//     serve;
+//   - 408/409/429 are transport/contention conditions.
+//
+// Keeping any of those as a verdict is what turned a channel outage into a
+// client-visible error on pinned traffic (measured 2026-10-21: a 503 "all
+// accounts are temporarily unavailable" matched a retry keyword and the guard
+// stopped 194 buyer requests).
 func IsVerdictStatusCode(code int) bool {
 	switch code {
-	case 408, 429:
-		return false
+	case http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusPaymentRequired,
+		http.StatusForbidden,
+		http.StatusPreconditionFailed,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity,
+		http.StatusUnavailableForLegalReasons:
+		return true
 	}
-	return code >= 400 && code < 500
+	return false
 }

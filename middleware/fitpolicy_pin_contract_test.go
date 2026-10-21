@@ -87,6 +87,12 @@ func balanceKeywordError() *types.NewAPIError {
 // instead of the official body — while the whole suite stayed green.
 func TestOfficialFitPinKeepsTheUpstreamVerdictThroughTheProductionEntryPoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// The guard is only enforced in "on" mode; production runs "shadow", where
+	// the same decision is recorded but failover stays available (availability
+	// first). This contract test pins the enforced half.
+	previousMode := operation_setting.RetryErrorFidelityModeOrDefault()
+	require.NoError(t, operation_setting.SetRetryErrorFidelityMode(operation_setting.RetryErrorFidelityOn))
+	t.Cleanup(func() { _ = operation_setting.SetRetryErrorFidelityMode(previousMode) })
 	requireLiveBuiltinPolicy(t)
 	installBalanceKeyword(t)
 
@@ -105,7 +111,7 @@ func TestOfficialFitPinKeepsTheUpstreamVerdictThroughTheProductionEntryPoint(t *
 		// here re-pins, excludes the only official channel, and answers the
 		// client with a 503 routing error instead of the official body.
 		decision := service.DecideRelayRetry(c, balanceKeywordError(), 1)
-		assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision,
+		assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision,
 			"a retry would exclude the only official channel and replace the official body with a routing error")
 		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin),
 			"the production entry point must mark a shape the policy pins")
@@ -140,7 +146,7 @@ func TestOfficialFitPinKeepsTheUpstreamVerdictThroughTheProductionEntryPoint(t *
 		markV4OfficialPinFromDistributor(c)
 
 		decision := service.DecideRelayRetry(c, balanceKeywordError(), 1)
-		assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+		assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision)
 		assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin))
 	})
 }

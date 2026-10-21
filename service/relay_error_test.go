@@ -229,6 +229,11 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 // channel really has another enabled key to hand out.
 func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// The keyword branch now honours RetryErrorFidelityMode like the status-code
+	// branch: the guard is only enforced in "on" mode. Shadow/off (the live
+	// settings) record the verdict but still fail over, which is what
+	// TestRetryErrorFidelityGuard pins.
+	withRetryErrorFidelityMode(t, operation_setting.RetryErrorFidelityOn)
 	origKeywords := operation_setting.AutomaticRetryKeywords
 	origMultiKeyKeywords := operation_setting.MultiKeyCredentialRetryKeywords
 	t.Cleanup(func() {
@@ -255,7 +260,7 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
 		decision := DecideRelayRetry(c, balanceErr, 1)
-		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision)
 	})
 
 	// A channel reported as multi-key with a single credential must NOT be treated
@@ -266,7 +271,7 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 	t.Run("official-pinned one-key channel is not treated as rotatable", func(t *testing.T) {
 		c, channelID := newPinnedMultiKeyContext(t, []string{"only-key"}, nil, []string{"only-key"})
 		decision := DecideRelayRetry(c, balanceErr, 1)
-		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision,
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision,
 			"a one-key channel has nowhere to rotate, so the official verdict is kept")
 		require.NotZero(t, channelID)
 	})
@@ -281,7 +286,7 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 	t.Run("official-pinned channel whose spare key is disabled keeps the verdict", func(t *testing.T) {
 		c, _ := newPinnedMultiKeyContext(t, []string{"drained-key", "disabled-key"}, map[int]int{1: common.ChannelStatusManuallyDisabled}, []string{"drained-key"})
 		decision := DecideRelayRetry(c, balanceErr, 1)
-		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision,
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision,
 			"a disabled credential cannot serve the request, so rotation would not help")
 	})
 
@@ -310,7 +315,7 @@ func TestOfficialFitPinKeepsUpstreamVerdict(t *testing.T) {
 		otherErr := types.NewOpenAIError(
 			errors.New("max_tokens must be greater than 2"),
 			types.ErrorCodeBadResponseStatusCode,
-			http.StatusBadRequest,
+			http.StatusInternalServerError,
 		)
 		plain, _ := gin.CreateTestContext(httptest.NewRecorder())
 		pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -401,6 +406,7 @@ func newPinnedMultiKeyContext(t *testing.T, keys []string, statusList map[int]in
 // the pin would otherwise be fatal.
 func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	withRetryErrorFidelityMode(t, operation_setting.RetryErrorFidelityOn)
 	origKeywords := operation_setting.AutomaticRetryKeywords
 	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = origKeywords })
 	operation_setting.AutomaticRetryKeywordsFromString("credits\ninsufficient balance\n额度")
@@ -440,7 +446,7 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 			http.StatusBadRequest,
 		)
 		decision := DecideRelayRetry(c, balanceErr, 1)
-		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"}, decision)
 	})
 
 	t.Run("official-pinned platform billing 403 still keeps the verdict", func(t *testing.T) {
@@ -458,9 +464,11 @@ func TestOfficialFitPinCredentialExhaustionFailover(t *testing.T) {
 			errors.New("用户额度不足, 剩余额度: ¥0"),
 			types.ErrorCodeInsufficientUserQuota,
 			http.StatusForbidden,
+			types.ErrOptionWithSkipRetry(),
 		)
 		decision := DecideRelayRetry(c, billingErr, 1)
-		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}, decision)
+		assert.Equal(t, PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}, decision,
+			"the platform's own refusal carries its skip-retry marker and stops before the keyword list")
 	})
 }
 
@@ -658,8 +666,10 @@ func TestOfficialFitPinDoesNotBlockFailoverOnPoolExhaustion(t *testing.T) {
 		DecideRelayRetry(pinned, poolExhausted, 1),
 		"a 503 pool outage must fail over instead of being kept as an official verdict")
 
-	// A verdict-shaped status still keeps the official answer: that is what the
-	// guard is for (the upstream answered about the request itself).
+	// A verdict-shaped status still keeps the official answer when the guard is
+	// enforced: that is what the guard is for (the upstream answered about the
+	// request itself).
+	withRetryErrorFidelityMode(t, operation_setting.RetryErrorFidelityOn)
 	verdict := types.NewOpenAIError(
 		errors.New("temporarily unavailable"),
 		types.ErrorCodeBadResponseStatusCode,
@@ -667,7 +677,7 @@ func TestOfficialFitPinDoesNotBlockFailoverOnPoolExhaustion(t *testing.T) {
 	)
 	kept, _ := gin.CreateTestContext(httptest.NewRecorder())
 	common.SetContextKey(kept, constant.ContextKeyV4OfficialPin, true)
-	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"},
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_official_verdict", Source: "channel_constraint"},
 		DecideRelayRetry(kept, verdict, 1),
-		"a 4xx verdict must still keep the pinned official answer")
+		"a 4xx verdict must still keep the pinned official answer in on mode")
 }
