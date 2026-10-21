@@ -632,3 +632,42 @@ func withRetryErrorFidelityMode(t *testing.T, mode string) {
 	t.Cleanup(func() { require.NoError(t, operation_setting.SetRetryErrorFidelityMode(previous)) })
 	require.NoError(t, operation_setting.SetRetryErrorFidelityMode(mode))
 }
+
+// Availability first: a channel-pool exhaustion (503 "all accounts are
+// temporarily unavailable") matched the operator keyword list and used to keep
+// the official-fit pin, so the buyer saw 503 even though other qualifying
+// channels could serve the request (measured 2026-10-21: 194 failed requests).
+// The guard may only preserve a *verdict* status, and pool exhaustion is also a
+// credential-level condition the escape hatch recognizes.
+func TestOfficialFitPinDoesNotBlockFailoverOnPoolExhaustion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := operation_setting.AutomaticRetryKeywords
+	t.Cleanup(func() { operation_setting.AutomaticRetryKeywords = original })
+	operation_setting.AutomaticRetryKeywordsFromString("temporarily unavailable")
+
+	poolExhausted := types.NewOpenAIError(
+		errors.New("all accounts are temporarily unavailable, please retry later"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusServiceUnavailable,
+	)
+	require.True(t, isCredentialExhaustedFailure(poolExhausted), "the pool-exhaustion wording is a credential-level failure")
+
+	pinned, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(pinned, constant.ContextKeyV4OfficialPin, true)
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"},
+		DecideRelayRetry(pinned, poolExhausted, 1),
+		"a 503 pool outage must fail over instead of being kept as an official verdict")
+
+	// A verdict-shaped status still keeps the official answer: that is what the
+	// guard is for (the upstream answered about the request itself).
+	verdict := types.NewOpenAIError(
+		errors.New("temporarily unavailable"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	kept, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(kept, constant.ContextKeyV4OfficialPin, true)
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"},
+		DecideRelayRetry(kept, verdict, 1),
+		"a 4xx verdict must still keep the pinned official answer")
+}

@@ -85,7 +85,15 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// An operator-configured keyword is an explicit channel capability signal;
 	// it takes precedence over a generic skip-retry marker.
 	if operation_setting.MatchesAutomaticRetryKeywords(err.Error()) {
-		if officialFitPinKeepsVerdict(c, err) {
+		// Availability first (operator policy): the keyword list describes
+		// transient upstream wording, and a non-verdict status (5xx, 408, 429) is
+		// not an answer the official-fit promise needs to preserve. Keeping the
+		// pin on one of those turns "the channel pool is exhausted" into a
+		// client-visible 503 even when another qualifying channel could serve the
+		// request - measured 2026-10-21: "all accounts are temporarily
+		// unavailable" (503) matched the keyword list, the guard kept the pin,
+		// and 194 buyer requests failed that a failover could have served.
+		if operation_setting.IsVerdictStatusCode(err.StatusCode) && officialFitPinKeepsVerdict(c, err) {
 			return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
 		}
 		return PolicyDecision{Action: "retry", Reason: "retry_keyword_matched", Source: "global"}
@@ -245,6 +253,16 @@ var credentialExhaustedKeywords = []string{
 	"没有可用的计费资源",
 	"额度不足",
 	"余额不足",
+	// Account-pool exhaustion (measured 2026-10-21 on the WorkBuddy-backed
+	// channel and its resellers): every credential of the channel is
+	// temporarily unavailable. It is exactly the credential-level condition the
+	// escape hatch exists for, so a pinned request may fail over and still
+	// serve instead of surfacing the pool outage.
+	"all accounts are temporarily unavailable",
+	"no_healthy_account",
+	"no healthy account",
+	"temporarily unavailable",
+	"暂时不可用",
 }
 
 // isCredentialExhaustedFailure reports whether an upstream error means the
