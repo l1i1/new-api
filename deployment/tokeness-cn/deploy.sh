@@ -1366,12 +1366,54 @@ REMOTE_MASTER_VER
   fi
 
   # Green is reachable and correct; commit on the ECS: :80 last-resort follows,
-  # blue drains briefly and is retired, green takes the canonical name.
-  if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
-      < <(master_bootstrap_stdin))"; then
-    error "blue-green commit failed; reconciling via abort"
-    master_sync_abort "$image_ref" || true
-    return 1
+  # the panel flips, and blue then finishes its in-flight streams.
+  #
+  # MASTER_RETIRE_ASYNC=1 (the deploy-release path) runs the commit in the
+  # background and waits only for the FLIP: from that moment the panel and the
+  # /v1 last-resort serve green, while the 765s quiet window only protects
+  # blue's already-started streams. The relay cutover must not wait out that
+  # window - it used to, because the commit call was synchronous, which pushed
+  # the new-version relay traffic ~13 minutes later than necessary on .65.
+  # master_retire_wait() joins the background half before the release declares
+  # success, so a broken retirement still fails the release.
+  if [[ "${MASTER_RETIRE_ASYNC:-0}" == "1" ]]; then
+    MASTER_COMMIT_LOG="$(mktemp "${TMPDIR:-/tmp}/master-commit.XXXXXX.log")"
+    MASTER_COMMIT_STATUS_FILE="$(mktemp "${TMPDIR:-/tmp}/master-commit.XXXXXX.status")"
+    log "blue-green commit started in the background; the relay cutover waits only for the panel flip"
+    (
+      rc=0
+      remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
+        < <(master_bootstrap_stdin) >"$MASTER_COMMIT_LOG" 2>&1 || rc=$?
+      printf '%s\n' "$rc" > "$MASTER_COMMIT_STATUS_FILE"
+    ) &
+    MASTER_COMMIT_PID=$!
+    # Wait for the commit to produce its first output before probing: the flip
+    # log line ("panel is on green") is printed right after nginx moves, and
+    # waiting for it keeps the probe off the pre-flip state (and keeps the
+    # bootstrap invocation order deterministic in the deploy tests).
+    local start_deadline=$(( SECONDS + ${MASTER_FLIP_TIMEOUT_SECONDS:-180} ))
+    while [[ ! -s "$MASTER_COMMIT_LOG" ]]; do
+      if ! kill -0 "$MASTER_COMMIT_PID" 2>/dev/null; then
+        error "blue-green commit exited before flipping the panel; reconciling via abort"
+        wait "$MASTER_COMMIT_PID" || true
+        master_sync_abort "$image_ref" || true
+        return 1
+      fi
+      if (( SECONDS >= start_deadline )); then
+        error "blue-green commit produced no output within ${MASTER_FLIP_TIMEOUT_SECONDS:-180}s; waiting for it before reconciling"
+        wait "$MASTER_COMMIT_PID" || true
+        master_sync_abort "$image_ref" || true
+        return 1
+      fi
+      sleep 1
+    done
+  else
+    if ! out="$(remote_cmd_on "$MASTER_HOST" "$MASTER_SSH_KEY_PATH" "$MASTER_SSH_KNOWN_HOSTS" "$image_ref" commit \
+        < <(master_bootstrap_stdin))"; then
+      error "blue-green commit failed; reconciling via abort"
+      master_sync_abort "$image_ref" || true
+      return 1
+    fi
   fi
 
   # Post-commit gate. The commit is the point of no return for blue, so the
@@ -1394,7 +1436,31 @@ REMOTE_MASTER_VER
     master_sync_abort "$image_ref" || true
     return 1
   fi
-  log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retired"
+  if [[ "${MASTER_RETIRE_ASYNC:-0}" == "1" ]]; then
+    log "master container blue-green committed: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retirement continues in the background"
+  else
+    log "master container blue-green complete: :$old_port -> :$green_port (version $master_version); ECS serves green, blue retired"
+  fi
+}
+
+# master_retire_wait - join the background blue retirement started by an
+# asynchronous commit (MASTER_RETIRE_ASYNC=1). The flip already moved the panel
+# and the /v1 last-resort onto green, so this wait belongs AFTER the relay
+# cutover: in a normal release the 765s drain finishes during the relay's own
+# drain window and the call returns immediately. Returns nonzero when the
+# retirement itself failed, so the release can reconcile instead of silently
+# leaving blue behind.
+master_retire_wait() {
+  local rc
+  [[ -n "${MASTER_COMMIT_PID:-}" ]] || return 0
+  wait "$MASTER_COMMIT_PID" 2>/dev/null || true
+  rc="$(cat "${MASTER_COMMIT_STATUS_FILE:-/dev/null}" 2>/dev/null || true)"
+  MASTER_COMMIT_PID=""
+  if [[ ! "$rc" =~ ^[0-9]+$ || "$rc" -ne 0 ]]; then
+    error "master blue retirement failed (exit ${rc:-?}); see ${MASTER_COMMIT_LOG:-<log>}"
+    return 1
+  fi
+  log "master blue retirement complete: blue finished its in-flight streams and was removed"
 }
 
 # master_sync_abort <image-ref> - reconcile after a failed master roll.
@@ -3583,6 +3649,11 @@ main() {
       # tier has already started moving.
       local release_mode release_batch
       resolve_release_plan || die "the release's rollout plan is not usable as configured"
+      # Relay cutover must not wait out the master's blue drain: the commit
+      # flips the panel (and the /v1 last-resort) onto green immediately and
+      # retires blue in the background, so the ECI rollout starts right after
+      # the flip. The background half is joined below, after cutover.
+      MASTER_RETIRE_ASYNC=1
       release_mode="$RELEASE_MODE"
       release_batch="$RELEASE_BATCH"
       # Headroom gate BEFORE anything mutates: every roll path scales the tier to
@@ -3649,6 +3720,7 @@ main() {
         if ! restore_scaling_config "$previous_snapshot"; then
           error "master roll failed and the scaling configuration could not be restored"
         fi
+        master_retire_wait || true
         if ! sync_master_container ""; then
           error "master container could not be restored to the previous digest; manual intervention required (deploy.sh sync-host)"
         fi
@@ -3667,10 +3739,18 @@ main() {
           # rollout_batch already restored the scaling configuration and the
           # steady-state capacity on every failure path; keep the master on that
           # same (previous) digest so node versions never drift.
+          master_retire_wait || true
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed one-shot cutover; manual intervention required (deploy.sh sync-host)"
           fi
           die "release one-shot cutover failed; rollback was attempted and must be verified before retrying"
+        fi
+        if ! master_retire_wait; then
+          if master_sync_abort "$CNB_IMAGE_REPOSITORY@$release_digest"; then
+            warn "master blue retirement failed but the abort phase finalized green and removed blue; continuing"
+          else
+            die "master blue retirement failed and could not be reconciled; manual intervention required"
+          fi
         fi
         log "release $release_tag -> $release_digest deployed to the whole ECI tier in ONE drain window (one-shot)"
       else
@@ -3678,6 +3758,7 @@ main() {
           # rollback_failed_rollout re-pinned the scaling configuration + ECI to
           # the previous digest; bring the master back in line so node versions
           # never drift after an aborted release.
+          master_retire_wait || true
           if ! sync_master_container ""; then
             error "master container could not be restored after the failed rollout; manual intervention required (deploy.sh sync-host)"
           fi
@@ -3698,12 +3779,20 @@ main() {
             # rollout_batch already restored the scaling configuration and the
             # steady-state capacity on every failure path; keep the master on
             # that same (previous) digest so node versions never drift.
+            master_retire_wait || true
             if ! sync_master_container ""; then
               error "master container could not be restored after the failed batch rollout; manual intervention required (deploy.sh sync-host)"
             fi
             die "release batch rollout failed; rollback was attempted and must be verified before retrying"
           fi
           log "release $release_tag -> $release_digest deployed to the whole ECI tier (batches of $release_batch)"
+        fi
+        if ! master_retire_wait; then
+          if master_sync_abort "$CNB_IMAGE_REPOSITORY@$release_digest"; then
+            warn "master blue retirement failed but the abort phase finalized green and removed blue; continuing"
+          else
+            die "master blue retirement failed and could not be reconciled; manual intervention required"
+          fi
         fi
       fi
       ;;

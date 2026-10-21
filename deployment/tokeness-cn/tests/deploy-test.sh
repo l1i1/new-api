@@ -542,8 +542,10 @@ assert_contains "$release_case/state/host-bootstrap.log" "host-bootstrap invocat
 # ECS, the commit flips its nginx, and the post-commit probe proves it.
 grep -q 'panel tier is this ECS' "$release_case/state/stdout.log" \
   || fail "the release did not take the ECS panel-tier path"
-grep -q 'ECS serves green, blue retired' "$release_case/state/stdout.log" \
+grep -q 'ECS serves green' "$release_case/state/stdout.log" \
   || fail "the post-commit probe did not confirm the ECS serving green"
+grep -q 'blue retirement continues in the background' "$release_case/state/stdout.log" \
+  || fail "the deploy-release path did not defer blue retirement instead of blocking the relay cutover"
 [[ "$(grep -c 'web-port-pin' "$release_case/state/aliyun-calls.log" || true)" -eq 0 ]] \
   || fail "the release pinned a retired lightweight host"
 [[ ! -e "$release_case/state/web-primary-port" ]] \
@@ -1079,7 +1081,7 @@ loser="$first"; winner="$second"
 if (( mutex_rc2 != 0 )); then loser="$second"; winner="$first"; fi
 grep -qE "refusing to release|refusing to run two at once|owned by|is owned by" "$loser/state/output.log" \
   || fail "the losing release did not explain its refusal"
-grep -q "master container blue-green complete" "$winner/state/stdout.log" \
+grep -qE "master container blue-green (complete|committed)" "$winner/state/stdout.log" \
   || fail "the winning release did not complete its roll"
 # Both contenders reached the acquire while the gate held the lock: the race
 # was real, not one release starting after the other finished.
@@ -1616,7 +1618,7 @@ run_deploy "$no_alarm_case" \
   deploy-release v1.0.0-rc.33-tokeness-mainland.9
 grep -q "no scale-in alarm named 'cpu-in-25'" "$no_alarm_case/state/stdout.log" \
   || fail "a missing scale-in alarm did not warn"
-grep -q "master container blue-green complete" "$no_alarm_case/state/stdout.log" \
+grep -qE "master container blue-green (complete|committed)" "$no_alarm_case/state/stdout.log" \
   || fail "a missing scale-in alarm aborted the release"
 [[ ! -e "$no_alarm_case/shrink-hold" ]] \
   || fail "the hold survived a release that suspended no alarm"
