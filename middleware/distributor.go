@@ -464,6 +464,10 @@ func channelSelectionFailureResponse(err error) (int, types.ErrorCode) {
 		return http.StatusServiceUnavailable, types.ErrorCodeGetChannelFailed
 	case service.ChannelSelectionAccessDenied:
 		return http.StatusForbidden, types.ErrorCodeAccessDenied
+	case service.ChannelSelectionVideoUnsupported:
+		// A definite media-capability gap: answer the designed video_request
+		// rejection (400) the pinned and request-filter paths already produce.
+		return http.StatusBadRequest, types.ErrorCode(taskdto.FilterVideoRequest)
 	case service.ChannelSelectionUnprovableExhaustion:
 		// Honest "we could not prove a candidate set was exhausted": the
 		// controller answers with the last real upstream verdict when it has
@@ -933,6 +937,28 @@ func officialFitThinkingDisabled(req v4OfficialPinRequest) bool {
 	return strings.EqualFold(strings.TrimSpace(req.ReasoningEffort), "none")
 }
 
+// officialFitValidateOwnsContentParts reports whether the local official-fit
+// validation decides the verdict for a media content part on this request.
+//
+// Today that is the DeepSeek V4 family with the Validate dimension on: the live
+// endpoint rejects every media content variant (video_url, video, audio_url, …)
+// with a 422 serde error, and validateDeepSeekV4Messages reproduces it before
+// any channel is entered. Channel selection runs earlier (middleware), so a
+// video part must not arm the capability filter for these requests — otherwise
+// selection fails with a channel-selection error before the validator can
+// answer the official verdict (the 2026-10-21 customer video test).
+func officialFitValidateOwnsContentParts(c *gin.Context, modelName string) bool {
+	if officialfit.FamilyOf(modelName) != officialfit.FamilyDeepSeekV4 {
+		return false
+	}
+	setting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
+	if !ok {
+		return false
+	}
+	profile, enabled := setting.OfficialFitProfileFor(modelName)
+	return enabled && profile.Validate
+}
+
 // messagesContainImagePart reports whether any message carries an image_url
 // content part. Text-only V4 models officially accept them (2026-09-06
 // probes; the previous "This model does not support image" 400 is gone), so
@@ -1034,7 +1060,14 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	// instead of rejecting the part. The body is already in hand here, so the
 	// check costs one scan and runs before any channel is chosen. Consumers that
 	// are not chat-shaped simply report false and keep their existing routing.
-	if service.RequestBytesCarryVideo(requestBody) {
+	//
+	// Official-fit DeepSeek V4 validation owns its verdict: the endpoint rejects
+	// every media part as an unknown content variant (422), so the request must
+	// reach the validator instead of being filtered out here. Selection runs
+	// before the relay handler (and therefore before validation), and a video
+	// filter applied here failed first with a channel-selection error — the
+	// 2026-10-21 customer video test saw 500 instead of the official 422.
+	if service.RequestBytesCarryVideo(requestBody) && !officialFitValidateOwnsContentParts(c, model) {
 		common.SetContextKey(c, constant.ContextKeyVideoRequest, true)
 	}
 

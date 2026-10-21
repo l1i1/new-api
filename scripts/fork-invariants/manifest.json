@@ -3644,7 +3644,8 @@
    "files": [
     "model/channel_cache.go",
     "model/ability.go",
-    "service/channel_select.go"
+    "service/channel_select.go",
+    "middleware/distributor.go"
    ],
    "anchors": [
     {
@@ -3661,6 +3662,16 @@
      "kind": "contains",
      "file": "service/channel_select.go",
      "contains": "model.ErrNoVideoCapableChannel"
+    },
+    {
+     "kind": "contains",
+     "file": "middleware/distributor.go",
+     "contains": "func officialFitValidateOwnsContentParts"
+    },
+    {
+     "kind": "contains",
+     "file": "middleware/distributor.go",
+     "contains": "ChannelSelectionVideoUnsupported"
     }
    ],
    "tests": [
@@ -3681,6 +3692,18 @@
      "file": "model/channel_video_selection_test.go",
      "names": [
       "TestSelectChannelVideoRequestFailsWhenNothingDeclaresVideo"
+     ]
+    },
+    {
+     "file": "middleware/video_request_flag_test.go",
+     "names": [
+      "TestGetModelFromJSONBodyMarksVideoRequests"
+     ]
+    },
+    {
+     "file": "middleware/distributor_video_gap_test.go",
+     "names": [
+      "TestChannelSelectionFailureResponseMapsVideoCapabilityGap"
      ]
     }
    ]

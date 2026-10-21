@@ -72,6 +72,12 @@ const (
 	ChannelSelectionUnprovableExhaustion ChannelSelectionFailureKind = "unprovable_exhaustion"
 	ChannelSelectionInternalError        ChannelSelectionFailureKind = "internal_selection_error"
 	ChannelSelectionAccessDenied         ChannelSelectionFailureKind = "access_denied"
+	// ChannelSelectionVideoUnsupported: the group publishes the model, but no
+	// candidate declares it can read the request's video. A definite capability
+	// gap, so the caller answers the designed video_request rejection; it must
+	// not be reported as an internal selection error (the 2026-10-21 video
+	// incident answered 500 with the pin's unprovable-exhaustion wording).
+	ChannelSelectionVideoUnsupported ChannelSelectionFailureKind = "video_unsupported"
 )
 
 type ChannelSelectionError struct {
@@ -388,6 +394,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		channel, err = model.GetRandomSatisfiedChannelPinnedWithFit(param.TokenGroup, routingModel, selectionRetry, param.RequestPath, blockedChannels, v4OfficialPin(param), videoRequestOnly(param), model.FitChannelFilterForRequest(param.Ctx))
 		// tokeness-fitpolicy:end
 		if err != nil {
+			if errors.Is(err, model.ErrNoVideoCapableChannel) {
+				return nil, param.TokenGroup, &ChannelSelectionError{
+					Kind:  ChannelSelectionVideoUnsupported,
+					Group: param.TokenGroup,
+					Model: param.ModelName,
+					Err:   err,
+				}
+			}
 			return nil, param.TokenGroup, &ChannelSelectionError{
 				Kind:  ChannelSelectionInternalError,
 				Group: param.TokenGroup,
@@ -401,6 +415,14 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	}
 	if channel == nil {
 		if lastAutoGroupSelectionErr != nil {
+			if errors.Is(lastAutoGroupSelectionErr, model.ErrNoVideoCapableChannel) {
+				return nil, lastAutoGroupSelectionErrGroup, &ChannelSelectionError{
+					Kind:  ChannelSelectionVideoUnsupported,
+					Group: lastAutoGroupSelectionErrGroup,
+					Model: param.ModelName,
+					Err:   lastAutoGroupSelectionErr,
+				}
+			}
 			return nil, lastAutoGroupSelectionErrGroup, &ChannelSelectionError{
 				Kind:  ChannelSelectionInternalError,
 				Group: lastAutoGroupSelectionErrGroup,
