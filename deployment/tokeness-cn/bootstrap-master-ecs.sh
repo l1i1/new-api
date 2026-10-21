@@ -205,6 +205,23 @@ write_serving_marker() { # <port> - atomic (tmp + rename): ml-sync/deploy never 
 #      the LINK, not the file - a "backup" that changes whenever the live file
 #      does. So: resolve the target once, edit the target, back up a regular
 #      copy of it.
+# nginx_panel_probe - the panel must answer through this host's :80 after the
+# flip. Loopback is tried first on purpose: the panel server blocks listen on
+# 0.0.0.0:80, but since 2026-10-20 a gateway block owns the private address
+# (`internal-2api.conf: listen 10.0.0.249:80`), and a request to $SERVE_IP:80
+# matches that block instead of the wildcard listener, which answers its own
+# 404. Probing $SERVE_IP first therefore failed a healthy flip on 2026-10-21
+# and aborted the .63 release while green was already serving correctly.
+nginx_panel_probe() {
+  local host
+  for host in 127.0.0.1 "$SERVE_IP"; do
+    if curl -fsS --max-time 5 -H "Host: $ECS_NGINX_HOST_HEADER" "http://$host:80/health/ready" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 ecs_nginx_apply() {
   local port="$1" old_port="$2" add_backup="${3:-}" bak target
   target="$(readlink -f "$ECS_NGINX_CONF" 2>/dev/null || printf '%s' "$ECS_NGINX_CONF")"
@@ -232,7 +249,7 @@ ecs_nginx_apply() {
     return 1
   fi
   systemctl reload nginx || { err "nginx reload failed; restoring $bak"; cp -a "$bak" "$target"; systemctl reload nginx >/dev/null 2>&1 || true; return 1; }
-  if ! curl -fsS --max-time 5 -H "Host: $ECS_NGINX_HOST_HEADER" "http://$SERVE_IP:80/health/ready" >/dev/null 2>&1; then
+  if ! nginx_panel_probe; then
     err ":80 post-flip probe failed; restoring $bak"
     cp -a "$bak" "$target"
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
