@@ -19,6 +19,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// imageTokenFallback 是图像 token 无法本地测量时的保守平摊值：与 getImageToken
+// 在「不本地计算图像 token」分支返回的 3*baseTokens（baseTokens 默认 85）一致。
+const imageTokenFallback = 3 * 85
+
 func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, stream bool) (int, error) {
 	if fileMeta == nil || fileMeta.Source == nil {
 		return 0, fmt.Errorf("image_url_is_nil")
@@ -267,8 +271,15 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 			// 而我们这里既然要计算 token，通常需要完整数据
 			cachedData, err := LoadFileSource(c, file.Source, "token_counter")
 			if err != nil {
+				// 本地算 token 只是预扣费估算，最终结算用上游 usage 补扣。任何取不到
+				// 的媒体（超过 64MB、4xx、网络错误、SSRF 拦截）都不能把客户请求变成
+				// 500：保持类型未知，走下面 switch 的默认平摊值——与非流请求本来就走
+				// 的同一条路径一致（GET_MEDIA_TOKEN_NOT_STREAM 默认关闭）。
+				// 非流请求历史上就允许失败（只 debug），不新增 warn 噪声。
 				if shouldFetchFiles {
-					return 0, fmt.Errorf("error getting file type: %v", err)
+					logger.LogWarn(c, "token_counter: media load failed, counting as unknown file type: %v", err)
+				} else {
+					logger.LogDebug(c, "token_counter: media load skipped, counting as unknown file type: %v", err)
 				}
 				continue
 			}
@@ -276,15 +287,19 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 		}
 	}
 
-	for i, file := range meta.Files {
+	for _, file := range meta.Files {
 		switch file.FileType {
 		case types.FileTypeImage:
 			if common.IsOpenAITextModel(model) {
 				token, err := getImageToken(c, file, model, info.IsStream)
 				if err != nil {
-					return 0, fmt.Errorf("error counting image token, media index[%d], identifier[%s], err: %v", i, file.GetIdentifier(), err)
+					// 同上：量不出来就按 getImageToken 自己在无法测量时返回的平摊值估算，
+					// 不把估算失败升级成客户可见的 500。
+					logger.LogWarn(c, "token_counter: image token counting failed (identifier %s), using flat estimate: %v", file.GetIdentifier(), err)
+					tkm += imageTokenFallback
+				} else {
+					tkm += token
 				}
-				tkm += token
 			} else {
 				tkm += 520
 			}

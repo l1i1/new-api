@@ -171,6 +171,12 @@ func loadFromURL(c *gin.Context, url string, reason ...string) (*types.CachedFil
 		return nil, fmt.Errorf("failed to download file, status code: %d", resp.StatusCode)
 	}
 
+	// 声明了大小时先判断，别为一个注定超限的文件白读几十 MB。实测一次 64MB 媒体
+	// URL 的本地 token 估算让请求多等了 53 秒（2026-10-22 00:07 生产）。
+	if resp.ContentLength > int64(maxFileSize) {
+		return nil, fmt.Errorf("file size exceeds maximum allowed size: %dMB", constant.MaxFileDownloadMB)
+	}
+
 	// 读取文件内容（限制大小）
 	if common.DebugEnabled {
 		logger.LogDebug(c, "loadFromURL: reading response body")
