@@ -426,3 +426,50 @@ func TestPostFitCapabilityReportBindsTheBaseline(t *testing.T) {
 	recorder, _ = postReport(t, matching)
 	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
 }
+
+// TestGetChannelFitCapabilitiesReportsStaleBinding pins the agreement between the
+// single-channel read view and the selection path: a mark bound to a superseded
+// policy must be reported as stale here too. Before 2026-10-22 this handler
+// passed empty hashes, so every supported suite mark looked fresh — exactly the
+// state that made ch77's policy-v7 GLM marks (and its lack of traffic)
+// impossible to diagnose from the channel view.
+func TestGetChannelFitCapabilitiesReportsStaleBinding(t *testing.T) {
+	setupFitCapabilityEndpoint(t)
+	version, hash := installLivePolicy(t)
+	now := common.GetTimestamp()
+
+	_, err := model.ApplyChannelFitCapability(model.FitCapabilityWrite{
+		ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "tools.dynamic_names",
+		Supported: true, Source: model.FitCapabilitySourceSuite, At: now,
+		PolicyVersion: version, PolicyHash: hash, ExpectedRevision: 0,
+	}, now)
+	require.NoError(t, err)
+
+	_, err = model.ApplyChannelFitCapability(model.FitCapabilityWrite{
+		ChannelId: 7, Family: "kimi-k3", Model: "kimi-k3", Behavior: "response_format.json",
+		Supported: true, Source: model.FitCapabilitySourceSuite, At: now,
+		PolicyVersion: 7, PolicyHash: "superseded-policy-hash", ExpectedRevision: 0,
+	}, now)
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/fit-capability?channel_id=7", nil)
+	GetChannelFitCapabilities(c)
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
+
+	payload := map[string]any{}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	rows, ok := payload["data"].([]any)
+	require.True(t, ok)
+	states := map[string]string{}
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		require.True(t, ok)
+		behavior, _ := row["behavior"].(string)
+		state, _ := row["state"].(string)
+		states[behavior] = state
+	}
+	assert.Equal(t, model.FitCapabilitySuiteFresh, states["tools.dynamic_names"], "a mark bound to the live policy stays fresh")
+	assert.Equal(t, model.FitCapabilitySuiteStale, states["response_format.json"], "a mark bound to a superseded policy must not read as fresh")
+}

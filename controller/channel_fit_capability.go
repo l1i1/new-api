@@ -131,11 +131,22 @@ func GetChannelFitCapabilities(c *gin.Context) {
 		model.ChannelFitCapability
 		State string `json:"state"`
 	}
+	// Resolve the state against the bindings currently in force, exactly as the
+	// paged view and the selection path do. Passing empty hashes (the previous
+	// behaviour) skipped the binding comparison, so a mark measured under a
+	// superseded policy was reported as suite_fresh here while selection treated
+	// it as stale — an operator looking at one channel could not see why it was
+	// receiving no traffic (2026-10-22: ch77's GLM marks were bound to policy v7
+	// while v13 was in force, yet this endpoint said "fresh").
+	var policyHash, baselineHash string
+	if snapshot := fitpolicy.Current(); snapshot != nil {
+		policyHash, baselineHash = snapshot.Hash(), snapshot.Baseline()
+	}
 	views := make([]markView, 0, len(rows))
 	for i := range rows {
 		views = append(views, markView{
 			ChannelFitCapability: rows[i],
-			State:                model.FitCapabilityState(&rows[i], now, "", ""),
+			State:                model.FitCapabilityState(&rows[i], now, policyHash, baselineHash),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": views})
