@@ -31,6 +31,8 @@ func (e *evalEnv) MessagesCarryDynamicTools() bool     { return e.View.MessagesC
 func (e *evalEnv) ResponseFormatNotText() bool         { return e.View.ResponseFormatNotText() }
 func (e *evalEnv) ToolChoiceForcesOfficial() bool      { return e.View.ToolChoiceForcesOfficial() }
 func (e *evalEnv) StopRequested() bool                 { return e.View.StopRequested() }
+func (e *evalEnv) ResponsesEndpoint() bool             { return e.View.ResponsesEndpoint() }
+func (e *evalEnv) PromptCacheOptionsRequested() bool   { return e.View.PromptCacheOptionsRequested() }
 func (e *evalEnv) WholeFamily() bool                   { return e.View.WholeFamily() }
 
 // compiledRule is one rule with its program already built.

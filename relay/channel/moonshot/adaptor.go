@@ -55,11 +55,16 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		if info.RelayFormat == types.RelayFormatOpenAI {
 			return fmt.Sprintf("%s/chat/completions", specialPlan.OpenAIBaseURL), nil
 		}
+		if info.RelayFormat == types.RelayFormatOpenAIResponses {
+			return fmt.Sprintf("%s/responses", specialPlan.OpenAIBaseURL), nil
+		}
 	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatClaude:
 		return fmt.Sprintf("%s/anthropic/v1/messages", info.ChannelBaseUrl), nil
+	case types.RelayFormatOpenAIResponses:
+		return fmt.Sprintf("%s/v1/responses", info.ChannelBaseUrl), nil
 	default:
 		if info.RelayMode == constant.RelayModeRerank {
 			return fmt.Sprintf("%s/v1/rerank", info.ChannelBaseUrl), nil
@@ -99,8 +104,10 @@ func isTemperatureOneOnlyModel(model string) bool {
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	// Moonshot's Responses API uses the same top-level shape as OpenAI's. The
+	// request has already passed the gateway's validation; forwarding it as-is
+	// keeps prompt_cache_options and prompt_cache_key intact.
+	return request, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {

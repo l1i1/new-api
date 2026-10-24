@@ -24,7 +24,7 @@ package fitpolicy
 //     and any explicit stop sequence. The one class the pool still serves
 //     faithfully is plain explicit thinking-off chat.
 //   - kimi-k3 narrows per shape. The family moved to measured admission on
-//     2026-10-03: a channel qualifies by passing the five behaviour probes
+//     2026-10-03: a channel qualifies by passing the measured behaviour probes
 //     below, so a request is only pinned when its own shape is one the
 //     priority channel measurably cannot reproduce. Pinning the whole family
 //     would take ordinary traffic off the priority channel, which is exactly
@@ -72,6 +72,13 @@ func BuiltinPolicy() Policy {
 					{ID: "k3-response-format", When: "ResponseFormatNotText()", Require: []string{BehaviorResponseFormatJSON}},
 					{ID: "k3-history", When: "!HistoryBeginsWithUserTurn()", Require: []string{BehaviorHistoryAssistantFirst}},
 					{ID: "k3-dynamic-tools", When: "MessagesCarryDynamicTools()", Require: []string{BehaviorToolsDynamicNames}},
+					// Responses is a different wire protocol, not a chat shape: a channel
+					// that only speaks chat must not be admitted merely because it
+					// carries the model. The cache mark is required as well because the
+					// observed aggregator responses omit cached_tokens even when the
+					// request itself succeeds (2026-10-24).
+					{ID: "k3-responses", When: "ResponsesEndpoint()", Require: []string{BehaviorResponsesEndpoint, BehaviorPromptCacheOptions}},
+					{ID: "k3-prompt-cache-options", When: "PromptCacheOptionsRequested()", Require: []string{BehaviorPromptCacheOptions}},
 				},
 				Behaviors: map[string]Behavior{
 					BehaviorThinkingCounting:      {Class: ClassVerdict},
@@ -79,6 +86,8 @@ func BuiltinPolicy() Policy {
 					BehaviorResponseFormatJSON:    {Class: ClassVerdict},
 					BehaviorHistoryAssistantFirst: {Class: ClassVerdict},
 					BehaviorToolsDynamicNames:     {Class: ClassVerdict},
+					BehaviorResponsesEndpoint:     {Class: ClassVerdict},
+					BehaviorPromptCacheOptions:    {Class: ClassVerdict},
 				},
 				UnknownMarkPolicy: UnknownMarkConservative,
 				EmptyMatchPolicy:  EmptyMatchFallthroughPriority,
@@ -149,6 +158,14 @@ const (
 	BehaviorImageParts            = "image.parts"
 	BehaviorStopSequences         = "stop.sequences"
 	BehaviorFamilyWhole           = "family.whole"
+	// Responses API capabilities. The endpoint mark means the channel can serve
+	// the Responses wire protocol. The cache mark means it both accepts
+	// prompt_cache_options and reports the resulting cache read/write usage.
+	// They are separate on purpose: ch91/ch102 served Responses on 2026-10-24 but
+	// returned no input_tokens_details, so an endpoint-only mark would route the
+	// customer straight back to the broken accounting path.
+	BehaviorResponsesEndpoint  = "responses.endpoint"
+	BehaviorPromptCacheOptions = "prompt_cache_options"
 	// BehaviourEmptyContentAccepted marks the DeepSeek V4 contentless-turn
 	// contract: the official endpoint answers such a body with 200, while every
 	// aggregation backend rejects it with a provider error (live-probed

@@ -34,14 +34,29 @@ import (
 // rejected — local validation answers those with the official 400 before any
 // upstream call, so over-selecting costs nothing.
 type RequestView struct {
-	Model           string
-	LogProbs        *bool
-	ReasoningEffort string
-	Thinking        json.RawMessage
-	ToolChoice      json.RawMessage
-	ResponseFormat  json.RawMessage
-	Stop            json.RawMessage
-	Messages        []dto.Message
+	Model              string
+	RequestPath        string
+	LogProbs           *bool
+	ReasoningEffort    string
+	Thinking           json.RawMessage
+	ToolChoice         json.RawMessage
+	ResponseFormat     json.RawMessage
+	Stop               json.RawMessage
+	PromptCacheOptions json.RawMessage
+	Messages           []dto.Message
+}
+
+// ResponsesEndpoint reports whether this is the OpenAI Responses API. The
+// compact endpoint is a different protocol and is intentionally excluded.
+func (v RequestView) ResponsesEndpoint() bool {
+	return v.RequestPath == "/v1/responses"
+}
+
+// PromptCacheOptionsRequested reports whether the client asked for an explicit
+// cache-write policy. The document is kept raw; presence is all the policy
+// needs, and validation remains the relay's job.
+func (v RequestView) PromptCacheOptionsRequested() bool {
+	return len(trimJSON(v.PromptCacheOptions)) > 0
 }
 
 // ThinkingDisabled mirrors officialFitThinkingDisabled: thinking.type=disabled,

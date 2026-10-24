@@ -90,6 +90,62 @@ func TestDecideGating(t *testing.T) {
 	}
 }
 
+func TestResponsesAndPromptCacheOptionsRequireTheirOwnMarks(t *testing.T) {
+	snapshot := mustCompileBuiltin(t)
+
+	responses := snapshot.Decide("kimi-k3", true, RequestView{
+		Model:       "kimi-k3",
+		RequestPath: "/v1/responses",
+	})
+	if !responses.HasOpinion() {
+		t.Fatal("Responses must require its endpoint/cache marks")
+	}
+	for _, mark := range []string{BehaviorResponsesEndpoint, BehaviorPromptCacheOptions} {
+		if _, ok := responses.Behaviors[mark]; !ok {
+			t.Fatalf("Responses requirement is missing %q: %#v", mark, responses.Behaviors)
+		}
+	}
+
+	cacheOptions := snapshot.Decide("kimi-k3", true, RequestView{
+		Model:              "kimi-k3",
+		RequestPath:        "/v1/chat/completions",
+		PromptCacheOptions: json.RawMessage(`{"mode":"implicit","ttl":"5m"}`),
+	})
+	if !cacheOptions.HasOpinion() {
+		t.Fatal("prompt_cache_options must require the cache-options mark")
+	}
+	if _, ok := cacheOptions.Behaviors[BehaviorPromptCacheOptions]; !ok {
+		t.Fatalf("cache-options requirement is missing %q", BehaviorPromptCacheOptions)
+	}
+
+	plainChat := snapshot.Decide("kimi-k3", true, RequestView{
+		Model:       "kimi-k3",
+		RequestPath: "/v1/chat/completions",
+	})
+	if plainChat.HasOpinion() {
+		t.Fatalf("plain chat must keep the existing no-opinion route, got %#v", plainChat.Behaviors)
+	}
+}
+
+func TestResponsesRequestViewPredicates(t *testing.T) {
+	view := RequestView{
+		RequestPath:        "/v1/responses",
+		PromptCacheOptions: json.RawMessage(`{"mode":"implicit","ttl":"5m"}`),
+	}
+	if !view.ResponsesEndpoint() {
+		t.Fatal("ResponsesEndpoint() must match /v1/responses")
+	}
+	if !view.PromptCacheOptionsRequested() {
+		t.Fatal("PromptCacheOptionsRequested() must see a non-empty object")
+	}
+	if (RequestView{RequestPath: "/v1/responses/compact"}).ResponsesEndpoint() {
+		t.Fatal("the compact endpoint must not be classified as /v1/responses")
+	}
+	if (RequestView{PromptCacheOptions: json.RawMessage(`null`)}).PromptCacheOptionsRequested() {
+		t.Fatal("a JSON null must not count as a cache-options request")
+	}
+}
+
 func TestDecideReportsPolicyIdentity(t *testing.T) {
 	snapshot := mustCompileBuiltin(t)
 	view := RequestView{Model: "kimi-k3", Thinking: json.RawMessage(`{"type":"disabled"}`)}

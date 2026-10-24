@@ -34,10 +34,11 @@ import (
 // messages, tools and credentials must never reach the log.
 
 const (
-	// fitPolicyScopedPath is the only path the policy applies to: OpenAI chat
-	// completions on the versioned API. The relay format is implied by the route
-	// (relay-router.go maps exactly this path to RelayFormatOpenAI).
-	fitPolicyScopedPath = "/v1/chat/completions"
+	// fitPolicyScopedPath is the OpenAI chat-completions path. Responses has its
+	// own exact path: the policy must not match the compact or playground forms,
+	// which are different protocols/routes.
+	fitPolicyScopedPath          = "/v1/chat/completions"
+	fitPolicyScopedResponsesPath = "/v1/responses"
 
 	// fitPolicyShadowLogBurst is how many individual shadow decisions are logged
 	// up front, so a dry run costs a bounded number of lines instead of one per
@@ -65,10 +66,10 @@ var (
 )
 
 // fitPolicyInScope reports whether this request may be governed by the policy.
-// Everything else — the playground path, /v1/completions, /v1/messages,
-// /v1/responses/compact, Gemini/embedding/audio/rerank, realtime WS, the
-// Responses WebSocket, task and task-plugin selection — keeps today's
-// behaviour.
+// It covers exact /v1/chat/completions and /v1/responses. Everything else — the
+// playground path, /v1/completions, /v1/messages, /v1/responses/compact,
+// Gemini/embedding/audio/rerank, realtime WS, the Responses WebSocket, task and
+// task-plugin selection — keeps today's behaviour.
 func fitPolicyInScope(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -76,7 +77,7 @@ func fitPolicyInScope(c *gin.Context) bool {
 	if c.Request.Method != http.MethodPost {
 		return false
 	}
-	return c.Request.URL.Path == fitPolicyScopedPath
+	return c.Request.URL.Path == fitPolicyScopedPath || c.Request.URL.Path == fitPolicyScopedResponsesPath
 }
 
 // fitPolicyExplicitPinActive reports whether the request is already bound to one
@@ -128,14 +129,16 @@ func applyFitPolicy(c *gin.Context, req v4OfficialPinRequest, routeEnabled bool)
 		return
 	}
 	requirement := snapshot.Decide(req.Model, routeEnabled, fitpolicy.RequestView{
-		Model:           req.Model,
-		LogProbs:        req.LogProbs,
-		ReasoningEffort: req.ReasoningEffort,
-		Thinking:        req.THINKING,
-		ToolChoice:      req.ToolChoice,
-		ResponseFormat:  req.ResponseFormat,
-		Stop:            req.Stop,
-		Messages:        req.Messages,
+		Model:              req.Model,
+		RequestPath:        c.Request.URL.Path,
+		LogProbs:           req.LogProbs,
+		ReasoningEffort:    req.ReasoningEffort,
+		Thinking:           req.THINKING,
+		ToolChoice:         req.ToolChoice,
+		ResponseFormat:     req.ResponseFormat,
+		Stop:               req.Stop,
+		PromptCacheOptions: req.PromptCacheOptions,
+		Messages:           req.Messages,
 	})
 	if !requirement.HasOpinion() {
 		fitPolicyStats.noOpinion.Add(1)

@@ -662,6 +662,9 @@ type v4OfficialPinRequest struct {
 	// Stop stays raw because the wire allows a bare string, an array of strings
 	// or null, and the pin predicate must see every form.
 	Stop json.RawMessage `json:"stop,omitempty"`
+	// PromptCacheOptions is present only on the Responses API. Presence is the
+	// shape signal; the relay validates the document itself.
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
 }
 
 // markV4OfficialPinFromDistributor applies the official-pin marking at
@@ -680,7 +683,8 @@ func markV4OfficialPinFromDistributor(c *gin.Context) {
 	if c.Request.Method != http.MethodPost {
 		return
 	}
-	if !strings.HasSuffix(c.Request.URL.Path, "/chat/completions") {
+	requestPath := c.Request.URL.Path
+	if !strings.HasSuffix(requestPath, "/chat/completions") && requestPath != fitPolicyScopedResponsesPath {
 		return
 	}
 	var pinRequest v4OfficialPinRequest
