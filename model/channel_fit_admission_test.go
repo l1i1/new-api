@@ -135,9 +135,9 @@ func TestOfficialFitAdmissionMeasuredFromMarks(t *testing.T) {
 	assert.False(t, matchAdmission(37, "kimi-k3", admissionMeasured(battery...)),
 		"a channel nobody measured is not admitted")
 
-	// Marks bound to another policy hash are stale and admit nothing.
-	assert.False(t, matchAdmission(41, "kimi-k3", withPolicy(admissionMeasured(battery...), "other-policy")),
-		"stale-bound marks do not admit: a policy change must re-measure, not re-validate")
+	// A policy hash change is audit metadata only; the mark remains valid.
+	assert.True(t, matchAdmission(41, "kimi-k3", withPolicy(admissionMeasured(battery...), "other-policy")),
+		"a policy change must not invalidate a measured capability")
 
 	// A battery the channel only partly satisfies does not admit it.
 	twoBehaviorBattery := []string{fitpolicy.BehaviorThinkingCounting, fitpolicy.BehaviorLogprobsDualPath}

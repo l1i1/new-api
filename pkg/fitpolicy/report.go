@@ -12,10 +12,10 @@ import (
 // table, so it is validated before anything is written. Two properties matter
 // more than the rest:
 //
-//  1. The report is bound to the policy and baseline it was measured against.
-//     A report produced for a different rule set describes behaviour under rules
-//     that no longer exist; applying it would mark channels as verified against
-//     a requirement that has since changed.
+//  1. The report is bound to the official baseline it was measured against. A
+//     report describing a different upstream behaviour must not vouch for the
+//     current one. Policy version/hash are audit metadata only and do not
+//     invalidate a report.
 //  2. The shape is bounded. The report arrives over HTTP, so its size and field
 //     shapes are limited here rather than trusted, and a malformed field is
 //     rejected instead of being coerced into a mark.
@@ -60,8 +60,8 @@ type SuiteResult struct {
 }
 
 // ReportBinding is what the receiving node requires a report to have been
-// measured against. An empty PolicyHash or BaselineHash means "do not check
-// this field".
+// measured against. PolicyVersion/PolicyHash are carried for audit only; an
+// empty BaselineHash means "do not check this field".
 type ReportBinding struct {
 	PolicyVersion int
 	PolicyHash    string
@@ -97,14 +97,9 @@ func ValidateSuiteReport(report *SuiteReport, binding ReportBinding) error {
 		return fmt.Errorf("fitpolicy: report carries %d results, above the limit of %d", len(report.Results), MaxSuiteReportResults)
 	}
 
-	// Binding first: a mismatched report is stale as a whole, and reporting a
-	// per-result shape error for it would be misleading.
-	if binding.PolicyVersion != 0 && report.PolicyVersion != binding.PolicyVersion {
-		return fmt.Errorf("fitpolicy: report was measured against policy version %d, but %d is live", report.PolicyVersion, binding.PolicyVersion)
-	}
-	if binding.PolicyHash != "" && report.PolicyHash != binding.PolicyHash {
-		return fmt.Errorf("fitpolicy: report was measured against policy hash %s, but %s is live", report.PolicyHash, binding.PolicyHash)
-	}
+	// Policy version/hash remain audit metadata only; policy edits no longer
+	// invalidate measured results. The official baseline still binds the
+	// evidence to the upstream behaviour it describes.
 	if binding.BaselineHash != "" && report.BaselineHash != binding.BaselineHash {
 		return fmt.Errorf("fitpolicy: report was measured against baseline %s, but %s is in force", report.BaselineHash, binding.BaselineHash)
 	}

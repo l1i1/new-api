@@ -418,18 +418,16 @@ func buildFitCapabilityRow(write FitCapabilityWrite, now int64, revision int64) 
 
 // FitCapabilityState resolves the state of one stored mark.
 //
-// policyHash and baselineHash are the values currently in force. A suite result
-// measured against a different policy or baseline is stale rather than valid:
-// the behaviour may have changed underneath it, and the spec forbids letting it
-// recover silently.
+// policyHash is compatibility metadata and is not consulted. Policy edits no
+// longer invalidate suite results. The official baseline still invalidates a
+// measurement when it changes, because the baseline identifies the upstream
+// behaviour the rows describe.
 //
 // Age deliberately plays no part (operator decision, 2026-10-05). Marks used to
 // expire 30 days after they were taken, which forced a periodic re-measurement
 // whose only product was re-recording what the previous run had already
-// established. What invalidates evidence here is that the thing it is evidence
-// *about* changed — the policy document or the baseline — and that is still
-// enforced. Each row keeps its `at` and the management surface reports it, so a
-// reader can still judge age; nothing expires it silently.
+// established. Each row keeps its `at` and the management surface reports it, so
+// a reader can still judge age; nothing expires it silently.
 func FitCapabilityState(row *ChannelFitCapability, now int64, policyHash, baselineHash string) string {
 	if row == nil {
 		return FitCapabilityUnknown
@@ -440,9 +438,6 @@ func FitCapabilityState(row *ChannelFitCapability, now int64, policyHash, baseli
 	case FitCapabilitySourceSuite:
 		if !row.Supported {
 			return FitCapabilitySuiteFailed
-		}
-		if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
-			return FitCapabilitySuiteStale
 		}
 		if baselineHash != "" && row.BaselineHash != "" && row.BaselineHash != baselineHash {
 			return FitCapabilitySuiteStale

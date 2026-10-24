@@ -88,11 +88,11 @@ func TestSuiteMarkSatisfiesWhenEveryBindingMatches(t *testing.T) {
 	})
 	assert.True(t, satisfied, "a fresh suite mark under the request's own binding must satisfy")
 
-	// The counterpart that keeps the fallback honest: a different policy must not
-	// be vouched for by a measurement taken under this one.
-	assert.False(t, ChannelSatisfiesFitMarks(8, FitMarkRequirement{
+	// A different policy hash is audit metadata only; the measurement remains
+	// valid across policy edits.
+	assert.True(t, ChannelSatisfiesFitMarks(8, FitMarkRequirement{
 		Model:      "kimi-k3",
 		Marks:      []string{"family.whole"},
 		PolicyHash: "0000000000000000000000000000000000000000000000000000000000000000",
-	}), "a mark bound to another policy must not satisfy this one")
+	}), "a policy edit must not invalidate a measured capability")
 }

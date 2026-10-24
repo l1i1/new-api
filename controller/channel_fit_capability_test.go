@@ -293,19 +293,23 @@ func TestPostFitCapabilityReportRequiresALivePolicy(t *testing.T) {
 	assert.Contains(t, payload["message"], "no fit policy is installed")
 }
 
-// TestPostFitCapabilityReportRejectsStaleBinding is the whole-report gate: a run
-// measured against older rules must not mark channels against the current ones.
-func TestPostFitCapabilityReportRejectsStaleBinding(t *testing.T) {
+// TestPostFitCapabilityReportAcceptsPolicyHashChange pins the removed policy
+// binding: a policy edit is audit metadata and must not reject evidence that was
+// measured before it. The baseline binding remains covered separately.
+func TestPostFitCapabilityReportAcceptsPolicyHashChange(t *testing.T) {
 	setupFitCapabilityEndpoint(t)
 	version, hash := installLivePolicy(t)
 
-	recorder, payload := postReport(t, reportBody(version, hash+"-stale", "tools.dynamic_names", 7, true))
-	require.Equal(t, http.StatusConflict, recorder.Code, "body: %s", recorder.Body.String())
-	assert.Contains(t, payload["message"], "policy hash")
+	recorder, payload := postReport(t, reportBody(version, hash+"-older", "tools.dynamic_names", 7, true))
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
+	summary, ok := payload["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(1), summary["applied"])
 
 	rows, err := model.ListChannelFitCapabilities(7)
 	require.NoError(t, err)
-	assert.Empty(t, rows, "a rejected report must write nothing")
+	require.Len(t, rows, 1)
+	assert.Equal(t, hash+"-older", rows[0].PolicyHash, "the policy hash is retained as audit metadata")
 }
 
 func TestPostFitCapabilityReportAppliesAndRefreshesTheIndex(t *testing.T) {
@@ -471,5 +475,5 @@ func TestGetChannelFitCapabilitiesReportsStaleBinding(t *testing.T) {
 		states[behavior] = state
 	}
 	assert.Equal(t, model.FitCapabilitySuiteFresh, states["tools.dynamic_names"], "a mark bound to the live policy stays fresh")
-	assert.Equal(t, model.FitCapabilitySuiteStale, states["response_format.json"], "a mark bound to a superseded policy must not read as fresh")
+	assert.Equal(t, model.FitCapabilitySuiteFresh, states["response_format.json"], "a policy hash change must not stale a mark")
 }

@@ -8,14 +8,19 @@ import (
 	"strings"
 )
 
-// Policy is the versioned rule set stored at options["official_fit.policy"].
+// Policy is the rule set stored at options["official_fit.policy"]. The legacy
+// version field is optional metadata; policy edits do not invalidate capability
+// evidence.
 //
 // The shape is intentionally small: a family owns a list of rules, each rule
 // names the behaviours a matching request requires. Which channel can serve
 // those behaviours is a separate concern (the channel capability marks), so the
 // policy never mentions channels.
 type Policy struct {
-	Version int  `json:"version"`
+	// Version is accepted for compatibility with existing documents but is not
+	// required, validated, or used as evidence identity. Policy edits no longer
+	// invalidate capability marks.
+	Version int  `json:"version,omitempty"`
 	Enabled bool `json:"enabled"`
 	Shadow  bool `json:"shadow"`
 	// Baseline identifies the official behaviour reference the measurements were
@@ -221,12 +226,9 @@ func ParsePolicy(raw []byte) (Policy, error) {
 	return policy, nil
 }
 
-// Validate checks the static shape: version, family ids, rule ids, behaviour
-// references and the two policy enums.
+// Validate checks the static shape: family ids, rule ids, behaviour references
+// and the two policy enums. The legacy version field is optional.
 func (p Policy) Validate() error {
-	if p.Version <= 0 {
-		return fmt.Errorf("%w: version must be a positive integer", ErrPolicyInvalid)
-	}
 	if len(p.Families) > MaxPolicyFamilies {
 		return fmt.Errorf("%w: at most %d families", ErrPolicyInvalid, MaxPolicyFamilies)
 	}

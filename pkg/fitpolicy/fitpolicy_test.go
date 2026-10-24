@@ -260,7 +260,6 @@ func TestPolicyValidationRejects(t *testing.T) {
 		}
 	}
 	cases := map[string]func(p *Policy){
-		"zero version":            func(p *Policy) { p.Version = 0 },
 		"unregistered family":     func(p *Policy) { p.Families[0].ID = "not-a-family" },
 		"empty family id":         func(p *Policy) { p.Families[0].ID = "" },
 		"duplicate family":        func(p *Policy) { p.Families = append(p.Families, p.Families[0]) },
@@ -283,6 +282,14 @@ func TestPolicyValidationRejects(t *testing.T) {
 				t.Fatal("Compile must reject an invalid policy too")
 			}
 		})
+	}
+
+	// Version is no longer required: old and new documents both load without a
+	// version field.
+	versionless := valid()
+	versionless.Version = 0
+	if err := versionless.Validate(); err != nil {
+		t.Fatalf("a versionless policy must validate: %v", err)
 	}
 }
 
@@ -776,26 +783,30 @@ func TestValidateSuiteReportRejectsShapeProblems(t *testing.T) {
 	}
 }
 
-// TestValidateSuiteReportRejectsStaleBinding is the gate that stops a report
-// measured under different rules from marking channels as verified: the rules
-// may have changed the meaning of the behaviour in question.
-func TestValidateSuiteReportRejectsStaleBinding(t *testing.T) {
+// TestValidateSuiteReportOnlyBindsToBaseline pins the reduced binding model:
+// policy version/hash changes are audit metadata and must not invalidate a
+// report; only a changed official baseline does.
+func TestValidateSuiteReportOnlyBindsToBaseline(t *testing.T) {
 	for name, binding := range map[string]ReportBinding{
 		"policy version moved on": {PolicyVersion: 2, PolicyHash: "policy-a"},
 		"policy hash changed":     {PolicyVersion: 1, PolicyHash: "policy-b"},
-		"baseline changed":        {PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-b"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			report := validSuiteReport()
-			if err := ValidateSuiteReport(&report, binding); err == nil {
-				t.Fatal("a report bound to an older policy or baseline must be rejected")
+			if err := ValidateSuiteReport(&report, binding); err != nil {
+				t.Fatalf("policy version/hash must not invalidate evidence: %v", err)
 			}
 		})
 	}
 
-	// An unbound check (empty hash) deliberately accepts: a node that has no
-	// baseline registry yet must not reject every report.
 	report := validSuiteReport()
+	binding := ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a", BaselineHash: "baseline-b"}
+	if err := ValidateSuiteReport(&report, binding); err == nil {
+		t.Fatal("a changed official baseline must still reject the report")
+	}
+
+	// An unbound check deliberately accepts: a node that has no baseline
+	// registry yet must not reject every report.
 	if err := ValidateSuiteReport(&report, ReportBinding{PolicyVersion: 1, PolicyHash: "policy-a"}); err != nil {
 		t.Fatalf("an unchecked baseline must not reject the report: %v", err)
 	}

@@ -306,26 +306,16 @@ type fitCapabilityPageItem struct {
 // fitCapabilityBindingCurrent mirrors the binding half of FitCapabilityState,
 // and the mirror has to be exact or the two disagree in the same response.
 //
-// The state machine only reaches its hash comparison for a suite measurement
-// that is otherwise eligible: source == suite, supported, and not expired. An
-// operator mark is a human decision, not a measurement, and no hash invalidates
-// it; a failed or expired suite row is already reported as failed or stale, and
-// comparing its hashes would only add a second reason for the same verdict.
-// Applying the comparison to every row made a stored operator mark report "not
-// bound" beside a green "Operator mark" state — a contradiction the selection
-// path does not recognise, because it never looks at a manual row's hash.
-//
-// An empty value on either side means the check does not apply, exactly as in
-// the state machine.
+// The policy hash is deliberately not compared: policy edits no longer
+// invalidate evidence. The baseline still binds a suite result to the official
+// behaviour it was measured against. An empty value on either side means the
+// check does not apply, exactly as in the state machine.
 func fitCapabilityBindingCurrent(row *model.ChannelFitCapability, now int64, policyHash, baselineHash string) bool {
 	if row == nil {
 		return false
 	}
 	if row.Source != model.FitCapabilitySourceSuite || !row.Supported {
 		return true
-	}
-	if policyHash != "" && row.PolicyHash != "" && row.PolicyHash != policyHash {
-		return false
 	}
 	if baselineHash != "" && row.BaselineHash != "" && row.BaselineHash != baselineHash {
 		return false

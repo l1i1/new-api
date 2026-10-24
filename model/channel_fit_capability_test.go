@@ -231,9 +231,9 @@ func TestFitCapabilityStateMachine(t *testing.T) {
 			want: FitCapabilitySuiteFailed,
 		},
 		{
-			name: "policy change invalidates a fresh suite result",
+			name: "policy change does not invalidate a fresh suite result",
 			row:  &ChannelFitCapability{Source: FitCapabilitySourceSuite, Supported: true, At: now - day, PolicyHash: "policy-a"},
-			want: FitCapabilitySuiteStale,
+			want: FitCapabilitySuiteFresh,
 		},
 		{
 			name: "baseline change invalidates a fresh suite result",
@@ -357,11 +357,10 @@ func TestFitCapabilityWriteRejectsUnknownChannel(t *testing.T) {
 	require.Empty(t, rows, "a rejected write must leave no row behind")
 }
 
-// TestFitMarksGoStaleWhenThePolicyBindingChanges covers a defect found in review:
-// the index used to freeze each mark's verdict at build time with an empty policy
-// binding, so changing the policy left old measurements vouching for channels
-// until the next channel-cache rebuild — which a policy change does not trigger.
-func TestFitMarksGoStaleWhenThePolicyBindingChanges(t *testing.T) {
+// TestFitMarksSurvivePolicyChangesButNotBaselineChanges pins the reduced
+// evidence model: policy version/hash changes do not invalidate marks, while a
+// baseline change still removes evidence describing the old official behaviour.
+func TestFitMarksSurvivePolicyChangesButNotBaselineChanges(t *testing.T) {
 	setupFitCapabilityDB(t)
 
 	now := common.GetTimestamp()
@@ -380,12 +379,12 @@ func TestFitMarksGoStaleWhenThePolicyBindingChanges(t *testing.T) {
 		t.Fatal("a mark measured under the live policy must satisfy")
 	}
 
-	// The policy moved on. No index rebuild happens here — that is the point.
-	if ChannelSatisfiesFitMarks(7, FitMarkRequirement{
+	// A policy hash change is metadata only; the measurement still stands.
+	if !ChannelSatisfiesFitMarks(7, FitMarkRequirement{
 		Model: "kimi-k3", Marks: []string{"tools.dynamic_names"},
 		PolicyHash: "policy-b", BaselineHash: "baseline-a",
 	}) {
-		t.Fatal("a rule change must invalidate a measurement taken under the old rules")
+		t.Fatal("a policy change must not invalidate a measured capability")
 	}
 
 	if ChannelSatisfiesFitMarks(7, FitMarkRequirement{
@@ -431,12 +430,12 @@ func TestFitMarkBindingIsHonoredWithoutARebuild(t *testing.T) {
 		t.Fatal("a mark bound to the effective policy must satisfy")
 	}
 
-	// The document is replaced while the index still holds the old binding. No
-	// rebuild happens here on purpose: the request itself must invalidate it.
+	// The document is replaced while the index still holds the old binding. A
+	// policy change must not invalidate it.
 	moved := bound
 	moved.PolicyHash = "policy-b"
-	if ChannelSatisfiesFitMarks(7, moved) {
-		t.Fatal("a mark bound to a replaced policy must stop satisfying without waiting for a cache rebuild")
+	if !ChannelSatisfiesFitMarks(7, moved) {
+		t.Fatal("a policy change must not invalidate a mark")
 	}
 	movedBaseline := bound
 	movedBaseline.BaselineHash = "baseline-b"

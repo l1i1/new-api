@@ -384,8 +384,8 @@ func TestGetChannelFitCapabilitiesPagesAcrossChannels(t *testing.T) {
 	last, ok := items[0].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "ch-8", last["channel_name"])
-	assert.Equal(t, model.FitCapabilitySuiteStale, last["state"], "a mark bound to a superseded policy is stale, not fresh")
-	assert.Equal(t, false, last["binding_current"])
+	assert.Equal(t, model.FitCapabilitySuiteFresh, last["state"], "a policy hash change must not stale a mark")
+	assert.Equal(t, true, last["binding_current"])
 }
 
 // TestGetChannelFitCapabilitiesFiltersAndRejectsBadInput keeps the filter
@@ -471,9 +471,9 @@ func TestGetChannelFitCapabilitiesDoesNotFlagAnOperatorMarkAsSuperseded(t *testi
 
 	measured := byBehavior["usage.thinking_counting"]
 	require.NotNil(t, measured)
-	assert.Equal(t, model.FitCapabilitySuiteStale, measured["state"])
-	assert.Equal(t, false, measured["binding_current"],
-		"a suite measurement under a replaced policy is exactly the case the verdict exists for")
+	assert.Equal(t, model.FitCapabilitySuiteFresh, measured["state"])
+	assert.Equal(t, true, measured["binding_current"],
+		"a policy hash change must not invalidate a suite measurement")
 }
 
 // TestGetChannelFitCapabilitiesRefusesACancelledPageContract pins the paging
