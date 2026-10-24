@@ -910,6 +910,22 @@ func recordReasoningDiagnostics(c *gin.Context, info *relaycommon.RelayInfo, dia
 // being billed).
 const kimiK3AggregatorDisabledEffort = "minimal"
 
+// kimiK3PointOneAggregatorDisabledEffort is the nearest accepted effort for
+// kimi-k3.1-pro aggregators. They reject "minimal" with
+// "reasoning_effort must be one of low/high/max" (live 2026-10-24); "low" is
+// the only legal value that reduces thinking, so it avoids turning a
+// disable-thinking request into a 400. Official channels still receive the
+// caller's native thinking.type=disabled and are not rewritten.
+const kimiK3PointOneAggregatorDisabledEffort = "low"
+
+func kimiK3AggregatorDisabledEffortFor(modelName string) string {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	if strings.HasPrefix(name, "kimi-k3.1") {
+		return kimiK3PointOneAggregatorDisabledEffort
+	}
+	return kimiK3AggregatorDisabledEffort
+}
+
 // kimiK3DisabledThinkingRequest reports whether the CALLER asked for thinking to
 // be disabled, using the same two control axes the official Moonshot endpoint
 // accepts (reasoning_effort "none" and thinking.type "disabled").
@@ -972,7 +988,7 @@ func applyKimiK3DisabledThinkingDialect(info *relaycommon.RelayInfo, request *dt
 	if !kimiK3DisabledThinkingRequest(info, request) {
 		return
 	}
-	request.ReasoningEffort = kimiK3AggregatorDisabledEffort
+	request.ReasoningEffort = kimiK3AggregatorDisabledEffortFor(modelName)
 	// The aggregator dialect carries the whole intent on reasoning_effort, so the
 	// caller's native thinking object must not travel next to it. The pair
 	// "thinking.type=disabled + reasoning_effort=minimal" is self-contradictory,

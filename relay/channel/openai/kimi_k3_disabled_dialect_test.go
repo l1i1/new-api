@@ -65,6 +65,49 @@ func TestKimiK3DisabledThinkingTranslatedForAggregator(t *testing.T) {
 	}
 }
 
+// kimi-k3.1-pro aggregators reject "minimal" (live 2026-10-24), so the
+// disable-thinking dialect must pick an effort they accept instead of turning
+// the caller's request into a 400.
+func TestKimiK3PointOneAggregatorUsesLegalEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		effort   string
+		thinking string
+	}{
+		{"effort none", "none", ""},
+		{"thinking disabled", "", "disabled"},
+		{"both", "none", "disabled"},
+	} {
+		info, req := kimiDialectInfo(1, tc.effort, tc.thinking)
+		req.Model = "kimi-k3.1-pro"
+		info.OriginModelName = req.Model
+		info.ChannelMeta.UpstreamModelName = req.Model
+		applyKimiK3DisabledThinkingDialect(info, req)
+		if req.ReasoningEffort != kimiK3PointOneAggregatorDisabledEffort {
+			t.Fatalf("%s: effort = %q, want %q", tc.name, req.ReasoningEffort, kimiK3PointOneAggregatorDisabledEffort)
+		}
+		if len(req.THINKING) != 0 {
+			t.Fatalf("%s: translated request still carries a thinking object", tc.name)
+		}
+	}
+}
+
+// The official axis is still the caller's own thinking object for k3.1; the
+// aggregator fallback must not leak into official channels.
+func TestKimiK3PointOneOfficialChannelKeepsNativeAxis(t *testing.T) {
+	info, req := kimiDialectInfo(constant.ChannelTypeMoonshot, "", "disabled")
+	req.Model = "kimi-k3.1-pro"
+	info.OriginModelName = req.Model
+	info.ChannelMeta.UpstreamModelName = req.Model
+	applyKimiK3DisabledThinkingDialect(info, req)
+	if len(req.THINKING) == 0 {
+		t.Fatal("official k3.1 channel lost thinking.type=disabled")
+	}
+	if req.ReasoningEffort != "" {
+		t.Fatalf("official k3.1 channel got rewritten effort %q", req.ReasoningEffort)
+	}
+}
+
 // The exported dialect contract for other channels: an official-behaving
 // channel keeps the caller's own axis, and a request that did not ask for
 // disabled thinking keeps whatever thinking object it sent.
