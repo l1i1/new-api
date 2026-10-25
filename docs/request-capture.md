@@ -82,7 +82,8 @@ GET /api/option/request_capture/content?name=<返回的 name>
 
 - **不是"抓 2 小时就停"**：`window_seconds=7200` 只表示"每 2 小时最多 `limit` 条"。要停就 `enabled:false` 或把规则删掉；要缩短文件保存时间改 `request_capture.retention_hours`（全局，影响所有规则）。
 - 捕获的是 relay 收到的请求（headers/body）与可选响应；超过 `max_bytes` 会截断并置 `request_body_truncated=true`，不会静默丢。
-- 文件是容器内 master 的本地盘（生产 bind mount 到宿主），随容器迁移不会跟过去；retention 按日期目录整目录 prune。
+- 文件写在 master 容器的 `/data/request-captures`，生产 bind mount 到宿主 **`/var/lib/new-api-captures`**；查容量看宿主目录（`du -sh` / `df -h /`）。文件随容器迁移不会跟过去；retention 按日期目录整目录 prune。
+- 存储没有 per-rule 硬上界：上限 ≈ `limit × max_bytes × (retention_hours / window_hours)`。生产把 `max_bytes` 收紧到 1MB 就是为这个式子留余量；大流量规则仍应定期看宿主磁盘。
 - 客户请求体是敏感数据：只开必要规则、用完删规则并 `DELETE /api/option/request_capture` 清文件，不要外发。
 
 ## 5. 常见故障对照
@@ -97,6 +98,7 @@ GET /api/option/request_capture/content?name=<返回的 name>
 
 ## 6. 生产现状（2026-10-25）
 
-- `enabled=true`，目录 `/data/request-captures`，`max_bytes=10485760`，`retention_hours=48`。
-- 规则：`cdp-glm-debug-20261016`（user 88/86）、`cdp-k31-test-20261025`（token 174，window 7200s，limit 400，请求头+体）。
+- `enabled=true`，目录容器内 `/data/request-captures`、宿主 `/var/lib/new-api-captures`，`max_bytes=1048576`（1MB），`retention_hours=48`。
+- 规则：`cdp-glm-debug-20261016`（user 88/86，1000 条/24h）、`cdp-k31-test-20261025`（token 174，window 7200s，limit 400，请求头+体）。
+- “捕获 2 小时”是**操作约定**：窗口是 7200s，规则不会自己过期；2026-10-25 晚上由计划任务停用该规则。要立即停止就把它从 `request_capture.rules` 删掉并 `DELETE` 文件。
 - 历史规则 `cdp-k31-cache-20261024` 已被替换；历史文件按 48h retention 自然清理。
