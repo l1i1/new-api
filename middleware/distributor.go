@@ -836,6 +836,12 @@ func kimiK3RequestNeedsOfficial(req v4OfficialPinRequest) bool {
 // upstream to behave in a way the priority pool does not reproduce. "auto" and
 // an absent field stay servable; "required", "none", the named-function object
 // and any unparseable value do not. Both selective families read it.
+//
+// "allowed_tools" is the one object shape whose answer depends on its mode:
+// mode=auto only bounds which tools may be called and is translated by the relay
+// into a filtered tools list plus tool_choice "auto", which the priority pool
+// reproduces. mode=required (and any unrecognized mode) still needs the official
+// forced-choice semantics, so it keeps pinning.
 func toolChoiceNeedsOfficial(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -845,8 +851,19 @@ func toolChoiceNeedsOfficial(raw json.RawMessage) bool {
 	if err := common.Unmarshal(trimmed, &strategy); err == nil {
 		return !strings.EqualFold(strings.TrimSpace(strategy), "auto")
 	}
-	// Not a string: the named-function object (or a malformed value the local
-	// validator rejects). Both are forcing shapes.
+	var allowed struct {
+		Type         string `json:"type"`
+		AllowedTools struct {
+			Mode string `json:"mode"`
+		} `json:"allowed_tools"`
+	}
+	if err := common.Unmarshal(trimmed, &allowed); err == nil &&
+		strings.EqualFold(strings.TrimSpace(allowed.Type), "allowed_tools") {
+		return !strings.EqualFold(strings.TrimSpace(allowed.AllowedTools.Mode), "auto")
+	}
+	// Not a string and not a translatable allowed_tools object: the
+	// named-function object (or a malformed value the local validator rejects).
+	// Both are forcing shapes.
 	return true
 }
 

@@ -199,6 +199,12 @@ func (v RequestView) ResponseFormatNotText() bool {
 // ToolChoiceForcesOfficial mirrors kimiK3ToolChoiceNeedsOfficial: "auto" and an
 // absent field stay servable; "required", "none", the named-function object and
 // any unparseable value do not.
+//
+// "allowed_tools" is the one object shape whose answer depends on its mode:
+// mode=auto only bounds which tools may be called, and the relay rewrites it
+// into a filtered tools list plus tool_choice "auto" — a shape the priority pool
+// serves faithfully. mode=required (and any unrecognized mode) still demands the
+// forced-choice semantics only the official channel reproduces, so it pins.
 func (v RequestView) ToolChoiceForcesOfficial() bool {
 	raw := trimJSON(v.ToolChoice)
 	if len(raw) == 0 {
@@ -208,8 +214,19 @@ func (v RequestView) ToolChoiceForcesOfficial() bool {
 	if err := common.Unmarshal(raw, &strategy); err == nil {
 		return !strings.EqualFold(strings.TrimSpace(strategy), "auto")
 	}
-	// Not a string: the named-function object (or a malformed value the local
-	// validator rejects). Both are forcing shapes.
+	var allowed struct {
+		Type         string `json:"type"`
+		AllowedTools struct {
+			Mode string `json:"mode"`
+		} `json:"allowed_tools"`
+	}
+	if err := common.Unmarshal(raw, &allowed); err == nil &&
+		strings.EqualFold(strings.TrimSpace(allowed.Type), "allowed_tools") {
+		return !strings.EqualFold(strings.TrimSpace(allowed.AllowedTools.Mode), "auto")
+	}
+	// Not a string and not a translatable allowed_tools object: the
+	// named-function object (or a malformed value the local validator rejects).
+	// Both are forcing shapes.
 	return true
 }
 

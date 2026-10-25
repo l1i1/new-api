@@ -96,6 +96,14 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`7`), Messages: userOnly},
 		},
 		{
+			name: "k3 allowed_tools auto stays on the priority channel", family: "kimi-k3", want: false,
+			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[{"type":"function","function":{"name":"f"}}]}}`), Messages: userOnly},
+		},
+		{
+			name: "k3 allowed_tools required pins", family: "kimi-k3", want: true,
+			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","function":{"name":"f"}}]}}`), Messages: userOnly},
+		},
+		{
 			name: "k3 response_format json_object pins", family: "kimi-k3", want: true,
 			req: v4OfficialPinRequest{Model: "kimi-k3", THINKING: thinkingOn, ResponseFormat: json.RawMessage(`{"type":"json_object"}`), Messages: userOnly},
 		},
@@ -218,6 +226,14 @@ func TestFitPolicyBuiltinMatchesShippedPredicates(t *testing.T) {
 		{
 			name: "ds tool_choice auto does not pin", family: "deepseek-v4", want: false,
 			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`"auto"`), Messages: userOnly},
+		},
+		{
+			name: "ds allowed_tools auto does not pin", family: "deepseek-v4", want: false,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[{"type":"function","function":{"name":"f"}}]}}`), Messages: userOnly},
+		},
+		{
+			name: "ds allowed_tools required pins", family: "deepseek-v4", want: true,
+			req: v4OfficialPinRequest{Model: "deepseek-v4-flash", THINKING: thinkingOff, ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","function":{"name":"f"}}]}}`), Messages: userOnly},
 		},
 	}
 

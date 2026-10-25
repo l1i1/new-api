@@ -493,6 +493,25 @@ func TestPrimitivesMatchShippedSemantics(t *testing.T) {
 			view:        RequestView{ToolChoice: json.RawMessage(`"auto"`)},
 			wantHistory: true,
 		},
+		{
+			name:        "tool_choice allowed_tools auto stays servable",
+			view:        RequestView{ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[{"type":"function","function":{"name":"f"}}]}}`)},
+			wantHistory: true,
+		},
+		{
+			name:          "tool_choice allowed_tools required pins",
+			view:          RequestView{ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"function","function":{"name":"f"}}]}}`)},
+			wantToolForce: true,
+			wantHistory:   true,
+		},
+		{
+			// An unknown mode cannot be translated, so it keeps the old
+			// conservative answer instead of silently falling to auto.
+			name:          "tool_choice allowed_tools unknown mode pins",
+			view:          RequestView{ToolChoice: json.RawMessage(`{"type":"allowed_tools","allowed_tools":{"mode":"sometimes"}}`)},
+			wantToolForce: true,
+			wantHistory:   true,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

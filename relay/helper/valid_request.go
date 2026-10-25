@@ -362,6 +362,12 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			return nil, errors.New("field prompt is required")
 		}
 	case relayconstant.RelayModeChatCompletions:
+		// OpenAI's allowed_tools tool_choice is translated into the classic
+		// filtered-declarations + string form before the official-fit validators
+		// run: the current upstreams ignore the object shape, and mirroring its
+		// strictest reading locally would reject a request both upstreams accept
+		// (see the helper for the live probe).
+		normalizeAllowedToolsToolChoice(textRequest)
 		profile, fitEnabled := officialFitProfile(c, textRequest.Model)
 		if fitEnabled && profile.Validate {
 			// The official deserialization texts end in a location suffix
