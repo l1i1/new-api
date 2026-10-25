@@ -353,6 +353,51 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 				ResponseFormat: &dto.ResponseFormat{Type: "json_schema",
 					JsonSchema: json.RawMessage(`{"name":"w","strict":"yes","schema":{"type":"object"}}`)}},
 			kimiK3ResponseFormatStrictTypePrefix + `"yes" is not acceptable`,
+		}, // Stop contract (live-probed 2026-10-25): five items, 32 bytes each.
+		{
+			"stop array above the five sequence cap",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: []any{"a", "b", "c", "d", "e", "f"}},
+			kimiK3StopArrayTooLongPrefix + "6" + kimiK3StopArrayTooLongSuffix,
+		},
+		{
+			"stop string above the 32-byte cap",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: strings.Repeat("x", 33)},
+			kimiK3StopSequenceTooLongPrefix + "33" + kimiK3StopSequenceTooLongSuffix,
+		},
+		{
+			// The cap counts bytes, not characters: 11 CJK characters are 33
+			// bytes and the endpoint reports 33.
+			"stop array item above the 32-byte cap in multibyte characters",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: []any{strings.Repeat("西", 11)}},
+			kimiK3StopSequenceTooLongPrefix + "33" + kimiK3StopSequenceTooLongSuffix,
+		},
+		{
+			"stop array with a non-string item",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: []any{1}},
+			kimiK3StopItemTypePrefix + "number" + kimiK3StopTypeSuffix,
+		},
+		{
+			"stop field as a boolean",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: true},
+			kimiK3StopFieldTypePrefix + "bool" + kimiK3StopTypeSuffix,
+		},
+		{
+			"stop field as an object",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: map[string]any{"a": 1}},
+			kimiK3StopFieldTypePrefix + "object" + kimiK3StopTypeSuffix,
+		},
+		{
+			"stop field as a number",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Stop: 1},
+			kimiK3StopFieldTypePrefix + "number" + kimiK3StopTypeSuffix,
+		},
+		{
+			// Ordering probe: the endpoint answers a bad temperature before any
+			// stop class, so the local validator must report the temperature.
+			"bad temperature outranks a bad stop array",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Temperature: floatPtr(2.0),
+				Stop: []any{"a", "b", "c", "d", "e", "f"}},
+			kimiK3TemperatureThinkingMessage,
 		},
 	}
 	for _, tt := range rejected {
@@ -462,7 +507,16 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "kimi-k3", Prefix: "<fill>", Suffix: "</fill>"},
 		// non-kimi models are never inspected
 		{Model: "deepseek-v4-flash", ReasoningEffort: "extreme", Temperature: floatPtr(0)},
-		{Model: "kimi-k2.6", THINKING: json.RawMessage(`{"type":"disabled"}`)},
+		{Model: "kimi-k2.6", THINKING: json.RawMessage(`{"type":"disabled"}`)}, // Stop is a string or an array of strings; null, an empty array and
+		// empty items mean/behave as no stop, and both caps are inclusive.
+		{Model: "kimi-k3", Messages: base.Messages, Stop: "西瓜"},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: strings.Repeat("x", 32)},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{"a", "b", "c", "d", "e"}},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{strings.Repeat("西", 10)}},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{""}},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{"a", nil}},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{}},
+		{Model: "kimi-k3", Messages: base.Messages, Stop: nil},
 	}
 	for i, req := range accepted {
 		assert.NoError(t, validateKimiK3OfficialFields(req), "case %d", i)

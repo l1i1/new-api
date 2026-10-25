@@ -1112,6 +1112,20 @@ const (
 	kimiK3PresencePenaltyMessage     = "invalid presence_penalty: only 0 is allowed for this model"
 	kimiK3FrequencyPenaltyMessage    = "invalid frequency_penalty: only 0 is allowed for this model"
 	kimiK3TopLogprobsPairMessage     = "Invalid request: logprobs must be set to true if top_logprobs is used"
+	// Stop-sequence contract, live-probed against the official endpoint on
+	// 2026-10-25: `stop` is a string or an array of strings (null and [] mean no
+	// stop); at most 5 sequences, each at most 32 BYTES (11 CJK characters are 33
+	// bytes and are rejected); a null item inside the array is tolerated. The
+	// three rejection classes are deserialization-class for a wrong JSON type and
+	// semantic for the two caps. Ordering matters: the endpoint answers a bad
+	// temperature before any stop class, so the stop checks run last.
+	kimiK3StopArrayTooLongPrefix     = "Invalid request: stop array too long. Expected an array with maximum length 5, but got an array with length "
+	kimiK3StopArrayTooLongSuffix     = " instead"
+	kimiK3StopSequenceTooLongPrefix  = "Invalid request: stop sequence must not be longer than 32, but got "
+	kimiK3StopSequenceTooLongSuffix  = " instead"
+	kimiK3StopItemTypePrefix         = "Invalid request: the `stop` field in the request (expected type string) is illegal, and "
+	kimiK3StopFieldTypePrefix        = "Invalid request: the `stop` field in the request (expected type []string) is illegal, and "
+	kimiK3StopTypeSuffix             = " is not acceptable"
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolChoiceRequiredMessage  = "Invalid request: tool_choice 'required' requires at least one tool"
 	// The unknown-strategy text interrupts the value with the endpoint's own
@@ -1267,10 +1281,79 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if err := validateKimiK3ResponseFormat(request); err != nil {
 		return err
 	}
+	if err := validateKimiK3Stop(request.Stop); err != nil {
+		return err
+	}
 	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
 		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
 	return nil
+}
+
+// validateKimiK3Stop reproduces the official K3 stop contract (live-probed
+// 2026-10-25; see the constants for the probe facts). A nil stop and an empty
+// array both mean "no stop". An array is type-checked before its length and the
+// per-sequence byte cap, which is the order the endpoint answers in: a 6-item
+// array of numbers reports the item type, not the array length. Null items are
+// tolerated both by the type pass and by the byte pass.
+func validateKimiK3Stop(stop any) error {
+	switch value := stop.(type) {
+	case nil:
+		return nil
+	case string:
+		return kimiK3StopSequenceCap(value)
+	case []any:
+		for _, item := range value {
+			if item == nil {
+				continue
+			}
+			if _, ok := item.(string); !ok {
+				return kimiK3Error(kimiK3StopItemTypePrefix + kimiK3StopJSONType(item) + kimiK3StopTypeSuffix)
+			}
+		}
+		if len(value) > 5 {
+			return kimiK3Error(kimiK3StopArrayTooLongPrefix + fmt.Sprintf("%d", len(value)) + kimiK3StopArrayTooLongSuffix)
+		}
+		for _, item := range value {
+			if item == nil {
+				continue
+			}
+			if err := kimiK3StopSequenceCap(item.(string)); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return kimiK3Error(kimiK3StopFieldTypePrefix + kimiK3StopJSONType(stop) + kimiK3StopTypeSuffix)
+	}
+}
+
+// kimiK3StopSequenceCap applies the endpoint's 32-byte cap to one sequence.
+func kimiK3StopSequenceCap(sequence string) error {
+	if length := len(sequence); length > 32 {
+		return kimiK3Error(kimiK3StopSequenceTooLongPrefix + fmt.Sprintf("%d", length) + kimiK3StopSequenceTooLongSuffix)
+	}
+	return nil
+}
+
+// kimiK3StopJSONType spells a decoded JSON value's type the way the endpoint's
+// deserialization rejection names it (its Rust serde names: "bool", "number",
+// "object", "array").
+func kimiK3StopJSONType(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "bool"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "number"
+	}
 }
 
 // kimiK3ThinkingEnabled reports whether the request runs in thinking mode.
