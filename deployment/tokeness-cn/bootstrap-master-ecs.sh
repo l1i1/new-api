@@ -350,11 +350,33 @@ if pid="$(commit_in_flight)"; then
   exit 6
 fi
 rm -f "$COMMIT_LOCK" 2>/dev/null || true
+# master-state-reconcile:begin
+# A serving container can lose its canonical name when a previous release
+# flipped nginx + the serving marker and then died before renaming green (the
+# 2026-10-24 .67 roll left exactly this: marker/serving port 3001 held by
+# new-api-master--green, while new-api-master named the already-retired blue on
+# 3000). Do not let the stale-green cleanup below delete the container that is
+# actually serving, and free the other port before starting.
 serve_c="$(container_on_port "$sp")"
 [ -n "$serve_c" ] || { err "no running container publishes $SERVE_IP:$sp; refusing to invent a master"; exit 3; }
-docker inspect "$CONTAINER" >/dev/null 2>&1 || docker rename "$serve_c" "$CONTAINER" >/dev/null 2>&1 || true
+if [ "$serve_c" != "$CONTAINER" ]; then
+  if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    stale_port="$(docker inspect -f '{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null || true)"
+    if [ "$stale_port" = "$sp" ]; then
+      err "canonical $CONTAINER publishes serving port :$sp but is not the serving container; refusing to start"
+      exit 3
+    fi
+    log "canonical $CONTAINER is a non-serving leftover on port ${stale_port:-unknown}; removing it before adopting $serve_c"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 \
+      || { err "could not remove stale canonical container $CONTAINER; refusing to start"; exit 3; }
+  fi
+  docker rename "$serve_c" "$CONTAINER" \
+    || { err "could not adopt serving container $serve_c as $CONTAINER; refusing to start"; exit 3; }
+  log "adopted serving container $serve_c as $CONTAINER (port :$sp); the old canonical name was stale"
+fi
 docker inspect "$CONTAINER" >/dev/null 2>&1 \
   || { err "container $CONTAINER does not exist; refusing to invent a master"; exit 3; }
+# master-state-reconcile:end
 old_image="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER")"
 
 # ---- phase: commit ---------------------------------------------------------
@@ -517,6 +539,14 @@ if docker inspect "$GREEN" >/dev/null 2>&1; then
     printf 'SERVING_PORT=%s\nPREVIOUS_PORT=%s\n' "$gp" "$sp"
     exit 0
   fi
+  # stale-green-guard:begin
+  # Defense in depth after the reconcile block above: never remove a container
+  # that publishes the serving port, whatever name it currently carries.
+  if [ "$(container_on_port "$sp")" = "$GREEN" ]; then
+    err "refusing to remove $GREEN: it publishes the serving port $SERVE_IP:$sp; a state reconcile is required"
+    exit 3
+  fi
+  # stale-green-guard:end
   log "stale green ($GREEN) found; removing before start"
   docker rm -f "$GREEN" >/dev/null 2>&1 || true
 fi

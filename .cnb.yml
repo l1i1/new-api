@@ -31,7 +31,9 @@ tokeness/main:
               bash -n "$helper"
             done
             bash -n deployment/tokeness-cn/tests/deploy-test.sh
+            bash -n deployment/tokeness-cn/tests/master-state-reconcile-test.sh
             bash deployment/tokeness-cn/tests/deploy-test.sh
+            bash deployment/tokeness-cn/tests/master-state-reconcile-test.sh
             jq -e . deployment/tokeness-cn/nodes.json >/dev/null
         - name: build mainland image
           script: |

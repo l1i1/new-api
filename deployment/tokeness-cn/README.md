@@ -331,6 +331,7 @@ If a new ECI fails before cutover, leave nginx unchanged and remove the failed i
 ```bash
 bash -n deployment/tokeness-cn/deploy.sh
 bash deployment/tokeness-cn/tests/deploy-test.sh
+bash deployment/tokeness-cn/tests/master-state-reconcile-test.sh
 jq -e . deployment/tokeness-cn/nodes.json >/dev/null
 ```
 
