@@ -99,6 +99,6 @@ GET /api/option/request_capture/content?name=<返回的 name>
 ## 6. 生产现状（2026-10-25）
 
 - `enabled=true`，目录容器内 `/data/request-captures`、宿主 `/var/lib/new-api-captures`，`max_bytes=1048576`（1MB），`retention_hours=48`。
-- 规则：`cdp-glm-debug-20261016`（user 88/86，1000 条/24h）、`cdp-k31-test-20261025`（token 174，window 7200s，limit 400，请求头+体）。
-- “捕获 2 小时”是**操作约定**：窗口是 7200s，规则不会自己过期；2026-10-25 晚上由计划任务停用该规则。要立即停止就把它从 `request_capture.rules` 删掉并 `DELETE` 文件。
-- 历史规则 `cdp-k31-cache-20261024` 已被替换；历史文件按 48h retention 自然清理。
+- 规则：`cdp-glm-debug-20261016`（user 88/86，1000 条/24h）、`cdp-k31-test-20261026`（token 174，window 7200s=2h、limit 400，请求头+体；2026-10-26 00:37 按用户指示重新开启，端到端已验证：文件 `2026-10-26/003700-cdp-k31-test-20261026-<rid>.json`，Authorization 已脱敏）。
+- “捕获 2 小时”是**操作约定**：窗口是 7200s，规则不会自己过期。2026-10-26 00:37 开启时已建 session 计划任务，02:37 自动把该规则从 `request_capture.rules` 移除；要立即停止就手动删规则（并 `DELETE` 文件）。
+- 历史规则 `cdp-k31-test-20261025`、`cdp-k31-cache-20261024` 已被替换；历史文件按 48h retention 自然清理。
