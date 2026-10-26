@@ -1119,13 +1119,18 @@ const (
 	// three rejection classes are deserialization-class for a wrong JSON type and
 	// semantic for the two caps. Ordering matters: the endpoint answers a bad
 	// temperature before any stop class, so the stop checks run last.
-	kimiK3StopArrayTooLongPrefix     = "Invalid request: stop array too long. Expected an array with maximum length 5, but got an array with length "
-	kimiK3StopArrayTooLongSuffix     = " instead"
-	kimiK3StopSequenceTooLongPrefix  = "Invalid request: stop sequence must not be longer than 32, but got "
-	kimiK3StopSequenceTooLongSuffix  = " instead"
-	kimiK3StopItemTypePrefix         = "Invalid request: the `stop` field in the request (expected type string) is illegal, and "
-	kimiK3StopFieldTypePrefix        = "Invalid request: the `stop` field in the request (expected type []string) is illegal, and "
-	kimiK3StopTypeSuffix             = " is not acceptable"
+	kimiK3StopArrayTooLongPrefix    = "Invalid request: stop array too long. Expected an array with maximum length 5, but got an array with length "
+	kimiK3StopArrayTooLongSuffix    = " instead"
+	kimiK3StopSequenceTooLongPrefix = "Invalid request: stop sequence must not be longer than 32, but got "
+	kimiK3StopSequenceTooLongSuffix = " instead"
+	kimiK3StopItemTypePrefix        = "Invalid request: the `stop` field in the request (expected type string) is illegal, and "
+	kimiK3StopFieldTypePrefix       = "Invalid request: the `stop` field in the request (expected type []string) is illegal, and "
+	kimiK3StopTypeSuffix            = " is not acceptable"
+	// Image-source contract, live-probed against both official K3 endpoints on
+	// 2026-10-26: image inputs must carry inline data (a data: URL after
+	// conversion); a public http(s) URL answers 400 with this text on both the
+	// Anthropic and the OpenAI-compatible endpoint.
+	kimiK3UnsupportedImageURLPrefix  = "Invalid request: unsupported image url: "
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolChoiceRequiredMessage  = "Invalid request: tool_choice 'required' requires at least one tool"
 	// The unknown-strategy text interrupts the value with the endpoint's own
@@ -1284,6 +1289,9 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if err := validateKimiK3Stop(request.Stop); err != nil {
 		return err
 	}
+	if err := validateKimiK3ImageSources(request); err != nil {
+		return err
+	}
 	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
 		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
@@ -1354,6 +1362,78 @@ func kimiK3StopJSONType(value any) string {
 	default:
 		return "number"
 	}
+}
+
+// validateKimiK3ImageSources reproduces the official K3 image-source contract:
+// only inline data URLs are accepted. The official Anthropic endpoint rejects a
+// public http(s) URL with "Invalid request: unsupported image url: <url>", and
+// the official OpenAI-compatible endpoint answers the same text (live-probed
+// 2026-10-26). Without this check the priority pool can serve the request from
+// an aggregator that silently accepts or fetches URL images, so a Validate-on
+// caller would see 200 where the official endpoint says 400.
+func validateKimiK3ImageSources(request *dto.GeneralOpenAIRequest) error {
+	if request == nil {
+		return nil
+	}
+	for i := range request.Messages {
+		// ParseContent memoizes onto the message struct; run it on a copy so
+		// validation never mutates the parsed request the caller keeps.
+		message := request.Messages[i]
+		for _, part := range message.ParseContent() {
+			if part.Type != dto.ContentTypeImageURL {
+				continue
+			}
+			media := part.GetImageMedia()
+			if media == nil {
+				continue
+			}
+			url := strings.TrimSpace(media.Url)
+			if url == "" || strings.HasPrefix(url, "data:") {
+				continue
+			}
+			return kimiK3Error(kimiK3UnsupportedImageURLPrefix + url)
+		}
+	}
+	return nil
+}
+
+// ValidateKimiK3ClaudeImages mirrors validateKimiK3ImageSources for the Claude
+// /v1/messages wire format, which reaches the relay through a different request
+// type and therefore never runs the OpenAI field validator. It is gated on the
+// caller's official-fit Validate dimension, like every other local K3 contract
+// check, and its error skips retry because the verdict cannot change per
+// channel.
+func ValidateKimiK3ClaudeImages(c *gin.Context, model string, request *dto.ClaudeRequest) *types.NewAPIError {
+	if request == nil || officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
+		return nil
+	}
+	profile, ok := officialFitProfile(c, model)
+	if !ok || !profile.Validate {
+		return nil
+	}
+	for i := range request.Messages {
+		// Same no-mutation rule as validateKimiK3ImageSources: parse a copy.
+		message := request.Messages[i]
+		blocks, err := message.ParseContent()
+		if err != nil {
+			continue
+		}
+		for _, block := range blocks {
+			if block.Type != "image" || block.Source == nil {
+				continue
+			}
+			url := strings.TrimSpace(block.Source.Url)
+			if url == "" || strings.HasPrefix(url, "data:") {
+				continue
+			}
+			return types.WithOpenAIError(types.OpenAIError{
+				Message: kimiK3UnsupportedImageURLPrefix + url,
+				Type:    "invalid_request_error",
+				Code:    "invalid_request_error",
+			}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		}
+	}
+	return nil
 }
 
 // kimiK3ThinkingEnabled reports whether the request runs in thinking mode.

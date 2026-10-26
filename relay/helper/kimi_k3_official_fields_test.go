@@ -399,6 +399,19 @@ func TestKimiK3OfficialFieldsReject(t *testing.T) {
 				Stop: []any{"a", "b", "c", "d", "e", "f"}},
 			kimiK3TemperatureThinkingMessage,
 		},
+		{
+			// Live-probed against the official OpenAI-compatible endpoint on
+			// 2026-10-26: a public image URL answers this exact text.
+			"public image url",
+			&dto.GeneralOpenAIRequest{Model: "kimi-k3", Messages: []dto.Message{{
+				Role: "user",
+				Content: []any{
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/x.png"}},
+					map[string]any{"type": "text", "text": "这是什么？"},
+				},
+			}}},
+			kimiK3UnsupportedImageURLPrefix + "https://***.com/***",
+		},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {
@@ -509,6 +522,14 @@ func TestKimiK3OfficialFieldsAccept(t *testing.T) {
 		{Model: "deepseek-v4-flash", ReasoningEffort: "extreme", Temperature: floatPtr(0)},
 		{Model: "kimi-k2.6", THINKING: json.RawMessage(`{"type":"disabled"}`)}, // Stop is a string or an array of strings; null, an empty array and
 		// empty items mean/behave as no stop, and both caps are inclusive.
+		// Inline data URLs are the supported image form and must stay accepted.
+		{Model: "kimi-k3", Messages: []dto.Message{{
+			Role: "user",
+			Content: []any{
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,iVBORw0KGgo="}},
+				map[string]any{"type": "text", "text": "这是什么？"},
+			},
+		}}},
 		{Model: "kimi-k3", Messages: base.Messages, Stop: "西瓜"},
 		{Model: "kimi-k3", Messages: base.Messages, Stop: strings.Repeat("x", 32)},
 		{Model: "kimi-k3", Messages: base.Messages, Stop: []any{"a", "b", "c", "d", "e"}},

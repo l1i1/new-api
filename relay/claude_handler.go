@@ -41,6 +41,13 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
 		return newConvertRequestFailedError(c, info, err)
 	}
+	// The Claude wire format has its own request type, so the K3 field
+	// validator (which reads dto.GeneralOpenAIRequest) never sees it. Mirror
+	// the official Anthropic endpoint's url-image rejection here for callers
+	// whose official-fit Validate dimension is on.
+	if newAPIErr := helper.ValidateKimiK3ClaudeImages(c, info.OriginModelName, request); newAPIErr != nil {
+		return newAPIErr
+	}
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
