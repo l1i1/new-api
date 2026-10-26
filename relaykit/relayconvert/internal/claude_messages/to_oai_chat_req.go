@@ -187,10 +187,24 @@ func ClaudeMessagesRequestToOpenAIChat(ctx context.Context, claudeRequest dto.Cl
 					}
 					mediaMessages = append(mediaMessages, message)
 				case "image":
-					imageData := fmt.Sprintf("data:%s;base64,%s", mediaMsg.Source.MediaType, mediaMsg.Source.Data)
+					// Render the source the way the official Anthropic endpoint does:
+					// a url source travels as its URL (the official endpoint answers
+					// 400 "unsupported image url"), while a base64 source becomes a
+					// data URL. Rendering every source as a base64 data URL turned a
+					// url image into an empty data URL, which upstreams silently
+					// ignored and answered 200 without seeing the image (customer
+					// report 2026-10-26). claudeSourceURL is the same renderer the
+					// Responses converter uses.
+					if mediaMsg.Source == nil {
+						continue
+					}
+					imageURL := claudeSourceURL(mediaMsg.Source)
+					if imageURL == "" {
+						imageURL = fmt.Sprintf("data:%s;base64,%s", mediaMsg.Source.MediaType, kitutil.Interface2String(mediaMsg.Source.Data))
+					}
 					mediaMessage := dto.MediaContent{
 						Type:     "image_url",
-						ImageUrl: &dto.MessageImageUrl{Url: imageData},
+						ImageUrl: &dto.MessageImageUrl{Url: imageURL},
 					}
 					mediaMessages = append(mediaMessages, mediaMessage)
 				case "tool_use":

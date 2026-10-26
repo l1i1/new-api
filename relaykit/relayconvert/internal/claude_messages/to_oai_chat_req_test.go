@@ -149,3 +149,39 @@ func TestClaudeMessagesRequestToOpenAIChatKeepsParallelToolResultsContiguous(t *
 	require.NotNil(t, parts[0].GetImageMedia())
 	assert.Equal(t, dataURL, parts[0].GetImageMedia().Url)
 }
+
+func TestClaudeMessagesRequestToOpenAIChatUserImageSources(t *testing.T) {
+	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	got, err := ClaudeMessagesRequestToOpenAIChat(context.Background(), dto.ClaudeRequest{
+		Model:     "kimi-k3.1-pro",
+		MaxTokens: lo.ToPtr(uint(64)),
+		Messages: []dto.ClaudeMessage{
+			{Role: "user", Content: []dto.ClaudeMediaMessage{
+				{Type: "image", Source: &dto.ClaudeMessageSource{Type: "url", Url: "https://example.com/shot.png"}},
+				{Type: "text", Text: lo.ToPtr("what is this?")},
+			}},
+			{Role: "user", Content: []dto.ClaudeMediaMessage{
+				{Type: "image", Source: &dto.ClaudeMessageSource{Type: "base64", MediaType: "image/png", Data: imageData}},
+				{Type: "text", Text: lo.ToPtr("and this?")},
+			}},
+		},
+	}, &convmeta.Values{})
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 2)
+
+	// A url-source image must reach the Chat body as its real URL, not as an
+	// empty base64 data URL: the official Anthropic endpoint answers such a
+	// request with 400 "unsupported image url", and an empty data URL made the
+	// upstream silently ignore the image and return 200 (customer report,
+	// 2026-10-26).
+	urlParts := got.Messages[0].ParseContent()
+	require.Len(t, urlParts, 2)
+	require.NotNil(t, urlParts[0].GetImageMedia())
+	assert.Equal(t, "https://example.com/shot.png", urlParts[0].GetImageMedia().Url)
+
+	// Base64 sources keep becoming a data URL.
+	base64Parts := got.Messages[1].ParseContent()
+	require.Len(t, base64Parts, 2)
+	require.NotNil(t, base64Parts[0].GetImageMedia())
+	assert.Equal(t, "data:image/png;base64,"+imageData, base64Parts[0].GetImageMedia().Url)
+}
