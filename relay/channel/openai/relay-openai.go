@@ -591,6 +591,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount) &&
 		len(streamFunctionCallNames) == 0 {
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String())
+		if result.rounds > 0 && c.Request != nil && c.Request.Context().Err() != nil {
+			// The caller walked away mid-continuation: the provider already
+			// generated the observed usage (same rule as client_gone on a
+			// normal stream), so keep it billable and do not synthesize an
+			// error nobody can receive.
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
 		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)

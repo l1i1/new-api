@@ -447,3 +447,57 @@ func TestOaiStreamHandlerRejectsThinkingContinuationWithoutVisibleAnswer(t *test
 	require.Zero(t, usage.TotalTokens)
 	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
 }
+
+// TestOaiStreamHandlerBillsObservedUsageWhenCallerLeavesDuringThinkingContinuation
+// keeps the client_gone contract for the new mode: if the caller disconnects
+// while the resumed round is in flight, observed upstream usage stays billable.
+func TestOaiStreamHandlerBillsObservedUsageWhenCallerLeavesDuringThinkingContinuation(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	partialRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"继续"},"finish_reason":null}]}`,
+		``,
+	}, "\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	calls := 0
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		cancel() // caller leaves while the resumed round is still in flight
+		return continuationSSEResponse(partialRound), nil
+	}, 1, 100, 1<<20)
+	c.Request = c.Request.WithContext(ctx)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "client disconnect is not an upstream error")
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 10, usage.CompletionTokens, "the first round's observed output stays billable")
+}
+
+// TestOaiStreamHandlerSkipsThinkingContinuationWithoutReasoning is the negative
+// control: an abnormal finish with no captured reasoning keeps the ordinary
+// failure path (zero usage, 502).
+func TestOaiStreamHandlerSkipsThinkingContinuationWithoutReasoning(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	calls := 0
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondContinuationRoundForTest()), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, 0, calls)
+	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
+}
