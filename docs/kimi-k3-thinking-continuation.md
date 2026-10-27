@@ -54,7 +54,7 @@ missing 模式只在上游侧 EOF、不是客户端断开、且 `streamMissingFi
 
 ## 已验证
 
-- 单元：`TestBuildChatThinkingContinuationBody`、`TestMergeContinuationUsageBillsInputOnce`、`TestOaiStreamHandlerContinuesThinkingAfterAbnormalFinish`、`TestOaiStreamHandlerContinuesMissingFinishStream`、`TestOaiStreamHandlerFallsBackWhenThinkingContinuationFails`、`TestOaiStreamHandlerFallsBackWhenMissingFinishContinuationFails`、`TestOaiStreamHandlerSkipsThinkingContinuationWhenReasoningTooLarge`、`TestOaiStreamHandlerSkipsMissingFinishContinuationWithoutReasoning`、`TestOaiStreamHandlerDedupesRepeatedRoundUsage`、`TestOaiStreamHandlerSuppressesFinishOnDeltaChunk`、`TestChatAbnormalContinuationStepsForRequest`、`TestChatMissingContinuationStepsForRequest`、`TestExtendWriteDeadlineForSetsFutureDeadline`。
+- 单元：`TestBuildChatThinkingContinuationBody`、`TestMergeContinuationUsageBillsInputOnce`、`TestOaiStreamHandlerContinuesThinkingAfterAbnormalFinish`、`TestOaiStreamHandlerContinuesMissingFinishStream`、`TestOaiStreamHandlerFallsBackWhenThinkingContinuationFails`、`TestOaiStreamHandlerFallsBackWhenMissingFinishContinuationFails`、`TestOaiStreamHandlerSkipsThinkingContinuationWhenReasoningTooLarge`、`TestOaiStreamHandlerSkipsMissingFinishContinuationWithoutReasoning`、`TestOaiStreamHandlerDedupesRepeatedRoundUsage`、`TestOaiStreamHandlerSuppressesFinishOnDeltaChunk`、`TestChatAbnormalContinuationStepsForRequest`、`TestChatMissingContinuationStepsForRequest`、`TestExtendWriteDeadlineForSetsFutureDeadline`、`TestContinuationKeepsWriteDeadlineAlive`、`TestSendThinkingContinuationSuppressesUpstreamPinger`。
 - 回归：`go test ./...` 全绿；`go test -race ./relay/channel/openai/ ./relay/common/` 通过；`go vet ./relay/... ./common/...` 干净。
 - 本地假上游 e2e：续写成功、单终帧、输入一次、输出两轮计费；失败轮回落 502/退款。
 

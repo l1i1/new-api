@@ -545,32 +545,6 @@ func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, r
 	_ = sendStreamData(c, info, string(data), info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 }
 
-// addChatContinuationUsage accumulates the usage events inside ONE upstream
-// round (providers may repeat or split usage). It must not be used to combine
-// independent rounds: input tokens are billed once by mergeContinuationUsage.
-func addChatContinuationUsage(total, round *dto.Usage) *dto.Usage {
-	if round == nil {
-		return total
-	}
-	if total == nil {
-		cloned := *round
-		return &cloned
-	}
-	total.PromptTokens += round.PromptTokens
-	total.CompletionTokens += round.CompletionTokens
-	total.TotalTokens += round.TotalTokens
-	total.InputTokens += round.InputTokens
-	total.OutputTokens += round.OutputTokens
-	total.PromptCacheHitTokens += round.PromptCacheHitTokens
-	total.ClaudeCacheCreation5mTokens += round.ClaudeCacheCreation5mTokens
-	total.ClaudeCacheCreation1hTokens += round.ClaudeCacheCreation1hTokens
-	total.PromptTokensDetails.CachedTokens += round.PromptTokensDetails.CachedTokens
-	total.PromptTokensDetails.CacheWriteTokens += round.PromptTokensDetails.CacheWriteTokens
-	total.PromptTokensDetails.CachedCreationTokens += round.PromptTokensDetails.CachedCreationTokens
-	total.CompletionTokenDetails.ReasoningTokens += round.CompletionTokenDetails.ReasoningTokens
-	return total
-}
-
 // mergeContinuationUsage folds one continuation round into the settled totals.
 // Output tokens of every round are billable (they were forwarded to the
 // client), but prompt/input tokens belong to the original request only: the
@@ -632,7 +606,9 @@ func writeThinkingContinuationPing(c *gin.Context) error {
 		return err
 	}
 	helper.RecordKeepAliveBytes(c, len(": PING\n\n"))
-	c.Writer.Flush()
+	if err := http.NewResponseController(c.Writer).Flush(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -663,11 +639,6 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.Rel
 		info.DisablePing = true
 	}
 	go func() {
-		defer func() {
-			if info != nil {
-				info.DisablePing = prevDisablePing
-			}
-		}()
 		resp, err := cfg.Send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
@@ -676,6 +647,9 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.Rel
 	for {
 		select {
 		case r := <-result:
+			if info != nil {
+				info.DisablePing = prevDisablePing
+			}
 			return r.resp, r.err
 		case <-ticker.C:
 			// Even when pings are disabled, keep the connection write deadline

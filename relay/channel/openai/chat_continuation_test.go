@@ -761,3 +761,113 @@ func TestOaiStreamHandlerSuppressesFinishOnDeltaChunk(t *testing.T) {
 	require.Contains(t, body, "最终答案")
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "exactly one terminal frame")
 }
+
+// TestSendThinkingContinuationSuppressesUpstreamPinger pins the single-writer
+// contract: while the second attempt runs, doRequest must not start its own SSE
+// pinger, and the original DisablePing value is restored afterwards.
+func TestSendThinkingContinuationSuppressesUpstreamPinger(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{DisablePing: false}
+	seen := false
+	cfg := &relaycommon.ChatAbnormalContinuationConfig{
+		MaxSteps: 1,
+		Send: func(string, int) (*http.Response, error) {
+			seen = info.DisablePing
+			return continuationSSEResponse("data: [DONE]\n\n"), nil
+		},
+	}
+	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, "思考", 100)
+	require.Nil(t, err)
+	require.NotNil(t, resp)
+	_ = resp.Body.Close()
+	require.True(t, seen, "doRequest pinger must be suppressed during the second attempt")
+	require.False(t, info.DisablePing, "the original DisablePing value must be restored")
+}
+
+type cappedDeadlineWriter struct {
+	gin.ResponseWriter
+	max time.Duration
+}
+
+func (w *cappedDeadlineWriter) SetWriteDeadline(t time.Time) error {
+	if limit := time.Now().Add(w.max); t.After(limit) {
+		t = limit
+	}
+	return http.NewResponseController(w.ResponseWriter).SetWriteDeadline(t)
+}
+
+// TestContinuationKeepsWriteDeadlineAlive is the real-server regression for the
+// 30s client write deadline: pings must extend the deadline while round two is
+// still waiting, otherwise the resumed answer is silently dropped.
+func TestContinuationKeepsWriteDeadlineAlive(t *testing.T) {
+	oldInterval := thinkingContinuationPingInterval
+	thinkingContinuationPingInterval = 100 * time.Millisecond
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() {
+		thinkingContinuationPingInterval = oldInterval
+		constant.StreamingTimeout = oldTimeout
+	})
+
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.GET("/", func(c *gin.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Logf("handler panic: %v", r)
+				panic(r)
+			}
+		}()
+		c.Header("Content-Type", "text/event-stream")
+		c.Writer = &cappedDeadlineWriter{ResponseWriter: c.Writer, max: 500 * time.Millisecond}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+			IsStream:           true,
+			RelayMode:          relayconstant.RelayModeChatCompletions,
+			RelayFormat:        types.RelayFormatOpenAI,
+			ShouldIncludeUsage: true,
+			ClientMaxTokens:    100,
+			ChatContinuation: &relaycommon.ChatContinuationConfig{
+				Abnormal: &relaycommon.ChatAbnormalContinuationConfig{
+					MaxSteps:          1,
+					MaxReasoningBytes: 1 << 20,
+					MinReasoningChars: 1,
+					Send: func(string, int) (*http.Response, error) {
+						time.Sleep(900 * time.Millisecond)
+						return continuationSSEResponse(secondRound), nil
+					},
+				},
+			},
+		}
+		info.SetEstimatePromptTokens(5)
+		_, _ = OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(server.URL + "/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "最终答案")
+	require.Contains(t, string(body), "[DONE]")
+}
