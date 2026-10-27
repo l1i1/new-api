@@ -248,6 +248,11 @@ type RelayInfo struct {
 	// StreamFinishReason is the latest non-empty provider finish reason seen
 	// on an OpenAI-compatible stream, retained for consume-log diagnostics.
 	StreamFinishReason string
+	// ChatContinuation, when non-nil, allows the OpenAI chat stream handler to
+	// continue a generation that ended at an upstream output cap
+	// (finish_reason=length with client budget left) inside the same client
+	// response. Nil keeps the ordinary single-round streaming path.
+	ChatContinuation *ChatContinuationConfig
 	// PerformanceOutputTokens is captured by settlement and sampled once at
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64

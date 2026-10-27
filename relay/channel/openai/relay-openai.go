@@ -523,6 +523,26 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// (see ClampUsageToClientBudget for why upstream accumulation happens).
 	relaycommon.ClampUsageToClientBudget(info, usage)
 
+	// Transparent continuation for a provider-side output cap: the upstream ended
+	// the stream with finish_reason=length while the client still had budget left,
+	// so continue the same answer inside this same client stream instead of
+	// truncating it. The branch is inert unless the relay enabled continuation for
+	// this request (info.ChatContinuation != nil).
+	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount) && len(streamFunctionCallNames) == 0 {
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String())
+		if result.rounds > 0 {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkCompleted()
+			}
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
 		case isV4OpenAIStream:
