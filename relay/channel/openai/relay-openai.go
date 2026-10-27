@@ -432,26 +432,41 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// a hard request-side invariant.
 		relaycommon.ClampUsageToClientBudget(info, usage)
 
-		// The transport did not end normally, so the caller never received a
-		// finished answer: it must not be billed, and the counts returned to the
-		// caller/settlement are zeroed. The raw upstream counts survive only in
-		// the consume log's undelivered marker when one is written.
+		// The transport did not end normally. Two cases are deliberately
+		// separated:
+		//   - a caller that walked away (client_gone) chose to leave after the
+		//     provider had already generated tokens for it, so the observed usage
+		//     stays billable and no error is synthesized;
+		//   - any upstream-side termination (scanner error, timeout, panic, ping
+		//     failure) never delivered a finished answer, so it must not be
+		//     billed and the counts returned to the caller/settlement are zeroed.
 		clientGone := info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
 			(c.Request != nil && c.Request.Context().Err() != nil)
-		undeliveredReason := relaycommon.UndeliveredStreamPrefix + string(info.StreamStatus.EndReason)
-		if clientGone {
-			undeliveredReason = relaycommon.UndeliveredClientGone
+		if !clientGone {
+			undeliveredReason := relaycommon.UndeliveredStreamPrefix + string(info.StreamStatus.EndReason)
+			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+			terminationErr := info.StreamStatus.EndError
+			if terminationErr == nil {
+				terminationErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)
+			} else {
+				terminationErr = fmt.Errorf("upstream stream terminated (%s): %w", info.StreamStatus.EndReason, terminationErr)
+			}
+			options := make([]types.NewAPIErrorOptions, 0, 1)
+			if c.Writer.Written() || info.ReceivedResponseCount > 0 {
+				options = append(options, types.ErrOptionWithSkipRetry())
+			}
+			return usage, types.NewOpenAIError(
+				terminationErr,
+				types.ErrorCode("server_error"),
+				http.StatusBadGateway,
+				options...,
+			)
 		}
-		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
-
-		// A caller that walked away mid-stream is not an upstream failure, and
-		// there is nobody left to receive an error: settle (as zero) and finish
-		// without synthesizing one. The scanner reports the same event as
-		// scanner_error whenever the cancelled request context closes the upstream
-		// body first, so the request context is the authoritative signal.
-		if clientGone {
-			return usage, nil
-		}
+		// The caller left mid-stream: bill the observed partial usage, but do not
+		// synthesize an error nobody can receive. The scanner reports the same
+		// event as scanner_error whenever the cancelled request context closes the
+		// upstream body first, so the request context is the authoritative signal.
+		return usage, nil
 
 		terminationErr := info.StreamStatus.EndError
 		if terminationErr == nil {
@@ -541,13 +556,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// this request (info.ChatContinuation != nil).
 	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount) && len(streamFunctionCallNames) == 0 {
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String())
-		// A caller that walked away while a continuation round was running never
-		// received the continued answer: settle zero like any other client-gone
-		// stream. Without this check the merged rounds would be billed as success
-		// because the first round's capped terminal frame was suppressed.
-		if c.Request != nil && c.Request.Context().Err() != nil {
-			return markUndeliveredStreamUsage(info, relaycommon.UndeliveredClientGone, result.usage), nil
-		}
+		// A caller-side disconnect during the continuation rounds stays billable
+		// (same rule as client_gone on a normal stream): the provider already
+		// generated the merged usage.
 		if result.rounds > 0 {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)

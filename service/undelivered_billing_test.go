@@ -51,14 +51,14 @@ func newUndeliveredTestRelayInfo(t *testing.T) (*gin.Context, *relaycommon.Relay
 }
 
 // TestPostTextConsumeQuotaUndeliveredZeroesConsumeLog pins the billing policy:
-// a stream that did not deliver a terminal result to the caller (client gone,
-// truncation, transport failure) is recorded with quota=0 and zero token
+// a stream that did not deliver a terminal result because of an upstream fault
+// (scanner error, truncation, timeout) is recorded with quota=0 and zero token
 // columns, the raw upstream counts survive only in admin_info.undelivered, and
 // the caller's wallet is not debited.
 func TestPostTextConsumeQuotaUndeliveredZeroesConsumeLog(t *testing.T) {
 	ctx, info := newUndeliveredTestRelayInfo(t)
 	info.StreamStatus = relaycommon.NewStreamStatus()
-	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, errors.New("context canceled"))
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, errors.New("unexpected EOF"))
 
 	usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200}
 	PostTextConsumeQuota(ctx, info, usage, nil)
@@ -76,7 +76,7 @@ func TestPostTextConsumeQuotaUndeliveredZeroesConsumeLog(t *testing.T) {
 	require.True(t, ok, "admin_info should exist")
 	marker, ok := adminInfo["undelivered"].(map[string]any)
 	require.True(t, ok, "undelivered marker should be nested under admin_info")
-	assert.Equal(t, relaycommon.UndeliveredClientGone, marker["reason"])
+	assert.Equal(t, relaycommon.UndeliveredStreamPrefix+"scanner_error", marker["reason"])
 	assert.Equal(t, "zeroed", marker["action"])
 	assert.Equal(t, float64(1000), marker["upstream_prompt_tokens"])
 	assert.Equal(t, float64(200), marker["upstream_completion_tokens"])
@@ -108,4 +108,28 @@ func TestPostTextConsumeQuotaDeliveredStreamStaysBillable(t *testing.T) {
 	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
 	adminInfo, _ := other["admin_info"].(map[string]any)
 	assert.Nil(t, adminInfo["undelivered"], "no undelivered marker on a delivered response")
+}
+
+// TestPostTextConsumeQuotaClientGoneStaysBillable is the counterpart policy: a
+// caller-side disconnect is not an upstream fault. The provider already
+// generated (and charged) the observed tokens, so the request stays billable
+// and carries no undelivered marker.
+func TestPostTextConsumeQuotaClientGoneStaysBillable(t *testing.T) {
+	ctx, info := newUndeliveredTestRelayInfo(t)
+	info.StreamStatus = relaycommon.NewStreamStatus()
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, errors.New("context canceled"))
+
+	PostTextConsumeQuota(ctx, info, &dto.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200}, nil)
+
+	var log model.Log
+	require.NoError(t, model.LOG_DB.Where("user_id = ?", info.UserId).Take(&log).Error)
+	assert.Positive(t, log.Quota, "a caller-side disconnect keeps its observed usage billable")
+	assert.Equal(t, 1000, log.PromptTokens)
+	assert.Equal(t, 200, log.CompletionTokens)
+	assert.True(t, info.ObservedUsage)
+
+	var other map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+	adminInfo, _ := other["admin_info"].(map[string]any)
+	assert.Nil(t, adminInfo["undelivered"], "no undelivered marker for a caller-side disconnect")
 }

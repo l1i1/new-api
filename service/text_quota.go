@@ -404,11 +404,13 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
-	// A response that never delivered a usable terminal result must not be
-	// billed: zero the settlement input before any pricing runs so the quota,
-	// the consume-log token columns and the dashboard hourly buckets all read
-	// zero. The raw upstream counts are preserved on RelayInfo for the audit
-	// marker (admin_info.undelivered). See UndeliveredSettlementReason.
+	// A response that never delivered a usable terminal result because of an
+	// upstream fault must not be billed: zero the settlement input before any
+	// pricing runs so the quota, the consume-log token columns and the dashboard
+	// hourly buckets all read zero. The raw upstream counts are preserved on
+	// RelayInfo for the audit marker (admin_info.undelivered). A caller-side
+	// disconnect (client_gone) is deliberately excluded and stays billable. See
+	// UndeliveredSettlementReason.
 	undeliveredReason := ""
 	if relayInfo != nil {
 		undeliveredReason = relayInfo.UndeliveredSettlementReason()

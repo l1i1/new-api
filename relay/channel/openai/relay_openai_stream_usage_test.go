@@ -1046,11 +1046,9 @@ func TestOaiStreamHandlerTreatsClientGoneAsNonError(t *testing.T) {
 
 	require.Nil(t, err, "a caller that disconnected mid-stream must not surface a gateway error")
 	require.NotNil(t, usage)
-	assert.Zero(t, usage.PromptTokens, "an undelivered response settles zero token counts")
-	assert.Zero(t, usage.CompletionTokens)
-	assert.Zero(t, usage.TotalTokens)
-	assert.Equal(t, relaycommon.UndeliveredClientGone, info.UndeliveredReason,
-		"a caller that walked away must be recorded as an undelivered response")
+	assert.Equal(t, 11, usage.PromptTokens)
+	assert.Greater(t, usage.CompletionTokens, 0, "a caller-side disconnect keeps its observed usage billable")
+	assert.Empty(t, info.UndeliveredReason, "client_gone is a caller-side event, not an undelivered upstream result")
 	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`, "an abandoned stream never earns a success marker")
 }
 

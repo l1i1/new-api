@@ -495,9 +495,13 @@ func TestResponsesInterruptedStreamHealth(t *testing.T) {
 				}
 			}
 			fixture.closeAndWait(t)
-			// The caller never received a terminal answer, so the interrupted
-			// stream is recorded at zero charge under the undelivered policy.
-			assertResponsesWSAccounting(t, fixture, []int{0})
+			// Upstream idle timeouts are upstream faults and settle zero; a caller
+			// that cancels its own request keeps the observed usage billable.
+			expected := []int{0}
+			if scenario == "sse client cancel" {
+				expected = []int{1000}
+			}
+			assertResponsesWSAccounting(t, fixture, expected)
 			if scenario == "sse client cancel" {
 				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
 				require.NoError(t, err)
@@ -794,7 +798,7 @@ func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
 	}
 }
 
-func TestResponsesWebSocketDisconnectDoesNotChargePartialOutput(t *testing.T) {
+func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
 	fixture := newResponsesWSBillingTest(t, `tier("output", c * 2)`, func(ws *websocket.Conn, _ *http.Request) {
 		if _, _, err := ws.ReadMessage(); !assert.NoError(t, err) {
 			return
@@ -815,9 +819,9 @@ func TestResponsesWebSocketDisconnectDoesNotChargePartialOutput(t *testing.T) {
 	require.Equal(t, "response.output_text.delta", delta["type"])
 	assert.Equal(t, "hello", delta["delta"])
 	fixture.closeAndWait(t)
-	// The client walked away before the response completed: zero charge, but the
-	// request is still accounted (one consume row with quota 0).
-	assertResponsesWSAccounting(t, fixture, []int{0})
+	// The client walked away before the response completed: the output that was
+	// already delivered stays billable (one consume row, no double settlement).
+	assertResponsesWSAccounting(t, fixture, []int{1})
 	keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
 	require.NoError(t, err)
 	assert.Empty(t, keys, "client cancellation must not affect model health")

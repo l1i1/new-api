@@ -30,7 +30,8 @@ func TestUndeliveredSettlementReason(t *testing.T) {
 
 	info.StreamStatus = NewStreamStatus()
 	info.StreamStatus.SetEndReason(StreamEndReasonClientGone, nil)
-	assert.Equal(t, UndeliveredClientGone, info.UndeliveredSettlementReason())
+	assert.Empty(t, info.UndeliveredSettlementReason(),
+		"a caller-side disconnect is not an upstream fault and stays billable")
 
 	info.StreamStatus = NewStreamStatus()
 	info.StreamStatus.SetEndReason(StreamEndReasonScannerErr, nil)
@@ -39,5 +40,10 @@ func TestUndeliveredSettlementReason(t *testing.T) {
 	info = &RelayInfo{UndeliveredReason: UndeliveredMissingFinish, StreamStatus: NewStreamStatus()}
 	info.StreamStatus.SetEndReason(StreamEndReasonDone, nil)
 	assert.Equal(t, UndeliveredMissingFinish, info.UndeliveredSettlementReason(),
-		"an explicit marker wins over a normal transport end")
+		"an explicit upstream-fault marker wins over a normal transport end")
+
+	info = &RelayInfo{UndeliveredReason: UndeliveredClientGone, StreamStatus: NewStreamStatus()}
+	info.StreamStatus.SetEndReason(StreamEndReasonDone, nil)
+	assert.Empty(t, info.UndeliveredSettlementReason(),
+		"an accidental client_gone marker must not zero a settlement")
 }
