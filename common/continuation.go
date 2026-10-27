@@ -1,8 +1,26 @@
 package common
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+)
+
+// Option keys for the DB-backed continuation settings. The env vars with the
+// same names remain only as first-boot defaults; after that the OptionMap row
+// (editable in the admin console) is authoritative.
+const (
+	ChatContinuationOptionPrefix                    = "relay_chat_continuation_"
+	ChatContinuationOptionOnAbnormal                = ChatContinuationOptionPrefix + "on_abnormal"
+	ChatContinuationOptionOnMissing                 = ChatContinuationOptionPrefix + "on_missing"
+	ChatContinuationOptionChannels                  = ChatContinuationOptionPrefix + "channels"
+	ChatContinuationOptionMaxSteps                  = ChatContinuationOptionPrefix + "max_steps"
+	ChatContinuationOptionAbnormalMaxSteps          = ChatContinuationOptionPrefix + "abnormal_max_steps"
+	ChatContinuationOptionAbnormalMaxReasoningBytes = ChatContinuationOptionPrefix + "abnormal_max_reasoning_bytes"
+	ChatContinuationOptionAbnormalMinReasoningChars = ChatContinuationOptionPrefix + "abnormal_min_reasoning_chars"
+	ChatContinuationOptionMissingMaxSteps           = ChatContinuationOptionPrefix + "missing_max_steps"
+	ChatContinuationOptionMissingMaxReasoningBytes  = ChatContinuationOptionPrefix + "missing_max_reasoning_bytes"
+	ChatContinuationOptionMissingMinReasoningChars  = ChatContinuationOptionPrefix + "missing_min_reasoning_chars"
 )
 
 // ChatContinuationMaxSteps is the number of extra upstream rounds the relay may
@@ -14,6 +32,10 @@ var ChatContinuationMaxSteps int
 // ChatContinuationChannelIDs is the channel whitelist for transparent chat
 // continuation (RELAY_CHAT_CONTINUATION_CHANNELS, comma separated ids).
 var ChatContinuationChannelIDs map[int]struct{}
+
+// ChatContinuationChannelsRaw keeps the comma separated env/default form so a
+// fresh database is seeded with the operator's configured channel list.
+var ChatContinuationChannelsRaw string
 
 // ChatContinuationOnAbnormal enables the second continuation mode: when an
 // upstream stream dies with an abnormal finish_reason before any visible
@@ -82,4 +104,127 @@ func ChatContinuationChannelAllowed(channelID int) bool {
 	}
 	_, ok := ChatContinuationChannelIDs[channelID]
 	return ok
+}
+
+// SetChatContinuationOption validates and applies one DB-backed continuation
+// setting. It returns an error for an unknown key or a malformed value so the
+// admin API rejects the write before it can reach request goroutines.
+func ValidateChatContinuationOption(key, value string) error {
+	value = strings.TrimSpace(value)
+	switch key {
+	case ChatContinuationOptionOnAbnormal, ChatContinuationOptionOnMissing:
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("%s must be true or false", key)
+		}
+	case ChatContinuationOptionChannels:
+		if value == "" {
+			return nil
+		}
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			id, err := strconv.Atoi(part)
+			if err != nil || id <= 0 {
+				return fmt.Errorf("%s must be comma separated positive channel ids", key)
+			}
+		}
+	case ChatContinuationOptionAbnormalMaxReasoningBytes, ChatContinuationOptionMissingMaxReasoningBytes:
+		if n, err := strconv.Atoi(value); err != nil || n < 1 {
+			return fmt.Errorf("%s must be an integer >= 1", key)
+		}
+	case ChatContinuationOptionMaxSteps, ChatContinuationOptionAbnormalMaxSteps,
+		ChatContinuationOptionMissingMaxSteps, ChatContinuationOptionAbnormalMinReasoningChars,
+		ChatContinuationOptionMissingMinReasoningChars:
+		if n, err := strconv.Atoi(value); err != nil || n < 0 {
+			return fmt.Errorf("%s must be an integer >= 0", key)
+		}
+	default:
+		return fmt.Errorf("unknown chat continuation option: %s", key)
+	}
+	return nil
+}
+
+func SetChatContinuationOption(key, value string) error {
+	if err := ValidateChatContinuationOption(key, value); err != nil {
+		return err
+	}
+	value = strings.TrimSpace(value)
+	parseBool := func() (bool, error) { return strconv.ParseBool(value) }
+	parseInt := func(min int) (int, error) {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < min {
+			return 0, fmt.Errorf("%s must be an integer >= %d", key, min)
+		}
+		return n, nil
+	}
+	switch key {
+	case ChatContinuationOptionOnAbnormal:
+		v, err := parseBool()
+		if err != nil {
+			return err
+		}
+		ChatContinuationOnAbnormal = v
+	case ChatContinuationOptionOnMissing:
+		v, err := parseBool()
+		if err != nil {
+			return err
+		}
+		ChatContinuationOnMissing = v
+	case ChatContinuationOptionChannels:
+		ChatContinuationChannelsRaw = value
+		if value != "" {
+			for _, part := range strings.Split(value, ",") {
+				part = strings.TrimSpace(part)
+				id, err := strconv.Atoi(part)
+				if err != nil || id <= 0 {
+					return fmt.Errorf("%s must be comma separated positive channel ids", key)
+				}
+			}
+		}
+		ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionMaxSteps:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationMaxSteps = v
+	case ChatContinuationOptionAbnormalMaxSteps:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationAbnormalMaxSteps = v
+	case ChatContinuationOptionAbnormalMaxReasoningBytes:
+		v, err := parseInt(1)
+		if err != nil {
+			return err
+		}
+		ChatContinuationAbnormalMaxReasoningBytes = v
+	case ChatContinuationOptionAbnormalMinReasoningChars:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationAbnormalMinReasoningChars = v
+	case ChatContinuationOptionMissingMaxSteps:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationMissingMaxSteps = v
+	case ChatContinuationOptionMissingMaxReasoningBytes:
+		v, err := parseInt(1)
+		if err != nil {
+			return err
+		}
+		ChatContinuationMissingMaxReasoningBytes = v
+	case ChatContinuationOptionMissingMinReasoningChars:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationMissingMinReasoningChars = v
+	default:
+		return fmt.Errorf("unknown chat continuation option: %s", key)
+	}
+	return nil
 }

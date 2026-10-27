@@ -721,5 +721,26 @@
   "overrides": {
     "Disabled {{count}} keys": "Disabled {{count}} keys",
     "Email address is already in use": "Email address is already in use"
-  }
+  },
+  "Chat Continuation": "Chat Continuation",
+  "900s / abnormal finish continuation": "900s / abnormal finish continuation",
+  "Resume a reasoning-only round after an abnormal finish (900s cut)": "Resume a reasoning-only round after an abnormal finish (900s cut)",
+  "60s / missing finish continuation": "60s / missing finish continuation",
+  "Resume a reasoning-only round that ended without any finish_reason": "Resume a reasoning-only round that ended without any finish_reason",
+  "Channel whitelist": "Channel whitelist",
+  "Comma separated channel ids; empty disables the feature": "Comma separated channel ids; empty disables the feature",
+  "32k output-cap continuation steps": "32k output-cap continuation steps",
+  "0 disables length continuation; each step adds one upstream round": "0 disables length continuation; each step adds one upstream round",
+  "900s continuation steps": "900s continuation steps",
+  "Recommended 1: each round can wait another upstream timeout window": "Recommended 1: each round can wait another upstream timeout window",
+  "900s reasoning capture limit (bytes)": "900s reasoning capture limit (bytes)",
+  "Rounds above the limit fall back to the original failure path": "Rounds above the limit fall back to the original failure path",
+  "900s minimum reasoning (bytes)": "900s minimum reasoning (bytes)",
+  "Below this length the model had barely started thinking": "Below this length the model had barely started thinking",
+  "Missing-finish continuation steps": "Missing-finish continuation steps",
+  "Recommended 1: a repeated 60s wall must not loop": "Recommended 1: a repeated 60s wall must not loop",
+  "Missing-finish reasoning capture limit (bytes)": "Missing-finish reasoning capture limit (bytes)",
+  "Rounds above the limit fall back to refund": "Rounds above the limit fall back to refund",
+  "Missing-finish minimum reasoning (bytes)": "Missing-finish minimum reasoning (bytes)",
+  "Below this length the cut has too little context to resume": "Below this length the cut has too little context to resume"
 }

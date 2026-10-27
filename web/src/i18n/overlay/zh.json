@@ -730,5 +730,26 @@
     "Start a playground chat": "开始一场模型对话",
     "Disabled {{count}} keys": "已禁用 {{count}} 个密钥",
     "Email address is already in use": "邮箱地址已被占用"
-  }
+  },
+  "Chat Continuation": "对话续写",
+  "900s / abnormal finish continuation": "900 秒 / 异常终止续写",
+  "Resume a reasoning-only round after an abnormal finish (900s cut)": "异常终止（900 秒截断）且只有 reasoning 时，续写该轮",
+  "60s / missing finish continuation": "60 秒 / 缺失 finish 续写",
+  "Resume a reasoning-only round that ended without any finish_reason": "流结束但从未出现 finish_reason、且只有 reasoning 时，续写该轮",
+  "Channel whitelist": "渠道白名单",
+  "Comma separated channel ids; empty disables the feature": "逗号分隔的渠道 ID；留空表示不启用",
+  "32k output-cap continuation steps": "32k 输出上限续写轮数",
+  "0 disables length continuation; each step adds one upstream round": "0 表示关闭 length 续写；每轮增加一次上游请求",
+  "900s continuation steps": "900 秒续写轮数",
+  "Recommended 1: each round can wait another upstream timeout window": "建议 1：每轮可能再等一个上游超时窗口",
+  "900s reasoning capture limit (bytes)": "900 秒 reasoning 捕获上限（字节）",
+  "Rounds above the limit fall back to the original failure path": "超过上限时回落原失败路径",
+  "900s minimum reasoning (bytes)": "900 秒 reasoning 最小长度（字节）",
+  "Below this length the model had barely started thinking": "低于该长度说明模型还没开始思考",
+  "Missing-finish continuation steps": "缺失 finish 续写轮数",
+  "Recommended 1: a repeated 60s wall must not loop": "建议 1：避免 60 秒墙反复循环",
+  "Missing-finish reasoning capture limit (bytes)": "缺失 finish reasoning 捕获上限（字节）",
+  "Rounds above the limit fall back to refund": "超过上限时回落退款",
+  "Missing-finish minimum reasoning (bytes)": "缺失 finish reasoning 最小长度（字节）",
+  "Below this length the cut has too little context to resume": "低于该长度时截断上下文太少，无法续写"
 }

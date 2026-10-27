@@ -14,6 +14,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -870,4 +871,56 @@ func TestContinuationKeepsWriteDeadlineAlive(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(body), "最终答案")
 	require.Contains(t, string(body), "[DONE]")
+}
+
+// TestChatMissingContinuationRejectsMultipleChoices pins the n<=1 gate; a
+// multi-choice stream must not be resumed by a single-choice continuation.
+func TestChatMissingContinuationRejectsMultipleChoices(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:        true,
+		RelayFormat:     types.RelayFormatOpenAI,
+		ClientMaxTokens: 100,
+		StreamStatus:    relaycommon.NewStreamStatus(),
+		ChatContinuation: &relaycommon.ChatContinuationConfig{
+			Missing: &relaycommon.ChatAbnormalContinuationConfig{
+				MaxSteps:          1,
+				Send:              func(string, int) (*http.Response, error) { return nil, nil },
+				MinReasoningChars: 1,
+			},
+		},
+	}
+	require.False(t, chatMissingContinuationCandidate(info, &dto.Usage{}, 0, 100, 0, 2, false))
+	require.True(t, chatMissingContinuationCandidate(info, &dto.Usage{}, 0, 100, 0, 1, false))
+}
+
+// TestContinuationCountsEachToolCallOnce proves the resumed round uses the same
+// identity dedupe as round one instead of counting every streamed chunk.
+func TestContinuationCountsEachToolCallOnce(t *testing.T) {
+	operation_setting.SetToolPriceForTest("get_weather", 0.01)
+	t.Cleanup(func() { operation_setting.DeleteToolPriceForTest("get_weather") })
+
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"查一下","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.NotNil(t, info.ResponsesUsageInfo)
+	tool, ok := info.ResponsesUsageInfo.BuiltInTools["get_weather"]
+	require.True(t, ok)
+	require.Equal(t, 1, tool.CallCount, "one tool call split over two chunks must be billed once")
 }

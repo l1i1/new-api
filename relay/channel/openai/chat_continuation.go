@@ -194,7 +194,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if cfg.Send == nil || cfg.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
@@ -387,6 +387,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	var builder strings.Builder
+	toolSeen := make(map[string]struct{})
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -422,10 +423,43 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 				forward = true
 			}
-			for _, toolCall := range delta.ToolCalls {
-				// Round-1 tool calls are already counted by the main loop; the
-				// resumed round must contribute its own priced calls too.
-				info.CountBillableToolCall(dto.BuildInCallFunctionCall, toolCall.Function.Name)
+			for i, toolCall := range delta.ToolCalls {
+				// Identity-dedupe exactly like round one: providers repeat the
+				// function name on every chunk of one streamed call, and billing
+				// is per call, not per chunk.
+				if !isValidStreamFunctionToolCall(toolCall) {
+					continue
+				}
+				name := strings.TrimSpace(toolCall.Function.Name)
+				toolIdx := i
+				if toolCall.Index != nil {
+					toolIdx = *toolCall.Index
+				}
+				fallbackKey := fmt.Sprintf("index\x00%d\x00%d\x00%s", choice.Index, toolIdx, name)
+				activeKey := fmt.Sprintf("active\x00%d\x00%d\x00%s", choice.Index, toolIdx, name)
+				callID := strings.TrimSpace(toolCall.ID)
+				if callID != "" {
+					idKey := fmt.Sprintf("id\x00%d\x00%s", choice.Index, callID)
+					if _, ok := toolSeen[idKey]; ok {
+						continue
+					}
+					toolSeen[idKey] = struct{}{}
+					toolSeen[activeKey] = struct{}{}
+					if _, delayedID := toolSeen[fallbackKey]; delayedID {
+						delete(toolSeen, fallbackKey)
+						continue
+					}
+				} else {
+					if _, ok := toolSeen[fallbackKey]; ok {
+						continue
+					}
+					if _, ok := toolSeen[activeKey]; ok {
+						continue
+					}
+					toolSeen[fallbackKey] = struct{}{}
+					toolSeen[activeKey] = struct{}{}
+				}
+				info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 			}
 			if len(delta.ToolCalls) > 0 {
 				forward = true

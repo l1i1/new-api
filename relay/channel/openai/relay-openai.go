@@ -269,6 +269,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				Usage             *dto.Usage                                `json:"usage"`
 			}
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil {
+				for _, choice := range streamResp.Choices {
+					if choice.Index+1 > streamChoiceCount {
+						streamChoiceCount = choice.Index + 1
+					}
+				}
 				// A missing-finish stream may have no terminal chunk to carry
 				// the envelope, so capture it from the first chunk that has it.
 				if responseId == "" && streamResp.ID != "" {
@@ -620,8 +625,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
-			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
-			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
@@ -659,6 +663,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
@@ -691,6 +696,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)

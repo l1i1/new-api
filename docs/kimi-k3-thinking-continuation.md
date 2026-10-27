@@ -21,21 +21,24 @@ missing 模式只在上游侧 EOF、不是客户端断开、且 `streamMissingFi
 
 不满足条件（有正文、reasoning 过短/被截断、工具调用、非流式、非 OpenAI chat、渠道未白名单）时保持原有行为：异常终帧透传 + 502 + 退款。
 
-## 开关（默认关）
+## 配置（数据库 OptionMap，后台在线编辑）
 
-| 环境变量 | 默认 | 说明 |
+所有开关都存放在数据库 `options` 表（`OptionMap`），后台 **系统设置 → 运营 → Chat Continuation** 可直接编辑，保存后当前节点立即生效，其他节点通过 Redis 配置变更/周期同步生效。环境变量只作为首次建库的默认种子；已有数据库以 DB 值为准，不再读取环境变量。
+
+| Option key | 默认 | 说明 |
 |---|---|---|
-| `RELAY_CHAT_CONTINUATION_ON_ABNORMAL` | `false` | 总开关 |
-| `RELAY_CHAT_CONTINUATION_CHANNELS` | 空 | 渠道白名单，逗号分隔；两种续写共用 |
-| `RELAY_CHAT_CONTINUATION_ABNORMAL_MAX_STEPS` | `1` | 最多续写轮数；每轮可能再等一个上游超时窗口 |
-| `RELAY_CHAT_CONTINUATION_ABNORMAL_MAX_REASONING_BYTES` | `524288` | reasoning 捕获上限；超限跳过续写，走原失败路径 |
-| `RELAY_CHAT_CONTINUATION_ABNORMAL_MIN_REASONING_CHARS` | `512` | 低于该长度不续写（按 UTF-8 字节） |
-| `RELAY_CHAT_CONTINUATION_ON_MISSING` | `false` | missing-finish 模式总开关 |
-| `RELAY_CHAT_CONTINUATION_MISSING_MAX_STEPS` | `1` | missing 模式最多续写轮数；建议保持 1 |
-| `RELAY_CHAT_CONTINUATION_MISSING_MAX_REASONING_BYTES` | `262144` | missing 模式 reasoning 捕获上限 |
-| `RELAY_CHAT_CONTINUATION_MISSING_MIN_REASONING_CHARS` | `64` | 低于该长度不续写（按 UTF-8 字节） |
+| `relay_chat_continuation_on_abnormal` | `false` | 900s / 异常终止续写开关 |
+| `relay_chat_continuation_on_missing` | `false` | 缺失 finish 续写开关 |
+| `relay_chat_continuation_channels` | 空 | 渠道白名单，逗号分隔；所有续写模式共用 |
+| `relay_chat_continuation_max_steps` | `0` | 32k length 续写轮数；0 关闭 |
+| `relay_chat_continuation_abnormal_max_steps` | `1` | 900s 续写轮数；每轮可能再等一个上游超时窗口 |
+| `relay_chat_continuation_abnormal_max_reasoning_bytes` | `524288` | 900s reasoning 捕获上限；超限走原失败路径 |
+| `relay_chat_continuation_abnormal_min_reasoning_chars` | `512` | 900s 最低 reasoning 长度（按 UTF-8 字节） |
+| `relay_chat_continuation_missing_max_steps` | `1` | missing 续写轮数；建议保持 1 |
+| `relay_chat_continuation_missing_max_reasoning_bytes` | `262144` | missing reasoning 捕获上限 |
+| `relay_chat_continuation_missing_min_reasoning_chars` | `64` | missing 最低 reasoning 长度（按 UTF-8 字节） |
 
-`RELAY_CHAT_CONTINUATION_MAX_STEPS` 仍只控制 `finish_reason=length`（32k 输出上限）的续写，与本模式独立。
+对应的环境变量（`RELAY_CHAT_CONTINUATION_*`）只用于首次建库默认值；修改环境变量不会覆盖已有 DB 值。
 
 ## 计费
 

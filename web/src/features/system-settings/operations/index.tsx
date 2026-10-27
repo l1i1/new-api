@@ -60,6 +60,16 @@ const defaultOperationsSettings: OperationsSettings = {
   'perf_metrics_setting.retention_days': 0,
   'video_estimate_setting.base_url': '',
   'video_estimate_setting.api_key': '',
+  relay_chat_continuation_on_abnormal: false,
+  relay_chat_continuation_on_missing: false,
+  relay_chat_continuation_channels: '',
+  relay_chat_continuation_max_steps: 0,
+  relay_chat_continuation_abnormal_max_steps: 1,
+  relay_chat_continuation_abnormal_max_reasoning_bytes: 524288,
+  relay_chat_continuation_abnormal_min_reasoning_chars: 512,
+  relay_chat_continuation_missing_max_steps: 1,
+  relay_chat_continuation_missing_max_reasoning_bytes: 262144,
+  relay_chat_continuation_missing_min_reasoning_chars: 64,
 }
 
 export function OperationsSettings() {
