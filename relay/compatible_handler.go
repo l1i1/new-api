@@ -194,7 +194,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
-		if relaycommon.ChatContinuationStepsForRequest(info) > 0 {
+		if relaycommon.ChatContinuationStepsForRequest(info) > 0 ||
+			relaycommon.ChatAbnormalContinuationStepsForRequest(info) > 0 {
 			continuationBase = append([]byte(nil), jsonData...)
 		}
 
@@ -214,12 +215,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	// instruction, so the handler can stitch the rounds into one client response.
 	if len(continuationBase) > 0 {
 		steps := relaycommon.ChatContinuationStepsForRequest(info)
+		abnormalSteps := relaycommon.ChatAbnormalContinuationStepsForRequest(info)
 		base := continuationBase
 		adaptorRef := adaptor
-		info.ChatContinuation = &relaycommon.ChatContinuationConfig{
-			MaxSteps: steps,
-			Send: func(partialContent string, remainingTokens int) (*http.Response, error) {
-				continuationJSON, buildErr := openaichannel.BuildChatContinuationBody(base, partialContent, remainingTokens)
+		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
+			return func(partial string, remaining int) (*http.Response, error) {
+				continuationJSON, buildErr := build(base, partial, remaining)
 				if buildErr != nil {
 					return nil, buildErr
 				}
@@ -237,8 +238,21 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 					return nil, fmt.Errorf("continuation: adaptor returned %T", respAny)
 				}
 				return resp, nil
-			},
+			}
 		}
+		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}
+		if steps > 0 {
+			cfg.Send = send(openaichannel.BuildChatContinuationBody)
+		}
+		if abnormalSteps > 0 {
+			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
+				MaxSteps:          abnormalSteps,
+				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
+				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
+			}
+		}
+		info.ChatContinuation = cfg
 	}
 
 	var httpResp *http.Response

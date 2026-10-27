@@ -25,6 +25,11 @@ import (
 // was cut mid-sentence and a structured (for example numbered) output.
 const chatContinuationPrompt = "上一条回复因输出长度限制被截断。请严格从中断处继续，不要重复已输出的内容，不要添加任何前言或解释。"
 
+// chatThinkingContinuationPrompt is used by the abnormal-finish mode. The
+// captured reasoning is replayed as the assistant body because upstreams
+// ignore reasoning_content in the message history (verified 2026-10-27).
+const chatThinkingContinuationPrompt = "上面是你在上一轮被上游截断的思考过程（当时还没有开始输出正文）。请从中断处继续思考，不要重复已经写过的内容，完成思考后直接给出最终答案。"
+
 // BuildChatContinuationBody rebuilds the final upstream chat-completions body
 // into a continuation request: the original messages, the visible answer so
 // far as an assistant message, the continuation instruction, and the remaining
@@ -32,6 +37,18 @@ const chatContinuationPrompt = "上一条回复因输出长度限制被截断。
 // means the continuation inherits the same model, tools, sampling parameters
 // and channel-specific rewrites as the first round.
 func BuildChatContinuationBody(baseJSON []byte, partialContent string, remainingTokens int) ([]byte, error) {
+	return buildChatContinuationBody(baseJSON, partialContent, chatContinuationPrompt, remainingTokens)
+}
+
+// BuildChatThinkingContinuationBody rebuilds a request that resumes a cut-off
+// thinking round. The captured reasoning is placed in the assistant content
+// (not reasoning_content, which upstreams ignore) and the instruction asks the
+// model to continue from that point.
+func BuildChatThinkingContinuationBody(baseJSON []byte, reasoning string, remainingTokens int) ([]byte, error) {
+	return buildChatContinuationBody(baseJSON, reasoning, chatThinkingContinuationPrompt, remainingTokens)
+}
+
+func buildChatContinuationBody(baseJSON []byte, partialContent, instruction string, remainingTokens int) ([]byte, error) {
 	if remainingTokens <= 0 {
 		return nil, fmt.Errorf("continuation: remaining output budget is %d", remainingTokens)
 	}
@@ -47,11 +64,11 @@ func BuildChatContinuationBody(baseJSON []byte, partialContent string, remaining
 	if err != nil {
 		return nil, err
 	}
-	instruction, err := common.Marshal(map[string]any{"role": "user", "content": chatContinuationPrompt})
+	instructionMessage, err := common.Marshal(map[string]any{"role": "user", "content": instruction})
 	if err != nil {
 		return nil, err
 	}
-	rawMessages = append(rawMessages, json.RawMessage(assistantMessage), json.RawMessage(instruction))
+	rawMessages = append(rawMessages, json.RawMessage(assistantMessage), json.RawMessage(instructionMessage))
 	encodedMessages, err := common.Marshal(rawMessages)
 	if err != nil {
 		return nil, err
@@ -122,6 +139,106 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	return true
 }
 
+// chatAbnormalContinuationCandidate decides whether a stream that died with an
+// abnormal finish_reason can be resumed from its captured reasoning. It is the
+// 900s cut-off shape: no visible content, a large reasoning trace, an abnormal
+// finish, and a second upstream attempt available.
+func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls int) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Abnormal == nil {
+		return false
+	}
+	cfg := info.ChatContinuation.Abnormal
+	if cfg.Send == nil || cfg.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+		return false
+	}
+	if contentChars > 0 {
+		return false
+	}
+	minChars := cfg.MinReasoningChars
+	if minChars <= 0 {
+		minChars = 512
+	}
+	if reasoningChars < minChars {
+		return false
+	}
+	if info.StreamStatus == nil || !info.StreamStatus.ResponseFailed() {
+		return false
+	}
+	if !relaycommon.IsAbnormalFinishReason(info.StreamFinishReason) {
+		return false
+	}
+	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+		return false
+	}
+	return true
+}
+
+// runAbnormalChatContinuation resumes a cut-off thinking round. The captured
+// reasoning is replayed as the assistant body (upstreams ignore
+// reasoning_content in history); intermediate terminal/usage frames are
+// suppressed so the client sees one stream and one terminal frame.
+func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string) chatContinuationResult {
+	total := cloneUsage(baseUsage)
+	result := chatContinuationResult{usage: total, finish: info.StreamFinishReason}
+	cfg := info.ChatContinuation.Abnormal
+	contextText := reasoning
+	for step := 0; step < cfg.MaxSteps; step++ {
+		remaining := info.ClientMaxTokens - total.CompletionTokens
+		if remaining <= 0 {
+			break
+		}
+		resp, err := cfg.Send(contextText, remaining)
+		if err != nil {
+			logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
+			break
+		}
+		if resp == nil {
+			break
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d", resp.StatusCode))
+			break
+		}
+		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp)
+		_ = resp.Body.Close()
+		result.rounds++
+		if roundUsage != nil {
+			total = mergeContinuationUsage(total, roundUsage)
+		}
+		if finish != "" {
+			result.finish = finish
+		}
+		contextText += roundContent
+		if roundErr != nil {
+			logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
+			break
+		}
+		if !deltaSeen {
+			break
+		}
+		if finish == "" || relaycommon.IsAbnormalFinishReason(finish) || finish != "length" {
+			break
+		}
+	}
+	result.usage = total
+	return result
+}
+
+func cloneUsage(in *dto.Usage) *dto.Usage {
+	if in == nil {
+		return &dto.Usage{}
+	}
+	cloned := *in
+	return &cloned
+}
+
 type chatContinuationResult struct {
 	usage  *dto.Usage
 	finish string
@@ -133,7 +250,7 @@ type chatContinuationResult struct {
 // as they arrive; intermediate terminal frames and usage events are suppressed
 // because the client must see one continuous response with one terminal frame.
 func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, partial string) chatContinuationResult {
-	total := addChatContinuationUsage(nil, baseUsage)
+	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
@@ -158,7 +275,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		_ = resp.Body.Close()
 		result.rounds++
 		if roundUsage != nil {
-			total = addChatContinuationUsage(total, roundUsage)
+			total = mergeContinuationUsage(total, roundUsage)
 		}
 		if finish != "" {
 			result.finish = finish
@@ -283,9 +400,9 @@ func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, r
 	_ = sendStreamData(c, info, string(data), info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 }
 
-// addChatContinuationUsage accumulates the usage of independent continuation
-// rounds. Rounds are separate upstream requests, so prompt and completion
-// tokens add up; a nil total starts from the first round's snapshot.
+// addChatContinuationUsage accumulates the usage events inside ONE upstream
+// round (providers may repeat or split usage). It must not be used to combine
+// independent rounds: input tokens are billed once by mergeContinuationUsage.
 func addChatContinuationUsage(total, round *dto.Usage) *dto.Usage {
 	if round == nil {
 		return total
@@ -306,5 +423,42 @@ func addChatContinuationUsage(total, round *dto.Usage) *dto.Usage {
 	total.PromptTokensDetails.CacheWriteTokens += round.PromptTokensDetails.CacheWriteTokens
 	total.PromptTokensDetails.CachedCreationTokens += round.PromptTokensDetails.CachedCreationTokens
 	total.CompletionTokenDetails.ReasoningTokens += round.CompletionTokenDetails.ReasoningTokens
+	return total
+}
+
+// mergeContinuationUsage folds one continuation round into the settled totals.
+// Output tokens of every round are billable (they were forwarded to the
+// client), but prompt/input tokens belong to the original request only: the
+// continuation body replays the original input plus the reasoning we already
+// produced, and billing that again would double-charge input.
+func mergeContinuationUsage(total, round *dto.Usage) *dto.Usage {
+	if round == nil {
+		return total
+	}
+	if total == nil {
+		return cloneUsage(round)
+	}
+	total.CompletionTokens += round.CompletionTokens
+	total.OutputTokens += round.OutputTokens
+	total.CompletionTokenDetails.TextTokens += round.CompletionTokenDetails.TextTokens
+	total.CompletionTokenDetails.ReasoningTokens += round.CompletionTokenDetails.ReasoningTokens
+	total.CompletionTokenDetails.AudioTokens += round.CompletionTokenDetails.AudioTokens
+	total.CompletionTokenDetails.ImageTokens += round.CompletionTokenDetails.ImageTokens
+	if total.OutputTokensDetails != nil && round.OutputTokensDetails != nil {
+		total.OutputTokensDetails.TextTokens += round.OutputTokensDetails.TextTokens
+		total.OutputTokensDetails.ReasoningTokens += round.OutputTokensDetails.ReasoningTokens
+	}
+	total.TotalTokens = total.PromptTokens + total.CompletionTokens
+	// Settlement prefers BillingUsage when present. Rebuild the OpenAI-shaped
+	// copy from the merged top-level usage so the second round's output is
+	// billable too; any other semantic is dropped and settlement falls back to
+	// the merged top-level numbers.
+	if total.BillingUsage != nil {
+		if total.BillingUsage.OpenAIUsage != nil {
+			total.BillingUsage = dto.NewOpenAIChatBillingUsage(total)
+		} else {
+			total.BillingUsage = nil
+		}
+	}
 	return total
 }

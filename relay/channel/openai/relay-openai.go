@@ -179,6 +179,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var systemFingerprint string
 	var containStreamUsage bool
 	var responseTextBuilder strings.Builder
+	// Captured reasoning for the abnormal-finish continuation mode. The cap is
+	// enforced here so a 900s thinking round cannot grow process memory without
+	// bound; if the trace is truncated the continuation is skipped.
+	var reasoningTextBuilder strings.Builder
+	reasoningBytes := 0
+	reasoningTruncated := false
+	visibleContentChars := 0
 	var toolCount int
 	var usage = &dto.Usage{}
 	var lastStreamData string
@@ -264,6 +271,25 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 						usage = dto.MergeUsage(usage, streamResp.Usage)
 						containStreamUsage = true
 					}
+				}
+			}
+			if info.ChatContinuation != nil && info.ChatContinuation.Abnormal != nil {
+				limit := info.ChatContinuation.Abnormal.MaxReasoningBytes
+				if limit <= 0 {
+					limit = 512 * 1024
+				}
+				for _, choice := range streamResp.Choices {
+					visibleContentChars += len(choice.Delta.GetContentString())
+					reasoning := choice.Delta.GetReasoningContent()
+					if reasoning == "" {
+						continue
+					}
+					if reasoningBytes+len(reasoning) > limit {
+						reasoningTruncated = true
+						continue
+					}
+					reasoningTextBuilder.WriteString(reasoning)
+					reasoningBytes += len(reasoning)
 				}
 			}
 			// Apply provider-specific cache extraction before the previous
@@ -548,6 +574,29 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
+			}
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
+	// Abnormal-finish continuation (900s cut-off shape): the provider ended
+	// with finish_reason=error before any visible content, after emitting a long
+	// reasoning trace. Resume the thinking round inside the same client stream
+	// instead of surfacing the failure. Must run before the terminal/usage frame
+	// switch below, otherwise the client would receive the provider's error
+	// terminal frame and no continuation could repair it.
+	if streamAbnormalFinish != "" && !reasoningTruncated &&
+		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount) &&
+		len(streamFunctionCallNames) == 0 {
+		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String())
+		if result.rounds > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
 			}
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
