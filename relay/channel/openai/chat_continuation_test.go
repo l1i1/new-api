@@ -178,6 +178,9 @@ func TestOaiStreamHandlerRepeatsContinuationUntilFinish(t *testing.T) {
 	require.Contains(t, body, "A")
 	require.Contains(t, body, "B")
 	require.Contains(t, body, "C")
+	require.Contains(t, body, `"id":"chat_1"`)
+	require.NotContains(t, body, `"id":"chat_2"`, "capped rounds keep the first round's id")
+	require.NotContains(t, body, `"id":"chat_3"`)
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`))
 	require.Equal(t, 1, strings.Count(body, "[DONE]"))
 }
@@ -363,6 +366,8 @@ func TestOaiStreamHandlerContinuesThinkingAfterAbnormalFinish(t *testing.T) {
 
 	body := recorder.Body.String()
 	require.Contains(t, body, "最终答案")
+	require.Contains(t, body, `"id":"chat_1"`)
+	require.NotContains(t, body, `"id":"chat_2"`, "continuation deltas keep the first round's id")
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 	require.NotContains(t, body, `"finish_reason":"error"`, "the failed round's terminal frame is suppressed")
@@ -500,4 +505,17 @@ func TestOaiStreamHandlerSkipsThinkingContinuationWithoutReasoning(t *testing.T)
 	require.Zero(t, usage.TotalTokens)
 	require.Equal(t, 0, calls)
 	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
+}
+
+func TestRewriteContinuationChunkMeta(t *testing.T) {
+	meta := chatContinuationMeta{ID: "chat_1", Created: 111, Model: "kimi-k3.1-pro", SystemFingerprint: "fp_1"}
+	out := rewriteContinuationChunkMeta(`{"id":"chat_2","created":222,"model":"other","system_fingerprint":"fp_2","choices":[]}`, meta)
+	require.Contains(t, out, `"id":"chat_1"`)
+	require.Contains(t, out, `"created":111`)
+	require.Contains(t, out, `"model":"kimi-k3.1-pro"`)
+	require.Contains(t, out, `"system_fingerprint":"fp_1"`)
+	require.NotContains(t, out, "chat_2")
+
+	noFP := rewriteContinuationChunkMeta(`{"id":"chat_2","created":222,"model":"other","system_fingerprint":"fp_2"}`, chatContinuationMeta{ID: "chat_1", Created: 111, Model: "m"})
+	require.NotContains(t, noFP, "system_fingerprint", "fingerprint is removed when the first round had none")
 }

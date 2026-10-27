@@ -6,7 +6,7 @@
 
 1. 第一轮若 **正文 content 为空、已产生 reasoning**，网关不把上游错误终帧转给客户端；
 2. 把已捕获的 reasoning 作为 `assistant` 正文回传，并追加一条“从中断处继续思考、给最终答案”的指令；
-3. 在同一个客户端 SSE 流里转发第二轮的 reasoning/content，只发一个 `finish_reason=stop` 终帧；
+3. 在同一个客户端 SSE 流里转发第二轮的 reasoning/content，所有 delta 的 `id`/`created`/`model`/`system_fingerprint` 归一化为第一轮的值，只发一个 `finish_reason=stop` 终帧；
 4. 计费：输入 token 只计一次（第一轮 prompt）；两轮实际下发到客户端的 output token 都计费。
 
 不满足条件（有正文、reasoning 过短/被截断、工具调用、非流式、非 OpenAI chat、渠道未白名单）时保持原有行为：异常终帧透传 + 502 + 退款。

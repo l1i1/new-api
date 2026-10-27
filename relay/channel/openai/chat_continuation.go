@@ -183,7 +183,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 // reasoning is replayed as the assistant body (upstreams ignore
 // reasoning_content in history); intermediate terminal/usage frames are
 // suppressed so the client sees one stream and one terminal frame.
-func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string) chatContinuationResult {
+func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: info.StreamFinishReason}
 	cfg := info.ChatContinuation.Abnormal
@@ -206,7 +206,7 @@ func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, ba
 			logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d", resp.StatusCode))
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp)
+		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
 		_ = resp.Body.Close()
 		result.rounds++
 		if roundUsage != nil {
@@ -247,11 +247,22 @@ type chatContinuationResult struct {
 	contentChars int
 }
 
+// chatContinuationMeta carries the first round's envelope fields. Continuation
+// rounds are separate upstream requests with their own chunk ids, so every
+// forwarded delta is rewritten to the first round's id/created/model/fingerprint.
+// Clients must see one logical response, not a mid-stream id change.
+type chatContinuationMeta struct {
+	ID                string
+	Created           int64
+	Model             string
+	SystemFingerprint string
+}
+
 // runChatContinuation stitches up to MaxSteps continuation rounds into the
 // current client stream. Content/reasoning deltas of every round are forwarded
 // as they arrive; intermediate terminal frames and usage events are suppressed
 // because the client must see one continuous response with one terminal frame.
-func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, partial string) chatContinuationResult {
+func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, partial string, meta chatContinuationMeta) chatContinuationResult {
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
@@ -273,7 +284,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d", resp.StatusCode))
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp)
+		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
 		_ = resp.Body.Close()
 		result.rounds++
 		if roundUsage != nil {
@@ -305,7 +316,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 // returns that round's usage, terminal finish reason and visible content. The
 // terminal frame and usage events are not forwarded: the caller renders one
 // final frame with the merged usage.
-func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (usage *dto.Usage, finish string, content string, deltaSeen bool, err error) {
+func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) (usage *dto.Usage, finish string, content string, deltaSeen bool, err error) {
 	if resp == nil || resp.Body == nil {
 		return nil, "", "", false, fmt.Errorf("continuation response has no body")
 	}
@@ -356,6 +367,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		if stripErr != nil {
 			forwardData = data
 		}
+		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
 			return usage, finish, builder.String(), deltaSeen, sendErr
 		}
@@ -364,6 +376,41 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		return usage, finish, builder.String(), deltaSeen, scanErr
 	}
 	return usage, finish, builder.String(), deltaSeen, nil
+}
+
+// rewriteContinuationChunkMeta normalizes one continuation delta to the first
+// round's envelope. Empty first-round fields are left alone; the fingerprint is
+// deleted when the first round did not carry one, so clients cannot observe the
+// second upstream's value.
+func rewriteContinuationChunkMeta(data string, meta chatContinuationMeta) string {
+	if data == "" {
+		return data
+	}
+	var err error
+	if meta.ID != "" {
+		data, err = sjson.Set(data, "id", meta.ID)
+		if err != nil {
+			return data
+		}
+	}
+	if meta.Created != 0 {
+		data, err = sjson.Set(data, "created", meta.Created)
+		if err != nil {
+			return data
+		}
+	}
+	if meta.Model != "" {
+		data, err = sjson.Set(data, "model", meta.Model)
+		if err != nil {
+			return data
+		}
+	}
+	if meta.SystemFingerprint != "" {
+		data, _ = sjson.Set(data, "system_fingerprint", meta.SystemFingerprint)
+	} else {
+		data, _ = sjson.Delete(data, "system_fingerprint")
+	}
+	return data
 }
 
 // sendChatContinuationTerminal renders the single terminal frame for a
