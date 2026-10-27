@@ -112,7 +112,7 @@ func InitEnv() {
 	RelayTimeout = GetEnvOrDefault("RELAY_TIMEOUT", 0)
 	RelayIdleConnTimeout = GetEnvOrDefault("RELAY_IDLE_CONN_TIMEOUT", 90)
 	RelayResponseHeaderTimeout = GetEnvOrDefault("RELAY_RESPONSE_HEADER_TIMEOUT", 1800)
-	RelayStreamResponseHeaderTimeout = GetEnvOrDefault("RELAY_STREAM_RESPONSE_HEADER_TIMEOUT", 120)
+	RelayStreamResponseHeaderTimeout = GetEnvOrDefault("RELAY_STREAM_RESPONSE_HEADER_TIMEOUT", 300)
 	RelayTransportRetryBudgetSeconds = GetEnvOrDefault("RELAY_TRANSPORT_RETRY_BUDGET_SECONDS", 600)
 	RelayMaxIdleConns = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS", 500)
 	RelayMaxIdleConnsPerHost = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS_PER_HOST", 100)
