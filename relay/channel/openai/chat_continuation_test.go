@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -969,4 +970,104 @@ func TestOaiStreamHandlerContinuesThinkingAfterLengthCap(t *testing.T) {
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 	require.NotContains(t, body, `"finish_reason":"length"`, "the capped round's terminal frame is suppressed")
+}
+
+// TestOaiStreamHandlerLengthThinkingContinuationFailureKeepsTruncation checks
+// that a failed continuation leaves the ordinary output-cap behaviour intact:
+// one length terminal, first-round usage billed once, no recovered status.
+func TestOaiStreamHandlerLengthThinkingContinuationFailureKeepsTruncation(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		calls++
+		return nil, fmt.Errorf("upstream refused the continuation")
+	}, 2, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 10, usage.CompletionTokens, "a failed continuation still bills the first round")
+	body := recorder.Body.String()
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerSkipsLengthThinkingContinuationWithoutReasoning ensures a
+// cap with no captured reasoning keeps the plain truncation path.
+func TestOaiStreamHandlerSkipsLengthThinkingContinuationWithoutReasoning(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(`data: [DONE]` + "\n"), nil
+	}, 2, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.Equal(t, 0, calls, "no reasoning to resume")
+	require.Equal(t, 10, usage.CompletionTokens)
+	require.Equal(t, 1, strings.Count(recorder.Body.String(), `"finish_reason":"length"`))
+}
+
+// TestOaiStreamHandlerSkipsLengthThinkingContinuationWhenBudgetExhausted covers
+// a client that already spent its whole budget: nothing left to ask for.
+func TestOaiStreamHandlerSkipsLengthThinkingContinuationWhenBudgetExhausted(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":100,"total_tokens":105}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	calls := 0
+	c, info, _ := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(`data: [DONE]` + "\n"), nil
+	}, 2, 100, 1<<20)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.Equal(t, 0, calls)
+}
+
+// TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength covers a
+// continuation round that forwards content and then dies: the client already
+// read that content, so the response must end on a length terminal with the
+// merged usage instead of the first round's frame.
+func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"部分答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 2, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+	body := recorder.Body.String()
+	require.Contains(t, body, "部分答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "delivered content ends on a length terminal")
+	require.NotContains(t, body, `"finish_reason":"error"`)
+	require.Equal(t, 1, strings.Count(body, "[DONE]"))
 }

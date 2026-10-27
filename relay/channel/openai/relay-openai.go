@@ -695,17 +695,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		// Once a continuation round forwarded visible content the client is
+		// already reading that answer, so the response must end on a terminal
+		// frame consistent with what was delivered: an empty or abnormal finish
+		// is reported as "length" (an output-cap truncation) instead of falling
+		// through to the first round's terminal, which would contradict the
+		// streamed content and drop the continuation usage from the bill.
+		if result.rounds > 0 && result.contentChars > 0 {
+			finish := result.finish
+			if finish == "" || relaycommon.IsAbnormalFinishReason(finish) {
+				finish = "length"
+			}
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
-			info.StreamFinishReason = result.finish
+			info.StreamFinishReason = finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			common.SysLog(fmt.Sprintf("length thinking continuation recovered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			common.SysLog(fmt.Sprintf("length thinking continuation delivered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, finish)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
