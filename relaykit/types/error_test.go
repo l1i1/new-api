@@ -44,3 +44,19 @@ func TestUpstreamFailureMarkerDrivesAffinityEviction(t *testing.T) {
 	require.False(t, plainErr.ShouldEvictChannelAffinity())
 	require.False(t, (*NewAPIError)(nil).ShouldEvictChannelAffinity())
 }
+
+func TestTruncatedStreamMarkerEvictsAffinityWithoutSettlingUsage(t *testing.T) {
+	// A stream that ended without its terminal event proves the pinned upstream
+	// is broken, so the affinity binding must be dropped...
+	truncatedErr := NewOpenAIError(errors.New("upstream stream ended without a terminal finish_reason"),
+		ErrorCode("upstream_error"), 502, ErrOptionWithSkipRetry(), ErrOptionWithTruncatedStream())
+	require.True(t, truncatedErr.IsTruncatedStream())
+	require.True(t, truncatedErr.ShouldEvictChannelAffinity())
+
+	// ...but it is refunded rather than settled for the partial usage, so the
+	// settle helper must keep excluding it (the two markers are independent).
+	require.False(t, truncatedErr.SettlesObservedUsageAfterError())
+	emptyErr := NewOpenAIError(errors.New("empty"), ErrorCode("server_error"), 502, ErrOptionWithEmptyOutput())
+	require.True(t, emptyErr.SettlesObservedUsageAfterError())
+	require.False(t, emptyErr.IsTruncatedStream())
+}

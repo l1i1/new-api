@@ -90,16 +90,17 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	emptyOutput    bool
-	upstreamFailed bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err             error
+	RelayError      any
+	skipRetry       bool
+	recordErrorLog  *bool
+	emptyOutput     bool
+	upstreamFailed  bool
+	truncatedStream bool
+	errorType       ErrorType
+	errorCode       ErrorCode
+	StatusCode      int
+	Metadata        json.RawMessage
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -454,13 +455,41 @@ func (e *NewAPIError) IsUpstreamFailure() bool {
 	return e != nil && e.upstreamFailed
 }
 
+// ErrOptionWithTruncatedStream marks an error produced by a stream/body that
+// ended in a normal transport state but never delivered the protocol's terminal
+// event (for example a stream that reaches [DONE] without ever carrying a
+// finish_reason). The upstream is provably broken for this request, so the
+// channel affinity binding must be dropped; unlike an explicit in-band failure
+// the request is still refunded instead of settling the partial usage.
+func ErrOptionWithTruncatedStream() NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.truncatedStream = true
+	}
+}
+
+// IsTruncatedStream reports whether the response ended without its terminal
+// event. See ErrOptionWithTruncatedStream.
+func (e *NewAPIError) IsTruncatedStream() bool {
+	return e != nil && e.truncatedStream
+}
+
+// SettlesObservedUsageAfterError reports whether upstream-reported usage should
+// be settled when the request fails after the upstream already reported it.
+// Zero-output and explicit in-band failures settle observed usage (the provider
+// already charged for it); a truncated stream is refunded instead, so it is
+// deliberately absent here.
+func (e *NewAPIError) SettlesObservedUsageAfterError() bool {
+	return e.IsEmptyOutput() || e.IsUpstreamFailure()
+}
+
 // ShouldEvictChannelAffinity reports whether the error proves the pinned
 // upstream could not serve the request, so the affinity binding must be
-// dropped. Both zero-output streams and explicit in-band upstream failures
-// qualify; the client retries with the same affinity key and would otherwise
-// be pinned back to the same broken channel until the TTL expires.
+// dropped. Zero-output streams, explicit in-band upstream failures and streams
+// that ended without their terminal event all qualify; the client retries with
+// the same affinity key and would otherwise be pinned back to the same broken
+// channel until the TTL expires.
 func (e *NewAPIError) ShouldEvictChannelAffinity() bool {
-	return e.IsEmptyOutput() || e.IsUpstreamFailure()
+	return e.SettlesObservedUsageAfterError() || e.IsTruncatedStream()
 }
 
 func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {

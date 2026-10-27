@@ -63,6 +63,8 @@ func TestOaiStreamHandlerTreatsAbnormalFinishReasonAsFailure(t *testing.T) {
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
 			require.False(t, info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors())
+			require.True(t, err.ShouldEvictChannelAffinity(), "an abnormal finish must drop the affinity binding")
+			require.False(t, err.SettlesObservedUsageAfterError(), "an abnormal finish is refunded, not settled")
 		})
 	}
 }
@@ -95,6 +97,8 @@ func TestOpenaiHandlerTreatsAbnormalFinishReasonAsFailure(t *testing.T) {
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadGateway, err.StatusCode)
 	require.NotContains(t, recorder.Body.String(), "engine_overloaded")
+	require.True(t, err.ShouldEvictChannelAffinity())
+	require.False(t, err.SettlesObservedUsageAfterError())
 }
 
 func TestIsAbnormalFinishReason(t *testing.T) {
@@ -175,6 +179,8 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 			require.Empty(t, info.StreamFinishReason)
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
+			require.True(t, err.ShouldEvictChannelAffinity(), "a truncated stream must drop the affinity binding")
+			require.False(t, err.SettlesObservedUsageAfterError(), "a truncated stream is refunded, not settled")
 		})
 	}
 }

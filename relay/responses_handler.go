@@ -86,7 +86,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		// not refund a settled billing session. Only non-zero usage is settled --
 		// a zero-output truncation has nothing to bill.
 		if streamUsage, ok := usage.(*dto.Usage); ok && streamUsage != nil &&
-			streamUsage.TotalTokens > 0 && newAPIError.ShouldEvictChannelAffinity() {
+			streamUsage.TotalTokens > 0 && newAPIError.SettlesObservedUsageAfterError() {
 			service.PostTextConsumeQuota(c, info, streamUsage, []string{"incomplete upstream stream"})
 		}
 		// reset status code 重置状态码

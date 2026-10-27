@@ -133,3 +133,28 @@ func TestRecordChannelAffinity_RecordsSuccessfulRelay(t *testing.T) {
 	require.True(t, found, "a successful relay must bind the affinity key")
 	require.Equal(t, 137, got)
 }
+
+func TestEvictChannelAffinityOnUpstreamFailure_RemovesBindingForTruncatedStream(t *testing.T) {
+	ctx, cacheKey := buildChannelAffinityEvictContextForTest(t)
+	cache := getChannelAffinityCache()
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+
+	require.NoError(t, cache.SetWithTTL(cacheKey, 46, 600*time.Second))
+	_, found, err := cache.Get(cacheKey)
+	require.NoError(t, err)
+	require.True(t, found, "precondition: binding must exist")
+
+	// Mirrors the 2026-10-27 ch77 truncation: [DONE] and usage arrived, but no
+	// finish_reason ever did. The client retries with the same affinity key, so
+	// the binding must be dropped or the retry is pinned to the same channel.
+	truncatedErr := types.NewOpenAIError(
+		errors.New("upstream stream ended without a terminal finish_reason"),
+		types.ErrorCode("upstream_error"), 502,
+		types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream(),
+	)
+	require.True(t, EvictChannelAffinityOnUpstreamFailure(ctx, truncatedErr))
+
+	_, found, err = cache.Get(cacheKey)
+	require.NoError(t, err)
+	require.False(t, found, "truncated stream must evict the binding")
+}

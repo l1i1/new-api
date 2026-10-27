@@ -611,10 +611,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish != "" {
 		// The client has received the provider's own terminal frame, but the
 		// generation failed: surface it as a failed request so the controller
-		// refunds the reservation instead of settling it as a success.
+		// refunds the reservation instead of settling it as a success, and drop
+		// the channel affinity binding so a retry is not pinned to the same
+		// broken upstream again.
 		return usage, types.NewOpenAIError(
 			fmt.Errorf("upstream terminated the stream with finish_reason %q", streamAbnormalFinish),
-			types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+			types.ErrorCode("upstream_error"), http.StatusBadGateway,
+			types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream())
 	}
 
 	if !streamFinishSeen && streamMissingFinishMarksTruncation(info, isAudioModel) {
@@ -622,10 +625,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.StreamStatus.RecordError("upstream stream ended without a terminal finish_reason")
 		// Same contract as an abnormal finish reason: the client already holds the
 		// provider's bytes, but the generation never reached a terminal state, so
-		// the request must not settle as a success.
+		// the request must not settle as a success and the affinity binding must be
+		// dropped (otherwise the retry lands on the same truncating channel).
 		return usage, types.NewOpenAIError(
 			fmt.Errorf("upstream stream ended without a terminal finish_reason"),
-			types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+			types.ErrorCode("upstream_error"), http.StatusBadGateway,
+			types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream())
 	}
 
 	return usage, nil
@@ -776,7 +781,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if relaycommon.IsAbnormalFinishReason(choice.FinishReason) {
 			return &simpleResponse.Usage, types.NewOpenAIError(
 				fmt.Errorf("upstream returned finish_reason %q", choice.FinishReason),
-				types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+				types.ErrorCode("upstream_error"), http.StatusBadGateway,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream())
 		}
 	}
 

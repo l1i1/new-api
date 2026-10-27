@@ -254,7 +254,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			info.RelayMode == relayconstant.RelayModeCompletions
 		truncatedUpstream := info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() &&
 			info.ReceivedResponseCount > 0
-		rejectedAfterUsage := newApiErr.ShouldEvictChannelAffinity() &&
+		rejectedAfterUsage := newApiErr.SettlesObservedUsageAfterError() &&
 			streamUsage != nil && streamUsage.TotalTokens > 0
 		if isTextCompletion && streamUsage != nil && (truncatedUpstream || rejectedAfterUsage) {
 			containAudioTokens := streamUsage.CompletionTokenDetails.AudioTokens > 0 || streamUsage.PromptTokensDetails.AudioTokens > 0
