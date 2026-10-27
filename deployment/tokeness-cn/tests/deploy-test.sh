@@ -513,6 +513,10 @@ assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi
 assert_not_contains "$release_case/state/modify-args.txt" "Key NODE_NAME"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.6.Key NODE_TYPE"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.7.Key SHUTDOWN_TIMEOUT_SECONDS"
+# Per-instance NODE_NAME is derived at container start from the ECI hostname.
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.Command.1 /bin/sh"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.Command.2 -c"
+assert_contains "$release_case/state/modify-args.txt" 'export NODE_NAME="$(hostname)"; exec /new-api'
 assert_contains "$release_case/state/modify-args.txt" "--Cpu 2"
 assert_contains "$release_case/state/modify-args.txt" "--Memory 4"
 assert_contains "$release_case/state/modify-args.txt" "--SecurityGroupId sg-test"

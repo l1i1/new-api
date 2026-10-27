@@ -1227,11 +1227,12 @@ restore_scaling_config() {
 # is the new-api-master container on the backup entry ECS (NODE_TYPE=master) and
 # is rolled by sync_master_container / bootstrap-master-ecs.sh.
 #
-# NODE_NAME is deliberately NOT injected into the ECI tier: every replica used to
-# receive the same fixed name (new-api-ml000), so the panel instance list showed
-# one shared worker row instead of one row per replica. Without it the app falls
-# back to the container hostname, which is unique per ECI instance. The ECS
-# master keeps its stable NODE_NAME from bootstrap-master-ecs.sh.
+# NODE_NAME is deliberately NOT injected as a fixed env: the scaling config is
+# shared by every replica, so one value would collapse the panel instance list.
+# Instead the container entrypoint below exports NODE_NAME from its own hostname
+# (unique per ECI instance) and execs the real binary, so the app sees a manually
+# configured, per-instance name and the panel warning goes away. The ECS master
+# keeps its stable NODE_NAME from bootstrap-master-ecs.sh.
 # Values overridable via ECI_NODE_TYPE.
 inject_node_identity_envs() {
   local snapshot="$1"
@@ -1282,6 +1283,11 @@ def inject(envs):
 for container in config.get("Containers") or []:
     if container.get("Name") == "newapi":
         container["EnvironmentVars"] = inject(container.get("EnvironmentVars") or [])
+        # Per-instance NODE_NAME without per-instance env: the scaling config is
+        # shared, so derive it from the container hostname at startup. exec keeps
+        # the app as PID 1 so SIGTERM/shutdown handling is unchanged.
+        container["Command"] = ["/bin/sh", "-c"]
+        container["Arg"] = ["export NODE_NAME=\"$(hostname)\"; exec /new-api"]
 print(json.dumps(snapshot, ensure_ascii=False))
 '
 }
