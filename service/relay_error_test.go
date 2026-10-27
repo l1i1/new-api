@@ -145,6 +145,8 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "status outside retry rules", err: upstream(http.StatusRequestTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}},
 		{name: "upstream force retry status", err: upstream(http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
 		{name: "malformed upstream response retries", err: types.NewOpenAIError(errors.New("invalid upstream JSON"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError), retries: 1, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
+		{name: "transport failure retries", err: types.NewError(errors.New("net/http: timeout awaiting response headers"), types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed")), retries: 1, want: PolicyDecision{Action: "retry", Reason: "transport_error", Source: "system"}},
+		{name: "transport failure respects attempt budget", err: types.NewError(errors.New("net/http: timeout awaiting response headers"), types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed")), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		{name: "local force retry status stays local", err: types.NewErrorWithStatusCode(errors.New("invalid request"), types.ErrorCodeInvalidRequest, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}},
 		{name: "attempt budget exhausted", err: upstream(http.StatusTooManyRequests), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		{name: "always skipped status", err: upstream(http.StatusGatewayTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
@@ -171,6 +173,25 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			assert.Equal(t, tc.want.Action == "retry", ShouldRetryRelayError(c, tc.err, tc.retries))
 		})
 	}
+}
+
+// TestDecideRelayRetryTransportBudgetExhausted guards the wall-clock bound on a
+// chain of transport failures: eight retries against silent upstreams must not
+// become attempt-count × first-byte-timeout of waiting for the client.
+func TestDecideRelayRetryTransportBudgetExhausted(t *testing.T) {
+	previous := common.RelayTransportRetryBudgetSeconds
+	common.RelayTransportRetryBudgetSeconds = 600
+	t.Cleanup(func() { common.RelayTransportRetryBudgetSeconds = previous })
+
+	transportErr := types.NewError(errors.New("net/http: timeout awaiting response headers"), types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	RequestPolicy(c).StartedAt = time.Now().Add(-11 * time.Minute)
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "transport_retry_budget_exhausted", Source: "system"}, DecideRelayRetry(c, transportErr, 3))
+
+	underBudget, _ := gin.CreateTestContext(httptest.NewRecorder())
+	RequestPolicy(underBudget).StartedAt = time.Now()
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "transport_error", Source: "system"}, DecideRelayRetry(underBudget, transportErr, 3))
 }
 
 func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {

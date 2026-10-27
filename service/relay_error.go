@@ -91,6 +91,27 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if err.GetErrorType() == types.ErrorTypeNewAPIError && isLocalFinalRefusal(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
+	// A transport failure never produced an upstream verdict: the attempt did not
+	// reach the channel's answer, so another attempt can still serve the request.
+	// The motivating case is the streaming response-header budget
+	// (RELAY_STREAM_RESPONSE_HEADER_TIMEOUT): the upstream accepted the request
+	// and then sent nothing for the whole budget, and before this branch the
+	// request ended with a local 500 while the retry budget was untouched.
+	// Retrying here stays bounded by the attempt budget checked above and by the
+	// never-retry rules before this point; a client disconnect is caught at the
+	// top of the function (request_context_done) and never reaches here.
+	if err.GetErrorCode() == types.ErrorCodeDoRequestFailed {
+		// A chain of silent upstreams must not turn into attempt-count × first-byte
+		// timeout of wall clock. The budget is measured from the first attempt
+		// selection (the policy state is created there), so it bounds this failure
+		// class only; a request that is actually streaming keeps its own budget.
+		if budget := time.Duration(common.RelayTransportRetryBudgetSeconds) * time.Second; budget > 0 {
+			if elapsed := time.Since(RequestPolicy(c).StartedAt); elapsed >= budget {
+				return PolicyDecision{Action: "stop", Reason: "transport_retry_budget_exhausted", Source: "system"}
+			}
+		}
+		return PolicyDecision{Action: "retry", Reason: "transport_error", Source: "system"}
+	}
 	// A malformed upstream response can succeed on another channel. Local
 	// conversion failures carry an explicit skip-retry marker instead.
 	// An operator-configured keyword is an explicit channel capability signal;

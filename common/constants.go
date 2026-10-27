@@ -176,6 +176,26 @@ var RelayIdleConnTimeout int // unit is second
 // ResponseHeaderTimeout only bounds the wait for the response headers; once the
 // headers arrive, streaming is unaffected.
 var RelayResponseHeaderTimeout int // unit is second
+
+// RelayStreamResponseHeaderTimeout is the response-header budget applied to
+// streaming attempts only. A streaming upstream is expected to start the stream
+// quickly; one that accepts the request and then sends no header for this long
+// is a transport failure the retry loop can serve from another channel, and
+// waiting the general budget (1800s) burns the client's time for an answer that
+// may never come. Non-streaming attempts keep RelayResponseHeaderTimeout because
+// an adaptor may legitimately return headers only after the whole generation.
+//
+// 0 keeps the general value for streaming too.
+var RelayStreamResponseHeaderTimeout int // unit is second
+
+// RelayTransportRetryBudgetSeconds bounds the wall-clock time one request may
+// spend on transport failures (do_request_failed) before the retry loop stops.
+// Each streaming attempt can spend RelayStreamResponseHeaderTimeout waiting for a
+// first byte, so a pool of silent upstreams would otherwise turn one request into
+// attempt-count × first-byte-timeout of waiting. The attempt count still bounds
+// the loop; this budget only limits how much wall-clock time that class of
+// failure may consume. 0 disables the budget.
+var RelayTransportRetryBudgetSeconds int // unit is second
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
 

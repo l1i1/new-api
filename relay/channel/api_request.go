@@ -617,6 +617,22 @@ func nonStreamKeepAliveApplies(info *common.RelayInfo, settings *operation_setti
 	return true
 }
 
+// relayStreamResponseHeaderTimeout returns the response-header (time-to-first
+// byte) budget this attempt should use. Streaming attempts get the tighter
+// streaming budget so a silent upstream fails over inside the retry window;
+// non-streaming attempts keep the general budget because an adaptor may
+// legitimately return headers only after the whole generation. 0 means "use the
+// shared default client".
+func relayStreamResponseHeaderTimeout(info *common.RelayInfo) int {
+	if info == nil || !info.IsStream {
+		return 0
+	}
+	if common2.RelayStreamResponseHeaderTimeout <= 0 {
+		return 0
+	}
+	return common2.RelayStreamResponseHeaderTimeout
+}
+
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
@@ -628,7 +644,11 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 }
 
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
-	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+	client, err := service.GetHttpClientWithProxySettingsAndResponseHeaderTimeout(
+		info.ChannelSetting.Proxy,
+		info.ChannelSetting,
+		relayStreamResponseHeaderTimeout(info),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
