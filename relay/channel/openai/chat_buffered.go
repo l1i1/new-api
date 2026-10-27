@@ -26,8 +26,8 @@ import (
 // RELAY_RESPONSE_HEADER_TIMEOUT, because the relay waits for response headers
 // and a non-streaming upstream sends none until the entire answer exists. That
 // ceiling cut real customer traffic: a 29m55s non-streaming request returned 200,
-// while a sibling that needed slightly longer hit the 1800s limit and failed with
-// nothing to show for it. Once the upstream streams, the header wait ends
+// while a sibling that needed slightly longer hit the response-header limit of the
+// time (1800s) and failed with nothing to show for it. Once the upstream streams, the header wait ends
 // immediately ("once the headers arrive, streaming is unaffected"), the relay can
 // tell "slow to start" from "hung", and a failure before the buffer completes
 // leaves the client response uncommitted - so the ordinary retry loop fails over

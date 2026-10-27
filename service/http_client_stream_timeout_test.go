@@ -20,7 +20,7 @@ func TestStreamResponseHeaderTimeoutClientVariants(t *testing.T) {
 	withRelayHTTPTransportSettings(t)
 	prevGeneral := common.RelayResponseHeaderTimeout
 	prevStream := common.RelayStreamResponseHeaderTimeout
-	common.RelayResponseHeaderTimeout = 1800
+	common.RelayResponseHeaderTimeout = 3600
 	common.RelayStreamResponseHeaderTimeout = 120
 	t.Cleanup(func() {
 		common.RelayResponseHeaderTimeout = prevGeneral
@@ -28,7 +28,7 @@ func TestStreamResponseHeaderTimeoutClientVariants(t *testing.T) {
 		ResetProxyClientCache()
 	})
 
-	assert.Equal(t, 1800*time.Second, newRelayHTTPTransportWithResponseHeaderTimeout(common.RelayResponseHeaderTimeout).ResponseHeaderTimeout)
+	assert.Equal(t, 3600*time.Second, newRelayHTTPTransportWithResponseHeaderTimeout(common.RelayResponseHeaderTimeout).ResponseHeaderTimeout)
 	assert.Equal(t, 120*time.Second, newRelayHTTPTransportWithResponseHeaderTimeout(common.RelayStreamResponseHeaderTimeout).ResponseHeaderTimeout)
 
 	stream, err := GetHttpClientWithProxySettingsAndResponseHeaderTimeout("", dto.ChannelSettings{}, common.RelayStreamResponseHeaderTimeout)

@@ -181,8 +181,9 @@ var RelayResponseHeaderTimeout int // unit is second
 // streaming attempts only. A streaming upstream is expected to start the stream
 // quickly; one that accepts the request and then sends no header for this long
 // is a transport failure the retry loop can serve from another channel, and
-// waiting the general budget (1800s) burns the client's time for an answer that
-// may never come. Non-streaming attempts keep RelayResponseHeaderTimeout because
+// waiting the general budget (RELAY_RESPONSE_HEADER_TIMEOUT, default 3600s)
+// burns the client's time for an answer that may never come. Non-streaming
+// attempts keep RelayResponseHeaderTimeout because
 // an adaptor may legitimately return headers only after the whole generation.
 //
 // 0 keeps the general value for streaming too.
