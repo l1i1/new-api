@@ -512,20 +512,43 @@ func mergeContinuationUsage(total, round *dto.Usage) *dto.Usage {
 	return total
 }
 
+func closeLateThinkingContinuationResponse(result <-chan thinkingContinuationSendResult) {
+	r := <-result
+	if r.resp != nil && r.resp.Body != nil {
+		_ = r.resp.Body.Close()
+	}
+}
+
+// writeThinkingContinuationPing writes an SSE comment without going through
+// helper.PingData: the ping shares the request with the in-flight upstream call,
+// and PingData touches RelayInfo counters that the sender may also touch. The
+// comment only needs the client writer.
+func writeThinkingContinuationPing(c *gin.Context) error {
+	if c == nil || c.Writer == nil {
+		return nil
+	}
+	if _, err := c.Writer.WriteString(": PING\n\n"); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return nil
+}
+
 // sendThinkingContinuationWithKeepAlive issues one continuation upstream call
 // while writing SSE ping comments, so a client does not sit silent during the
 // second attempt's prefill/header wait. The ping goroutine owns the client
 // writer until Send returns; body deltas are only forwarded after that, so the
 // writer is never touched concurrently.
+type thinkingContinuationSendResult struct {
+	resp *http.Response
+	err  error
+}
+
 func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
-	type sendResult struct {
-		resp *http.Response
-		err  error
-	}
-	result := make(chan sendResult, 1)
+	result := make(chan thinkingContinuationSendResult, 1)
 	go func() {
 		resp, err := cfg.Send(content, remaining)
-		result <- sendResult{resp: resp, err: err}
+		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -534,16 +557,12 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.Chat
 		case r := <-result:
 			return r.resp, r.err
 		case <-ticker.C:
-			if err := helper.PingData(c); err != nil {
+			if err := writeThinkingContinuationPing(c); err != nil {
+				go closeLateThinkingContinuationResponse(result)
 				return nil, err
 			}
 		case <-c.Request.Context().Done():
-			go func() {
-				r := <-result
-				if r.resp != nil && r.resp.Body != nil {
-					_ = r.resp.Body.Close()
-				}
-			}()
+			go closeLateThinkingContinuationResponse(result)
 			return nil, c.Request.Context().Err()
 		}
 	}
