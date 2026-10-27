@@ -216,6 +216,7 @@ func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, ba
 			result.finish = finish
 		}
 		contextText += roundContent
+		result.contentChars += len(roundContent)
 		if roundErr != nil {
 			logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
 			break
@@ -240,9 +241,10 @@ func cloneUsage(in *dto.Usage) *dto.Usage {
 }
 
 type chatContinuationResult struct {
-	usage  *dto.Usage
-	finish string
-	rounds int
+	usage        *dto.Usage
+	finish       string
+	rounds       int
+	contentChars int
 }
 
 // runChatContinuation stitches up to MaxSteps continuation rounds into the

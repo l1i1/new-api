@@ -421,3 +421,29 @@ func TestOaiStreamHandlerFallsBackWhenThinkingContinuationFails(t *testing.T) {
 	require.Equal(t, 1, calls)
 	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
 }
+
+// TestOaiStreamHandlerRejectsThinkingContinuationWithoutVisibleAnswer keeps a
+// stop frame from being reported as a delivered answer when the resumed round
+// produced only reasoning and no visible content.
+func TestOaiStreamHandlerRejectsThinkingContinuationWithoutVisibleAnswer(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	reasoningOnlyRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"还在想"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(reasoningOnlyRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err, "reasoning-only continuation is not a delivered answer")
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
+}

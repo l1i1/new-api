@@ -591,7 +591,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount) &&
 		len(streamFunctionCallNames) == 0 {
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String())
-		if result.rounds > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
