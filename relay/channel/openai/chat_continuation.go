@@ -193,7 +193,7 @@ func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, ba
 		if remaining <= 0 {
 			break
 		}
-		resp, err := cfg.Send(contextText, remaining)
+		resp, err := sendThinkingContinuationWithKeepAlive(c, cfg, contextText, remaining)
 		if err != nil {
 			logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
 			break
@@ -463,4 +463,41 @@ func mergeContinuationUsage(total, round *dto.Usage) *dto.Usage {
 		}
 	}
 	return total
+}
+
+// sendThinkingContinuationWithKeepAlive issues one continuation upstream call
+// while writing SSE ping comments, so a client does not sit silent during the
+// second attempt's prefill/header wait. The ping goroutine owns the client
+// writer until Send returns; body deltas are only forwarded after that, so the
+// writer is never touched concurrently.
+func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
+	type sendResult struct {
+		resp *http.Response
+		err  error
+	}
+	result := make(chan sendResult, 1)
+	go func() {
+		resp, err := cfg.Send(content, remaining)
+		result <- sendResult{resp: resp, err: err}
+	}()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case r := <-result:
+			return r.resp, r.err
+		case <-ticker.C:
+			if err := helper.PingData(c); err != nil {
+				return nil, err
+			}
+		case <-c.Request.Context().Done():
+			go func() {
+				r := <-result
+				if r.resp != nil && r.resp.Body != nil {
+					_ = r.resp.Body.Close()
+				}
+			}()
+			return nil, c.Request.Context().Err()
+		}
+	}
 }

@@ -47,7 +47,7 @@
 ## 已知边界 / 未做
 
 - 只处理 **content=0 + reasoning** 的形态；已有部分正文的异常截断不在此模式（需另设计）。
-- 两轮之间没有独立心跳；第二轮首包前客户端可能静默（上游首包通常数秒到数十秒）。
+- 第二轮等待上游响应头期间每 10s 写一条 SSE ping（`sendThinkingContinuationWithKeepAlive`），避免客户端在 prefill 阶段静默；进入正文后由数据帧续命。
 - 续写轮再失败或只产出 reasoning、没有可见正文：回落原有异常失败路径（不按成功计费）。
 - 客户端在续写过程中断开：按已观测用量计费并返回成功（与普通流的 client_gone 口径一致）。
 - 原生 `/v1/responses`、Claude、Gemini 格式不在本模式范围。
