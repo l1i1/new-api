@@ -520,6 +520,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if !clientGone {
 			undeliveredReason := relaycommon.UndeliveredStreamPrefix + string(info.StreamStatus.EndReason)
 			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 			terminationErr := info.StreamStatus.EndError
 			if terminationErr == nil {
 				terminationErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)
@@ -768,6 +769,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 	if undeliveredReason != "" {
 		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+		service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {

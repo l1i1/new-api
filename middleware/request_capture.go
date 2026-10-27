@@ -64,6 +64,16 @@ func (w *captureResponseWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+// captureEffectiveStatus is what the rule's status filter and the stored payload should use:
+// the HTTP status unless the relay recorded a more severe failure of its own. A truncated stream
+// has already sent 200, so only the relay marker can make it visible to a 5xx rule.
+func captureEffectiveStatus(c *gin.Context, writerStatus int) int {
+	if abnormal := service.CaptureAbnormalStatus(c); abnormal > writerStatus {
+		return abnormal
+	}
+	return writerStatus
+}
+
 // RequestCaptureMiddleware is installed after authentication and before the relay handlers, so the
 // token is known, the body has not been consumed yet, and every protocol on the group is covered by
 // one implementation instead of one per relay format.
@@ -94,7 +104,11 @@ func RequestCaptureMiddleware() gin.HandlerFunc {
 		// reason: a rule that watches failures must not spend its limit on successes. Deciding
 		// before the request runs would consume the window on traffic the operator never asked for
 		// and leave nothing for the errors it exists to catch.
-		if !service.CaptureStatusAllowed(rule, writer.status) {
+		// A stream that was cut off after its headers went out still reads as 200 here; the relay
+		// records the real failure status in the context, and the rule's status filter must see it
+		// or the abnormal-traffic rule would silently skip exactly the requests it exists for.
+		effectiveStatus := captureEffectiveStatus(c, writer.status)
+		if !service.CaptureStatusAllowed(rule, effectiveStatus) {
 			return
 		}
 		budgetCtx, cancelBudget := context.WithTimeout(context.Background(), 3*time.Second)
@@ -129,7 +143,7 @@ func RequestCaptureMiddleware() gin.HandlerFunc {
 			payload.ResponseBody = string(writer.body)
 			payload.ResponseTruncated = writer.truncated
 		}
-		payload.ResponseStatus = writer.status
+		payload.ResponseStatus = effectiveStatus
 		go func() {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

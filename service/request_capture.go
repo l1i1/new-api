@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/gin-gonic/gin"
 )
 
 // Targeted request capture.
@@ -58,6 +59,32 @@ type RequestCapturePayload struct {
 	ResponseHeaders   map[string]string `json:"response_headers,omitempty"`
 	ResponseBody      string            `json:"response_body,omitempty"`
 	ResponseTruncated bool              `json:"response_body_truncated,omitempty"`
+}
+
+// captureAbnormalStatusKey carries the relay-level failure status of a response whose HTTP
+// status is already committed as 200 (a stream that was cut off after its headers went out).
+// The capture middleware runs below the relay handler, so it cannot see the relay's error
+// classification; without this marker a truncated stream looks like a successful 200 and the
+// rule that exists to catch failures would never fire for the most important failure shape.
+const captureAbnormalStatusKey = "capture_abnormal_status"
+
+// MarkCaptureAbnormalStatus records that the relay ended this response with a failure status.
+// Only 5xx counts: client errors (400/429) are the caller's own doing and must stay out of the
+// abnormal-traffic captures.
+func MarkCaptureAbnormalStatus(c *gin.Context, status int) {
+	if c == nil || status < 500 {
+		return
+	}
+	c.Set(captureAbnormalStatusKey, status)
+}
+
+// CaptureAbnormalStatus returns the relay-recorded failure status, or 0 when the response ended
+// the way its HTTP status says it did.
+func CaptureAbnormalStatus(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	return c.GetInt(captureAbnormalStatusKey)
 }
 
 var captureRegexCache sync.Map // pattern -> *regexp.Regexp

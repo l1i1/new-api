@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -108,4 +109,25 @@ func TestCaptureResponseWriterKeepsHijackAndFlush(t *testing.T) {
 	w.Write([]byte("data: hello\n\n"))
 	require.NotPanics(t, func() { asWriter.Flush() })
 	require.Equal(t, "data: hello\n\n", rec.Body.String())
+}
+
+func TestCaptureEffectiveStatusUsesRelayAbnormalMarker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	require.Equal(t, http.StatusOK, captureEffectiveStatus(c, http.StatusOK),
+		"without a relay marker the status the client saw is the truth")
+
+	service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+	require.Equal(t, http.StatusBadGateway, captureEffectiveStatus(c, http.StatusOK),
+		"a stream cut after its headers went out must still be visible to a 5xx rule")
+
+	service.MarkCaptureAbnormalStatus(c, http.StatusTooManyRequests)
+	require.Equal(t, http.StatusBadGateway, captureEffectiveStatus(c, http.StatusOK),
+		"client errors must not overwrite a relay-recorded failure")
+
+	clean, _ := gin.CreateTestContext(httptest.NewRecorder())
+	service.MarkCaptureAbnormalStatus(clean, http.StatusTooManyRequests)
+	require.Zero(t, service.CaptureAbnormalStatus(clean),
+		"429 is the caller's doing and must never enter abnormal-traffic captures")
 }
