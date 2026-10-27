@@ -114,6 +114,8 @@ func InitEnv() {
 	RelayResponseHeaderTimeout = GetEnvOrDefault("RELAY_RESPONSE_HEADER_TIMEOUT", 3600)
 	RelayStreamResponseHeaderTimeout = GetEnvOrDefault("RELAY_STREAM_RESPONSE_HEADER_TIMEOUT", 300)
 	RelayTransportRetryBudgetSeconds = GetEnvOrDefault("RELAY_TRANSPORT_RETRY_BUDGET_SECONDS", 600)
+	ChatContinuationMaxSteps = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_MAX_STEPS", 0)
+	ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_CHANNELS", ""))
 	RelayMaxIdleConns = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS", 500)
 	RelayMaxIdleConnsPerHost = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS_PER_HOST", 100)
 

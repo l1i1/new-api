@@ -25,6 +25,9 @@ import (
 
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	// A previous attempt of the same request must not leak its continuation hook
+	// into this attempt (the channel whitelist can differ between attempts).
+	info.ChatContinuation = nil
 
 	textReq, ok := info.Request.(*dto.GeneralOpenAIRequest)
 	if !ok {
@@ -129,6 +132,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		info.RelayFormat == types.RelayFormatOpenAI
 
 	var requestBody io.Reader
+	// continuationBase is the final upstream body snapshot used to build
+	// transparent continuation rounds for an output-capped stream. Nil unless
+	// the feature is enabled and this channel is whitelisted.
+	var continuationBase []byte
 
 	if passThroughRequestBody {
 		requestBody, err = getPassThroughRequestBody(c, info)
@@ -187,6 +194,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
+		if relaycommon.ChatContinuationStepsForRequest(info) > 0 {
+			continuationBase = append([]byte(nil), jsonData...)
+		}
+
 		body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -194,6 +205,40 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		defer closer.Close()
 		jsonData = nil
 		requestBody = body
+	}
+
+	// A provider-side output cap can end a chat stream with finish_reason=length
+	// while the client still has budget left. When the feature is enabled for this
+	// channel, hand the stream handler a sender that replays the same final
+	// upstream body with the visible answer prefix plus the continuation
+	// instruction, so the handler can stitch the rounds into one client response.
+	if len(continuationBase) > 0 {
+		steps := relaycommon.ChatContinuationStepsForRequest(info)
+		base := continuationBase
+		adaptorRef := adaptor
+		info.ChatContinuation = &relaycommon.ChatContinuationConfig{
+			MaxSteps: steps,
+			Send: func(partialContent string, remainingTokens int) (*http.Response, error) {
+				continuationJSON, buildErr := openaichannel.BuildChatContinuationBody(base, partialContent, remainingTokens)
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				body, bodyCloser, bodyErr := relaycommon.NewOutboundJSONBody(continuationJSON)
+				if bodyErr != nil {
+					return nil, bodyErr
+				}
+				defer bodyCloser.Close()
+				respAny, requestErr := adaptorRef.DoRequest(c, info, body)
+				if requestErr != nil {
+					return nil, requestErr
+				}
+				resp, ok := respAny.(*http.Response)
+				if !ok || resp == nil {
+					return nil, fmt.Errorf("continuation: adaptor returned %T", respAny)
+				}
+				return resp, nil
+			},
+		}
 	}
 
 	var httpResp *http.Response
