@@ -467,23 +467,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// event as scanner_error whenever the cancelled request context closes the
 		// upstream body first, so the request context is the authoritative signal.
 		return usage, nil
-
-		terminationErr := info.StreamStatus.EndError
-		if terminationErr == nil {
-			terminationErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)
-		} else {
-			terminationErr = fmt.Errorf("upstream stream terminated (%s): %w", info.StreamStatus.EndReason, terminationErr)
-		}
-		options := make([]types.NewAPIErrorOptions, 0, 1)
-		if c.Writer.Written() || info.ReceivedResponseCount > 0 {
-			options = append(options, types.ErrOptionWithSkipRetry())
-		}
-		return usage, types.NewOpenAIError(
-			terminationErr,
-			types.ErrorCode("server_error"),
-			http.StatusBadGateway,
-			options...,
-		)
 	}
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
