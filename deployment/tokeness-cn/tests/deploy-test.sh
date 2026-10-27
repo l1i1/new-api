@@ -28,6 +28,13 @@ assert_not_contains() {
   fi
 }
 
+# DescribeScalingInstances defaults to PageSize=10; a 2x rollout has more
+# instances than that and the old page-based count made every one-shot cutover
+# time out with "have 10" while all instances were healthy.
+if ! grep -q 'DescribeScalingInstances.*--PageSize 100' "$DEPLOY_SCRIPT"; then
+  fail "deploy.sh must request a page large enough for the 2x rollout fleet"
+fi
+
 # aliyun CLI 3.x silently ignores the camelCase --RegionId on eci/vpc/ess and
 # then dies with "region can't be empty", which broke EIP->bandwidth-package
 # convergence without failing the rollout. Only the lowercase flag works.

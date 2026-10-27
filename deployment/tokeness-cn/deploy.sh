@@ -641,7 +641,11 @@ image_ref() {
 }
 
 scaling_instances_json() {
-  aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" | tr -d '\r'
+  # DescribeScalingInstances is paginated (default PageSize=10). A rollout
+  # temporarily runs at 2x the steady fleet, so the default page silently hid
+  # instances and made wait_healthy_instances time out with "have 10" while all
+  # requested instances were healthy (2026-10-27 release .73).
+  aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" --PageSize 100 | tr -d '\r'
 }
 
 in_service_instance_ids() {
@@ -2468,7 +2472,7 @@ REMOTE_CAP
 wait_healthy_instances() {
   local want="$1" tries="${2:-40}" i=0 got
   while [ "$i" -lt "$tries" ]; do
-    got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" \
+    got="$(aliyun_cmd ess DescribeScalingInstances --ScalingGroupId "$SCALING_GROUP_ID" --region "$ALIYUN_REGION" --PageSize 100 \
       | jq -r '[.ScalingInstances.ScalingInstance[] | select(.LifecycleState=="InService" and .HealthStatus=="Healthy")] | length' | tr -d '\r')" \
       || got="0"
     if [ "$got" -ge "$want" ]; then
