@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -119,6 +120,10 @@ func TestOaiStreamHandlerStitchesTransparentContinuation(t *testing.T) {
 	require.Equal(t, 4, usage.CompletionTokens)
 	require.Equal(t, 14, usage.PromptTokens)
 	require.Equal(t, 18, usage.TotalTokens)
+	// A successful continuation is an ordinary delivered response: settlement
+	// bills the merged usage, so no undelivered marker may be set.
+	require.Empty(t, info.UndeliveredReason)
+	require.True(t, info.StreamStatus.IsNormalEnd())
 
 	body := recorder.Body.String()
 	require.Contains(t, body, "1、2、")
@@ -207,4 +212,40 @@ func secondContinuationRoundForTest() string {
 		`data: [DONE]`,
 		``,
 	}, "\n")
+}
+
+// TestOaiStreamHandlerZeroChargesContinuationAfterClientGone pins the billing
+// interaction: if the caller disconnects while a continuation round is running,
+// the merged usage must not be settled as a success. The first round's capped
+// terminal frame is suppressed, so only this explicit check prevents a charge
+// for an answer nobody received.
+func TestOaiStreamHandlerZeroChargesContinuationAfterClientGone(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"1、2、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"3、4、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		cancel() // the caller walks away while the continuation round is running
+		return continuationSSEResponse(secondRound), nil
+	}, 2, 20)
+	c.Request = c.Request.WithContext(ctx)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a client-gone continuation is not an upstream failure")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an undelivered continuation settles zero usage")
+	require.Equal(t, relaycommon.UndeliveredClientGone, info.UndeliveredReason)
+	require.NotContains(t, recorder.Body.String(), `"completion_tokens":4`,
+		"the client must never see the merged usage of an abandoned continuation")
 }

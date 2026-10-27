@@ -541,6 +541,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// this request (info.ChatContinuation != nil).
 	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount) && len(streamFunctionCallNames) == 0 {
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String())
+		// A caller that walked away while a continuation round was running never
+		// received the continued answer: settle zero like any other client-gone
+		// stream. Without this check the merged rounds would be billed as success
+		// because the first round's capped terminal frame was suppressed.
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			return markUndeliveredStreamUsage(info, relaycommon.UndeliveredClientGone, result.usage), nil
+		}
 		if result.rounds > 0 {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
