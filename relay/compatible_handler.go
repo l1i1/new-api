@@ -195,7 +195,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
 		if relaycommon.ChatContinuationStepsForRequest(info) > 0 ||
-			relaycommon.ChatAbnormalContinuationStepsForRequest(info) > 0 {
+			relaycommon.ChatAbnormalContinuationStepsForRequest(info) > 0 ||
+			relaycommon.ChatMissingContinuationStepsForRequest(info) > 0 {
 			continuationBase = append([]byte(nil), jsonData...)
 		}
 
@@ -216,6 +217,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if len(continuationBase) > 0 {
 		steps := relaycommon.ChatContinuationStepsForRequest(info)
 		abnormalSteps := relaycommon.ChatAbnormalContinuationStepsForRequest(info)
+		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
 		base := continuationBase
 		adaptorRef := adaptor
 		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
@@ -250,6 +252,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
+			}
+		}
+		if missingSteps > 0 {
+			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
+				MaxSteps:          missingSteps,
+				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
+				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}
 		}
 		info.ChatContinuation = cfg

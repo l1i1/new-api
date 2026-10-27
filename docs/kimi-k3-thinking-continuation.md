@@ -1,12 +1,22 @@
 # Kimi K3 思考续写（900s 截断后不提前打断）
 
-## 行为
+## 三种模式
+
+| 模式 | 触发 | 可续前缀 | 目标渠道 |
+|---|---|---|---|
+| length（32k） | `finish_reason=length` + 可见正文 | assistant 正文 | 同渠道，多轮 |
+| abnormal（900s） | `finish_reason=error` 等异常值 + content=0 + reasoning | reasoning 作为 assistant 正文 | 同渠道，1 轮 |
+| missing（60s 静默截断） | 从未出现 `finish_reason`（EOF/[DONE]）+ content=0 + reasoning | reasoning 作为 assistant 正文 | 同渠道，1 轮 |
+
+missing 模式只在上游侧 EOF、不是客户端断开、且 `streamMissingFinishMarksTruncation` 成立时触发，避免把正常的无 finish 形态或客户端断开误判成可续。
+
+## 行为（abnormal / missing）
 
 流式 OpenAI chat 请求命中上游异常终止（`finish_reason=error` / `engine_overloaded` 等非官方值）时：
 
 1. 第一轮若 **正文 content 为空、已产生 reasoning**，网关不把上游错误终帧转给客户端；
 2. 把已捕获的 reasoning 作为 `assistant` 正文回传，并追加一条“从中断处继续思考、给最终答案”的指令；
-3. 在同一个客户端 SSE 流里转发第二轮的 reasoning/content，所有 delta 的 `id`/`created`/`model`/`system_fingerprint` 归一化为第一轮的值，只发一个 `finish_reason=stop` 终帧；
+3. 在同一个客户端 SSE 流里转发第二轮的 reasoning/content，所有 delta 的 `id`/`created`/`model`/`system_fingerprint` 归一化为第一轮的值，只发一个终帧（正常为 `stop`，也可能由上游给出 `length`/`tool_calls`）；
 4. 计费：输入 token 只计一次（第一轮 prompt）；两轮实际下发到客户端的 output token 都计费。
 
 不满足条件（有正文、reasoning 过短/被截断、工具调用、非流式、非 OpenAI chat、渠道未白名单）时保持原有行为：异常终帧透传 + 502 + 退款。
@@ -19,7 +29,11 @@
 | `RELAY_CHAT_CONTINUATION_CHANNELS` | 空 | 渠道白名单，逗号分隔；两种续写共用 |
 | `RELAY_CHAT_CONTINUATION_ABNORMAL_MAX_STEPS` | `1` | 最多续写轮数；每轮可能再等一个上游超时窗口 |
 | `RELAY_CHAT_CONTINUATION_ABNORMAL_MAX_REASONING_BYTES` | `524288` | reasoning 捕获上限；超限跳过续写，走原失败路径 |
-| `RELAY_CHAT_CONTINUATION_ABNORMAL_MIN_REASONING_CHARS` | `512` | 低于该长度不续写 |
+| `RELAY_CHAT_CONTINUATION_ABNORMAL_MIN_REASONING_CHARS` | `512` | 低于该长度不续写（按 UTF-8 字节） |
+| `RELAY_CHAT_CONTINUATION_ON_MISSING` | `false` | missing-finish 模式总开关 |
+| `RELAY_CHAT_CONTINUATION_MISSING_MAX_STEPS` | `1` | missing 模式最多续写轮数；建议保持 1 |
+| `RELAY_CHAT_CONTINUATION_MISSING_MAX_REASONING_BYTES` | `262144` | missing 模式 reasoning 捕获上限 |
+| `RELAY_CHAT_CONTINUATION_MISSING_MIN_REASONING_CHARS` | `64` | 低于该长度不续写（按 UTF-8 字节） |
 
 `RELAY_CHAT_CONTINUATION_MAX_STEPS` 仍只控制 `finish_reason=length`（32k 输出上限）的续写，与本模式独立。
 
@@ -40,17 +54,22 @@
 
 ## 已验证
 
-- 单元：`TestBuildChatThinkingContinuationBody`、`TestMergeContinuationUsageBillsInputOnce`、`TestOaiStreamHandlerContinuesThinkingAfterAbnormalFinish`、`TestOaiStreamHandlerFallsBackWhenThinkingContinuationFails`、`TestOaiStreamHandlerSkipsThinkingContinuationWhenReasoningTooLarge`、`TestChatAbnormalContinuationStepsForRequest`。
-- 回归：`go test ./...` 全绿；`go vet ./relay/... ./common/...` 干净。
+- 单元：`TestBuildChatThinkingContinuationBody`、`TestMergeContinuationUsageBillsInputOnce`、`TestOaiStreamHandlerContinuesThinkingAfterAbnormalFinish`、`TestOaiStreamHandlerContinuesMissingFinishStream`、`TestOaiStreamHandlerFallsBackWhenThinkingContinuationFails`、`TestOaiStreamHandlerFallsBackWhenMissingFinishContinuationFails`、`TestOaiStreamHandlerSkipsThinkingContinuationWhenReasoningTooLarge`、`TestOaiStreamHandlerSkipsMissingFinishContinuationWithoutReasoning`、`TestOaiStreamHandlerDedupesRepeatedRoundUsage`、`TestOaiStreamHandlerSuppressesFinishOnDeltaChunk`、`TestChatAbnormalContinuationStepsForRequest`、`TestChatMissingContinuationStepsForRequest`、`TestExtendWriteDeadlineForSetsFutureDeadline`。
+- 回归：`go test ./...` 全绿；`go test -race ./relay/channel/openai/ ./relay/common/` 通过；`go vet ./relay/... ./common/...` 干净。
 - 本地假上游 e2e：续写成功、单终帧、输入一次、输出两轮计费；失败轮回落 502/退款。
 
 ## 已知边界 / 未做
 
 - 只处理 **content=0 + reasoning** 的形态；已有部分正文的异常截断不在此模式（需另设计）。
-- 第二轮等待上游响应头期间每 10s 写一条 SSE ping（`sendThinkingContinuationWithKeepAlive`），避免客户端在 prefill 阶段静默；进入正文后由数据帧续命。
+- missing 模式当前只做**同渠道**续写；如果上游 60 秒墙仍是请求级总预算，第二轮可能再次被截断。跨渠道续写需要额外的路由/渠道选择实现，未包含在本次改动中。
+- missing 模式只做 1 轮，避免 60s×N 空转；续写轮仍失败则回落退款。
+- 第二轮等待上游响应头期间每 10s 写一条 SSE ping（`sendThinkingContinuationWithKeepAlive`），并在每次 ping/正文/终帧写出前调用 `helper.ExtendWriteDeadline`，避免 30s 客户端写超时后静默丢帧；即使渠道关闭 ping，也会周期性续写 deadline。
+- 续写执行器会临时关闭 `info.DisablePing` 对应的上游 SSE pinger，由网关单一持有客户端 writer，避免两个 goroutine 并发写同一 SSE。
 - 续写轮再失败或只产出 reasoning、没有可见正文：回落原有异常失败路径（不按成功计费）。
 - 客户端在续写过程中断开：按已观测用量计费并返回成功（与普通流的 client_gone 口径一致）。
 - 原生 `/v1/responses`、Claude、Gemini 格式不在本模式范围。
+- 前提：请求带 `max_tokens`（否则 `ClientMaxTokens<=0` 不续写）、传输以正常 EOF/[DONE] 结束、`n<=1`、未开启 `thinking_to_content`、非官方 fit V4/K3 路径；JSON error 事件（无 finish_reason）不可恢复。
+- 续写轮仍受 `RELAY_STREAM_RESPONSE_HEADER_TIMEOUT`（默认 300s）约束；实测 290s 的第二轮已接近该上限，必要时单独调大。
 - 不提前截断：不在 300–600s 主动打断，只在 900s 异常终止后触发。
 
 ## 上线建议

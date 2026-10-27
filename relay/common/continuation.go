@@ -24,6 +24,10 @@ type ChatContinuationConfig struct {
 	// streams that died with an abnormal finish_reason before any visible
 	// content (900s cut-off shape). Send receives the captured reasoning text.
 	Abnormal *ChatAbnormalContinuationConfig
+	// Missing, when non-nil, enables the mode for streams that reached EOF/[DONE]
+	// without any terminal finish_reason and without visible content (60s silent
+	// cut shape). It reuses the same reasoning-prefix sender contract.
+	Missing *ChatAbnormalContinuationConfig
 }
 
 // ChatAbnormalContinuationConfig carries one reasoning-continuation sender.
@@ -48,6 +52,18 @@ func ChatAbnormalContinuationStepsForRequest(info *RelayInfo) int {
 		return 0
 	}
 	return rootcommon.ChatContinuationAbnormalMaxSteps
+}
+
+// ChatMissingContinuationStepsForRequest reports how many reasoning
+// continuation rounds the current missing-finish request may use.
+func ChatMissingContinuationStepsForRequest(info *RelayInfo) int {
+	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+		return 0
+	}
+	if !rootcommon.ChatContinuationOnMissing || rootcommon.ChatContinuationMissingMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+		return 0
+	}
+	return rootcommon.ChatContinuationMissingMaxSteps
 }
 
 // ChatContinuationStepsForRequest reports how many continuation rounds the

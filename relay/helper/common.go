@@ -42,6 +42,16 @@ const pingProbe = ": PING\n\n"
 // one that already delivered real data.
 const ginKeyKeepAliveBytes = "helper_keepalive_written_bytes"
 
+// RecordKeepAliveBytes accounts bytes that were written outside PingData but are
+// still pure keep-alive output (the continuation writer-only ping). Retry
+// classification uses this to keep a ping-only commit retryable.
+func RecordKeepAliveBytes(c *gin.Context, n int) {
+	if c == nil || n <= 0 {
+		return
+	}
+	c.Set(ginKeyKeepAliveBytes, c.GetInt(ginKeyKeepAliveBytes)+n)
+}
+
 // ResponseCommitState describes what has already been committed to the client,
 // which decides whether swapping channels for a retry is safe.
 type ResponseCommitState int

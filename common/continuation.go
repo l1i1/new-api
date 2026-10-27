@@ -33,6 +33,24 @@ var ChatContinuationAbnormalMaxSteps int
 // replaying a partial prefix.
 var ChatContinuationAbnormalMaxReasoningBytes int
 
+// ChatContinuationOnMissing enables the third mode: an upstream stream that
+// reaches EOF/[DONE] without ever sending a terminal finish_reason, has no
+// visible content, but already emitted reasoning (the 60s silent cut shape).
+// Disabled by default.
+var ChatContinuationOnMissing bool
+
+// ChatContinuationMissingMaxSteps bounds the extra rounds for the missing-finish
+// mode; one round avoids burning repeated 60s windows.
+var ChatContinuationMissingMaxSteps int
+
+// ChatContinuationMissingMaxReasoningBytes caps the captured reasoning for the
+// missing-finish mode.
+var ChatContinuationMissingMaxReasoningBytes int
+
+// ChatContinuationMissingMinReasoningChars is the minimum captured reasoning
+// length that makes a missing-finish continuation worthwhile.
+var ChatContinuationMissingMinReasoningChars int
+
 // ChatContinuationAbnormalMinReasoningChars is the minimum captured reasoning
 // length that makes a continuation worthwhile (below it the model had barely
 // started thinking).

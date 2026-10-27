@@ -116,12 +116,12 @@ func buildChatContinuationBody(baseJSON []byte, partialContent, instruction stri
 // The visible answer must be non-empty (a reasoning-only round has nothing to
 // resume), no tool call may have been emitted, and the V4/K3 fit paths (which
 // own their terminal frames) stay untouched.
-func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, toolCalls int) bool {
+func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, toolCalls, choiceCount int) bool {
 	if info == nil || usage == nil || info.ChatContinuation == nil ||
 		info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
@@ -143,7 +143,7 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 // abnormal finish_reason can be resumed from its captured reasoning. It is the
 // 900s cut-off shape: no visible content, a large reasoning trace, an abnormal
 // finish, and a second upstream attempt available.
-func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls int) bool {
+func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int) bool {
 	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Abnormal == nil {
 		return false
 	}
@@ -151,10 +151,13 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if cfg.Send == nil || cfg.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
 		return false
 	}
 	if contentChars > 0 {
@@ -179,21 +182,71 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	return true
 }
 
+// chatMissingContinuationCandidate decides whether a stream that ended at
+// EOF/[DONE] without any finish_reason can be resumed from its reasoning. It is
+// the 60s silent cut shape: no visible content, a reasoning prefix, no terminal
+// frame, and a second upstream attempt available.
+func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int, streamFinishSeen bool) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Missing == nil {
+		return false
+	}
+	cfg := info.ChatContinuation.Missing
+	if cfg.Send == nil || cfg.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return false
+	}
+	if streamFinishSeen || strings.TrimSpace(info.StreamFinishReason) != "" {
+		return false
+	}
+	if contentChars > 0 {
+		return false
+	}
+	minChars := cfg.MinReasoningChars
+	if minChars <= 0 {
+		minChars = 64
+	}
+	if reasoningChars < minChars {
+		return false
+	}
+	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return false
+	}
+	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+		return false
+	}
+	return true
+}
+
 // runAbnormalChatContinuation resumes a cut-off thinking round. The captured
 // reasoning is replayed as the assistant body (upstreams ignore
 // reasoning_content in history); intermediate terminal/usage frames are
 // suppressed so the client sees one stream and one terminal frame.
 func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Abnormal, info.StreamFinishReason, meta)
+}
+
+func runMissingChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Missing, "", meta)
+}
+
+func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, cfg *relaycommon.ChatAbnormalContinuationConfig, initialFinish string, meta chatContinuationMeta) chatContinuationResult {
 	total := cloneUsage(baseUsage)
-	result := chatContinuationResult{usage: total, finish: info.StreamFinishReason}
-	cfg := info.ChatContinuation.Abnormal
+	result := chatContinuationResult{usage: total, finish: initialFinish}
 	contextText := reasoning
 	for step := 0; step < cfg.MaxSteps; step++ {
 		remaining := info.ClientMaxTokens - total.CompletionTokens
 		if remaining <= 0 {
 			break
 		}
-		resp, err := sendThinkingContinuationWithKeepAlive(c, cfg, contextText, remaining)
+		resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
 		if err != nil {
 			logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
 			break
@@ -237,6 +290,17 @@ func cloneUsage(in *dto.Usage) *dto.Usage {
 		return &dto.Usage{}
 	}
 	cloned := *in
+	if in.OutputTokensDetails != nil {
+		details := *in.OutputTokensDetails
+		cloned.OutputTokensDetails = &details
+	}
+	if in.InputTokensDetails != nil {
+		details := *in.InputTokensDetails
+		cloned.InputTokensDetails = &details
+	}
+	if in.BillingUsage != nil {
+		cloned.BillingUsage = dto.CloneBillingUsage(in.BillingUsage)
+	}
 	return &cloned
 }
 
@@ -340,7 +404,10 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			continue
 		}
 		if chunk.Usage != nil {
-			usage = addChatContinuationUsage(usage, chunk.Usage)
+			// Usage events inside one round are cumulative snapshots, not
+			// increments: merge fill-only so a repeated terminal/usage snapshot
+			// cannot double-count the round.
+			usage = dto.MergeUsage(usage, chunk.Usage)
 		}
 		forward := false
 		for _, choice := range chunk.Choices {
@@ -367,7 +434,19 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		if stripErr != nil {
 			forwardData = data
 		}
+		// A chunk may carry both a delta and a terminal finish_reason; forward
+		// only the delta and let the synthetic terminal frame be the sole
+		// finish marker.
+		for i := range chunk.Choices {
+			// The client already received the assistant role in round one; a
+			// second role delta is a protocol seam.
+			forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.delta.role", i))
+			if chunk.Choices[i].FinishReason != nil && *chunk.Choices[i].FinishReason != "" {
+				forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.finish_reason", i))
+			}
+		}
 		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
+		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
 			return usage, finish, builder.String(), deltaSeen, sendErr
 		}
@@ -422,6 +501,7 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 		return
 	}
 	for _, merged := range info.StreamCoalescer.Close() {
+		helper.ExtendWriteDeadline(c)
 		if err := writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 			logger.LogError(c, "error writing coalesced continuation event: "+err.Error())
 		}
@@ -433,6 +513,7 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 // HandleFinalResponse so the client sees exactly one terminal frame and at most
 // one usage event, matching an ordinary stream.
 func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string) {
+	helper.ExtendWriteDeadline(c)
 	if finish == "" {
 		finish = "length"
 	}
@@ -546,9 +627,11 @@ func writeThinkingContinuationPing(c *gin.Context) error {
 	if c == nil || c.Writer == nil {
 		return nil
 	}
+	helper.ExtendWriteDeadline(c)
 	if _, err := c.Writer.WriteString(": PING\n\n"); err != nil {
 		return err
 	}
+	helper.RecordKeepAliveBytes(c, len(": PING\n\n"))
 	c.Writer.Flush()
 	return nil
 }
@@ -567,9 +650,24 @@ type thinkingContinuationSendResult struct {
 	err  error
 }
 
-func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
+func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
 	result := make(chan thinkingContinuationSendResult, 1)
+	helper.ExtendWriteDeadline(c)
+	allowPing := info == nil || !info.DisablePing
+	prevDisablePing := false
+	if info != nil {
+		prevDisablePing = info.DisablePing
+		// doRequest would start its own SSE pinger for the second attempt and
+		// touch the same writer from another goroutine. The handler owns the
+		// keepalive for continuation rounds, so suppress that pinger.
+		info.DisablePing = true
+	}
 	go func() {
+		defer func() {
+			if info != nil {
+				info.DisablePing = prevDisablePing
+			}
+		}()
 		resp, err := cfg.Send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
@@ -580,6 +678,12 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.Chat
 		case r := <-result:
 			return r.resp, r.err
 		case <-ticker.C:
+			// Even when pings are disabled, keep the connection write deadline
+			// alive during the second attempt's header wait.
+			helper.ExtendWriteDeadline(c)
+			if !allowPing {
+				continue
+			}
 			if err := writeThinkingContinuationPing(c); err != nil {
 				go closeLateThinkingContinuationResponse(result)
 				return nil, err

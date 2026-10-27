@@ -580,9 +580,184 @@ func TestOaiStreamHandlerWritesPingWhileWaitingForContinuation(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		return continuationSSEResponse(secondRound), nil
 	}, 1, 100, 1<<20)
+	info.DisablePing = false
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
 	require.Nil(t, err)
 	require.NotNil(t, usage)
 	require.Contains(t, recorder.Body.String(), ": PING")
+}
+
+func newMissingContinuationTestContext(t *testing.T, sender func(string, int) (*http.Response, error), maxSteps, clientMaxTokens, maxReasoningBytes int) (*gin.Context, *relaycommon.RelayInfo, *httptest.ResponseRecorder) {
+	t.Helper()
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+		ClientMaxTokens:    clientMaxTokens,
+		ChatContinuation: &relaycommon.ChatContinuationConfig{
+			Missing: &relaycommon.ChatAbnormalContinuationConfig{
+				MaxSteps:          maxSteps,
+				Send:              sender,
+				MaxReasoningBytes: maxReasoningBytes,
+				MinReasoningChars: 1,
+			},
+		},
+	}
+	info.SetEstimatePromptTokens(5)
+	return c, info, recorder
+}
+
+// TestOaiStreamHandlerContinuesMissingFinishStream pins the 60s silent-cut
+// shape: reasoning, usage and [DONE], but no finish_reason at all. The stream
+// must resume and deliver one visible answer with one stop frame.
+func TestOaiStreamHandlerContinuesMissingFinishStream(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	var gotReasoning string
+	c, info, recorder := newMissingContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		calls++
+		gotReasoning = reasoning
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, "思考一思考二", gotReasoning)
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.Equal(t, 13, usage.CompletionTokens, "output of both rounds is billed")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "最终答案")
+	require.Contains(t, body, `"id":"chat_1"`)
+	require.NotContains(t, body, `"id":"chat_2"`)
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`))
+	require.Equal(t, 1, strings.Count(body, "[DONE]"))
+}
+
+// TestOaiStreamHandlerFallsBackWhenMissingFinishContinuationFails keeps the
+// refund path when the resumed round also ends without a terminal frame.
+func TestOaiStreamHandlerFallsBackWhenMissingFinishContinuationFails(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	stillTruncated := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"继续"},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, _ := newMissingContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(stillTruncated), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, relaycommon.UndeliveredMissingFinish, info.UndeliveredReason)
+}
+
+// TestOaiStreamHandlerSkipsMissingFinishContinuationWithoutReasoning is the
+// negative control for empty/short reasoning.
+func TestOaiStreamHandlerSkipsMissingFinishContinuationWithoutReasoning(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	calls := 0
+	c, info, _ := newMissingContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondContinuationRoundForTest()), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, 0, calls)
+	require.Equal(t, relaycommon.UndeliveredMissingFinish, info.UndeliveredReason)
+}
+
+// TestOaiStreamHandlerDedupesRepeatedRoundUsage protects billing from providers
+// that repeat the same cumulative usage snapshot inside one continuation round.
+func TestOaiStreamHandlerDedupesRepeatedRoundUsage(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 13, usage.CompletionTokens, "repeated cumulative usage must count once")
+}
+
+// TestOaiStreamHandlerSuppressesFinishOnDeltaChunk ensures a round-2 chunk that
+// carries both content and finish_reason does not produce a second terminal frame.
+func TestOaiStreamHandlerSuppressesFinishOnDeltaChunk(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	body := recorder.Body.String()
+	require.Contains(t, body, "最终答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "exactly one terminal frame")
 }
