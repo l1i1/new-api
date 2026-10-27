@@ -87,6 +87,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		// a zero-output truncation has nothing to bill.
 		if streamUsage, ok := usage.(*dto.Usage); ok && streamUsage != nil &&
 			streamUsage.TotalTokens > 0 && newAPIError.SettlesObservedUsageAfterError() {
+			// A failed Responses stream delivered no complete answer: the settle
+			// below is zeroed by the undelivered policy.
+			info.MarkUndelivered(relaycommon.UndeliveredUpstreamFailure, streamUsage)
 			service.PostTextConsumeQuota(c, info, streamUsage, []string{"incomplete upstream stream"})
 		}
 		// reset status code 重置状态码

@@ -12,6 +12,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,7 +52,7 @@ func TestOaiStreamHandlerTreatsAbnormalFinishReasonAsFailure(t *testing.T) {
 			}
 			info.SetEstimatePromptTokens(10)
 
-			_, err := OaiStreamHandler(c, info, &http.Response{
+			usage, err := OaiStreamHandler(c, info, &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(strings.NewReader(body)),
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -59,6 +60,9 @@ func TestOaiStreamHandlerTreatsAbnormalFinishReasonAsFailure(t *testing.T) {
 
 			require.NotNil(t, err, "an abnormal finish reason must not be reported as success")
 			require.Equal(t, http.StatusBadGateway, err.StatusCode)
+			require.NotNil(t, usage)
+			assert.Zero(t, usage.TotalTokens, "a failed generation must return zero usage to the caller")
+			assert.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
 			require.Equal(t, reason, info.StreamFinishReason)
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
@@ -112,7 +116,7 @@ func TestIsAbnormalFinishReason(t *testing.T) {
 	}
 }
 
-func newMissingFinishTestContext(t *testing.T) (*gin.Context, *relaycommon.RelayInfo) {
+func newMissingFinishTestContext(t *testing.T) (*gin.Context, *relaycommon.RelayInfo, *httptest.ResponseRecorder) {
 	t.Helper()
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
@@ -132,7 +136,7 @@ func newMissingFinishTestContext(t *testing.T) (*gin.Context, *relaycommon.Relay
 		DisablePing: true,
 	}
 	info.SetEstimatePromptTokens(10)
-	return c, info
+	return c, info, recorder
 }
 
 // TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure pins the second half of
@@ -165,10 +169,10 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, info := newMissingFinishTestContext(t)
+			c, info, recorder := newMissingFinishTestContext(t)
 			body := strings.Join(tc.body, "\n")
 
-			_, err := OaiStreamHandler(c, info, &http.Response{
+			usage, err := OaiStreamHandler(c, info, &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(strings.NewReader(body)),
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -176,6 +180,11 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 
 			require.NotNil(t, err, "a stream without any terminal finish_reason must not be reported as success")
 			require.Equal(t, http.StatusBadGateway, err.StatusCode)
+			require.NotNil(t, usage)
+			assert.Zero(t, usage.PromptTokens, "a truncated stream must return zero usage to the caller")
+			assert.Zero(t, usage.CompletionTokens)
+			assert.Equal(t, relaycommon.UndeliveredMissingFinish, info.UndeliveredReason)
+			assert.NotContains(t, recorder.Body.String(), "167674", "the upstream usage count must never reach the caller unzeroed")
 			require.Empty(t, info.StreamFinishReason)
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
@@ -188,7 +197,7 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 // TestOaiStreamHandlerAcceptsTerminalFinishReason is the control: the same shape
 // with a real terminal finish_reason must still succeed.
 func TestOaiStreamHandlerAcceptsTerminalFinishReason(t *testing.T) {
-	c, info := newMissingFinishTestContext(t)
+	c, info, _ := newMissingFinishTestContext(t)
 	body := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,

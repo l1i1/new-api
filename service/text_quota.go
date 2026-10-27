@@ -404,6 +404,20 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+	// A response that never delivered a usable terminal result must not be
+	// billed: zero the settlement input before any pricing runs so the quota,
+	// the consume-log token columns and the dashboard hourly buckets all read
+	// zero. The raw upstream counts are preserved on RelayInfo for the audit
+	// marker (admin_info.undelivered). See UndeliveredSettlementReason.
+	undeliveredReason := ""
+	if relayInfo != nil {
+		undeliveredReason = relayInfo.UndeliveredSettlementReason()
+		if undeliveredReason != "" {
+			relayInfo.MarkUndelivered(undeliveredReason, usage)
+			usage = relaycommon.ZeroUsage()
+			extraContent = append(extraContent, "未交付完整结果，按 0 计费（"+undeliveredReason+"）")
+		}
+	}
 	// Billing-side safety net for the same rule the adaptors apply before they
 	// render the client's usage: output can never legitimately exceed the
 	// request's declared budget, so an accumulated count is capped here even for
@@ -437,6 +451,17 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, billingUsage)
+	if undeliveredReason != "" {
+		// A response the caller never received cannot carry a tool surcharge or a
+		// fixed-price tier: clear every billable component and the token counts.
+		summary.ToolSurchargeItems = nil
+		summary.ToolCallSurchargeQuota = decimal.Zero
+		summary.FixedPriceBilling = false
+		summary.Quota = 0
+		summary.PromptTokens = 0
+		summary.CompletionTokens = 0
+		summary.TotalTokens = 0
+	}
 
 	var tieredResult *billingexpr.TieredResult
 	var tieredTokens billingexpr.TokenParams
@@ -448,7 +473,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if billingUsage == nil && snap != nil && billingexpr.UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
 		billingUsage = &dto.Usage{PromptTokens: summary.PromptTokens, CompletionTokens: summary.CompletionTokens, TotalTokens: summary.TotalTokens}
 	}
-	if billingUsage != nil {
+	if billingUsage != nil && undeliveredReason == "" {
 		var tieredUsedVars map[string]bool
 		if snap := relayInfo.TieredBillingSnapshot; snap != nil {
 			tieredUsedVars = billingexpr.UsedVarsByHash(snap.ExprString, snap.ExprHash)
@@ -504,8 +529,14 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	billable := summary.hasBillableUsage()
 	if !billable {
-		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
-		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
+		if undeliveredReason != "" {
+			extraContent = append(extraContent, "上游未交付完整结果，按 0 计费")
+			logger.LogWarn(ctx, fmt.Sprintf("undelivered response, zero charge: reason=%s userId %d, channelId %d, tokenId %d, model %s",
+				undeliveredReason, relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName))
+		} else {
+			extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
+			logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
+		}
 	} else if relayInfo.BillingSource != BillingSourceWallet {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 	}
@@ -607,6 +638,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 	attachBillingAnomaly(ctx, relayInfo, other, rawUsageMap(billingUsage))
+	attachUndelivered(ctx, relayInfo, other)
 	// L2-A usage-deviation guard (alarm-only): flag upstream usage that
 	// exceeds what the request itself allows (client budget / local prompt
 	// estimate / cache k-fingerprint). Billing is NOT changed — phase A only
@@ -627,9 +659,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
-	relayInfo.ObservedUsage = true
-	relayInfo.ObservedInputTokens = int64(summary.PromptTokens)
-	relayInfo.ObservedCacheReadTokens = int64(summary.CacheTokens)
-	relayInfo.ObservedCacheWriteTokens = int64(summary.CacheCreationTokens)
-	relayInfo.PerformanceOutputTokens = int64(summary.CompletionTokens)
+	if undeliveredReason == "" {
+		relayInfo.ObservedUsage = true
+		relayInfo.ObservedInputTokens = int64(summary.PromptTokens)
+		relayInfo.ObservedCacheReadTokens = int64(summary.CacheTokens)
+		relayInfo.ObservedCacheWriteTokens = int64(summary.CacheCreationTokens)
+		relayInfo.PerformanceOutputTokens = int64(summary.CompletionTokens)
+	}
 }

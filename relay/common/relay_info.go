@@ -245,6 +245,18 @@ type RelayInfo struct {
 	FinalRequestRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
+	// UndeliveredReason, when non-empty, says this response did not deliver a
+	// usable terminal result (client disconnect, upstream truncation, transport
+	// failure, abnormal finish reason). Settlement then charges zero and any
+	// consume log written for the request carries zero token counts; the raw
+	// upstream counts are kept on the two fields below purely for the audit
+	// marker. See UndeliveredSettlementReason.
+	UndeliveredReason string
+	// UndeliveredPromptTokens / UndeliveredCompletionTokens preserve the
+	// upstream-reported counts of an undelivered response for the consume log's
+	// admin_info.undelivered marker. They are never billed.
+	UndeliveredPromptTokens     int64
+	UndeliveredCompletionTokens int64
 	// StreamFinishReason is the latest non-empty provider finish reason seen
 	// on an OpenAI-compatible stream, retained for consume-log diagnostics.
 	StreamFinishReason string

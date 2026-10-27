@@ -495,7 +495,9 @@ func TestResponsesInterruptedStreamHealth(t *testing.T) {
 				}
 			}
 			fixture.closeAndWait(t)
-			assertResponsesWSAccounting(t, fixture, []int{1000})
+			// The caller never received a terminal answer, so the interrupted
+			// stream is recorded at zero charge under the undelivered policy.
+			assertResponsesWSAccounting(t, fixture, []int{0})
 			if scenario == "sse client cancel" {
 				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
 				require.NoError(t, err)
@@ -792,7 +794,7 @@ func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
 	}
 }
 
-func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
+func TestResponsesWebSocketDisconnectDoesNotChargePartialOutput(t *testing.T) {
 	fixture := newResponsesWSBillingTest(t, `tier("output", c * 2)`, func(ws *websocket.Conn, _ *http.Request) {
 		if _, _, err := ws.ReadMessage(); !assert.NoError(t, err) {
 			return
@@ -813,7 +815,9 @@ func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
 	require.Equal(t, "response.output_text.delta", delta["type"])
 	assert.Equal(t, "hello", delta["delta"])
 	fixture.closeAndWait(t)
-	assertResponsesWSAccounting(t, fixture, []int{1})
+	// The client walked away before the response completed: zero charge, but the
+	// request is still accounted (one consume row with quota 0).
+	assertResponsesWSAccounting(t, fixture, []int{0})
 	keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
 	require.NoError(t, err)
 	assert.Empty(t, keys, "client cancellation must not affect model health")
@@ -1022,12 +1026,17 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 						assert.JSONEq(t, expected, string(actual), "upstream frames must be delivered once and unchanged")
 					}
 				}
-				// Preserve the fork HTTP refund contract for failed streams without
-				// usage; accepted WebSocket requests retain their existing settlement.
+				// A failed terminal did not deliver a usable result: HTTP refunds
+				// it without a consume row, WebSocket records it at zero. The
+				// follow-up completed response below keeps its normal price.
 				refunded := transport == "http-sse" && tc.httpRefund
-				quotas := []int{1000}
-				if refunded {
-					quotas = nil
+				var quotas []int
+				if !refunded {
+					if tc.failed {
+						quotas = []int{0}
+					} else {
+						quotas = []int{1000}
+					}
 				}
 				if tc.failed {
 					// The first terminal must complete settlement and middleware before
@@ -1227,7 +1236,9 @@ func TestResponsesWebSocketAmbiguousControlErrorClosesAndSettlesOnce(t *testing.
 	var timeout net.Error
 	assert.False(t, errors.As(err, &timeout) && timeout.Timeout(), "the server must close before the read deadline")
 	fixture.closeAndWait(t)
-	assertResponsesWSAccounting(t, fixture, []int{1000})
+	// The unattributed in-band error delivered no usable result: one consume row,
+	// zero charge.
+	assertResponsesWSAccounting(t, fixture, []int{0})
 }
 
 // A control event queued while another is still outstanding is rejected
@@ -1310,7 +1321,8 @@ func TestResponsesWebSocketAcceptsCancelAfterControlError(t *testing.T) {
 	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.cancel","response_id":"active"}`)))
 	assert.Equal(t, "response.cancelled", readResponsesWSTestEvent(t, fixture.client)["type"])
 	fixture.closeAndWait(t)
-	assertResponsesWSAccounting(t, fixture, []int{1000})
+	// A cancelled response is not a delivered result: zero charge.
+	assertResponsesWSAccounting(t, fixture, []int{0})
 }
 
 // A late error that names the previous response must not end the request
@@ -1352,7 +1364,11 @@ func TestResponsesWebSocketIgnoresLateErrorForPreviousResponse(t *testing.T) {
 			require.Equal(t, "response.created", created["type"], "the late error must not reach the client or end the request: %v", created)
 			assert.Equal(t, "response.completed", readResponsesWSTestEvent(t, fixture.client)["type"])
 			fixture.closeAndWait(t)
-			assertResponsesWSAccounting(t, fixture, []int{1000, 1000})
+			firstQuota := 1000
+			if tc.firstTerminalType == "error" {
+				firstQuota = 0
+			}
+			assertResponsesWSAccounting(t, fixture, []int{firstQuota, 1000})
 		})
 	}
 }

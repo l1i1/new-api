@@ -301,6 +301,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			info.ReceivedResponseCount > 0
 		rejectedAfterUsage := newApiErr.SettlesObservedUsageAfterError() &&
 			streamUsage != nil && streamUsage.TotalTokens > 0
+		if streamUsage != nil && (truncatedUpstream || rejectedAfterUsage) {
+			// The caller did not receive a complete answer, so this settlement
+			// must be zero even though the upstream reported usage. The raw
+			// counts stay on the relay info for the consume log's audit marker.
+			info.MarkUndelivered(relaycommon.UndeliveredUpstreamFailure, streamUsage)
+		}
 		if isTextCompletion && streamUsage != nil && (truncatedUpstream || rejectedAfterUsage) {
 			containAudioTokens := streamUsage.CompletionTokenDetails.AudioTokens > 0 || streamUsage.PromptTokensDetails.AudioTokens > 0
 			containsAudioRatios := ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)

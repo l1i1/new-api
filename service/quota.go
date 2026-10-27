@@ -204,7 +204,6 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	if tieredOk {
 		quota = tieredQuota
 	}
-
 	// Billing-input sanity gate for the legacy ratio path (the tiered path is
 	// gated inside TryTieredSettle). Garbage usage or a saturated conversion
 	// bills as zero; raw counts survive only in the anomaly marker.
@@ -308,6 +307,19 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 }
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent string) {
+	// A streaming caller that never received a terminal result (client gone,
+	// scanner error, timeout) must not be billed even if the upstream reported
+	// audio usage. Zero the input before pricing; raw counts go to the audit
+	// marker only.
+	undeliveredReason := ""
+	if relayInfo != nil {
+		undeliveredReason = relayInfo.UndeliveredSettlementReason()
+		if undeliveredReason != "" {
+			relayInfo.MarkUndelivered(undeliveredReason, usage)
+			usage = relaycommon.ZeroUsage()
+			extraContent += "，未交付完整结果，按 0 计费（" + undeliveredReason + "）"
+		}
+	}
 	if usage == nil {
 		usage = &dto.Usage{PromptTokens: relayInfo.GetEstimatePromptTokens(), TotalTokens: relayInfo.GetEstimatePromptTokens()}
 	}
@@ -361,6 +373,12 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if tieredOk {
 		quota = tieredQuota
 	}
+	if undeliveredReason != "" {
+		// No delivery, no charge - not even a fixed-price tier or a tool
+		// surcharge computed from an upstream usage that never reached the caller.
+		quota = 0
+		fixedPriceBilling = false
+	}
 
 	// Billing-input sanity gate for the legacy ratio path (the tiered path is
 	// gated inside TryTieredSettle). Garbage usage or a saturated conversion
@@ -392,7 +410,10 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 && !fixedPriceBilling {
+	if undeliveredReason != "" {
+		quota = 0
+		logContent += "（未交付完整结果，按 0 计费：" + undeliveredReason + "）"
+	} else if totalTokens == 0 && !fixedPriceBilling {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -419,6 +440,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
 	attachBillingAnomaly(ctx, relayInfo, other, rawUsage)
+	attachUndelivered(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,
@@ -433,11 +455,13 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	})
-	relayInfo.ObservedUsage = true
-	relayInfo.ObservedInputTokens = int64(usage.PromptTokens)
-	relayInfo.ObservedCacheReadTokens = int64(usage.PromptTokensDetails.CachedTokens)
-	relayInfo.ObservedCacheWriteTokens = int64(usage.PromptTokensDetails.CacheCreationTokensTotal())
-	relayInfo.PerformanceOutputTokens = int64(usage.CompletionTokens)
+	if undeliveredReason == "" {
+		relayInfo.ObservedUsage = true
+		relayInfo.ObservedInputTokens = int64(usage.PromptTokens)
+		relayInfo.ObservedCacheReadTokens = int64(usage.PromptTokensDetails.CachedTokens)
+		relayInfo.ObservedCacheWriteTokens = int64(usage.PromptTokensDetails.CacheCreationTokensTotal())
+		relayInfo.PerformanceOutputTokens = int64(usage.CompletionTokens)
+	}
 }
 
 func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {

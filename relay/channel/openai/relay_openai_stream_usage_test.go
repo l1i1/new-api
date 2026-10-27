@@ -954,9 +954,10 @@ func TestOaiStreamHandlerRejectsScannerErrorAfterPartialData(t *testing.T) {
 
 	require.NotNil(t, usage)
 	require.Error(t, err)
-	assert.Equal(t, 12, usage.PromptTokens)
-	assert.Greater(t, usage.CompletionTokens, 0)
-	assert.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+	assert.Zero(t, usage.PromptTokens, "a truncated stream must not report caller-visible usage")
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Zero(t, usage.TotalTokens)
+	assert.Equal(t, relaycommon.UndeliveredStreamPrefix+"scanner_error", info.UndeliveredReason)
 	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
 	assert.Equal(t, types.ErrorCode("server_error"), err.GetErrorCode())
 	assert.True(t, types.IsSkipRetryError(err))
@@ -1045,8 +1046,11 @@ func TestOaiStreamHandlerTreatsClientGoneAsNonError(t *testing.T) {
 
 	require.Nil(t, err, "a caller that disconnected mid-stream must not surface a gateway error")
 	require.NotNil(t, usage)
-	assert.Equal(t, 11, usage.PromptTokens)
-	assert.Greater(t, usage.CompletionTokens, 0, "observed partial output stays settled")
+	assert.Zero(t, usage.PromptTokens, "an undelivered response settles zero token counts")
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Zero(t, usage.TotalTokens)
+	assert.Equal(t, relaycommon.UndeliveredClientGone, info.UndeliveredReason,
+		"a caller that walked away must be recorded as an undelivered response")
 	assert.NotContains(t, recorder.Body.String(), `data: [DONE]`, "an abandoned stream never earns a success marker")
 }
 

@@ -432,13 +432,24 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// a hard request-side invariant.
 		relaycommon.ClampUsageToClientBudget(info, usage)
 
+		// The transport did not end normally, so the caller never received a
+		// finished answer: it must not be billed, and the counts returned to the
+		// caller/settlement are zeroed. The raw upstream counts survive only in
+		// the consume log's undelivered marker when one is written.
+		clientGone := info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
+			(c.Request != nil && c.Request.Context().Err() != nil)
+		undeliveredReason := relaycommon.UndeliveredStreamPrefix + string(info.StreamStatus.EndReason)
+		if clientGone {
+			undeliveredReason = relaycommon.UndeliveredClientGone
+		}
+		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+
 		// A caller that walked away mid-stream is not an upstream failure, and
-		// there is nobody left to receive an error: settle the observed usage and
-		// finish without synthesizing one. The scanner reports the same event as
+		// there is nobody left to receive an error: settle (as zero) and finish
+		// without synthesizing one. The scanner reports the same event as
 		// scanner_error whenever the cancelled request context closes the upstream
 		// body first, so the request context is the authoritative signal.
-		if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
-			(c.Request != nil && c.Request.Context().Err() != nil) {
+		if clientGone {
 			return usage, nil
 		}
 
@@ -543,6 +554,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	// The transport ended normally, but the generation never reached a terminal
+	// state: either the provider marked the failure in-band with an abnormal
+	// finish_reason, or it closed the stream ([DONE]/EOF) without ever sending a
+	// finish_reason. Both are truncated answers. Classify before any terminal or
+	// usage frame is rendered so the caller-visible usage is zero too.
+	undeliveredReason := ""
+	if streamAbnormalFinish != "" {
+		undeliveredReason = relaycommon.UndeliveredAbnormalFinish
+	} else if !streamFinishSeen && streamMissingFinishMarksTruncation(info, isAudioModel) {
+		undeliveredReason = relaycommon.UndeliveredMissingFinish
+	}
+	if undeliveredReason != "" {
+		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+	}
+
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
 		case isV4OpenAIStream:
@@ -622,7 +648,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
-	if usage != nil {
+	if usage != nil && info.UndeliveredReason == "" {
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
 	}
 
@@ -654,6 +680,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	return usage, nil
+}
+
+// markUndeliveredStreamUsage records why this stream result is unbillable and
+// returns a zeroed usage for both the caller-facing terminal frames and the
+// settlement/log. The upstream-reported counts are preserved on the relay info
+// for the consume log's audit marker only.
+func markUndeliveredStreamUsage(info *relaycommon.RelayInfo, reason string, usage *dto.Usage) *dto.Usage {
+	if info != nil && usage != nil {
+		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
+	}
+	info.MarkUndelivered(reason, usage)
+	return relaycommon.ZeroUsage()
 }
 
 // streamMissingFinishMarksTruncation reports whether a normally-ended stream that

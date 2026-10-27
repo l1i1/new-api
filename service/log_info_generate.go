@@ -105,6 +105,29 @@ func attachBillingAnomaly(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, ot
 	}
 }
 
+// attachUndelivered nests the "caller did not receive a result, so the charge
+// is zeroed" marker under other.admin_info.undelivered, keeping the raw
+// upstream-reported counts auditable after the consume log's token columns are
+// zeroed. No-op for a delivered (billable) response.
+func attachUndelivered(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if relayInfo == nil || other == nil || relayInfo.UndeliveredReason == "" {
+		return
+	}
+	marker := map[string]any{
+		"reason": relayInfo.UndeliveredReason,
+		"action": "zeroed",
+	}
+	if relayInfo.UndeliveredPromptTokens > 0 || relayInfo.UndeliveredCompletionTokens > 0 {
+		marker["upstream_prompt_tokens"] = relayInfo.UndeliveredPromptTokens
+		marker["upstream_completion_tokens"] = relayInfo.UndeliveredCompletionTokens
+	}
+	other.SetAdmin("undelivered", marker)
+	if ctx != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("undelivered response, charge zeroed: reason=%s user=%d model=%s",
+			relayInfo.UndeliveredReason, relayInfo.UserId, relayInfo.GetBillingModelName()))
+	}
+}
+
 // attachUsageDeviation runs the L2-A usage-deviation guard on one settlement
 // and nests the verdict under other.admin_info.usage_deviation (same shape as
 // billing_anomaly). Alarm-only by design: the marker plus the backend warn are

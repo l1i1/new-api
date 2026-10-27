@@ -351,6 +351,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
+		// A previous attempt's undelivered marker must never leak into this one:
+		// a retry that succeeds is billable, and one that fails again re-marks.
+		relayInfo.UndeliveredReason = ""
+		relayInfo.UndeliveredPromptTokens = 0
+		relayInfo.UndeliveredCompletionTokens = 0
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()

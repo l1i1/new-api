@@ -485,7 +485,10 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 						s.lastResponseID = responseID
 						state.terminal, state.closeAfter = &incoming, ambiguous
-						ConsumeResponsesQuota(c, info, accumulator.Finish())
+						usage := accumulator.Finish()
+						// A failed terminal delivered no usable result: settle zero.
+						info.MarkUndelivered(relaycommon.UndeliveredUpstreamFailure, usage)
+						ConsumeResponsesQuota(c, info, usage)
 						return nil
 					}
 					if rejection.Error == nil {
@@ -518,7 +521,15 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				}
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				state.terminal = &incoming
-				ConsumeResponsesQuota(c, info, accumulator.Finish())
+				usage := accumulator.Finish()
+				// A failed/cancelled terminal delivered no usable result, so the
+				// settlement below is zeroed. A completed or output-limit
+				// (incomplete) response remains billable.
+				switch event.Type {
+				case "response.failed", "response.cancelled", "response.canceled":
+					info.MarkUndelivered(relaycommon.UndeliveredUpstreamFailure, usage)
+				}
+				ConsumeResponsesQuota(c, info, usage)
 				service.RecordMultiKeySuccess(c)
 				return nil
 			}
