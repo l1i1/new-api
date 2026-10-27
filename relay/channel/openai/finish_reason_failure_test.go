@@ -107,3 +107,96 @@ func TestIsAbnormalFinishReason(t *testing.T) {
 		require.True(t, relaycommon.IsAbnormalFinishReason(r), r)
 	}
 }
+
+func newMissingFinishTestContext(t *testing.T) (*gin.Context, *relaycommon.RelayInfo) {
+	t.Helper()
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatOpenAI,
+		DisablePing: true,
+	}
+	info.SetEstimatePromptTokens(10)
+	return c, info
+}
+
+// TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure pins the second half of
+// the A contract. The reported 2026-10-27 case: an aggregator channel (ch77)
+// ended the stream at 60s with a usage-only event and [DONE], while the reasoning
+// text stopped mid-sentence and no finish_reason appeared at all. [DONE] is not
+// proof of a finished answer, so the handler must fail the request (the
+// controller refunds instead of settling) rather than bill the truncated output.
+func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		body []string
+	}{
+		{
+			name: "done_with_usage_and_no_finish",
+			body: []string{
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"I need to respond"},"finish_reason":null}]}`,
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[],"usage":{"prompt_tokens":167674,"completion_tokens":237,"total_tokens":167911}}`,
+				`data: [DONE]`,
+				``,
+			},
+		},
+		{
+			name: "eof_without_done_and_no_finish",
+			body: []string{
+				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]}`,
+				``,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, info := newMissingFinishTestContext(t)
+			body := strings.Join(tc.body, "\n")
+
+			_, err := OaiStreamHandler(c, info, &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			})
+
+			require.NotNil(t, err, "a stream without any terminal finish_reason must not be reported as success")
+			require.Equal(t, http.StatusBadGateway, err.StatusCode)
+			require.Empty(t, info.StreamFinishReason)
+			require.NotNil(t, info.StreamStatus)
+			require.True(t, info.StreamStatus.ResponseFailed())
+		})
+	}
+}
+
+// TestOaiStreamHandlerAcceptsTerminalFinishReason is the control: the same shape
+// with a real terminal finish_reason must still succeed.
+func TestOaiStreamHandlerAcceptsTerminalFinishReason(t *testing.T) {
+	c, info := newMissingFinishTestContext(t)
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	_, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err)
+	require.Equal(t, "stop", info.StreamFinishReason)
+	require.False(t, info.StreamStatus.ResponseFailed())
+}

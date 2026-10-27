@@ -197,6 +197,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// ends with [DONE] and a normal transport end, but it did not deliver a
 	// finished answer, so the request must not settle or log as a success.
 	var streamAbnormalFinish string
+	// streamFinishSeen records whether the provider ever closed the generation with
+	// a terminal finish_reason. A transport that is cut off can still send a usage
+	// event and [DONE] while the answer is mid-sentence (2026-10-27: YJ aggregator
+	// channels ended at 60s with reasoning truncated and no finish marker), so
+	// [DONE] alone is not proof of a finished answer; such a stream used to settle
+	// and bill as a success.
+	var streamFinishSeen bool
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
@@ -228,6 +235,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				for _, choice := range streamResp.Choices {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						currentHasFinish = true
+						streamFinishSeen = true
 						info.StreamFinishReason = *choice.FinishReason
 						if relaycommon.IsAbnormalFinishReason(*choice.FinishReason) {
 							if streamAbnormalFinish == "" {
@@ -609,7 +617,42 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
 	}
 
+	if !streamFinishSeen && streamMissingFinishMarksTruncation(info, isAudioModel) {
+		info.StreamStatus.MarkFailed("upstream_missing_finish_reason", "upstream_error", http.StatusBadGateway)
+		info.StreamStatus.RecordError("upstream stream ended without a terminal finish_reason")
+		// Same contract as an abnormal finish reason: the client already holds the
+		// provider's bytes, but the generation never reached a terminal state, so
+		// the request must not settle as a success.
+		return usage, types.NewOpenAIError(
+			fmt.Errorf("upstream stream ended without a terminal finish_reason"),
+			types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+	}
+
 	return usage, nil
+}
+
+// streamMissingFinishMarksTruncation reports whether a normally-ended stream that
+// never carried a finish_reason must be treated as truncated. The DeepSeek V4
+// family legitimately ends this way in some official shapes, and audio streams use
+// their own terminal event, so both are excluded. A stream that ended because the
+// caller left, timed out or failed at the transport layer is already classified by
+// the branch above this helper.
+func streamMissingFinishMarksTruncation(info *relaycommon.RelayInfo, audioModel bool) bool {
+	if info == nil || info.StreamStatus == nil || audioModel {
+		return false
+	}
+	if isDeepSeekV4Family(info) {
+		return false
+	}
+	if info.StreamStatus.ResponseFailed() {
+		return false
+	}
+	switch info.StreamStatus.EndReason {
+	case relaycommon.StreamEndReasonDone, relaycommon.StreamEndReasonEOF:
+		return true
+	default:
+		return false
+	}
 }
 
 // observeStreamChoices collects billable function call names and records the

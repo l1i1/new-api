@@ -91,6 +91,22 @@ func isDeepSeekV4ChatModel(info *relaycommon.RelayInfo) bool {
 	return officialfit.FamilyOf(modelName) == officialfit.FamilyDeepSeekV4
 }
 
+// isDeepSeekV4Family reports whether the attempt serves the DeepSeek V4 family,
+// checking the client-facing model name first and falling back to the upstream
+// model name (test fixtures and a few adaptor paths only populate the latter).
+// The family is exempt from the "stream ended without finish_reason means
+// truncated" rule because the official V4 stream legitimately ends with
+// [DONE]/EOF and no finish marker in some shapes.
+func isDeepSeekV4Family(info *relaycommon.RelayInfo) bool {
+	if isDeepSeekV4ChatModel(info) {
+		return true
+	}
+	if info == nil {
+		return false
+	}
+	return officialfit.FamilyOf(strings.ToLower(strings.TrimSpace(info.UpstreamModelName))) == officialfit.FamilyDeepSeekV4
+}
+
 // deepSeekV4FitEnabled reports whether the official response-shape fit layer
 // applies to this request: the DeepSeek V4 model family plus the user's
 // official-fit Shape flag. Without the flag the generic relay path runs
