@@ -74,10 +74,17 @@ func copyCodexSSEHeaders(c *gin.Context, resp *http.Response) {
 // stream write. Best-effort: writers that don't support deadlines (e.g.
 // httptest recorders) are silently ignored.
 func ExtendWriteDeadline(c *gin.Context) {
-	if c == nil || c.Writer == nil {
+	ExtendWriteDeadlineFor(c, streamWriteTimeout)
+}
+
+// ExtendWriteDeadlineFor pushes the connection write deadline forward by an
+// explicit duration. Continuation rounds use it because their natural gaps can
+// be longer than one normal stream write.
+func ExtendWriteDeadlineFor(c *gin.Context, timeout time.Duration) {
+	if c == nil || c.Writer == nil || timeout <= 0 {
 		return
 	}
-	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
+	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(timeout))
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {

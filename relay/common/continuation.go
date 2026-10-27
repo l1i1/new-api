@@ -20,6 +20,50 @@ import (
 type ChatContinuationConfig struct {
 	MaxSteps int
 	Send     func(partialContent string, remainingTokens int) (*http.Response, error)
+	// Abnormal, when non-nil, enables the reasoning continuation mode for
+	// streams that died with an abnormal finish_reason before any visible
+	// content (900s cut-off shape). Send receives the captured reasoning text.
+	Abnormal *ChatAbnormalContinuationConfig
+	// Missing, when non-nil, enables the mode for streams that reached EOF/[DONE]
+	// without any terminal finish_reason and without visible content (60s silent
+	// cut shape). It reuses the same reasoning-prefix sender contract.
+	Missing *ChatAbnormalContinuationConfig
+}
+
+// ChatAbnormalContinuationConfig carries one reasoning-continuation sender.
+// Unlike the output-cap mode it replays reasoning as the assistant body, so the
+// captured text must come from the same attempt and must not be re-billed as
+// extra input.
+type ChatAbnormalContinuationConfig struct {
+	MaxSteps          int
+	Send              func(reasoning string, remainingTokens int) (*http.Response, error)
+	MaxReasoningBytes int
+	MinReasoningChars int
+}
+
+// ChatAbnormalContinuationStepsForRequest reports how many reasoning
+// continuation rounds the current request may use. 0 keeps the ordinary
+// abnormal-finish failure path.
+func ChatAbnormalContinuationStepsForRequest(info *RelayInfo) int {
+	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+		return 0
+	}
+	if !rootcommon.ChatContinuationOnAbnormal || rootcommon.ChatContinuationAbnormalMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+		return 0
+	}
+	return rootcommon.ChatContinuationAbnormalMaxSteps
+}
+
+// ChatMissingContinuationStepsForRequest reports how many reasoning
+// continuation rounds the current missing-finish request may use.
+func ChatMissingContinuationStepsForRequest(info *RelayInfo) int {
+	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+		return 0
+	}
+	if !rootcommon.ChatContinuationOnMissing || rootcommon.ChatContinuationMissingMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+		return 0
+	}
+	return rootcommon.ChatContinuationMissingMaxSteps
 }
 
 // ChatContinuationStepsForRequest reports how many continuation rounds the

@@ -441,6 +441,16 @@ export type OperationsSettings = {
   'perf_metrics_setting.retention_days': number
   'video_estimate_setting.base_url': string
   'video_estimate_setting.api_key': string
+  relay_chat_continuation_on_abnormal: boolean
+  relay_chat_continuation_on_missing: boolean
+  relay_chat_continuation_channels: string
+  relay_chat_continuation_max_steps: number
+  relay_chat_continuation_abnormal_max_steps: number
+  relay_chat_continuation_abnormal_max_reasoning_bytes: number
+  relay_chat_continuation_abnormal_min_reasoning_chars: number
+  relay_chat_continuation_missing_max_steps: number
+  relay_chat_continuation_missing_max_reasoning_bytes: number
+  relay_chat_continuation_missing_min_reasoning_chars: number
 }
 
 export type SecuritySettings = {

@@ -165,6 +165,31 @@ func writeStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, f
 	return helper.ObjectData(c, lastStreamResponse)
 }
 
+func resetContinuationCoalescer(info *relaycommon.RelayInfo) {
+	if info == nil {
+		return
+	}
+	if ms := info.ChannelSetting.StreamCoalesceMs; ms > 0 {
+		info.StreamCoalescer = streammerge.New(streammerge.Config{MaxDelay: time.Duration(ms) * time.Millisecond})
+	} else {
+		info.StreamCoalescer = nil
+	}
+}
+
+func continuationReasoningLimit(info *relaycommon.RelayInfo) int {
+	if info == nil || info.ChatContinuation == nil {
+		return 0
+	}
+	limit := 0
+	if cfg := info.ChatContinuation.Abnormal; cfg != nil && cfg.MaxReasoningBytes > limit {
+		limit = cfg.MaxReasoningBytes
+	}
+	if cfg := info.ChatContinuation.Missing; cfg != nil && cfg.MaxReasoningBytes > limit {
+		limit = cfg.MaxReasoningBytes
+	}
+	return limit
+}
+
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -179,6 +204,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var systemFingerprint string
 	var containStreamUsage bool
 	var responseTextBuilder strings.Builder
+	// Captured reasoning for the abnormal-finish continuation mode. The cap is
+	// enforced here so a 900s thinking round cannot grow process memory without
+	// bound; if the trace is truncated the continuation is skipped.
+	var reasoningTextBuilder strings.Builder
+	reasoningBytes := 0
+	reasoningTruncated := false
+	visibleContentChars := 0
+	streamChoiceCount := 0
 	var toolCount int
 	var usage = &dto.Usage{}
 	var lastStreamData string
@@ -228,10 +261,33 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		currentWithoutUsage := ""
 		if len(data) > 0 {
 			var streamResp struct {
-				Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
-				Usage   *dto.Usage                                `json:"usage"`
+				ID                string                                    `json:"id"`
+				Created           int64                                     `json:"created"`
+				Model             string                                    `json:"model"`
+				SystemFingerprint string                                    `json:"system_fingerprint"`
+				Choices           []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
+				Usage             *dto.Usage                                `json:"usage"`
 			}
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil {
+				for _, choice := range streamResp.Choices {
+					if choice.Index+1 > streamChoiceCount {
+						streamChoiceCount = choice.Index + 1
+					}
+				}
+				// A missing-finish stream may have no terminal chunk to carry
+				// the envelope, so capture it from the first chunk that has it.
+				if responseId == "" && streamResp.ID != "" {
+					responseId = streamResp.ID
+				}
+				if createAt == 0 && streamResp.Created > 0 {
+					createAt = streamResp.Created
+				}
+				if model == "" && streamResp.Model != "" {
+					model = streamResp.Model
+				}
+				if systemFingerprint == "" && streamResp.SystemFingerprint != "" {
+					systemFingerprint = streamResp.SystemFingerprint
+				}
 				for _, choice := range streamResp.Choices {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						currentHasFinish = true
@@ -264,6 +320,25 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 						usage = dto.MergeUsage(usage, streamResp.Usage)
 						containStreamUsage = true
 					}
+				}
+			}
+			if info.ChatContinuation != nil && (info.ChatContinuation.Abnormal != nil || info.ChatContinuation.Missing != nil) {
+				limit := continuationReasoningLimit(info)
+				if limit <= 0 {
+					limit = 512 * 1024
+				}
+				for _, choice := range streamResp.Choices {
+					visibleContentChars += len(choice.Delta.GetContentString())
+					reasoning := choice.Delta.GetReasoningContent()
+					if reasoning == "" {
+						continue
+					}
+					if reasoningBytes+len(reasoning) > limit {
+						reasoningTruncated = true
+						continue
+					}
+					reasoningTextBuilder.WriteString(reasoning)
+					reasoningBytes += len(reasoning)
 				}
 			}
 			// Apply provider-specific cache extraction before the previous
@@ -537,8 +612,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// so continue the same answer inside this same client stream instead of
 	// truncating it. The branch is inert unless the relay enabled continuation for
 	// this request (info.ChatContinuation != nil).
-	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount) && len(streamFunctionCallNames) == 0 {
-		result := runChatContinuation(c, info, usage, responseTextBuilder.String())
+	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount, streamChoiceCount) && len(streamFunctionCallNames) == 0 {
+		resetContinuationCoalescer(info)
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		// A caller-side disconnect during the continuation rounds stays billable
 		// (same rule as client_gone on a normal stream): the provider already
 		// generated the merged usage.
@@ -549,7 +625,82 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
+	// Abnormal-finish continuation (900s cut-off shape): the provider ended
+	// with finish_reason=error before any visible content, after emitting a long
+	// reasoning trace. Resume the thinking round inside the same client stream
+	// instead of surfacing the failure. Must run before the terminal/usage frame
+	// switch below, otherwise the client would receive the provider's error
+	// terminal frame and no continuation could repair it.
+	if streamAbnormalFinish != "" && !reasoningTruncated &&
+		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
+		len(streamFunctionCallNames) == 0 {
+		resetContinuationCoalescer(info)
+		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			// The caller walked away mid-continuation: the provider already
+			// generated the observed usage (same rule as client_gone on a
+			// normal stream), so keep it billable and do not synthesize an
+			// error nobody can receive.
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
+	// Missing-finish continuation (60s silent cut shape): the provider reached
+	// EOF/[DONE] without any terminal finish_reason, emitted only reasoning, and
+	// therefore delivered no visible answer. Resume the thinking round inside
+	// the same client stream instead of surfacing a truncation.
+	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
+		streamMissingFinishMarksTruncation(info, isAudioModel) &&
+		chatMissingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount, streamFinishSeen) &&
+		len(streamFunctionCallNames) == 0 {
+		resetContinuationCoalescer(info)
+		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
 		}

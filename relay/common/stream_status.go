@@ -131,6 +131,27 @@ func (s *StreamStatus) MarkIncomplete(reason string) {
 	s.markTerminal(ResponseOutcomeIncomplete, reason)
 }
 
+// MarkRecovered turns a failed stream into a delivered one after a successful
+// continuation round. The first attempt's abnormal finish_reason is expected to
+// have marked the response failed; settlement and health sampling must see the
+// merged result as success, while the original error text stays out of the
+// outcome snapshot.
+func (s *StreamStatus) MarkRecovered() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.response = ResponseOutcomeCompleted
+	s.errorCode = ""
+	s.errorType = ""
+	s.errorStatus = 0
+	s.incompleteReason = ""
+	s.Errors = nil
+	s.ErrorCount = 0
+	s.EndError = nil
+}
+
 func (s *StreamStatus) MarkCancelled() {
 	s.markTerminal(ResponseOutcomeCancelled, "")
 }

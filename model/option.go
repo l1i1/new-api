@@ -229,6 +229,19 @@ func InitOptionMap() {
 	common.OptionMap[operation_setting.ErrorMessageFilterPatternOptionKey] = operation_setting.GetErrorMessageFilterPattern()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
 
+	// Chat continuation settings are DB-backed; these values only seed a fresh
+	// database (the env vars remain first-boot defaults).
+	common.OptionMap[common.ChatContinuationOptionOnAbnormal] = strconv.FormatBool(common.ChatContinuationOnAbnormal)
+	common.OptionMap[common.ChatContinuationOptionOnMissing] = strconv.FormatBool(common.ChatContinuationOnMissing)
+	common.OptionMap[common.ChatContinuationOptionChannels] = common.ChatContinuationChannelsRaw
+	common.OptionMap[common.ChatContinuationOptionMaxSteps] = strconv.Itoa(common.ChatContinuationMaxSteps)
+	common.OptionMap[common.ChatContinuationOptionAbnormalMaxSteps] = strconv.Itoa(common.ChatContinuationAbnormalMaxSteps)
+	common.OptionMap[common.ChatContinuationOptionAbnormalMaxReasoningBytes] = strconv.Itoa(common.ChatContinuationAbnormalMaxReasoningBytes)
+	common.OptionMap[common.ChatContinuationOptionAbnormalMinReasoningChars] = strconv.Itoa(common.ChatContinuationAbnormalMinReasoningChars)
+	common.OptionMap[common.ChatContinuationOptionMissingMaxSteps] = strconv.Itoa(common.ChatContinuationMissingMaxSteps)
+	common.OptionMap[common.ChatContinuationOptionMissingMaxReasoningBytes] = strconv.Itoa(common.ChatContinuationMissingMaxReasoningBytes)
+	common.OptionMap[common.ChatContinuationOptionMissingMinReasoningChars] = strconv.Itoa(common.ChatContinuationMissingMinReasoningChars)
+
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()
 	maps.Copy(common.OptionMap, modelConfigs)
@@ -318,6 +331,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if strings.HasPrefix(key, common.ChatContinuationOptionPrefix) {
+		return common.ValidateChatContinuationOption(key, value)
+	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
 		return err
 	}
@@ -511,6 +527,9 @@ func updateOptionMap(key string, value string) (err error) {
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value
+	if strings.HasPrefix(key, common.ChatContinuationOptionPrefix) {
+		return common.SetChatContinuationOption(key, value)
+	}
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {

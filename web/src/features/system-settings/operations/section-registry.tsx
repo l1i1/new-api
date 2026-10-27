@@ -21,6 +21,7 @@ import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { VideoEstimateSettingsSection } from '../integrations/video-estimate-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
+import { ContinuationSection } from '../maintenance/continuation-section'
 import { ErrorMessageFilterSection } from '../maintenance/error-message-filter-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
@@ -152,6 +153,36 @@ const OPERATIONS_SECTIONS = [
             settings['performance_setting.monitor_memory_threshold'] ?? 90,
           'performance_setting.monitor_disk_threshold':
             settings['performance_setting.monitor_disk_threshold'] ?? 95,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'continuation',
+    titleKey: 'Chat Continuation',
+    build: (settings: OperationsSettings) => (
+      <ContinuationSection
+        defaultValues={{
+          relay_chat_continuation_on_abnormal:
+            settings.relay_chat_continuation_on_abnormal,
+          relay_chat_continuation_on_missing:
+            settings.relay_chat_continuation_on_missing,
+          relay_chat_continuation_channels:
+            settings.relay_chat_continuation_channels,
+          relay_chat_continuation_max_steps:
+            settings.relay_chat_continuation_max_steps,
+          relay_chat_continuation_abnormal_max_steps:
+            settings.relay_chat_continuation_abnormal_max_steps,
+          relay_chat_continuation_abnormal_max_reasoning_bytes:
+            settings.relay_chat_continuation_abnormal_max_reasoning_bytes,
+          relay_chat_continuation_abnormal_min_reasoning_chars:
+            settings.relay_chat_continuation_abnormal_min_reasoning_chars,
+          relay_chat_continuation_missing_max_steps:
+            settings.relay_chat_continuation_missing_max_steps,
+          relay_chat_continuation_missing_max_reasoning_bytes:
+            settings.relay_chat_continuation_missing_max_reasoning_bytes,
+          relay_chat_continuation_missing_min_reasoning_chars:
+            settings.relay_chat_continuation_missing_min_reasoning_chars,
         }}
       />
     ),
