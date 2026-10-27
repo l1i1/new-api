@@ -413,6 +413,21 @@ func rewriteContinuationChunkMeta(data string, meta chatContinuationMeta) string
 	return data
 }
 
+// flushContinuationCoalescer flushes buffered deltas of the continuation
+// rounds before the terminal frame. The normal stream path flushes right after
+// the upstream body ends; a continuation returns early, so it must flush here
+// or the client receives the terminal frame before the buffered content.
+func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
+	if info == nil || !info.StreamCoalescer.Enabled() {
+		return
+	}
+	for _, merged := range info.StreamCoalescer.Close() {
+		if err := writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+			logger.LogError(c, "error writing coalesced continuation event: "+err.Error())
+		}
+	}
+}
+
 // sendChatContinuationTerminal renders the single terminal frame for a
 // transparently continued response. Usage is emitted separately by
 // HandleFinalResponse so the client sees exactly one terminal frame and at most
@@ -539,6 +554,10 @@ func writeThinkingContinuationPing(c *gin.Context) error {
 // second attempt's prefill/header wait. The ping goroutine owns the client
 // writer until Send returns; body deltas are only forwarded after that, so the
 // writer is never touched concurrently.
+// thinkingContinuationPingInterval is a variable so tests can shorten the
+// keep-alive window without waiting ten seconds.
+var thinkingContinuationPingInterval = 10 * time.Second
+
 type thinkingContinuationSendResult struct {
 	resp *http.Response
 	err  error
@@ -550,7 +569,7 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, cfg *relaycommon.Chat
 		resp, err := cfg.Send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(thinkingContinuationPingInterval)
 	defer ticker.Stop()
 	for {
 		select {

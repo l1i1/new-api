@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -518,4 +519,70 @@ func TestRewriteContinuationChunkMeta(t *testing.T) {
 
 	noFP := rewriteContinuationChunkMeta(`{"id":"chat_2","created":222,"model":"other","system_fingerprint":"fp_2"}`, chatContinuationMeta{ID: "chat_1", Created: 111, Model: "m"})
 	require.NotContains(t, noFP, "system_fingerprint", "fingerprint is removed when the first round had none")
+}
+
+// TestOaiStreamHandlerFlushesCoalescedContinuationBeforeTerminal pins the
+// early-return flush: channels with stream coalescing must not let the terminal
+// frame overtake (or drop) the resumed round's buffered content.
+func TestOaiStreamHandlerFlushesCoalescedContinuationBeforeTerminal(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"最终"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	info.ChannelSetting.StreamCoalesceMs = 1
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	body := recorder.Body.String()
+	terminalAt := strings.Index(body, `"finish_reason":"stop"`)
+	require.NotEqual(t, -1, terminalAt)
+	// The first content delta flushes immediately; the second one is buffered by
+	// the coalescer and must be flushed before the terminal frame.
+	secondAt := strings.Index(body, "答案")
+	require.NotEqual(t, -1, secondAt, "buffered continuation content must be flushed")
+	require.Less(t, secondAt, terminalAt, "buffered content must precede the terminal frame")
+}
+
+// TestOaiStreamHandlerWritesPingWhileWaitingForContinuation proves the header
+// wait keeps the SSE connection alive; the short ticker override keeps the test
+// fast and the race detector can verify the writer-only ping.
+func TestOaiStreamHandlerWritesPingWhileWaitingForContinuation(t *testing.T) {
+	oldInterval := thinkingContinuationPingInterval
+	thinkingContinuationPingInterval = 5 * time.Millisecond
+	t.Cleanup(func() { thinkingContinuationPingInterval = oldInterval })
+
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		time.Sleep(20 * time.Millisecond)
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), ": PING")
 }

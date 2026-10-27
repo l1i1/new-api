@@ -575,6 +575,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
+			flushContinuationCoalescer(c, info)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -608,6 +609,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			flushContinuationCoalescer(c, info)
 			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
