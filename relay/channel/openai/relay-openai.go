@@ -191,6 +191,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var deepSeekV4PendingFinalData string
 	var kimiK3PendingFinalData string
 	var streamErr *types.NewAPIError
+	// streamAbnormalFinish keeps the first non-terminal finish reason a provider
+	// used to signal a failed generation (e.g. "error" from aggregators,
+	// "engine_overloaded" from the official Moonshot endpoint). Such a stream
+	// ends with [DONE] and a normal transport end, but it did not deliver a
+	// finished answer, so the request must not settle or log as a success.
+	var streamAbnormalFinish string
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
@@ -223,6 +229,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						currentHasFinish = true
 						info.StreamFinishReason = *choice.FinishReason
+						if relaycommon.IsAbnormalFinishReason(*choice.FinishReason) {
+							if streamAbnormalFinish == "" {
+								streamAbnormalFinish = *choice.FinishReason
+							}
+							info.StreamStatus.MarkFailed("upstream_finish_reason", "upstream_error", http.StatusBadGateway)
+							info.StreamStatus.RecordError("upstream finish_reason=" + *choice.FinishReason)
+						}
 					}
 				}
 				if streamResp.Usage != nil {
@@ -587,6 +600,15 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
+	if streamAbnormalFinish != "" {
+		// The client has received the provider's own terminal frame, but the
+		// generation failed: surface it as a failed request so the controller
+		// refunds the reservation instead of settling it as a success.
+		return usage, types.NewOpenAIError(
+			fmt.Errorf("upstream terminated the stream with finish_reason %q", streamAbnormalFinish),
+			types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+	}
+
 	return usage, nil
 }
 
@@ -702,6 +724,16 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "openai_finish_reason=content_filter")
 			break
+		}
+	}
+	// A non-terminal finish reason means the provider failed the generation
+	// (aggregator "error", official "engine_overloaded"/capacity values). The
+	// body must not be forwarded or settled as a success.
+	for _, choice := range simpleResponse.Choices {
+		if relaycommon.IsAbnormalFinishReason(choice.FinishReason) {
+			return &simpleResponse.Usage, types.NewOpenAIError(
+				fmt.Errorf("upstream returned finish_reason %q", choice.FinishReason),
+				types.ErrorCode("upstream_error"), http.StatusBadGateway, types.ErrOptionWithSkipRetry())
 		}
 	}
 
