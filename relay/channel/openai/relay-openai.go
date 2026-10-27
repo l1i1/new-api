@@ -673,6 +673,45 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	if streamAbnormalFinish != "" {
+		common.SysLog(fmt.Sprintf("abnormal finish observed: ch=%d reason=%s content=%d reasoning=%d truncated=%v continuation=%v abnormalCfg=%v failed=%v clientMax=%d completion=%d",
+			info.ChannelId, streamAbnormalFinish, visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
+			info.ChatContinuation != nil, info.ChatContinuation != nil && info.ChatContinuation.Abnormal != nil,
+			info.StreamStatus != nil && info.StreamStatus.ResponseFailed(), info.ClientMaxTokens, usage.CompletionTokens))
+	}
+
+	// Length-cap continuation during the thinking phase (32k cap, no visible
+	// answer yet): the prefix continuation has nothing to replay, so resume the
+	// thinking round from the captured reasoning instead of truncating.
+	if streamAbnormalFinish == "" && !reasoningTruncated &&
+		chatLengthThinkingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
+		len(streamFunctionCallNames) == 0 {
+		common.SysLog(fmt.Sprintf("length thinking continuation: ch=%d reasoning=%d clientMax=%d completion=%d", info.ChannelId, reasoningTextBuilder.Len(), info.ClientMaxTokens, usage.CompletionTokens))
+		resetContinuationCoalescer(info)
+		result := runLengthThinkingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			common.SysLog(fmt.Sprintf("length thinking continuation recovered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
 	// Missing-finish continuation (60s silent cut shape): the provider reached
 	// EOF/[DONE] without any terminal finish_reason, emitted only reasoning, and
 	// therefore delivered no visible answer. Resume the thinking round inside

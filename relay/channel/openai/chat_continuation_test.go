@@ -924,3 +924,49 @@ func TestContinuationCountsEachToolCallOnce(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 1, tool.CallCount, "one tool call split over two chunks must be billed once")
 }
+
+// TestOaiStreamHandlerContinuesThinkingAfterLengthCap covers the 32k-cap shape
+// where the provider stops on its output cap while the model is still thinking:
+// there is no visible content to replay, so the thinking continuation resumes
+// from the captured reasoning and the client still sees one normal completion.
+func TestOaiStreamHandlerContinuesThinkingAfterLengthCap(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	var gotReasoning string
+	var gotRemaining int
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		calls++
+		gotReasoning, gotRemaining = reasoning, remaining
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "the length cap with no visible content resumes the thinking round")
+	require.Equal(t, "思考一思考二", gotReasoning)
+	require.Equal(t, 90, gotRemaining)
+	require.Equal(t, 13, usage.CompletionTokens, "reasoning from both rounds is billed once")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+	require.False(t, info.StreamStatus.ResponseFailed())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "最终答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, `"finish_reason":"length"`, "the capped round's terminal frame is suppressed")
+}

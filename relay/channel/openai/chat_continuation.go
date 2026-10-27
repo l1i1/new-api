@@ -225,6 +225,55 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	return true
 }
 
+// chatLengthThinkingContinuationCandidate decides whether a stream that hit the
+// provider output cap (finish_reason=length) before any visible content can be
+// resumed from its captured reasoning. This is the 32k cap landing during the
+// thinking phase: the prefix-based length continuation has no visible answer to
+// replay, so the thinking continuation path has to take over.
+func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Abnormal == nil {
+		return false
+	}
+	cfg := info.ChatContinuation.Abnormal
+	if cfg.Send == nil || cfg.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
+		return false
+	}
+	if contentChars > 0 {
+		return false
+	}
+	minChars := cfg.MinReasoningChars
+	if minChars <= 0 {
+		minChars = 512
+	}
+	if reasoningChars < minChars {
+		return false
+	}
+	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+		return false
+	}
+	return true
+}
+
+// runLengthThinkingChatContinuation resumes a thinking round that died on the
+// provider output cap. It reuses the reasoning continuation sender; the initial
+// finish stays "length" so a round that ends without an answer is not reported
+// as a normal completion.
+func runLengthThinkingChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Abnormal, "length", meta)
+}
+
 // runAbnormalChatContinuation resumes a cut-off thinking round. The captured
 // reasoning is replayed as the assistant body (upstreams ignore
 // reasoning_content in history); intermediate terminal/usage frames are
