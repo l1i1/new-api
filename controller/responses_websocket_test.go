@@ -1010,6 +1010,17 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 				setting.ModelRequestRateLimitDurationMinutes = 1
 				setting.ModelRequestRateLimitSuccessCount = 1
 				setting.ModelRequestRateLimitCount = 0
+				// Phase B client-visible clamp: this case's upstream terminal reports
+				// output_tokens=10 while the client budget is 1.
+				expectedTerminal := terminal
+				expectedEvents := events
+				if tc.name == "failed-actual-usage" {
+					expectedTerminal = strings.Replace(terminal, `"output_tokens":10,"total_tokens":1010`, `"output_tokens":1,"total_tokens":1001`, 1)
+					expectedEvents = make([]string, len(events))
+					for i, event := range events {
+						expectedEvents[i] = strings.Replace(event, `"output_tokens":10,"total_tokens":1010`, `"output_tokens":1,"total_tokens":1001`, 1)
+					}
+				}
 				if transport == "http-sse" {
 					request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hi","stream":true,"max_output_tokens":1}`))
 					require.NoError(t, err)
@@ -1021,13 +1032,13 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 					require.NoError(t, err)
 					require.NoError(t, response.Body.Close())
 					assert.Equal(t, http.StatusOK, response.StatusCode)
-					assert.Contains(t, string(body), terminal)
+					assert.Contains(t, string(body), expectedTerminal)
 				} else {
 					require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","stream_id":"planner","model":"ws-billing","input":"hi","max_output_tokens":1}`)))
-					for _, expected := range events {
+					for _, expected := range expectedEvents {
 						actual, err := common.Marshal(readResponsesWSTestEvent(t, fixture.client))
 						require.NoError(t, err)
-						assert.JSONEq(t, expected, string(actual), "upstream frames must be delivered once and unchanged")
+						assert.JSONEq(t, expected, string(actual), "upstream frames must be delivered once with the client usage clamped")
 					}
 				}
 				// A failed terminal did not deliver a usable result: HTTP refunds

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -116,6 +117,18 @@ func SetEventStreamHeaders(c *gin.Context) {
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 }
 
+// relayInfoForClientUsage resolves the current relay info for the final
+// client-usage clamp applied by the stream writers below.
+func relayInfoForClientUsage(c *gin.Context) *relaycommon.RelayInfo {
+	if c == nil {
+		return nil
+	}
+	if info, ok := common.GetContextKeyType[*relaycommon.RelayInfo](c, constant.ContextKeyRelayInfoPtr); ok {
+		return info
+	}
+	return nil
+}
+
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	if requestContextDone(c) {
 		return nil
@@ -126,6 +139,7 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	if err != nil {
 		common.SysError("error marshalling stream response: " + err.Error())
 	} else {
+		jsonData = relaycommon.ClampClientUsageJSON(relayInfoForClientUsage(c), jsonData)
 		c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
 	}
@@ -271,6 +285,9 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 		return
 	}
 
+	// Phase B last stop: the upstream message_delta may carry an accumulated
+	// output_tokens above the client's max_tokens; cap it before rendering.
+	data = string(relaycommon.ClampClientUsageJSON(relayInfoForClientUsage(c), common.StringToByteSlice(data)))
 	// Claude-native SSE writer: scan the event for an implausible usage the
 	// same way StringData does (see service.SanitizeClientUsageJSON). The
 	// typed patch above only rewrites the fields this fork models; a Claude
@@ -289,6 +306,7 @@ func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data st
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
+	data = string(relaycommon.ClampClientUsageJSON(relayInfoForClientUsage(c), common.StringToByteSlice(data)))
 	// Shared Responses SSE writer: scan the event for an implausible usage the
 	// same way StringData does (see service.SanitizeClientUsageJSON).
 	data = string(service.SanitizeClientUsageJSON(common.StringToByteSlice(data)))
@@ -307,6 +325,11 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
+	// Phase B last stop: cap an accumulated completion count to the request's
+	// output budget before the chunk is rendered to the client. The clamp is
+	// gated on a substring probe and a positive budget, so ordinary content
+	// chunks are untouched.
+	str = string(relaycommon.ClampClientUsageJSON(relayInfoForClientUsage(c), common.StringToByteSlice(str)))
 	// Shared SSE writer: a chunk forwarded verbatim still has to be scanned for
 	// an implausible usage (see service.SanitizeClientUsageJSON). The scan is
 	// gated on a substring check, so ordinary content chunks are untouched.

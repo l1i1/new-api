@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -112,4 +113,31 @@ func TestClampUsageToClientBudget(t *testing.T) {
 		require.False(t, ClampUsageToClientBudget(nil, &dto.Usage{}))
 		require.False(t, ClampUsageToClientBudget(&RelayInfo{ClientMaxTokens: 1}, nil))
 	})
+}
+
+// TestClampUsageToClientBudgetGeminiJointBudget pins P0-3: Gemini's
+// maxOutputTokens covers candidates + thoughts together, so the pair must be
+// clamped jointly and the total adjusted by exactly the removed tokens.
+func TestClampUsageToClientBudgetGeminiJointBudget(t *testing.T) {
+	info := &RelayInfo{ClientMaxTokens: 100}
+	usage := &dto.Usage{
+		PromptTokens:     50,
+		CompletionTokens: 380,
+		TotalTokens:      430,
+		BillingUsage: &dto.BillingUsage{GeminiUsageMetadata: &dto.GeminiUsageMetadata{
+			PromptTokenCount:     50,
+			CandidatesTokenCount: 80,
+			ThoughtsTokenCount:   300,
+			TotalTokenCount:      430,
+		}},
+	}
+
+	require.True(t, ClampUsageToClientBudget(info, usage))
+	assert.Equal(t, 100, usage.CompletionTokens)
+	assert.Equal(t, 150, usage.TotalTokens)
+	gm := usage.BillingUsage.GeminiUsageMetadata
+	assert.Equal(t, 80, gm.CandidatesTokenCount)
+	assert.Equal(t, 20, gm.ThoughtsTokenCount)
+	assert.Equal(t, 150, gm.TotalTokenCount)
+	assert.Equal(t, 380, info.UpstreamRawCompletionTokens)
 }

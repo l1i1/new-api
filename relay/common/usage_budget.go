@@ -72,8 +72,12 @@ func maxCompletionAcrossCopies(usage *dto.Usage) int {
 	if bu.ClaudeUsage != nil && bu.ClaudeUsage.OutputTokens > raw {
 		raw = bu.ClaudeUsage.OutputTokens
 	}
-	if bu.GeminiUsageMetadata != nil && bu.GeminiUsageMetadata.CandidatesTokenCount > raw {
-		raw = bu.GeminiUsageMetadata.CandidatesTokenCount
+	if gm := bu.GeminiUsageMetadata; gm != nil {
+		// Gemini's maxOutputTokens covers candidates and thoughts together, so
+		// either copy exceeding the budget is an accumulated count.
+		if geminiOutput := gm.CandidatesTokenCount + gm.ThoughtsTokenCount; geminiOutput > raw {
+			raw = geminiOutput
+		}
 	}
 	return raw
 }
@@ -94,13 +98,29 @@ func clampBillingUsageToBudget(bu *dto.BillingUsage, budget int) {
 	if cu := bu.ClaudeUsage; cu != nil && cu.OutputTokens > budget {
 		cu.OutputTokens = budget
 	}
-	if gm := bu.GeminiUsageMetadata; gm != nil && gm.CandidatesTokenCount > budget {
-		gm.CandidatesTokenCount = budget
-		if gm.ThoughtsTokenCount > budget {
-			gm.ThoughtsTokenCount = budget
-		}
-		if gm.TotalTokenCount > gm.PromptTokenCount+budget {
-			gm.TotalTokenCount = gm.PromptTokenCount + budget
+	if gm := bu.GeminiUsageMetadata; gm != nil {
+		// maxOutputTokens is a joint candidate+thoughts budget: clamp the pair
+		// together (candidates first, thoughts get the remainder) and keep the
+		// total consistent without discarding unrelated components such as
+		// tool-use prompt tokens.
+		raw := gm.CandidatesTokenCount + gm.ThoughtsTokenCount
+		if raw > budget {
+			newCandidates := gm.CandidatesTokenCount
+			if newCandidates > budget {
+				newCandidates = budget
+			}
+			newThoughts := gm.ThoughtsTokenCount
+			if remaining := budget - newCandidates; newThoughts > remaining {
+				newThoughts = remaining
+			}
+			if gm.TotalTokenCount > 0 {
+				gm.TotalTokenCount -= raw - (newCandidates + newThoughts)
+				if gm.TotalTokenCount < 0 {
+					gm.TotalTokenCount = 0
+				}
+			}
+			gm.CandidatesTokenCount = newCandidates
+			gm.ThoughtsTokenCount = newThoughts
 		}
 	}
 }

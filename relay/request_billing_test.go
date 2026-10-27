@@ -10,6 +10,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 )
 
 // minimalContainerBase64 is an ISO-BMFF movie with one track (1920x1080,
@@ -72,4 +73,22 @@ func TestPrepareRequestBillingReadsTheSelectedChannelFromTheContext(t *testing.T
 	if got := info.GetVideoTokens(); got <= 0 {
 		t.Fatalf("the gate must price the video part from the context channel settings, got %d", got)
 	}
+}
+
+// TestPrepareRequestBillingReadsGeminiMaxOutputTokens pins P0-2: a native
+// Gemini request's generationConfig.maxOutputTokens is the client output budget;
+// without it ClientMaxTokens stays zero and Phase B never clamps the request.
+func TestPrepareRequestBillingReadsGeminiMaxOutputTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-pro:generateContent", nil)
+	maxOut := uint(2048)
+	info := &relaycommon.RelayInfo{
+		Request: &dto.GeminiChatRequest{
+			GenerationConfig: dto.GeminiChatGenerationConfig{MaxOutputTokens: &maxOut},
+		},
+		OriginModelName: "gemini-pro",
+	}
+	_ = PrepareRequestBilling(c, info) // pricing may fail; the extraction must already have run
+	assert.Equal(t, 2048, info.ClientMaxTokens)
 }

@@ -438,6 +438,10 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				return nil
 			}
 			info.SetFirstResponseTime()
+			// Phase B client-visible clamp: a terminal/frame may carry an
+			// accumulated output count above the request budget. Patch the body
+			// before it is stored as the terminal frame or relayed to the client.
+			incoming.body = relaycommon.ClampClientUsageJSON(info, incoming.body)
 			var event struct {
 				dto.ResponsesStreamResponse
 				StreamID string `json:"stream_id"`

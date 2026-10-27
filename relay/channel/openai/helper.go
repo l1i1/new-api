@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -260,6 +261,11 @@ func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResu
 			logger.LogError(c, "failed to marshal gemini response: "+err.Error())
 			return err
 		}
+		var info *relaycommon.RelayInfo
+		if c != nil {
+			info, _ = common.GetContextKeyType[*relaycommon.RelayInfo](c, constant.ContextKeyRelayInfoPtr)
+		}
+		data = relaycommon.ClampClientUsageJSON(info, data)
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(data)})
 		_ = helper.FlushWriter(c)
 	}

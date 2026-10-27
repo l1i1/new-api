@@ -39,6 +39,9 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		case *dto.ClaudeRequest:
 			meta.MaxTokens = int(lo.FromPtr(request.MaxTokens))
 			info.ClientMaxTokens = meta.MaxTokens
+		case *dto.GeminiChatRequest:
+			meta.MaxTokens = int(lo.FromPtr(request.GenerationConfig.MaxOutputTokens))
+			info.ClientMaxTokens = meta.MaxTokens
 		case *dto.ImageRequest:
 			meta = request.GetTokenCountMeta()
 		}
@@ -55,6 +58,8 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 			info.ClientMaxTokens = int(lo.FromPtr(request.MaxOutputTokens))
 		case *dto.ClaudeRequest:
 			info.ClientMaxTokens = int(lo.FromPtr(request.MaxTokens))
+		case *dto.GeminiChatRequest:
+			info.ClientMaxTokens = int(lo.FromPtr(request.GenerationConfig.MaxOutputTokens))
 		}
 	}
 

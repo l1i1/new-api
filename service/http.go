@@ -62,6 +62,12 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) erro
 		}
 	}
 
+	// Phase B last stop for client-visible usage: a verbatim upstream body may
+	// carry an accumulated completion count above the request's max_tokens.
+	// Clamp it before the bytes (and their Content-Length) reach the client.
+	if info, ok := relayInfoFromContext(c); ok && info != nil {
+		data = relaycommon.ClampClientUsageJSON(info, data)
+	}
 	// Last line of defense for the client's copy of the numbers: a verbatim
 	// upstream body in any relay format has its usage zeroed when it carries an
 	// implausible count (see SanitizeClientUsageJSON).
