@@ -224,6 +224,12 @@ type RelayInfo struct {
 	// upstream-reported completion_tokens against it: output can never
 	// legitimately exceed the budget the requester asked for. 0 = undeclared.
 	ClientMaxTokens int
+	// UpstreamRawCompletionTokens keeps the largest upstream-reported
+	// completion count seen before ClampUsageToClientBudget capped it to
+	// ClientMaxTokens. It feeds the alarm-only usage-deviation marker so the
+	// clamp cannot hide accumulation from on-call; the client, the consume log
+	// and the settlement all use the clamped value.
+	UpstreamRawCompletionTokens int
 	// ImageRequestCount is the effective quantity sent on the current attempt;
 	// ImageQuotaBeforeGroup is the frozen legacy estimate before request ratios.
 	ImageRequestCount     int

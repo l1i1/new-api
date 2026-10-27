@@ -44,6 +44,10 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if responseID := helper.GetResponseID(c); responseID != "" {
 		chatResp.Id = responseID
 	}
+	// Cap the output count at the request's declared budget before the usage is
+	// converted into the client's Responses payload and before settlement:
+	// aggregator continuation retries can accumulate several internal rounds.
+	relaycommon.ClampUsageToClientBudget(info, &chatResp.Usage)
 	convertResult, err := service.ConvertResponse(c, info, types.RelayFormatOpenAIResponses, &chatResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -193,6 +197,11 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	usage := state.Usage()
 	if usage == nil || usage.TotalTokens == 0 {
 		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		state.SetUsage(usage)
+	}
+	// Cap the output count at the declared budget before the terminal
+	// response.completed event is rendered and before the caller settles it.
+	if relaycommon.ClampUsageToClientBudget(info, usage) {
 		state.SetUsage(usage)
 	}
 

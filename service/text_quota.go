@@ -404,6 +404,12 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+	// Billing-side safety net for the same rule the adaptors apply before they
+	// render the client's usage: output can never legitimately exceed the
+	// request's declared budget, so an accumulated count is capped here even for
+	// request paths that did not clamp the client-visible copy themselves. The
+	// raw upstream count stays on RelayInfo for the deviation marker.
+	relaycommon.ClampUsageToClientBudget(relayInfo, usage)
 	billingUsage := effectiveBillingUsage(usage)
 	// A channel marked with video usage estimation reports a prompt count that
 	// ignores the video payload entirely. Two corrections are possible, in

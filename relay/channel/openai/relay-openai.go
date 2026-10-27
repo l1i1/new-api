@@ -405,6 +405,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			patchZeroCompletionUsage(c, info, usage, responseText, toolCount)
 		}
 		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+		// Cap the output count at the budget the request declared before this
+		// usage is settled and recorded: aggregator continuation retries can
+		// accumulate several internal rounds into one usage, and max_tokens is
+		// a hard request-side invariant.
+		relaycommon.ClampUsageToClientBudget(info, usage)
 
 		// A caller that walked away mid-stream is not an upstream failure, and
 		// there is nobody left to receive an error: settle the observed usage and
@@ -492,6 +497,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(usageFrame))
+	// Cap the output count before the terminal/usage frames are rendered, so
+	// the client, the consume log and the settlement all carry the same number
+	// (see ClampUsageToClientBudget for why upstream accumulation happens).
+	relaycommon.ClampUsageToClientBudget(info, usage)
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
@@ -756,6 +765,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+	// Cap the output count before the body is rendered for the client and
+	// before the caller settles it: the displayed usage, the consume log and
+	// the invoice must agree, and no legitimate answer can exceed max_tokens.
+	if relaycommon.ClampUsageToClientBudget(info, &simpleResponse.Usage) {
+		usageModified = true
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:

@@ -116,10 +116,17 @@ func attachUsageDeviation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, ot
 	if relayInfo == nil || other == nil || usage == nil {
 		return
 	}
+	// report against the upstream's own count: ClampUsageToClientBudget has
+	// already capped the billed/displayed usage, and the raw value is what the
+	// guard must judge or the clamp would silence its own alarm.
+	completionTokens := float64(usage.CompletionTokens)
+	if float64(relayInfo.UpstreamRawCompletionTokens) > completionTokens {
+		completionTokens = float64(relayInfo.UpstreamRawCompletionTokens)
+	}
 	deviation := billingexpr.CheckUsageDeviation(
 		relayInfo.GetBillingModelName(),
 		float64(usage.PromptTokens),
-		float64(usage.CompletionTokens),
+		completionTokens,
 		float64(usage.PromptTokensDetails.CachedTokens),
 		float64(relayInfo.GetEstimatePromptTokens()),
 		float64(relayInfo.ClientMaxTokens),
