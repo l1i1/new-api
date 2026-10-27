@@ -287,14 +287,23 @@ while index < len(argv):
     index += 1
     if not flag.startswith("--"):
         continue
+    # The serializer emits --flag=value for values that start with "-" (the
+    # "-c" of `sh -c`), because a bare "-c" would be parsed as a flag. Accept
+    # both shapes here so the fake stays a faithful stand-in for the real CLI.
+    inline = None
+    if "=" in flag:
+        flag, inline = flag.split("=", 1)
     if flag in {"--ScalingConfigurationId", "--region"}:
-        if index < len(argv):
+        if inline is None and index < len(argv):
             index += 1
         continue
-    if index >= len(argv):
-        break
-    raw_value = argv[index]
-    index += 1
+    if inline is not None:
+        raw_value = inline
+    else:
+        if index >= len(argv):
+            break
+        raw_value = argv[index]
+        index += 1
     put(flag[2:].split("."), scalar(flag, raw_value))
 
 state["config"] = config

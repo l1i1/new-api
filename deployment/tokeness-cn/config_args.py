@@ -646,7 +646,22 @@ def desired_document(
 
 
 def add_arg(args: list[str], path: str, value: Any) -> None:
-    args.extend((path, validate_scalar(path, value)))
+    # An empty scalar must be omitted, not forwarded: the aliyun CLI 3.5.1
+    # argument parser treats the empty token as "no value given", consumes the
+    # following flag instead, and then rejects the shifted vector with a bogus
+    # "--c is not a valid parameter" error (2026-10-28 release .74 attempt).
+    # A replace call simply keeps the unset field unset, which is what the
+    # readback comparison expects as well.
+    if isinstance(value, str) and value == "":
+        return
+    scalar = validate_scalar(path, value)
+    if isinstance(scalar, str) and scalar.startswith("-"):
+        # A value such as the "-c" of `sh -c` would be parsed by the aliyun CLI
+        # as the next flag ("--c is not a valid parameter", 2026-10-28 .74
+        # rollout). The --flag=value form keeps it as one opaque token.
+        args.append(f"{path}={scalar}")
+        return
+    args.extend((path, scalar))
 
 
 def add_generic(args: list[str], prefix: str, value: Any, path: str) -> None:
