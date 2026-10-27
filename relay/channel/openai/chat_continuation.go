@@ -422,6 +422,11 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 				forward = true
 			}
+			for _, toolCall := range delta.ToolCalls {
+				// Round-1 tool calls are already counted by the main loop; the
+				// resumed round must contribute its own priced calls too.
+				info.CountBillableToolCall(dto.BuildInCallFunctionCall, toolCall.Function.Name)
+			}
 			if len(delta.ToolCalls) > 0 {
 				forward = true
 			}
