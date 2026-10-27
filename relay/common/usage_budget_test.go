@@ -76,6 +76,38 @@ func TestClampUsageToClientBudget(t *testing.T) {
 		require.Equal(t, 250, info.UpstreamRawCompletionTokens)
 	})
 
+	t.Run("claude and gemini billing semantics are detected too", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			biling *dto.BillingUsage
+			get    func(*dto.BillingUsage) int
+			raw    int
+		}{
+			{
+				name:   "claude",
+				biling: &dto.BillingUsage{ClaudeUsage: &dto.ClaudeUsage{InputTokens: 10, OutputTokens: 500}},
+				get:    func(b *dto.BillingUsage) int { return b.ClaudeUsage.OutputTokens },
+				raw:    500,
+			},
+			{
+				name: "gemini",
+				biling: &dto.BillingUsage{GeminiUsageMetadata: &dto.GeminiUsageMetadata{
+					PromptTokenCount: 10, CandidatesTokenCount: 500, TotalTokenCount: 510,
+				}},
+				get: func(b *dto.BillingUsage) int { return b.GeminiUsageMetadata.CandidatesTokenCount },
+				raw: 500,
+			},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				info := &RelayInfo{ClientMaxTokens: 100}
+				usage := &dto.Usage{PromptTokens: 10, CompletionTokens: 100, TotalTokens: 110, BillingUsage: testCase.biling}
+				require.True(t, ClampUsageToClientBudget(info, usage))
+				require.Equal(t, 100, testCase.get(usage.BillingUsage))
+				require.Equal(t, testCase.raw, info.UpstreamRawCompletionTokens)
+			})
+		}
+	})
+
 	t.Run("nil inputs are safe", func(t *testing.T) {
 		require.False(t, ClampUsageToClientBudget(nil, &dto.Usage{}))
 		require.False(t, ClampUsageToClientBudget(&RelayInfo{ClientMaxTokens: 1}, nil))

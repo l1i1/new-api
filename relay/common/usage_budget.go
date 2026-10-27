@@ -29,13 +29,11 @@ func ClampUsageToClientBudget(info *RelayInfo, usage *dto.Usage) bool {
 		return false
 	}
 	budget := info.ClientMaxTokens
-	raw := usage.CompletionTokens
 	// Settlement prefers BillingUsage when the adaptor attached one
 	// (effectiveBillingUsage). That copy must be clamped too or the invoice
-	// would still use the accumulated number.
-	if bu := usage.BillingUsage; bu != nil && bu.OpenAIUsage != nil && bu.OpenAIUsage.CompletionTokens > raw {
-		raw = bu.OpenAIUsage.CompletionTokens
-	}
+	// would still use the accumulated number — including the Claude/Gemini
+	// semantics, whose output count lives in another field.
+	raw := maxCompletionAcrossCopies(usage)
 	if raw <= budget {
 		return false
 	}
@@ -53,6 +51,31 @@ func ClampUsageToClientBudget(info *RelayInfo, usage *dto.Usage) bool {
 		clampBillingUsageToBudget(bu, budget)
 	}
 	return true
+}
+
+// maxCompletionAcrossCopies returns the largest output count any settled usage
+// copy reports. The top-level usage is what the client sees; BillingUsage is
+// what settlement actually bills when present, and its Claude/Gemini semantics
+// keep the output count in a different field.
+func maxCompletionAcrossCopies(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	raw := usage.CompletionTokens
+	bu := usage.BillingUsage
+	if bu == nil {
+		return raw
+	}
+	if bu.OpenAIUsage != nil && bu.OpenAIUsage.CompletionTokens > raw {
+		raw = bu.OpenAIUsage.CompletionTokens
+	}
+	if bu.ClaudeUsage != nil && bu.ClaudeUsage.OutputTokens > raw {
+		raw = bu.ClaudeUsage.OutputTokens
+	}
+	if bu.GeminiUsageMetadata != nil && bu.GeminiUsageMetadata.CandidatesTokenCount > raw {
+		raw = bu.GeminiUsageMetadata.CandidatesTokenCount
+	}
+	return raw
 }
 
 // clampBillingUsageToBudget applies the same output cap to the settlement-side
