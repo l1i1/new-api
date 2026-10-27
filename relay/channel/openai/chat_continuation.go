@@ -519,7 +519,11 @@ func mergeContinuationUsage(total, round *dto.Usage) *dto.Usage {
 	// the merged top-level numbers.
 	if total.BillingUsage != nil {
 		if total.BillingUsage.OpenAIUsage != nil {
+			estimated := total.BillingUsage.Estimated
 			total.BillingUsage = dto.NewOpenAIChatBillingUsage(total)
+			if total.BillingUsage != nil {
+				total.BillingUsage.Estimated = estimated
+			}
 		} else {
 			total.BillingUsage = nil
 		}
