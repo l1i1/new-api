@@ -463,7 +463,7 @@ assert_contains "$release_case/state/modify-args.txt" "--TerminationGracePeriodS
 grep -Eq -- '--Container\.1\.EnvironmentVar\.[0-9]+\.Key SHUTDOWN_TIMEOUT_SECONDS' \
   "$release_case/state/modify-args.txt" \
   || fail "the application drain budget did not reach the scaling configuration"
-assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.8.Value [REDACTED]"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.7.Value [REDACTED]"
 # Rollback stays byte-faithful. Restore mode returns a snapshot exactly as it
 # was: a grace period the snapshot carried survives, and one it never carried is
 # NOT injected - otherwise a rollback would quietly re-apply hardening it was
@@ -501,8 +501,11 @@ if "240" not in targeted:
 PYEOF
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.ReadinessProbe.HttpGet.Port 3000"
 assert_contains "$release_case/state/modify-args.txt" "--Container.1.Name newapi"
-assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.3.Key NODE_NAME"
-assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.7.Key NODE_TYPE"
+# ECI replicas must not carry a fixed NODE_NAME (it collapses every worker into
+# one instance row and hides their per-instance hostname); NODE_TYPE stays.
+assert_not_contains "$release_case/state/modify-args.txt" "Key NODE_NAME"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.6.Key NODE_TYPE"
+assert_contains "$release_case/state/modify-args.txt" "--Container.1.EnvironmentVar.7.Key SHUTDOWN_TIMEOUT_SECONDS"
 assert_contains "$release_case/state/modify-args.txt" "--Cpu 2"
 assert_contains "$release_case/state/modify-args.txt" "--Memory 4"
 assert_contains "$release_case/state/modify-args.txt" "--SecurityGroupId sg-test"

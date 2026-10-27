@@ -1215,24 +1215,28 @@ restore_scaling_config() {
   log "scaling configuration snapshot restored"
 }
 
-# inject_node_identity_envs <snapshot-json> - upsert NODE_NAME / NODE_TYPE into
-# the app container env of a scaling-configuration snapshot. Without them every
+# inject_node_identity_envs <snapshot-json> - upsert NODE_TYPE into the app
+# container env of a scaling-configuration snapshot. Without NODE_TYPE every
 # instance self-reports as master (new-api defaults NODE_TYPE!=slave), so a
 # scale-out to 2 ECI instances ran every background/system task twice (2026-09-06).
 # The ECI tier is a slave: migrations + system tasks belong to the master, which
 # is the new-api-master container on the backup entry ECS (NODE_TYPE=master) and
 # is rolled by sync_master_container / bootstrap-master-ecs.sh.
-# Values overridable via ECI_NODE_NAME / ECI_NODE_TYPE.
+#
+# NODE_NAME is deliberately NOT injected into the ECI tier: every replica used to
+# receive the same fixed name (new-api-ml000), so the panel instance list showed
+# one shared worker row instead of one row per replica. Without it the app falls
+# back to the container hostname, which is unique per ECI instance. The ECS
+# master keeps its stable NODE_NAME from bootstrap-master-ecs.sh.
+# Values overridable via ECI_NODE_TYPE.
 inject_node_identity_envs() {
   local snapshot="$1"
   require_command python3
-  printf '%s' "$snapshot" | ECI_NODE_NAME="${ECI_NODE_NAME:-new-api-ml000}" \
-    ECI_NODE_TYPE="${ECI_NODE_TYPE:-slave}" \
+  printf '%s' "$snapshot" | ECI_NODE_TYPE="${ECI_NODE_TYPE:-slave}" \
     ECI_SHUTDOWN_TIMEOUT_SECONDS="${ECI_SHUTDOWN_TIMEOUT_SECONDS:-$APP_SHUTDOWN_TIMEOUT_SECONDS}" python3 -c '
 import json, os, sys
 
 snapshot = json.loads(sys.stdin.read())
-name = os.environ["ECI_NODE_NAME"]
 node_type = os.environ["ECI_NODE_TYPE"]
 shutdown = os.environ["ECI_SHUTDOWN_TIMEOUT_SECONDS"]
 if node_type not in ("master", "slave"):
@@ -1252,7 +1256,9 @@ def inject(envs):
     for entry in envs:
         key = entry.get("Key")
         if key == "NODE_NAME":
-            out.append({"Key": "NODE_NAME", "Value": name}); seen.add("NODE_NAME")
+            # ECI replicas must report their own hostname; drop the fixed name
+            # from older configs on every write.
+            continue
         elif key == "NODE_TYPE":
             out.append({"Key": "NODE_TYPE", "Value": node_type}); seen.add("NODE_TYPE")
         elif key == "SHUTDOWN_TIMEOUT_SECONDS":
@@ -1263,8 +1269,6 @@ def inject(envs):
             out.append({"Key": "SHUTDOWN_TIMEOUT_SECONDS", "Value": shutdown}); seen.add("SHUTDOWN_TIMEOUT_SECONDS")
         else:
             out.append(entry)
-    if "NODE_NAME" not in seen:
-        out.append({"Key": "NODE_NAME", "Value": name})
     if "NODE_TYPE" not in seen:
         out.append({"Key": "NODE_TYPE", "Value": node_type})
     if "SHUTDOWN_TIMEOUT_SECONDS" not in seen:

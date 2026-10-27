@@ -38,10 +38,11 @@ CONF_JSON=$(aliyun ess DescribeEciScalingConfigurations \
   --RegionId cn-shanghai --ScalingConfigurationId "$ASG_CONFIG_ID" | tr -d '\r')
 
 # Node identity: this host container is the single stable MASTER (it runs DB
-# migrations and system/background tasks). The ECI tier runs as slave with
-# NODE_NAME=new-api-ml000, so both instances report distinct identities in the
-# panel instance list and tasks never execute twice. Hostname fallbacks (ECI
-# container id / SWAS-2 host id) are not stable across recreations.
+# migrations and system/background tasks). The ECI tier runs as slave and is
+# deliberately NOT given a fixed NODE_NAME, so each replica reports its own
+# hostname and the panel instance list has one row per worker; only NODE_TYPE
+# (slave) is injected there. Hostname fallbacks for the MASTER are not stable
+# across recreations, which is why the host keeps this explicit stable name.
 HOST_NODE_NAME="${HOST_NODE_NAME:-new-api-host-sw2}"
 HOST_NODE_TYPE="${HOST_NODE_TYPE:-master}"
 
