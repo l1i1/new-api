@@ -94,3 +94,40 @@ func TestStreamResponseHeaderTimeoutBoundsHeadersOnly(t *testing.T) {
 		assert.Equal(t, "ok", string(body))
 	})
 }
+
+// TestDefaultRelayClientKeepsGeneralResponseHeaderTimeout is the regression test
+// for the gap where the default client was built with an explicit zero budget:
+// the transport then had no ResponseHeaderTimeout at all, silently disabling
+// RELAY_RESPONSE_HEADER_TIMEOUT for every non-streaming relay attempt.
+func TestDefaultRelayClientKeepsGeneralResponseHeaderTimeout(t *testing.T) {
+	withRelayHTTPTransportSettings(t)
+	prevGeneral := common.RelayResponseHeaderTimeout
+	prevStream := common.RelayStreamResponseHeaderTimeout
+	common.RelayResponseHeaderTimeout = 77
+	common.RelayStreamResponseHeaderTimeout = 9
+	t.Cleanup(func() {
+		common.RelayResponseHeaderTimeout = prevGeneral
+		common.RelayStreamResponseHeaderTimeout = prevStream
+		InitHttpClient()
+	})
+
+	InitHttpClient()
+	require.NotNil(t, httpClient)
+	defaultTransport, ok := httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, 77*time.Second, defaultTransport.ResponseHeaderTimeout,
+		"the shared default client must carry the general relay budget")
+
+	general, err := GetHttpClientWithProxySettingsAndResponseHeaderTimeout("", dto.ChannelSettings{}, 0)
+	require.NoError(t, err)
+	generalTransport, ok := general.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, 77*time.Second, generalTransport.ResponseHeaderTimeout,
+		"asking for the default budget must not disable the ceiling")
+
+	stream, err := GetHttpClientWithProxySettingsAndResponseHeaderTimeout("", dto.ChannelSettings{}, common.RelayStreamResponseHeaderTimeout)
+	require.NoError(t, err)
+	streamTransport, ok := stream.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, 9*time.Second, streamTransport.ResponseHeaderTimeout)
+}

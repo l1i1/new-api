@@ -77,6 +77,19 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 // time.Duration without overflowing (~292 years).
 const maxTimeoutSeconds = int(math.MaxInt64 / int64(time.Second))
 
+// effectiveResponseHeaderTimeout resolves a per-call override to the concrete
+// transport budget. A positive value is an explicit budget (streaming attempts
+// pass their tighter one); 0 means the general relay budget
+// (RELAY_RESPONSE_HEADER_TIMEOUT). Without this resolution a caller asking for
+// the default would pass 0 into the transport builder and silently disable the
+// operator-configured ceiling.
+func effectiveResponseHeaderTimeout(override int) int {
+	if override > 0 {
+		return override
+	}
+	return common.RelayResponseHeaderTimeout
+}
+
 func newRelayHTTPTransport() *http.Transport {
 	return newRelayHTTPTransportWithResponseHeaderTimeout(common.RelayResponseHeaderTimeout)
 }
@@ -159,8 +172,9 @@ func clientCacheKey(proxyCacheKey string, policy HTTPTransportPolicy, responseHe
 
 func InitHttpClient() {
 	policy := defaultHTTPTransportPolicy()
-	httpClient = newDirectHTTPClient(policy, nil, 0)
-	proxyClients.store(clientCacheKey("", policy, 0), httpClient)
+	generalTimeout := effectiveResponseHeaderTimeout(0)
+	httpClient = newDirectHTTPClient(policy, nil, generalTimeout)
+	proxyClients.store(clientCacheKey("", policy, generalTimeout), httpClient)
 	ssrfProtectedHTTPClient = newProtectedFetchHTTPClient()
 }
 
@@ -393,11 +407,11 @@ func newDirectHTTPClient(policy HTTPTransportPolicy, tlsConfig *tls.Config, resp
 // newHTTPClientWithPolicyAndTLS is a test seam that builds a never-used transport
 // stack with the given policy and TLS config (for httptest certificate trust).
 func newHTTPClientWithPolicyAndTLS(policy HTTPTransportPolicy, tlsConfig *tls.Config) *http.Client {
-	return newDirectHTTPClient(policy, tlsConfig, 0)
+	return newDirectHTTPClient(policy, tlsConfig, effectiveResponseHeaderTimeout(0))
 }
 
 func newProxyHTTPClient(proxyURL *url.URL) (*http.Client, error) {
-	return newHTTPClientFromPolicy(defaultHTTPTransportPolicy(), proxyURL, nil, 0)
+	return newHTTPClientFromPolicy(defaultHTTPTransportPolicy(), proxyURL, nil, effectiveResponseHeaderTimeout(0))
 }
 
 // GetHttpClientWithProxy returns the default client or a cached proxy-enabled client.
@@ -425,12 +439,13 @@ func GetHttpClientWithProxySettingsAndResponseHeaderTimeout(rawProxyURL string, 
 	}
 	policy := NormalizeHTTPTransportPolicy(settings)
 	trimmedProxyURL := strings.TrimSpace(rawProxyURL)
+	effectiveTimeout := effectiveResponseHeaderTimeout(responseHeaderTimeout)
 
 	if trimmedProxyURL == "" {
 		return getOrCreateDirectClient(policy, responseHeaderTimeout)
 	}
 
-	if client, ok := proxyClients.get(trimmedProxyURL, policy, responseHeaderTimeout); ok {
+	if client, ok := proxyClients.get(trimmedProxyURL, policy, effectiveTimeout); ok {
 		return client, nil
 	}
 
@@ -442,8 +457,8 @@ func GetHttpClientWithProxySettingsAndResponseHeaderTimeout(rawProxyURL string, 
 	if legacySuffixStripped {
 		warnLegacyProxyURLOnce(config)
 	}
-	return proxyClients.getOrCreate(trimmedProxyURL, config, policy, responseHeaderTimeout, func() (*http.Client, error) {
-		return newHTTPClientFromPolicy(policy, config.parsedURL, nil, responseHeaderTimeout)
+	return proxyClients.getOrCreate(trimmedProxyURL, config, policy, effectiveTimeout, func() (*http.Client, error) {
+		return newHTTPClientFromPolicy(policy, config.parsedURL, nil, effectiveTimeout)
 	})
 }
 
@@ -457,11 +472,12 @@ func getOrCreateDirectClient(policy HTTPTransportPolicy, responseHeaderTimeout i
 		return http.DefaultClient, nil
 	}
 
-	if client, ok := proxyClients.get("", policy, responseHeaderTimeout); ok {
+	effectiveTimeout := effectiveResponseHeaderTimeout(responseHeaderTimeout)
+	if client, ok := proxyClients.get("", policy, effectiveTimeout); ok {
 		return client, nil
 	}
-	return proxyClients.getOrCreate("", nil, policy, responseHeaderTimeout, func() (*http.Client, error) {
-		return newDirectHTTPClient(policy, nil, responseHeaderTimeout), nil
+	return proxyClients.getOrCreate("", nil, policy, effectiveTimeout, func() (*http.Client, error) {
+		return newDirectHTTPClient(policy, nil, effectiveTimeout), nil
 	})
 }
 
@@ -495,7 +511,7 @@ func ResetProxyClientCache() {
 		return
 	}
 	defaultClient.CloseIdleConnections()
-	proxyClients.store(clientCacheKey("", defaultHTTPTransportPolicy(), 0), defaultClient)
+	proxyClients.store(clientCacheKey("", defaultHTTPTransportPolicy(), effectiveResponseHeaderTimeout(0)), defaultClient)
 }
 
 // NewProxyHttpClient is kept for compatibility.
