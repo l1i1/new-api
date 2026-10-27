@@ -261,10 +261,28 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		currentWithoutUsage := ""
 		if len(data) > 0 {
 			var streamResp struct {
-				Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
-				Usage   *dto.Usage                                `json:"usage"`
+				ID                string                                    `json:"id"`
+				Created           int64                                     `json:"created"`
+				Model             string                                    `json:"model"`
+				SystemFingerprint string                                    `json:"system_fingerprint"`
+				Choices           []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
+				Usage             *dto.Usage                                `json:"usage"`
 			}
 			if err := common.Unmarshal(common.StringToByteSlice(data), &streamResp); err == nil {
+				// A missing-finish stream may have no terminal chunk to carry
+				// the envelope, so capture it from the first chunk that has it.
+				if responseId == "" && streamResp.ID != "" {
+					responseId = streamResp.ID
+				}
+				if createAt == 0 && streamResp.Created > 0 {
+					createAt = streamResp.Created
+				}
+				if model == "" && streamResp.Model != "" {
+					model = streamResp.Model
+				}
+				if systemFingerprint == "" && streamResp.SystemFingerprint != "" {
+					systemFingerprint = streamResp.SystemFingerprint
+				}
 				for _, choice := range streamResp.Choices {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						currentHasFinish = true
