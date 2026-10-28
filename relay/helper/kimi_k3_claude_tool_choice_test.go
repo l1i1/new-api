@@ -34,57 +34,106 @@ func TestValidateKimiK3ClaudeToolChoice(t *testing.T) {
 		})
 		return c
 	}
-	requestWithChoice := func(choice any) *dto.ClaudeRequest {
-		return &dto.ClaudeRequest{
-			Model:      "kimi-k3.1-pro",
+	claudeRequest := func(model string, choice any, thinkingType string) *dto.ClaudeRequest {
+		request := &dto.ClaudeRequest{
+			Model:      model,
 			Messages:   []dto.ClaudeMessage{{Role: "user", Content: "北京天气怎么样"}},
 			ToolChoice: choice,
 		}
+		if thinkingType != "" {
+			request.Thinking = &dto.Thinking{Type: thinkingType}
+		}
+		return request
 	}
 
-	t.Run("named tool with default thinking is rejected with the official text", func(t *testing.T) {
-		err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(true), "kimi-k3.1-pro",
-			requestWithChoice(map[string]any{"type": "tool", "name": "get_weather"}))
-		require.NotNil(t, err)
-		assert.Equal(t, http.StatusBadRequest, err.StatusCode)
-		assert.Equal(t, kimiK3ToolChoiceSpecifiedMessage, err.ToOpenAIError().Message)
-		assert.True(t, types.IsSkipRetryError(err))
-	})
-
-	t.Run("named tool with thinking disabled passes", func(t *testing.T) {
-		request := requestWithChoice(map[string]any{"type": "tool", "name": "get_weather"})
-		request.Thinking = &dto.Thinking{Type: "disabled"}
-		err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(true), "kimi-k3.1-pro", request)
-		assert.Nil(t, err)
-	})
-
-	// "any" is not rejected locally: the OpenAI-compatible endpoint accepts the
-	// forcing `required` form with tools while thinking, so an Anthropic-endpoint
-	// verdict needs its own probe before this check may answer for it.
-	for _, choice := range []any{
-		map[string]any{"type": "auto"},
-		map[string]any{"type": "none"},
-		map[string]any{"type": "any"},
-		"auto",
-		nil,
-	} {
-		t.Run("non-named shape passes", func(t *testing.T) {
-			err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(true), "kimi-k3.1-pro", requestWithChoice(choice))
-			assert.Nil(t, err)
+	tests := []struct {
+		name        string
+		model       string
+		validate    bool
+		request     *dto.ClaudeRequest
+		wantMessage string // empty means no local rejection
+	}{
+		{
+			name:        "named tool with default thinking is rejected with the official text",
+			model:       "kimi-k3.1-pro",
+			validate:    true,
+			request:     claudeRequest("kimi-k3.1-pro", map[string]any{"type": "tool", "name": "get_weather"}, ""),
+			wantMessage: kimiK3ToolChoiceSpecifiedMessage,
+		},
+		{
+			name:     "named tool with thinking disabled passes",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", map[string]any{"type": "tool", "name": "get_weather"}, "disabled"),
+		},
+		{
+			name:        "named tool with explicit thinking enabled is rejected",
+			model:       "kimi-k3.1-pro",
+			validate:    true,
+			request:     claudeRequest("kimi-k3.1-pro", map[string]any{"type": "tool", "name": "get_weather"}, "enabled"),
+			wantMessage: kimiK3ToolChoiceSpecifiedMessage,
+		},
+		{
+			name:     "auto passes",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", map[string]any{"type": "auto"}, ""),
+		},
+		{
+			name:     "none passes",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", map[string]any{"type": "none"}, ""),
+		},
+		{
+			// The forcing "any" form is left to the upstream: the OpenAI-compatible
+			// endpoint accepts the forcing `required` form with tools while thinking,
+			// so an Anthropic-endpoint verdict needs its own probe before this check
+			// may answer for it.
+			name:     "any is left to the upstream",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", map[string]any{"type": "any"}, ""),
+		},
+		{
+			name:     "absent tool_choice passes",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", nil, ""),
+		},
+		{
+			name:     "non-object tool_choice stays the upstream's to reject",
+			model:    "kimi-k3.1-pro",
+			validate: true,
+			request:  claudeRequest("kimi-k3.1-pro", "auto", ""),
+		},
+		{
+			name:     "validate dimension off passes",
+			model:    "kimi-k3.1-pro",
+			validate: false,
+			request:  claudeRequest("kimi-k3.1-pro", map[string]any{"type": "tool", "name": "get_weather"}, ""),
+		},
+		{
+			name:     "other families pass",
+			model:    "deepseek-v4-flash",
+			validate: true,
+			request:  claudeRequest("deepseek-v4-flash", map[string]any{"type": "tool", "name": "get_weather"}, ""),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(tc.validate), tc.model, tc.request)
+			if tc.wantMessage == "" {
+				assert.Nil(t, err)
+				return
+			}
+			require.NotNil(t, err)
+			assert.Equal(t, http.StatusBadRequest, err.StatusCode)
+			assert.Equal(t, tc.wantMessage, err.ToOpenAIError().Message)
+			assert.Equal(t, "invalid_request_error", err.ToClaudeError().Type)
+			assert.True(t, types.IsSkipRetryError(err))
 		})
 	}
-
-	t.Run("validate dimension off passes", func(t *testing.T) {
-		err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(false), "kimi-k3.1-pro",
-			requestWithChoice(map[string]any{"type": "tool", "name": "get_weather"}))
-		assert.Nil(t, err)
-	})
-
-	t.Run("other families pass", func(t *testing.T) {
-		err := ValidateKimiK3ClaudeToolChoice(ctxWithProfile(true), "deepseek-v4-flash",
-			requestWithChoice(map[string]any{"type": "tool", "name": "get_weather"}))
-		assert.Nil(t, err)
-	})
 
 	t.Run("nil request passes", func(t *testing.T) {
 		assert.Nil(t, ValidateKimiK3ClaudeToolChoice(ctxWithProfile(true), "kimi-k3.1-pro", nil))
