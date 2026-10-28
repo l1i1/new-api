@@ -201,6 +201,29 @@ func chatContinuationOutputBudget(info *relaycommon.RelayInfo) int {
 // ceiling the client asked for; an undeclared request gets a fresh per-round
 // step, because output that was produced before the ceiling existed cannot have
 // exhausted it.
+// chatContinuationBudgetLeftWithContent bounds the next round by both the
+// provider-reported completion tokens and a local estimate of the text already
+// delivered. An upstream that ignores stream usage would otherwise let every round
+// reuse the same remaining budget: the answer could exceed the caller's max_tokens
+// while those extra tokens stayed unbilled (2026-10-29 review, H8).
+func chatContinuationBudgetLeftWithContent(info *relaycommon.RelayInfo, usage *dto.Usage, deliveredChars int) int {
+	remaining := chatContinuationBudgetLeft(info, usage)
+	if deliveredChars <= 0 || info == nil || info.ClientMaxTokens <= 0 {
+		return remaining
+	}
+	estimate := deliveredChars / 4
+	if usage != nil && int(usage.CompletionTokens) > estimate {
+		estimate = int(usage.CompletionTokens)
+	}
+	if byContent := info.ClientMaxTokens - estimate; byContent < remaining {
+		remaining = byContent
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining
+}
+
 func chatContinuationBudgetLeft(info *relaycommon.RelayInfo, usage *dto.Usage) int {
 	budget := chatContinuationOutputBudget(info)
 	if budget <= 0 {
@@ -507,7 +530,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 	result := chatContinuationResult{usage: total, finish: initialFinish}
 	contextText := reasoning
 	for step := 0; step < cfg.MaxSteps; step++ {
-		remaining := chatContinuationBudgetLeft(info, total)
+		remaining := chatContinuationBudgetLeftWithContent(info, total, len(contextText)-len(reasoning))
 		if remaining <= 0 {
 			break
 		}
@@ -594,8 +617,22 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		}
 	}
 	result.usage = total
-	common.RecordContinuationOutcome(info.ChannelId, result.rounds > 0 && result.contentChars > 0)
+	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && result.contentChars > 0)
 	return result
+}
+
+// continuationOutcomeChannel names the channel a round outcome belongs to: the last
+// channel that actually served a round when tracked, otherwise the request channel.
+func continuationOutcomeChannel(info *relaycommon.RelayInfo, tracker *relaycommon.ContinuationRoundChannel) int {
+	if tracker != nil {
+		if last := tracker.Last(); last > 0 {
+			return last
+		}
+	}
+	if info == nil {
+		return 0
+	}
+	return info.ChannelId
 }
 
 func cloneUsage(in *dto.Usage) *dto.Usage {
@@ -652,7 +689,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
-		remaining := chatContinuationBudgetLeft(info, total)
+		remaining := chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial))
 		if remaining <= 0 {
 			break
 		}
@@ -742,7 +779,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		if result.finish != "length" {
 			break
 		}
-		if chatContinuationBudgetLeft(info, total) <= 0 {
+		if chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial)) <= 0 {
 			break
 		}
 	}
@@ -750,10 +787,10 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if produced := len(content) - len(partial); produced > 0 {
 		result.contentChars = produced
 	}
-	// Capability telemetry: a round that produced nothing is evidence this channel
-	// does not resume well; a round that did is evidence it does. Feeds the
-	// data-driven whitelist.
-	common.RecordContinuationOutcome(info.ChannelId, result.rounds > 0 && result.contentChars > 0)
+	// Capability telemetry: attribute the outcome to the channel that actually ran
+	// the rounds (a cross-channel hop would otherwise credit the channel that failed
+	// to start them).
+	common.RecordContinuationOutcome(continuationOutcomeChannel(info, info.ChatContinuation.RoundChannel), result.rounds > 0 && result.contentChars > 0)
 	return result
 }
 

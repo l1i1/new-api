@@ -2,6 +2,7 @@ package common
 
 import (
 	"net/http"
+	"sync"
 
 	rootcommon "github.com/QuantumNous/new-api/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -17,9 +18,41 @@ import (
 // It is nil unless the relay layer enabled continuation for this request (the
 // feature is off by default and priced per channel), so the ordinary streaming
 // path stays byte-identical when the feature is disabled.
+// ContinuationRoundChannel records which channel served the most recent
+// continuation round. A cross-channel resume is credited (and blamed) on the
+// channel that actually ran the round, not on the channel that failed to start it;
+// otherwise a channel that cannot resume at all but always hops would be
+// recommended by the capability telemetry (2026-10-29 review, H5).
+type ContinuationRoundChannel struct {
+	mu sync.Mutex
+	id int
+}
+
+// Set records the channel of the round that just ran.
+func (c *ContinuationRoundChannel) Set(id int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.id = id
+	c.mu.Unlock()
+}
+
+// Last returns the last recorded channel id, 0 when no round ran.
+func (c *ContinuationRoundChannel) Last() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.id
+}
+
 type ChatContinuationConfig struct {
 	MaxSteps int
 	Send     func(partialContent string, remainingTokens int) (*http.Response, error)
+	// RoundChannel, when set, tracks the channel of the latest round.
+	RoundChannel *ContinuationRoundChannel
 	// Fallback, when non-nil, is used once after the same-channel sender fails to
 	// even start the round. It is expected to resume the same prefix on a
 	// different channel with a full rebind (selection, model mapping, credential,
@@ -41,10 +74,12 @@ type ChatContinuationConfig struct {
 // captured text must come from the same attempt and must not be re-billed as
 // extra input.
 type ChatAbnormalContinuationConfig struct {
-	MaxSteps          int
-	Send              func(reasoning string, remainingTokens int) (*http.Response, error)
+	MaxSteps int
+	Send     func(reasoning string, remainingTokens int) (*http.Response, error)
 	// Fallback mirrors ChatContinuationConfig.Fallback for the reasoning modes.
-	Fallback          func(reasoning string, remainingTokens int) (*http.Response, error)
+	Fallback func(reasoning string, remainingTokens int) (*http.Response, error)
+	// RoundChannel mirrors ChatContinuationConfig.RoundChannel.
+	RoundChannel      *ContinuationRoundChannel
 	MaxReasoningBytes int
 	MinReasoningChars int
 }

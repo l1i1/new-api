@@ -38,7 +38,7 @@ import (
 // -> credential/multi-key selection -> header/param overrides -> concurrency slot.
 // The live request info is restored before returning, so billing, request logs and
 // the caller-visible stream stay attributed to the channel that served the answer.
-func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, base []byte, build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
+func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, base []byte, build func([]byte, string, int) ([]byte, error), roundChannel *relaycommon.ContinuationRoundChannel) func(string, int) (*http.Response, error) {
 	return func(partial string, remaining int) (*http.Response, error) {
 		if c == nil || info == nil || c.Request == nil || len(base) == 0 {
 			return nil, errors.New("cross-channel continuation unavailable")
@@ -89,6 +89,10 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 		}
 		logger.LogWarn(c, fmt.Sprintf("chat continuation hopping to channel %d after channel %d failed to start the round", selected.Id, info.ChannelId))
 		resp, err := runContinuationRoundOnChannel(c, info, selected, base, build, partial, remaining)
+		if err == nil && resp != nil {
+			// Credit the hop channel for the round it actually served.
+			roundChannel.Set(selected.Id)
+		}
 		if err != nil {
 			// Only a genuine upstream failure counts as channel breakage: saturated
 			// slots, local build/marshal errors and a caller that walked away must not

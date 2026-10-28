@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -2073,4 +2074,36 @@ func TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent(t *testing.T
 	require.Contains(t, body, "尾块")
 	require.Contains(t, body, "续写")
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+}
+
+// TestOaiStreamHandlerCreditsResumedRoundToItsChannel pins the capability telemetry
+// attribution: a round served by another channel must be credited to that channel,
+// not to the channel that failed to start it (2026-10-29 review, H5).
+func TestOaiStreamHandlerCreditsResumedRoundToItsChannel(t *testing.T) {
+	const hopChannelID = 986777
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return nil, errors.New("dial tcp: connection refused") }
+	c, info, _ := newContinuationTestContext(t, sender, 1, 128000)
+	tracker := &relaycommon.ContinuationRoundChannel{}
+	info.ChatContinuation.RoundChannel = tracker
+	info.ChatContinuation.Fallback = func(string, int) (*http.Response, error) {
+		tracker.Set(hopChannelID)
+		return continuationSSEResponse(secondRound), nil
+	}
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	stats := common.ContinuationCapabilitySnapshot()[hopChannelID]
+	require.GreaterOrEqual(t, stats.Successes, int64(1), "the hop channel that produced the text must be credited")
 }

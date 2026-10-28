@@ -304,6 +304,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
 		base := continuationBase
 		adaptorRef := adaptor
+		// Tracks the channel of the latest round so continuation-capability telemetry
+		// names the channel that actually resumed (cross-channel hops included).
+		roundChannel := &relaycommon.ContinuationRoundChannel{}
 		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
 			// sendOnce replays the continuation body through one channel.
 			sendOnce := func(channelAdaptor relaychannel.Adaptor, partial string, remaining int) (*http.Response, error) {
@@ -330,7 +333,11 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			// its prompt cache. The runner spends the single cross-channel fallback
 			// only when this sender cannot even start the round.
 			return func(partial string, remaining int) (*http.Response, error) {
-				return sendOnce(adaptorRef, partial, remaining)
+				resp, err := sendOnce(adaptorRef, partial, remaining)
+				if err == nil && resp != nil {
+					roundChannel.Set(info.ChannelId)
+				}
+				return resp, err
 			}
 		}
 		// The cross-channel fallback replays the same OpenAI continuation body and
@@ -341,9 +348,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			if !crossChannel {
 				return nil
 			}
-			return crossChannelContinuationFallback(c, info, base, build)
+			return crossChannelContinuationFallback(c, info, base, build, roundChannel)
 		}
-		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}
+		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, RoundChannel: roundChannel}
 		if steps > 0 {
 			cfg.Send = send(openaichannel.BuildChatContinuationBody)
 			cfg.Fallback = fallback(openaichannel.BuildChatContinuationBody)
@@ -352,6 +359,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				RoundChannel:      roundChannel,
 				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
@@ -361,6 +369,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				RoundChannel:      roundChannel,
 				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
