@@ -32,6 +32,11 @@ const chatContinuationRoundAttempts = 3
 // chatContinuationRetryBackoff is the linear backoff between resume attempts.
 const chatContinuationRetryBackoff = 300 * time.Millisecond
 
+// chatContinuationRetryBudget bounds the wall time a single round may spend
+// retrying. A rejected resume normally fails in milliseconds; an upstream that
+// rejects slowly must not stretch an already fifteen-minute request further.
+const chatContinuationRetryBudget = 5 * time.Second
+
 // chatContinuationPrompt is the instruction appended after the truncated
 // assistant message. It is deliberately neutral so it fits both an answer that
 // was cut mid-sentence and a structured (for example numbered) output.
@@ -510,12 +515,18 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			deltaSeen    bool
 			roundErr     error
 		)
+		retryStarted := time.Now()
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				if c.Request != nil && c.Request.Context().Err() != nil {
 					break
 				}
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "thinking continuation retry budget exhausted")
+					break
+				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
 			}
 			roundSend := cfg.Send
 			if attempt > 0 && cfg.SendFallback != nil {
@@ -630,6 +641,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			deltaSeen    bool
 			roundErr     error
 		)
+		retryStarted := time.Now()
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				// The caller walked away while the previous attempt was in flight:
@@ -637,7 +649,15 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 				if c.Request != nil && c.Request.Context().Err() != nil {
 					break
 				}
+				// A slow-rejecting upstream must not stack retries indefinitely on
+				// top of an already fifteen-minute request; the budget is wall time,
+				// not attempt count.
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "chat continuation retry budget exhausted")
+					break
+				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
 			}
 			roundSend := info.ChatContinuation.Send
 			if attempt > 0 && info.ChatContinuation.SendFallback != nil {

@@ -1759,6 +1759,7 @@ func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T)
 	body := recorder.Body.String()
 	require.Contains(t, body, "已经发出的前半段", "the delivered prefix stays")
 	require.NotContains(t, body, "truncated_stream", "no error frame for a delivered prefix")
+	require.NotContains(t, body, `"finish_reason":"error"`, "the provider's abnormal terminal frame must not leak past the honest close")
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }

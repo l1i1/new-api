@@ -76,6 +76,13 @@ func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Cha
 	if keyErr != nil {
 		return nil
 	}
+	// An empty credential (single-key channel with no key configured, or a
+	// multi-key channel whose enabled key was just revoked) must not turn into an
+	// anonymous Bearer request: refuse the fallback so the caller keeps the
+	// original channel's attribution and reports the real failure.
+	if strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
 	info.ChannelId = channel.Id
 	info.ChannelType = channel.Type
 	info.ChannelBaseUrl = channel.GetBaseURL()
@@ -401,10 +408,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				// aggregator errors out instead of answering). Replaying the
 				// continuation there spends the one permitted step on the same
 				// failure, so one attempt on a different channel is worth it.
-				if resp != nil && resp.Body != nil {
-					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-					_ = resp.Body.Close()
-				}
+				drainAndCloseResponse(resp)
 				fallback := continuationFallbackChannel(c, info)
 				if fallback == nil {
 					return resp, requestErr

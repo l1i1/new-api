@@ -867,6 +867,19 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d shape=%s content=%d reasoning=%d", info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len()))
 			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+			// Health/rate-limit sampling must see the cut as an incomplete answer,
+			// not as a clean success: the caller received a truncated response. An
+			// abnormal finish already recorded a failure (first terminal wins), while
+			// a missing finish_reason is still unknown at this point.
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkIncomplete("upstream_truncated_" + undeliveredReason)
+			}
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				// The caller left: nobody can receive the terminal frame, and the
+				// zeroed usage already keeps the request unbilled.
+				common.SysLog(fmt.Sprintf("partial answer terminal skipped, caller gone: ch=%d", info.ChannelId))
+				return usage, nil
+			}
 			info.StreamFinishReason = "length"
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
