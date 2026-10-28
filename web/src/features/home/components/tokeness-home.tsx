@@ -109,6 +109,13 @@ const DOMESTIC_PROVIDERS = PROVIDERS.filter(
 const ICP_BEIAN = import.meta.env.VITE_ICP_BEIAN as string | undefined
 // Public-security (公安联网备案) filing number for the mainland edition.
 const POLICE_BEIAN = import.meta.env.VITE_POLICE_BEIAN as string | undefined
+// Value-added telecom business operating licence (增值电信业务经营许可证) for the
+// mainland edition. The licence number is fixed, so it lives here as a literal
+// instead of a build-time env var. The register URL is copied verbatim from the
+// MIIT query page; the licence number inside it stays double percent-encoded.
+const VALUE_ADDED_TELECOM_LICENSE = '川B2-20261739'
+const VALUE_ADDED_TELECOM_LICENSE_URL =
+  'https://tsm.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyesearch.jsp?num=%25E5%25B7%259DB2-20261739&type=xuke'
 // Support mailbox. The mainland edition is operated by 合江册知软件有限公司 and
 // its user agreement names this address, so reviewers must not be sent to the
 // overseas brand's mailbox.
@@ -368,6 +375,16 @@ export function TokenessHome() {
                     className='tokeness-home__police-icon'
                   />
                   {POLICE_BEIAN}
+                </a>
+              ) : null}
+              {isMainland ? (
+                <a
+                  href={VALUE_ADDED_TELECOM_LICENSE_URL}
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  className='tokeness-home__footer-link'
+                >
+                  增值电信业务经营许可证：{VALUE_ADDED_TELECOM_LICENSE}
                 </a>
               ) : null}
             </div>
