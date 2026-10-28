@@ -68,3 +68,56 @@ aliyun ess RemoveInstances --RegionId cn-shanghai \
 
 - 未回滚 `.81`（根因与版本无关）；未改任何渠道配置、分组、计费；只读凭据用于日志/监控 API 与
   ECI `Describe*`，唯一的写操作是上面那一条 ESS `RemoveInstances`。
+
+## 后续加固：入口 nginx 请求级节点故障切换（2026-10-28 16:51 CST，用户授权）
+
+**动机**：坏实例返回的 500 是"应用层 500"，nginx 默认只对 `error/timeout` 重放，所以一条请求落到坏实例就只能失败；
+网关内部重试又只在**渠道**维度换（实测 992 个失败请求里 963 个只试过 neurvibe 四把渠道，3 次尝试预算轮不到 ch8/ch103），
+而故障在**实例出口**，换渠道无效。缺的是**节点维度**的重放。
+
+**改动**（入口 ECS `8.133.244.241`，`/etc/nginx/sites-available/tokeness-ml.conf`，5 个 server 块各加一段，
+备份 `tokeness-ml.conf.bak-1793177471`）：
+
+```nginx
+location ~ ^/v1/(chat/completions|messages|responses)$ {
+    access_log /var/log/nginx/canary.log canary;
+    if ($canary_flag = 1) { proxy_pass http://gateway_canary; }
+    proxy_pass http://newapi_ml;
+    proxy_request_buffering on;                                  # 请求体可重放（仅聊天类接口）
+    proxy_next_upstream error timeout http_500 non_idempotent;    # POST 需显式 non_idempotent
+    proxy_next_upstream_tries 2;                                  # 1 次重试
+    proxy_next_upstream_timeout 0;
+}
+```
+
+图片/文件等其它 location 保持 `proxy_request_buffering off`（流式转发不变）；响应侧 `proxy_buffering off` 未动，
+SSE 流不受影响。`nginx -t` 通过后 `nginx -s reload`（不重启、不断连）。
+
+**机制验证**（本机 docker nginx 隔离实验，非生产）：上游 A `return 500`、上游 B `return 200 OK2`，
+上游 A `weight=1000` 保证第一跳命中：
+
+| 场景 | 结果 |
+|---|---|
+| `http_500` + buffering **on**，小请求体 | **200 OK2**（重放到 B 成功） |
+| `http_500` + buffering **on**，2MB 请求体 | **200 OK2** |
+| 不列 `http_500`（原配置） | 500（不重放） |
+| `http_500` + buffering **off**，小请求体 | 200（小体能重放） |
+| `http_500` + buffering **off**，2MB 请求体 | **500**（请求体不可重放） |
+
+所以 `proxy_request_buffering on` 是**大请求体**（长上下文 / 视频）能重放的前提，只对小请求体可省。
+另：fleet include 每行是 `max_fails=2 fail_timeout=5s`，按 nginx 语义 `proxy_next_upstream` 列出的条件即"失败尝试"
+→ 连续 2 个 500 后该节点被摘 5 秒，等于自动摘坏节点。
+
+**生产验证**：`nginx -T` 中该指令出现 5 处；无鉴权 `POST /v1/chat/completions` 返回 401（0.14s）、
+2MB 请求体返回 401（0.43s，缓冲路径正常）；reload 后 error.log 无新类型错误
+（"upstream prematurely closed" 全天都有，来自客户取消，基线约 1 次/3–15 分钟，未因本次变更升高）。
+
+**回滚**：
+```bash
+cp -a /etc/nginx/sites-available/tokeness-ml.conf.bak-1793177471 \
+      /etc/nginx/sites-available/tokeness-ml.conf && nginx -t && nginx -s reload
+```
+
+**已知影响**：真正的 500 会被重放一次（上游多做一遍活，可能双倍上游消耗；失败请求不计客户费用）；
+已开始输出字节的流无法重试（本来也救不了）；`proxy_request_buffering on` 使这三个接口先收完请求体再回源
+（JSON 请求无感知）。
