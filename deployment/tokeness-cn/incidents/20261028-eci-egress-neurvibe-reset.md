@@ -121,3 +121,34 @@ cp -a /etc/nginx/sites-available/tokeness-ml.conf.bak-1793177471 \
 **已知影响**：真正的 500 会被重放一次（上游多做一遍活，可能双倍上游消耗；失败请求不计客户费用）；
 已开始输出字节的流无法重试（本来也救不了）；`proxy_request_buffering on` 使这三个接口先收完请求体再回源
 （JSON 请求无感知）。
+
+## 覆盖缺口：ch102 截断发生在"答到一半"（2026-10-28 17:20 补）
+
+客户反馈的 502 不是实例出口那条（那条 16:18 已归零），而是 **ch102 `DEF-neurvibe_k31_B` 在上游直接把流切断**：
+该渠道近 20 分钟 **成功 40 / 错误 366**，且它是 k3.1-pro 候选里权重最高的一条（priority 151、weight 20，
+同级 37/91 的权重是 15/5），选路天然给它约一半流量。
+
+**为什么续写没接住**：续写已实现三格，但这次落在第四格——
+
+| 形状 | 有可见正文 | 续写 |
+|---|---|---|
+| `finish_reason=length`（输出上限） | 有 | ✅ `mode=length` |
+| `finish_reason=error/engine_overloaded` | 有 | ✅ `mode=abnormal-content`（今天救回 3 次，ch37/ch102 content 21–30KB） |
+| 异常帧，正文为空 | 无 | ✅ `mode=abnormal` |
+| **无终止帧（missing），正文已出** | 有 | ❌ 落到 502 ← ch102 在这一格 |
+| 无终止帧，正文为空 | 无 | ✅ `mode=missing` |
+
+日志实证：`missing finish observed: ch=102 content=1665 reasoning=1079 marks=true candidate=false steps=1 onMissing=true cfg=true`，
+234 次 missing-finish 里 **231 次 `candidate=false`**，原因就是 `chatMissingContinuationCandidate` 的
+`if contentChars > 0 { return false }`。
+
+**修复**（分支 `fix/missing-visible-continuation`，commit `93b4da5d5`，**未部署**）：
+新增 `chatMissingVisibleContinuationCandidate` + handler 分支，把"已出正文的 missing 截断"交给与
+length-cap / abnormal-content 相同的 `runChatContinuation` 续写一次（一个终止帧、合并用量只结算一次）；
+只思考未出正文的截断仍走原 `mode=missing` 思考续写。守卫沿用：单 choice、无 tool_calls、
+`completion < clientMax`、非客户端主动断开、`Missing` 配置 opt-in。测试：
+`TestChatMissingVisibleContinuationCandidateGuards`、`TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent`，
+`go test ./relay/...` 21 包全绿，`go vet ./relay/...` 干净。
+
+**仍未解决**：这条渠道本身在截断，续写只是把"客户看到 502"变成"多花一次上游调用把答案补完"；
+要止血仍需摘掉 ch102（`status=2` 或 `weight 20→0`）。
