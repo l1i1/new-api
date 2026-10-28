@@ -326,29 +326,33 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				}
 				return resp, nil
 			}
+			// Same-channel first: a resume on the channel that owns the prefix hits
+			// its prompt cache. The runner spends the single cross-channel fallback
+			// only when this sender cannot even start the round.
 			return func(partial string, remaining int) (*http.Response, error) {
-				// Same-channel only. A cross-channel resume is deliberately NOT wired
-				// here: binding a fallback channel correctly means rebuilding its model
-				// mapping, headers, api type/version, credential selection and
-				// concurrency slot the way the controller's retry loop does. The half
-				// bound hop this replaced picked the wrong protocol adaptor (a channel
-				// type was passed where an API type is expected, so an OpenAI channel
-				// resolved to the Claude adaptor), carried the original channel's
-				// upstream model name, and skipped the per-channel concurrency slot -
-				// it could send the caller's resume to the wrong upstream model. It is
-				// parked as a separately scoped change; the round retry re-sends on
-				// this channel, which is the behaviour the 900s repair depends on.
 				return sendOnce(adaptorRef, partial, remaining)
 			}
+		}
+		// The cross-channel fallback replays the same OpenAI continuation body and
+		// parses an OpenAI stream, so it is only offered when this attempt's body is
+		// OpenAI-shaped. A converted (Claude/Gemini) attempt keeps same-channel only.
+		crossChannel := info.ApiType == constant.APITypeOpenAI
+		fallback := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
+			if !crossChannel {
+				return nil
+			}
+			return crossChannelContinuationFallback(c, info, base, build)
 		}
 		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}
 		if steps > 0 {
 			cfg.Send = send(openaichannel.BuildChatContinuationBody)
+			cfg.Fallback = fallback(openaichannel.BuildChatContinuationBody)
 		}
 		if abnormalSteps > 0 {
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
 			}
@@ -357,6 +361,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}

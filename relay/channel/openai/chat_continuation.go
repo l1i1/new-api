@@ -521,6 +521,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			roundErr       error
 		)
 		retryStarted := time.Now()
+		fallbackUsed := false
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				if c.Request != nil && c.Request.Context().Err() != nil {
@@ -533,10 +534,19 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
 				helper.ExtendWriteDeadline(c)
 			}
-			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
+			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg.Send, contextText, remaining)
 			if err != nil {
 				logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
-				break
+				if cfg.Fallback == nil || fallbackUsed {
+					break
+				}
+				fallbackUsed = true
+				logger.LogWarn(c, "thinking continuation failed on its own channel; resuming on another channel")
+				resp, err = sendThinkingContinuationWithKeepAlive(c, info, cfg.Fallback, contextText, remaining)
+				if err != nil {
+					logger.LogWarn(c, "cross-channel thinking continuation failed: "+err.Error())
+					break
+				}
 			}
 			if resp == nil {
 				break
@@ -655,6 +665,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			roundErr       error
 		)
 		retryStarted := time.Now()
+		fallbackUsed := false
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				// The caller walked away while the previous attempt was in flight:
@@ -672,9 +683,20 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			resp, err := info.ChatContinuation.Send(content, remaining)
 			if err != nil {
 				// A send/build failure is not the transient upstream rejection this
-				// retry exists for: keep the previous single-attempt behaviour.
+				// retry exists for. If a cross-channel fallback is configured, spend
+				// it once here: the channel itself is unreachable, so re-sending on it
+				// cannot help, while another channel may still resume the answer.
 				logger.LogWarn(c, "chat continuation request failed: "+err.Error())
-				break
+				if info.ChatContinuation.Fallback == nil || fallbackUsed {
+					break
+				}
+				fallbackUsed = true
+				logger.LogWarn(c, "chat continuation failed on its own channel; resuming on another channel")
+				resp, err = info.ChatContinuation.Fallback(content, remaining)
+				if err != nil {
+					logger.LogWarn(c, "cross-channel continuation failed: "+err.Error())
+					break
+				}
 			}
 			if resp == nil {
 				break
@@ -1062,7 +1084,7 @@ type thinkingContinuationSendResult struct {
 	err  error
 }
 
-func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
+func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, send func(string, int) (*http.Response, error), content string, remaining int) (*http.Response, error) {
 	result := make(chan thinkingContinuationSendResult, 1)
 	helper.ExtendWriteDeadline(c)
 	allowPing := info == nil || !info.DisablePing
@@ -1075,7 +1097,7 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.Rel
 		info.DisablePing = true
 	}
 	go func() {
-		resp, err := cfg.Send(content, remaining)
+		resp, err := send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
 	ticker := time.NewTicker(thinkingContinuationPingInterval)

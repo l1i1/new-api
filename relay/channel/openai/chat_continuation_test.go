@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -781,7 +782,7 @@ func TestSendThinkingContinuationSuppressesUpstreamPinger(t *testing.T) {
 			return continuationSSEResponse("data: [DONE]\n\n"), nil
 		},
 	}
-	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, "思考", 100)
+	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg.Send, "思考", 100)
 	require.Nil(t, err)
 	require.NotNil(t, resp)
 	_ = resp.Body.Close()
@@ -1932,4 +1933,48 @@ func TestOpenaiHandlerAbnormalFinishIsRetryable(t *testing.T) {
 	_, apiErr := OpenaiHandler(c, info, resp)
 	require.NotNil(t, apiErr)
 	require.False(t, types.IsSkipRetryError(apiErr), "a non-streaming abnormal finish must fall over to another channel")
+}
+
+// TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart pins
+// the cross-channel fallback contract: when the owning channel cannot even start
+// the resume round, the configured fallback is spent once and the answer is
+// stitched from the other channel (2026-10-28 ch77 kept answering "Upstream
+// completed without answer text", while other channels could still resume).
+func TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	fallbackRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameChannelCalls := 0
+	sender := func(string, int) (*http.Response, error) {
+		sameChannelCalls++
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	fallbackCalls := 0
+	fallback := func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(fallbackRound), nil
+	}
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+	info.ChatContinuation.Fallback = fallback
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.GreaterOrEqual(t, sameChannelCalls, 1, "the owning channel is always tried first")
+	require.Equal(t, 1, fallbackCalls, "the cross-channel fallback is spent once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }

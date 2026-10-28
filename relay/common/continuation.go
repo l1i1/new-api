@@ -20,6 +20,12 @@ import (
 type ChatContinuationConfig struct {
 	MaxSteps int
 	Send     func(partialContent string, remainingTokens int) (*http.Response, error)
+	// Fallback, when non-nil, is used once after the same-channel sender fails to
+	// even start the round. It is expected to resume the same prefix on a
+	// different channel with a full rebind (selection, model mapping, credential,
+	// header/param overrides, concurrency slot). The round still counts as one
+	// step: the fallback is neither a retry budget nor a second billed answer.
+	Fallback func(partialContent string, remainingTokens int) (*http.Response, error)
 	// Abnormal, when non-nil, enables the reasoning continuation mode for
 	// streams that died with an abnormal finish_reason before any visible
 	// content (900s cut-off shape). Send receives the captured reasoning text.
@@ -37,6 +43,8 @@ type ChatContinuationConfig struct {
 type ChatAbnormalContinuationConfig struct {
 	MaxSteps          int
 	Send              func(reasoning string, remainingTokens int) (*http.Response, error)
+	// Fallback mirrors ChatContinuationConfig.Fallback for the reasoning modes.
+	Fallback          func(reasoning string, remainingTokens int) (*http.Response, error)
 	MaxReasoningBytes int
 	MinReasoningChars int
 }
