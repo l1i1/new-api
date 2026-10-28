@@ -383,6 +383,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
+		// A Responses stream replay belongs to the attempt that produced it: a
+		// failure before this attempt reaches its stream handler must not be
+		// masked by the previous attempt's held-back events and error.
+		c.Set(string(constant.ContextKeyResponsesStreamDeferredReplay), nil)
 		// A previous attempt's undelivered marker must never leak into this one:
 		// a retry that succeeds is billable, and one that fails again re-marks.
 		relayInfo.UndeliveredReason = ""

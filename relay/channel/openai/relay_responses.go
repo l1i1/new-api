@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -106,6 +107,20 @@ func responsesStreamEventCarriesNoOutput(eventType string) bool {
 		return true
 	}
 	return false
+}
+
+// responsesStreamErrorIsDeterministicRejection reports an in-band stream failure
+// that another channel would reproduce (context-window and similar request
+// rejections). The handler normalizes every in-band error to 503, so the relay's
+// never-retry keyword rule — which only inspects 4xx — cannot classify it;
+// without this marker the newly retryable pre-output path would spend the whole
+// retry budget reproducing the same rejection.
+func responsesStreamErrorIsDeterministicRejection(oaiError types.OpenAIError) bool {
+	text := oaiError.Message
+	if code, ok := oaiError.Code.(string); ok {
+		text += " " + code
+	}
+	return operation_setting.MatchesNeverRetryKeywords(text)
 }
 
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -227,7 +242,15 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			// The upstream reported the failure in-band, so the pinned channel
 			// must be dropped from the affinity binding even when the stream
 			// was already committed and cannot be retried within this request.
-			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable, types.ErrOptionWithUpstreamFailure())
+			options := []types.NewAPIErrorOptions{types.ErrOptionWithUpstreamFailure()}
+			if responsesStreamErrorIsDeterministicRejection(*oaiError) {
+				// The relay sees every in-band failure as 503, so its own
+				// never-retry keyword rule (which only inspects 4xx) cannot
+				// classify it. Keep the pre-buffering behaviour for rejections
+				// another channel would reproduce: no failover.
+				options = append(options, types.ErrOptionWithSkipRetry())
+			}
+			streamErr = types.WithOpenAIError(*oaiError, http.StatusServiceUnavailable, options...)
 		}
 		// A failure received before any event was forwarded has not committed
 		// the response. Returning the error without writing lets the relay retry
@@ -237,12 +260,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			// The held-back lifecycle events belong to the failed attempt: drop
 			// them instead of letting a retry inherit another channel's events,
 			// but remember how to replay them with this failure in case the relay
-			// runs out of retries.
+			// runs out of retries. A ping-only writer needs the replay even with
+			// no held-back events, otherwise the client would only see keep-alive
+			// bytes when no channel can serve the request.
 			pending := deferred
 			deferred = nil
-			deferResponsesStreamReplay(c, pending, func() {
-				sendResponsesStreamData(c, streamResponse, data)
-			})
+			keepAliveOnly := helper.ResponseCommitStateOf(c) == helper.ResponseKeepAliveOnly
+			if len(pending) > 0 || keepAliveOnly {
+				deferResponsesStreamReplay(c, pending, func() {
+					sendResponsesStreamData(c, streamResponse, data)
+				})
+			}
 			sr.Stop(streamErr)
 			return
 		}
@@ -291,10 +319,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		// retried, matching the relay's own commit-state classification.
 		committed := helper.ResponseCommitStateOf(c) == helper.ResponsePayloadWritten
 		apiErr := incompleteResponsesStreamError(c, committed, hadOutput)
-		if !committed && len(deferred) > 0 {
+		if !committed && (len(deferred) > 0 || helper.ResponseCommitStateOf(c) == helper.ResponseKeepAliveOnly) {
 			// If the relay cannot retry, replay the held-back events plus the
 			// synthetic response.failed that a committed truncation would have
-			// received, keeping the client-visible stream unchanged.
+			// received, keeping the client-visible stream unchanged. Ping-only
+			// commits need this even with an empty buffer: their previous
+			// behaviour was a synthetic terminal event, not a bare 200 with pings.
 			pending := deferred
 			deferResponsesStreamReplay(c, pending, func() {
 				writeSyntheticResponsesStreamFailure(c, apiErr)
@@ -384,9 +414,11 @@ func writeSyntheticResponsesStreamFailure(c *gin.Context, apiErr *types.NewAPIEr
 // deferResponsesStreamReplay stores a closure that replays the lifecycle events
 // held back by this attempt together with its terminal failure. The relay calls
 // it only when it cannot retry anymore, so the client receives the same stream
-// it would have gotten before the lifecycle events were deferred.
+// it would have gotten before the lifecycle events were deferred. The pending
+// list may be empty for a ping-only commit whose terminal event still has to be
+// emitted.
 func deferResponsesStreamReplay(c *gin.Context, pending []deferredResponsesStreamEvent, writeTerminal func()) {
-	if c == nil || len(pending) == 0 || writeTerminal == nil {
+	if c == nil || writeTerminal == nil {
 		return
 	}
 	c.Set(string(constant.ContextKeyResponsesStreamDeferredReplay), func() {
