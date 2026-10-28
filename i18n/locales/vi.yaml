@@ -362,6 +362,8 @@ notify.content_moderation.subject: "[{{.SystemName}}] Thông báo kiểm soát r
 notify.content_moderation.body: "Yêu cầu API của bạn đã kích hoạt chính sách kiểm duyệt nội dung của nền tảng.\n\nDanh mục / điểm số: {{.Category}} / {{.Score}}\nSố lần kích hoạt tích lũy: {{.Count}} / {{.Threshold}}\n\nVui lòng kiểm tra nội dung yêu cầu."
 notify.channel.disabled_subject: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã bị vô hiệu hóa"
 notify.channel.disabled_body: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã bị vô hiệu hóa, lý do: {{.Reason}}"
+notify.channel.key_disabled_subject: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã vô hiệu hóa một khóa"
+notify.channel.key_disabled_body: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã vô hiệu hóa khóa #{{.KeyPosition}}; còn {{.EnabledKeyNum}}/{{.TotalKeyNum}} khóa sử dụng được nên kênh vẫn tiếp tục phục vụ. Lý do: {{.Reason}}"
 notify.channel.enabled_subject: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã được kích hoạt"
 notify.channel.enabled_body: "Kênh \"{{.ChannelName}}\" (#{{.ChannelId}}) đã được kích hoạt"
 notify.channel_test.subject: "Đã hoàn tất kiểm tra kênh"

@@ -30,6 +30,50 @@ const chatContinuationPrompt = "上一条回复因输出长度限制被截断。
 // ignore reasoning_content in the message history (verified 2026-10-27).
 const chatThinkingContinuationPrompt = "上面是你在上一轮被上游截断的思考过程（当时还没有开始输出正文）。请从中断处继续思考，不要重复已经写过的内容，完成思考后直接给出最终答案。"
 
+// chatAnswerContinuationPrompt is used by the abnormal/missing modes, where the
+// previous round already burned the provider's whole wall (900s for these
+// channels) on thinking and produced no visible answer. Asking it to continue
+// thinking just walks into the same wall again, so the round must answer from
+// the captured trace instead.
+const chatAnswerContinuationPrompt = "上面是你上一轮被上游截断的思考过程。现在不要再继续思考，请立即基于上面的内容直接输出最终答案（可以简短），必须给出正文。"
+
+// BuildChatAnswerContinuationBody rebuilds a request that resumes a cut-off
+// round in answer mode: the captured reasoning goes into the assistant content
+// and the round runs with the cheapest thinking budget the upstream accepts, so
+// it produces the answer instead of spending another full wall on reasoning.
+func BuildChatAnswerContinuationBody(baseJSON []byte, reasoning string, remainingTokens int) ([]byte, error) {
+	out, err := buildChatContinuationBody(baseJSON, reasoning, chatAnswerContinuationPrompt, remainingTokens)
+	if err != nil {
+		return nil, err
+	}
+	if !gjson.GetBytes(out, "reasoning_effort").Exists() {
+		return out, nil
+	}
+	var modelName string
+	if request, ok := gjsonParseModel(baseJSON); ok {
+		modelName = request
+	}
+	effort := kimiK3AggregatorDisabledEffortFor(modelName)
+	if effort == "" {
+		return out, nil
+	}
+	patched, patchErr := sjson.SetBytes(out, "reasoning_effort", effort)
+	if patchErr != nil {
+		return nil, patchErr
+	}
+	return patched, nil
+}
+
+// gjsonParseModel returns the request's model name, used to pick the cheapest
+// thinking effort the upstream accepts.
+func gjsonParseModel(body []byte) (string, bool) {
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
+
 // BuildChatContinuationBody rebuilds the final upstream chat-completions body
 // into a continuation request: the original messages, the visible answer so
 // far as an assistant message, the continuation instruction, and the remaining
@@ -124,7 +168,7 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
@@ -154,7 +198,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -197,7 +241,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -225,6 +269,106 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	return true
 }
 
+// chatMissingVisibleContinuationCandidate decides whether a stream that ended at
+// EOF/[DONE] without any finish_reason can be resumed from the visible answer it
+// already delivered.
+//
+// This is the cut-mid-answer shape (2026-10-28: a degraded kimi-k3.1-pro
+// upstream truncated 1.4-2.4KB answers at 13-22s in production): the client is
+// already reading a partial answer, so the reasoning resume cannot repair it
+// (chatMissingContinuationCandidate refuses any visible content), and discarding
+// the prefix surfaces a 502 for work that can still be completed. The visible
+// prefix is continued through the same transparent continuation used for a
+// provider length cap and for an abnormal finish after the answer started.
+//
+// Guards mirror those paths: one choice, no tool calls, a client budget left, and
+// no client disconnect (that is the caller's own cancellation, not a truncation).
+func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, toolCalls, choiceCount int, streamFinishSeen bool) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Missing == nil {
+		return false
+	}
+	// The visible prefix is continued through the output-cap runner, which sends
+	// with the top-level sender; the Missing config is what opts this request and
+	// channel into truncation repair at all.
+	if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 || info.ChatContinuation.Missing.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return false
+	}
+	if streamFinishSeen || strings.TrimSpace(info.StreamFinishReason) != "" {
+		return false
+	}
+	if contentChars <= 0 {
+		return false
+	}
+	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return false
+	}
+	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+		return false
+	}
+	return true
+}
+
+// truncationRepairSkipReason explains why a truncated stream reached the caller
+// instead of being repaired by one of the continuation modes. Every guard that
+// silently refuses a repair is named here so the one production shape that keeps
+// failing can be identified from a single log line instead of reverse-engineering
+// the decision matrix (2026-10-28: the missing-finish-with-content gap took an
+// hour to find because the only trace was "candidate=false").
+//
+// Returns "" when no guard is known to apply; the caller still logs the line, so
+// an unnamed skip shows up as an empty reason rather than disappearing.
+func truncationRepairSkipReason(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int) string {
+	if info == nil {
+		return "no_relay_info"
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI {
+		return "unsupported_format"
+	}
+	if info.ChatContinuation == nil {
+		return "continuation_not_configured"
+	}
+	if toolCalls > 0 {
+		return "tool_calls_in_progress"
+	}
+	if choiceCount > 1 {
+		return "multiple_choices"
+	}
+	if deepSeekV4FitEnabled(info) {
+		return "deepseek_v4_fit_pin"
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return "reasoning_suppressed_or_folded"
+	}
+	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return "client_gone"
+	}
+	if info.ClientMaxTokens <= 0 || usage == nil || usage.CompletionTokens >= info.ClientMaxTokens {
+		return "client_budget_exhausted"
+	}
+	if info.ChatContinuation.Missing == nil && info.ChatContinuation.Abnormal == nil {
+		return "continuation_not_configured"
+	}
+	if contentChars > 0 {
+		if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 {
+			return "visible_continuation_disabled"
+		}
+		return ""
+	}
+	if reasoningChars <= 0 {
+		return "nothing_to_continue"
+	}
+	return ""
+}
+
 // chatLengthThinkingContinuationCandidate decides whether a stream that hit the
 // provider output cap (finish_reason=length) before any visible content can be
 // resumed from its captured reasoning. This is the 32k cap landing during the
@@ -241,7 +385,7 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -422,6 +566,9 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 	}
 	result.usage = total
+	if produced := len(content) - len(partial); produced > 0 {
+		result.contentChars = produced
+	}
 	return result
 }
 
@@ -534,6 +681,18 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 		}
 		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
+		// A Kimi K3 official-fit caller must not see the aggregator's chunk
+		// shape just because this delta came from a continuation round: run the
+		// same per-event fit the ordinary path applies, so the resumed segment
+		// stays indistinguishable from one continuous official stream (key set,
+		// empty-field stripping, reasoning delta normalization). The fit is
+		// skipped for every other caller, whose frames stay byte-identical.
+		if kimiK3FitEnabled(info) {
+			forwardData = FitKimiK3StreamEventForAdapters(c, info, forwardData, nil, false)
+			if forwardData == "" {
+				continue
+			}
+		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
 			return usage, finish, builder.String(), deltaSeen, sendErr
@@ -600,7 +759,15 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 // transparently continued response. Usage is emitted separately by
 // HandleFinalResponse so the client sees exactly one terminal frame and at most
 // one usage event, matching an ordinary stream.
-func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string) {
+//
+// A Kimi K3 official-fit caller must keep the official stream shape: the
+// terminal chunk carries the merged usage inside choices[0].usage and, when the
+// client asked for stream usage, is followed by the choices:[] usage-only event.
+// The generic frame below would leak the platform's internal usage shape and,
+// because HandleFinalResponse suppresses its generic usage frame under the fit,
+// leave the caller with no usage at all. So the fit owns both terminal frames
+// for those callers; every other caller keeps the exact bytes it saw before.
+func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string, usage *dto.Usage) {
 	helper.ExtendWriteDeadline(c)
 	if finish == "" {
 		finish = "length"
@@ -613,6 +780,27 @@ func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if model == "" && info != nil {
 		model = info.UpstreamModelName
+	}
+	if info != nil && kimiK3FitEnabled(info) {
+		// The fit caller sees the official envelope order, and the fit moves the
+		// merged usage into choices[0].usage (append keeps it last, where the
+		// official endpoint puts it). A marshal failure falls through to the
+		// generic frame rather than losing the terminal marker entirely.
+		idJSON, idErr := common.Marshal(responseId)
+		modelJSON, modelErr := common.Marshal(model)
+		finishJSON, finishErr := common.Marshal(finish)
+		if idErr == nil && modelErr == nil && finishErr == nil {
+			terminalData := fmt.Sprintf(`{"id":%s,"object":"chat.completion.chunk","created":%d,"model":%s,"choices":[{"index":0,"delta":{},"finish_reason":%s}]}`, idJSON, createAt, modelJSON, finishJSON)
+			if fitted := FitKimiK3StreamEventForAdapters(c, info, terminalData, usage, true); fitted != "" {
+				terminalData = fitted
+			}
+			_ = sendStreamData(c, info, terminalData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			if usageOnly := FitKimiK3StreamUsageOnlyChunk(info, terminalData); usageOnly != "" {
+				helper.ExtendWriteDeadline(c)
+				_ = sendStreamData(c, info, usageOnly, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			return
+		}
 	}
 	payload := map[string]any{
 		"id":      responseId,
