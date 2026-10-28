@@ -114,15 +114,6 @@ func ClaudeMessagesRequestToOpenAIChat(ctx context.Context, claudeRequest dto.Cl
 	}
 	openAIRequest.Tools = openAITools
 
-	if claudeRequest.ToolChoice != nil {
-		if toolChoice, parallelToolCalls := claudeToolChoiceToChat(claudeRequest.ToolChoice); toolChoice != nil {
-			openAIRequest.ToolChoice = toolChoice
-			if parallelToolCalls != nil {
-				openAIRequest.ParallelTooCalls = parallelToolCalls
-			}
-		}
-	}
-
 	openAIMessages := make([]dto.Message, 0)
 	if claudeRequest.System != nil {
 		if claudeRequest.IsStringSystem() && claudeRequest.GetStringSystem() != "" {
@@ -301,43 +292,6 @@ func claudeToolResultToChat(blocks []dto.ClaudeMediaMessage) (string, []dto.Medi
 		return "[image]", media
 	default:
 		return strings.Join(texts, "\n"), media
-	}
-}
-
-// claudeToolChoiceToChat maps the Messages tool_choice object onto the Chat
-// Completions field. Dropping it silently demoted every forcing request to an
-// ordinary auto one: the official endpoint forces the named call, while the
-// converted request let the model answer freely. Shapes the Messages wire does
-// not define are left to the upstream. disable_parallel_tool_use travels as
-// parallel_tool_calls=false, the Chat-side spelling of the same restriction.
-func claudeToolChoiceToChat(value any) (any, *bool) {
-	choice, err := kitutil.Any2Type[dto.ClaudeToolChoice](value)
-	if err != nil || strings.TrimSpace(choice.Type) == "" {
-		return nil, nil
-	}
-	var parallelToolCalls *bool
-	if choice.DisableParallelToolUse {
-		disabled := false
-		parallelToolCalls = &disabled
-	}
-	switch strings.ToLower(strings.TrimSpace(choice.Type)) {
-	case "auto":
-		return "auto", parallelToolCalls
-	case "none":
-		return "none", parallelToolCalls
-	case "any":
-		return "required", parallelToolCalls
-	case "tool":
-		name := strings.TrimSpace(choice.Name)
-		if name == "" {
-			return nil, parallelToolCalls
-		}
-		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": name},
-		}, parallelToolCalls
-	default:
-		return nil, nil
 	}
 }
 
