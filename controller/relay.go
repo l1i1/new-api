@@ -126,6 +126,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if service.OpsCyberPolicyForwarded(c) {
 				return
 			}
+			// A Responses stream attempt may have held back its content-free
+			// lifecycle events so the relay could retry another channel. Once the
+			// relay stops, replay them plus the terminal failure so the client
+			// still receives the stream it would have gotten before.
+			var replayResponsesStream func()
+			if relayFormat == types.RelayFormatOpenAIResponses {
+				if replay, ok := c.Get(string(constant.ContextKeyResponsesStreamDeferredReplay)); ok {
+					replayResponsesStream, _ = replay.(func())
+				}
+			}
 			if c.Writer != nil && c.Writer.Written() {
 				// The status is committed, so nothing can be written at the HTTP
 				// level — except when the ONLY thing on the wire is non-stream
@@ -135,9 +145,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				// keep-alive exists to prevent. Reporting the error as a body at
 				// the already-committed 200 is imperfect, but it is parseable and
 				// it is honest; see MEMORY.md for the remaining trade-off.
-				if !(helper.NonStreamKeepAliveActive(c) && helper.KeepAliveOnlyCommitted(c)) {
+				keepAliveOnly := helper.ResponseCommitStateOf(c) == helper.ResponseKeepAliveOnly
+				if !(helper.NonStreamKeepAliveActive(c) && helper.KeepAliveOnlyCommitted(c)) &&
+					!(replayResponsesStream != nil && keepAliveOnly) {
 					return
 				}
+			}
+			if replayResponsesStream != nil {
+				// No channel could serve the request: emit the held-back
+				// Responses stream of the last failed attempt.
+				replayResponsesStream()
+				return
 			}
 			if mark := service.GetOpsCyberPolicy(c); mark != nil && mark.Body != "" {
 				statusCode := mark.UpstreamStatus

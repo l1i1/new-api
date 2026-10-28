@@ -76,7 +76,9 @@ func TestOaiResponsesStreamTruncatedAfterPartialOutputIsFailure(t *testing.T) {
 }
 
 // A zero-output stream without a terminal event is still a protocol failure,
-// but it is classified as an upstream truncation rather than empty output.
+// but it is classified as an upstream truncation rather than empty output. The
+// only event is a content-free lifecycle event, so it stays buffered: nothing
+// reached the client and the relay can retry another channel.
 func TestOaiResponsesStreamTruncatedWithoutOutputIsUpstreamFailure(t *testing.T) {
 	sse := responsesSSE(
 		`{"type":"response.created","response":{"status":"in_progress"}}`,
@@ -87,7 +89,8 @@ func TestOaiResponsesStreamTruncatedWithoutOutputIsUpstreamFailure(t *testing.T)
 	require.True(t, apiErr.IsUpstreamFailure())
 	require.False(t, apiErr.IsEmptyOutput())
 	require.True(t, apiErr.ShouldEvictChannelAffinity())
-	require.Contains(t, clientBody, "response.failed")
+	require.False(t, types.IsSkipRetryError(apiErr), "an uncommitted truncation must stay retryable")
+	require.Empty(t, clientBody, "held-back lifecycle events must not reach the client")
 }
 
 // A well-formed stream ending in response.completed must stay a success; the

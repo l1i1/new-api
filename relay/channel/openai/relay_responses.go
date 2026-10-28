@@ -76,6 +76,38 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	return usage, nil
 }
 
+// deferredResponsesStreamEvent is a content-free Responses stream event held
+// back until the stream produces real output. Forwarding a lifecycle event such
+// as response.created commits the response; if the upstream then fails before
+// producing anything (for example an overloaded Moonshot pool reports an
+// engine-overloaded error ~15s into the stream), the relay can no longer fail
+// over to another channel. Keeping the lifecycle events buffered preserves that
+// retry window. Keep-alive pings still reach the client meanwhile, and the retry
+// classifier ignores ping-only commits.
+type deferredResponsesStreamEvent struct {
+	payload dto.ResponsesStreamResponse
+	data    string
+}
+
+// maxDeferredResponsesStreamEvents bounds the lifecycle buffer. An upstream that
+// keeps emitting content-free events without ever producing output falls back to
+// streaming instead of growing memory without limit.
+const maxDeferredResponsesStreamEvents = 64
+
+// responsesStreamEventCarriesNoOutput reports whether a Responses SSE event only
+// announces stream state and carries no model output. Such events are buffered
+// until the first output or terminal event, so an upstream that fails before any
+// output can still be retried on another channel.
+func responsesStreamEventCarriesNoOutput(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress", "response.queued",
+		"response.output_item.added", "response.content_part.added",
+		"response.reasoning_summary_part.added":
+		return true
+	}
+	return false
+}
+
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -90,6 +122,21 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	hadOutput := false
 	var streamErr *types.NewAPIError
 	policyUsage := &dto.Usage{}
+	// Lifecycle events are forwarded only once the stream produces output (or a
+	// terminal event). Until then they stay here, so a pre-output upstream
+	// failure leaves the response uncommitted and the relay can retry another
+	// channel (see responsesStreamEventCarriesNoOutput).
+	deferred := make([]deferredResponsesStreamEvent, 0, 4)
+	flushDeferred := func() {
+		if len(deferred) == 0 {
+			return
+		}
+		for _, event := range deferred {
+			sendResponsesStreamData(c, event.payload, event.data)
+		}
+		deferred = deferred[:0]
+		responseDataSent = true
+	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if streamErr != nil {
@@ -122,6 +169,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		policyUsage = dto.MergeUsageNonZero(policyUsage, usageFromResponsesResponse(streamResponse.Response))
 		if cyberErr := service.NewOpenAICyberPolicyError(c, common.StringToByteSlice(data), resp.StatusCode, true, policyUsage); cyberErr != nil {
 			streamErr = cyberErr
+			// Keep the protocol ordering: a held-back response.created must not
+			// arrive after the event that terminates the stream.
+			flushDeferred()
 			sendResponsesStreamData(c, streamResponse, data)
 			responseDataSent = true
 			helper.Done(c)
@@ -143,6 +193,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				sr.Error(err)
 				return
 			}
+		}
+		// Hold content-free lifecycle events until the stream produces output.
+		// Nothing has been written yet, so an upstream failure in between keeps
+		// the response uncommitted and lets the relay retry another channel.
+		if responsesStreamEventCarriesNoOutput(streamResponse.Type) && len(deferred) < maxDeferredResponsesStreamEvents {
+			deferred = append(deferred, deferredResponsesStreamEvent{payload: streamResponse, data: data})
+			return
 		}
 		// Reseller channels also report a failure as a bare SSE error event
 		// (type "error") rather than the protocol's response.failed/response.error.
@@ -174,9 +231,19 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		// another channel; forwarding the failure event would commit a 200 and
 		// block that retry.
 		if streamErr != nil && !responseDataSent {
+			// The held-back lifecycle events belong to the failed attempt: drop
+			// them instead of letting a retry inherit another channel's events,
+			// but remember how to replay them with this failure in case the relay
+			// runs out of retries.
+			pending := deferred
+			deferred = nil
+			deferResponsesStreamReplay(c, pending, func() {
+				sendResponsesStreamData(c, streamResponse, data)
+			})
 			sr.Stop(streamErr)
 			return
 		}
+		flushDeferred()
 		sendResponsesStreamData(c, streamResponse, data)
 		if streamErr != nil {
 			sr.Stop(streamErr)
@@ -216,7 +283,21 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	// Responses requires an explicit terminal event. A clean EOF without one
 	// is an upstream truncation and must remain visible to retry/affinity logic.
 	if !sawTerminalEvent {
-		return usage, incompleteResponsesStreamError(c, c.Writer.Written(), hadOutput)
+		// Only real payload commits the response. A stream that sent nothing but
+		// keep-alive pings, or only held-back lifecycle events, can still be
+		// retried, matching the relay's own commit-state classification.
+		committed := helper.ResponseCommitStateOf(c) == helper.ResponsePayloadWritten
+		apiErr := incompleteResponsesStreamError(c, committed, hadOutput)
+		if !committed && len(deferred) > 0 {
+			// If the relay cannot retry, replay the held-back events plus the
+			// synthetic response.failed that a committed truncation would have
+			// received, keeping the client-visible stream unchanged.
+			pending := deferred
+			deferResponsesStreamReplay(c, pending, func() {
+				writeSyntheticResponsesStreamFailure(c, apiErr)
+			})
+		}
+		return usage, apiErr
 	}
 
 	return usage, nil
@@ -272,6 +353,15 @@ func incompleteResponsesStreamError(c *gin.Context, committed bool, hadOutput bo
 	if !committed || hadOutput {
 		return apiErr
 	}
+	writeSyntheticResponsesStreamFailure(c, apiErr)
+	return apiErr
+}
+
+// writeSyntheticResponsesStreamFailure emits the protocol-shaped response.failed
+// event that terminates a zero-output Responses stream. It is used when the
+// stream is already committed, and by the relay's deferred replay when a retry
+// is no longer possible.
+func writeSyntheticResponsesStreamFailure(c *gin.Context, apiErr *types.NewAPIError) {
 	synthetic := dto.ResponsesStreamResponse{
 		Type: "response.failed",
 		Response: &dto.OpenAIResponsesResponse{
@@ -286,5 +376,20 @@ func incompleteResponsesStreamError(c *gin.Context, committed bool, hadOutput bo
 		_ = helper.ResponseChunkData(c, synthetic, string(data))
 		helper.Done(c)
 	}
-	return apiErr
+}
+
+// deferResponsesStreamReplay stores a closure that replays the lifecycle events
+// held back by this attempt together with its terminal failure. The relay calls
+// it only when it cannot retry anymore, so the client receives the same stream
+// it would have gotten before the lifecycle events were deferred.
+func deferResponsesStreamReplay(c *gin.Context, pending []deferredResponsesStreamEvent, writeTerminal func()) {
+	if c == nil || len(pending) == 0 || writeTerminal == nil {
+		return
+	}
+	c.Set(string(constant.ContextKeyResponsesStreamDeferredReplay), func() {
+		for _, event := range pending {
+			sendResponsesStreamData(c, event.payload, event.data)
+		}
+		writeTerminal()
+	})
 }

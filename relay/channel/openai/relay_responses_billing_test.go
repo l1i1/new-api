@@ -577,12 +577,12 @@ func TestOaiResponsesStreamHandlerRejectsEmptyEOFWithoutTerminalEvent(t *testing
 	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
 	require.Equal(t, types.ErrorCode("server_error"), apiErr.GetErrorCode())
-	// Stream headers/status already committed by the intermediate events; the
-	// client-visible result must carry a synthetic failed event, not a clean end.
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), "response.failed")
-	require.Contains(t, w.Body.String(), "server_error")
-	require.Contains(t, w.Body.String(), "data: [DONE]")
+	// The metadata events are content-free and stay buffered, so nothing reached
+	// the client: the response is still uncommitted and the relay retries another
+	// channel instead of synthesizing a terminal event for this attempt.
+	require.False(t, types.IsSkipRetryError(apiErr))
+	require.Empty(t, w.Body.String())
+	require.False(t, c.Writer.Written())
 }
 
 func TestOaiResponsesHandlerRewritesSGLangCreatedAtToInt(t *testing.T) {

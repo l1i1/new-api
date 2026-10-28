@@ -133,6 +133,12 @@ const (
 	ContextKeyLanguage             ContextKey = "language"
 	ContextKeyIsStream             ContextKey = "is_stream"
 	ContextKeyResponseStreamStatus ContextKey = "response_stream_status"
+	// ContextKeyResponsesStreamDeferredReplay carries a func() that replays the
+	// Responses SSE events held back by a failed attempt (content-free lifecycle
+	// events plus its terminal failure). The relay only calls it when a retry is
+	// not possible anymore, preserving the client-visible stream while keeping
+	// the response uncommitted during the retry window.
+	ContextKeyResponsesStreamDeferredReplay ContextKey = "responses_stream_deferred_replay"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit
