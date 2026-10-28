@@ -65,7 +65,13 @@ func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Cha
 	if info == nil || info.ChannelMeta == nil || channel == nil {
 		return nil
 	}
-	channelAdaptor := GetAdaptor(channel.Type)
+	// GetAdaptor takes an API type, not a channel type (channel type 1 would
+	// resolve to the Claude adaptor), so map it first.
+	apiType, apiTypeOK := common.ChannelType2APIType(channel.Type)
+	if !apiTypeOK {
+		return nil
+	}
+	channelAdaptor := GetAdaptor(apiType)
 	if channelAdaptor == nil {
 		return nil
 	}
@@ -76,9 +82,18 @@ func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Cha
 	info.ParamOverride = nil
 	info.ResponseOverride = nil
 	info.HeadersOverride = nil
-	info.ApiKey = channel.Key
-	info.ChannelIsMultiKey = false
-	info.ChannelMultiKeyIndex = 0
+	// A multi-key channel must hand out one enabled key, not the raw Key field
+	// (that is the joined credential list, which is not a valid bearer token).
+	apiKey, keyIndex, keyErr := channel.GetNextEnabledKey()
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
+	info.ApiKey = apiKey
+	info.ChannelIsMultiKey = channel.ChannelInfo.IsMultiKey
+	info.ChannelMultiKeyIndex = keyIndex
+	if info.ChannelMeta != nil {
+		info.ChannelMeta.ApiType = apiType
+	}
 	return channelAdaptor
 }
 
@@ -312,40 +327,18 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				return resp, nil
 			}
 			return func(partial string, remaining int) (*http.Response, error) {
-				previousChannel := info.ChannelId
-				var previousMeta relaycommon.ChannelMeta
-				if info.ChannelMeta != nil {
-					previousMeta = *info.ChannelMeta
-				}
-				resp, requestErr := sendOnce(adaptorRef, partial, remaining)
-				if requestErr == nil && resp != nil && resp.StatusCode < http.StatusBadRequest {
-					return resp, nil
-				}
-				// The first round's channel is frequently the reason the stream was
-				// cut (the 900s wall belongs to a single upstream flow, and a broken
-				// aggregator errors out instead of answering). Replaying the
-				// continuation there spends the one permitted step on the same
-				// failure, so one attempt on a different channel is worth it.
-				if resp != nil && resp.Body != nil {
-					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-					_ = resp.Body.Close()
-				}
-				fallback := continuationFallbackChannel(c, info)
-				if fallback == nil {
-					return resp, requestErr
-				}
-				fallbackAdaptor := adoptChannelForContinuation(info, fallback)
-				if fallbackAdaptor == nil {
-					restoreChannelMeta(previousMeta, info)
-					return resp, requestErr
-				}
-				common.SysLog(fmt.Sprintf("continuation round failed on channel %d, retrying on channel %d", previousChannel, fallback.Id))
-				fallbackResp, fallbackErr := sendOnce(fallbackAdaptor, partial, remaining)
-				if fallbackErr != nil {
-					restoreChannelMeta(previousMeta, info)
-					return nil, fallbackErr
-				}
-				return fallbackResp, nil
+				// Same-channel only. A cross-channel resume is deliberately NOT wired
+				// here: binding a fallback channel correctly means rebuilding its model
+				// mapping, headers, api type/version, credential selection and
+				// concurrency slot the way the controller's retry loop does. The half
+				// bound hop this replaced picked the wrong protocol adaptor (a channel
+				// type was passed where an API type is expected, so an OpenAI channel
+				// resolved to the Claude adaptor), carried the original channel's
+				// upstream model name, and skipped the per-channel concurrency slot -
+				// it could send the caller's resume to the wrong upstream model. It is
+				// parked as a separately scoped change; the round retry re-sends on
+				// this channel, which is the behaviour the 900s repair depends on.
+				return sendOnce(adaptorRef, partial, remaining)
 			}
 		}
 		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}

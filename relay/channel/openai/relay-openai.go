@@ -219,6 +219,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamHasUsage bool
 	var lastStreamHasChoices bool
 	var lastStreamHasFinish bool
+	// finishFrameForwarded records that the provider's own terminal frame already
+	// reached the client, so the truncated close below must not synthesize a
+	// second one with a contradictory finish_reason.
+	finishFrameForwarded := false
 	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	var deepSeekV4PendingFinalData string
@@ -423,6 +427,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				pendingUsageData = lastStreamData
 				if lastStreamHasChoices {
 					if lastStreamWithoutUsage != "" {
+						if lastStreamHasFinish {
+							finishFrameForwarded = true
+						}
 						if err := HandleStreamFormat(c, info, lastStreamWithoutUsage, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 							common.SysLog("error handling stream format: " + err.Error())
 							sr.Error(err)
@@ -438,6 +445,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				}
 			} else {
 				streamData := lastStreamData
+				if lastStreamHasFinish {
+					finishFrameForwarded = true
+				}
 				if info.RelayFormat == types.RelayFormatOpenAI {
 					patched, err := patchStreamUsageData(streamData, usage)
 					if err != nil {
@@ -608,6 +618,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// (see ClampUsageToClientBudget for why upstream accumulation happens).
 	relaycommon.ClampUsageToClientBudget(info, usage)
 
+	// Tool-call deltas forwarded by a resumed round: once the caller holds half a
+	// call, the answer must not be closed as a clean truncation.
+	continuationToolCalls := 0
+
 	// Transparent continuation for a provider-side output cap: the upstream ended
 	// the stream with finish_reason=length while the client still had budget left,
 	// so continue the same answer inside this same client stream instead of
@@ -616,10 +630,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount, streamChoiceCount) && len(streamFunctionCallNames) == 0 {
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		// A caller-side disconnect during the continuation rounds stays billable
 		// (same rule as client_gone on a normal stream): the provider already
 		// generated the merged usage.
-		if result.rounds > 0 {
+		if result.rounds > 0 && result.terminal {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -651,13 +666,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -685,6 +701,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		len(streamFunctionCallNames) == 0 {
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			// The caller walked away mid-continuation: the provider already
 			// generated the observed usage (same rule as client_gone on a
@@ -695,7 +712,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -728,6 +745,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		common.SysLog(fmt.Sprintf("length thinking continuation: ch=%d reasoning=%d clientMax=%d completion=%d", info.ChannelId, reasoningTextBuilder.Len(), info.ClientMaxTokens, usage.CompletionTokens))
 		resetContinuationCoalescer(info)
 		result := runLengthThinkingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
@@ -740,7 +758,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// is reported as "length" (an output-cap truncation) instead of falling
 		// through to the first round's terminal, which would contradict the
 		// streamed content and drop the continuation usage from the bill.
-		if result.rounds > 0 && result.contentChars > 0 {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal {
 			finish := result.finish
 			if finish == "" || relaycommon.IsAbnormalFinishReason(finish) {
 				finish = "length"
@@ -775,13 +793,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -811,13 +830,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		len(streamFunctionCallNames) == 0 {
 		resetContinuationCoalescer(info)
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -863,10 +883,23 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// frame - half a tool call is not a usable answer and the caller must
 		// retry - and so does a reasoning-only cut, which delivered no answer.
 		if visibleContentChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
-			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+			continuationToolCalls == 0 && streamChoiceCount <= 1 && !finishFrameForwarded &&
+			!deepSeekV4FitEnabled(info) && info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
 			common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d shape=%s content=%d reasoning=%d", info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len()))
 			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+			// Health and rate-limit sampling must not read this as a clean success:
+			// the caller received a truncated answer. The abnormal shape already
+			// recorded its failure when the upstream terminal arrived; the silent
+			// (no finish_reason at all) shape reaches here still unknown.
+			if info.StreamStatus != nil && undeliveredReason == relaycommon.UndeliveredMissingFinish {
+				info.StreamStatus.MarkFailed("upstream_missing_finish_reason", "upstream_error", http.StatusBadGateway)
+				info.StreamStatus.RecordError("upstream stream ended without a terminal finish_reason")
+			}
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				common.SysLog(fmt.Sprintf("partial answer terminal skipped, caller gone: ch=%d", info.ChannelId))
+				return usage, nil
+			}
 			info.StreamFinishReason = "length"
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)

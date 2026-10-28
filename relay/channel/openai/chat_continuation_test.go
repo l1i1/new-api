@@ -1762,3 +1762,71 @@ func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T)
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
+
+// TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame pins the robustness
+// rule behind the retry work: a resumed round that forwards deltas and then
+// hits a clean EOF (no finish_reason, no [DONE]) is NOT a recovered answer. It
+// used to be reported as a "length" completion, billed, and its failure erased
+// from StreamStatus.
+func TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	// A resume round that emits a delta and then closes with no terminal frame.
+	truncatedRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(truncatedRound), nil
+	}, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Abnormal.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an answer cut twice must not be billed")
+	require.NotEmpty(t, info.UndeliveredReason, "the cut stays classified as undelivered")
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"stop"`, "no clean answer was produced")
+}
+
+// TestOaiStreamHandlerKeepsErrorWhenResumeForwardsToolCalls pins the tool-call
+// rule across rounds: a resumed round that forwards half a tool call must keep
+// the error frame instead of being closed as a truncated success, because a
+// client would otherwise execute a truncated argument string.
+func TestOaiStreamHandlerKeepsErrorWhenResumeForwardsToolCalls(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	toolCallRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"q\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(toolCallRound), nil
+	}, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Abnormal.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err, "a half tool call must stay an error for the caller")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"length"`,
+		"a half tool call must not be masked as a truncated success")
+}

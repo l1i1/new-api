@@ -32,6 +32,10 @@ const chatContinuationRoundAttempts = 3
 // chatContinuationRetryBackoff is the linear backoff between resume attempts.
 const chatContinuationRetryBackoff = 300 * time.Millisecond
 
+// chatContinuationRetryBudget bounds the wall time one round may spend retrying:
+// a slow-rejecting upstream must not stretch an already long request.
+const chatContinuationRetryBudget = 5 * time.Second
+
 // chatContinuationPrompt is the instruction appended after the truncated
 // assistant message. It is deliberately neutral so it fits both an answer that
 // was cut mid-sentence and a structured (for example numbered) output.
@@ -238,7 +242,11 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
 		return false
 	}
-	if contentChars <= 0 || chatContinuationBudgetLeft(info, usage) <= 0 {
+	// An ordinary output-cap resume only spends a budget the caller declared. An
+	// undeclared request has no ceiling, so resuming a legitimate model cap would
+	// generate (and bill) unbounded rounds; the abnormal and missing cut shapes
+	// keep the per-round step for undeclared requests.
+	if contentChars <= 0 || info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
 		return false
 	}
 	if info.StreamStatus != nil && info.StreamStatus.ResponseFailed() {
@@ -504,18 +512,26 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			break
 		}
 		var (
-			roundUsage   *dto.Usage
-			finish       string
-			roundContent string
-			deltaSeen    bool
-			roundErr     error
+			roundUsage     *dto.Usage
+			finish         string
+			roundContent   string
+			deltaSeen      bool
+			roundToolCalls int
+			roundTerminal  bool
+			roundErr       error
 		)
+		retryStarted := time.Now()
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				if c.Request != nil && c.Request.Context().Err() != nil {
 					break
 				}
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "thinking continuation retry budget exhausted")
+					break
+				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
 			}
 			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
 			if err != nil {
@@ -530,7 +546,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 				logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
 				continue
 			}
-			roundUsage, finish, roundContent, deltaSeen, roundErr = consumeChatContinuationRound(c, info, resp, meta)
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta)
 			_ = resp.Body.Close()
 			if roundErr != nil {
 				if deltaSeen {
@@ -550,6 +566,8 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			break
 		}
 		result.rounds++
+		result.toolCalls += roundToolCalls
+		result.terminal = roundTerminal
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
 		}
@@ -561,7 +579,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		if roundErr != nil {
 			break
 		}
-		if finish == "" || relaycommon.IsAbnormalFinishReason(finish) || finish != "length" {
+		if finish != "length" {
 			break
 		}
 	}
@@ -593,6 +611,14 @@ type chatContinuationResult struct {
 	finish       string
 	rounds       int
 	contentChars int
+	// terminal reports whether the LAST round ended with a provider terminal
+	// frame. A round that forwards deltas then hits a clean EOF must not be
+	// reported as recovered: the caller would be billed for a twice-cut answer.
+	terminal bool
+	// toolCalls counts tool-call deltas forwarded by resumed rounds. A round that
+	// emits a tool call and dies has already sent half a call, so the answer must
+	// not be closed as a clean truncation.
+	toolCalls int
 }
 
 // chatContinuationMeta carries the first round's envelope fields. Continuation
@@ -620,12 +646,15 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			break
 		}
 		var (
-			roundUsage   *dto.Usage
-			finish       string
-			roundContent string
-			deltaSeen    bool
-			roundErr     error
+			roundUsage     *dto.Usage
+			finish         string
+			roundContent   string
+			deltaSeen      bool
+			roundToolCalls int
+			roundTerminal  bool
+			roundErr       error
 		)
+		retryStarted := time.Now()
 		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 			if attempt > 0 {
 				// The caller walked away while the previous attempt was in flight:
@@ -633,7 +662,12 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 				if c.Request != nil && c.Request.Context().Err() != nil {
 					break
 				}
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "chat continuation retry budget exhausted")
+					break
+				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
 			}
 			resp, err := info.ChatContinuation.Send(content, remaining)
 			if err != nil {
@@ -650,7 +684,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 				logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
 				continue
 			}
-			roundUsage, finish, roundContent, deltaSeen, roundErr = consumeChatContinuationRound(c, info, resp, meta)
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta)
 			_ = resp.Body.Close()
 			if roundErr != nil {
 				if deltaSeen {
@@ -670,6 +704,8 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			break
 		}
 		result.rounds++
+		result.toolCalls += roundToolCalls
+		result.terminal = roundTerminal
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
 		}
@@ -698,9 +734,9 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 // returns that round's usage, terminal finish reason and visible content. The
 // terminal frame and usage events are not forwarded: the caller renders one
 // final frame with the merged usage.
-func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) (usage *dto.Usage, finish string, content string, deltaSeen bool, err error) {
+func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, sawTerminal bool, err error) {
 	if resp == nil || resp.Body == nil {
-		return nil, "", "", false, fmt.Errorf("continuation response has no body")
+		return nil, "", "", false, 0, false, fmt.Errorf("continuation response has no body")
 	}
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
@@ -716,6 +752,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			continue
 		}
 		if data == "[DONE]" {
+			sawTerminal = true
 			break
 		}
 		var chunk dto.ChatCompletionsStreamResponse
@@ -781,6 +818,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 			if len(delta.ToolCalls) > 0 {
 				forward = true
+				toolCalls++
 			}
 		}
 		if !forward {
@@ -817,13 +855,13 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
-			return usage, finish, builder.String(), deltaSeen, sendErr
+			return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, sendErr
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		return usage, finish, builder.String(), deltaSeen, scanErr
+		return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, scanErr
 	}
-	return usage, finish, builder.String(), deltaSeen, nil
+	return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, nil
 }
 
 // rewriteContinuationChunkMeta normalizes one continuation delta to the first
