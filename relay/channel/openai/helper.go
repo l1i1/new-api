@@ -153,6 +153,37 @@ func stripStreamUsageData(data string) (string, error) {
 	return string(stripped), nil
 }
 
+// stripStreamFinishData removes choices[*].finish_reason from one stream event.
+// Used when a chunk the loop was holding is replayed as a plain delta: the terminal
+// frame is rendered by the handler itself, never leaked from a held chunk.
+func stripStreamFinishData(data string) (string, error) {
+	var payload map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
+		return data, err
+	}
+	choicesRaw, ok := payload["choices"]
+	if !ok {
+		return data, nil
+	}
+	var choices []map[string]json.RawMessage
+	if err := common.UnmarshalJsonStr(string(choicesRaw), &choices); err != nil {
+		return data, nil
+	}
+	for _, choice := range choices {
+		delete(choice, "finish_reason")
+	}
+	patched, err := common.Marshal(choices)
+	if err != nil {
+		return data, err
+	}
+	payload["choices"] = patched
+	out, err := common.Marshal(payload)
+	if err != nil {
+		return data, err
+	}
+	return string(out), nil
+}
+
 func stripStreamChoicesData(data string) (string, error) {
 	var payload map[string]json.RawMessage
 	if err := common.UnmarshalJsonStr(data, &payload); err != nil {

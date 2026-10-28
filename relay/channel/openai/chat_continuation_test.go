@@ -1978,3 +1978,99 @@ func TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart(t 
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
+
+// TestOaiStreamHandlerKeepsOneTerminalWhenFinishAndUsageAreSeparateChunks pins the
+// standard OpenAI shape (finish chunk followed by a usage-only chunk) that the
+// earlier fixtures missed: the provider terminal frame used to be forwarded before
+// the repair decided, so the caller received finish_reason=length, then resumed
+// content, then finish_reason=stop (2026-10-29 review, BLOCKER).
+func TestOaiStreamHandlerKeepsOneTerminalWhenFinishAndUsageAreSeparateChunks(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Zero(t, strings.Count(body, `"finish_reason":"length"`), "the provider terminal frame must be held, not forwarded")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"))
+}
+
+// TestOaiStreamHandlerDeliversHeldTailBeforeRepair pins the answer fragment the
+// stream loop still held when the early return happened: the continuation prompt
+// includes it, so dropping it left a silent hole in the caller's answer
+// (2026-10-29 review, BLOCKER).
+func TestOaiStreamHandlerDeliversHeldTailBeforeRepair(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"第一块"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"尾块"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"续写"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "第一块")
+	require.Contains(t, body, "尾块", "the held answer tail must reach the caller before the resumed round")
+	require.Contains(t, body, "续写")
+}
+
+// TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent pins the transport
+// fault shape (reset/timeout): the delivered prefix is resumed instead of leaving
+// the caller with a bare EOF and no terminal frame (2026-10-29 review, HIGH).
+func TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent(t *testing.T) {
+	firstRound := io.MultiReader(
+		strings.NewReader(strings.Join([]string{
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"第一块"},"finish_reason":null}]}`,
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"尾块"},"finish_reason":null}]}`,
+			``,
+		}, "\n")),
+		streamErrorReader{err: errors.New("connection reset by peer")},
+	)
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"续写"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(firstRound),
+	})
+	require.Nil(t, err, "a transport cut after delivered content must be repaired or closed, not failed")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "尾块")
+	require.Contains(t, body, "续写")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+}

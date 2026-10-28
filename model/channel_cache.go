@@ -599,12 +599,6 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
-	// Short cooldown is an admission hint, never a hard exclusion: if every
-	// candidate is cooling the original list is kept, so a bad upstream cannot
-	// empty the pool and turn "all channels recently failed" into "no channel".
-	if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
-		channels = cooling
-	}
 	// Video capability is a hard requirement and is applied BEFORE the fit
 	// narrowing on purpose. The narrowing keeps only channels that prove the
 	// requested behaviour, which may exclude the only channel that can read the
@@ -615,6 +609,15 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// priority) serve the request.
 	channels, videoEmptied := narrowVideoCandidates(channels, videoOnly, model)
 	channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
+	// Short cooldown is a preference inside the hard constraints, never a capability
+	// filter in front of them: applying it before the video/fit narrowing turned a
+	// transient hint into a 400 "video unsupported" and silently downgraded
+	// official-fit requests (2026-10-29 review, B1). Filtering after narrowing and
+	// keeping the narrowed set when every candidate is cooling preserves both
+	// semantics.
+	if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
+		channels = cooling
+	}
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
@@ -625,6 +628,9 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 		channels, normalizedEmptied = narrowVideoCandidates(channels, videoOnly, model)
 		videoEmptied = videoEmptied || normalizedEmptied
 		channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
+		if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
+			channels = cooling
+		}
 	}
 
 	if len(channels) == 0 {

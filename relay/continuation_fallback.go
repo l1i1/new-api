@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -49,7 +50,10 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 		excluded := map[int]struct{}{info.ChannelId: {}}
 		var selected *model.Channel
 		for attempt := 0; attempt < 4; attempt++ {
-			retry := 0
+			// retry>0 skips the session-affinity branch of the selector: affinity
+			// would hand back the channel that just failed, and its returned channel
+			// ignores the excluded set (2026-10-29 review, H1).
+			retry := attempt + 1
 			param := &service.RetryParam{
 				Ctx:         c,
 				TokenGroup:  group,
@@ -65,7 +69,9 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 				return nil, fmt.Errorf("cross-channel continuation: no candidate channel: %v", selectErr)
 			}
 			if _, seen := excluded[candidate.Id]; seen {
-				return nil, errors.New("cross-channel continuation: selection returned an excluded channel")
+				// Keep looking instead of aborting: one stale preferred candidate must
+				// not make the whole cross-channel resume impossible.
+				continue
 			}
 			excluded[candidate.Id] = struct{}{}
 			if common.ChannelInCooldown(candidate.Id) {
@@ -84,11 +90,27 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 		logger.LogWarn(c, fmt.Sprintf("chat continuation hopping to channel %d after channel %d failed to start the round", selected.Id, info.ChannelId))
 		resp, err := runContinuationRoundOnChannel(c, info, selected, base, build, partial, remaining)
 		if err != nil {
-			common.RecordChannelFailure(selected.Id)
+			// Only a genuine upstream failure counts as channel breakage: saturated
+			// slots, local build/marshal errors and a caller that walked away must not
+			// cool a healthy channel down (2026-10-29 review, H4).
+			var upstreamFailure *continuationUpstreamFailure
+			if errors.As(err, &upstreamFailure) && (c.Request == nil || c.Request.Context().Err() == nil) {
+				common.RecordChannelFailure(selected.Id)
+			}
 		}
 		return resp, err
 	}
 }
+
+// continuationUpstreamFailure marks an error that came from the hop's upstream
+// request (transport failure), as opposed to a local build/binding/slot error.
+type continuationUpstreamFailure struct {
+	err error
+}
+
+func (e *continuationUpstreamFailure) Error() string { return e.err.Error() }
+
+func (e *continuationUpstreamFailure) Unwrap() error { return e.err }
 
 // continuationContextKeys are the request-scoped context values that describe the
 // selected channel. They are snapshotted before the hop and restored afterwards so
@@ -108,11 +130,25 @@ var continuationContextKeys = []constant.ContextKey{
 	constant.ContextKeyChannelParamOverride,
 	constant.ContextKeyChannelResponseOverride,
 	constant.ContextKeyChannelHeaderOverride,
+	constant.ContextKeyChannelOrganization,
+	constant.ContextKeyChannelAutoBan,
+	constant.ContextKeyChannelModelMapping,
+	constant.ContextKeyChannelStatusCodeMapping,
+	constant.ContextKeyChannelCredentialId,
+	constant.ContextKeyChannelProxyMode,
+	constant.ContextKeyChannelEffectiveProxy,
+	constant.ContextKeyChannelMultiKeyTried,
+	constant.ContextKeySystemPromptOverride,
 	constant.ContextKeySelectedChannel,
 	constant.ContextKeyOriginalModel,
 	constant.ContextKey("api_version"),
+	constant.ContextKey("region"),
 	constant.ContextKey("channel_organization"),
 	constant.ContextKey("original_model"),
+	constant.ContextKey("task_plugin_key"),
+	constant.ContextKey("expected_task_plugin_key"),
+	constant.ContextKey("platform"),
+	constant.ContextKey("bot_id"),
 }
 
 func snapshotContinuationContext(c *gin.Context) map[string]any {
@@ -129,6 +165,10 @@ func restoreContinuationContext(c *gin.Context, snapshot map[string]any) {
 	for _, key := range continuationContextKeys {
 		value, exists := snapshot[string(key)]
 		if !exists {
+			// The hop may have created a channel-scoped key that did not exist before
+			// (channel_organization is only written when the channel has one). Leaving
+			// it behind would describe the hop channel to later attempts, so clear it.
+			c.Set(string(key), nil)
 			continue
 		}
 		c.Set(string(key), value)
@@ -186,40 +226,42 @@ func runContinuationRoundOnChannel(c *gin.Context, info *relaycommon.RelayInfo, 
 	if release == nil {
 		release = func() {}
 	}
+	var releaseOnce sync.Once
+	releaseSlot := func() { releaseOnce.Do(release) }
 
 	jsonBody, marshalErr := common.Marshal(&request)
 	if marshalErr != nil {
-		release()
+		releaseSlot()
 		return nil, marshalErr
 	}
 	if jsonBody, marshalErr = relaycommon.ApplyParamOverrideWithRelayInfo(jsonBody, &round); marshalErr != nil {
-		release()
+		releaseSlot()
 		return nil, marshalErr
 	}
 	body, bodyCloser, bodyErr := relaycommon.NewOutboundJSONBody(jsonBody)
 	if bodyErr != nil {
-		release()
+		releaseSlot()
 		return nil, bodyErr
 	}
 	defer bodyCloser.Close()
 
 	respAny, requestErr := channelAdaptor.DoRequest(c, &round, body)
 	if requestErr != nil {
-		release()
-		return nil, requestErr
+		releaseSlot()
+		return nil, &continuationUpstreamFailure{err: requestErr}
 	}
 	resp, ok := respAny.(*http.Response)
 	if !ok || resp == nil {
-		release()
+		releaseSlot()
 		return nil, fmt.Errorf("cross-channel continuation: adaptor returned %T", respAny)
 	}
-	if resp.Body != nil {
-		// The concurrency slot belongs to the round's body lifetime: hold it until
-		// the caller finishes reading the round.
-		resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: release}
-	} else {
-		release()
+	if resp.Body == nil {
+		releaseSlot()
+		return nil, fmt.Errorf("cross-channel continuation: channel %d returned no body", selected.Id)
 	}
+	// The concurrency slot belongs to the round's body lifetime: hold it until the
+	// caller finishes reading the round.
+	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: releaseSlot}
 	return resp, nil
 }
 
