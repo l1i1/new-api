@@ -46,7 +46,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	// the official Anthropic endpoint's tool_choice and url-image rejections
 	// here for callers whose official-fit Validate dimension is on. Order
 	// follows validateKimiK3OfficialFields (tool_choice before image sources).
-	if newAPIErr := helper.ValidateKimiK3ClaudeToolChoice(c, info.OriginModelName, request); newAPIErr != nil {
+	if newAPIErr := helper.ValidateKimiK3ClaudeToolChoice(c, info.OriginModelName, request, info); newAPIErr != nil {
 		return newAPIErr
 	}
 	if newAPIErr := helper.ValidateKimiK3ClaudeImages(c, info.OriginModelName, request); newAPIErr != nil {

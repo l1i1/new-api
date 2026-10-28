@@ -16,8 +16,10 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/officialfit"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/samber/lo"
 
@@ -1439,21 +1441,24 @@ func ValidateKimiK3ClaudeImages(c *gin.Context, model string, request *dto.Claud
 // ValidateKimiK3ClaudeToolChoice mirrors validateKimiK3ToolChoice for the Claude
 // /v1/messages wire format, which — like the image check above — reaches the
 // relay through dto.ClaudeRequest and therefore never runs the OpenAI field
-// validator. The official K3 endpoints answer the same business rejection with
-// the same wording on both wires (the 2026-10-26 image probe found the text
-// identical on the Anthropic and the OpenAI-compatible endpoint), so the named
-// tool shape answers the official "specified" rejection while thinking is on.
-// "auto" and "none" stay serviced. The forcing "any" form is deliberately left
-// to the upstream: the OpenAI-compatible endpoint accepts `required` with tools
-// while thinking, so the two wires' contracts are not interchangeable and there
-// is no live Anthropic-endpoint probe for `any` yet.
+// validator. The official K3 texts are shared across the two wires wherever
+// they have been probed together (the 2026-10-26 image probe found identical
+// wording on the Anthropic and the OpenAI-compatible endpoint); the tool_choice
+// wording itself was probed on the OpenAI-compatible endpoint only (2026-09-22)
+// and is assumed to be shared, so it still owes an Anthropic-endpoint probe. The
+// named tool shape answers the official "specified" rejection while thinking is
+// on. "auto" and "none" stay serviced. The forcing "any" form is deliberately
+// left to the upstream: the OpenAI-compatible endpoint accepts `required` with
+// tools while thinking, so the two wires' contracts are not interchangeable and
+// there is no Anthropic-endpoint probe for `any` yet.
 //
-// The thinking state comes from request.Thinking.type on this wire; a request
-// that omits the field keeps the endpoint default, which is enabled. Gated on
-// the caller's official-fit Validate dimension like every other local K3
-// contract check, and the error skips retry because the verdict cannot change
-// per channel.
-func ValidateKimiK3ClaudeToolChoice(c *gin.Context, model string, request *dto.ClaudeRequest) *types.NewAPIError {
+// The thinking state is the EFFECTIVE one. Model modifiers run before this check
+// and clear the request fields they override while recording the intent on
+// RelayInfo, so that state is consulted first; without a modifier the request's
+// native thinking / output_config controls decide. Gated on the caller's
+// official-fit Validate dimension like every other local K3 contract check, and
+// the error skips retry because the verdict cannot change per channel.
+func ValidateKimiK3ClaudeToolChoice(c *gin.Context, model string, request *dto.ClaudeRequest, info *relaycommon.RelayInfo) *types.NewAPIError {
 	if request == nil || officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
 		return nil
 	}
@@ -1461,7 +1466,7 @@ func ValidateKimiK3ClaudeToolChoice(c *gin.Context, model string, request *dto.C
 	if !ok || !profile.Validate {
 		return nil
 	}
-	if request.Thinking != nil && strings.EqualFold(strings.TrimSpace(request.Thinking.Type), "disabled") {
+	if kimiK3ClaudeThinkingDisabled(request, info) {
 		return nil
 	}
 	choice, ok := request.ToolChoice.(map[string]any)
@@ -1480,6 +1485,31 @@ func ValidateKimiK3ClaudeToolChoice(c *gin.Context, model string, request *dto.C
 		Type:    "invalid_request_error",
 		Code:    "invalid_request_error",
 	}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+}
+
+// kimiK3ClaudeThinkingDisabled resolves the effective thinking state of a Claude
+// wire request. A model modifier outranks the request fields, and
+// ApplyReasoningModelSuffix records that override on RelayInfo while clearing
+// the fields it replaced, so the info state is consulted first. Without a
+// modifier the native controls decide: thinking.type=disabled, or an
+// output_config effort of none (the same disabled state the converter derives
+// via reasoning.FromClaude). Unparseable controls keep the endpoint default
+// (enabled); their own validation answers before the request would be served.
+func kimiK3ClaudeThinkingDisabled(request *dto.ClaudeRequest, info *relaycommon.RelayInfo) bool {
+	if info != nil {
+		if state := info.ReasoningState(); state != nil {
+			return strings.EqualFold(strings.TrimSpace(state.Mode), string(reasoning.ModeDisabled)) ||
+				strings.EqualFold(strings.TrimSpace(state.Effort), string(reasoning.EffortNone))
+		}
+	}
+	if request == nil {
+		return false
+	}
+	intent, _, err := reasoning.FromClaude(request)
+	if err != nil {
+		return false
+	}
+	return intent.Mode == reasoning.ModeDisabled || intent.Effort == reasoning.EffortNone
 }
 
 // kimiK3ThinkingEnabled reports whether the request runs in thinking mode.
