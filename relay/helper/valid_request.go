@@ -1436,6 +1436,52 @@ func ValidateKimiK3ClaudeImages(c *gin.Context, model string, request *dto.Claud
 	return nil
 }
 
+// ValidateKimiK3ClaudeToolChoice mirrors validateKimiK3ToolChoice for the Claude
+// /v1/messages wire format, which — like the image check above — reaches the
+// relay through dto.ClaudeRequest and therefore never runs the OpenAI field
+// validator. The official K3 endpoints answer the same business rejection with
+// the same wording on both wires (the 2026-10-26 image probe found the text
+// identical on the Anthropic and the OpenAI-compatible endpoint), so the named
+// tool shape answers the official "specified" rejection while thinking is on.
+// "auto" and "none" stay serviced. The forcing "any" form is deliberately left
+// to the upstream: the OpenAI-compatible endpoint accepts `required` with tools
+// while thinking, so the two wires' contracts are not interchangeable and there
+// is no live Anthropic-endpoint probe for `any` yet.
+//
+// The thinking state comes from request.Thinking.type on this wire; a request
+// that omits the field keeps the endpoint default, which is enabled. Gated on
+// the caller's official-fit Validate dimension like every other local K3
+// contract check, and the error skips retry because the verdict cannot change
+// per channel.
+func ValidateKimiK3ClaudeToolChoice(c *gin.Context, model string, request *dto.ClaudeRequest) *types.NewAPIError {
+	if request == nil || officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
+		return nil
+	}
+	profile, ok := officialFitProfile(c, model)
+	if !ok || !profile.Validate {
+		return nil
+	}
+	if request.Thinking != nil && strings.EqualFold(strings.TrimSpace(request.Thinking.Type), "disabled") {
+		return nil
+	}
+	choice, ok := request.ToolChoice.(map[string]any)
+	if !ok {
+		// Absent (nil) and non-object shapes are not the Messages contract; a
+		// malformed value stays the upstream's to reject. The named tool object
+		// is the only shape this check has to answer.
+		return nil
+	}
+	choiceType, _ := choice["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(choiceType), "tool") {
+		return nil
+	}
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: kimiK3ToolChoiceSpecifiedMessage,
+		Type:    "invalid_request_error",
+		Code:    "invalid_request_error",
+	}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+}
+
 // kimiK3ThinkingEnabled reports whether the request runs in thinking mode.
 // Official K3 defaults to enabled, and two fields can turn it off: a
 // thinking.type of disabled, or reasoning_effort "none". A recognized
