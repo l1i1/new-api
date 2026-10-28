@@ -157,4 +157,40 @@ describe('video understanding channel settings', () => {
     expect(settings.supports_video).toBe(true)
     expect(settings.video_usage_mode).toBe('estimate')
   })
+
+  test('a probe-written exclusion list survives an unrelated edit', () => {
+    // The capability probe writes `video_unsupported_models`; the form has no
+    // field for it, so saving any other change must not drop it while the
+    // channel still declares video capability.
+    const form = transformChannelToFormDefaults(
+      baseChannel({
+        settings: JSON.stringify({
+          supports_video: true,
+          video_unsupported_models: ['kimi-k3.1-pro'],
+        }),
+      })
+    )
+    form.priority = 5
+    const settings = settingsFrom(form)
+    expect(settings.supports_video).toBe(true)
+    expect(settings.video_unsupported_models).toEqual(['kimi-k3.1-pro'])
+  })
+
+  test('clearing the capability also clears the probe exclusion list', () => {
+    // An exception to a declaration that no longer exists is inert, and
+    // leaving it behind would revive it silently if the capability came back
+    // before the next probe sweep.
+    const form = transformChannelToFormDefaults(
+      baseChannel({
+        settings: JSON.stringify({
+          supports_video: true,
+          video_unsupported_models: ['kimi-k3.1-pro'],
+        }),
+      })
+    )
+    form.supports_video = false
+    const settings = settingsFrom(form)
+    expect(settings).not.toHaveProperty('supports_video')
+    expect(settings).not.toHaveProperty('video_unsupported_models')
+  })
 })

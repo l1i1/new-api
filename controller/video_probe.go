@@ -2,11 +2,14 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -35,21 +38,42 @@ import (
 // per-model exclusion list (dto.ChannelOtherSettings.VideoUnsupportedModels),
 // so routing stops sending that model's video requests to a blind upstream.
 const (
-	// videoProbeSampleURL is a short public MP4 used as the video part. It only
-	// has to be a fetchable clip: blindness is detected from the usage delta, not
-	// from the answer, so an upstream that rejects the URL (the official Moonshot
-	// endpoint answers 400 "unsupported video url") is reported as inconclusive
-	// instead of being marked blind.
+	// videoProbeSampleURL is a short public MP4 that the probe embeds as an
+	// inline data URI. The inline form is the one customers send, and it is the
+	// only form the official Moonshot endpoint accepts: a URL-sourced video part
+	// is rejected with 400 "unsupported video url" there, so probing with a URL
+	// could never confirm capability on the official channel and would leave
+	// every URL-rejecting upstream permanently unclassified.
+	//
+	// VIDEO_CAPABILITY_PROBE_SAMPLE_URL overrides the download source without a
+	// rebuild (an operator can point it at a local mirror when the public CDN is
+	// unreachable from the node).
 	videoProbeSampleURL = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
+	// videoProbeSampleMaxBytes bounds the download; the sample is ~1.1MB.
+	videoProbeSampleMaxBytes = 16 << 20
+	// videoProbeSampleTimeout bounds the one-off download.
+	videoProbeSampleTimeout = 60 * time.Second
+	// videoProbeSampleRetryDelay is how long a failed download is remembered
+	// before the next pair retries it.
+	videoProbeSampleRetryDelay = 30 * time.Minute
 	// videoProbePrompt is identical in both arms so the prompt-token delta is
 	// the media alone.
 	videoProbePrompt = "Describe this video in one short sentence."
 	// videoProbeMaxTokens keeps the probe cheap; the answer text is ignored.
 	videoProbeMaxTokens = 16
-	// videoProbeMinVideoTokens is the smallest media contribution that counts as
-	// "the upstream read it". Anything between zero and this is ambiguous and
-	// reported as inconclusive rather than written into the exclusion list.
-	videoProbeMinVideoTokens = 32
+	// videoProbeCapableMinDelta is the smallest prompt-token increase that
+	// proves the upstream charged the media. The sample clip costs thousands of
+	// prompt tokens wherever video is actually read (measured 2026-10-28: 7168
+	// on the official channel, 3549 on a GLM channel, 7168 on the aggregator that
+	// serves kimi-k3), so a four-digit floor cannot be reached by a placeholder
+	// or a reminder sentence injected in place of the media.
+	videoProbeCapableMinDelta = 1024
+	// videoProbeBlindMaxDelta is the largest increase still read as "the media
+	// never reached tokenisation". It is not zero because a blind upstream may
+	// substitute the part with a short reminder: the measured blind failure
+	// answered 200 with 122 prompt tokens for a 1.13MB clip, and any handful of
+	// substituted tokens must still count as blind rather than as ambiguous.
+	videoProbeBlindMaxDelta = 128
 	// videoProbeInterval is how often the scheduled sweep re-checks every
 	// (channel, model) pair whose channel declares video.
 	videoProbeInterval = 6 * time.Hour
@@ -80,10 +104,16 @@ const (
 // classifyVideoProbe maps one probe pair to a verdict.
 //
 // videoStatus is the HTTP status of the video arm (0 when it never answered).
-// Only a successful video arm can prove blindness: an explicit rejection proves
+// Only a successful video arm can prove anything: an explicit rejection proves
 // the upstream inspects the media (the official endpoint rejects URL-sourced
 // video with 400 instead of ignoring it), and a transport failure proves
 // nothing at all.
+//
+// The two thresholds are deliberately far apart. A capable upstream charges a
+// four-digit number of tokens for the sample clip, a blind one charges the
+// baseline (or a few substituted tokens), and everything in between is left
+// alone: a mis-marked channel either strands video traffic or silently serves
+// blind answers, so only a clear signal may rewrite capability.
 func classifyVideoProbe(baselineTokens int, videoTokens int, videoStatus int) videoProbeVerdict {
 	if videoStatus != http.StatusOK {
 		return videoProbeVerdictInconclusive
@@ -92,13 +122,16 @@ func classifyVideoProbe(baselineTokens int, videoTokens int, videoStatus int) vi
 		return videoProbeVerdictInconclusive
 	}
 	delta := videoTokens - baselineTokens
-	if delta == 0 {
-		return videoProbeVerdictBlind
-	}
-	if delta >= videoProbeMinVideoTokens {
+	switch {
+	case delta >= videoProbeCapableMinDelta:
 		return videoProbeVerdictCapable
+	case delta <= videoProbeBlindMaxDelta:
+		// Includes a shrinking prompt: a video arm that costs no more than the
+		// text-only arm never had the media charged.
+		return videoProbeVerdictBlind
+	default:
+		return videoProbeVerdictInconclusive
 	}
-	return videoProbeVerdictInconclusive
 }
 
 // videoProbeOutcome reports one (channel, model) probe result.
@@ -114,15 +147,101 @@ type videoProbeOutcome struct {
 	Applied        bool              `json:"applied,omitempty"`
 }
 
-// videoProbeRequest builds the probe chat request. withVideo=false yields the
-// baseline arm (identical prompt, no media), so the two arms differ only by the
-// media part.
-func videoProbeRequest(modelName string, withVideo bool) dto.Request {
+// videoProbeSampleDataURL returns the inline video part shared by every probe
+// arm, downloading and validating the sample once and reusing it for the life
+// of the process.
+//
+// The inline form is what customers send and what the official endpoint
+// accepts; see videoProbeSampleURL. A download failure is reported and turns
+// the sweep inconclusive rather than guessing capability; the failure is
+// retried after videoProbeSampleRetryDelay so a transient CDN outage does not
+// disable probing until the next restart.
+func videoProbeSampleDataURL(ctx context.Context) (string, error) {
+	videoProbeSampleMu.Lock()
+	defer videoProbeSampleMu.Unlock()
+	if videoProbeSample != "" {
+		return videoProbeSample, nil
+	}
+	if videoProbeSampleErr != nil && time.Now().Before(videoProbeSampleRetryAfter) {
+		return "", videoProbeSampleErr
+	}
+	sample, err := downloadVideoProbeSample(ctx)
+	if err != nil {
+		videoProbeSampleErr = err
+		videoProbeSampleRetryAfter = time.Now().Add(videoProbeSampleRetryDelay)
+		return "", err
+	}
+	videoProbeSample = sample
+	videoProbeSampleErr = nil
+	return videoProbeSample, nil
+}
+
+// downloadVideoProbeSample performs the one-off download and inline encoding.
+func downloadVideoProbeSample(ctx context.Context) (string, error) {
+	source := strings.TrimSpace(common.GetEnvOrDefaultString("VIDEO_CAPABILITY_PROBE_SAMPLE_URL", videoProbeSampleURL))
+	downloadCtx, cancel := context.WithTimeout(ctx, videoProbeSampleTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, source, nil)
+	if err != nil {
+		return "", fmt.Errorf("invalid video sample url: %w", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("failed to download video sample: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("video sample download answered %d", response.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, videoProbeSampleMaxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("failed to read video sample: %w", err)
+	}
+	if err := validateVideoProbeSample(raw); err != nil {
+		return "", err
+	}
+	return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// validateVideoProbeSample rejects payloads that are clearly not an MP4 so a
+// proxy error page does not become the "video" every probe measures.
+func validateVideoProbeSample(raw []byte) error {
+	if len(raw) == 0 {
+		return errors.New("video sample is empty")
+	}
+	if len(raw) > videoProbeSampleMaxBytes {
+		return fmt.Errorf("video sample exceeds %d bytes", videoProbeSampleMaxBytes)
+	}
+	// ISO base media files carry an "ftyp" box within the first 64 bytes.
+	header := raw
+	if len(header) > 64 {
+		header = header[:64]
+	}
+	if !strings.Contains(string(header), "ftyp") {
+		return errors.New("video sample is not an mp4 container")
+	}
+	return nil
+}
+
+// Package-level cache for the sample bytes: one download per process, shared by
+// the scheduled sweep and the admin endpoints. A failed download is remembered
+// for videoProbeSampleRetryDelay rather than forever.
+var (
+	videoProbeSampleMu         sync.Mutex
+	videoProbeSample           string
+	videoProbeSampleErr        error
+	videoProbeSampleRetryAfter time.Time
+)
+
+// videoProbeRequest builds the probe chat request. An empty videoPartURL yields
+// the baseline arm (identical prompt, no media), so the two arms differ only by
+// the media part.
+func videoProbeRequest(modelName string, videoPartURL string) dto.Request {
 	content := []any{map[string]any{"type": "text", "text": videoProbePrompt}}
-	if withVideo {
+	if videoPartURL != "" {
 		content = append(content, map[string]any{
 			"type":      "video_url",
-			"video_url": map[string]any{"url": videoProbeSampleURL},
+			"video_url": map[string]any{"url": videoPartURL},
 		})
 	}
 	maxTokens := uint(videoProbeMaxTokens)
@@ -139,10 +258,17 @@ func videoProbeRequest(modelName string, withVideo bool) dto.Request {
 func probeChannelModelVideo(ctx context.Context, channel *model.Channel, testUserID int, modelName string) videoProbeOutcome {
 	outcome := videoProbeOutcome{ChannelID: channel.Id, ChannelName: channel.Name, Model: modelName}
 
+	sample, err := videoProbeSampleDataURL(ctx)
+	if err != nil {
+		outcome.Verdict = videoProbeVerdictInconclusive
+		outcome.Error = "video sample unavailable: " + common.DebugLogPreview(err.Error())
+		return outcome
+	}
+
 	pairCtx, cancel := context.WithTimeout(ctx, videoProbePairTimeout)
 	defer cancel()
 
-	baseline := testChannelWithOptionsAndRequest(pairCtx, channel, testUserID, modelName, "", false, nil, false, false, videoProbeRequest(modelName, false))
+	baseline := testChannelWithOptionsAndRequest(pairCtx, channel, testUserID, modelName, "", false, nil, false, false, videoProbeRequest(modelName, ""))
 	if baseline.usage == nil {
 		outcome.Verdict = videoProbeVerdictInconclusive
 		outcome.Error = "baseline probe failed: " + channelTestFailureText(baseline)
@@ -150,7 +276,7 @@ func probeChannelModelVideo(ctx context.Context, channel *model.Channel, testUse
 	}
 	outcome.BaselineTokens = baseline.usage.PromptTokens
 
-	video := testChannelWithOptionsAndRequest(pairCtx, channel, testUserID, modelName, "", false, nil, false, false, videoProbeRequest(modelName, true))
+	video := testChannelWithOptionsAndRequest(pairCtx, channel, testUserID, modelName, "", false, nil, false, false, videoProbeRequest(modelName, sample))
 	outcome.VideoStatus = video.upstreamStatus
 	if video.usage != nil {
 		outcome.VideoTokens = video.usage.PromptTokens

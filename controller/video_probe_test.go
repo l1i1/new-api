@@ -16,11 +16,11 @@ import (
 // keeps receiving video requests for one model.
 //
 // The signal is the prompt-token delta between two otherwise identical arms: a
-// capable upstream charges the media, a media-blind one reports the baseline
-// count because the part never reached tokenisation. Only an exact zero delta
-// proves blindness — an ambiguous small delta must not rewrite capability —
-// and a rejected video arm proves the upstream inspected the media, so it can
-// never be read as blindness.
+// capable upstream charges the media (thousands of tokens for the sample clip),
+// a media-blind one reports the baseline count because the part never reached
+// tokenisation. The bands are wide apart on purpose — the in-between region
+// must not rewrite capability — and a rejected video arm proves the upstream
+// inspected the media, so it can never be read as blindness.
 func TestClassifyVideoProbe(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -30,13 +30,16 @@ func TestClassifyVideoProbe(t *testing.T) {
 		verdict   videoProbeVerdict
 		rationale string
 	}{
-		{"media charged", 40, 7168, http.StatusOK, videoProbeVerdictCapable, "the upstream read the clip"},
+		{"media charged", 40, 7168, http.StatusOK, videoProbeVerdictCapable, "the upstream read the clip (7168 measured on the official channel)"},
+		{"capable floor", 100, 100 + videoProbeCapableMinDelta, http.StatusOK, videoProbeVerdictCapable, "the floor itself is enough proof"},
 		{"exact baseline", 122, 122, http.StatusOK, videoProbeVerdictBlind, "the measured 2026-10-28 signature: media dropped before tokenisation"},
-		{"small delta", 122, 130, http.StatusOK, videoProbeVerdictInconclusive, "ambiguous, must not rewrite capability"},
+		{"substituted reminder", 122, 158, http.StatusOK, videoProbeVerdictBlind, "a blind upstream may substitute the clip with a short reminder instead of charging it"},
+		{"blind ceiling", 100, 100 + videoProbeBlindMaxDelta, http.StatusOK, videoProbeVerdictBlind, "the ceiling itself is still blind"},
+		{"ambiguous band", 122, 400, http.StatusOK, videoProbeVerdictInconclusive, "ambiguous, must not rewrite capability"},
 		{"video rejected", 40, 0, http.StatusBadRequest, videoProbeVerdictInconclusive, "an explicit rejection means the media was inspected, not ignored"},
 		{"video failed", 40, 0, 0, videoProbeVerdictInconclusive, "a transport failure proves nothing"},
 		{"no usage", 0, 7168, http.StatusOK, videoProbeVerdictInconclusive, "a baseline without usage cannot be compared"},
-		{"negative delta", 500, 40, http.StatusOK, videoProbeVerdictInconclusive, "a shrinking prompt is not evidence of capability"},
+		{"shrinking prompt", 500, 40, http.StatusOK, videoProbeVerdictBlind, "a video arm cheaper than the text-only arm never charged the media"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,12 +48,22 @@ func TestClassifyVideoProbe(t *testing.T) {
 	}
 }
 
+// TestValidateVideoProbeSample keeps a proxy error page or a truncated download
+// from becoming the clip every probe measures.
+func TestValidateVideoProbeSample(t *testing.T) {
+	assert.Error(t, validateVideoProbeSample(nil))
+	assert.Error(t, validateVideoProbeSample([]byte("<html>403 forbidden</html>")))
+	assert.NoError(t, validateVideoProbeSample([]byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")))
+	assert.Error(t, validateVideoProbeSample(make([]byte, videoProbeSampleMaxBytes+1)))
+}
+
 // TestVideoProbeRequestArmsDifferOnlyByTheMedia pins the experiment's
 // precondition: both arms carry the same model and prompt text, so the delta is
 // the clip alone rather than a difference in the text.
 func TestVideoProbeRequestArmsDifferOnlyByTheMedia(t *testing.T) {
-	baseline := videoProbeRequest("kimi-k3.1-pro", false)
-	video := videoProbeRequest("kimi-k3.1-pro", true)
+	const sample = "data:video/mp4;base64,AAAAIGZ0eXBtcDQy"
+	baseline := videoProbeRequest("kimi-k3.1-pro", "")
+	video := videoProbeRequest("kimi-k3.1-pro", sample)
 
 	baselineRaw, err := json.Marshal(baseline)
 	require.NoError(t, err)
@@ -78,7 +91,8 @@ func TestVideoProbeRequestArmsDifferOnlyByTheMedia(t *testing.T) {
 	assert.Equal(t, "video_url", videoParts[1]["type"])
 	videoURL, ok := videoParts[1]["video_url"].(map[string]any)
 	require.True(t, ok, "the video part must use the OpenAI video_url shape")
-	assert.Equal(t, videoProbeSampleURL, videoURL["url"])
+	assert.Equal(t, sample, videoURL["url"], "the probe inlines the clip: the official endpoint only accepts inline video")
+	assert.NotEqual(t, videoProbeSampleURL, videoURL["url"], "a URL-sourced part would be rejected by the official channel")
 }
 
 // probeContentParts extracts the first message's content parts from a marshalled

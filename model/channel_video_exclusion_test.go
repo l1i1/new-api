@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/glebarez/sqlite"
@@ -100,6 +101,32 @@ func TestFilterAbilitiesByVideoCapabilityHonoursModelExclusion(t *testing.T) {
 	unfiltered, err := filterAbilitiesByVideoCapability(abilities, false)
 	require.NoError(t, err)
 	assert.Len(t, unfiltered, 4)
+}
+
+// TestChannelSatisfiesFiltersHonoursModelExclusion covers the pinned and
+// affinity paths: they pick a channel without the video-aware selectors and
+// then ask ChannelSatisfiesFilters whether it is acceptable, so the model-level
+// exclusion has to be applied there as well or a client that chatted on the
+// blind channel first would have the next video request pinned to it.
+func TestChannelSatisfiesFiltersHonoursModelExclusion(t *testing.T) {
+	filters := []dto.ChannelFilter{{Kind: dto.FilterVideoRequest}}
+
+	excluded := videoChannelWithExclusions(810301, "kimi-k3.1-pro")
+	plain := videoChannelWithExclusions(810302)
+	blind := videoChannel(810303, false)
+
+	ok, _ := ChannelSatisfiesFilters(excluded, "kimi-k3", filters)
+	assert.True(t, ok, "the model the upstream does read video for keeps the channel")
+	ok, kind := ChannelSatisfiesFilters(excluded, "kimi-k3.1-pro", filters)
+	assert.False(t, ok, "the marked model must not satisfy the video filter")
+	assert.Equal(t, dto.FilterVideoRequest, kind)
+	ok, _ = ChannelSatisfiesFilters(excluded, "Kimi-K3.1-Pro", filters)
+	assert.False(t, ok, "the exclusion match is case-insensitive")
+
+	ok, _ = ChannelSatisfiesFilters(plain, "kimi-k3.1-pro", filters)
+	assert.True(t, ok, "a channel without exceptions stays capable")
+	ok, _ = ChannelSatisfiesFilters(blind, "kimi-k3.1-pro", filters)
+	assert.False(t, ok, "an undeclared channel can never serve video")
 }
 
 // setupVideoExclusionDB gives one test its own SQLite database with the channel

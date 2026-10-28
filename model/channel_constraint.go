@@ -3,8 +3,10 @@ package model
 import (
 	"slices"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 )
 
 var filterEvalOrder = []dto.ChannelFilterKind{
@@ -127,9 +129,32 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 		}
 	case dto.FilterVideoRequest:
 		// A channel with no settings cannot have declared the capability, so an
-		// undeclared channel is excluded rather than assumed capable.
-		return supportsVideoForCache(ch)
+		// undeclared channel is excluded rather than assumed capable. The check
+		// must carry the model: this filter also guards the pinned and affinity
+		// paths, which pick a channel without going through the video-aware
+		// selectors, and a channel can read video for one model while being
+		// media-blind for another.
+		return videoCapableForModel(ch, modelName)
 	default:
 		return true
 	}
+}
+
+// videoCapableForModel reports whether ch declared video capability for this
+// model, including the per-model exclusions recorded by the capability probe.
+//
+// It parses the channel's stored settings instead of the cache index so it can
+// answer for a channel that was not resolved through the selectors, and it must
+// not take the channel cache lock: callers already hold it (filterCandidateIDs)
+// or work on a channel row loaded from the database. Unreadable settings are
+// treated as "no declared capability", matching supportsVideoForCache.
+func videoCapableForModel(ch *Channel, modelName string) bool {
+	if ch == nil || ch.OtherSettings == "" {
+		return false
+	}
+	var settings kitdto.ChannelOtherSettings
+	if err := common.Unmarshal([]byte(ch.OtherSettings), &settings); err != nil {
+		return false
+	}
+	return settings.SupportsVideoForModel(modelName)
 }

@@ -838,6 +838,13 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   // rejects `video_usage_mode` without `supports_video`, and a stale mode left
   // behind by switching the capability off would fail the save with an error
   // that points at a field the operator cannot see.
+  //
+  // `video_unsupported_models` is written by the capability probe, not by this
+  // form, so it is preserved for a channel that keeps the capability (the
+  // parsed settings above carry it through untouched) and dropped when the
+  // capability is switched off: an exception to a declaration that no longer
+  // exists is inert, and it would silently come back to life if the capability
+  // were switched on again before the next probe sweep.
   if (formData.supports_video === true) {
     settingsObj.supports_video = true
     if (formData.video_usage_mode === 'estimate') {
@@ -848,6 +855,7 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   } else {
     delete settingsObj.supports_video
     delete settingsObj.video_usage_mode
+    delete settingsObj.video_unsupported_models
   }
 
   // Upstream model update settings (for model-fetchable channel types)

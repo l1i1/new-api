@@ -51,17 +51,19 @@ func TestNormalizeVideoUnsupportedModels(t *testing.T) {
 }
 
 // TestValidateVideoUnsupportedModels pins the save-time rejections so a typo
-// cannot leave a channel that silently keeps routing video to a blind upstream,
-// and so an exception without the declaration it belongs to is refused.
+// cannot leave a channel that silently keeps routing video to a blind upstream.
+//
+// A list left behind after the capability was switched off is accepted on
+// purpose: the probe writes this field by itself, and the channel form neither
+// shows nor clears it, so rejecting it would make the switch impossible to turn
+// off from the console.
 func TestValidateVideoUnsupportedModels(t *testing.T) {
 	require.NoError(t, (&ChannelOtherSettings{}).ValidateVideoUnsupportedModels())
 	require.NoError(t, (&ChannelOtherSettings{SupportsVideo: true, VideoUnsupportedModels: []string{"kimi-k3.1-pro"}}).ValidateVideoUnsupportedModels())
+	require.NoError(t, (&ChannelOtherSettings{VideoUnsupportedModels: []string{"kimi-k3.1-pro"}}).ValidateVideoUnsupportedModels())
 
-	err := (&ChannelOtherSettings{VideoUnsupportedModels: []string{"kimi-k3.1-pro"}}).ValidateVideoUnsupportedModels()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires supports_video")
-
-	err = (&ChannelOtherSettings{SupportsVideo: true, VideoUnsupportedModels: []string{""}}).ValidateVideoUnsupportedModels()
+	blank := &ChannelOtherSettings{SupportsVideo: true, VideoUnsupportedModels: []string{""}}
+	err := blank.ValidateVideoUnsupportedModels()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty model name")
 

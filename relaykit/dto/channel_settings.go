@@ -328,16 +328,19 @@ func NormalizeVideoUnsupportedModels(models []string) []string {
 	return cleaned
 }
 
-// ValidateVideoUnsupportedModels rejects entries that cannot be matched and a
-// list without the video declaration it is an exception to. An exclusion on a
-// channel that never receives video requests is dead configuration that reads
-// as if it were doing something, the same reasoning as VideoUsageMode.
+// ValidateVideoUnsupportedModels rejects entries that cannot be matched.
+//
+// An exclusion stored on a channel that no longer declares video capability is
+// tolerated instead of rejected: the probe writes this list by itself, so an
+// operator who turns the capability off in the channel form would otherwise get
+// a save error naming a field the form does not show and cannot clear. Such a
+// list is inert — SupportsVideoForModel returns false without the declaration —
+// and it is kept for the same reason a mark outlives a model being removed from
+// the channel: if the capability or the model comes back, the probe re-verifies
+// within one sweep instead of silently serving blind answers in the meantime.
 func (s *ChannelOtherSettings) ValidateVideoUnsupportedModels() error {
 	if s == nil || len(s.VideoUnsupportedModels) == 0 {
 		return nil
-	}
-	if !s.SupportsVideo {
-		return fmt.Errorf("video_unsupported_models requires supports_video on the same channel")
 	}
 	if len(s.VideoUnsupportedModels) > MaxVideoUnsupportedModels {
 		return fmt.Errorf("video_unsupported_models has %d entries, limit is %d", len(s.VideoUnsupportedModels), MaxVideoUnsupportedModels)
