@@ -180,3 +180,32 @@ func TestOaiResponsesStreamHandlerReplaysLifecycleWithSyntheticFailureOnUncommit
 	require.Contains(t, body, "response.failed")
 	require.Contains(t, body, "data: [DONE]")
 }
+
+// Lifecycle events that arrive after real output has been committed must pass
+// through immediately: buffering them then has no retry value and would delay
+// (or, at EOF, drop) events such as a second output_item.added.
+func TestOaiResponsesStreamHandlerForwardsLateLifecycleEventsAfterCommit(t *testing.T) {
+	c, w, info := newResponsesStreamTestContext(t)
+	stream := responsesSSEStream(
+		`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","sequence_number":1,"delta":"OK"}`,
+		`{"type":"response.output_item.added","sequence_number":2,"item":{"id":"msg_2","type":"message","status":"in_progress","content":[]}}`,
+	)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(stream)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	_, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	// No terminal event: the stream is a committed truncation, so it stays a
+	// failure and must not be retried, but every delivered event must be visible.
+	require.NotNil(t, apiErr)
+	require.True(t, types.IsSkipRetryError(apiErr))
+	require.Equal(t, helper.ResponsePayloadWritten, helper.ResponseCommitStateOf(c))
+	body := w.Body.String()
+	require.Contains(t, body, "response.output_text.delta")
+	require.Contains(t, body, "response.output_item.added")
+	require.NotContains(t, body, "response.failed")
+}

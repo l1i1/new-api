@@ -197,7 +197,10 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		// Hold content-free lifecycle events until the stream produces output.
 		// Nothing has been written yet, so an upstream failure in between keeps
 		// the response uncommitted and lets the relay retry another channel.
-		if responsesStreamEventCarriesNoOutput(streamResponse.Type) && len(deferred) < maxDeferredResponsesStreamEvents {
+		// Once payload has been committed the buffer has no retry value left, so
+		// later lifecycle events (e.g. a second output_item.added) pass through
+		// immediately instead of being delayed by one event.
+		if !responseDataSent && responsesStreamEventCarriesNoOutput(streamResponse.Type) && len(deferred) < maxDeferredResponsesStreamEvents {
 			deferred = append(deferred, deferredResponsesStreamEvent{payload: streamResponse, data: data})
 			return
 		}
