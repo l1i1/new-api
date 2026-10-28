@@ -1295,10 +1295,16 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	// body must not be forwarded or settled as a success.
 	for _, choice := range simpleResponse.Choices {
 		if relaycommon.IsAbnormalFinishReason(choice.FinishReason) {
+			// Nothing has been written to a non-streaming caller yet, so another
+			// channel can still serve this request: retry instead of surfacing the
+			// first upstream's abnormal finish. Retrying used to be suppressed here,
+			// so a single bad upstream answer ended the request after tens of
+			// seconds with zero content (2026-10-28 22:54, kimi-k3.1-pro, ch91,
+			// 85s, 0 tokens, customer-visible 502).
 			return &simpleResponse.Usage, types.NewOpenAIError(
 				fmt.Errorf("upstream returned finish_reason %q", choice.FinishReason),
 				types.ErrorCode("upstream_error"), http.StatusBadGateway,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream())
+				types.ErrOptionWithTruncatedStream())
 		}
 	}
 

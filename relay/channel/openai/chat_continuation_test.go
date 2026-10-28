@@ -1902,3 +1902,34 @@ func TestOaiStreamHandlerClosesMidStreamErrorAsTruncated(t *testing.T) {
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
+
+// TestOpenaiHandlerAbnormalFinishIsRetryable pins the non-streaming gap found on
+// 2026-10-28 22:54: an upstream answered finish_reason=error after 85s with zero
+// content, and the request ended as a customer-visible 502 because the error was
+// marked non-retryable. Nothing had been written to a non-streaming caller, so
+// another channel must be allowed to serve it.
+func TestOpenaiHandlerAbnormalFinishIsRetryable(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:    false,
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	info.SetEstimatePromptTokens(5)
+
+	body := `{"id":"chat_1","object":"chat.completion","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	_, apiErr := OpenaiHandler(c, info, resp)
+	require.NotNil(t, apiErr)
+	require.False(t, types.IsSkipRetryError(apiErr), "a non-streaming abnormal finish must fall over to another channel")
+}
