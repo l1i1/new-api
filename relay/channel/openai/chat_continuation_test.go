@@ -1689,3 +1689,76 @@ func TestOaiStreamHandlerContinuesMissingCutWithContentWithoutDeclaredBudget(t *
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
+
+// TestOaiStreamHandlerRetriesContinuationRoundWhenUpstreamRejectsResume pins the
+// 2026-10-28 21:21 shape: a 900s cut is followed by a resume request the
+// upstream rejects immediately (503). Retrying the round must recover the
+// answer instead of surfacing a 502 for the prefix already delivered.
+func TestOaiStreamHandlerRetriesContinuationRoundWhenUpstreamRejectsResume(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	sender := func(string, int) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+		}
+		return continuationSSEResponse(secondRound), nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a rejected resume request must be retried, not surfaced")
+	require.NotNil(t, usage)
+	require.Equal(t, 2, calls, "the round is retried once after the rejection")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated pins the
+// fallback: when every repair attempt fails, an answer whose prefix already
+// reached the caller is closed with finish_reason=length instead of a 502, so
+// the delivered work survives and the caller can continue. Usage stays unbilled.
+func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"已经发出的前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sender := func(string, int) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a delivered prefix must not be turned into a 502")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "已经发出的前半段", "the delivered prefix stays")
+	require.NotContains(t, body, "truncated_stream", "no error frame for a delivered prefix")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}

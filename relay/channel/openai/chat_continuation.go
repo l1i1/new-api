@@ -20,6 +20,18 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// chatContinuationRoundAttempts bounds how many times a resume round may be
+// retried when it dies before forwarding a single delta. An upstream that has
+// just hit its own wall (the 900s cut) often rejects the follow-up request
+// immediately; without this retry the gateway abandoned a half-written answer
+// and surfaced a 502 for work already tens of kilobytes into the caller's
+// answer (2026-10-28 21:21-21:22, kimi-k3.1-pro). A round that already
+// forwarded deltas is never retried: the caller would see duplicates.
+const chatContinuationRoundAttempts = 3
+
+// chatContinuationRetryBackoff is the linear backoff between resume attempts.
+const chatContinuationRetryBackoff = 300 * time.Millisecond
+
 // chatContinuationPrompt is the instruction appended after the truncated
 // assistant message. It is deliberately neutral so it fits both an answer that
 // was cut mid-sentence and a structured (for example numbered) output.
@@ -491,21 +503,52 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		if remaining <= 0 {
 			break
 		}
-		resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
-		if err != nil {
-			logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
-			break
-		}
-		if resp == nil {
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
+		var (
+			roundUsage   *dto.Usage
+			finish       string
+			roundContent string
+			deltaSeen    bool
+			roundErr     error
+		)
+		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
+			if attempt > 0 {
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					break
+				}
+				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+			}
+			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
+			if err != nil {
+				logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
+				break
+			}
+			if resp == nil {
+				break
+			}
+			if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
+				logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
+			roundUsage, finish, roundContent, deltaSeen, roundErr = consumeChatContinuationRound(c, info, resp, meta)
 			_ = resp.Body.Close()
-			logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d", resp.StatusCode))
+			if roundErr != nil {
+				if deltaSeen {
+					logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
+					break
+				}
+				logger.LogWarn(c, "thinking continuation stream failed before any delta, retrying: "+roundErr.Error())
+				continue
+			}
+			if !deltaSeen && roundContent == "" {
+				logger.LogWarn(c, fmt.Sprintf("thinking continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
-		_ = resp.Body.Close()
+		if !deltaSeen && roundContent == "" {
+			break
+		}
 		result.rounds++
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
@@ -516,10 +559,6 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		contextText += roundContent
 		result.contentChars += len(roundContent)
 		if roundErr != nil {
-			logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
-			break
-		}
-		if !deltaSeen {
 			break
 		}
 		if finish == "" || relaycommon.IsAbnormalFinishReason(finish) || finish != "length" {
@@ -580,21 +619,56 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		if remaining <= 0 {
 			break
 		}
-		resp, err := info.ChatContinuation.Send(content, remaining)
-		if err != nil {
-			logger.LogWarn(c, "chat continuation request failed: "+err.Error())
-			break
-		}
-		if resp == nil {
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
+		var (
+			roundUsage   *dto.Usage
+			finish       string
+			roundContent string
+			deltaSeen    bool
+			roundErr     error
+		)
+		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
+			if attempt > 0 {
+				// The caller walked away while the previous attempt was in flight:
+				// retrying would only spend upstream capacity nobody can receive.
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					break
+				}
+				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+			}
+			resp, err := info.ChatContinuation.Send(content, remaining)
+			if err != nil {
+				// A send/build failure is not the transient upstream rejection this
+				// retry exists for: keep the previous single-attempt behaviour.
+				logger.LogWarn(c, "chat continuation request failed: "+err.Error())
+				break
+			}
+			if resp == nil {
+				break
+			}
+			if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
+				logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
+			roundUsage, finish, roundContent, deltaSeen, roundErr = consumeChatContinuationRound(c, info, resp, meta)
 			_ = resp.Body.Close()
-			logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d", resp.StatusCode))
+			if roundErr != nil {
+				if deltaSeen {
+					logger.LogWarn(c, "chat continuation stream failed: "+roundErr.Error())
+					break
+				}
+				logger.LogWarn(c, "chat continuation stream failed before any delta, retrying: "+roundErr.Error())
+				continue
+			}
+			if !deltaSeen && roundContent == "" {
+				logger.LogWarn(c, fmt.Sprintf("chat continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
-		_ = resp.Body.Close()
+		if !deltaSeen && roundContent == "" {
+			break
+		}
 		result.rounds++
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
@@ -604,13 +678,9 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 		content += roundContent
 		if roundErr != nil {
-			logger.LogWarn(c, "chat continuation stream failed: "+roundErr.Error())
 			break
 		}
 		if result.finish != "length" {
-			break
-		}
-		if !deltaSeen {
 			break
 		}
 		if chatContinuationBudgetLeft(info, total) <= 0 {

@@ -854,6 +854,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount,
 			info.ClientMaxTokens, usage.CompletionTokens,
 			truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)))
+		// The caller already holds the answer prefix. Turning a cut that could
+		// not be finished into a 502 throws that work away and forces a full
+		// fifteen-minute retry (2026-10-28 21:21-21:33: 25 customer requests),
+		// so close the stream honestly as a truncated answer instead: one
+		// terminal frame with finish_reason=length, the prefix stays delivered,
+		// and the usage stays unbilled. A cut inside a tool call keeps the error
+		// frame - half a tool call is not a usable answer and the caller must
+		// retry - and so does a reasoning-only cut, which delivered no answer.
+		if visibleContentChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
+			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+			common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d shape=%s content=%d reasoning=%d", info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len()))
+			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+			info.StreamFinishReason = "length"
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", usage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, false)
+			return usage, nil
+		}
 		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 		service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 	}
