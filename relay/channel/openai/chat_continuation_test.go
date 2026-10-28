@@ -1458,3 +1458,111 @@ func TestOaiStreamHandlerContinuesAnswerAfterAbnormalCutWithContent(t *testing.T
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 	require.NotContains(t, body, `"finish_reason":"error"`, "the cut's terminal frame is suppressed")
 }
+
+// TestChatMissingVisibleContinuationCandidateGuards pins the guards on the
+// truncate-mid-answer repair: it may only run when a visible prefix exists, the
+// request can still be continued (budget, one choice, no tool calls) and the cut
+// was not the caller's own disconnect.
+func TestChatMissingVisibleContinuationCandidateGuards(t *testing.T) {
+	send := func(string, int) (*http.Response, error) { return nil, nil }
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+			IsStream:        true,
+			RelayFormat:     types.RelayFormatOpenAI,
+			ClientMaxTokens: 100,
+			StreamStatus:    relaycommon.NewStreamStatus(),
+			ChatContinuation: &relaycommon.ChatContinuationConfig{
+				MaxSteps: 1,
+				Send:     send,
+				Missing:  &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: send, MinReasoningChars: 1},
+			},
+		}
+	}
+
+	info := newInfo()
+	require.True(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 1, false),
+		"a visible prefix with budget left is repairable")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 0, 0, 1, false),
+		"thinking-only cuts belong to the reasoning resume")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 1, 1, false),
+		"a tool-call stream cannot be continued")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 2, false),
+		"multiple choices are not repairable")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 1, true),
+		"a terminal frame means this is not the missing-finish shape")
+
+	flat := newInfo()
+	flat.StreamFinishReason = "length"
+	require.False(t, chatMissingVisibleContinuationCandidate(flat, &dto.Usage{}, 1200, 0, 1, false))
+
+	noBudget := newInfo()
+	noBudget.ClientMaxTokens = 0
+	require.False(t, chatMissingVisibleContinuationCandidate(noBudget, &dto.Usage{}, 1200, 0, 1, false))
+
+	spent := newInfo()
+	spent.ClientMaxTokens = 10
+	require.False(t, chatMissingVisibleContinuationCandidate(spent, &dto.Usage{CompletionTokens: 10}, 1200, 0, 1, false),
+		"no budget left to continue")
+
+	gone := newInfo()
+	gone.StreamStatus.EndReason = relaycommon.StreamEndReasonClientGone
+	require.False(t, chatMissingVisibleContinuationCandidate(gone, &dto.Usage{}, 1200, 0, 1, false),
+		"a client disconnect is not a truncation")
+
+	noMissing := newInfo()
+	noMissing.ChatContinuation.Missing = nil
+	require.False(t, chatMissingVisibleContinuationCandidate(noMissing, &dto.Usage{}, 1200, 0, 1, false))
+
+	noSender := newInfo()
+	noSender.ChatContinuation.Send = nil
+	require.False(t, chatMissingVisibleContinuationCandidate(noSender, &dto.Usage{}, 1200, 0, 1, false))
+
+	thinkingToContent := newInfo()
+	thinkingToContent.ChannelSetting.ThinkingToContent = true
+	require.False(t, chatMissingVisibleContinuationCandidate(thinkingToContent, &dto.Usage{}, 1200, 0, 1, false))
+}
+
+// TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent covers the
+// 2026-10-28 production shape: an upstream dies mid-answer with no terminal
+// finish_reason at all. The prefix already sent to the client must be continued
+// instead of surfacing a 502, with one terminal frame and merged usage.
+func TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var gotPartial string
+	c, info, recorder := newMissingContinuationTestContext(t, func(partial string, remaining int) (*http.Response, error) {
+		gotPartial = partial
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	// 可见正文续写复用输出上限那条 runner，它走顶层 sender。
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Missing.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}

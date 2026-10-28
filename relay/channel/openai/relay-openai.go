@@ -761,6 +761,43 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	// Missing-finish continuation after the answer already started: the upstream
+	// reached EOF/[DONE] with no terminal finish_reason at all, but the client is
+	// already reading a partial answer. The reasoning resume below refuses any
+	// visible content, and discarding the prefix would surface a 502 for work
+	// that can still be completed, so continue the visible prefix through the
+	// same transparent continuation used for a length cap and for an abnormal
+	// cut after the answer started.
+	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
+		streamMissingFinishMarksTruncation(info, isAudioModel) &&
+		chatMissingVisibleContinuationCandidate(info, usage, visibleContentChars, toolCount, streamChoiceCount, streamFinishSeen) &&
+		len(streamFunctionCallNames) == 0 {
+		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		resetContinuationCoalescer(info)
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=missing-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
 	// Missing-finish continuation (60s silent cut shape): the provider reached
 	// EOF/[DONE] without any terminal finish_reason, emitted only reasoning, and
 	// therefore delivered no visible answer. Resume the thinking round inside

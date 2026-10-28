@@ -269,6 +269,54 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	return true
 }
 
+// chatMissingVisibleContinuationCandidate decides whether a stream that ended at
+// EOF/[DONE] without any finish_reason can be resumed from the visible answer it
+// already delivered.
+//
+// This is the cut-mid-answer shape (2026-10-28: a degraded kimi-k3.1-pro
+// upstream truncated 1.4-2.4KB answers at 13-22s in production): the client is
+// already reading a partial answer, so the reasoning resume cannot repair it
+// (chatMissingContinuationCandidate refuses any visible content), and discarding
+// the prefix surfaces a 502 for work that can still be completed. The visible
+// prefix is continued through the same transparent continuation used for a
+// provider length cap and for an abnormal finish after the answer started.
+//
+// Guards mirror those paths: one choice, no tool calls, a client budget left, and
+// no client disconnect (that is the caller's own cancellation, not a truncation).
+func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, toolCalls, choiceCount int, streamFinishSeen bool) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Missing == nil {
+		return false
+	}
+	// The visible prefix is continued through the output-cap runner, which sends
+	// with the top-level sender; the Missing config is what opts this request and
+	// channel into truncation repair at all.
+	if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 || info.ChatContinuation.Missing.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return false
+	}
+	if streamFinishSeen || strings.TrimSpace(info.StreamFinishReason) != "" {
+		return false
+	}
+	if contentChars <= 0 {
+		return false
+	}
+	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return false
+	}
+	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+		return false
+	}
+	return true
+}
+
 // chatLengthThinkingContinuationCandidate decides whether a stream that hit the
 // provider output cap (finish_reason=length) before any visible content can be
 // resumed from its captured reasoning. This is the 32k cap landing during the
