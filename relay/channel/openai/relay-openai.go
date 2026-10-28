@@ -486,6 +486,53 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	})
 	if streamErr != nil {
+		// An upstream that dies mid-stream after the answer already reached the
+		// caller is the same repair opportunity as an abnormal finish: the prefix
+		// is delivered, so replay it and continue instead of handing the caller a
+		// raw transport error over content it already read (2026-10-28 22:55:
+		// ch103 streamed 1263 chunks and then returned "Upstream response stream
+		// ended before completion"; every repair path was skipped because this
+		// branch returns before them).
+		deliveredChars := max(visibleContentChars, responseTextBuilder.Len())
+		// SendResponseCount proves bytes actually reached the caller: a repair that
+		// replays a prefix the caller never received would deliver an answer with a
+		// missing beginning, so only repair after at least one frame was written.
+		if deliveredChars > 0 && info.SendResponseCount > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
+			info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
+			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel && !deepSeekV4FitEnabled(info) &&
+			streamChoiceCount <= 1 && (c.Request == nil || c.Request.Context().Err() == nil) &&
+			chatContinuationBudgetLeft(info, usage) > 0 {
+			common.SysLog(fmt.Sprintf("stream error after visible content, attempting continuation: ch=%d content=%d err=%s", info.ChannelId, deliveredChars, streamErr.Error()))
+			// The loop still holds the last chunk it read (it is forwarded only when
+			// the next chunk arrives). The continuation treats everything
+			// accumulated so far as the caller's prefix, so deliver that tail first
+			// or the merged answer would silently miss its last fragment.
+			flushPendingStreamTail(c, info, lastStreamData, usage)
+			resetContinuationCoalescer(info)
+			result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				return result.usage, nil
+			}
+			if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
+				result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+				finalUsage := result.usage
+				relaycommon.ClampUsageToClientBudget(info, finalUsage)
+				info.StreamFinishReason = result.finish
+				if info.StreamStatus != nil {
+					info.StreamStatus.MarkRecovered()
+				}
+				logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=stream-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+				flushContinuationCoalescer(c, info)
+				helper.ExtendWriteDeadline(c)
+				sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+				helper.ExtendWriteDeadline(c)
+				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+				return finalUsage, nil
+			}
+			// The repair did not produce a usable answer either: close honestly as
+			// a truncated answer rather than throwing the delivered prefix away.
+			return closeTruncatedDeliveredStream(c, info, usage, "stream_error_after_visible_content", responseId, createAt, model, systemFingerprint), nil
+		}
 		return usage, streamErr
 	}
 	// Flush merged text before anything terminal (finish_reason / usage) is
@@ -1043,6 +1090,60 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 // returns a zeroed usage for both the caller-facing terminal frames and the
 // settlement/log. The upstream-reported counts are preserved on the relay info
 // for the consume log's audit marker only.
+// flushPendingStreamTail writes the chunk the stream loop was still holding when
+// the upstream failed, plus any coalesced deltas, so the caller's view matches
+// the prefix a continuation would replay.
+func flushPendingStreamTail(c *gin.Context, info *relaycommon.RelayInfo, pending string, usage *dto.Usage) {
+	if info != nil && info.StreamCoalescer.Enabled() {
+		for _, merged := range info.StreamCoalescer.Close() {
+			helper.ExtendWriteDeadline(c)
+			if err := writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				logger.LogError(c, "error writing coalesced stream event: "+err.Error())
+			}
+		}
+	}
+	if pending == "" {
+		return
+	}
+	payload := pending
+	if stripped, err := stripStreamUsageData(pending); err == nil && stripped != "" {
+		payload = stripped
+	}
+	if info != nil && info.RelayFormat == types.RelayFormatOpenAI {
+		if patched, err := patchStreamUsageData(payload, usage); err == nil {
+			payload = patched
+		}
+	}
+	helper.ExtendWriteDeadline(c)
+	if err := HandleStreamFormat(c, info, payload, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+		logger.LogError(c, "error writing pending stream tail: "+err.Error())
+	}
+}
+
+// closeTruncatedDeliveredStream ends a response whose answer prefix already
+// reached the caller but cannot be completed: one terminal frame with
+// finish_reason=length, zero usage, explicit capture status. The caller keeps
+// the delivered answer and can continue or resend instead of receiving an error
+// for work that was already read.
+func closeTruncatedDeliveredStream(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage, reason, responseId string, createAt int64, model, systemFingerprint string) *dto.Usage {
+	common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d reason=%s", info.ChannelId, reason))
+	finalUsage := markUndeliveredStreamUsage(info, reason, usage)
+	service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+	if info.StreamStatus != nil {
+		info.StreamStatus.MarkFailed("upstream_stream_error", "upstream_error", http.StatusBadGateway)
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return finalUsage
+	}
+	info.StreamFinishReason = "length"
+	flushContinuationCoalescer(c, info)
+	helper.ExtendWriteDeadline(c)
+	sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", finalUsage)
+	helper.ExtendWriteDeadline(c)
+	HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+	return finalUsage
+}
+
 func markUndeliveredStreamUsage(info *relaycommon.RelayInfo, reason string, usage *dto.Usage) *dto.Usage {
 	if info != nil && usage != nil {
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
