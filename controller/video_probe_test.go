@@ -1,12 +1,15 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +49,25 @@ func TestClassifyVideoProbe(t *testing.T) {
 			assert.Equal(t, tc.verdict, classifyVideoProbe(tc.baseline, tc.video, tc.status), tc.rationale)
 		})
 	}
+}
+
+// TestProbeChannelModelVideoSkipsEstimateBilling pins the one channel setting
+// that invalidates the experiment: an estimate-billed video channel states that
+// its upstream does not count the media, so a zero delta would mark a channel
+// that does read video. The probe must report inconclusive and touch nothing.
+func TestProbeChannelModelVideoSkipsEstimateBilling(t *testing.T) {
+	channel := &model.Channel{Id: 830001, Name: "estimate-billed", Type: constant.ChannelTypeOpenAI}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{
+		SupportsVideo:  true,
+		VideoUsageMode: dto.VideoUsageModeEstimate,
+	})
+
+	outcome := probeChannelModelVideo(context.Background(), channel, 0, "kimi-k3.1-pro")
+
+	assert.Equal(t, videoProbeVerdictInconclusive, outcome.Verdict)
+	assert.Contains(t, outcome.Error, "estimate")
+	assert.Zero(t, outcome.BaselineTokens)
+	assert.Zero(t, outcome.VideoTokens)
 }
 
 // TestValidateVideoProbeSample keeps a proxy error page or a truncated download

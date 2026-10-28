@@ -258,6 +258,18 @@ func videoProbeRequest(modelName string, videoPartURL string) dto.Request {
 func probeChannelModelVideo(ctx context.Context, channel *model.Channel, testUserID int, modelName string) videoProbeOutcome {
 	outcome := videoProbeOutcome{ChannelID: channel.Id, ChannelName: channel.Name, Model: modelName}
 
+	// A channel that bills video by estimate declares, in its own settings, that
+	// its upstream does not count the media in prompt_tokens. The delta would
+	// then measure the accounting quirk rather than the capability, and reading
+	// it as blindness would exclude a channel that does read video. Such a
+	// channel keeps its declaration: the token evidence is simply not available.
+	settings := channel.GetOtherSettings()
+	if settings.EstimatesVideoUsage() {
+		outcome.Verdict = videoProbeVerdictInconclusive
+		outcome.Error = "channel bills video usage by estimate, so the token delta cannot prove blindness"
+		return outcome
+	}
+
 	sample, err := videoProbeSampleDataURL(ctx)
 	if err != nil {
 		outcome.Verdict = videoProbeVerdictInconclusive
