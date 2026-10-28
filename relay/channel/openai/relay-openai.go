@@ -326,13 +326,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					}
 				}
 			}
+			// Count delivered answer text for every channel, not only the ones with
+			// continuation configured: the truncated-close guard below must see the
+			// answer a non-whitelisted channel already delivered (2026-10-28: ch14
+			// and ch77 cut after content but kept the error frame because this counter
+			// stayed zero).
+			for _, choice := range streamResp.Choices {
+				visibleContentChars += len(choice.Delta.GetContentString())
+			}
 			if info.ChatContinuation != nil && (info.ChatContinuation.Abnormal != nil || info.ChatContinuation.Missing != nil) {
 				limit := continuationReasoningLimit(info)
 				if limit <= 0 {
 					limit = 512 * 1024
 				}
 				for _, choice := range streamResp.Choices {
-					visibleContentChars += len(choice.Delta.GetContentString())
 					reasoning := choice.Delta.GetReasoningContent()
 					if reasoning == "" {
 						continue
@@ -502,6 +509,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel && !deepSeekV4FitEnabled(info) &&
 			streamChoiceCount <= 1 && (c.Request == nil || c.Request.Context().Err() == nil) &&
 			chatContinuationBudgetLeft(info, usage) > 0 {
+			// An upstream that breaks mid-answer after content is unreliable in a way
+			// a retry cannot fix; two such breaks inside two minutes cool the channel
+			// for a few minutes so it stops absorbing customer traffic (2026-10-28:
+			// ch77 kept returning "Upstream completed without answer text").
+			common.RecordChannelFailure(info.ChannelId)
 			common.SysLog(fmt.Sprintf("stream error after visible content, attempting continuation: ch=%d content=%d err=%s", info.ChannelId, deliveredChars, streamErr.Error()))
 			// The loop still holds the last chunk it read (it is forwarded only when
 			// the next chunk arrives). The continuation treats everything
@@ -1295,6 +1307,10 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	// body must not be forwarded or settled as a success.
 	for _, choice := range simpleResponse.Choices {
 		if relaycommon.IsAbnormalFinishReason(choice.FinishReason) {
+			// A non-streaming upstream that reports an abnormal finish produced no
+			// usable answer at all: count it so a channel that keeps doing this cools
+			// down instead of being retried forever.
+			common.RecordChannelFailure(info.ChannelId)
 			// Nothing has been written to a non-streaming caller yet, so another
 			// channel can still serve this request: retry instead of surfacing the
 			// first upstream's abnormal finish. Retrying used to be suppressed here,

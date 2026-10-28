@@ -599,6 +599,12 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
 	channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
+	// Short cooldown is an admission hint, never a hard exclusion: if every
+	// candidate is cooling the original list is kept, so a bad upstream cannot
+	// empty the pool and turn "all channels recently failed" into "no channel".
+	if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
+		channels = cooling
+	}
 	// Video capability is a hard requirement and is applied BEFORE the fit
 	// narrowing on purpose. The narrowing keeps only channels that prove the
 	// requested behaviour, which may exclude the only channel that can read the
@@ -791,6 +797,21 @@ func selectChannelFromMetadata(group string, model string, retry int, metadata *
 		}
 	}
 	return nil, fmt.Errorf("no channel found, group: %s, model: %s, priority retry: %d", group, model, retry)
+}
+
+// filterChannelIDsByCooldown drops channels that recently failed in a way a
+// retry cannot fix, so traffic moves off a broken upstream until it expires.
+func filterChannelIDsByCooldown(channels []int) []int {
+	if len(channels) == 0 {
+		return channels
+	}
+	kept := make([]int, 0, len(channels))
+	for _, channelID := range channels {
+		if !common.ChannelInCooldown(channelID) {
+			kept = append(kept, channelID)
+		}
+	}
+	return kept
 }
 
 func filterChannelIDsByBlockedChannels(channels []int, blockedChannels map[int]struct{}) []int {

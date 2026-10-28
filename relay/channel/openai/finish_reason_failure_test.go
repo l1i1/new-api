@@ -149,9 +149,14 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 	cases := []struct {
 		name string
 		body []string
+		// A cut that delivered answer text is closed honestly as a truncated
+		// answer (finish_reason=length, zero usage) instead of an error frame; a
+		// reasoning-only cut delivered no answer and keeps the error.
+		expectError bool
 	}{
 		{
-			name: "done_with_usage_and_no_finish",
+			name:        "done_with_usage_and_no_finish",
+			expectError: true,
 			body: []string{
 				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"I need to respond"},"finish_reason":null}]}`,
 				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[],"usage":{"prompt_tokens":167674,"completion_tokens":237,"total_tokens":167911}}`,
@@ -160,7 +165,8 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 			},
 		},
 		{
-			name: "eof_without_done_and_no_finish",
+			name:        "eof_without_done_and_no_finish",
+			expectError: false,
 			body: []string{
 				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]}`,
 				``,
@@ -178,21 +184,28 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			})
 
-			require.NotNil(t, err, "a stream without any terminal finish_reason must not be reported as success")
-			require.Equal(t, http.StatusBadGateway, err.StatusCode)
 			require.NotNil(t, usage)
 			assert.Zero(t, usage.PromptTokens, "a truncated stream must return zero usage to the caller")
 			assert.Zero(t, usage.CompletionTokens)
 			assert.Equal(t, relaycommon.UndeliveredMissingFinish, info.UndeliveredReason)
 			assert.NotContains(t, recorder.Body.String(), "167674", "the upstream usage count must never reach the caller unzeroed")
-			require.Empty(t, info.StreamFinishReason)
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
-			require.True(t, err.ShouldEvictChannelAffinity(), "a truncated stream must drop the affinity binding")
-			require.False(t, err.SettlesObservedUsageAfterError(), "a truncated stream is refunded, not settled")
-			// The client must be able to tell that nothing was delivered: a bare
-			// [DONE] after zero content reads as a successful empty answer.
-			assert.Contains(t, recorder.Body.String(), "truncated_stream", "an unrecoverable silent cut must be surfaced as an error frame")
+			if tc.expectError {
+				require.NotNil(t, err, "a silent cut with no delivered answer must not be reported as success")
+				require.Equal(t, http.StatusBadGateway, err.StatusCode)
+				require.Empty(t, info.StreamFinishReason)
+				require.True(t, err.ShouldEvictChannelAffinity(), "a truncated stream must drop the affinity binding")
+				require.False(t, err.SettlesObservedUsageAfterError(), "a truncated stream is refunded, not settled")
+				// The client must be able to tell that nothing was delivered: a bare
+				// [DONE] after zero content reads as a successful empty answer.
+				assert.Contains(t, recorder.Body.String(), "truncated_stream", "an unrecoverable silent cut must be surfaced as an error frame")
+			} else {
+				require.Nil(t, err, "a cut after delivered answer text is closed, not failed")
+				require.Equal(t, "length", info.StreamFinishReason)
+				assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`, "the caller must be told the answer was cut")
+				assert.NotContains(t, recorder.Body.String(), "truncated_stream")
+			}
 		})
 	}
 }
