@@ -30,6 +30,50 @@ const chatContinuationPrompt = "上一条回复因输出长度限制被截断。
 // ignore reasoning_content in the message history (verified 2026-10-27).
 const chatThinkingContinuationPrompt = "上面是你在上一轮被上游截断的思考过程（当时还没有开始输出正文）。请从中断处继续思考，不要重复已经写过的内容，完成思考后直接给出最终答案。"
 
+// chatAnswerContinuationPrompt is used by the abnormal/missing modes, where the
+// previous round already burned the provider's whole wall (900s for these
+// channels) on thinking and produced no visible answer. Asking it to continue
+// thinking just walks into the same wall again, so the round must answer from
+// the captured trace instead.
+const chatAnswerContinuationPrompt = "上面是你上一轮被上游截断的思考过程。现在不要再继续思考，请立即基于上面的内容直接输出最终答案（可以简短），必须给出正文。"
+
+// BuildChatAnswerContinuationBody rebuilds a request that resumes a cut-off
+// round in answer mode: the captured reasoning goes into the assistant content
+// and the round runs with the cheapest thinking budget the upstream accepts, so
+// it produces the answer instead of spending another full wall on reasoning.
+func BuildChatAnswerContinuationBody(baseJSON []byte, reasoning string, remainingTokens int) ([]byte, error) {
+	out, err := buildChatContinuationBody(baseJSON, reasoning, chatAnswerContinuationPrompt, remainingTokens)
+	if err != nil {
+		return nil, err
+	}
+	if !gjson.GetBytes(out, "reasoning_effort").Exists() {
+		return out, nil
+	}
+	var modelName string
+	if request, ok := gjsonParseModel(baseJSON); ok {
+		modelName = request
+	}
+	effort := kimiK3AggregatorDisabledEffortFor(modelName)
+	if effort == "" {
+		return out, nil
+	}
+	patched, patchErr := sjson.SetBytes(out, "reasoning_effort", effort)
+	if patchErr != nil {
+		return nil, patchErr
+	}
+	return patched, nil
+}
+
+// gjsonParseModel returns the request's model name, used to pick the cheapest
+// thinking effort the upstream accepts.
+func gjsonParseModel(body []byte) (string, bool) {
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
+
 // BuildChatContinuationBody rebuilds the final upstream chat-completions body
 // into a continuation request: the original messages, the visible answer so
 // far as an assistant message, the continuation instruction, and the remaining

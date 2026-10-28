@@ -355,7 +355,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if abnormalSteps > 0 {
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
-				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
 			}
@@ -363,7 +363,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if missingSteps > 0 {
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
-				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}
