@@ -64,7 +64,7 @@ missing 模式只在上游侧 EOF、不是客户端断开、且 `streamMissingFi
 ## 已知边界 / 未做
 
 - 只处理 **content=0 + reasoning** 的形态；已有部分正文的异常截断不在此模式（需另设计）。
-- missing 模式当前只做**同渠道**续写；如果上游 60 秒墙仍是请求级总预算，第二轮可能再次被截断。跨渠道续写需要额外的路由/渠道选择实现，未包含在本次改动中。
+- missing 模式默认**同渠道**续写；如果上游 60 秒墙仍是请求级总预算，第二轮可能再次被截断。**跨渠道续写已于 2026-10-29 实现**（`relay/continuation_fallback.go`）：同渠道连续发不出续写轮时，用一次 fallback 换到另一个 OpenAI 兼容渠道，绑定完整（选路、模型映射、凭据/多 key、header/param override、并发槽），计费与日志仍归属原渠道；详见本文末尾“跨渠道续写”。
 - missing 模式只做 1 轮，避免 60s×N 空转；续写轮仍失败则回落退款。
 - 第二轮等待上游响应头期间每 10s 写一条 SSE ping（`sendThinkingContinuationWithKeepAlive`），并在每次 ping/正文/终帧写出前调用 `helper.ExtendWriteDeadline`，避免 30s 客户端写超时后静默丢帧；即使渠道关闭 ping，也会周期性续写 deadline。
 - 续写执行器会临时关闭 `info.DisablePing` 对应的上游 SSE pinger，由网关单一持有客户端 writer，避免两个 goroutine 并发写同一 SSE。
@@ -81,3 +81,12 @@ missing 模式只在上游侧 EOF、不是客户端断开、且 `streamMissingFi
 2. 观察 24h：续写成功率、第二轮耗时、客户端超时率、单条计费与退款行为；
 3. 客户端确认超时 >20 分钟后，再扩大白名单；
 4. 回滚：清空 `RELAY_CHAT_CONTINUATION_CHANNELS` 或关闭 `RELAY_CHAT_CONTINUATION_ON_ABNORMAL`。
+
+## 跨渠道续写（2026-10-29）
+
+- 触发：续写轮在**本渠道连请求都发不出去**（`Send` 返回错误）时，消耗一次 fallback 换渠道；上游返回非 200 或空轮仍在同渠道重试，避免丢掉 prompt cache。
+- 限制：仅 OpenAI 兼容渠道（续写 body 与响应解析都是 OpenAI 形态）；`tool_calls` 进行中、official-fit 信封、音频、多 choice 不换道。
+- 绑定：`SelectChannelForRequest`（retry>0 绕过 session affinity、排除原渠道与冷却渠道）→ `SetupContextForSelectedChannel` → `InitChannelMeta` → `ModelMappedHelper` → 凭据/多 key → header/param override → 渠道并发槽（持有到该轮 body 关闭）。
+- 归属：hop 前对 relay info 与渠道上下文做快照，hop 后恢复，因此计费、请求日志、客户可见流仍归属原渠道；一轮 hop 只算一轮，不做第二次计费。
+- 遥测：续写结果按**实际执行轮次的渠道**记录（`ContinuationRoundChannel`），供 `GET /api/continuation_capabilities` 与 `deployment/tokeness-cn/continuation-whitelist.py` 生成白名单建议（默认只读，`--apply` 才写配置）。
+- 关键回归用例：`TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart`、`TestOaiStreamHandlerCreditsResumedRoundToItsChannel`、`TestOaiStreamHandlerKeepsOneTerminalWhenFinishAndUsageAreSeparateChunks`、`TestOaiStreamHandlerDeliversHeldTailBeforeRepair`、`TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent`。
