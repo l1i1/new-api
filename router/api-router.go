@@ -277,6 +277,10 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/request_capture/content", controller.GetRequestCapture)
 			optionRoute.DELETE("/request_capture", controller.DeleteRequestCaptures)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
+			// Continuation capability telemetry: what real continuation rounds did per
+			// channel, plus the whitelist those counters support. Read-only; applying
+			// it stays an explicit operator action.
+			apiRouter.GET("/continuation_capabilities", middleware.AdminAuth(), controller.GetContinuationCapabilities)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)
 			optionRoute.POST("/rest_model_ratio", controller.ResetModelRatio)
 			optionRoute.GET("/waffo-pancake/catalog", controller.ListWaffoPancakeCatalog)

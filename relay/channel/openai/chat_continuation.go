@@ -594,6 +594,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		}
 	}
 	result.usage = total
+	common.RecordContinuationOutcome(info.ChannelId, result.rounds > 0 && result.contentChars > 0)
 	return result
 }
 
@@ -749,6 +750,10 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if produced := len(content) - len(partial); produced > 0 {
 		result.contentChars = produced
 	}
+	// Capability telemetry: a round that produced nothing is evidence this channel
+	// does not resume well; a round that did is evidence it does. Feeds the
+	// data-driven whitelist.
+	common.RecordContinuationOutcome(info.ChannelId, result.rounds > 0 && result.contentChars > 0)
 	return result
 }
 
