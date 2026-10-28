@@ -1168,7 +1168,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if !ctxDone && service.ShouldDisableChannel(err) && channelError.AutoBan {
 		gopool.Go(func() {
-			service.DisableChannel(channelError, err.ErrorWithStatusCode())
+			service.DisableChannelBecauseRelayError(channelError, err.ErrorWithStatusCode())
 		})
 	}
 
