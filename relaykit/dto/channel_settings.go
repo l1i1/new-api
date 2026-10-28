@@ -240,6 +240,24 @@ type ChannelOtherSettings struct {
 	// Meaningful only together with SupportsVideo: without it no video request
 	// reaches this channel, so a mode set alone can never take effect.
 	VideoUsageMode string `json:"video_usage_mode,omitempty"`
+	// VideoUnsupportedModels lists the models this channel's upstream does NOT
+	// read video for, even though SupportsVideo declares the channel can.
+	//
+	// Capability is declared per channel but the truth is per model: one
+	// aggregator backend can read video for one model and be media-blind for
+	// another (measured 2026-10-28: on the same channel kimi-k3 reported 7168
+	// prompt tokens for a clip while kimi-k3.1-pro reported 122 and answered
+	// "the current model does not support videos"), and an upstream can lose
+	// the capability for a single model at any time. A video request for a
+	// listed model is routed as if this channel did not declare video, so the
+	// request lands on a channel that really reads the media instead of
+	// receiving a plausible answer written from text alone.
+	//
+	// Meaningful only together with SupportsVideo, mirroring VideoUsageMode: a
+	// channel that declares no video capability already receives no video
+	// request, so an exclusion set alone could never take effect. Names are
+	// matched case-insensitively against the request model name.
+	VideoUnsupportedModels []string `json:"video_unsupported_models,omitempty"`
 }
 
 // VideoUsageMode values. Empty is the default (trust the upstream).
@@ -276,6 +294,92 @@ func (s *ChannelOtherSettings) EstimatesVideoUsage() bool {
 		return false
 	}
 	return strings.TrimSpace(s.VideoUsageMode) == VideoUsageModeEstimate
+}
+
+// MaxVideoUnsupportedModels bounds the exclusion list so a malformed channel
+// row cannot turn the routing hot path into an unbounded scan.
+const MaxVideoUnsupportedModels = 128
+
+// NormalizeVideoUnsupportedModels trims every entry, drops empty entries and
+// removes case-insensitive duplicates while keeping the first spelling. It
+// returns the cleaned slice without mutating the receiver so callers can decide
+// whether they need to persist the result.
+func NormalizeVideoUnsupportedModels(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(models))
+	cleaned := make([]string, 0, len(models))
+	for _, model := range models {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, trimmed)
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
+// ValidateVideoUnsupportedModels rejects entries that cannot be matched and a
+// list without the video declaration it is an exception to. An exclusion on a
+// channel that never receives video requests is dead configuration that reads
+// as if it were doing something, the same reasoning as VideoUsageMode.
+func (s *ChannelOtherSettings) ValidateVideoUnsupportedModels() error {
+	if s == nil || len(s.VideoUnsupportedModels) == 0 {
+		return nil
+	}
+	if !s.SupportsVideo {
+		return fmt.Errorf("video_unsupported_models requires supports_video on the same channel")
+	}
+	if len(s.VideoUnsupportedModels) > MaxVideoUnsupportedModels {
+		return fmt.Errorf("video_unsupported_models has %d entries, limit is %d", len(s.VideoUnsupportedModels), MaxVideoUnsupportedModels)
+	}
+	seen := make(map[string]struct{}, len(s.VideoUnsupportedModels))
+	for _, model := range s.VideoUnsupportedModels {
+		trimmed := strings.TrimSpace(model)
+		if trimmed == "" {
+			return fmt.Errorf("video_unsupported_models contains an empty model name")
+		}
+		if len(trimmed) > 128 {
+			return fmt.Errorf("video_unsupported_models entry is too long: %d characters", len(trimmed))
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("video_unsupported_models contains a duplicate model name: %s", trimmed)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// SupportsVideoForModel reports whether this channel's upstream can read a
+// video part for the given model: the channel-wide declaration must be set and
+// the model must not be excluded as media-blind.
+func (s *ChannelOtherSettings) SupportsVideoForModel(model string) bool {
+	if s == nil || !s.SupportsVideo {
+		return false
+	}
+	if len(s.VideoUnsupportedModels) == 0 {
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(model))
+	if target == "" {
+		return true
+	}
+	for _, excluded := range s.VideoUnsupportedModels {
+		if strings.ToLower(strings.TrimSpace(excluded)) == target {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

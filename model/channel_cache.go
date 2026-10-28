@@ -68,6 +68,70 @@ func setSupportsVideoIn(channel2 map[int]struct{}, channel *Channel) {
 	}
 }
 
+// channel2videoUnsupportedModels holds the per-model exception to the channel's
+// video declaration (dto.ChannelOtherSettings.VideoUnsupportedModels) as a
+// lower-cased set. A channel can read video for one model and be media-blind
+// for another (measured 2026-10-28: kimi-k3 reported 7168 prompt tokens for a
+// clip while kimi-k3.1-pro on the same channel reported 122 and answered from
+// text alone), so capability is a channel-wide declaration with model-level
+// exceptions. A missing entry means "no exception"; the channel-level flag
+// still has to pass. Refreshed with the channel cache.
+var channel2videoUnsupportedModels map[int]map[string]struct{}
+
+// videoUnsupportedModelsForCache reads the per-model exclusion set. Like the
+// other cache accessors it parses settings JSON directly instead of calling
+// GetOtherSettings, whose malformed-JSON self-heal writes to the database.
+func videoUnsupportedModelsForCache(channel *Channel) map[string]struct{} {
+	if channel == nil || channel.OtherSettings == "" {
+		return nil
+	}
+	var settings dto.ChannelOtherSettings
+	if err := common.Unmarshal([]byte(channel.OtherSettings), &settings); err != nil {
+		return nil
+	}
+	if len(settings.VideoUnsupportedModels) == 0 {
+		return nil
+	}
+	excluded := make(map[string]struct{}, len(settings.VideoUnsupportedModels))
+	for _, model := range settings.VideoUnsupportedModels {
+		trimmed := strings.ToLower(strings.TrimSpace(model))
+		if trimmed == "" {
+			continue
+		}
+		excluded[trimmed] = struct{}{}
+	}
+	if len(excluded) == 0 {
+		return nil
+	}
+	return excluded
+}
+
+// setVideoUnsupportedModelsIn records the channel's per-model video exclusion
+// set into the index, replacing any previous entry.
+func setVideoUnsupportedModelsIn(target map[int]map[string]struct{}, channel *Channel) {
+	if channel == nil {
+		return
+	}
+	delete(target, channel.Id)
+	if excluded := videoUnsupportedModelsForCache(channel); len(excluded) > 0 {
+		target[channel.Id] = excluded
+	}
+}
+
+// channelVideoCapableForModel reports whether the channel's upstream reads
+// video for the given model. Caller must hold channelSyncLock (read lock).
+func channelVideoCapableForModel(channelId int, modelName string) bool {
+	if _, ok := channel2supportsVideo[channelId]; !ok {
+		return false
+	}
+	excluded, ok := channel2videoUnsupportedModels[channelId]
+	if !ok || len(excluded) == 0 {
+		return true
+	}
+	_, blocked := excluded[strings.ToLower(strings.TrimSpace(modelName))]
+	return !blocked
+}
+
 // concurrencyLimitForCache returns the channel's configured concurrency limit.
 // It deliberately avoids Channel.GetSetting, whose malformed-JSON self-heal
 // rewrites the database: this runs on the selection/acquire hot path, so one
@@ -136,6 +200,7 @@ func InitChannelCache() {
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
 	newChannel2concurrencyLimits := make(map[int]int)
 	newChannel2supportsVideo := make(map[int]struct{})
+	newChannel2videoUnsupportedModels := make(map[int]map[string]struct{})
 	var channels []*Channel
 	if err := DB.Find(&channels).Error; err != nil {
 		// Publishing the empty maps this read would produce means "this node has
@@ -155,6 +220,7 @@ func InitChannelCache() {
 		}
 		setConcurrencyLimitIn(newChannel2concurrencyLimits, channel)
 		setSupportsVideoIn(newChannel2supportsVideo, channel)
+		setVideoUnsupportedModelsIn(newChannel2videoUnsupportedModels, channel)
 	}
 	var abilities []*Ability
 	if err := DB.Find(&abilities).Error; err != nil {
@@ -236,6 +302,7 @@ func InitChannelCache() {
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channel2concurrencyLimits = newChannel2concurrencyLimits
 	channel2supportsVideo = newChannel2supportsVideo
+	channel2videoUnsupportedModels = newChannel2videoUnsupportedModels
 	group2model2channelSelection = newGroup2model2channelSelection
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
@@ -540,7 +607,7 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// exhaustion" error. Narrowing inside the video-capable set instead lets the
 	// genuinely capable channel (the official one, routinely the lowest
 	// priority) serve the request.
-	channels, videoEmptied := narrowVideoCandidates(channels, videoOnly)
+	channels, videoEmptied := narrowVideoCandidates(channels, videoOnly, model)
 	channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
 
 	// If no channels found, try to find channels with the normalized model name.
@@ -549,7 +616,7 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 		channels = filterChannelIDsByBlockedChannels(channels, blockedChannels)
 		normalizedEmptied := false
-		channels, normalizedEmptied = narrowVideoCandidates(channels, videoOnly)
+		channels, normalizedEmptied = narrowVideoCandidates(channels, videoOnly, model)
 		videoEmptied = videoEmptied || normalizedEmptied
 		channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
 	}
@@ -768,18 +835,20 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 	return filtered
 }
 
-// filterChannelIDsByVideoCapability drops channels that have not declared they
-// can read video parts when the request carries one. Caller must hold
-// channelSyncLock (read lock). The input slice is never mutated. A channel
-// missing from the id map is dropped: an unknown capability cannot be treated
-// as capable.
-func filterChannelIDsByVideoCapability(channels []int, videoOnly bool) []int {
+// filterChannelIDsByVideoCapability drops channels that cannot read video for
+// the requested model when the request carries a video part. Capability is the
+// channel-wide declaration minus the model-level exceptions, so a channel that
+// reads video for one model but is media-blind for another is dropped for the
+// blind model only. Caller must hold channelSyncLock (read lock). The input
+// slice is never mutated. A channel missing from the id map is dropped: an
+// unknown capability cannot be treated as capable.
+func filterChannelIDsByVideoCapability(channels []int, videoOnly bool, modelName string) []int {
 	if !videoOnly || len(channels) == 0 {
 		return channels
 	}
 	filtered := make([]int, 0, len(channels))
 	for _, channelId := range channels {
-		if _, ok := channel2supportsVideo[channelId]; ok {
+		if channelVideoCapableForModel(channelId, modelName) {
 			filtered = append(filtered, channelId)
 		}
 	}
@@ -796,11 +865,11 @@ var ErrNoVideoCapableChannel = errors.New("no candidate declares video capabilit
 // reports whether it removed every candidate. The flag is what lets the caller
 // tell a capability gap from an empty group/model: an empty input stays empty
 // with the flag false, so nothing is inferred from absent candidates.
-func narrowVideoCandidates(channels []int, videoOnly bool) ([]int, bool) {
+func narrowVideoCandidates(channels []int, videoOnly bool, modelName string) ([]int, bool) {
 	if !videoOnly || len(channels) == 0 {
 		return channels, false
 	}
-	filtered := filterChannelIDsByVideoCapability(channels, videoOnly)
+	filtered := filterChannelIDsByVideoCapability(channels, videoOnly, modelName)
 	return filtered, len(filtered) == 0
 }
 
@@ -913,6 +982,10 @@ func CacheUpdateChannel(channel *Channel) {
 		channel2supportsVideo = make(map[int]struct{})
 	}
 	setSupportsVideoIn(channel2supportsVideo, channel)
+	if channel2videoUnsupportedModels == nil {
+		channel2videoUnsupportedModels = make(map[int]map[string]struct{})
+	}
+	setVideoUnsupportedModelsIn(channel2videoUnsupportedModels, channel)
 	group2model2channelSelection = nil
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
 	// Lock ordering: do NOT hold channelSyncLock while calling

@@ -269,9 +269,12 @@ func abilitiesAtRetryTier(abilities []Ability, retry int) []Ability {
 	return kept
 }
 
-// filterAbilitiesByVideoCapability drops channels that have not declared they
-// can read video parts. The declaration lives in the channel's settings JSON,
-// which is loaded by the same query that feeds this filter's callers.
+// filterAbilitiesByVideoCapability drops channels that cannot read video for
+// the ability's model. The declaration lives in the channel's settings JSON,
+// which is loaded by the same query that feeds this filter's callers, together
+// with the per-model exceptions (dto.ChannelOtherSettings.VideoUnsupportedModels)
+// that keep a channel eligible for the models it does read video for while
+// dropping it for the ones it does not.
 //
 // A failed capability read still drops every candidate — an unreadable
 // capability must not route a video request to an upstream that may silently
@@ -297,16 +300,27 @@ func filterAbilitiesByVideoCapability(abilities []Ability, videoOnly bool) ([]Ab
 		return nil, err
 	}
 	capable := make(map[int]struct{}, len(channels))
+	excluded := make(map[int]map[string]struct{}, len(channels))
 	for _, channel := range channels {
-		if supportsVideoForCache(channel) {
-			capable[channel.Id] = struct{}{}
+		if !supportsVideoForCache(channel) {
+			continue
+		}
+		capable[channel.Id] = struct{}{}
+		if blocked := videoUnsupportedModelsForCache(channel); len(blocked) > 0 {
+			excluded[channel.Id] = blocked
 		}
 	}
 	filtered := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
-		if _, ok := capable[ability.ChannelId]; ok {
-			filtered = append(filtered, ability)
+		if _, ok := capable[ability.ChannelId]; !ok {
+			continue
 		}
+		if blocked, ok := excluded[ability.ChannelId]; ok {
+			if _, isBlocked := blocked[strings.ToLower(strings.TrimSpace(ability.Model))]; isBlocked {
+				continue
+			}
+		}
+		filtered = append(filtered, ability)
 	}
 	return filtered, nil
 }

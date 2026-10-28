@@ -1279,6 +1279,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelOtherSettings.ValidateVideoUsageMode(); err != nil {
 		return err
 	}
+	if err := channelOtherSettings.ValidateVideoUnsupportedModels(); err != nil {
+		return err
+	}
 	if preset := common.GetAdvancedCustomPreset(channel.Type); preset != nil {
 		channelOtherSettings.AdvancedCustom = preset
 	}
@@ -1298,6 +1301,83 @@ func (channel *Channel) ValidateSettings() error {
 		}
 	}
 	return nil
+}
+
+// SetChannelVideoUnsupportedModel records (unsupported=true) or clears the
+// per-model video capability exception on one channel and reports whether the
+// stored settings changed.
+//
+// The write is a compare-and-set on the settings column: the row is only
+// updated while its JSON still matches what was read, so a concurrent channel
+// edit (priority, models, another capability mark) is never silently
+// overwritten. One retry re-reads the row and reapplies the delta.
+func SetChannelVideoUnsupportedModel(channelId int, modelName string, unsupported bool) (bool, error) {
+	modelName = strings.TrimSpace(modelName)
+	if channelId <= 0 || modelName == "" {
+		return false, fmt.Errorf("channel id and model name are required")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		var channel Channel
+		if err := DB.Where("id = ?", channelId).First(&channel).Error; err != nil {
+			return false, err
+		}
+		settings := dto.ChannelOtherSettings{}
+		if channel.OtherSettings != "" {
+			if err := common.UnmarshalJsonStr(channel.OtherSettings, &settings); err != nil {
+				return false, fmt.Errorf("channel %d has unreadable settings: %w", channelId, err)
+			}
+		}
+		if !settings.SupportsVideo {
+			// Without the channel-wide declaration no video request reaches this
+			// channel, so an exception would be dead configuration.
+			return false, nil
+		}
+		excluded := dto.NormalizeVideoUnsupportedModels(settings.VideoUnsupportedModels)
+		present := false
+		for _, name := range excluded {
+			if strings.EqualFold(name, modelName) {
+				present = true
+				break
+			}
+		}
+		if present == unsupported {
+			return false, nil
+		}
+		if unsupported {
+			excluded = dto.NormalizeVideoUnsupportedModels(append(excluded, modelName))
+		} else {
+			kept := make([]string, 0, len(excluded))
+			for _, name := range excluded {
+				if strings.EqualFold(name, modelName) {
+					continue
+				}
+				kept = append(kept, name)
+			}
+			excluded = dto.NormalizeVideoUnsupportedModels(kept)
+		}
+		settings.VideoUnsupportedModels = excluded
+		if err := settings.ValidateVideoUnsupportedModels(); err != nil {
+			return false, err
+		}
+		encoded, err := common.Marshal(settings)
+		if err != nil {
+			return false, fmt.Errorf("failed to encode channel settings: %w", err)
+		}
+		updated := DB.Model(&Channel{}).
+			Where("id = ? AND settings = ?", channelId, channel.OtherSettings).
+			Update("settings", string(encoded))
+		if updated.Error != nil {
+			return false, updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			continue // another writer touched the row; re-read and reapply
+		}
+		if refreshed, err := GetChannelById(channelId, true); err == nil {
+			CacheUpdateChannel(refreshed)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("channel %d settings kept changing concurrently, giving up", channelId)
 }
 
 func (channel *Channel) GetSetting() dto.ChannelSettings {

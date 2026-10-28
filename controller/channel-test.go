@@ -41,6 +41,16 @@ type testResult struct {
 	context     *gin.Context
 	localErr    error
 	newAPIError *types.NewAPIError
+	// usage is the parsed upstream usage of a successful probe. It is only read
+	// by the video-capability probe, which compares a text-only baseline with the
+	// same request carrying a video part to tell "media read" from "media
+	// silently dropped" (the second reports the baseline count unchanged).
+	usage *dto.Usage
+	// upstreamStatus is the HTTP status the upstream answered with, 0 when the
+	// request never reached it. The video probe needs it to treat an explicit
+	// media rejection (e.g. the official Moonshot "unsupported video url" 400) as
+	// "media inspected" rather than as a transport failure.
+	upstreamStatus int
 }
 
 func newChannelTestBadResponseError(err error, statusCode int) *types.NewAPIError {
@@ -111,6 +121,14 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 // normal channel test; when set, the durable credential is injected directly
 // so a batch key test never falls back to random/round-robin selection.
 func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, credentialID *int, includeDisabled bool, recordLog bool) testResult {
+	return testChannelWithOptionsAndRequest(ctx, channel, testUserID, testModel, endpointType, isStream, credentialID, includeDisabled, recordLog, nil)
+}
+
+// testChannelWithOptionsAndRequest is testChannelWithOptions with a caller
+// supplied request body. requestOverride nil keeps the canned per-endpoint test
+// request; the video capability probe passes a chat request that carries a
+// video part (and, for its baseline, the same chat without the video).
+func testChannelWithOptionsAndRequest(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, credentialID *int, includeDisabled bool, recordLog bool, requestOverride dto.Request) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -281,7 +299,10 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 		}
 	}
 
-	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	request := requestOverride
+	if request == nil {
+		request = buildTestRequest(testModel, endpointType, channel, isStream)
+	}
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -499,6 +520,7 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 	if resp != nil {
 		httpResp = resp.(*http.Response)
 		if httpResp.StatusCode != http.StatusOK {
+			statusCode := httpResp.StatusCode
 			err := service.RelayErrorHandlerWithFormat(c, httpResp, true, info.RelayFormat)
 			common.SysError(fmt.Sprintf(
 				"channel test bad response: channel_id=%d name=%s type=%d model=%s endpoint_type=%s status=%d err=%v",
@@ -511,9 +533,10 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 				common.DebugLogPreview(fmt.Sprintf("%v", err)),
 			))
 			return testResult{
-				context:     c,
-				localErr:    err,
-				newAPIError: newChannelTestBadResponseError(err, httpResp.StatusCode),
+				context:        c,
+				localErr:       err,
+				newAPIError:    newChannelTestBadResponseError(err, statusCode),
+				upstreamStatus: statusCode,
 			}
 		}
 	}
@@ -573,9 +596,11 @@ func testChannelWithOptions(ctx context.Context, channel *model.Channel, testUse
 	}
 	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, common.DebugLogPreview(string(respBody))))
 	return testResult{
-		context:     c,
-		localErr:    nil,
-		newAPIError: nil,
+		context:        c,
+		localErr:       nil,
+		newAPIError:    nil,
+		usage:          usage,
+		upstreamStatus: http.StatusOK,
 	}
 }
 

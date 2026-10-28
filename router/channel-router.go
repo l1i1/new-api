@@ -123,6 +123,10 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/:id", permission: authz.ChannelRead, handler: controller.GetChannel},
 	{method: http.MethodGet, path: "/test", permission: authz.ChannelOperate, handler: controller.TestAllChannels},
 	{method: http.MethodGet, path: "/test/:id", permission: authz.ChannelOperate, handler: controller.TestChannel},
+	// Video capability probe: verifies that the upstream actually reads video for
+	// each model instead of trusting the channel-wide supports_video declaration.
+	{method: http.MethodPost, path: "/video-probe", permission: authz.ChannelOperate, handler: controller.RunVideoCapabilityProbe},
+	{method: http.MethodPost, path: "/:id/video-probe", permission: authz.ChannelOperate, handler: controller.RunVideoCapabilityProbeForChannel},
 	{method: http.MethodGet, path: "/update_balance", permission: authz.ChannelOperate, handler: controller.UpdateAllChannelsBalance},
 	{method: http.MethodGet, path: "/update_balance/:id", permission: authz.ChannelOperate, handler: controller.UpdateChannelBalance},
 	{method: http.MethodPost, path: "/", permission: authz.ChannelSensitiveWrite, handler: controller.AddChannel},

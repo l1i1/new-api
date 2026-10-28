@@ -46,14 +46,14 @@ func TestFilterChannelIDsByVideoCapability(t *testing.T) {
 
 	// Not a video request: the narrowing is inert, so unrelated traffic keeps
 	// its full candidate set.
-	assert.Equal(t, []int{800001, 800002}, filterChannelIDsByVideoCapability([]int{800001, 800002}, false))
+	assert.Equal(t, []int{800001, 800002}, filterChannelIDsByVideoCapability([]int{800001, 800002}, false, "kimi-k3"))
 	// A video request keeps only the declaring channel.
-	assert.Equal(t, []int{800001}, filterChannelIDsByVideoCapability([]int{800001, 800002}, true))
+	assert.Equal(t, []int{800001}, filterChannelIDsByVideoCapability([]int{800001, 800002}, true, "kimi-k3"))
 	// No declared channel means no candidate at all, which callers surface as
 	// "no available channel" rather than silently using a blind upstream.
-	assert.Empty(t, filterChannelIDsByVideoCapability([]int{800002}, true))
+	assert.Empty(t, filterChannelIDsByVideoCapability([]int{800002}, true, "kimi-k3"))
 	// An id with no cache entry cannot be treated as capable.
-	assert.Empty(t, filterChannelIDsByVideoCapability([]int{800099}, true))
+	assert.Empty(t, filterChannelIDsByVideoCapability([]int{800099}, true, "kimi-k3"))
 }
 
 // TestSupportsVideoForCacheReadsTheDeclaration pins the parsing rule: only an
