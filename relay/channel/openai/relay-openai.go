@@ -727,6 +727,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// EOF/[DONE] without any terminal finish_reason, emitted only reasoning, and
 	// therefore delivered no visible answer. Resume the thinking round inside
 	// the same client stream instead of surfacing a truncation.
+	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated {
+		common.SysLog(fmt.Sprintf("missing finish observed: ch=%d content=%d reasoning=%d marks=%v candidate=%v steps=%d onMissing=%v cfg=%v", info.ChannelId, visibleContentChars, reasoningTextBuilder.Len(), streamMissingFinishMarksTruncation(info, isAudioModel), chatMissingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount, streamFinishSeen), relaycommon.ChatMissingContinuationStepsForRequest(info), common.ChatContinuationOnMissing, info.ChatContinuation != nil && info.ChatContinuation.Missing != nil))
+	}
 	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
 		streamMissingFinishMarksTruncation(info, isAudioModel) &&
 		chatMissingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount, streamFinishSeen) &&
@@ -770,6 +773,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if undeliveredReason != "" {
 		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 		service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+	}
+	// A missing finish_reason means the provider never sent a terminal frame at
+	// all: everything below would render the last upstream event plus [DONE],
+	// which every client reads as a successful, empty answer. That is exactly the
+	// silent truncation the caller cannot see (2026-10-28: 600s kimi cut). Speak
+	// up instead of finishing cleanly: the answer was not delivered, the usage is
+	// zeroed above, and the client must be able to tell and retry.
+	if undeliveredReason == relaycommon.UndeliveredMissingFinish && info.RelayFormat == types.RelayFormatOpenAI {
+		common.SysLog(fmt.Sprintf("missing finish surfaced as an error frame: ch=%d content=%d reasoning=%d", info.ChannelId, visibleContentChars, reasoningTextBuilder.Len()))
+		_ = helper.ObjectData(c, gin.H{"error": gin.H{
+			"message": "upstream stream ended without a terminal finish_reason",
+			"type":    "upstream_error",
+			"code":    "truncated_stream",
+		}})
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {

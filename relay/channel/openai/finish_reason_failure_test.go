@@ -190,6 +190,9 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 			require.True(t, info.StreamStatus.ResponseFailed())
 			require.True(t, err.ShouldEvictChannelAffinity(), "a truncated stream must drop the affinity binding")
 			require.False(t, err.SettlesObservedUsageAfterError(), "a truncated stream is refunded, not settled")
+			// The client must be able to tell that nothing was delivered: a bare
+			// [DONE] after zero content reads as a successful empty answer.
+			assert.Contains(t, recorder.Body.String(), "truncated_stream", "an unrecoverable silent cut must be surfaced as an error frame")
 		})
 	}
 }
