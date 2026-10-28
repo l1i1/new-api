@@ -1071,3 +1071,328 @@ func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength(t *tes
 	require.NotContains(t, body, `"finish_reason":"error"`)
 	require.Equal(t, 1, strings.Count(body, "[DONE]"))
 }
+
+// enableKimiK3OfficialFit makes the relay info look like a Kimi K3 caller whose
+// user enabled the official-fit Shape dimension — the production shape of user
+// 1 (admin) and user 3 (the customer), see MEMORY 2026-10-16/17 and 2026-10-28.
+// Before this work that setting silently disabled every continuation mode.
+func enableKimiK3OfficialFit(info *relaycommon.RelayInfo) {
+	info.OriginModelName = "kimi-k3.1-pro"
+	info.RelayMode = relayconstant.RelayModeChatCompletions
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.ClientIncludeUsage = true
+	info.UserSetting = dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{
+		Profile: map[string]dto.OfficialFitProfile{
+			"kimi-k3": {Shape: true},
+		},
+	}}
+}
+
+func continuationDataPayloads(body string) []string {
+	payloads := make([]string, 0, 8)
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		payloads = append(payloads, payload)
+	}
+	return payloads
+}
+
+// assertKimiK3OfficialContinuationBody pins the official-form contract for a
+// transparently continued K3 stream: one terminal frame, one [DONE], the first
+// round's envelope everywhere, no repeated assistant role, no forwarded
+// top-level usage, the merged usage inside choices[0].usage of the terminal
+// chunk, and (only when the client asked) exactly one choices:[] usage-only
+// event whose usage is byte-identical to the terminal's.
+func assertKimiK3OfficialContinuationBody(t *testing.T, body string, wantCompletion int, wantUsageOnly bool) {
+	t.Helper()
+
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.Contains(t, body, `"id":"chat_1"`)
+	require.NotContains(t, body, `"id":"chat_2"`, "continuation deltas keep the first round's id")
+	require.Equal(t, 1, strings.Count(body, `"role":"assistant"`), "no repeated role delta")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+
+	officialTopLevel := map[string]struct{}{"id": {}, "object": {}, "created": {}, "model": {}, "choices": {}, "system_fingerprint": {}}
+	officialChoice := map[string]struct{}{"index": {}, "delta": {}, "finish_reason": {}, "usage": {}}
+	officialDelta := map[string]struct{}{"role": {}, "content": {}, "reasoning_content": {}, "tool_calls": {}}
+	officialUsage := map[string]struct{}{"prompt_tokens": {}, "completion_tokens": {}, "total_tokens": {}, "cached_tokens": {}, "completion_tokens_details": {}, "prompt_tokens_details": {}}
+
+	var terminal string
+	terminalCount := 0
+	usageOnlyCount := 0
+	var usageOnlyUsage string
+	for _, payload := range continuationDataPayloads(body) {
+		event := gjson.Parse(payload)
+		choices := event.Get("choices").Array()
+		if len(choices) == 0 {
+			require.True(t, event.Get("usage").Exists(), "an empty-choices event must be the usage-only event: %s", payload)
+			usageOnlyCount++
+			usageOnlyUsage = event.Get("usage").Raw
+			for key := range event.Map() {
+				if key == "usage" {
+					continue
+				}
+				_, ok := officialTopLevel[key]
+				require.True(t, ok, "unexpected top-level key %q in usage-only event: %s", key, payload)
+			}
+			continue
+		}
+		require.False(t, event.Get("usage").Exists(), "official K3 stream carries no top-level usage: %s", payload)
+		for key := range event.Map() {
+			_, ok := officialTopLevel[key]
+			require.True(t, ok, "unexpected top-level key %q in continuation chunk: %s", key, payload)
+		}
+		for _, choice := range choices {
+			for key := range choice.Map() {
+				_, ok := officialChoice[key]
+				require.True(t, ok, "unexpected choice key %q in continuation chunk: %s", key, payload)
+			}
+			delta := choice.Get("delta")
+			if delta.Exists() {
+				for key := range delta.Map() {
+					_, ok := officialDelta[key]
+					require.True(t, ok, "unexpected delta key %q in continuation chunk: %s", key, payload)
+				}
+			}
+			finish := choice.Get("finish_reason")
+			if finish.Type == gjson.String && finish.String() != "" {
+				terminal = payload
+				terminalCount++
+			}
+		}
+	}
+	require.Equal(t, 1, terminalCount, "exactly one terminal frame")
+	require.NotEmpty(t, terminal)
+
+	terminalUsage := gjson.Get(terminal, "choices.0.usage")
+	require.True(t, terminalUsage.Exists(), "official K3 terminal chunk carries usage inside choices[0]: %s", terminal)
+	for key := range terminalUsage.Map() {
+		_, ok := officialUsage[key]
+		require.True(t, ok, "unexpected usage key %q: %s", key, terminal)
+	}
+	require.Equal(t, int64(5), terminalUsage.Get("prompt_tokens").Int(), "input is billed once")
+	require.Equal(t, int64(wantCompletion), terminalUsage.Get("completion_tokens").Int(), "terminal carries the merged completion")
+	require.Equal(t, int64(5+wantCompletion), terminalUsage.Get("total_tokens").Int())
+
+	if wantUsageOnly {
+		require.Equal(t, 1, usageOnlyCount, "one choices:[] usage-only event when the client asked for usage")
+		require.Equal(t, terminalUsage.Raw, usageOnlyUsage, "usage-only event repeats the terminal usage verbatim")
+	} else {
+		require.Equal(t, 0, usageOnlyCount, "no usage-only event when the client did not ask")
+	}
+}
+
+// TestOaiStreamHandlerKimiK3FitLengthContinuationKeepsOfficialShape covers the
+// 32k-cap shape for a fit caller: the resumed segment and the merged usage must
+// stay inside the official K3 stream form.
+func TestOaiStreamHandlerKimiK3FitLengthContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"1、2、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"3、4、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 2, 20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "a fit caller must still be continued")
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.Empty(t, info.UndeliveredReason)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "1、2、")
+	require.Contains(t, body, "3、4、")
+	assertKimiK3OfficialContinuationBody(t, body, 4, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitAbnormalContinuationKeepsOfficialShape covers
+// the 900s cut-off shape for a fit caller (reasoning only, finish_reason=error).
+func TestOaiStreamHandlerKimiK3FitAbnormalContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+	require.False(t, info.StreamStatus.ResponseFailed())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "最终答案")
+	require.NotContains(t, body, `"finish_reason":"error"`, "the failed round's terminal frame is suppressed")
+	assertKimiK3OfficialContinuationBody(t, body, 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitMissingFinishContinuationKeepsOfficialShape
+// covers the 60s/600s silent-cut shape for a fit caller.
+func TestOaiStreamHandlerKimiK3FitMissingFinishContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newMissingContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	assertKimiK3OfficialContinuationBody(t, recorder.Body.String(), 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitLengthThinkingContinuationKeepsOfficialShape
+// covers the output cap landing while the model is still thinking.
+func TestOaiStreamHandlerKimiK3FitLengthThinkingContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"length"`, "the capped round's terminal frame is suppressed")
+	assertKimiK3OfficialContinuationBody(t, body, 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitContinuationWithoutClientUsageAsk keeps the
+// official contract that the choices:[] usage-only event exists only when the
+// client's own stream_options asked for usage.
+func TestOaiStreamHandlerKimiK3FitContinuationWithoutClientUsageAsk(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+	info.ClientIncludeUsage = false
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 13, usage.CompletionTokens)
+
+	assertKimiK3OfficialContinuationBody(t, recorder.Body.String(), 13, false)
+}
+
+// TestOaiStreamHandlerKimiK3FitContinuationFailureKeepsFailurePath keeps the
+// no-fit failure contract for a fit caller: a continuation round that never
+// produces a visible answer must not be reported as a delivered success.
+func TestOaiStreamHandlerKimiK3FitContinuationFailureKeepsFailurePath(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	reasoningOnlyRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"还在想"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(reasoningOnlyRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
+}

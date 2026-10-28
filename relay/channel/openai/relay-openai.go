@@ -629,7 +629,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -667,7 +667,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -716,7 +716,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			common.SysLog(fmt.Sprintf("length thinking continuation delivered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -752,7 +752,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil

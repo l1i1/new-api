@@ -124,7 +124,7 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
@@ -154,7 +154,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -197,7 +197,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -241,7 +241,7 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -534,6 +534,18 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 		}
 		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
+		// A Kimi K3 official-fit caller must not see the aggregator's chunk
+		// shape just because this delta came from a continuation round: run the
+		// same per-event fit the ordinary path applies, so the resumed segment
+		// stays indistinguishable from one continuous official stream (key set,
+		// empty-field stripping, reasoning delta normalization). The fit is
+		// skipped for every other caller, whose frames stay byte-identical.
+		if kimiK3FitEnabled(info) {
+			forwardData = FitKimiK3StreamEventForAdapters(c, info, forwardData, nil, false)
+			if forwardData == "" {
+				continue
+			}
+		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
 			return usage, finish, builder.String(), deltaSeen, sendErr
@@ -600,7 +612,15 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 // transparently continued response. Usage is emitted separately by
 // HandleFinalResponse so the client sees exactly one terminal frame and at most
 // one usage event, matching an ordinary stream.
-func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string) {
+//
+// A Kimi K3 official-fit caller must keep the official stream shape: the
+// terminal chunk carries the merged usage inside choices[0].usage and, when the
+// client asked for stream usage, is followed by the choices:[] usage-only event.
+// The generic frame below would leak the platform's internal usage shape and,
+// because HandleFinalResponse suppresses its generic usage frame under the fit,
+// leave the caller with no usage at all. So the fit owns both terminal frames
+// for those callers; every other caller keeps the exact bytes it saw before.
+func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string, usage *dto.Usage) {
 	helper.ExtendWriteDeadline(c)
 	if finish == "" {
 		finish = "length"
@@ -613,6 +633,27 @@ func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if model == "" && info != nil {
 		model = info.UpstreamModelName
+	}
+	if info != nil && kimiK3FitEnabled(info) {
+		// The fit caller sees the official envelope order, and the fit moves the
+		// merged usage into choices[0].usage (append keeps it last, where the
+		// official endpoint puts it). A marshal failure falls through to the
+		// generic frame rather than losing the terminal marker entirely.
+		idJSON, idErr := common.Marshal(responseId)
+		modelJSON, modelErr := common.Marshal(model)
+		finishJSON, finishErr := common.Marshal(finish)
+		if idErr == nil && modelErr == nil && finishErr == nil {
+			terminalData := fmt.Sprintf(`{"id":%s,"object":"chat.completion.chunk","created":%d,"model":%s,"choices":[{"index":0,"delta":{},"finish_reason":%s}]}`, idJSON, createAt, modelJSON, finishJSON)
+			if fitted := FitKimiK3StreamEventForAdapters(c, info, terminalData, usage, true); fitted != "" {
+				terminalData = fitted
+			}
+			_ = sendStreamData(c, info, terminalData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			if usageOnly := FitKimiK3StreamUsageOnlyChunk(info, terminalData); usageOnly != "" {
+				helper.ExtendWriteDeadline(c)
+				_ = sendStreamData(c, info, usageOnly, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			return
+		}
 	}
 	payload := map[string]any{
 		"id":      responseId,
