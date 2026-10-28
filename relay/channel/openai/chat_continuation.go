@@ -466,6 +466,9 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 	}
 	result.usage = total
+	if produced := len(content) - len(partial); produced > 0 {
+		result.contentChars = produced
+	}
 	return result
 }
 

@@ -636,6 +636,44 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
+	// Abnormal cut after the answer already started (900s wall hit mid-answer):
+	// the caller is reading a partial answer, so resuming the thinking round is
+	// pointless and discarding the prefix (the old fallback) throws away tens of
+	// kilobytes of finished work. Continue the visible answer prefix instead, the
+	// same way an upstream length cap is repaired.
+	if streamAbnormalFinish != "" && !reasoningTruncated && visibleContentChars > 0 &&
+		info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
+		info.IsStream && info.RelayFormat == types.RelayFormatOpenAI &&
+		toolCount == 0 && streamChoiceCount <= 1 && len(streamFunctionCallNames) == 0 &&
+		!deepSeekV4FitEnabled(info) &&
+		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
+		info.ClientMaxTokens > 0 && usage.CompletionTokens < info.ClientMaxTokens {
+		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		resetContinuationCoalescer(info)
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=abnormal-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
 	// Abnormal-finish continuation (900s cut-off shape): the provider ended
 	// with finish_reason=error before any visible content, after emitting a long
 	// reasoning trace. Resume the thinking round inside the same client stream

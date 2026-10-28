@@ -1396,3 +1396,65 @@ func TestOaiStreamHandlerKimiK3FitContinuationFailureKeepsFailurePath(t *testing
 	require.Zero(t, usage.TotalTokens)
 	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
 }
+
+// TestOaiStreamHandlerContinuesAnswerAfterAbnormalCutWithContent pins the 900s
+// wall hit mid-answer: the caller already received a partial answer, and the
+// gateway used to discard it and surface finish_reason=error. It must instead
+// continue the visible prefix, keep one terminal frame and bill the merged usage
+// exactly once.
+func TestOaiStreamHandlerContinuesAnswerAfterAbnormalCutWithContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	var gotPartial string
+	sender := func(partial string, remaining int) (*http.Response, error) {
+		gotPartial = partial
+		return continuationSSEResponse(secondRound), nil
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+		ClientMaxTokens:    100,
+		ChatContinuation: &relaycommon.ChatContinuationConfig{
+			MaxSteps: 2,
+			Send:     sender,
+			Abnormal: &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: sender, MaxReasoningBytes: 1 << 20, MinReasoningChars: 1},
+		},
+	}
+	info.SetEstimatePromptTokens(5)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, `"finish_reason":"error"`, "the cut's terminal frame is suppressed")
+}
