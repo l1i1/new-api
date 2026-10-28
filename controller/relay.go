@@ -70,6 +70,17 @@ func officialFitErrorsEnabled(c *gin.Context, originalModel string) bool {
 	return ok && profile.Errors
 }
 
+// officialFitErrorsApplyOnWire reports whether this relay wire relays
+// first-party official validation texts. Both the OpenAI chat wire and the
+// Anthropic Messages wire do, so the Errors dimension's "no gateway request id"
+// guarantee applies to both; every other wire keeps its historical rendering.
+func officialFitErrorsApplyOnWire(c *gin.Context, relayFormat types.RelayFormat, originalModel string) bool {
+	if relayFormat != types.RelayFormatOpenAI && relayFormat != types.RelayFormatClaude {
+		return false
+	}
+	return officialFitErrorsEnabled(c, originalModel)
+}
+
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -140,11 +151,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			// Official-fit validation errors carry no gateway request ID suffix
 			// and render with the official content type; keep such messages
 			// byte-identical to the provider whenever the requesting user has
-			// the Errors dimension enabled. Which wire shape applies is a
-			// property of the model's family (see package officialfit), not a
-			// per-family branch here.
+			// the Errors dimension enabled. Both wires that can relay
+			// first-party validation texts participate — the OpenAI chat wire
+			// and the Anthropic Messages wire (which renders its own envelope
+			// below, so the effect there is the missing suffix alone). Which
+			// wire shape applies is a property of the model's family (see
+			// package officialfit), not a per-family branch here.
 			originalModel := strings.ToLower(strings.TrimSpace(common.GetContextKeyString(c, constant.ContextKeyOriginalModel)))
-			fitErrors := relayFormat == types.RelayFormatOpenAI && officialFitErrorsEnabled(c, originalModel)
+			fitErrors := officialFitErrorsApplyOnWire(c, relayFormat, originalModel)
 			wireShape := officialfit.WireShapeOf(originalModel)
 			// An official-fit user's remote-image request rejected by an
 			// aggregation backend carries that backend's own provider wording
@@ -154,7 +168,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			// download-failure text, so normalize the message and status here.
 			// The helper refuses account-level verdicts and non-DeepSeek-V4
 			// surfaces; see FitDeepSeekV4ImageDownloadError.
-			if fitErrors && officialfit.FamilyOf(originalModel) == officialfit.FamilyDeepSeekV4 {
+			if fitErrors && relayFormat == types.RelayFormatOpenAI && officialfit.FamilyOf(originalModel) == officialfit.FamilyDeepSeekV4 {
 				if officialMessage, normalized := helper.FitDeepSeekV4ImageDownloadError(c, newAPIError.StatusCode, filteredMessage); normalized {
 					newAPIError = types.WithOpenAIError(types.OpenAIError{
 						Message: officialMessage,
