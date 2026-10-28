@@ -2523,3 +2523,38 @@ func TestReasoningEffortOverrideIsAuditedWithoutDebugMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"set reasoning.effort = max"}, info.ParamOverrideAudit)
 }
+
+// A condition whose literal does not match the JSON type of the target field must be
+// skipped, never turned into a request failure: the failure path used to return 500 and
+// the platform auto-disabled the production channel (2026-10-28, #37/#91).
+func TestApplyParamOverrideSkipsUncomparableConditionInsteadOfFailing(t *testing.T) {
+	input := []byte(`{"model":"kimi-k3.1-pro","max_tokens":2047,"temperature":1}`)
+	override := map[string]any{
+		"operations": []any{
+			map[string]any{
+				"path":  "max_tokens",
+				"mode":  "set",
+				"value": 512,
+				"conditions": []any{
+					// "2047" (string) against max_tokens: 2047 (number): type mismatch.
+					map[string]any{"path": "max_tokens", "mode": "full", "value": "2047"},
+				},
+			},
+			map[string]any{
+				"path":  "temperature",
+				"mode":  "set",
+				"value": 0.5,
+				"conditions": []any{
+					map[string]any{"path": "model", "mode": "full", "value": "kimi-k3.1-pro"},
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	require.NoError(t, err, "a mistyped condition must not fail the request")
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(out, &body))
+	require.EqualValues(t, 2047, body["max_tokens"], "the operation behind the uncomparable condition must be skipped")
+	require.EqualValues(t, 0.5, body["temperature"], "comparable operations must still apply")
+}

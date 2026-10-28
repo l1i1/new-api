@@ -79,6 +79,10 @@ var transientChannelErrors = map[types.ErrorCode]struct{}{
 	types.ErrorCodeChannelUnsupportedEndpoint:  {},
 	types.ErrorCodeChannelUnsupportedFeature:   {},
 	types.ErrorCodeChannelResponseTimeExceeded: {},
+	// A broken override condition is a configuration mistake on our side, not a
+	// broken upstream: one is enough to fail the request, and banning the channel
+	// on top of it removes capacity for every other caller (2026-10-28 #37/#91).
+	types.ErrorCodeChannelParamOverrideInvalid: {},
 }
 
 func shouldDisableForChannelError(err *types.NewAPIError) bool {

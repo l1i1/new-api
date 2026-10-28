@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
@@ -676,13 +677,33 @@ func checkSingleCondition(data []byte, contextJSON string, condition ConditionOp
 
 	result, err := compareGjsonValues(value, targetValue, strings.ToLower(condition.Mode))
 	if err != nil {
-		return false, fmt.Errorf("comparison failed for path %s: %v", condition.Path, err)
+		// A condition that cannot be compared (typically a debug rule written with a
+		// string literal against a numeric JSON field) is a configuration mistake, not
+		// an upstream failure. Treat it as "condition not met" and skip the operation:
+		// returning an error here turned one wrong debug condition into a 500 for real
+		// traffic, and the 500 then auto-disabled the production channel (2026-10-28,
+		// channels #37/#91, "compare for different types, got Number and String").
+		// Log it once per distinct failure so the typo stays visible.
+		logUncomparableCondition(condition.Path, err)
+		return false, nil
 	}
 
 	if condition.Invert {
 		result = !result
 	}
 	return result, nil
+}
+
+// uncomparableConditionLog deduplicates the warning above: override conditions are
+// evaluated per request, and a broken debug rule must not flood the log.
+var uncomparableConditionLog sync.Map // "path|error" -> struct{}
+
+func logUncomparableCondition(path string, err error) {
+	key := path + "|" + err.Error()
+	if _, seen := uncomparableConditionLog.LoadOrStore(key, struct{}{}); seen {
+		return
+	}
+	common.SysLog(fmt.Sprintf("param_override condition skipped (uncomparable): path=%s err=%v", path, err))
 }
 
 func processNegativeIndex(data []byte, path string) string {
