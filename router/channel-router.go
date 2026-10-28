@@ -127,6 +127,9 @@ var channelPermissionRoutes = []permissionRoute{
 	// each model instead of trusting the channel-wide supports_video declaration.
 	{method: http.MethodPost, path: "/video-probe", permission: authz.ChannelOperate, handler: controller.RunVideoCapabilityProbe},
 	{method: http.MethodPost, path: "/:id/video-probe", permission: authz.ChannelOperate, handler: controller.RunVideoCapabilityProbeForChannel},
+	// Fit capability calibration: re-measures the stored k3 marks against the
+	// official reference and reports (optionally writes) drift.
+	{method: http.MethodPost, path: "/fit-calibration", permission: authz.ChannelOperate, handler: controller.RunFitCapabilityCalibration},
 	{method: http.MethodGet, path: "/update_balance", permission: authz.ChannelOperate, handler: controller.UpdateAllChannelsBalance},
 	{method: http.MethodGet, path: "/update_balance/:id", permission: authz.ChannelOperate, handler: controller.UpdateChannelBalance},
 	{method: http.MethodPost, path: "/", permission: authz.ChannelSensitiveWrite, handler: controller.AddChannel},

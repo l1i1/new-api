@@ -51,6 +51,12 @@ type testResult struct {
 	// media rejection (e.g. the official Moonshot "unsupported video url" 400) as
 	// "media inspected" rather than as a transport failure.
 	upstreamStatus int
+	// body is the relay's response body of a successful test. The fit
+	// capability calibration reads the structural fields it carries
+	// (tool_calls, JSON content, logprobs, reasoning) so it can compare a
+	// channel against the official reference without spending a second request
+	// per mark.
+	body []byte
 }
 
 func newChannelTestBadResponseError(err error, statusCode int) *types.NewAPIError {
@@ -601,6 +607,7 @@ func testChannelWithOptionsAndRequest(ctx context.Context, channel *model.Channe
 		newAPIError:    nil,
 		usage:          usage,
 		upstreamStatus: http.StatusOK,
+		body:           respBody,
 	}
 }
 

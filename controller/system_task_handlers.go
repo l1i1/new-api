@@ -26,6 +26,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(videoProbeHandler{})
+	service.RegisterSystemTaskHandler(fitCalibrationHandler{})
 }
 
 type channelCredentialTestHandler struct{}
