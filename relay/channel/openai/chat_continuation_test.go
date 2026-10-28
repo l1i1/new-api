@@ -1566,3 +1566,59 @@ func TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent(t *testing.T)
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
+
+// TestTruncationRepairSkipReason pins the diagnostic reasons: each guard that
+// declines a repair must be named, so a new uncovered shape is identifiable from
+// one log line instead of a decision-matrix investigation.
+func TestTruncationRepairSkipReason(t *testing.T) {
+	send := func(string, int) (*http.Response, error) { return nil, nil }
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+			IsStream:        true,
+			RelayFormat:     types.RelayFormatOpenAI,
+			ClientMaxTokens: 100,
+			StreamStatus:    relaycommon.NewStreamStatus(),
+			ChatContinuation: &relaycommon.ChatContinuationConfig{
+				MaxSteps: 1,
+				Send:     send,
+				Missing:  &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: send},
+			},
+		}
+	}
+
+	info := newInfo()
+	require.Equal(t, "", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 0, 1),
+		"a repairable shape has no skip reason")
+	require.Equal(t, "tool_calls_in_progress", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 1, 1))
+	require.Equal(t, "multiple_choices", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 0, 2))
+
+	folded := newInfo()
+	folded.ChannelSetting.ThinkingToContent = true
+	require.Equal(t, "reasoning_suppressed_or_folded", truncationRepairSkipReason(folded, &dto.Usage{}, 1200, 10, 0, 1))
+
+	spent := newInfo()
+	spent.ClientMaxTokens = 10
+	require.Equal(t, "client_budget_exhausted", truncationRepairSkipReason(spent, &dto.Usage{CompletionTokens: 10}, 1200, 10, 0, 1))
+
+	gone := newInfo()
+	gone.StreamStatus.EndReason = relaycommon.StreamEndReasonClientGone
+	require.Equal(t, "client_gone", truncationRepairSkipReason(gone, &dto.Usage{}, 1200, 10, 0, 1))
+
+	unconfigured := newInfo()
+	unconfigured.ChatContinuation = nil
+	require.Equal(t, "continuation_not_configured", truncationRepairSkipReason(unconfigured, &dto.Usage{}, 1200, 10, 0, 1))
+
+	noSender := newInfo()
+	noSender.ChatContinuation.Send = nil
+	require.Equal(t, "visible_continuation_disabled", truncationRepairSkipReason(noSender, &dto.Usage{}, 1200, 10, 0, 1))
+	require.Equal(t, "", truncationRepairSkipReason(noSender, &dto.Usage{}, 0, 10, 0, 1),
+		"a thinking-only cut uses the reasoning sender, which is still configured")
+
+	empty := newInfo()
+	require.Equal(t, "nothing_to_continue", truncationRepairSkipReason(empty, &dto.Usage{}, 0, 0, 0, 1))
+
+	notStream := newInfo()
+	notStream.IsStream = false
+	require.Equal(t, "unsupported_format", truncationRepairSkipReason(notStream, &dto.Usage{}, 1200, 10, 0, 1))
+}

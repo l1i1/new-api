@@ -317,6 +317,58 @@ func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	return true
 }
 
+// truncationRepairSkipReason explains why a truncated stream reached the caller
+// instead of being repaired by one of the continuation modes. Every guard that
+// silently refuses a repair is named here so the one production shape that keeps
+// failing can be identified from a single log line instead of reverse-engineering
+// the decision matrix (2026-10-28: the missing-finish-with-content gap took an
+// hour to find because the only trace was "candidate=false").
+//
+// Returns "" when no guard is known to apply; the caller still logs the line, so
+// an unnamed skip shows up as an empty reason rather than disappearing.
+func truncationRepairSkipReason(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int) string {
+	if info == nil {
+		return "no_relay_info"
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI {
+		return "unsupported_format"
+	}
+	if info.ChatContinuation == nil {
+		return "continuation_not_configured"
+	}
+	if toolCalls > 0 {
+		return "tool_calls_in_progress"
+	}
+	if choiceCount > 1 {
+		return "multiple_choices"
+	}
+	if deepSeekV4FitEnabled(info) {
+		return "deepseek_v4_fit_pin"
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return "reasoning_suppressed_or_folded"
+	}
+	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return "client_gone"
+	}
+	if info.ClientMaxTokens <= 0 || usage == nil || usage.CompletionTokens >= info.ClientMaxTokens {
+		return "client_budget_exhausted"
+	}
+	if info.ChatContinuation.Missing == nil && info.ChatContinuation.Abnormal == nil {
+		return "continuation_not_configured"
+	}
+	if contentChars > 0 {
+		if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 {
+			return "visible_continuation_disabled"
+		}
+		return ""
+	}
+	if reasoningChars <= 0 {
+		return "nothing_to_continue"
+	}
+	return ""
+}
+
 // chatLengthThinkingContinuationCandidate decides whether a stream that hit the
 // provider output cap (finish_reason=length) before any visible content can be
 // resumed from its captured reasoning. This is the 32k cap landing during the

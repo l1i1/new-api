@@ -846,6 +846,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		undeliveredReason = relaycommon.UndeliveredMissingFinish
 	}
 	if undeliveredReason != "" {
+		// Log the refusal reason before the usage is zeroed: a repaired truncation
+		// returns earlier, so reaching here means every continuation mode declined
+		// and the caller sees the cut. One line names the caller, the shape and the
+		// guard, which is what the 2026-10-28 gap investigation lacked.
+		common.SysLog(fmt.Sprintf("truncated stream unrepaired: ch=%d shape=%s content=%d reasoning=%d tools=%d choices=%d clientMax=%d completion=%d reason=%s",
+			info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount,
+			info.ClientMaxTokens, usage.CompletionTokens,
+			truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)))
 		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 		service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 	}
