@@ -163,6 +163,20 @@ func referenceBody(model string) map[string]any {
 // cost of this one probe moves from 16 to 96 completion tokens and nothing else.
 const toolsChoiceSemanticsProbeMaxTokens = 96
 
+// kimiThinkingCountingProbeMaxTokens is the generation budget of the kimi-k3
+// usage.thinking_counting probe. An aggregator that reasons on a
+// thinking-disabled request spends the budget on reasoning, so an 8-token cap
+// makes the row undecidable; 128 leaves room for both the reasoning and the
+// answer (32 was still spent entirely on reasoning, measured 2026-10-28).
+const kimiThinkingCountingProbeMaxTokens = 128
+
+// responseFormatProbeMaxTokens is the generation budget of the
+// response_format.json probe. Thinking-first endpoints spend their first
+// tokens on reasoning, so a budget that only fits the JSON object truncates
+// both legs and makes the mark undecidable (measured 2026-10-28: official and
+// channel both at 16/16 with no content).
+const responseFormatProbeMaxTokens = 64
+
 // glmThinkingCountingProbeMaxTokens is the generation budget of the glm-5.3
 // usage.thinking_counting probe. It is larger than the other thinking probes
 // because the glm branch asks for a tool call: a real call plus the reasoning
@@ -260,8 +274,12 @@ var probeSpecs = map[string]ProbeSpec{
 		Path:      chatPath,
 		MaxTokens: 8,
 		// glm-5.3 asks for a tool call, so the request carries a larger budget
-		// than the 8 the other families keep.
-		MaxTokensForFamily: map[string]int{"glm-5.3": glmThinkingCountingProbeMaxTokens},
+		// than the 8 the other families keep. kimi-k3 gets 32: an aggregator
+		// that reasons anyway spends a bare 8-token budget on reasoning and
+		// emits no content, so the truncation guard turned every such row
+		// inconclusive (measured 2026-10-28 on DEF-neurvibe_kimi-B); 32 lets the
+		// answer finish and the reasoning-accounting comparison decide.
+		MaxTokensForFamily: map[string]int{"glm-5.3": glmThinkingCountingProbeMaxTokens, "kimi-k3": kimiThinkingCountingProbeMaxTokens},
 		Fields:             []string{"thinking", "reasoning_effort", "reasoning", "usage", "tools", "tool_choice"},
 		RequiresExercise: func(family string, channel signature) (bool, string) {
 			if family != "glm-5.3" {
@@ -315,6 +333,7 @@ var probeSpecs = map[string]ProbeSpec{
 			default:
 				// kimi-k3 requires it for thinking-disabled requests: the pool
 				// reports the thinking-on prompt count there.
+				body = chatBody(model, []map[string]any{userMessage("hi")}, kimiThinkingCountingProbeMaxTokens)
 				body["thinking"] = map[string]any{"type": "disabled"}
 			}
 			return body
@@ -438,15 +457,20 @@ var probeSpecs = map[string]ProbeSpec{
 		},
 	},
 	fitpolicy.BehaviorResponseFormatJSON: {
-		Behavior:  fitpolicy.BehaviorResponseFormatJSON,
-		Path:      chatPath,
-		MaxTokens: 16,
+		Behavior: fitpolicy.BehaviorResponseFormatJSON,
+		Path:     chatPath,
+		// responseFormatProbeMaxTokens rather than 16: measured 2026-10-28 a
+		// thinking-first endpoint spends a 16-token cap entirely on reasoning
+		// on both legs, so neither side emits the JSON object and the mark can
+		// never be decided structurally. 64 leaves room for the reasoning and
+		// the tiny object.
+		MaxTokens: responseFormatProbeMaxTokens,
 		Fields:    []string{"response_format"},
 		Build: func(family, model string) map[string]any {
 			// The prompt must contain the word "json": DeepSeek V4 rejects
 			// json_object otherwise, locally and upstream
 			// (relay/helper/valid_request.go:620).
-			body := chatBody(model, []map[string]any{userMessage(`Reply with json: {"ok":true}`)}, 16)
+			body := chatBody(model, []map[string]any{userMessage(`Reply with json: {"ok":true}`)}, responseFormatProbeMaxTokens)
 			body["response_format"] = map[string]any{"type": "json_object"}
 			return body
 		},
@@ -480,7 +504,13 @@ var probeSpecs = map[string]ProbeSpec{
 			return body
 		},
 		StructuralAbsenceIsDivergence: true,
-		EvidenceIsGeneratedOutput:     true,
+		// The logprobs object rides on the response envelope for the tokens the
+		// upstream emitted, so the probe's own generation cap cannot explain its
+		// absence. Treating it as generated output made every 16/16 answer
+		// inconclusive (measured 2026-10-28 on DEF_Self-WB: the official leg
+		// carried logprobs and the channel's did not, yet the truncation clause
+		// withheld the verdict).
+		EvidenceIsGeneratedOutput: false,
 		StructuralCompare: func(base, channel signature) []string {
 			if base.HasLogprobs != channel.HasLogprobs {
 				return []string{"logprobs_present official=" + boolText(base.HasLogprobs) + " channel=" + boolText(channel.HasLogprobs)}
@@ -869,7 +899,16 @@ func isRelayLocalError(code, fingerprint string) bool {
 		return true
 	}
 	lower := strings.ToLower(fingerprint)
-	for _, marker := range []string{"no available channel", "无可用渠道", "channel not found"} {
+	for _, marker := range []string{
+		"no available channel", "无可用渠道", "channel not found",
+		// Group / permission denials are answered by the gateway's
+		// distributor before the channel is reached, so a 403 "No permission
+		// to access this group" says nothing about the channel. Measured
+		// 2026-10-28: a probe pinned through a token whose group does not hold
+		// the channel returned this 403 on every mark, and the old rule read
+		// six divergences (supported=false) for a channel that was never asked.
+		"no permission to access this group", "无权限", "permission denied", "无权访问",
+	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -1020,6 +1059,37 @@ func classifyForFamily(spec ProbeSpec, exp Expectation, baseline *signature, cha
 		}
 	}
 	if hasMeasuredBaseline && hasDiscriminator(exp, discPromptTokens) {
+		// Accounting is not behaviour. When the dimension declares a
+		// structural discriminator, this tool compared that structure against
+		// the baseline and found no difference (a difference returned above),
+		// and the structural evidence is present, then a prompt-token delta is
+		// only a tokenizer/framing difference: upstreams count tool schemas,
+		// role framing and cache prefixes differently while serving the shape
+		// identically. Measured 2026-10-28 on DEF-neurvibe_kimi-B, where both
+		// sides returned the forced tool_calls and the delta was +66 against
+		// the official +102, and on response_format.json (+19 against +55);
+		// the old rule wrote supported=false for those rows, a conservative
+		// false negative that removes a capable channel from the shape. Only a
+		// mark whose sole discriminator is prompt_tokens is judged on the
+		// count.
+		if spec.StructuralCompare != nil && hasDiscriminator(exp, discStructure) {
+			known, present := structuralEvidenceForFamily(spec, channel, familyName)
+			if known && present {
+				return verdictConsistent, strength,
+					"the dimension's structural evidence matches the measured official baseline; the prompt-token delta differs by accounting (tokenizer/framing) and is not evidence for this mark",
+					""
+			}
+		}
+		// A probe the channel's own budget cut short cannot be diverged on a
+		// token count either: the accounting difference may be the truncation.
+		if spec.EvidenceIsGeneratedOutput {
+			budget := spec.budgetFor(familyName)
+			if channel.looksTruncated(budget, true) {
+				return verdictInconclusive, strength,
+					"the channel's answer looks truncated at the probe's own token cap (max_tokens=" + itoa(budget) + ", completion_tokens=" + itoa(channel.CompletionTokens) + "), so the prompt-token difference cannot be attributed to the channel",
+					""
+			}
+		}
 		// A difference carries exactly the strength the dimension's
 		// discriminator table declares, the same tier the equality branch
 		// below returns: a prompt_tokens-only mark can no more be diverged on

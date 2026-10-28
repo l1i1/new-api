@@ -2535,7 +2535,10 @@ func TestProbeBudgetFollowsTheFamily(t *testing.T) {
 	if got := spec.budgetFor("glm-5.3"); got != glmThinkingCountingProbeMaxTokens {
 		t.Fatalf("glm-5.3 budget = %d, want %d", got, glmThinkingCountingProbeMaxTokens)
 	}
-	for _, family := range []string{"deepseek-v4", "kimi-k3", ""} {
+	if got := spec.budgetFor("kimi-k3"); got != kimiThinkingCountingProbeMaxTokens {
+		t.Fatalf("kimi-k3 budget = %d, want %d: an aggregator that reasons on a thinking-disabled request needs room for the answer", got, kimiThinkingCountingProbeMaxTokens)
+	}
+	for _, family := range []string{"deepseek-v4", ""} {
 		if got := spec.budgetFor(family); got != spec.MaxTokens {
 			t.Fatalf("%s budget = %d, want the spec's %d", family, got, spec.MaxTokens)
 		}
@@ -2625,6 +2628,43 @@ func TestR21PromptTokensCompareCancelsPerUpstreamOffset(t *testing.T) {
 // cut at the probe's own cap, and only the budget differed from the official
 // leg. The difference cannot be attributed to the channel, so it must stay
 // undecided rather than become supported=false.
+// R23: a structural mark whose structure already matched the measured
+// baseline must not be diverged on prompt-token accounting alone. Measured
+// 2026-10-28 on DEF-neurvibe_kimi-B: the forced tool_calls came back on both
+// legs while the prompt delta was +66 against the official +102, and the old
+// rule wrote supported=false — a conservative false negative that removes a
+// capable channel from the shape. A mark whose only discriminator is
+// prompt_tokens keeps the old comparison in force.
+func TestR23StructuralMatchIgnoresPromptAccounting(t *testing.T) {
+	spec := probeSpecs[fitpolicy.BehaviorToolsChoiceSemantics]
+	exp := expectationFor("kimi-k3", fitpolicy.BehaviorToolsChoiceSemantics)
+	official := &signature{
+		Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+		HasToolCalls: true, HasFinishReason: true,
+		PromptTokens: 188, CompletionTokens: 56, finishReason: "tool_calls",
+	}
+	channel := signature{
+		Status: 200, OK: true, JSON: true, Accepted: true, HasUsage: true,
+		HasToolCalls: true, HasFinishReason: true,
+		PromptTokens: 152, CompletionTokens: 81, finishReason: "tool_calls",
+	}
+	verdict, strength, basis, shape := classifyForFamily(spec, exp, official, channel, "kimi-k3", nil, nil)
+	if verdict != verdictConsistent || strength != strengthStructural {
+		t.Fatalf("structural match with a tokenizer delta = (%q, %q) (%s; %s), want (%q, %q)", verdict, strength, basis, shape, verdictConsistent, strengthStructural)
+	}
+	if !strings.Contains(basis, "accounting") {
+		t.Fatalf("basis must name the accounting difference, got %q", basis)
+	}
+
+	// The same accounting difference without the structural evidence is not a
+	// pass: absence has to fall through to the delta comparison.
+	absent := channel
+	absent.HasToolCalls = false
+	if verdict, _, basis, _ := classifyForFamily(spec, exp, official, absent, "kimi-k3", nil, nil); verdict != verdictDivergence {
+		t.Fatalf("absent structure = %q (%s), want divergence: the accounting clause must not excuse a missing shape", verdict, basis)
+	}
+}
+
 func TestR22TruncatedGeneratedDifferenceWithBaselineIsInconclusive(t *testing.T) {
 	spec := probeSpecs[fitpolicy.BehaviorToolsChoiceSemantics]
 	exp := expectationFor("kimi-k3", fitpolicy.BehaviorToolsChoiceSemantics)
