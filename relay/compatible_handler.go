@@ -69,6 +69,13 @@ func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Cha
 	if channelAdaptor == nil {
 		return nil
 	}
+	// A multi-key channel must hand out one enabled key, not the raw Key field:
+	// that string is the joined credential list, so sending it as a bearer token
+	// would fail authentication on the fallback attempt.
+	apiKey, keyIndex, keyErr := channel.GetNextEnabledKey()
+	if keyErr != nil {
+		return nil
+	}
 	info.ChannelId = channel.Id
 	info.ChannelType = channel.Type
 	info.ChannelBaseUrl = channel.GetBaseURL()
@@ -76,20 +83,83 @@ func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Cha
 	info.ParamOverride = nil
 	info.ResponseOverride = nil
 	info.HeadersOverride = nil
-	info.ApiKey = channel.Key
-	info.ChannelIsMultiKey = false
-	info.ChannelMultiKeyIndex = 0
+	info.ApiKey = apiKey
+	info.ChannelIsMultiKey = channel.ChannelInfo.IsMultiKey
+	info.ChannelMultiKeyIndex = keyIndex
 	return channelAdaptor
 }
 
 // restoreChannelMeta rolls the relay info back to the channel that owned it, used
 // when the fallback attempt itself fails and the request keeps its original
 // attribution.
-func restoreChannelMeta(previous relaycommon.ChannelMeta, info *relaycommon.RelayInfo) {
-	if info == nil || info.ChannelMeta == nil {
+// drainAndCloseResponse discards a rejected continuation response body before
+// closing it, so the transport can be reused instead of being reset.
+func drainAndCloseResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
 		return
 	}
-	*info.ChannelMeta = previous
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+}
+
+// channelIdentitySnapshot captures every relay-info field
+// adoptChannelForContinuation overwrites, so a failed continuation attempt can
+// put the request back on the channel that actually owns it. Restoring only
+// ChannelMeta (the behaviour before 2026-10-28) left info.ChannelId pointing at
+// a channel that never served: the error log blamed the wrong channel and the
+// next fallback selection excluded the wrong id.
+type channelIdentitySnapshot struct {
+	channelId         int
+	channelType       int
+	channelBaseUrl    string
+	apiKey            string
+	channelIsMultiKey bool
+	multiKeyIndex     int
+	setting           dto.ChannelSettings
+	paramOverride     map[string]any
+	responseOverride  map[string]any
+	headersOverride   map[string]any
+	meta              relaycommon.ChannelMeta
+}
+
+func snapshotChannelIdentity(info *relaycommon.RelayInfo) channelIdentitySnapshot {
+	snapshot := channelIdentitySnapshot{}
+	if info == nil {
+		return snapshot
+	}
+	snapshot.channelId = info.ChannelId
+	snapshot.channelType = info.ChannelType
+	snapshot.channelBaseUrl = info.ChannelBaseUrl
+	snapshot.apiKey = info.ApiKey
+	snapshot.channelIsMultiKey = info.ChannelIsMultiKey
+	snapshot.multiKeyIndex = info.ChannelMultiKeyIndex
+	snapshot.setting = info.ChannelSetting
+	snapshot.paramOverride = info.ParamOverride
+	snapshot.responseOverride = info.ResponseOverride
+	snapshot.headersOverride = info.HeadersOverride
+	if info.ChannelMeta != nil {
+		snapshot.meta = *info.ChannelMeta
+	}
+	return snapshot
+}
+
+func restoreChannelIdentity(info *relaycommon.RelayInfo, snapshot channelIdentitySnapshot) {
+	if info == nil {
+		return
+	}
+	info.ChannelId = snapshot.channelId
+	info.ChannelType = snapshot.channelType
+	info.ChannelBaseUrl = snapshot.channelBaseUrl
+	info.ApiKey = snapshot.apiKey
+	info.ChannelIsMultiKey = snapshot.channelIsMultiKey
+	info.ChannelMultiKeyIndex = snapshot.multiKeyIndex
+	info.ChannelSetting = snapshot.setting
+	info.ParamOverride = snapshot.paramOverride
+	info.ResponseOverride = snapshot.responseOverride
+	info.HeadersOverride = snapshot.headersOverride
+	if info.ChannelMeta != nil {
+		*info.ChannelMeta = snapshot.meta
+	}
 }
 
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
@@ -321,10 +391,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			}
 			sameChannel := func(partial string, remaining int) (*http.Response, error) {
 				previousChannel := info.ChannelId
-				var previousMeta relaycommon.ChannelMeta
-				if info.ChannelMeta != nil {
-					previousMeta = *info.ChannelMeta
-				}
+				previous := snapshotChannelIdentity(info)
 				resp, requestErr := sendOnce(adaptorRef, partial, remaining)
 				if requestErr == nil && resp != nil && resp.StatusCode < http.StatusBadRequest {
 					return resp, nil
@@ -344,36 +411,45 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				}
 				fallbackAdaptor := adoptChannelForContinuation(info, fallback)
 				if fallbackAdaptor == nil {
-					restoreChannelMeta(previousMeta, info)
+					restoreChannelIdentity(info, previous)
 					return resp, requestErr
 				}
 				common.SysLog(fmt.Sprintf("continuation round failed on channel %d, retrying on channel %d", previousChannel, fallback.Id))
 				fallbackResp, fallbackErr := sendOnce(fallbackAdaptor, partial, remaining)
 				if fallbackErr != nil {
-					restoreChannelMeta(previousMeta, info)
+					restoreChannelIdentity(info, previous)
 					return nil, fallbackErr
+				}
+				if fallbackResp != nil && fallbackResp.StatusCode >= http.StatusBadRequest {
+					// The fallback channel failed too: keep the request attributed to
+					// the channel that owns it instead of the one that refused.
+					drainAndCloseResponse(fallbackResp)
+					restoreChannelIdentity(info, previous)
+					return fallbackResp, nil
 				}
 				return fallbackResp, nil
 			}
 			otherChannel := func(partial string, remaining int) (*http.Response, error) {
-				var previousMeta relaycommon.ChannelMeta
-				if info.ChannelMeta != nil {
-					previousMeta = *info.ChannelMeta
-				}
+				previous := snapshotChannelIdentity(info)
 				fallbackChannel := continuationFallbackChannel(c, info)
 				if fallbackChannel == nil {
 					return nil, fmt.Errorf("continuation: no alternate channel available")
 				}
 				fallbackAdaptor := adoptChannelForContinuation(info, fallbackChannel)
 				if fallbackAdaptor == nil {
-					restoreChannelMeta(previousMeta, info)
+					restoreChannelIdentity(info, previous)
 					return nil, fmt.Errorf("continuation: channel %d has no adaptor", fallbackChannel.Id)
 				}
 				common.SysLog(fmt.Sprintf("continuation retry pinned to another channel (%d)", fallbackChannel.Id))
 				resp, requestErr := sendOnce(fallbackAdaptor, partial, remaining)
 				if requestErr != nil {
-					restoreChannelMeta(previousMeta, info)
+					restoreChannelIdentity(info, previous)
 					return nil, requestErr
+				}
+				if resp != nil && resp.StatusCode >= http.StatusBadRequest {
+					drainAndCloseResponse(resp)
+					restoreChannelIdentity(info, previous)
+					return resp, nil
 				}
 				return resp, nil
 			}
