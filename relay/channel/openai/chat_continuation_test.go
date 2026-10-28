@@ -1500,9 +1500,13 @@ func TestChatMissingVisibleContinuationCandidateGuards(t *testing.T) {
 	flat.StreamFinishReason = "length"
 	require.False(t, chatMissingVisibleContinuationCandidate(flat, &dto.Usage{}, 1200, 0, 1, false))
 
+	// An undeclared max_tokens is not an exhausted budget: the request simply has
+	// no client ceiling (2026-10-28 18:21: one kimi cut reached the caller as a 502
+	// because this guard read 0 as "no budget left" after 52 output tokens).
 	noBudget := newInfo()
 	noBudget.ClientMaxTokens = 0
-	require.False(t, chatMissingVisibleContinuationCandidate(noBudget, &dto.Usage{}, 1200, 0, 1, false))
+	require.True(t, chatMissingVisibleContinuationCandidate(noBudget, &dto.Usage{CompletionTokens: 100000}, 1200, 0, 1, false),
+		"an undeclared budget gets a per-round step instead of being refused")
 
 	spent := newInfo()
 	spent.ClientMaxTokens = 10
@@ -1621,4 +1625,67 @@ func TestTruncationRepairSkipReason(t *testing.T) {
 	notStream := newInfo()
 	notStream.IsStream = false
 	require.Equal(t, "unsupported_format", truncationRepairSkipReason(notStream, &dto.Usage{}, 1200, 10, 0, 1))
+}
+
+// TestChatContinuationBudgetSemantics pins the two budget readings: a declared
+// max_tokens stays a hard ceiling for the whole response, while an undeclared
+// one grants one round of the per-round step no matter how much the first round
+// already produced (output that predates the ceiling cannot exhaust it).
+func TestChatContinuationBudgetSemantics(t *testing.T) {
+	declared := &relaycommon.RelayInfo{ClientMaxTokens: 100}
+	require.Equal(t, 100, chatContinuationOutputBudget(declared))
+	require.Equal(t, 60, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 40}))
+	require.Equal(t, 0, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 100}))
+	require.Equal(t, 0, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 140}))
+
+	undeclared := &relaycommon.RelayInfo{}
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationOutputBudget(undeclared))
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationBudgetLeft(undeclared, &dto.Usage{CompletionTokens: 923}))
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationBudgetLeft(undeclared, nil))
+}
+
+// TestOaiStreamHandlerContinuesMissingCutWithContentWithoutDeclaredBudget is the
+// 2026-10-28 18:21 production shape: the client sent no max_tokens, the upstream
+// died mid-answer without a terminal frame, and the repair was refused because
+// ClientMaxTokens was 0. The answer must be continued and delivered as one
+// stream with one terminal frame.
+func TestOaiStreamHandlerContinuesMissingCutWithContentWithoutDeclaredBudget(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	var gotPartial string
+	var gotRemaining int
+	c, info, recorder := newMissingContinuationTestContext(t, func(partial string, remaining int) (*http.Response, error) {
+		calls++
+		gotPartial = partial
+		gotRemaining = remaining
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 0, 1<<20) // ClientMaxTokens 0 = the request declared no output budget
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Missing.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "the cut must be repaired without a declared max_tokens")
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, undeclaredClientOutputBudget, gotRemaining,
+		"an undeclared request spends one bounded round instead of zero")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }

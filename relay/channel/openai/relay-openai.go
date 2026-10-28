@@ -647,7 +647,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		toolCount == 0 && streamChoiceCount <= 1 && len(streamFunctionCallNames) == 0 &&
 		!deepSeekV4FitEnabled(info) &&
 		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
-		info.ClientMaxTokens > 0 && usage.CompletionTokens < info.ClientMaxTokens {
+		chatContinuationBudgetLeft(info, usage) > 0 {
 		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})

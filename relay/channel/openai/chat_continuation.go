@@ -151,6 +151,58 @@ func buildChatContinuationBody(baseJSON []byte, partialContent, instruction stri
 	return out, nil
 }
 
+// undeclaredClientOutputBudget is the output budget one continuation round may
+// spend when the request declared no max_tokens at all (ClientMaxTokens == 0).
+//
+// Such a request has no client-side ceiling: max_tokens is optional, and the
+// real ceiling is the model's own output cap, which the gateway does not hold
+// per model. Refusing the repair outright was wrong in production: 2026-10-28
+// 18:21 one kimi-k3.1-pro cut reached the caller as a 502 purely because the
+// guard read ClientMaxTokens <= 0 as "budget exhausted" even though only 52
+// tokens had been produced. Bounding each round instead of the total keeps the
+// declared-budget contract intact (a declared request is still hard-capped) and
+// gives an undeclared one one bounded step per round, with the continuation
+// configuration's MaxSteps bounding the number of rounds. The value matches the
+// smallest output cap among the models this gateway serves, so a round can never
+// ask an upstream for more output than the model can produce.
+const undeclaredClientOutputBudget = 8192
+
+// chatContinuationOutputBudget is the output budget a continuation may use:
+// the declared max_tokens when there is one, otherwise the undeclared per-round
+// step budget.
+func chatContinuationOutputBudget(info *relaycommon.RelayInfo) int {
+	if info == nil {
+		return 0
+	}
+	if info.ClientMaxTokens > 0 {
+		return info.ClientMaxTokens
+	}
+	return undeclaredClientOutputBudget
+}
+
+// chatContinuationBudgetLeft is the output budget a continuation round may still
+// spend. A declared budget counts everything already produced against the
+// ceiling the client asked for; an undeclared request gets a fresh per-round
+// step, because output that was produced before the ceiling existed cannot have
+// exhausted it.
+func chatContinuationBudgetLeft(info *relaycommon.RelayInfo, usage *dto.Usage) int {
+	budget := chatContinuationOutputBudget(info)
+	if budget <= 0 {
+		return 0
+	}
+	if info.ClientMaxTokens <= 0 {
+		return budget
+	}
+	used := 0
+	if usage != nil {
+		used = usage.CompletionTokens
+	}
+	if used >= budget {
+		return 0
+	}
+	return budget - used
+}
+
 // chatContinuationCandidate decides whether the first round ended at an
 // upstream output cap while the client still had budget left.
 //
@@ -174,7 +226,7 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
 		return false
 	}
-	if contentChars <= 0 || info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if contentChars <= 0 || chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	if info.StreamStatus != nil && info.StreamStatus.ResponseFailed() {
@@ -220,7 +272,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if !relaycommon.IsAbnormalFinishReason(info.StreamFinishReason) {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -263,7 +315,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -311,7 +363,7 @@ func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -351,7 +403,7 @@ func truncationRepairSkipReason(info *relaycommon.RelayInfo, usage *dto.Usage, c
 	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
 		return "client_gone"
 	}
-	if info.ClientMaxTokens <= 0 || usage == nil || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return "client_budget_exhausted"
 	}
 	if info.ChatContinuation.Missing == nil && info.ChatContinuation.Abnormal == nil {
@@ -404,7 +456,7 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if reasoningChars < minChars {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -435,7 +487,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 	result := chatContinuationResult{usage: total, finish: initialFinish}
 	contextText := reasoning
 	for step := 0; step < cfg.MaxSteps; step++ {
-		remaining := info.ClientMaxTokens - total.CompletionTokens
+		remaining := chatContinuationBudgetLeft(info, total)
 		if remaining <= 0 {
 			break
 		}
@@ -524,7 +576,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
-		remaining := info.ClientMaxTokens - total.CompletionTokens
+		remaining := chatContinuationBudgetLeft(info, total)
 		if remaining <= 0 {
 			break
 		}
@@ -561,7 +613,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		if !deltaSeen {
 			break
 		}
-		if total.CompletionTokens >= info.ClientMaxTokens {
+		if chatContinuationBudgetLeft(info, total) <= 0 {
 			break
 		}
 	}
