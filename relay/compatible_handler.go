@@ -289,7 +289,15 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
 		base := continuationBase
 		adaptorRef := adaptor
-		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
+		// senders builds both continuation senders for one body builder:
+		// sameChannel keeps the first attempt on the channel that produced the
+		// prefix (its upstream prompt cache still hits, so the resumed round
+		// starts from a warm prefix), and otherChannel jumps straight to a
+		// different channel for later attempts. The 900s wall belongs to one
+		// upstream flow, not to the model, so a channel that just walled is the
+		// worst place to spend the caller's remaining wait (2026-10-28 21:21-21:33:
+		// 25 customer requests cut at 900s, every same-channel resume refused).
+		senders := func(build func([]byte, string, int) ([]byte, error)) (func(string, int) (*http.Response, error), func(string, int) (*http.Response, error)) {
 			// sendOnce replays the continuation body through one channel.
 			sendOnce := func(channelAdaptor relaychannel.Adaptor, partial string, remaining int) (*http.Response, error) {
 				continuationJSON, buildErr := build(base, partial, remaining)
@@ -311,7 +319,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				}
 				return resp, nil
 			}
-			return func(partial string, remaining int) (*http.Response, error) {
+			sameChannel := func(partial string, remaining int) (*http.Response, error) {
 				previousChannel := info.ChannelId
 				var previousMeta relaycommon.ChannelMeta
 				if info.ChannelMeta != nil {
@@ -347,23 +355,50 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				}
 				return fallbackResp, nil
 			}
+			otherChannel := func(partial string, remaining int) (*http.Response, error) {
+				var previousMeta relaycommon.ChannelMeta
+				if info.ChannelMeta != nil {
+					previousMeta = *info.ChannelMeta
+				}
+				fallbackChannel := continuationFallbackChannel(c, info)
+				if fallbackChannel == nil {
+					return nil, fmt.Errorf("continuation: no alternate channel available")
+				}
+				fallbackAdaptor := adoptChannelForContinuation(info, fallbackChannel)
+				if fallbackAdaptor == nil {
+					restoreChannelMeta(previousMeta, info)
+					return nil, fmt.Errorf("continuation: channel %d has no adaptor", fallbackChannel.Id)
+				}
+				common.SysLog(fmt.Sprintf("continuation retry pinned to another channel (%d)", fallbackChannel.Id))
+				resp, requestErr := sendOnce(fallbackAdaptor, partial, remaining)
+				if requestErr != nil {
+					restoreChannelMeta(previousMeta, info)
+					return nil, requestErr
+				}
+				return resp, nil
+			}
+			return sameChannel, otherChannel
 		}
 		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}
 		if steps > 0 {
-			cfg.Send = send(openaichannel.BuildChatContinuationBody)
+			cfg.Send, cfg.SendFallback = senders(openaichannel.BuildChatContinuationBody)
 		}
 		if abnormalSteps > 0 {
+			same, other := senders(openaichannel.BuildChatAnswerContinuationBody)
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
-				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Send:              same,
+				SendFallback:      other,
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
 			}
 		}
 		if missingSteps > 0 {
+			same, other := senders(openaichannel.BuildChatAnswerContinuationBody)
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
-				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Send:              same,
+				SendFallback:      other,
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}

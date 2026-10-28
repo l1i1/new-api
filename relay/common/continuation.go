@@ -20,6 +20,13 @@ import (
 type ChatContinuationConfig struct {
 	MaxSteps int
 	Send     func(partialContent string, remainingTokens int) (*http.Response, error)
+	// SendFallback replays the same continuation body on a DIFFERENT channel.
+	// The first attempt always stays on the channel that produced the prefix so
+	// the upstream prompt cache still hits; once that attempt failed (the 900s
+	// wall usually belongs to one upstream flow, not the model), retrying the
+	// same channel only burns the caller's remaining wait, so later attempts use
+	// this sender. nil keeps every attempt on Send.
+	SendFallback func(partialContent string, remainingTokens int) (*http.Response, error)
 	// Abnormal, when non-nil, enables the reasoning continuation mode for
 	// streams that died with an abnormal finish_reason before any visible
 	// content (900s cut-off shape). Send receives the captured reasoning text.
@@ -35,8 +42,12 @@ type ChatContinuationConfig struct {
 // captured text must come from the same attempt and must not be re-billed as
 // extra input.
 type ChatAbnormalContinuationConfig struct {
-	MaxSteps          int
-	Send              func(reasoning string, remainingTokens int) (*http.Response, error)
+	MaxSteps int
+	Send     func(reasoning string, remainingTokens int) (*http.Response, error)
+	// SendFallback mirrors ChatContinuationConfig.SendFallback for the reasoning
+	// resume: first attempt on the original channel (prompt cache), later
+	// attempts on another channel.
+	SendFallback      func(reasoning string, remainingTokens int) (*http.Response, error)
 	MaxReasoningBytes int
 	MinReasoningChars int
 }

@@ -781,7 +781,7 @@ func TestSendThinkingContinuationSuppressesUpstreamPinger(t *testing.T) {
 			return continuationSSEResponse("data: [DONE]\n\n"), nil
 		},
 	}
-	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, "思考", 100)
+	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg.Send, "思考", 100)
 	require.Nil(t, err)
 	require.NotNil(t, resp)
 	_ = resp.Body.Close()
@@ -1761,4 +1761,49 @@ func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T)
 	require.NotContains(t, body, "truncated_stream", "no error frame for a delivered prefix")
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerUsesFallbackSenderOnRetry pins the channel policy the
+// customer asked for: the first resume attempt stays on the channel that
+// produced the prefix (its upstream prompt cache still hits), and only a failed
+// attempt moves to another channel - never three attempts on the walled one.
+func TestOaiStreamHandlerUsesFallbackSenderOnRetry(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameCalls, fallbackCalls := 0, 0
+	same := func(string, int) (*http.Response, error) {
+		sameCalls++
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("walled"))}, nil
+	}
+	fallback := func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(secondRound), nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, same, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = same
+	info.ChatContinuation.SendFallback = fallback
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, sameCalls, "the first attempt stays on the original channel for the prompt cache")
+	require.Equal(t, 1, fallbackCalls, "the rejected attempt moves to another channel instead of retrying the walled one")
+	require.Equal(t, 13, usage.CompletionTokens)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`))
+	require.Equal(t, 1, strings.Count(body, "[DONE]"))
 }

@@ -517,7 +517,11 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
 			}
-			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
+			roundSend := cfg.Send
+			if attempt > 0 && cfg.SendFallback != nil {
+				roundSend = cfg.SendFallback
+			}
+			resp, err := sendThinkingContinuationWithKeepAlive(c, info, roundSend, contextText, remaining)
 			if err != nil {
 				logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
 				break
@@ -635,7 +639,11 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 				}
 				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
 			}
-			resp, err := info.ChatContinuation.Send(content, remaining)
+			roundSend := info.ChatContinuation.Send
+			if attempt > 0 && info.ChatContinuation.SendFallback != nil {
+				roundSend = info.ChatContinuation.SendFallback
+			}
+			resp, err := roundSend(content, remaining)
 			if err != nil {
 				// A send/build failure is not the transient upstream rejection this
 				// retry exists for: keep the previous single-attempt behaviour.
@@ -1024,7 +1032,7 @@ type thinkingContinuationSendResult struct {
 	err  error
 }
 
-func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
+func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, send func(string, int) (*http.Response, error), content string, remaining int) (*http.Response, error) {
 	result := make(chan thinkingContinuationSendResult, 1)
 	helper.ExtendWriteDeadline(c)
 	allowPing := info == nil || !info.DisablePing
@@ -1037,7 +1045,7 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.Rel
 		info.DisablePing = true
 	}
 	go func() {
-		resp, err := cfg.Send(content, remaining)
+		resp, err := send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
 	ticker := time.NewTicker(thinkingContinuationPingInterval)
