@@ -584,9 +584,67 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 // answer text - the one thing a resume must never do. A round that already
 // forwarded visible content or part of a tool call keeps the old contract: no
 // retry, no hop, the caller must retry.
+// continuationHopFirstAfter is when a resume should prefer a different channel
+// over another attempt on the channel that just failed. The provider wall cuts
+// every generation at the same elapsed time, so retrying the resume on the same
+// channel spends another full wall (and the caller's deadline) on a channel that
+// has already proven it cannot finish inside it. Measured 2026-10-29: all 106
+// abnormal-finish failures in 30 minutes were exactly >=890s, i.e. the wall, and
+// the same-channel resume retries never rescued one of them.
+const continuationHopFirstAfter = 600 * time.Second
+
+// continuationShouldHopFirst reports whether this resume was triggered by a
+// provider wall (the request has already been running for most of the wall) and
+// a cross-channel sender is configured.
+func continuationShouldHopFirst(info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig) bool {
+	if info == nil || cfg == nil || cfg.Fallback == nil || info.StartTime.IsZero() {
+		return false
+	}
+	return time.Since(info.StartTime) >= continuationHopFirstAfter
+}
+
+// sendAndReadThinkingRound spends one sender on a reasoning resume and folds the
+// SSE body into a round outcome. label prefixes the log lines so a same-channel
+// attempt and a cross-channel hop are distinguishable in production.
+func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), contextText string, remaining int, meta chatContinuationMeta, label string) (thinkingRound, bool) {
+	round := thinkingRound{}
+	if sender == nil {
+		return round, false
+	}
+	resp, err := sendThinkingContinuationWithKeepAlive(c, info, sender, contextText, remaining)
+	if err != nil {
+		logger.LogWarn(c, label+" continuation request failed: "+err.Error())
+		return round, false
+	}
+	if resp == nil {
+		return round, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		logger.LogWarn(c, fmt.Sprintf("%s continuation upstream status %d", label, resp.StatusCode))
+		return round, false
+	}
+	return readThinkingRound(c, info, resp, meta), true
+}
+
 func runThinkingContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig, contextText string, remaining int, meta chatContinuationMeta) (thinkingRound, bool) {
 	var last thinkingRound
 	retryStarted := time.Now()
+	fallbackUsed := false
+	// A wall-triggered resume goes to another channel first: the current one just
+	// ended a generation at the wall, so another attempt there mostly buys another
+	// wall instead of an answer.
+	if continuationShouldHopFirst(info, cfg) {
+		logger.LogWarn(c, "continuation after provider wall: trying another channel first")
+		round, ok := sendAndReadThinkingRound(c, info, cfg.Fallback, contextText, remaining, meta, "cross-channel")
+		fallbackUsed = true
+		if ok && (round.content != "" || round.toolCalls > 0) {
+			return round, true
+		}
+		if round.err != nil {
+			last = round
+		}
+	}
 	for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 		if attempt > 0 {
 			if c.Request != nil && c.Request.Context().Err() != nil {
@@ -643,7 +701,7 @@ func runThinkingContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, c
 	// Nothing visible reached the caller, so a different channel can still own
 	// this answer. The fallback is spent once per round: a second dying channel
 	// is not worth another wall clock.
-	if cfg.Fallback == nil || last.content != "" || last.toolCalls > 0 {
+	if cfg.Fallback == nil || fallbackUsed || last.content != "" || last.toolCalls > 0 {
 		return last, false
 	}
 	logger.LogWarn(c, "thinking continuation forwarded no answer; resuming on another channel")
@@ -817,10 +875,49 @@ type contentRound struct {
 // may still finish the answer instead of a 502. Once visible text or part of a
 // tool call was forwarded the round is final - a second channel would duplicate
 // it.
+// sendAndReadContentRound spends one sender on a visible-answer resume and folds
+// the SSE body into a round outcome, using a fresh seam deduper against the
+// content delivered so far.
+func sendAndReadContentRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), meta chatContinuationMeta, content string, remaining int, label string) (contentRound, bool) {
+	round := contentRound{}
+	if sender == nil {
+		return round, false
+	}
+	resp, err := sender(content, remaining)
+	if err != nil {
+		logger.LogWarn(c, label+" continuation request failed: "+err.Error())
+		return round, false
+	}
+	if resp == nil {
+		return round, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		logger.LogWarn(c, fmt.Sprintf("%s continuation upstream status %d", label, resp.StatusCode))
+		return round, false
+	}
+	return readContentRound(c, info, resp, meta, newSeamDeduper(content)), true
+}
+
 func runContentContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, meta chatContinuationMeta, content string, remaining int) (contentRound, bool) {
 	var last contentRound
 	retryStarted := time.Now()
 	fallbackUsed := false
+	// A resume triggered by the provider wall (the request already ran most of a
+	// whole wall) goes straight to another channel: re-sending on the channel that
+	// just hit the wall mostly buys another wall instead of finishing the answer.
+	if info != nil && info.ChatContinuation != nil && info.ChatContinuation.Fallback != nil &&
+		!info.StartTime.IsZero() && time.Since(info.StartTime) >= continuationHopFirstAfter {
+		logger.LogWarn(c, "continuation after provider wall: trying another channel first")
+		round, ok := sendAndReadContentRound(c, info, info.ChatContinuation.Fallback, meta, content, remaining, "cross-channel")
+		fallbackUsed = true
+		if ok && (round.content != "" || round.toolCalls > 0) {
+			return round, true
+		}
+		if round.err != nil {
+			last = round
+		}
+	}
 	for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
 		if attempt > 0 {
 			// The caller walked away while the previous attempt was in flight:

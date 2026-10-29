@@ -2282,3 +2282,78 @@ func TestOaiStreamHandlerDoesNotSendUsageAfterErrorFrame(t *testing.T) {
 	require.NotContains(t, body, `"usage"`, "no usage frame may follow the error frame")
 	require.Contains(t, body, "[DONE]")
 }
+
+// TestOaiStreamHandlerHopsFirstAfterProviderWall pins the 2026-10-29 wall fix:
+// when the cut being repaired is the provider wall (the request already ran most
+// of a wall), the resume must go to another channel FIRST. All 106 abnormal
+// failures in 30 minutes that night were >=890s, and same-channel resume retries
+// never rescued one of them.
+func TestOaiStreamHandlerHopsFirstAfterProviderWall(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	answerRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"墙后续写答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameChannelCalls := 0
+	crossChannelCalls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		sameChannelCalls++
+		return continuationSSEResponse(answerRound), nil
+	}, 1, 100, 1<<20)
+	info.StartTime = time.Now().Add(-continuationHopFirstAfter - 30*time.Second)
+	info.ChatContinuation.Abnormal.Fallback = func(reasoning string, remaining int) (*http.Response, error) {
+		crossChannelCalls++
+		return continuationSSEResponse(answerRound), nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, crossChannelCalls, "the wall resume goes to another channel first")
+	require.Equal(t, 0, sameChannelCalls, "the channel that just walled is not retried first")
+	require.Contains(t, recorder.Body.String(), "墙后续写答案")
+}
+
+// A resume that was not triggered by the wall keeps the same-channel-first order
+// (the channel that owns the prefix hits its prompt cache).
+func TestOaiStreamHandlerKeepsSameChannelFirstBeforeWall(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	answerRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"答卷"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameChannelCalls := 0
+	crossChannelCalls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(reasoning string, remaining int) (*http.Response, error) {
+		sameChannelCalls++
+		return continuationSSEResponse(answerRound), nil
+	}, 1, 100, 1<<20)
+	info.StartTime = time.Now().Add(-30 * time.Second)
+	info.ChatContinuation.Abnormal.Fallback = func(reasoning string, remaining int) (*http.Response, error) {
+		crossChannelCalls++
+		return continuationSSEResponse(answerRound), nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, sameChannelCalls)
+	require.Equal(t, 0, crossChannelCalls)
+	require.Contains(t, recorder.Body.String(), "答卷")
+}
