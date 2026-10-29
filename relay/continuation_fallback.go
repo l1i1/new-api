@@ -90,6 +90,12 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 			if common.ChannelInCooldown(candidate.Id) {
 				continue
 			}
+			// Continuation only runs on channels opted into it (the whitelist marks
+			// channels whose upstream survives a reasoning/prefix replay); a rotation
+			// round must not land on any other channel even if it serves the model.
+			if !common.ChatContinuationChannelAllowed(candidate.Id) {
+				continue
+			}
 			apiType, ok := common.ChannelType2APIType(candidate.Type)
 			if !ok || apiType != constant.APITypeOpenAI {
 				continue
