@@ -125,3 +125,54 @@ func TestTriedChannelsTracksEachChannelOnce(t *testing.T) {
 	require.False(t, nilTried.Contains(3))
 	require.Nil(t, nilTried.IDs())
 }
+
+// TestMaxRoundsAloneEnablesContinuation pins the upgrade contract: configuring
+// only the rotation-era budget must switch the repair on, and an explicit 0 must
+// switch it off, without depending on the legacy step keys.
+func TestMaxRoundsAloneEnablesContinuation(t *testing.T) {
+	oldRounds, oldSet := rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet
+	oldSteps := rootcommon.ChatContinuationMaxSteps
+	oldAbnormal, oldOnAbnormal := rootcommon.ChatContinuationAbnormalMaxSteps, rootcommon.ChatContinuationOnAbnormal
+	oldMissing, oldOnMissing := rootcommon.ChatContinuationMissingMaxSteps, rootcommon.ChatContinuationOnMissing
+	oldChannels := rootcommon.ChatContinuationChannelIDs
+	t.Cleanup(func() {
+		rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = oldRounds, oldSet
+		rootcommon.ChatContinuationMaxSteps = oldSteps
+		rootcommon.ChatContinuationAbnormalMaxSteps, rootcommon.ChatContinuationOnAbnormal = oldAbnormal, oldOnAbnormal
+		rootcommon.ChatContinuationMissingMaxSteps, rootcommon.ChatContinuationOnMissing = oldMissing, oldOnMissing
+		rootcommon.ChatContinuationChannelIDs = oldChannels
+	})
+
+	rootcommon.ChatContinuationChannelIDs = map[int]struct{}{7: {}}
+	rootcommon.ChatContinuationOnAbnormal = true
+	rootcommon.ChatContinuationOnMissing = true
+	rootcommon.ChatContinuationMaxSteps = 0
+	rootcommon.ChatContinuationAbnormalMaxSteps = 1
+	rootcommon.ChatContinuationMissingMaxSteps = 1
+
+	info := &RelayInfo{
+		ChannelMeta: &ChannelMeta{},
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	info.ChannelId = 7
+
+	// Only the new key configured: every mode runs on the new budget.
+	rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = 4, true
+	require.Equal(t, 4, ChatContinuationStepsForRequest(info))
+	require.Equal(t, 4, ChatAbnormalContinuationStepsForRequest(info))
+	require.Equal(t, 4, ChatMissingContinuationStepsForRequest(info))
+
+	// Explicit 0 disables every mode, even with legacy steps set.
+	rootcommon.ChatContinuationMaxRounds = 0
+	require.Zero(t, ChatContinuationStepsForRequest(info))
+	require.Zero(t, ChatAbnormalContinuationStepsForRequest(info))
+	require.Zero(t, ChatMissingContinuationStepsForRequest(info))
+
+	// Unset: the legacy step counts keep their old meaning.
+	rootcommon.ChatContinuationMaxRoundsSet = false
+	require.Equal(t, 0, ChatContinuationStepsForRequest(info), "legacy max_steps=0 keeps the feature off")
+	require.Equal(t, 1, ChatAbnormalContinuationStepsForRequest(info))
+	require.Equal(t, 1, ChatMissingContinuationStepsForRequest(info))
+}

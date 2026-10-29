@@ -241,6 +241,9 @@ func InitOptionMap() {
 	common.OptionMap[common.ChatContinuationOptionMissingMaxSteps] = strconv.Itoa(common.ChatContinuationMissingMaxSteps)
 	common.OptionMap[common.ChatContinuationOptionMissingMaxReasoningBytes] = strconv.Itoa(common.ChatContinuationMissingMaxReasoningBytes)
 	common.OptionMap[common.ChatContinuationOptionMissingMinReasoningChars] = strconv.Itoa(common.ChatContinuationMissingMinReasoningChars)
+	common.OptionMap[common.ChatContinuationOptionMaxRounds] = strconv.Itoa(common.ChatContinuationMaxRounds)
+	common.OptionMap[common.ChatContinuationOptionRoundMaxElapsedSeconds] = strconv.Itoa(common.ChatContinuationRoundMaxElapsedSeconds)
+	common.OptionMap[common.ChatContinuationOptionRotateChannels] = strconv.FormatBool(common.ChatContinuationRotateChannels)
 
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()

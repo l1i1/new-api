@@ -794,9 +794,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// truncating it. The branch is inert unless the relay enabled continuation for
 	// this request (info.ChatContinuation != nil).
 	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount, streamChoiceCount) && len(streamFunctionCallNames) == 0 {
+		markRepairAttempted(info, "length")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		// A caller-side disconnect during the continuation rounds stays billable
 		// (same rule as client_gone on a normal stream): the provider already
@@ -833,7 +835,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
 		chatContinuationBudgetLeft(info, usage) > 0 {
 		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
-		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-content")
+		markRepairAttempted(info, "abnormal-content")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
@@ -872,11 +874,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish != "" && !reasoningTruncated &&
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
 		len(streamFunctionCallNames) == 0 {
-		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-reasoning")
+		markRepairAttempted(info, "abnormal-reasoning")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		// A repair that already forwarded visible text made the caller hold that
+		// answer: count it, or the unrepaired classification below would return a
+		// 502 for a response the client has been reading.
+		if result.contentChars > 0 {
+			visibleContentChars += result.contentChars
+		}
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			// The caller walked away mid-continuation: the provider already
@@ -917,7 +925,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// The failed type=5 row carries them (admin_info.stream_cut), so an
 	// unrepaired cut is explainable from /api/log/ instead of from a container
 	// log line that is usually gone by the time the customer reports the id.
-	if streamAbnormalFinish != "" || !streamFinishSeen {
+	if streamAbnormalFinish != "" || !streamFinishSeen || info.RepairRounds > 0 {
 		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
 			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
 			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
@@ -932,7 +940,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		common.SysLog(fmt.Sprintf("length thinking continuation: ch=%d reasoning=%d clientMax=%d completion=%d", info.ChannelId, reasoningTextBuilder.Len(), info.ClientMaxTokens, usage.CompletionTokens))
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
+		markRepairAttempted(info, "length-thinking")
 		result := runLengthThinkingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -980,7 +990,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		chatMissingVisibleContinuationCandidate(info, usage, visibleContentChars, toolCount, streamChoiceCount, streamFinishSeen) &&
 		len(streamFunctionCallNames) == 0 {
 		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
-		info.StreamCutDiagnostics.MarkRepairAttempted("missing-content")
+		markRepairAttempted(info, "missing-content")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
@@ -1023,9 +1033,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		len(streamFunctionCallNames) == 0 {
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
-		info.StreamCutDiagnostics.MarkRepairAttempted("missing-reasoning")
+		markRepairAttempted(info, "missing-reasoning")
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.contentChars > 0 {
+			visibleContentChars += result.contentChars
+		}
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1940,6 +1953,20 @@ func missingReasoningLogprobsError() *types.NewAPIError {
 	)
 }
 
+// markRepairAttempted records that a repair mode started. The cut diagnostics are
+// snapshotted after some repairs have already run, so the attempt flag is kept on
+// RelayInfo and copied in when the diagnostics are built.
+func markRepairAttempted(info *relaycommon.RelayInfo, mode string) {
+	if info == nil {
+		return
+	}
+	info.RepairAttempted = true
+	info.RepairMode = mode
+	if info.StreamCutDiagnostics != nil {
+		info.StreamCutDiagnostics.MarkRepairAttempted(mode)
+	}
+}
+
 // recordContinuationRepair carries one repair outcome into the request's cut
 // diagnostics. The repair runs before the diagnostics are snapshotted for some
 // shapes and after it for others, so the outcome is kept on RelayInfo and copied
@@ -1990,6 +2017,8 @@ func buildStreamCutDiagnostics(info *relaycommon.RelayInfo, usage *dto.Usage, vi
 		diag.AbnormalConfigured = cfg.Abnormal != nil && cfg.Abnormal.Send != nil && cfg.Abnormal.MaxSteps > 0
 		diag.MissingConfigured = cfg.Missing != nil && cfg.Missing.Send != nil && cfg.Missing.MaxSteps > 0
 	}
+	diag.RepairAttempted = info.RepairAttempted
+	diag.RepairMode = info.RepairMode
 	diag.RepairRounds = info.RepairRounds
 	diag.RepairChannels = info.RepairChannels
 	diag.RepairFailedReason = info.RepairFailedReason

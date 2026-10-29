@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	rootcommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -328,4 +329,109 @@ func TestContinuationStopsAtElapsedCap(t *testing.T) {
 	require.NotNil(t, usage)
 	require.Equal(t, 0, plan.fallbackCalls, "past the cap no new channel is asked")
 	require.Equal(t, "elapsed_cap", info.RepairFailedReason)
+}
+
+// TestContinuationRoundLimitHonorsLegacyWhenUnset pins the upgrade contract: an
+// unset rotation-era budget must leave the deployment on its legacy per-mode
+// round counts, and an explicit 0 must switch transparent continuation off.
+func TestContinuationRoundLimitHonorsLegacyWhenUnset(t *testing.T) {
+	oldRounds, oldSet := rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet
+	t.Cleanup(func() {
+		rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = oldRounds, oldSet
+	})
+
+	rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = 3, false
+	require.Equal(t, 2, continuationRoundLimit(0, 2), "unset: the legacy max_steps round count wins")
+	require.Equal(t, 1, continuationRoundLimit(0, 1))
+	require.Equal(t, 2, continuationRoundLimit(2, 1), "an explicit per-mode MaxRounds still wins")
+
+	rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = 3, true
+	require.Equal(t, 3, continuationRoundLimit(0, 1), "an explicitly configured budget wins")
+
+	rootcommon.ChatContinuationMaxRounds, rootcommon.ChatContinuationMaxRoundsSet = 0, true
+	require.Equal(t, 0, continuationRoundLimit(0, 2), "explicit 0 disables the repair")
+}
+
+// TestContinuationSuccessWithRotationDisabledIsNotLabelledIncomplete pins the
+// classification order: a reasoning resume that ends with a real terminal frame
+// is a success even when rotation is unavailable, so its row must not claim
+// round_incomplete.
+func TestContinuationSuccessWithRotationDisabledIsNotLabelledIncomplete(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	answerRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(answerRound), nil
+	}, 1, 100, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), "最终答案")
+	require.Empty(t, info.RepairFailedReason, "a terminal resume is a success, not round_incomplete")
+	require.Equal(t, 1, info.RepairRounds)
+}
+
+// TestContinuationRepairThatStreamedTextIsClosedHonestly pins the review finding
+// that a repair which already forwarded visible text must not surface a 502 with
+// zero usage: the caller is reading that text.
+func TestContinuationRepairThatStreamedTextIsClosedHonestly(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	// The resume forwards half an answer and then dies without a terminal frame.
+	dyingRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"半句正文"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(dyingRound), nil
+	}, 1, 1000, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "text already reached the caller: close honestly instead of a 502")
+	require.NotNil(t, usage)
+	body := recorder.Body.String()
+	require.Equal(t, 1, strings.Count(body, "半句正文"), "the delivered text is not repeated")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "one honest length terminal")
+	require.NotContains(t, body, "truncated_stream")
+	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
+}
+
+// TestContinuationNoCandidateDoesNotCountARound pins that a rotation with no
+// candidate is not recorded as if a round had run on the previous channel.
+func TestContinuationNoCandidateDoesNotCountARound(t *testing.T) {
+	plan := &rotationPlan{
+		channelIDs: []int{201, 202},
+		bodies: map[int]string{
+			201: cutRound("a", "（A续）", 2),
+			202: completeRound("b", "不该出现", 3),
+		},
+		maxRounds:  3,
+		clientMax:  64000,
+		noFallback: true,
+	}
+	cutBody := cutRound("a0", "第一段", 2)
+	c, info, _ := newRotationContext(t, plan)
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(cutBody))
+	require.Nil(t, err)
+	require.Equal(t, "no_candidate", info.RepairFailedReason)
+	require.Equal(t, []int{201}, info.RepairChannels, "only the round that actually ran is recorded")
+	require.Equal(t, 1, info.RepairRounds)
 }

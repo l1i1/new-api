@@ -62,7 +62,10 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 			}
 		}
 		var selected *model.Channel
-		for attempt := 0; attempt < 4; attempt++ {
+		// The candidate budget has to cover the channels the selector can hand back,
+		// because the whitelist filter below rejects most of them in a large group.
+		// A dozen lookups is still far below any selection cost that matters.
+		for attempt := 0; attempt < 32; attempt++ {
 			// retry>0 skips the session-affinity branch of the selector: affinity
 			// would hand back the channel that just failed, and its returned channel
 			// ignores the excluded set (2026-10-29 review, H1).
@@ -79,7 +82,10 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 			}
 			candidate, _, selectErr := service.SelectChannelForRequest(c, info.OriginModelName, param)
 			if selectErr != nil || candidate == nil {
-				return nil, fmt.Errorf("cross-channel continuation: %w (%v)", relaycommon.ErrNoContinuationCandidate, selectErr)
+				if selectErr == nil {
+					return nil, fmt.Errorf("cross-channel continuation: %w", relaycommon.ErrNoContinuationCandidate)
+				}
+				return nil, fmt.Errorf("cross-channel continuation: %w: %v", relaycommon.ErrNoContinuationCandidate, selectErr)
 			}
 			if _, seen := excluded[candidate.Id]; seen {
 				// Keep looking instead of aborting: one stale preferred candidate must
@@ -106,14 +112,25 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 		if selected == nil {
 			return nil, fmt.Errorf("cross-channel continuation: %w", relaycommon.ErrNoContinuationCandidate)
 		}
-		if tried != nil && !tried.Add(selected.Id) {
+		if tried != nil && tried.Contains(selected.Id) {
 			// The selector handed back a channel the request already tried (it can
 			// ignore the exclusion set through a preferred candidate); that is the end
 			// of the rotation, not a transient failure worth another round.
 			return nil, relaycommon.ErrNoContinuationCandidate
 		}
 		logger.LogWarn(c, fmt.Sprintf("chat continuation hopping to channel %d after channel %d failed to start the round", selected.Id, info.ChannelId))
+		// Attribute the round to the channel that was selected for it, even when the
+		// request then fails at transport: diagnostics must show where the round went,
+		// not where the previous one ran.
+		if roundChannel != nil {
+			roundChannel.Set(selected.Id)
+		}
 		resp, err := runContinuationRoundOnChannel(c, info, selected, base, build, partial, remaining)
+		if err == nil && resp != nil && tried != nil {
+			// Only a round that actually reached the channel counts as tried: a local
+			// bind/slot failure must not burn the candidate for the rest of the repair.
+			tried.Add(selected.Id)
+		}
 		if err == nil && resp != nil {
 			// Credit the hop channel for the round it actually served.
 			roundChannel.Set(selected.Id)

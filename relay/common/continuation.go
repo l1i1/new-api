@@ -193,10 +193,27 @@ func ChatAbnormalContinuationStepsForRequest(info *RelayInfo) int {
 	if !continuationEligible(info) {
 		return 0
 	}
-	if !rootcommon.ChatContinuationOnAbnormal || rootcommon.ChatContinuationAbnormalMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+	if !rootcommon.ChatContinuationOnAbnormal || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
 		return 0
 	}
-	return rootcommon.ChatContinuationAbnormalMaxSteps
+	return continuationRoundsOrLegacy(rootcommon.ChatContinuationAbnormalMaxSteps)
+}
+
+// continuationRoundsOrLegacy resolves how many rounds a repair mode may run: the
+// rotation-era budget when it was configured (0 disables the repair), otherwise
+// the mode's legacy step count. Without this, setting only the new key would
+// leave every candidate gate switched off and the new knob inert.
+func continuationRoundsOrLegacy(legacySteps int) int {
+	if rootcommon.ChatContinuationMaxRoundsSet {
+		if rootcommon.ChatContinuationMaxRounds <= 0 {
+			return 0
+		}
+		return rootcommon.ChatContinuationMaxRounds
+	}
+	if legacySteps < 0 {
+		return 0
+	}
+	return legacySteps
 }
 
 // ChatMissingContinuationStepsForRequest reports how many reasoning
@@ -205,10 +222,10 @@ func ChatMissingContinuationStepsForRequest(info *RelayInfo) int {
 	if !continuationEligible(info) {
 		return 0
 	}
-	if !rootcommon.ChatContinuationOnMissing || rootcommon.ChatContinuationMissingMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+	if !rootcommon.ChatContinuationOnMissing || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
 		return 0
 	}
-	return rootcommon.ChatContinuationMissingMaxSteps
+	return continuationRoundsOrLegacy(rootcommon.ChatContinuationMissingMaxSteps)
 }
 
 // ChatContinuationStepsForRequest reports how many continuation rounds the
@@ -219,8 +236,8 @@ func ChatContinuationStepsForRequest(info *RelayInfo) int {
 	if !continuationEligible(info) {
 		return 0
 	}
-	if rootcommon.ChatContinuationMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
+	if !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
 		return 0
 	}
-	return rootcommon.ChatContinuationMaxSteps
+	return continuationRoundsOrLegacy(rootcommon.ChatContinuationMaxSteps)
 }

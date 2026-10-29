@@ -512,6 +512,9 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 // finish stays "length" so a round that ends without an answer is not reported
 // as a normal completion.
 func runLengthThinkingChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	if info == nil || info.ChatContinuation == nil {
+		return chatContinuationResult{usage: cloneUsage(baseUsage)}
+	}
 	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Abnormal, "length", meta)
 }
 
@@ -540,18 +543,24 @@ func continuationRotationEnabled() bool {
 	return rootcommon.ChatContinuationRotateChannels
 }
 
-// continuationRoundLimit resolves the round budget: the hot option wins, the
-// mode's MaxRounds and the legacy MaxSteps stay readable so an existing
-// deployment keeps its round count after the upgrade.
+// continuationRoundLimit resolves the round budget. An explicitly configured
+// rotation-era budget wins (0 = transparent continuation off); when the key was
+// never set, the deployment keeps its legacy per-mode round counts, so upgrading
+// does not silently multiply the rounds a cut costs.
 func continuationRoundLimit(cfgRounds, cfgSteps int) int {
-	rounds := rootcommon.ChatContinuationMaxRounds
-	if rounds <= 0 {
-		rounds = cfgRounds
+	if rootcommon.ChatContinuationMaxRoundsSet {
+		if rootcommon.ChatContinuationMaxRounds <= 0 {
+			return 0
+		}
+		return rootcommon.ChatContinuationMaxRounds
 	}
-	if rounds <= 0 {
-		rounds = cfgSteps
+	if cfgRounds < 0 || cfgSteps < 0 {
+		return 0
 	}
-	return rounds
+	if cfgRounds > 0 {
+		return cfgRounds
+	}
+	return cfgSteps
 }
 
 // continuationRoundChannelID names the channel that served the latest round.
@@ -641,6 +650,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 	hopFirst := continuationShouldHopFirst(info, cfg.Fallback != nil)
 	recovered := false
 	contextText := reasoning
+	visible := ""
 	for round := 0; round < rounds; round++ {
 		if continuationElapsedCapReached(info) {
 			result.failedReason = relaycommon.ContinuationFailureElapsedCap
@@ -661,13 +671,17 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			result.failedReason = relaycommon.ContinuationFailureNoCandidate
 			break
 		}
-		// Rotation is the retry mechanism when another channel exists; without one
-		// the legacy bounded same-channel retries stay in place.
+		// Rotation is the retry mechanism for later rounds; the owning channel keeps
+		// its bounded same-channel retries (it is the one with the prompt cache).
 		attempts := 1
-		if !rotate {
+		if !rotate || (round == 0 && !hopFirst) {
 			attempts = chatContinuationRoundAttempts
 		}
-		roundOut, ok, err := sendThinkingRound(c, info, sender, contextText, remaining, meta, label, attempts)
+		roundOut, ok, err := sendThinkingRound(c, info, sender, contextText, remaining, meta, label, attempts, newSeamDeduper(visible))
+		if errors.Is(err, relaycommon.ErrNoContinuationCandidate) {
+			result.failedReason = relaycommon.ContinuationFailureNoCandidate
+			break
+		}
 		result.rounds++
 		channel := continuationRoundChannelID(info, cfg.RoundChannel)
 		result.channels = append(result.channels, channel)
@@ -698,26 +712,31 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		}
 		result.toolCalls += roundOut.toolCalls
 		contextText += roundOut.content
+		visible += roundOut.content
 		result.contentChars += len(roundOut.content)
 		if roundOut.toolCalls > 0 {
 			result.failedReason = relaycommon.ContinuationFailureToolCalls
 			break
 		}
-		if roundOut.content != "" && !rotate && roundOut.finish != "length" {
-			// Visible text already reached the caller and no other channel is
-			// configured: the cut is final, a same-channel replay would duplicate it.
+		// A "length" finish means the resumed round was capped again: that is not a
+		// success, the rotation continues. Any other real terminal reason ends the
+		// repair - classify it before the content-only breaks, or a successful
+		// resume that also delivered text would be labelled round_incomplete.
+		if roundOut.finish != "" && roundOut.finish != "length" && !relaycommon.IsAbnormalFinishReason(roundOut.finish) {
+			result.failedReason = ""
+			recovered = true
+			break
+		}
+		if roundOut.content != "" && roundOut.finish != "length" {
+			// Visible text already reached the caller and this round died on top of it:
+			// the cut is final. A reasoning repair must never continue on another
+			// channel with a half-delivered answer (the caller would read it twice);
+			// the caller closes the response honestly instead.
 			result.failedReason = relaycommon.ContinuationFailureRoundIncomplete
 			break
 		}
 		if roundOut.err != nil {
 			result.failedReason = relaycommon.ContinuationFailureRoundIncomplete
-			break
-		}
-		// A "length" finish means the resumed round was capped again: that is not a
-		// success, the rotation continues. Only a real terminal reason ends it.
-		if roundOut.finish != "" && roundOut.finish != "length" && !relaycommon.IsAbnormalFinishReason(roundOut.finish) {
-			result.failedReason = ""
-			recovered = true
 			break
 		}
 		if roundOut.content == "" && roundOut.finish != "length" {
@@ -734,8 +753,8 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 }
 
 // sendThinkingRound spends one sender on one reasoning-resume round.
-func sendThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), contextText string, remaining int, meta chatContinuationMeta, label string, attempts int) (thinkingRound, bool, error) {
-	return sendAndReadThinkingRound(c, info, sender, contextText, remaining, meta, label, attempts)
+func sendThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), contextText string, remaining int, meta chatContinuationMeta, label string, attempts int, seam *seamDeduper) (thinkingRound, bool, error) {
+	return sendAndReadThinkingRound(c, info, sender, contextText, remaining, meta, label, attempts, seam)
 }
 
 // runAbnormalChatContinuation resumes a cut-off thinking round. The captured
@@ -743,10 +762,16 @@ func sendThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(
 // reasoning_content in history); intermediate terminal/usage frames are
 // suppressed so the client sees one stream and one terminal frame.
 func runAbnormalChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	if info == nil || info.ChatContinuation == nil {
+		return chatContinuationResult{usage: cloneUsage(baseUsage)}
+	}
 	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Abnormal, info.StreamFinishReason, meta)
 }
 
 func runMissingChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, reasoning string, meta chatContinuationMeta) chatContinuationResult {
+	if info == nil || info.ChatContinuation == nil {
+		return chatContinuationResult{usage: cloneUsage(baseUsage)}
+	}
 	return runThinkingContinuation(c, info, baseUsage, reasoning, info.ChatContinuation.Missing, "", meta)
 }
 
@@ -776,7 +801,7 @@ type thinkingRound struct {
 // sendAndReadThinkingRound spends one sender on a reasoning resume and folds the
 // SSE body into a round outcome. label prefixes the log lines so a same-channel
 // attempt and a cross-channel hop are distinguishable in production.
-func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), contextText string, remaining int, meta chatContinuationMeta, label string, attempts int) (thinkingRound, bool, error) {
+func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(string, int) (*http.Response, error), contextText string, remaining int, meta chatContinuationMeta, label string, attempts int, seam *seamDeduper) (thinkingRound, bool, error) {
 	round := thinkingRound{}
 	if sender == nil {
 		return round, false, relaycommon.ErrNoContinuationCandidate
@@ -784,9 +809,14 @@ func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sende
 	if attempts < 1 {
 		attempts = 1
 	}
+	retryStarted := time.Now()
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			if c.Request != nil && c.Request.Context().Err() != nil {
+				break
+			}
+			if time.Since(retryStarted) > chatContinuationRetryBudget {
+				logger.LogWarn(c, label+" continuation retry budget exhausted")
 				break
 			}
 			time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
@@ -808,16 +838,16 @@ func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sende
 			logger.LogWarn(c, fmt.Sprintf("%s continuation upstream status %d (attempt %d/%d)", label, resp.StatusCode, attempt+1, attempts))
 			continue
 		}
-		return readThinkingRound(c, info, resp, meta), true, nil
+		return readThinkingRound(c, info, resp, meta, seam), true, nil
 	}
 	return round, false, round.err
 }
 
 // readThinkingRound consumes one resume round's SSE body into its outcome.
-func readThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) thinkingRound {
+func readThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) thinkingRound {
 	round := thinkingRound{}
 	defer resp.Body.Close()
-	usage, finish, content, deltaSeen, toolCalls, terminal, err := consumeChatContinuationRound(c, info, resp, meta, nil)
+	usage, finish, content, deltaSeen, toolCalls, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
 	round.usage = usage
 	round.finish = finish
 	round.content = content
@@ -921,11 +951,18 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			result.failedReason = relaycommon.ContinuationFailureNoCandidate
 			break
 		}
+		// The channel that owns the prefix keeps its bounded same-channel retries
+		// (it is the one with the prompt cache); rotating rounds are single attempts
+		// because the next round gets a different channel instead of a retry.
 		attempts := 1
-		if !rotate {
+		if !rotate || (round == 0 && !hopFirst) {
 			attempts = chatContinuationRoundAttempts
 		}
 		roundOut, ok, err := sendContentRound(c, info, sender, meta, content, remaining, label, attempts)
+		if errors.Is(err, relaycommon.ErrNoContinuationCandidate) {
+			result.failedReason = relaycommon.ContinuationFailureNoCandidate
+			break
+		}
 		result.rounds++
 		channel := continuationRoundChannelID(info, cfg.RoundChannel)
 		result.channels = append(result.channels, channel)
@@ -944,7 +981,9 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			continue
 		}
 		result.terminal = roundOut.terminal
-		if roundOut.usage != nil {
+		// Same billing rule as the reasoning modes: a round that delivered nothing
+		// to the caller is not merged into the settled usage.
+		if roundOut.usage != nil && (roundOut.content != "" || roundOut.toolCalls > 0) {
 			total = mergeContinuationUsage(total, roundOut.usage)
 		}
 		if roundOut.finish != "" {

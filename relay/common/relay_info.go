@@ -276,6 +276,8 @@ type RelayInfo struct {
 	// repair outcome until the cut diagnostics are snapshotted. The repair runs
 	// before the snapshot for some shapes and after it for others, so the outcome
 	// is kept here and copied into the diagnostics when they are built.
+	RepairAttempted    bool
+	RepairMode         string
 	RepairChannels     []int
 	RepairRounds       int
 	RepairFailedReason string
