@@ -213,6 +213,13 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if relayInfo.ConversionDiagnosticsTruncated() {
 			other.SetAdmin("conversion_diagnostics_truncated", true)
 		}
+		// A stream that ended without a usable terminal result keeps its cut
+		// diagnostics on the failure row: the numbers (budget left, visible
+		// content, which repair modes were configured) are what separate "no
+		// repair was possible by design" from "a repair ran and still failed".
+		if relayInfo.StreamCutDiagnostics != nil {
+			other.SetAdmin("stream_cut", relayInfo.StreamCutDiagnostics)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)

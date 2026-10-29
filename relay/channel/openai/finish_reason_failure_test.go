@@ -69,6 +69,14 @@ func TestOaiStreamHandlerTreatsAbnormalFinishReasonAsFailure(t *testing.T) {
 			require.False(t, info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors())
 			require.True(t, err.ShouldEvictChannelAffinity(), "an abnormal finish must drop the affinity binding")
 			require.False(t, err.SettlesObservedUsageAfterError(), "an abnormal finish is refunded, not settled")
+			// The failure row has to explain the cut without container logs.
+			require.NotNil(t, info.StreamCutDiagnostics, "an undelivered cut must carry diagnostics for the error row")
+			assert.Equal(t, reason, info.StreamCutDiagnostics.FinishReason)
+			assert.False(t, info.StreamCutDiagnostics.MissingFinish)
+			assert.Zero(t, info.StreamCutDiagnostics.VisibleContentChars)
+			assert.Zero(t, info.StreamCutDiagnostics.ReasoningChars, "reasoning is only captured when a continuation mode is configured")
+			assert.False(t, info.StreamCutDiagnostics.ContinuationConfigured, "this request had no continuation configured")
+			assert.False(t, info.StreamCutDiagnostics.RepairAttempted)
 		})
 	}
 }
@@ -188,6 +196,9 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 			assert.Zero(t, usage.PromptTokens, "a truncated stream must return zero usage to the caller")
 			assert.Zero(t, usage.CompletionTokens)
 			assert.Equal(t, relaycommon.UndeliveredMissingFinish, info.UndeliveredReason)
+			require.NotNil(t, info.StreamCutDiagnostics, "a missing terminal frame must carry diagnostics for the error row")
+			assert.True(t, info.StreamCutDiagnostics.MissingFinish)
+			assert.Empty(t, info.StreamCutDiagnostics.FinishReason)
 			assert.NotContains(t, recorder.Body.String(), "167674", "the upstream usage count must never reach the caller unzeroed")
 			require.NotNil(t, info.StreamStatus)
 			require.True(t, info.StreamStatus.ResponseFailed())
