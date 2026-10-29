@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	rootcommon "github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -183,10 +184,12 @@ func TestOaiStreamHandlerRegeneratesCutToolCall(t *testing.T) {
 	}
 }
 
-// TestOaiStreamHandlerDoesNotRegenerateAfterVisibleText pins the safety rule: once
-// answer text reached the caller, re-running the request would duplicate it, so
-// the cut stays an honest error.
-func TestOaiStreamHandlerDoesNotRegenerateAfterVisibleText(t *testing.T) {
+// TestOaiStreamHandlerRegeneratesAfterVisiblePreamble pins the 2026-10-30 operator
+// decision: a cut tool-call stream usually delivers a short preamble before the
+// call, and refusing to regenerate because of it turned a recoverable call into a
+// 502. Regeneration now runs; the regenerated answer is only accepted when it is a
+// pure call set, so the caller sees "preamble, consolidated call, terminal".
+func TestOaiStreamHandlerRegeneratesAfterVisiblePreamble(t *testing.T) {
 	enableToolBuffer(t, 780, true, true)
 	stream := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先说一句"},"finish_reason":null}]}`,
@@ -194,23 +197,76 @@ func TestOaiStreamHandlerDoesNotRegenerateAfterVisibleText(t *testing.T) {
 		`data: [DONE]`,
 		``,
 	}, "\n")
+	regenerated := `{"id":"chat_9","created":9,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_9","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"4+4\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
 
 	calls := 0
-	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
 		return nil, http.ErrHandlerTimeout
 	}, 1, 64000, 1<<20)
 	info.ChannelId = 780
 	info.ChatContinuation.Abnormal = nil
 	info.ChatContinuation.Regenerate = func(int) (*http.Response, error) {
 		calls++
-		return nil, io.EOF
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(regenerated))}, nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err != nil {
+		t.Fatalf("a recoverable call must not fail: %v", err)
+	}
+	if usage == nil || usage.CompletionTokens != 3 || usage.PromptTokens != 7 {
+		t.Fatalf("the regenerated round is billed once: %+v", usage)
+	}
+	if calls != 1 {
+		t.Fatalf("regeneration must run once after a visible preamble, calls=%d", calls)
+	}
+	body := recorder.Body.String()
+	if strings.Count(body, "先说一句") != 1 {
+		t.Fatalf("the preamble must appear exactly once: %s", body)
+	}
+	if !strings.Contains(body, "4+4") {
+		t.Fatalf("the regenerated call must be delivered: %s", body)
+	}
+	if strings.Contains(body, `"expr\":`) && strings.Contains(body, `{"expr":`) {
+		t.Fatalf("half an argument document must not reach the caller: %s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one tool_calls terminal: %s", body)
+	}
+}
+
+// TestOaiStreamHandlerRefusesRegeneratedTextAfterPreamble is the guard: the
+// regeneration exists to recover the CALL, so a regenerated answer that carries
+// its own text is refused (it would duplicate the preamble) and the cut stays an
+// honest error.
+func TestOaiStreamHandlerRefusesRegeneratedTextAfterPreamble(t *testing.T) {
+	enableToolBuffer(t, 783, true, true)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先说一句"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	regenerated := `{"id":"chat_9","created":9,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"另一段正文","tool_calls":[{"id":"call_9","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"5+5\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 783
+	info.ChatContinuation.Abnormal = nil
+	info.ChatContinuation.Regenerate = func(int) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(regenerated))}, nil
 	}
 
 	if _, err := OaiStreamHandler(c, info, continuationSSEResponse(stream)); err == nil {
-		t.Fatal("a cut after visible text must fail")
+		t.Fatal("a regeneration that returns its own text must be refused")
 	}
-	if calls != 0 {
-		t.Fatalf("regeneration must not run after visible text, calls=%d", calls)
+	body := recorder.Body.String()
+	if strings.Contains(body, "另一段正文") || strings.Contains(body, "5+5") {
+		t.Fatalf("the refused regeneration must not be delivered: %s", body)
+	}
+	if strings.Count(body, "先说一句") != 1 {
+		t.Fatalf("the delivered preamble stays: %s", body)
 	}
 }
 
@@ -270,5 +326,44 @@ func TestToolCallGateForwardsTextBesideACallFragment(t *testing.T) {
 	}
 	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
 		t.Fatalf("want one terminal frame: %s", body)
+	}
+}
+
+// TestToolRegenerationSkipsSameChannelAfterWall pins the wall-aware ladder: a
+// request that already spent a whole upstream wall (>=10 minutes) is not retried
+// on the channel that just hit that wall, because it would hit the same wall
+// again. Only the cross-channel hop runs.
+func TestToolRegenerationSkipsSameChannelAfterWall(t *testing.T) {
+	enableToolBuffer(t, 784, true, true)
+	cut := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	good := `{"id":"chat_9","created":9,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_9","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"6+6\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+
+	sameCalls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 784
+	info.StartTime = time.Now().Add(-700 * time.Second)
+	info.ChatContinuation.Abnormal = nil
+	info.ChatContinuation.RegenerateSame = func(int) (*http.Response, error) {
+		sameCalls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(good))}, nil
+	}
+	info.ChatContinuation.Regenerate = func(int) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(good))}, nil
+	}
+
+	if _, err := OaiStreamHandler(c, info, continuationSSEResponse(cut)); err != nil {
+		t.Fatalf("the cross-channel rung should recover the call: %v", err)
+	}
+	if sameCalls != 0 {
+		t.Fatalf("a wall-spent request must not retry the channel that hit the wall, sameCalls=%d", sameCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), "6+6") {
+		t.Fatal("regenerated call missing")
 	}
 }

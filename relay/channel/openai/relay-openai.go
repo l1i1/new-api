@@ -1237,7 +1237,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					// The switch allows one regeneration on another channel before the
 					// caller is told the call failed; it only runs when no visible answer
 					// text was delivered, so the regenerated calls cannot duplicate text.
-					if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
+					if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, finishFrameForwarded, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
 						return finalUsage, nil
 					}
 				}
@@ -1416,7 +1416,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// closing half a call. The switch allows one regeneration on another channel
 	// first, but only when no visible answer text was delivered.
 	if info.ToolCallBuffer != nil && info.ToolCallBuffer.Invalid() {
-		if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
+		if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, finishFrameForwarded, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
 			return finalUsage, nil
 		}
 		common.SysLog(fmt.Sprintf("buffered tool calls unusable: ch=%d calls=%d", info.ChannelId, info.ToolCallBuffer.CallCount()))

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -892,6 +893,14 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 	if result.failedReason == "" && !recovered {
 		result.failedReason = relaycommon.ContinuationFailureRoundsExhausted
 	}
+	// Same affinity rule as the content runner: a hop-served recovery means the
+	// original channel cannot finish this conversation's reasoning right now, so the
+	// next request must not be pinned back to it.
+	if recovered && cfg.RoundChannel != nil {
+		if served := cfg.RoundChannel.Last(); served != 0 && served != info.ChannelId {
+			service.DropStickyRoutingAfterUpstreamFailure(c)
+		}
+	}
 	result.usage = total
 	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && (result.contentChars > 0 || result.toolCallsDelivered))
 	return result
@@ -1267,6 +1276,15 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 	}
 	result.usage = total
+	// A recovered answer served by a different channel proves the original channel
+	// cannot finish this conversation's answers right now. Drop the conversation's
+	// sticky binding so the next request does not walk back into the channel that
+	// cut this one; a same-channel recovery keeps the binding (and its warm cache).
+	if recovered && cfg.RoundChannel != nil {
+		if served := cfg.RoundChannel.Last(); served != 0 && served != info.ChannelId {
+			service.DropStickyRoutingAfterUpstreamFailure(c)
+		}
+	}
 	if produced := len(content) - len(partial); produced > 0 {
 		result.contentChars = produced
 	}

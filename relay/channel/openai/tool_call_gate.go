@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -143,22 +144,30 @@ func mergeRegeneratedUsage(base, regenerated *dto.Usage) *dto.Usage {
 }
 
 // regenerateToolCalls recovers a cut tool call by re-running the original request
-// once on another channel and delivering its complete call set. It refuses to run
-// when visible answer text already reached the caller (a regeneration would
-// duplicate it), when the switch is off for this channel, or when no regenerate
-// hook is wired.
-func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, visibleContentChars int, meta chatContinuationMeta) (*dto.Usage, bool) {
+// once on another channel and delivering its complete call set.
+//
+// Visible answer text does NOT block it any more. A cut tool-call stream normally
+// delivers a short preamble before the call starts, and refusing to regenerate
+// because of those few characters turned a recoverable call into a 502
+// (2026-10-30 03:15 ch91: 75 visible chars + an incomplete call, 900s wall, no
+// repair attempted). The regenerated answer is only accepted when its content is
+// empty, so the caller sees "preamble, consolidated call, tool_calls terminal" -
+// the same shape a healthy stream produces. Nothing is stitched into the call
+// arguments themselves.
+//
+// The switch must be on for the channel, a regenerate hook must be wired, and the
+// answer must not already be closed: a forwarded terminal frame is final.
+func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, visibleContentChars int, terminalForwarded bool, meta chatContinuationMeta) (*dto.Usage, bool) {
 	cfg := info.ChatContinuation
 	if cfg == nil || (cfg.RegenerateSame == nil && cfg.Regenerate == nil) || !rootcommon.ChatToolRepairChannelAllowed(info.ChannelId) {
 		return nil, false
 	}
-	if visibleContentChars > 0 || info.ToolCallsDelivered {
+	if info.ToolCallsDelivered || terminalForwarded {
 		return nil, false
 	}
-	if info.SendResponseCount > 1 {
-		// The caller already received frames of this answer (role/reasoning). A
-		// regenerated tool-call answer can still be appended, but only when the
-		// calls are the whole answer, which the model decides on the retry.
+	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+		// Fit-shape callers demand the official chunking; a synthesized consolidated
+		// call would break that contract, so those requests keep the honest error.
 		return nil, false
 	}
 	remaining := chatContinuationBudgetLeft(info, baseUsage)
@@ -168,18 +177,35 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	// Retry ladder: the original channel first (prompt cache warm, no selection
 	// cost), then the cross-channel hop. A rung that returns an unusable call set
 	// hands over to the next one instead of failing the request outright.
-	rungs := []struct {
+	//
+	// The wall exception mirrors the continuation ladder: a request that already
+	// spent a whole upstream wall (>=10 minutes) is not retried on the channel that
+	// just hit it, because that channel will hit the same wall again - the retry
+	// would burn the caller's remaining patience and then fail anyway
+	// (2026-10-30 03:15 ch91 900s cut shape).
+	rungs := make([]struct {
 		fn    func(int) (*http.Response, error)
 		label string
-	}{
-		{cfg.RegenerateSame, "same-channel"},
-		{cfg.Regenerate, "cross-channel"},
+	}, 0, 2)
+	if cfg.RegenerateSame != nil && (info.StartTime.IsZero() || time.Since(info.StartTime) < continuationHopFirstAfter) {
+		rungs = append(rungs, struct {
+			fn    func(int) (*http.Response, error)
+			label string
+		}{cfg.RegenerateSame, "same-channel"})
 	}
+	rungs = append(rungs, struct {
+		fn    func(int) (*http.Response, error)
+		label string
+	}{cfg.Regenerate, "cross-channel"})
 	for _, rung := range rungs {
 		if rung.fn == nil {
 			continue
 		}
 		if finalUsage, ok := regenerateToolCallsFromRung(c, info, baseUsage, remaining, rung.fn, rung.label, meta); ok {
+			// The original channel cut this answer mid-call; the next request in the
+			// conversation must not be pinned back to it just because the call was
+			// recovered elsewhere. The next success re-records the binding.
+			service.DropStickyRoutingAfterUpstreamFailure(c)
 			return finalUsage, true
 		}
 		if c.Request != nil && c.Request.Context().Err() != nil {
