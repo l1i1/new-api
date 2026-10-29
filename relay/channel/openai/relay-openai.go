@@ -248,6 +248,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var deepSeekV4PendingFinalData string
 	var kimiK3PendingFinalData string
 	var streamErr *types.NewAPIError
+	// Held leading frames. A provider opens its stream with a role-only (or
+	// empty-delta) chunk before any answer payload. Writing that chunk commits the
+	// response, which forbids the controller from retrying a stream that then dies
+	// with zero output - the exact shape that produced customer-visible 502s while
+	// sibling channels were healthy (2026-10-30 02:10-02:50, ch91/ch37). These
+	// frames are held until the first real payload arrives and are dropped if the
+	// stream never produces one, so the response stays uncommitted and retryable.
+	// Order and shape are unchanged when a payload does arrive: the held frames are
+	// flushed first, in arrival order, then the payload follows.
+	var heldLeadingFrames []string
+	leadingPayloadSeen := false
 	// streamAbnormalFinish keeps the first non-terminal finish reason a provider
 	// used to signal a failed generation (e.g. "error" from aggregators,
 	// "engine_overloaded" from the official Moonshot endpoint). Such a stream
@@ -434,6 +445,23 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// 错误本身仍带 StatusCode，可见性不受影响。
 				sr.Stop(streamErr)
 				return
+			}
+		}
+		if lastStreamData != "" && !leadingPayloadSeen &&
+			info.RelayFormat == types.RelayFormatOpenAI && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) &&
+			!isAudioModel {
+			if streamFrameHasAnswerPayload(lastStreamData) {
+				leadingPayloadSeen = true
+				for _, prefix := range heldLeadingFrames {
+					if err := HandleStreamFormat(c, info, prefix, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+						common.SysLog("error handling held leading frame: " + err.Error())
+						sr.Error(err)
+					}
+				}
+				heldLeadingFrames = nil
+			} else {
+				heldLeadingFrames = append(heldLeadingFrames, lastStreamData)
+				lastStreamData = ""
 			}
 		}
 		if lastStreamData != "" {
@@ -2164,4 +2192,33 @@ func buildStreamCutDiagnostics(info *relaycommon.RelayInfo, usage *dto.Usage, vi
 	diag.ThinkingToContent = info.ChannelSetting.ThinkingToContent
 	diag.ReasoningSuppressed = shouldSuppressReasoningContent(info)
 	return diag
+}
+
+// streamFrameHasAnswerPayload reports whether a raw SSE data frame carries any
+// part of the answer itself: visible content, reasoning, a tool-call fragment, a
+// finish reason or a function-call payload. Framing-only events (the opening
+// role chunk, empty deltas, usage-only metadata) return false: they may be held
+// back without delaying the answer, and holding them is what keeps a zero-output
+// cut retryable.
+func streamFrameHasAnswerPayload(data string) bool {
+	var frame struct {
+		Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
+	}
+	if err := common.Unmarshal(common.StringToByteSlice(data), &frame); err != nil {
+		// A frame that cannot be parsed is forwarded: withholding it would lose
+		// information we do not understand.
+		return true
+	}
+	for _, choice := range frame.Choices {
+		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" {
+			return true
+		}
+		if len(choice.Delta.ToolCalls) > 0 {
+			return true
+		}
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			return true
+		}
+	}
+	return false
 }

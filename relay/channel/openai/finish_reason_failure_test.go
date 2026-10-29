@@ -284,3 +284,57 @@ func TestOaiStreamHandlerKeepsErrorFrameAfterDeliveredPrefix(t *testing.T) {
 	require.True(t, err.IsTruncatedStream())
 	require.Contains(t, recorder.Body.String(), "半截答案", "delivered bytes cannot be retracted")
 }
+
+// TestOaiStreamHandlerHoldsLeadingRoleFrameUntilPayload pins the retry enabler:
+// the opening role-only frame is not written before the answer payload, so a
+// stream that dies without delivering anything leaves the response uncommitted
+// and the controller can fail over to another channel.
+func TestOaiStreamHandlerHoldsLeadingRoleFrameUntilPayload(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, err, "a stream with no payload is a failure")
+	require.NotNil(t, usage)
+	require.True(t, err.IsTruncatedStream())
+	require.False(t, types.IsSkipRetryError(err), "an uncommitted response may be retried on another channel")
+	require.Empty(t, recorder.Body.String(), "no frame may be written before the answer payload exists")
+}
+
+// TestOaiStreamHandlerFlushesHeldRoleFrameBeforeContent is the shape guard: when
+// the payload does arrive, the held frames are released first and in order, so the
+// caller sees the same stream it would have seen without the hold.
+func TestOaiStreamHandlerFlushesHeldRoleFrameBeforeContent(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"完整答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 3, usage.CompletionTokens)
+	out := recorder.Body.String()
+	roleAt := strings.Index(out, `"role":"assistant"`)
+	contentAt := strings.Index(out, "完整答案")
+	require.GreaterOrEqual(t, roleAt, 0, "the held role frame must be flushed")
+	require.Greater(t, contentAt, roleAt, "the role frame must precede the content")
+	require.Contains(t, out, `"finish_reason":"stop"`)
+}
