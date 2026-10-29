@@ -746,6 +746,26 @@ func compareGjsonValues(jsonValue, targetValue gjson.Result, mode string) (bool,
 	case "suffix":
 		return strings.HasSuffix(jsonValue.String(), targetValue.String()), nil
 	case "contains":
+		// A JSON array contains a value only when one of its elements does, and
+		// JSON null contains nothing at all. Matching the serialized value instead
+		// made `contains ""` true for both `[]` and `null`, so the ch91 "upstream
+		// ignores stop sequences" guard fired on `"stop": []` — Claude-Code style
+		// clients send exactly that on every request, and every one of them was
+		// bounced to the next channel (2026-10-29: 538 requests in 50 minutes).
+		// Nested results (gjson's `#.` pipelines) are compared through their
+		// serialized form, which is how the image-url guard has always been
+		// evaluated.
+		if jsonValue.Type == gjson.Null {
+			return false, nil
+		}
+		if jsonValue.IsArray() {
+			for _, element := range jsonValue.Array() {
+				if strings.Contains(element.String(), targetValue.String()) {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
 		return strings.Contains(jsonValue.String(), targetValue.String()), nil
 	case "gt":
 		return compareNumeric(jsonValue, targetValue, "gt")

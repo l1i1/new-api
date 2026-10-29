@@ -251,6 +251,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var streamFinishSeen bool
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	// streamedToolCalls accumulates the tool calls of this attempt so a stream
+	// that dies without a terminal frame can still be closed as a tool_calls
+	// answer when every call it delivered is complete (see the salvage branch
+	// next to the truncated-close guard below).
+	var streamedToolCalls streamToolCallTracker
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
 	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
 	isK3OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info)
@@ -314,6 +319,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 						}
 					}
 				}
+				// Track every function-call fragment as the provider sent it: the
+				// truncated-close guard needs to know whether a cut landed after the
+				// last complete argument document or inside one.
+				streamedToolCalls.observe(streamResp.Choices)
 				if streamResp.Usage != nil {
 					currentHasUsage = true
 					currentHasChoices = len(streamResp.Choices) > 0
@@ -1011,6 +1020,59 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		undeliveredReason = relaycommon.UndeliveredMissingFinish
 	}
 	if undeliveredReason != "" {
+		// A stream cut after the answer is already written is closed below. The
+		// tool-call shape needs its own close: the provider can lose only the
+		// terminal frame after the model finished every call, and the caller then
+		// holds a complete, executable answer (2026-10-29: neurvibe :8111 cut
+		// 88-98% of the kimi-k3.1-pro tool-call streams; 13 of 14 sampled cuts had
+		// complete argument JSON). Closing it as finish_reason=tool_calls keeps the
+		// delivered answer usable and billable instead of charging nothing and
+		// handing the caller an error for work that is done. A cut inside a call
+		// keeps the error frame: half an argument document is not executable.
+		if undeliveredReason == relaycommon.UndeliveredMissingFinish &&
+			!finishFrameForwarded && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
+			!isAudioModel && info.RelayFormat == types.RelayFormatOpenAI {
+			if completeToolCalls, complete := streamedToolCalls.completeCalls(); complete {
+				// Deliver the held tail first: it can be the provider's last
+				// argument fragment, and the caller must hold it before the
+				// terminal frame closes the call.
+				flushHeldAnswerChunk(c, info, lastStreamData)
+				info.StreamFinishReason = constant.FinishReasonToolCalls
+				if info.StreamStatus != nil {
+					info.StreamStatus.MarkRecovered()
+				}
+				common.SysLog(fmt.Sprintf("truncated stream closed as tool_calls: ch=%d tools=%d content=%d reasoning=%d", info.ChannelId, completeToolCalls, visibleContentChars, reasoningTextBuilder.Len()))
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					// The caller is gone; the answer was generated and delivered up
+					// to the terminal frame, so it stays billable like any other
+					// client-gone stream.
+					return usage, nil
+				}
+				flushContinuationCoalescer(c, info)
+				helper.ExtendWriteDeadline(c)
+				sendChatContinuationTerminal(c, info, responseId, createAt, model, constant.FinishReasonToolCalls, usage)
+				helper.ExtendWriteDeadline(c)
+				// The normal terminal path forwards the provider's usage event.
+				// Here the provider never sent one, so render it when the caller
+				// asked for usage; HandleFinalResponse emits it only when the
+				// upstream usage was missing altogether.
+				if info.ShouldIncludeUsage && containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
+					response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+					response.SetSystemFingerprint(systemFingerprint)
+					helper.ObjectData(c, response)
+				}
+				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+				return usage, nil
+			}
+		}
+		// A channel that only ever breaks this way never reaches the cooldown:
+		// every other promotion point sits behind a repair attempt that a
+		// truncation does not have, so ch102 kept absorbing customer traffic for
+		// ten minutes while 88-98% of its answers were cut (2026-10-29). Record
+		// the failure here, the one place every unrepaired truncation passes
+		// through, so two cuts inside two minutes take the channel out of
+		// selection for a few minutes without touching its DB status.
+		common.RecordChannelFailure(info.ChannelId)
 		// Log the refusal reason before the usage is zeroed: a repaired truncation
 		// returns earlier, so reaching here means every continuation mode declined
 		// and the caller sees the cut. One line names the caller, the shape and the
@@ -1279,14 +1341,20 @@ func flushHeldAnswerChunk(c *gin.Context, info *relaycommon.RelayInfo, pending s
 	if err := common.Unmarshal(common.StringToByteSlice(payload), &probe); err != nil {
 		return
 	}
-	hasText := false
+	// The held tail is not always text: a provider can lose the terminal frame
+	// right after the last argument fragment of a tool call, and the caller must
+	// hold that fragment before a synthesized terminal frame closes the call
+	// (2026-10-29 tool-call cuts). Forwarding it here is safe for the existing
+	// callers: every repair path that flushes a held tail refuses requests with
+	// tool calls, so only the new tool-call close reaches this branch with one.
+	hasAnswerPayload := false
 	for _, choice := range probe.Choices {
-		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" {
-			hasText = true
+		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" || len(choice.Delta.ToolCalls) > 0 {
+			hasAnswerPayload = true
 			break
 		}
 	}
-	if !hasText {
+	if !hasAnswerPayload {
 		return
 	}
 	helper.ExtendWriteDeadline(c)
