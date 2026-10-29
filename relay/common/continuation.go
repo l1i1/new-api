@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 
@@ -48,9 +49,85 @@ func (c *ContinuationRoundChannel) Last() int {
 	return c.id
 }
 
+// Continuation repair failure reasons recorded in the cut diagnostics. They
+// name why the rotation ended without a usable answer, which is what an
+// operator needs to tell "the budget ran out" from "no channel left".
+const (
+	ContinuationFailureRoundIncomplete = "round_incomplete"
+	ContinuationFailureRoundsExhausted = "rounds_exhausted"
+	ContinuationFailureNoCandidate     = "no_candidate"
+	ContinuationFailureElapsedCap      = "elapsed_cap"
+	ContinuationFailureBudgetExhausted = "budget_exhausted"
+	ContinuationFailureToolCalls       = "tool_calls_in_progress"
+)
+
+// ErrNoContinuationCandidate is returned by a cross-channel continuation sender
+// when every channel the request could rotate to has already been tried. Callers
+// treat it as "the rotation is over", never as a transient failure worth another
+// round.
+var ErrNoContinuationCandidate = errors.New("no continuation candidate channel")
+
+// TriedChannels is the set of channels a request has already continued on. It
+// is shared by every repair mode of one request: a round that rotates channels
+// must never come back to one that already cut the answer, across the length,
+// abnormal and missing modes. Access is concurrency-safe because a continuation
+// round reads it from the request goroutine while another mode may observe it.
+type TriedChannels struct {
+	mu  sync.Mutex
+	ids []int
+}
+
+// Add records a channel and reports whether it was not already present.
+func (t *TriedChannels) Add(id int) bool {
+	if t == nil || id <= 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, existing := range t.ids {
+		if existing == id {
+			return false
+		}
+	}
+	t.ids = append(t.ids, id)
+	return true
+}
+
+// Contains reports whether the channel was already tried.
+func (t *TriedChannels) Contains(id int) bool {
+	if t == nil || id <= 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, existing := range t.ids {
+		if existing == id {
+			return true
+		}
+	}
+	return false
+}
+
+// IDs returns a copy of the tried channel ids in the order they were added.
+func (t *TriedChannels) IDs() []int {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]int, len(t.ids))
+	copy(out, t.ids)
+	return out
+}
+
 type ChatContinuationConfig struct {
 	MaxSteps int
-	Send     func(partialContent string, remainingTokens int) (*http.Response, error)
+	// MaxRounds is the total number of continuation rounds the handler may run.
+	// It is the rotation-era bound: round 1 runs on the original channel and every
+	// later round on a different one. Zero falls back to MaxSteps so a deployment
+	// that only sets the legacy key keeps its old round count.
+	MaxRounds int
+	Send      func(partialContent string, remainingTokens int) (*http.Response, error)
 	// RoundChannel, when set, tracks the channel of the latest round.
 	RoundChannel *ContinuationRoundChannel
 	// Fallback, when non-nil, is used once after the same-channel sender fails to
@@ -59,6 +136,10 @@ type ChatContinuationConfig struct {
 	// header/param overrides, concurrency slot). The round still counts as one
 	// step: the fallback is neither a retry budget nor a second billed answer.
 	Fallback func(partialContent string, remainingTokens int) (*http.Response, error)
+	// Tried is the shared set of channels this request has already continued on.
+	// The cross-channel sender excludes every entry, so rounds rotate instead of
+	// re-picking a channel that already cut the answer.
+	Tried *TriedChannels
 	// Abnormal, when non-nil, enables the reasoning continuation mode for
 	// streams that died with an abnormal finish_reason before any visible
 	// content (900s cut-off shape). Send receives the captured reasoning text.
@@ -75,11 +156,15 @@ type ChatContinuationConfig struct {
 // extra input.
 type ChatAbnormalContinuationConfig struct {
 	MaxSteps int
-	Send     func(reasoning string, remainingTokens int) (*http.Response, error)
+	// MaxRounds mirrors ChatContinuationConfig.MaxRounds for the reasoning modes.
+	MaxRounds int
+	Send      func(reasoning string, remainingTokens int) (*http.Response, error)
 	// Fallback mirrors ChatContinuationConfig.Fallback for the reasoning modes.
 	Fallback func(reasoning string, remainingTokens int) (*http.Response, error)
 	// RoundChannel mirrors ChatContinuationConfig.RoundChannel.
-	RoundChannel      *ContinuationRoundChannel
+	RoundChannel *ContinuationRoundChannel
+	// Tried mirrors ChatContinuationConfig.Tried.
+	Tried             *TriedChannels
 	MaxReasoningBytes int
 	MinReasoningChars int
 }

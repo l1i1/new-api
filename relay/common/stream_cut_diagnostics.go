@@ -41,8 +41,14 @@ type StreamCutDiagnostics struct {
 	RepairMode      string `json:"repair_mode,omitempty"`
 	RepairRounds    int    `json:"repair_rounds,omitempty"`
 	// RepairFailedReason says why a repair that did run did not deliver a usable
-	// answer, e.g. "round_incomplete" or "round_abnormal_finish".
+	// answer: "round_incomplete"/"round_abnormal_finish" for a cut round,
+	// "rounds_exhausted" when the round budget ran out, "no_candidate" when no
+	// other channel was left to rotate to, "elapsed_cap" when the request passed
+	// the continuation wall clock.
 	RepairFailedReason string `json:"repair_failed_reason,omitempty"`
+	// RepairChannels lists the channels each repair round actually ran on, in
+	// order. Round 1 is the original channel; later entries are the rotation.
+	RepairChannels []int `json:"repair_channels,omitempty"`
 }
 
 // MarkRepairAttempted records that a repair mode started, so a row that ends

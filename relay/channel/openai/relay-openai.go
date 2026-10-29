@@ -837,7 +837,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
-		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -876,7 +876,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
-		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			// The caller walked away mid-continuation: the provider already
@@ -984,7 +984,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
-		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1025,7 +1025,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		resetContinuationCoalescer(info)
 		info.StreamCutDiagnostics.MarkRepairAttempted("missing-reasoning")
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
-		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		recordContinuationRepair(info, result)
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1940,6 +1940,28 @@ func missingReasoningLogprobsError() *types.NewAPIError {
 	)
 }
 
+// recordContinuationRepair carries one repair outcome into the request's cut
+// diagnostics. The repair runs before the diagnostics are snapshotted for some
+// shapes and after it for others, so the outcome is kept on RelayInfo and copied
+// into the diagnostics when they are built.
+func recordContinuationRepair(info *relaycommon.RelayInfo, result chatContinuationResult) {
+	if info == nil {
+		return
+	}
+	reason := result.failedReason
+	if reason == "" && (result.contentChars == 0 || !result.terminal ||
+		(result.finish != "" && relaycommon.IsAbnormalFinishReason(result.finish))) {
+		reason = relaycommon.ContinuationFailureRoundIncomplete
+	}
+	info.RepairRounds = result.rounds
+	info.RepairChannels = result.channels
+	info.RepairFailedReason = reason
+	if info.StreamCutDiagnostics != nil {
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, reason)
+		info.StreamCutDiagnostics.RepairChannels = result.channels
+	}
+}
+
 // buildStreamCutDiagnostics snapshots what an undelivered stream cut left
 // behind: the shape of the cut, the caller's remaining budget, and which repair
 // modes were configured for the request. This is what turns "the customer got a
@@ -1968,6 +1990,9 @@ func buildStreamCutDiagnostics(info *relaycommon.RelayInfo, usage *dto.Usage, vi
 		diag.AbnormalConfigured = cfg.Abnormal != nil && cfg.Abnormal.Send != nil && cfg.Abnormal.MaxSteps > 0
 		diag.MissingConfigured = cfg.Missing != nil && cfg.Missing.Send != nil && cfg.Missing.MaxSteps > 0
 	}
+	diag.RepairRounds = info.RepairRounds
+	diag.RepairChannels = info.RepairChannels
+	diag.RepairFailedReason = info.RepairFailedReason
 	diag.ThinkingToContent = info.ChannelSetting.ThinkingToContent
 	diag.ReasoningSuppressed = shouldSuppressReasoningContent(info)
 	return diag

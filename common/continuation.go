@@ -21,6 +21,9 @@ const (
 	ChatContinuationOptionMissingMaxSteps           = ChatContinuationOptionPrefix + "missing_max_steps"
 	ChatContinuationOptionMissingMaxReasoningBytes  = ChatContinuationOptionPrefix + "missing_max_reasoning_bytes"
 	ChatContinuationOptionMissingMinReasoningChars  = ChatContinuationOptionPrefix + "missing_min_reasoning_chars"
+	ChatContinuationOptionMaxRounds                 = ChatContinuationOptionPrefix + "max_rounds"
+	ChatContinuationOptionRoundMaxElapsedSeconds    = ChatContinuationOptionPrefix + "round_max_elapsed_seconds"
+	ChatContinuationOptionRotateChannels            = ChatContinuationOptionPrefix + "rotate_channels"
 )
 
 // ChatContinuationMaxSteps is the number of extra upstream rounds the relay may
@@ -28,6 +31,27 @@ const (
 // (finish_reason=length) while the client's budget still has room. 0 disables
 // the feature; the relay additionally requires the channel to be whitelisted.
 var ChatContinuationMaxSteps int
+
+// ChatContinuationMaxRounds is the total number of continuation rounds a request
+// may run: round 1 on the original channel, every later round on a channel the
+// request has not tried yet. Zero keeps the legacy MaxSteps round count.
+var ChatContinuationMaxRounds int
+
+// ChatContinuationMaxRoundsSet records whether the rotation-era round budget was
+// configured explicitly (env or admin option). When it was not, the legacy
+// per-mode MaxSteps values keep controlling the round count; when it was set to
+// 0, transparent continuation is switched off entirely.
+var ChatContinuationMaxRoundsSet bool
+
+// ChatContinuationRoundMaxElapsedSeconds bounds the wall clock a repair may spend,
+// counted from the request start (default 1500s).
+var ChatContinuationRoundMaxElapsedSeconds int
+
+// ChatContinuationRotateChannels makes rounds 2..N rotate to channels that have
+// not been tried. Disabling it restores same-channel rounds. The zero value of a
+// bool is "same channel", so the initializer makes rotation the default for any
+// code path that runs before the option/env defaults are applied.
+var ChatContinuationRotateChannels = true
 
 // ChatContinuationChannelIDs is the channel whitelist for transparent chat
 // continuation (RELAY_CHAT_CONTINUATION_CHANNELS, comma separated ids).
@@ -112,6 +136,14 @@ func ChatContinuationChannelAllowed(channelID int) bool {
 func ValidateChatContinuationOption(key, value string) error {
 	value = strings.TrimSpace(value)
 	switch key {
+	case ChatContinuationOptionRotateChannels:
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("%s must be true or false", key)
+		}
+	case ChatContinuationOptionMaxRounds, ChatContinuationOptionRoundMaxElapsedSeconds:
+		if n, err := strconv.Atoi(value); err != nil || n < 0 {
+			return fmt.Errorf("%s must be an integer >= 0", key)
+		}
 	case ChatContinuationOptionOnAbnormal, ChatContinuationOptionOnMissing:
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be true or false", key)
@@ -181,6 +213,25 @@ func SetChatContinuationOption(key, value string) error {
 			}
 		}
 		ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionRotateChannels:
+		v, err := parseBool()
+		if err != nil {
+			return err
+		}
+		ChatContinuationRotateChannels = v
+	case ChatContinuationOptionMaxRounds:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationMaxRounds = v
+		ChatContinuationMaxRoundsSet = true
+	case ChatContinuationOptionRoundMaxElapsedSeconds:
+		v, err := parseInt(0)
+		if err != nil {
+			return err
+		}
+		ChatContinuationRoundMaxElapsedSeconds = v
 	case ChatContinuationOptionMaxSteps:
 		v, err := parseInt(0)
 		if err != nil {

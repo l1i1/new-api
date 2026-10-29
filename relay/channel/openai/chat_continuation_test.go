@@ -1966,6 +1966,8 @@ func TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart(t 
 		return continuationSSEResponse(fallbackRound), nil
 	}
 	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+	// Rotation rounds: round 1 on the owning channel, round 2 on another one.
+	info.ChatContinuation.MaxRounds = 2
 	info.ChatContinuation.Fallback = fallback
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
@@ -2095,6 +2097,8 @@ func TestOaiStreamHandlerCreditsResumedRoundToItsChannel(t *testing.T) {
 	}, "\n")
 	sender := func(string, int) (*http.Response, error) { return nil, errors.New("dial tcp: connection refused") }
 	c, info, _ := newContinuationTestContext(t, sender, 1, 128000)
+	// Rotation rounds: round 1 on the owning channel, round 2 on another one.
+	info.ChatContinuation.MaxRounds = 2
 	tracker := &relaycommon.ContinuationRoundChannel{}
 	info.ChatContinuation.RoundChannel = tracker
 	info.ChatContinuation.Fallback = func(string, int) (*http.Response, error) {
@@ -2137,6 +2141,8 @@ func TestOaiStreamHandlerHopsWhenThinkingRoundFailsWithoutAnswer(t *testing.T) {
 		sameCalls++
 		return continuationSSEResponse(dyingRound), nil
 	}, 1, 100, 1<<20)
+	// Rotation rounds: the reasoning resume round, then the hop channel.
+	info.ChatContinuation.Abnormal.MaxRounds = 2
 	info.ChatContinuation.Abnormal.Fallback = func(string, int) (*http.Response, error) {
 		fallbackCalls++
 		return continuationSSEResponse(recoveredRound), nil

@@ -272,6 +272,13 @@ type RelayInfo struct {
 	// cut can be diagnosed from /api/log/ instead of from a container log line
 	// that is usually gone by the time the customer reports the request id.
 	StreamCutDiagnostics *StreamCutDiagnostics
+	// RepairChannels / RepairRounds / RepairFailedReason carry the continuation
+	// repair outcome until the cut diagnostics are snapshotted. The repair runs
+	// before the snapshot for some shapes and after it for others, so the outcome
+	// is kept here and copied into the diagnostics when they are built.
+	RepairChannels     []int
+	RepairRounds       int
+	RepairFailedReason string
 	// ContinuationAudit, when non-nil, records a transparent continuation that
 	// repaired this response. The successful request's type=2 row carries it as
 	// admin_info.continuation, so the repair rate can be measured from /api/log/
