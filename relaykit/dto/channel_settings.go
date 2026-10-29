@@ -35,7 +35,7 @@ type ChannelSettings struct {
 	// the client until the buffer is complete the ordinary retry/failover path
 	// keeps working. Opt-in per channel so a deployment can pilot it on one
 	// upstream and roll back by clearing the flag.
-	InternalStreamForNonStream bool   `json:"internal_stream_for_nonstream,omitempty"`
+	InternalStreamForNonStream bool `json:"internal_stream_for_nonstream,omitempty"`
 	// ThinkingOffEmulation makes this channel bill and answer like the official
 	// endpoint when the caller asked for thinking-off but the upstream cannot
 	// honour it. Upstreams of this kind (every reseller measured 2026-10-29)
@@ -49,6 +49,14 @@ type ChannelSettings struct {
 	// endpoint would have produced. The difference is absorbed by the platform
 	// (operator decision 2026-10-29: 「确认按官方口径计费」).
 	ThinkingOffEmulation bool `json:"thinking_off_emulation,omitempty"`
+	// Prefill names the provider-native assistant-prefill dialect this channel
+	// accepts, so a continuation can hand the already-delivered prefix back
+	// instead of asking for it with an instruction. Empty (the default) keeps the
+	// instruction-style continuation. Probed 2026-10-30: the xunlitec gateway
+	// honoured kimi partial mode, while the neurvibe and moonravine gateways
+	// dropped the field and restarted the answer (see the release notes), so the
+	// capability is per channel and must be enabled only where it was measured.
+	Prefill string `json:"prefill,omitempty"`
 	// ThinkingOffPromptOffset is the fixed preamble the upstream adds to the
 	// prompt count for a thinking-disabled request (measured per channel).
 	ThinkingOffPromptOffset int `json:"thinking_off_prompt_offset,omitempty"`
@@ -57,9 +65,9 @@ type ChannelSettings struct {
 	ThinkingOffPromptOffsetPerMessage int `json:"thinking_off_prompt_offset_per_message,omitempty"`
 	// ThinkingOffPromptOffsetTools is the additional preamble the upstream adds
 	// when the request carries tools (measured 37 on ch106, 0 elsewhere).
-	ThinkingOffPromptOffsetTools int `json:"thinking_off_prompt_offset_tools,omitempty"`
-	SystemPrompt               string `json:"system_prompt,omitempty"`
-	SystemPromptOverride       bool   `json:"system_prompt_override,omitempty"`
+	ThinkingOffPromptOffsetTools int    `json:"thinking_off_prompt_offset_tools,omitempty"`
+	SystemPrompt                 string `json:"system_prompt,omitempty"`
+	SystemPromptOverride         bool   `json:"system_prompt_override,omitempty"`
 	// TaskExtendPluginKeys lists the task plugins a New API channel (type 60)
 	// is extended with. The upstream gateway may host many plugins, so the
 	// channel serves every listed plugin's models while the request still pins
@@ -109,6 +117,42 @@ type MultiKeyTestSetting struct {
 // so a runaway value would only waste semaphore slots, but a bound keeps the
 // documented range explicit.
 const MaxConcurrencyLimit = 10000
+
+// PrefillMode values. An unknown value is rejected at save time so a typo cannot
+// silently turn into "no prefill" on a channel an operator believes is prefilled.
+const (
+	PrefillNone           = ""
+	PrefillKimiPartial    = "kimi-partial"
+	PrefillDeepseekPrefix = "deepseek-prefix"
+	PrefillQwenPartial    = "qwen-partial"
+)
+
+// PrefillMode returns the channel's prefill dialect.
+func (s ChannelSettings) PrefillMode() string {
+	return strings.TrimSpace(s.Prefill)
+}
+
+// PrefillRequiresVisibleContent reports whether this prefill dialect can only
+// resume an answer that already produced visible text. Kimi's Partial Mode
+// restarts from scratch when the assistant prefix carries no content (its guide
+// says so for a truncation that fell inside thinking), so a reasoning-only cut
+// must not be resumed on such a channel.
+func (s ChannelSettings) PrefillRequiresVisibleContent() bool {
+	switch s.PrefillMode() {
+	case PrefillKimiPartial, PrefillQwenPartial, PrefillDeepseekPrefix:
+		return true
+	}
+	return false
+}
+
+// ValidatePrefill rejects unknown prefill dialects at save time.
+func (s ChannelSettings) ValidatePrefill() error {
+	switch s.PrefillMode() {
+	case PrefillNone, PrefillKimiPartial, PrefillDeepseekPrefix, PrefillQwenPartial:
+		return nil
+	}
+	return fmt.Errorf("unsupported prefill mode %q", s.Prefill)
+}
 
 // ValidateConcurrencyLimit validates the save-time channel concurrency limit.
 // Zero keeps the channel unlimited.

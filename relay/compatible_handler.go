@@ -372,31 +372,45 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			}
 			return crossChannelContinuationFallback(c, info, base, build, roundChannel, triedChannels)
 		}
-		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, MaxRounds: maxRounds, RoundChannel: roundChannel, Tried: triedChannels}
-		if steps > 0 {
-			cfg.Send = send(openaichannel.BuildChatContinuationBody)
-			cfg.Fallback = fallback(openaichannel.BuildChatContinuationBody)
+		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, MaxRounds: maxRounds, RoundChannel: roundChannel, Tried: triedChannels,
+			PrefillMode: info.ChannelSetting.PrefillMode()}
+		buildContent := func(base []byte, partialContent string, remainingTokens int) ([]byte, error) {
+			return openaichannel.BuildChatContinuationBody(base, partialContent, cfg.PrefixReasoning, remainingTokens, cfg.PrefillMode)
 		}
-		if abnormalSteps > 0 {
+		buildAnswer := func(base []byte, reasoning string, remainingTokens int) ([]byte, error) {
+			return openaichannel.BuildChatAnswerContinuationBody(base, reasoning, remainingTokens, cfg.PrefillMode)
+		}
+		if steps > 0 {
+			cfg.Send = send(buildContent)
+			cfg.Fallback = fallback(buildContent)
+		}
+		// A channel whose prefill dialect needs a visible prefix cannot resume a
+		// cut that never produced one: Kimi's guide says the provider restarts
+		// from scratch when the prefilled assistant turn is empty. Leaving the
+		// reasoning modes unwired keeps the caller's failure honest instead of
+		// spending a round on a restart (red line: no reasoning-only resume on a
+		// prefill channel).
+		reasoningResumeEnabled := !info.ChannelSetting.PrefillRequiresVisibleContent()
+		if abnormalSteps > 0 && reasoningResumeEnabled {
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
 				MaxRounds:         maxRounds,
 				Tried:             triedChannels,
-				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Send:              send(buildAnswer),
 				RoundChannel:      roundChannel,
-				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
+				Fallback:          fallback(buildAnswer),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
 			}
 		}
-		if missingSteps > 0 {
+		if missingSteps > 0 && reasoningResumeEnabled {
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
 				MaxRounds:         maxRounds,
 				Tried:             triedChannels,
-				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				Send:              send(buildAnswer),
 				RoundChannel:      roundChannel,
-				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
+				Fallback:          fallback(buildAnswer),
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}

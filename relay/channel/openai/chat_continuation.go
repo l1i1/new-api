@@ -59,7 +59,15 @@ const chatAnswerContinuationPrompt = "上面是你上一轮被上游截断的思
 // round in answer mode: the captured reasoning goes into the assistant content
 // and the round runs with the cheapest thinking budget the upstream accepts, so
 // it produces the answer instead of spending another full wall on reasoning.
-func BuildChatAnswerContinuationBody(baseJSON []byte, reasoning string, remainingTokens int) ([]byte, error) {
+func BuildChatAnswerContinuationBody(baseJSON []byte, reasoning string, remainingTokens int, prefill string) ([]byte, error) {
+	if prefill != "" {
+		// Reasoning-only resumes have no visible prefix to hand back, and every
+		// measured prefill dialect (kimi partial in particular) restarts from
+		// scratch when the assistant prefix is empty. Callers must not wire the
+		// reasoning modes for a prefill channel; failing loudly here keeps a
+		// mis-wired caller from spending a round that can only duplicate work.
+		return nil, fmt.Errorf("continuation: reasoning-only resume is unavailable for prefill mode %q", prefill)
+	}
 	out, err := buildChatContinuationBody(baseJSON, reasoning, chatAnswerContinuationPrompt, remainingTokens)
 	if err != nil {
 		return nil, err
@@ -98,8 +106,75 @@ func gjsonParseModel(body []byte) (string, bool) {
 // output budget. Keeping the original body (after mapping and param overrides)
 // means the continuation inherits the same model, tools, sampling parameters
 // and channel-specific rewrites as the first round.
-func BuildChatContinuationBody(baseJSON []byte, partialContent string, remainingTokens int) ([]byte, error) {
+func BuildChatContinuationBody(baseJSON []byte, partialContent, reasoning string, remainingTokens int, prefill string) ([]byte, error) {
+	if prefill != "" && strings.TrimSpace(partialContent) != "" && !continuationBodyRequestsJSON(baseJSON) {
+		return buildPrefillContinuationBody(baseJSON, partialContent, reasoning, prefill, remainingTokens)
+	}
 	return buildChatContinuationBody(baseJSON, partialContent, chatContinuationPrompt, remainingTokens)
+}
+
+// continuationBodyRequestsJSON reports whether the caller asked for a JSON
+// object. Kimi's guide warns that Partial Mode must not be mixed with
+// response_format=json_object, so that combination falls back to the
+// instruction-style continuation instead of sending a prefilled assistant turn.
+func continuationBodyRequestsJSON(baseJSON []byte) bool {
+	switch strings.TrimSpace(gjson.GetBytes(baseJSON, "response_format.type").String()) {
+	case "json_object", "json_schema":
+		return true
+	}
+	return false
+}
+
+// buildPrefillContinuationBody hands the provider the answer prefix it already
+// produced and lets it continue natively. Unlike the instruction-style body this
+// adds no trailing user message: the assistant turn is the last message, which
+// is exactly the shape Kimi Partial Mode, DeepSeek prefix completion and Qwen
+// partial mode expect. The other request properties (model, tools, sampling,
+// channel rewrites) stay untouched, so the round runs on the same model with the
+// same budget mapping.
+func buildPrefillContinuationBody(baseJSON []byte, content, reasoning, prefill string, remainingTokens int) ([]byte, error) {
+	if remainingTokens <= 0 {
+		return nil, fmt.Errorf("continuation: remaining output budget is %d", remainingTokens)
+	}
+	messages := gjson.GetBytes(baseJSON, "messages")
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("continuation: base request has no messages array")
+	}
+	assistant := map[string]any{"role": "assistant", "content": content}
+	switch prefill {
+	case dto.PrefillKimiPartial:
+		assistant["partial"] = true
+		// Thinking mode needs the reasoning the model already emitted; the guide
+		// passes it back next to the prefix so the resumed turn continues the
+		// same chain instead of starting a fresh one.
+		if strings.TrimSpace(reasoning) != "" {
+			assistant["reasoning_content"] = reasoning
+		}
+	case dto.PrefillQwenPartial:
+		assistant["partial"] = true
+	case dto.PrefillDeepseekPrefix:
+		assistant["prefix"] = true
+	default:
+		return nil, fmt.Errorf("continuation: unsupported prefill mode %q", prefill)
+	}
+	encodedAssistant, err := common.Marshal(assistant)
+	if err != nil {
+		return nil, err
+	}
+	rawMessages := make([]json.RawMessage, 0, len(messages.Array())+1)
+	for _, message := range messages.Array() {
+		rawMessages = append(rawMessages, json.RawMessage(message.Raw))
+	}
+	rawMessages = append(rawMessages, json.RawMessage(encodedAssistant))
+	encodedMessages, err := common.Marshal(rawMessages)
+	if err != nil {
+		return nil, err
+	}
+	out, err := sjson.SetRawBytes(baseJSON, "messages", encodedMessages)
+	if err != nil {
+		return nil, err
+	}
+	return finishContinuationBody(out, remainingTokens)
 }
 
 // BuildChatThinkingContinuationBody rebuilds a request that resumes a cut-off
@@ -139,6 +214,35 @@ func buildChatContinuationBody(baseJSON []byte, partialContent, instruction stri
 	if err != nil {
 		return nil, err
 	}
+	maxUpdated := false
+	if gjson.GetBytes(out, "max_completion_tokens").Exists() {
+		out, err = sjson.SetBytes(out, "max_completion_tokens", remainingTokens)
+		if err != nil {
+			return nil, err
+		}
+		maxUpdated = true
+	}
+	if gjson.GetBytes(out, "max_tokens").Exists() {
+		out, err = sjson.SetBytes(out, "max_tokens", remainingTokens)
+		if err != nil {
+			return nil, err
+		}
+		maxUpdated = true
+	}
+	if !maxUpdated {
+		out, err = sjson.SetBytes(out, "max_tokens", remainingTokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return finishContinuationBody(out, remainingTokens)
+}
+
+// finishContinuationBody applies the shared tail of every continuation body: the
+// remaining output budget on whichever max-token field the caller used, and a
+// streaming request that carries usage.
+func finishContinuationBody(out []byte, remainingTokens int) ([]byte, error) {
+	var err error
 	maxUpdated := false
 	if gjson.GetBytes(out, "max_completion_tokens").Exists() {
 		out, err = sjson.SetBytes(out, "max_completion_tokens", remainingTokens)

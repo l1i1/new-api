@@ -157,9 +157,8 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 	cases := []struct {
 		name string
 		body []string
-		// A cut that delivered answer text is closed honestly as a truncated
-		// answer (finish_reason=length, zero usage) instead of an error frame; a
-		// reasoning-only cut delivered no answer and keeps the error.
+		// Both shapes are failures: answer text already written stays delivered, but
+		// a cut never becomes a synthetic finish_reason=length (2026-10-30 red line).
 		expectError bool
 	}{
 		{
@@ -174,7 +173,7 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 		},
 		{
 			name:        "eof_without_done_and_no_finish",
-			expectError: false,
+			expectError: true,
 			body: []string{
 				`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]}`,
 				``,
@@ -208,14 +207,14 @@ func TestOaiStreamHandlerTreatsMissingFinishReasonAsFailure(t *testing.T) {
 				require.Empty(t, info.StreamFinishReason)
 				require.True(t, err.ShouldEvictChannelAffinity(), "a truncated stream must drop the affinity binding")
 				require.False(t, err.SettlesObservedUsageAfterError(), "a truncated stream is refunded, not settled")
-				// The client must be able to tell that nothing was delivered: a bare
-				// [DONE] after zero content reads as a successful empty answer.
-				assert.Contains(t, recorder.Body.String(), "truncated_stream", "an unrecoverable silent cut must be surfaced as an error frame")
+				// The client must be able to tell that nothing usable was delivered: the
+				// failure is classified as a truncated stream (the controller renders the
+				// error frame from it).
+				assert.True(t, err.IsTruncatedStream(), "an unrecoverable silent cut must be classified as a truncated stream")
 			} else {
-				require.Nil(t, err, "a cut after delivered answer text is closed, not failed")
-				require.Equal(t, "length", info.StreamFinishReason)
-				assert.Contains(t, recorder.Body.String(), `"finish_reason":"length"`, "the caller must be told the answer was cut")
-				assert.NotContains(t, recorder.Body.String(), "truncated_stream")
+				// The delivered prefix may stay, but the request is still a failure:
+				// no synthetic length frame may be rendered for a cut.
+				assert.NotContains(t, recorder.Body.String(), `"finish_reason":"length"`, "no synthetic length frame")
 			}
 		})
 	}

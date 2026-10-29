@@ -128,6 +128,15 @@ type ChatContinuationConfig struct {
 	// that only sets the legacy key keeps its old round count.
 	MaxRounds int
 	Send      func(partialContent string, remainingTokens int) (*http.Response, error)
+	// PrefillMode is the serving channel's native prefill dialect (empty means
+	// instruction-style continuation). The handler fills it in from the channel
+	// settings so the body builders can choose the native shape.
+	PrefillMode string
+	// PrefixReasoning is the reasoning captured from the round being resumed,
+	// set by the handler immediately before a round. The prefill builder sends
+	// it as reasoning_content beside the prefix so a thinking channel continues
+	// the same chain (Kimi Partial Mode requires it in thinking mode).
+	PrefixReasoning string
 	// RoundChannel, when set, tracks the channel of the latest round.
 	RoundChannel *ContinuationRoundChannel
 	// Fallback, when non-nil, is used once after the same-channel sender fails to

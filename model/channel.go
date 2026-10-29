@@ -1322,6 +1322,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelParams.ValidateHTTPTransport(); err != nil {
 		return err
 	}
+	if err := channelParams.ValidatePrefill(); err != nil {
+		return err
+	}
 	if err := channelParams.ValidateMultiKeyTest(); err != nil {
 		return err
 	}

@@ -325,8 +325,9 @@ func TestContinuationStopsAtElapsedCap(t *testing.T) {
 	c, info, _ := newRotationContext(t, plan)
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(cutBody))
-	require.Nil(t, err, "a content-bearing cut closes as an honest truncation, not a 502")
+	require.NotNil(t, err, "a content-bearing cut is a failure, not a synthetic length")
 	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an unrepaired cut stays unbilled")
 	require.Equal(t, 0, plan.fallbackCalls, "past the cap no new channel is asked")
 	require.Equal(t, "elapsed_cap", info.RepairFailedReason)
 }
@@ -382,10 +383,11 @@ func TestContinuationSuccessWithRotationDisabledIsNotLabelledIncomplete(t *testi
 	require.Equal(t, 1, info.RepairRounds)
 }
 
-// TestContinuationRepairThatStreamedTextIsClosedHonestly pins the review finding
-// that a repair which already forwarded visible text must not surface a 502 with
-// zero usage: the caller is reading that text.
-func TestContinuationRepairThatStreamedTextIsClosedHonestly(t *testing.T) {
+// TestContinuationRepairThatStreamedTextEndsInError pins the 2026-10-30 rule: a
+// repair round that forwards text and then dies without a terminal frame is a
+// failure, not a synthetic length. The forwarded text stays delivered once and
+// the usage is zeroed.
+func TestContinuationRepairThatStreamedTextEndsInError(t *testing.T) {
 	firstRound := strings.Join([]string{
 		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
@@ -405,12 +407,11 @@ func TestContinuationRepairThatStreamedTextIsClosedHonestly(t *testing.T) {
 	}, 1, 1000, 1<<20)
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
-	require.Nil(t, err, "text already reached the caller: close honestly instead of a 502")
+	require.NotNil(t, err, "a resume that dies without a terminal frame is an error")
 	require.NotNil(t, usage)
 	body := recorder.Body.String()
 	require.Equal(t, 1, strings.Count(body, "半句正文"), "the delivered text is not repeated")
-	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "one honest length terminal")
-	require.NotContains(t, body, "truncated_stream")
+	require.NotContains(t, body, `"finish_reason":"length"`, "no synthetic length terminal")
 	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
 }
 

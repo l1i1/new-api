@@ -26,7 +26,7 @@ import (
 
 func TestBuildChatContinuationBody(t *testing.T) {
 	base := []byte(`{"model":"kimi-k3.1-pro","stream":true,"stream_options":{"include_usage":true},"max_completion_tokens":131072,"messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}]}`)
-	out, err := BuildChatContinuationBody(base, "9152、", 64000)
+	out, err := BuildChatContinuationBody(base, "9152、", "", 64000, "")
 	require.NoError(t, err)
 
 	messages := gjson.GetBytes(out, "messages").Array()
@@ -49,7 +49,7 @@ func TestBuildChatContinuationBody(t *testing.T) {
 
 func TestBuildChatContinuationBodyHonorsMaxTokensField(t *testing.T) {
 	base := []byte(`{"model":"m","stream":true,"max_tokens":131072,"messages":[{"role":"user","content":"hi"}]}`)
-	out, err := BuildChatContinuationBody(base, "partial", 4096)
+	out, err := BuildChatContinuationBody(base, "partial", "", 4096, "")
 	require.NoError(t, err)
 	require.Equal(t, int64(4096), gjson.GetBytes(out, "max_tokens").Int())
 	require.False(t, gjson.GetBytes(out, "max_completion_tokens").Exists())
@@ -1734,11 +1734,13 @@ func TestOaiStreamHandlerRetriesContinuationRoundWhenUpstreamRejectsResume(t *te
 	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
 }
 
-// TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated pins the
-// fallback: when every repair attempt fails, an answer whose prefix already
-// reached the caller is closed with finish_reason=length instead of a 502, so
-// the delivered work survives and the caller can continue. Usage stays unbilled.
-func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T) {
+// TestOaiStreamHandlerReportsPartiallyDeliveredAnswerAsError pins the 2026-10-30
+// red line: when every repair attempt fails, the request is a failure even though
+// the prefix already reached the caller. Synthesizing finish_reason=length would
+// tell the caller the model stopped by design and hide the channel defect, so the
+// delivered prefix stays delivered, the usage is zeroed and the caller receives
+// the truncated-stream 502 it can retry.
+func TestOaiStreamHandlerReportsPartiallyDeliveredAnswerAsError(t *testing.T) {
 	firstRound := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"已经发出的前半段"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
@@ -1754,15 +1756,14 @@ func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T)
 	info.ChatContinuation.Send = sender
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
-	require.Nil(t, err, "a delivered prefix must not be turned into a 502")
+	require.NotNil(t, err, "a cut that no repair could finish is a failure, not a length completion")
 	require.NotNil(t, usage)
 	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
 
 	body := recorder.Body.String()
-	require.Contains(t, body, "已经发出的前半段", "the delivered prefix stays")
-	require.NotContains(t, body, "truncated_stream", "no error frame for a delivered prefix")
-	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
-	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.Contains(t, body, "已经发出的前半段", "the delivered prefix stays - it cannot be retracted")
+	require.NotContains(t, body, `"finish_reason":"length"`, "no synthetic length frame")
+	require.True(t, err.IsTruncatedStream(), "the failure is classified as a truncated stream")
 }
 
 // TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame pins the robustness
@@ -1790,7 +1791,7 @@ func TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame(t *testing.T) {
 	info.ChatContinuation.Send = info.ChatContinuation.Abnormal.Send
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
-	require.Nil(t, err)
+	require.NotNil(t, err, "an answer cut twice is a failure, not a length completion")
 	require.NotNil(t, usage)
 	require.Zero(t, usage.TotalTokens, "an answer cut twice must not be billed")
 	require.NotEmpty(t, info.UndeliveredReason, "the cut stays classified as undelivered")
@@ -1875,10 +1876,11 @@ func TestOaiStreamHandlerContinuesAfterMidStreamError(t *testing.T) {
 	require.NotContains(t, body, "truncated_stream")
 }
 
-// TestOaiStreamHandlerClosesMidStreamErrorAsTruncated is the fallback for the
-// same shape when the repair itself fails: the caller gets the delivered answer
-// closed with finish_reason=length and no charge, not a raw transport error.
-func TestOaiStreamHandlerClosesMidStreamErrorAsTruncated(t *testing.T) {
+// TestOaiStreamHandlerReportsMidStreamErrorAsTruncated pins the same red line on
+// the transport-failure path: when the repair also fails, the caller keeps the
+// delivered bytes but the request ends with the truncated-stream 502 and zero
+// usage instead of a synthetic length completion.
+func TestOaiStreamHandlerReportsMidStreamErrorAsTruncated(t *testing.T) {
 	firstRound := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"已经发出的"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"内容"},"finish_reason":null}]}`,
@@ -1894,15 +1896,15 @@ func TestOaiStreamHandlerClosesMidStreamErrorAsTruncated(t *testing.T) {
 	info.ChatContinuation.Send = sender
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
-	require.Nil(t, err, "no raw transport error may reach a caller that already read content")
+	require.NotNil(t, err, "a transport cut that no repair finished is an error")
 	require.NotNil(t, usage)
 	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
 
 	body := recorder.Body.String()
 	require.Contains(t, body, `"content":"已经发出的"`)
 	require.Contains(t, body, `"content":"内容"`, "the tail the loop still held must reach the caller")
-	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
-	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, `"finish_reason":"length"`, "no synthetic length frame")
+	require.True(t, err.IsTruncatedStream(), "the failure is classified as a truncated stream")
 }
 
 // TestOpenaiHandlerAbnormalFinishIsRetryable pins the non-streaming gap found on
