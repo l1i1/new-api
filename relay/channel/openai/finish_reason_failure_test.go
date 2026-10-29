@@ -241,3 +241,46 @@ func TestOaiStreamHandlerAcceptsTerminalFinishReason(t *testing.T) {
 	require.Equal(t, "stop", info.StreamFinishReason)
 	require.False(t, info.StreamStatus.ResponseFailed())
 }
+
+// TestOaiStreamHandlerReturnsZeroOutputCutForRetry pins the availability rule for
+// a stream that died before delivering anything: the response is not committed,
+// so the request may be retried on another channel instead of being written out
+// as an error frame. 2026-10-30 02:10-02:50: 29 such cuts (ch91/ch37) were
+// customer-visible 502s while sibling channels were healthy.
+func TestOaiStreamHandlerReturnsZeroOutputCutForRetry(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, err, "a cut stream is still a failure")
+	require.NotNil(t, usage)
+	require.True(t, err.IsTruncatedStream())
+	require.False(t, types.IsSkipRetryError(err), "nothing was delivered, so another channel may serve the request")
+	require.NotContains(t, recorder.Body.String(), "truncated_stream", "an error frame would commit the response and forbid the retry")
+	require.NotContains(t, recorder.Body.String(), "[DONE]", "the stream must not be closed before the retry decision")
+}
+
+// TestOaiStreamHandlerKeepsErrorFrameAfterDeliveredPrefix is the counterpart: once
+// the caller holds answer bytes, the response is committed and the honest error
+// frame must be written instead of attempting an unsafe retry.
+func TestOaiStreamHandlerKeepsErrorFrameAfterDeliveredPrefix(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"content":"半截答案"},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, err)
+	require.NotNil(t, usage)
+	require.True(t, err.IsTruncatedStream())
+	require.Contains(t, recorder.Body.String(), "半截答案", "delivered bytes cannot be retracted")
+}

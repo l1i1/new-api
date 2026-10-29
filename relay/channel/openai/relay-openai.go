@@ -1324,6 +1324,29 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			flushHeldAnswerChunk(c, info, lastStreamData)
 			return truncatedDeliveredFailure(c, info, usage, undeliveredReason)
 		}
+		// Nothing of the answer reached the caller: no text, no reasoning, no call
+		// fragment, and no provider terminal frame. The response is therefore still
+		// uncommitted (the writer holds at most keep-alive pings), so another channel
+		// can serve the same request. Writing our own error frame here would commit
+		// the response and forbid that retry - which is what turned 29 zero-output
+		// cuts in a 40-minute window (2026-10-30 02:10-02:50, ch91/ch37) into
+		// customer-visible 502s while other channels were healthy.
+		//
+		// Protocol semantics are unchanged: the client sees either one complete
+		// answer or, when every channel fails, one error. The retry only happens
+		// when no byte of the answer was delivered.
+		if commitState := helper.ResponseCommitStateOf(c); commitState != helper.ResponsePayloadWritten &&
+			visibleContentChars == 0 && reasoningTextBuilder.Len() == 0 &&
+			len(streamedToolCalls.order) == 0 && continuationToolCalls == 0 && !finishFrameForwarded &&
+			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+			common.SysLog(fmt.Sprintf("zero-output stream cut returns for a channel retry: ch=%d reason=%s", info.ChannelId, undeliveredReason))
+			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+			return usage, types.NewOpenAIError(
+				fmt.Errorf("upstream stream ended without a terminal finish_reason"),
+				types.ErrorCode("upstream_error"), http.StatusBadGateway,
+				types.ErrOptionWithTruncatedStream())
+		}
 		if deferredTerminalData != "" && !finishFrameForwarded {
 			// No repair is possible for this shape, so the provider's terminal frame
 			// is the honest end of the answer: release it now rather than leaving the
