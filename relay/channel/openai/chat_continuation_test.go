@@ -2107,3 +2107,76 @@ func TestOaiStreamHandlerCreditsResumedRoundToItsChannel(t *testing.T) {
 	stats := common.ContinuationCapabilitySnapshot()[hopChannelID]
 	require.GreaterOrEqual(t, stats.Successes, int64(1), "the hop channel that produced the text must be credited")
 }
+
+// TestOaiStreamHandlerHopsWhenThinkingRoundFailsWithoutAnswer pins the 2026-10-29
+// ch102 shape: the first cut is resumed on its own channel, the resume forwards
+// reasoning and then dies, and nothing visible ever reached the caller. A second
+// channel must get the chance to finish the answer instead of a 502.
+func TestOaiStreamHandlerHopsWhenThinkingRoundFailsWithoutAnswer(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	dyingRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recoveredRound := strings.Join([]string{
+		`data: {"id":"chat_3","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4,"total_tokens":34}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameCalls, fallbackCalls := 0, 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		sameCalls++
+		return continuationSSEResponse(dyingRound), nil
+	}, 1, 100, 1<<20)
+	info.ChatContinuation.Abnormal.Fallback = func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(recoveredRound), nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	t.Logf("sameCalls=%d fallbackCalls=%d err=%v", sameCalls, fallbackCalls, err)
+	require.Equal(t, 1, sameCalls, "the dying channel gets one round")
+	require.Equal(t, 1, fallbackCalls, "the fallback is spent exactly once")
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), "最终答案")
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.Equal(t, 14, usage.CompletionTokens, "reasoning from round one + hop round output")
+}
+
+// A round that already forwarded visible content must never hop: the caller is
+// reading that answer and a second channel would duplicate it.
+func TestOaiStreamHandlerDoesNotHopAfterForwardedContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	contentThenDie := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"content":"半句正文"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sameCalls, fallbackCalls := 0, 0
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		sameCalls++
+		return continuationSSEResponse(contentThenDie), nil
+	}, 1, 100, 1<<20)
+	info.ChatContinuation.Abnormal.Fallback = func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(contentThenDie), nil
+	}
+	_, _ = OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Equal(t, 1, sameCalls)
+	require.Zero(t, fallbackCalls, "a forwarded answer prefix must not be resumed elsewhere")
+}
