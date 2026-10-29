@@ -1014,7 +1014,11 @@ func prepareChannelRetryWithMessage(retryParam *service.RetryParam, channel *mod
 	if retryParam == nil || channel == nil || skipRetry {
 		return false
 	}
-	if channel.ChannelInfo.IsMultiKey && service.ShouldRotateMultiKeyCredentialOn(statusCode, message) {
+	// A credential-scoped failure keeps the channel and rotates its key; an
+	// engine-wide overload is the same answer on every key, so rotating only
+	// burns the attempt budget (2026-10-29 official 429 storm). Exclude the
+	// channel and let the ordinary failover list pick another one.
+	if channel.ChannelInfo.IsMultiKey && !service.IsEngineOverloadFailure(message) && service.ShouldRotateMultiKeyCredentialOn(statusCode, message) {
 		retryParam.PreferChannel(channel.Id)
 		retryParam.ResetRetryNextTry()
 		return true

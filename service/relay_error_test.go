@@ -738,3 +738,36 @@ func TestOfficialFitPinDoesNotKeepVerdictOnCapabilityGap(t *testing.T) {
 	assert.Equal(t, "retry", DecideRelayRetry(pinned, featureGap, 1).Action,
 		"an unsupported-feature channel error must not keep the pin")
 }
+
+// TestEngineOverloadFailureIsChannelWide pins the 2026-10-29 storm fix: an
+// upstream engine that is "currently overloaded" refuses every credential of the
+// channel identically, so the retry must exclude the channel instead of rotating
+// its keys, and a fidelity pin must step aside immediately.
+func TestEngineOverloadFailureIsChannelWide(t *testing.T) {
+	for _, msg := range []string{
+		"status_code=429, The engine is currently overloaded, please try again later",
+		"service is temporarily unavailable",
+		"server overloaded",
+	} {
+		require.True(t, IsEngineOverloadFailure(msg), msg)
+	}
+	for _, msg := range []string{
+		"Your account org-x / proj-y <ak-z> request reached organization TPM rate limit, current: 1, limit: 2",
+		"insufficient balance",
+		"",
+	} {
+		require.False(t, IsEngineOverloadFailure(msg), msg)
+	}
+}
+
+// An engine-wide overload relaxes a pinned request even while sibling credentials
+// are still "available": they will refuse identically, so keeping the pin only
+// burns the attempt budget.
+func TestEngineOverloadRelaxesOfficialPin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	err := types.NewOpenAIError(errors.New("The engine is currently overloaded, please try again later"),
+		types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
+	require.True(t, shouldRelaxOfficialPinForAvailability(c, err))
+}

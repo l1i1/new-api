@@ -394,6 +394,33 @@ var credentialExhaustedKeywords = []string{
 // the platform's own 403 with a routing error when no second official channel
 // exists. Upstream errors carry ErrorTypeOpenAIError/ErrorTypeClaudeError, so
 // the guard costs the real escape path nothing.
+// IsEngineOverloadFailure reports a failure that belongs to the upstream engine
+// or service as a whole rather than to one credential: "The engine is currently
+// overloaded" and "service temporarily unavailable" arrive identically on every
+// key of the channel, so rotating credentials cannot help — the channel has to
+// step aside and the request fail over (2026-10-29: during one official 429
+// storm, 2098 attempt-level 429s in 30 minutes burned every retry on the same
+// channel and 165 requests in ten minutes reached the caller as 429).
+func IsEngineOverloadFailure(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	for _, keyword := range []string{
+		"engine is currently overloaded",
+		"currently overloaded",
+		"service is temporarily unavailable",
+		"temporarily unavailable",
+		"server overloaded",
+		"overloaded, please try again",
+	} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldRelaxOfficialPinForAvailability reports whether a pinned request must
 // give up the official-fit narrowing for its remaining attempts: a non-verdict
 // failure (the upstream could not answer at all) with no sibling credential left
@@ -407,6 +434,12 @@ func shouldRelaxOfficialPinForAvailability(c *gin.Context, err *types.NewAPIErro
 	}
 	if operation_setting.IsVerdictStatusCode(err.StatusCode) {
 		return false
+	}
+	// An engine-wide overload is not fixed by rotating to a sibling key: the
+	// upstream refuses every credential the same way, so the pin must step aside
+	// immediately instead of spending the attempt budget on the same engine.
+	if IsEngineOverloadFailure(err.Error()) {
+		return true
 	}
 	return !anotherCredentialAvailable(c)
 }
