@@ -224,6 +224,43 @@ func (a *ChatBufferedAccumulator) Text() string {
 	return sb.String()
 }
 
+// ContentText returns only the visible answer text, in choice order. The
+// continuation repair needs the prefix the caller would have seen; Text() also
+// carries reasoning and tool arguments, which must not be replayed as the
+// assistant body.
+func (a *ChatBufferedAccumulator) ContentText() string {
+	var sb strings.Builder
+	indices := append([]int(nil), a.order...)
+	sort.Ints(indices)
+	for _, idx := range indices {
+		sb.WriteString(a.choices[idx].content.String())
+	}
+	return sb.String()
+}
+
+// ReasoningText returns the captured reasoning text, in choice order. It is the
+// replay body of a round that died before producing any visible content.
+func (a *ChatBufferedAccumulator) ReasoningText() string {
+	var sb strings.Builder
+	indices := append([]int(nil), a.order...)
+	sort.Ints(indices)
+	for _, idx := range indices {
+		sb.WriteString(a.choices[idx].reasoning.String())
+	}
+	return sb.String()
+}
+
+// HasToolCalls reports whether any choice accumulated a tool call. A cut inside
+// a tool call cannot be repaired by replaying text: the caller must retry.
+func (a *ChatBufferedAccumulator) HasToolCalls() bool {
+	for _, c := range a.choices {
+		if len(c.toolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // AllChoicesFinished reports whether every choice produced a finish_reason. A
 // stream without a [DONE] marker is only complete when each choice terminated;
 // checking just one would let a multi-choice answer through half-finished.

@@ -80,3 +80,29 @@ func TestChatMissingContinuationStepsForRequest(t *testing.T) {
 	notStream.IsStream = false
 	require.Zero(t, ChatMissingContinuationStepsForRequest(&notStream), "streaming only")
 }
+
+// A non-streaming client on a channel that answers it from a buffered upstream
+// stream has the same observable stream as a streaming one, so the repair modes
+// must stay available: the 2026-10-29 900s-wall failure burned three channels
+// (45 minutes) for a request whose answer was never committed.
+func TestContinuationStepsForBufferedNonStreamRequest(t *testing.T) {
+	oldSteps := rootcommon.ChatContinuationMaxSteps
+	oldChannels := rootcommon.ChatContinuationChannelIDs
+	t.Cleanup(func() {
+		rootcommon.ChatContinuationMaxSteps = oldSteps
+		rootcommon.ChatContinuationChannelIDs = oldChannels
+	})
+	rootcommon.ChatContinuationMaxSteps = 2
+	rootcommon.ChatContinuationChannelIDs = map[int]struct{}{106: {}}
+
+	info := &RelayInfo{
+		ChannelMeta: &ChannelMeta{ChannelId: 106},
+		IsStream:    false,
+		RelayMode:   relayconstant.RelayModeChatCompletions,
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	require.Zero(t, ChatContinuationStepsForRequest(info), "a plain non-stream request keeps the ordinary path")
+
+	info.ChannelSetting.InternalStreamForNonStream = true
+	require.Equal(t, 2, ChatContinuationStepsForRequest(info), "buffered upstream stream can be resumed")
+}

@@ -300,3 +300,28 @@ func TestChatBufferedAccumulatorEstimateTextIncludesReasoningAndTools(t *testing
 		}
 	}
 }
+
+// The continuation repair replays only the visible prefix, and only when the
+// round produced no tool call: Text() mixes reasoning and tool arguments, which
+// must never be replayed as an assistant message.
+func TestChatBufferedAccumulatorSeparatesVisibleReasoningAndTools(t *testing.T) {
+	acc := NewChatBufferedAccumulator()
+	content := "answer"
+	reasoning := "thinking"
+	acc.ProcessChunk(&dto.ChatCompletionsStreamResponse{Choices: []dto.ChatCompletionsStreamResponseChoice{{
+		Index: 0,
+		Delta: dto.ChatCompletionsStreamResponseChoiceDelta{Content: &content, ReasoningContent: &reasoning},
+	}}})
+	if got := acc.ContentText(); got != "answer" {
+		t.Fatalf("visible content = %q, want %q", got, "answer")
+	}
+	if got := acc.ReasoningText(); got != "thinking" {
+		t.Fatalf("reasoning = %q, want %q", got, "thinking")
+	}
+	if acc.HasToolCalls() {
+		t.Fatal("a plain content chunk must not report tool calls")
+	}
+	if text := acc.Text(); !strings.Contains(text, "answer") || !strings.Contains(text, "thinking") {
+		t.Fatalf("Text() must keep billing text = %q", text)
+	}
+}

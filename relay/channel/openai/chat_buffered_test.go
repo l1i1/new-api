@@ -174,3 +174,68 @@ func TestOaiChatBufferedStreamHandlerRejectsUnfinishedChoiceEvenWithDone(t *test
 	require.NotNil(t, err, "[DONE] with an unfinished choice is still an incomplete answer")
 	require.Zero(t, recorder.Body.Len())
 }
+
+// A buffered answer that the upstream cut mid-stream must be resumed inside the
+// same body instead of failing the caller: this is the non-streaming face of the
+// 900s provider wall.
+func TestOaiChatBufferedStreamHandlerContinuesCutAnswer(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sends := 0
+	info.ChatContinuation = &relaycommon.ChatContinuationConfig{
+		MaxSteps: 2,
+		Send: func(partial string, remaining int) (*http.Response, error) {
+			sends++
+			require.Equal(t, "你好", partial, "the resumed round must replay the visible prefix")
+			require.Positive(t, remaining)
+			return sseResponse("data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"世界\"},\"finish_reason\":null}]}\n\n" +
+				"data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+				"data: [DONE]\n\n"), nil
+		},
+	}
+	cut := "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n"
+
+	usage, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(cut))
+	require.Nil(t, err, "a repairable cut must not surface an error")
+	require.Equal(t, 1, sends)
+	body := recorder.Body.String()
+	require.Contains(t, body, `"content":"你好世界"`, "the resumed tail must join the cut prefix")
+	require.Contains(t, body, `"finish_reason":"stop"`)
+	require.Equal(t, 7, usage.TotalTokens, "input is billed once, output across rounds")
+}
+
+// A round that died inside thinking has no prefix to replay: the captured
+// reasoning goes back as the answer-mode prompt and its text becomes the body.
+func TestOaiChatBufferedStreamHandlerContinuesThinkingOnlyCut(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	sends := 0
+	info.ChatContinuation = &relaycommon.ChatContinuationConfig{
+		MaxSteps: 0,
+		Abnormal: &relaycommon.ChatAbnormalContinuationConfig{
+			MaxSteps:          1,
+			MinReasoningChars: 8,
+			Send: func(reasoning string, remaining int) (*http.Response, error) {
+				sends++
+				require.Contains(t, reasoning, "thinking")
+				return sseResponse("data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"答案\"},\"finish_reason\":null}]}\n\n" +
+					"data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000002,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+					"data: [DONE]\n\n"), nil
+			},
+		},
+	}
+	thinkingOnly := "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"thinking about it\"}}]}\n\n"
+
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(thinkingOnly))
+	require.Nil(t, err, "a thinking-only cut must be answered from the captured trace")
+	require.Equal(t, 1, sends)
+	require.Contains(t, recorder.Body.String(), `"content":"答案"`)
+}
+
+// Without a continuation sender the cut stays an error, so the caller can retry.
+func TestOaiChatBufferedStreamHandlerKeepsCutAsErrorWithoutContinuation(t *testing.T) {
+	ctx, _, info := bufferedStreamContext(t)
+	cut := "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1700000001,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半\"}}]}\n\n"
+	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(cut))
+	require.NotNil(t, err)
+	require.False(t, types.IsSkipRetryError(err), "a short cut is still retryable")
+}

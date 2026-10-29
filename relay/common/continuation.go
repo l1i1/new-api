@@ -87,8 +87,25 @@ type ChatAbnormalContinuationConfig struct {
 // ChatAbnormalContinuationStepsForRequest reports how many reasoning
 // continuation rounds the current request may use. 0 keeps the ordinary
 // abnormal-finish failure path.
+// continuationEligible reports whether this request may be transparently
+// continued by one of the repair modes.
+//
+// A streaming client is the original case. A non-streaming client on a channel
+// configured with internal_stream_for_nonstream has exactly the same observable
+// upstream stream: the relay owns the whole body until it marshals one JSON
+// response, so a cut round can be resumed without the caller seeing a seam. The
+// 2026-10-29 900s-wall failures showed why that matters - a non-streaming
+// request died at the provider wall on three channels in a row (45 minutes) and
+// returned 502 with nothing to show for it.
+func continuationEligible(info *RelayInfo) bool {
+	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+		return false
+	}
+	return info.IsStream || info.ChannelSetting.InternalStreamForNonStream
+}
+
 func ChatAbnormalContinuationStepsForRequest(info *RelayInfo) int {
-	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+	if !continuationEligible(info) {
 		return 0
 	}
 	if !rootcommon.ChatContinuationOnAbnormal || rootcommon.ChatContinuationAbnormalMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
@@ -100,7 +117,7 @@ func ChatAbnormalContinuationStepsForRequest(info *RelayInfo) int {
 // ChatMissingContinuationStepsForRequest reports how many reasoning
 // continuation rounds the current missing-finish request may use.
 func ChatMissingContinuationStepsForRequest(info *RelayInfo) int {
-	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+	if !continuationEligible(info) {
 		return 0
 	}
 	if !rootcommon.ChatContinuationOnMissing || rootcommon.ChatContinuationMissingMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
@@ -114,7 +131,7 @@ func ChatMissingContinuationStepsForRequest(info *RelayInfo) int {
 // whitelisted channel with the feature enabled. 0 keeps the ordinary
 // single-round streaming path.
 func ChatContinuationStepsForRequest(info *RelayInfo) int {
-	if info == nil || !info.IsStream || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
+	if !continuationEligible(info) {
 		return 0
 	}
 	if rootcommon.ChatContinuationMaxSteps <= 0 || !rootcommon.ChatContinuationChannelAllowed(info.ChannelId) {
