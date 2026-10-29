@@ -445,10 +445,45 @@ func IsEngineOverloadFailure(message string) bool {
 	return false
 }
 
+// IsOfficialQuotaExhaustedFailure reports a 429 that says the official
+// account's quota, credit or rate window is used up rather than that the whole
+// engine is down. Rotating credentials is the first move — a sibling key may
+// still have room — but once the request has no faithful capacity left it must
+// reach the low-thinking fallback pool instead of dying as a client-visible 429
+// (2026-10-30: ch8 429s carried `Your credit balance is running low` /
+// `You exceeded your current token quota` while the low-thinking emulation
+// channels sat idle, and requests ended after the backoff budget instead of
+// failing over).
+func IsOfficialQuotaExhaustedFailure(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	for _, keyword := range []string{
+		"credit balance is running low",
+		"exceeded your current token quota",
+		"insufficient credit",
+		"credit insufficient",
+		"insufficient balance",
+		"balance insufficient",
+		"insufficient_quota",
+		"insufficient quota",
+		"quota exceeded",
+		"token quota",
+		"rate limit reached",
+		"tpm rate limit",
+	} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldRelaxOfficialPinForAvailability reports whether a pinned request must
 // give up the official-fit narrowing for its remaining attempts: a non-verdict
-// failure (the upstream could not answer at all) with no sibling credential left
-// to rotate to. Verdicts keep the contract; capacity outages take the fallback.
+// failure (the upstream could not answer at all) with no faithful capacity left.
+// Verdicts keep the contract; capacity outages take the fallback.
 func shouldRelaxOfficialPinForAvailability(c *gin.Context, err *types.NewAPIError) bool {
 	if c == nil || err == nil || err.StatusCode <= 0 {
 		return false
@@ -463,6 +498,17 @@ func shouldRelaxOfficialPinForAvailability(c *gin.Context, err *types.NewAPIErro
 	// upstream refuses every credential the same way, so the pin must step aside
 	// immediately instead of spending the attempt budget on the same engine.
 	if IsEngineOverloadFailure(err.Error()) {
+		return true
+	}
+	// A quota/credit 429 on the pinned channel is the same statement one level
+	// down: this channel's remaining capacity is spent, and the low-thinking
+	// fallback exists precisely for this case. Relax immediately but do not skip
+	// rotation: the controller still prefers the same channel's next credential,
+	// so a sibling key that has room keeps official fidelity. The relaxation only
+	// matters once that rotation runs out — then the retry may land in the
+	// low-thinking pool and its failures must not be judged as official verdicts
+	// (the 2026-10-29 ch8 trail: four 429s on one channel, then stop).
+	if err.StatusCode == http.StatusTooManyRequests && IsOfficialQuotaExhaustedFailure(err.Error()) {
 		return true
 	}
 	return !anotherCredentialAvailable(c)
