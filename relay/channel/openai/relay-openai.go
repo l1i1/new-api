@@ -1712,6 +1712,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			}
 		}
 		if usageModified {
+			if thinkingOffEmulationActive(info) {
+				if patched := omitZeroCompletionTokenDetailsFromBody(responseBody); patched != nil && len(patched) > 0 {
+					responseBody = patched
+				}
+			}
 			encodedUsage, err := common.Marshal(helper.UsageForClient(&simpleResponse.Usage))
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)

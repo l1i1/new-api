@@ -162,6 +162,59 @@ func applyThinkingOffEmulation(info *relaycommon.RelayInfo, usage *dto.Usage) bo
 	return changed
 }
 
+// omitZeroCompletionTokenDetails drops a completion_tokens_details object whose
+// every field is zero. The official endpoint sends no such object when the model
+// was not asked to think, so an all-zero one is a pure shape difference: it
+// carries no data and would make an emulated answer visibly unlike the official
+// one.
+func omitZeroCompletionTokenDetails(payload map[string]json.RawMessage) {
+	raw, ok := payload["completion_tokens_details"]
+	if !ok {
+		return
+	}
+	var details map[string]int
+	if err := common.Unmarshal(raw, &details); err != nil {
+		return
+	}
+	for _, value := range details {
+		if value != 0 {
+			return
+		}
+	}
+	delete(payload, "completion_tokens_details")
+}
+
+// omitZeroCompletionTokenDetailsFromBody does the same for a marshalled response
+// body's usage object, leaving every other byte untouched.
+func omitZeroCompletionTokenDetailsFromBody(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	rawUsage, ok := payload["usage"]
+	if !ok {
+		return body
+	}
+	var usagePayload map[string]json.RawMessage
+	if err := common.Unmarshal(rawUsage, &usagePayload); err != nil {
+		return body
+	}
+	before := len(usagePayload)
+	omitZeroCompletionTokenDetails(usagePayload)
+	if len(usagePayload) == before {
+		return body
+	}
+	encodedUsage, err := common.Marshal(usagePayload)
+	if err != nil {
+		return body
+	}
+	patched, ok := replaceTopLevelJSONValue(body, "usage", encodedUsage)
+	if !ok {
+		return body
+	}
+	return patched
+}
+
 // mergeUsageForChannel merges one upstream usage snapshot into the accumulated
 // usage, applying the thinking-off emulation to the snapshot first. Subtracting
 // the preamble from every cumulative snapshot is idempotent under MergeUsage

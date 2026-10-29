@@ -70,3 +70,12 @@ func TestThinkingOffEmulationExemptsKimiK3OnlyWithoutSwitch(t *testing.T) {
 	on := emulationInfo(t, 68, 0, 0, `{"type":"disabled"}`, 1, false)
 	require.True(t, shouldSuppressReasoningContent(on), "a channel that cannot disable thinking must not leak its reasoning")
 }
+
+func TestOmitZeroCompletionTokenDetails(t *testing.T) {
+	body := []byte(`{"id":"x","usage":{"prompt_tokens":19,"completion_tokens":20,"total_tokens":39,"completion_tokens_details":{"text_tokens":0,"reasoning_tokens":0}}}`)
+	patched := omitZeroCompletionTokenDetailsFromBody(body)
+	require.NotContains(t, string(patched), "completion_tokens_details")
+	require.Contains(t, string(patched), `"prompt_tokens":19`)
+	kept := []byte(`{"usage":{"completion_tokens_details":{"reasoning_tokens":48}}}`)
+	require.Contains(t, string(omitZeroCompletionTokenDetailsFromBody(kept)), "completion_tokens_details")
+}

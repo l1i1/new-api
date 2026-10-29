@@ -187,9 +187,18 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		usage = &dto.Usage{}
 	}
 
+	// A channel that cannot disable thinking answered a thinking-off request:
+	// hide the reasoning it produced and give the body the official shape (no
+	// reasoning_content, no all-zero completion token details).
+	if shouldSuppressReasoningContent(info) {
+		stripReasoningContentFromTextResponse(final)
+	}
 	responseBody, err := common.Marshal(final)
 	if err != nil {
 		return usage, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+	}
+	if thinkingOffEmulationActive(info) {
+		responseBody = omitZeroCompletionTokenDetailsFromBody(responseBody)
 	}
 	// The upstream answered with SSE; a non-streaming client must not inherit that
 	// content type, and IOCopyBytesGracefully copies upstream headers verbatim.

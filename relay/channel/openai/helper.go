@@ -128,6 +128,7 @@ func patchStreamUsageData(data string, usage *dto.Usage) (string, error) {
 	for key, value := range mergedUsagePayload {
 		usagePayload[key] = value
 	}
+	omitZeroCompletionTokenDetails(usagePayload)
 	encodedUsage, err = common.Marshal(usagePayload)
 	if err != nil {
 		return data, err
