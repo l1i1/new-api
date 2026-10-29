@@ -1042,11 +1042,12 @@ func TestOaiStreamHandlerSkipsLengthThinkingContinuationWhenBudgetExhausted(t *t
 	require.Equal(t, 0, calls)
 }
 
-// TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength covers a
-// continuation round that forwards content and then dies: the client already
-// read that content, so the response must end on a length terminal with the
-// merged usage instead of the first round's frame.
-func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength(t *testing.T) {
+// TestOaiStreamHandlerLengthThinkingContinuationPartialRoundFailsHonestly covers
+// a continuation round that forwards content and then dies. The delivered text
+// cannot be retracted, but the round never produced a terminal frame, so the
+// response is a failure: no synthetic length frame is fabricated (2026-10-30 red
+// line) and the partial usage stays unbilled.
+func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundFailsHonestly(t *testing.T) {
 	firstRound := strings.Join([]string{
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考一"},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
@@ -1064,14 +1065,13 @@ func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength(t *tes
 	}, 2, 100, 1<<20)
 
 	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
-	require.Nil(t, err)
+	require.NotNil(t, err, "a resumed round without a terminal frame is a failure, not a length completion")
 	require.NotNil(t, usage)
-	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+	require.Zero(t, usage.CompletionTokens, "the unusable round stays unbilled")
 	body := recorder.Body.String()
-	require.Contains(t, body, "部分答案")
-	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "delivered content ends on a length terminal")
+	require.Contains(t, body, "部分答案", "the delivered prefix stays - it cannot be retracted")
+	require.NotContains(t, body, `"finish_reason":"length"`, "no synthetic length frame")
 	require.NotContains(t, body, `"finish_reason":"error"`)
-	require.Equal(t, 1, strings.Count(body, "[DONE]"))
 }
 
 // enableKimiK3OfficialFit makes the relay info look like a Kimi K3 caller whose

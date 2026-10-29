@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	rootcommon "github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -686,6 +687,20 @@ func continuationProviderOutputCap(usage *dto.Usage) int {
 	return 0
 }
 
+// continuationResultUsable reports whether a repair produced something the caller
+// can use: either visible text closed by a real terminal frame, or a buffered
+// tool-call set that validated and was delivered (the round may itself have lost
+// its terminal frame in that case, which is why terminal is not required).
+func continuationResultUsable(result chatContinuationResult) bool {
+	if result.rounds <= 0 || result.finish == "" || relaycommon.IsAbnormalFinishReason(result.finish) {
+		return false
+	}
+	if result.toolCallsDelivered {
+		return true
+	}
+	return result.terminal && result.toolCalls == 0 && result.contentChars > 0
+}
+
 // continuationRoundChannelID names the channel that served the latest round.
 func continuationRoundChannelID(info *relaycommon.RelayInfo, tracker *relaycommon.ContinuationRoundChannel) int {
 	if tracker != nil {
@@ -838,6 +853,13 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		visible += roundOut.content
 		result.contentChars += len(roundOut.content)
 		if roundOut.toolCalls > 0 {
+			if roundOut.toolCallsDelivered {
+				result.toolCallsDelivered = true
+				result.finish = constant.FinishReasonToolCalls
+				result.failedReason = ""
+				recovered = true
+				break
+			}
 			result.failedReason = relaycommon.ContinuationFailureToolCalls
 			break
 		}
@@ -871,7 +893,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		result.failedReason = relaycommon.ContinuationFailureRoundsExhausted
 	}
 	result.usage = total
-	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && result.contentChars > 0)
+	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && (result.contentChars > 0 || result.toolCallsDelivered))
 	return result
 }
 
@@ -905,8 +927,11 @@ type thinkingRound struct {
 	content   string
 	deltaSeen bool
 	toolCalls int
-	terminal  bool
-	err       error
+	// toolCallsDelivered reports that this round's buffered tool calls were
+	// complete and have already been delivered, making the round a valid answer.
+	toolCallsDelivered bool
+	terminal           bool
+	err                error
 }
 
 // runThinkingContinuationRound runs one reasoning-resume round: bounded
@@ -970,12 +995,13 @@ func sendAndReadThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, sende
 func readThinkingRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) thinkingRound {
 	round := thinkingRound{}
 	defer resp.Body.Close()
-	usage, finish, content, deltaSeen, toolCalls, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
+	usage, finish, content, deltaSeen, toolCalls, toolCallsDelivered, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
 	round.usage = usage
 	round.finish = finish
 	round.content = content
 	round.deltaSeen = deltaSeen
 	round.toolCalls = toolCalls
+	round.toolCallsDelivered = toolCallsDelivered
 	round.terminal = terminal
 	round.err = err
 	return round
@@ -1013,6 +1039,10 @@ type chatContinuationResult struct {
 	// emits a tool call and dies has already sent half a call, so the answer must
 	// not be closed as a clean truncation.
 	toolCalls int
+	// toolCallsDelivered reports that a round's buffered tool calls were complete
+	// and were delivered to the caller: the repair produced a usable answer even
+	// though the round itself lost its terminal frame.
+	toolCallsDelivered bool
 	// channels lists the channel that served each round, in order: round 1 is the
 	// original channel, later entries are the rotation. It lands in the cut
 	// diagnostics so an unrepaired request shows where the repair actually ran.
@@ -1114,6 +1144,16 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 		if roundOut.toolCalls > 0 {
 			result.toolCalls += roundOut.toolCalls
+			if roundOut.toolCallsDelivered {
+				// The resume round switched to a tool call and lost its terminal frame,
+				// but every argument document was complete: the consolidated call set
+				// already reached the caller, so this round is a usable answer.
+				result.toolCallsDelivered = true
+				result.finish = constant.FinishReasonToolCalls
+				result.failedReason = ""
+				recovered = true
+				break
+			}
 			result.failedReason = relaycommon.ContinuationFailureToolCalls
 			break
 		}
@@ -1163,8 +1203,12 @@ type contentRound struct {
 	content   string
 	deltaSeen bool
 	toolCalls int
-	terminal  bool
-	err       error
+	// toolCallsDelivered reports that this round's buffered tool calls were
+	// complete and have already been delivered to the caller, so the round is a
+	// recoverable answer rather than a cut.
+	toolCallsDelivered bool
+	terminal           bool
+	err                error
 }
 
 // runContentContinuationRound runs one output-cap resume round: bounded
@@ -1225,12 +1269,13 @@ func sendContentRound(c *gin.Context, info *relaycommon.RelayInfo, sender func(s
 func readContentRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) contentRound {
 	round := contentRound{}
 	defer resp.Body.Close()
-	usage, finish, emitted, deltaSeen, toolCalls, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
+	usage, finish, emitted, deltaSeen, toolCalls, toolCallsDelivered, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
 	round.usage = usage
 	round.finish = finish
 	round.content = emitted
 	round.deltaSeen = deltaSeen
 	round.toolCalls = toolCalls
+	round.toolCallsDelivered = toolCallsDelivered
 	round.terminal = terminal
 	round.err = err
 	return round
@@ -1240,10 +1285,17 @@ func readContentRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 // returns that round's usage, terminal finish reason and visible content. The
 // terminal frame and usage events are not forwarded: the caller renders one
 // final frame with the merged usage.
-func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, sawTerminal bool, err error) {
+func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, toolCallsDelivered bool, sawTerminal bool, err error) {
 	if resp == nil || resp.Body == nil {
-		return nil, "", "", false, 0, false, fmt.Errorf("continuation response has no body")
+		return nil, "", "", false, 0, false, false, fmt.Errorf("continuation response has no body")
 	}
+	// A resumed round can change its mind and emit a tool call. Its deltas are held
+	// here until the round ends, so a cut can never hand the caller half an
+	// argument document; a complete set is delivered as one consolidated event and
+	// turns the round into a usable answer (2026-10-30: 66 of 68 ch102 visible-cut
+	// failures were the resume round itself emitting a cut tool call).
+	calls := relaycommon.NewChatToolCallBuffer(true)
+	toolCallsSalvaged := false
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
 	// delivered is the visible text this round actually handed the client: the
@@ -1340,8 +1392,8 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 				info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 			}
 			if len(delta.ToolCalls) > 0 {
-				forward = true
 				toolCalls++
+				calls.Observe([]dto.ChatCompletionsStreamResponseChoice{choice})
 			}
 		}
 		if !forward {
@@ -1377,6 +1429,10 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			if chunk.Choices[i].FinishReason != nil && *chunk.Choices[i].FinishReason != "" {
 				forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.finish_reason", i))
 			}
+			if len(chunk.Choices[i].Delta.ToolCalls) > 0 {
+				// The held call set is delivered later, as one complete event.
+				forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.delta.tool_calls", i))
+			}
 		}
 		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
 		// A Kimi K3 official-fit caller must not see the aggregator's chunk
@@ -1393,24 +1449,38 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
-			return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
+			return usage, finish, delivered.String(), deltaSeen, toolCalls, false, sawTerminal, sendErr
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, scanErr
+		return usage, finish, delivered.String(), deltaSeen, toolCalls, false, sawTerminal, scanErr
 	}
 	if seam != nil {
 		// The round can end before the lookahead filled up; the held text still
 		// has to reach the client, at most seamMaxLookahead characters once.
 		if tail, ready := seam.finish(); ready && tail != "" {
 			if sendErr := sendContinuationTextChunk(c, info, meta, tail); sendErr != nil {
-				return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
+				return usage, finish, delivered.String(), deltaSeen, toolCalls, false, sawTerminal, sendErr
 			}
 			delivered.WriteString(tail)
 			deltaSeen = true
 		}
 	}
-	return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, nil
+	if toolCalls > 0 {
+		if err := calls.Validate(); err == nil {
+			if consolidated := calls.ConsolidatedChunk(meta.ID, meta.Created, meta.Model); consolidated != "" {
+				info.ToolCallsDelivered = true
+				helper.ExtendWriteDeadline(c)
+				if sendErr := sendStreamData(c, info, consolidated, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr == nil {
+					toolCallsSalvaged = true
+					finish = constant.FinishReasonToolCalls
+				}
+			}
+		} else {
+			common.SysLog(fmt.Sprintf("continuation round tool calls incomplete, dropped: ch=%d calls=%d err=%v", info.ChannelId, calls.CallCount(), err))
+		}
+	}
+	return usage, finish, delivered.String(), deltaSeen, toolCalls, toolCallsSalvaged, sawTerminal, nil
 }
 
 // rewriteContinuationChunkMeta normalizes one continuation delta to the first

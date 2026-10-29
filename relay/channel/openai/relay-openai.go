@@ -610,8 +610,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if c.Request != nil && c.Request.Context().Err() != nil {
 				return result.usage, nil
 			}
-			if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
-				result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			if continuationResultUsable(result) {
 				finalUsage := result.usage
 				relaycommon.ClampUsageToClientBudget(info, finalUsage)
 				info.StreamFinishReason = result.finish
@@ -698,8 +697,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				if c.Request != nil && c.Request.Context().Err() != nil {
 					return result.usage, nil
 				}
-				if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
-					result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+				if continuationResultUsable(result) {
 					finalUsage := result.usage
 					relaycommon.ClampUsageToClientBudget(info, finalUsage)
 					info.StreamFinishReason = result.finish
@@ -832,12 +830,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		continuationToolCalls += result.toolCalls
 		// A caller-side disconnect during the continuation rounds stays billable
 		// (same rule as client_gone on a normal stream): the provider already
 		// generated the merged usage.
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
-			result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if continuationResultUsable(result) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -878,6 +881,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -885,7 +894,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if continuationResultUsable(result) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -917,6 +926,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		// A repair that already forwarded visible text made the caller hold that
 		// answer: count it, or the unrepaired classification below would return a
 		// 502 for a response the client has been reading.
@@ -934,7 +949,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if continuationResultUsable(result) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -1007,6 +1022,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		markRepairAttempted(info, "length-thinking")
 		result := runLengthThinkingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1020,11 +1041,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// is reported as "length" (an output-cap truncation) instead of falling
 		// through to the first round's terminal, which would contradict the
 		// streamed content and drop the continuation usage from the bill.
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal {
+		if continuationResultUsable(result) {
+			// A real terminal reason from the resumed round: no synthetic "length"
+			// is fabricated for a round that only delivered text and died.
 			finish := result.finish
-			if finish == "" || relaycommon.IsAbnormalFinishReason(finish) {
-				finish = "length"
-			}
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = finish
@@ -1064,6 +1084,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1071,7 +1097,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if continuationResultUsable(result) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
@@ -1105,6 +1131,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		markRepairAttempted(info, "missing-reasoning")
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
+		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
+			// A round delivered text and then died without a terminal frame: the text
+			// stays delivered, but the response is a failure (no synthetic length) and
+			// the partial usage is refunded.
+			return truncatedDeliveredFailure(c, info, result.usage, relaycommon.ContinuationFailureRoundIncomplete)
+		}
 		if result.contentChars > 0 {
 			visibleContentChars += result.contentChars
 		}
@@ -1115,7 +1147,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if continuationResultUsable(result) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
