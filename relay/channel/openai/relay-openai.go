@@ -813,9 +813,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
 		chatContinuationBudgetLeft(info, usage) > 0 {
 		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-content")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -849,9 +851,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish != "" && !reasoningTruncated &&
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
 		len(streamFunctionCallNames) == 0 {
+		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-reasoning")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			// The caller walked away mid-continuation: the provider already
@@ -885,6 +889,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.ChannelId, streamAbnormalFinish, visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
 			info.ChatContinuation != nil, info.ChatContinuation != nil && info.ChatContinuation.Abnormal != nil,
 			info.StreamStatus != nil && info.StreamStatus.ResponseFailed(), info.ClientMaxTokens, usage.CompletionTokens))
+	}
+
+	// Snapshot the cut diagnostics before any repair attempt mutates the state.
+	// The failed type=5 row carries them (admin_info.stream_cut), so an
+	// unrepaired cut is explainable from /api/log/ instead of from a container
+	// log line that is usually gone by the time the customer reports the id.
+	if streamAbnormalFinish != "" || !streamFinishSeen {
+		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
+			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
+			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
 	}
 
 	// Length-cap continuation during the thinking phase (32k cap, no visible
@@ -943,9 +957,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		chatMissingVisibleContinuationCandidate(info, usage, visibleContentChars, toolCount, streamChoiceCount, streamFinishSeen) &&
 		len(streamFunctionCallNames) == 0 {
 		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		info.StreamCutDiagnostics.MarkRepairAttempted("missing-content")
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -983,7 +999,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		len(streamFunctionCallNames) == 0 {
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
+		info.StreamCutDiagnostics.MarkRepairAttempted("missing-reasoning")
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
@@ -1815,4 +1833,37 @@ func missingReasoningLogprobsError() *types.NewAPIError {
 		types.ErrorCodeChannelUnsupportedFeature,
 		http.StatusBadGateway,
 	)
+}
+
+// buildStreamCutDiagnostics snapshots what an undelivered stream cut left
+// behind: the shape of the cut, the caller's remaining budget, and which repair
+// modes were configured for the request. This is what turns "the customer got a
+// 502 on request X" into an answer without container logs — see
+// relaycommon.StreamCutDiagnostics.
+func buildStreamCutDiagnostics(info *relaycommon.RelayInfo, usage *dto.Usage, visibleContentChars, reasoningChars int, reasoningTruncated bool, toolCount, choiceCount int, abnormalFinish string, missingFinish bool) *relaycommon.StreamCutDiagnostics {
+	if info == nil {
+		return nil
+	}
+	diag := &relaycommon.StreamCutDiagnostics{
+		FinishReason:        abnormalFinish,
+		MissingFinish:       missingFinish,
+		ReasoningTruncated:  reasoningTruncated,
+		VisibleContentChars: visibleContentChars,
+		ReasoningChars:      reasoningChars,
+		ToolCalls:           toolCount,
+		ChoiceCount:         choiceCount,
+		ClientMaxTokens:     info.ClientMaxTokens,
+	}
+	if usage != nil {
+		diag.CompletionTokens = usage.CompletionTokens
+	}
+	diag.BudgetLeft = chatContinuationBudgetLeft(info, usage)
+	if cfg := info.ChatContinuation; cfg != nil {
+		diag.ContinuationConfigured = cfg.Send != nil && cfg.MaxSteps > 0
+		diag.AbnormalConfigured = cfg.Abnormal != nil && cfg.Abnormal.Send != nil && cfg.Abnormal.MaxSteps > 0
+		diag.MissingConfigured = cfg.Missing != nil && cfg.Missing.Send != nil && cfg.Missing.MaxSteps > 0
+	}
+	diag.ThinkingToContent = info.ChannelSetting.ThinkingToContent
+	diag.ReasoningSuppressed = shouldSuppressReasoningContent(info)
+	return diag
 }

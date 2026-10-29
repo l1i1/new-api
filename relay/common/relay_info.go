@@ -265,6 +265,13 @@ type RelayInfo struct {
 	// (finish_reason=length with client budget left) inside the same client
 	// response. Nil keeps the ordinary single-round streaming path.
 	ChatContinuation *ChatContinuationConfig
+	// StreamCutDiagnostics, when non-nil, explains a stream that ended without a
+	// usable terminal result (abnormal finish reason, or EOF/[DONE] with no
+	// finish_reason) and what the repair path had to work with. The failed
+	// request's type=5 row carries it as admin_info.stream_cut, so an unrepaired
+	// cut can be diagnosed from /api/log/ instead of from a container log line
+	// that is usually gone by the time the customer reports the request id.
+	StreamCutDiagnostics *StreamCutDiagnostics
 	// PerformanceOutputTokens is captured by settlement and sampled once at
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64
