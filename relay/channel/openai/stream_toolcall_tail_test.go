@@ -162,15 +162,47 @@ func TestOaiStreamHandlerKeepsErrorWhenToolCallCutMidArguments(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), `"finish_reason":"tool_calls"`)
 }
 
-// TestOaiStreamHandlerKeepsAbnormalFinishWithCompleteToolCallsAsError pins the
-// scope of the compensation: it applies to a stream that ended without any
-// terminal frame. A provider that explicitly reported a failed generation
-// (finish_reason=error) did not deliver a trustworthy answer even when the
-// argument JSON happens to parse, so the request stays an error.
-func TestOaiStreamHandlerKeepsAbnormalFinishWithCompleteToolCallsAsError(t *testing.T) {
+// TestOaiStreamHandlerClosesAbnormalFinishWithCompleteToolCallsAsToolCalls pins
+// the widened scope: the completeness of the argument documents, not the way the
+// provider signals the cut, decides whether the caller holds a usable answer.
+// 2026-10-29 18:13-18:17: three kimi-k3.1-pro tool-call streams were cut at the
+// provider's 900s wall with an in-band finish_reason="error" and refunded as 502
+// (ch91/ch106/ch37); the missing-finish sibling of the same cut already closed as
+// tool_calls.
+func TestOaiStreamHandlerClosesAbnormalFinishWithCompleteToolCallsAsToolCalls(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	body := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先查一下目录。"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"bash_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err, "a complete tool call must not become a 502 because the provider labelled the cut error")
+	require.NotNil(t, usage)
+	assert.NotZero(t, usage.TotalTokens, "the delivered answer stays billable")
+	assert.Equal(t, "tool_calls", info.StreamFinishReason)
+	assert.True(t, info.ClosedAsToolCalls)
+	require.NotNil(t, info.StreamStatus)
+	assert.False(t, info.StreamStatus.ResponseFailed())
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"tool_calls"`)
+	assert.NotContains(t, recorder.Body.String(), "truncated_stream")
+}
+
+// TestOaiStreamHandlerKeepsErrorWhenAbnormalFinishCutsInsideCall is the control:
+// an in-band failure inside an argument document is still an error, because half
+// a document is not executable.
+func TestOaiStreamHandlerKeepsErrorWhenAbnormalFinishCutsInsideCall(t *testing.T) {
 	c, info, _ := newMissingFinishTestContext(t)
 	body := strings.Join([]string{
-		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"bash_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"bash_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -l /app\","}}]},"finish_reason":null}]}`,
 		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}`,
 		`data: [DONE]`,
 		``,
@@ -182,7 +214,7 @@ func TestOaiStreamHandlerKeepsAbnormalFinishWithCompleteToolCallsAsError(t *test
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 	})
 
-	require.NotNil(t, err)
+	require.NotNil(t, err, "half an argument document must stay an error")
 	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
 	require.NotNil(t, usage)
 	assert.Zero(t, usage.TotalTokens)

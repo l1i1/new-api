@@ -1072,8 +1072,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// delivered answer usable and billable instead of charging nothing and
 		// handing the caller an error for work that is done. A cut inside a call
 		// keeps the error frame: half an argument document is not executable.
-		if undeliveredReason == relaycommon.UndeliveredMissingFinish &&
-			!finishFrameForwarded && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
+		//
+		// How the provider signals the cut does not change that math. A provider
+		// that marks the failure in-band (finish_reason="error" at its 900s
+		// generation wall) is treated exactly like one that drops the terminal
+		// frame: 2026-10-29 18:13-18:17 three sampled kimi-k3.1-pro tool-call cuts
+		// on ch91/ch106/ch37 were refunded as 502 while the calls may have been
+		// complete, and the missing-finish sibling of the same cut is already
+		// closed as tool_calls. The completeness guard is the safety property:
+		// truncating a JSON document mid-way almost never leaves valid JSON, so a
+		// complete set of calls is evidence the model finished, while any
+		// incomplete call keeps the error.
+		if !finishFrameForwarded && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
 			!isAudioModel && info.RelayFormat == types.RelayFormatOpenAI {
 			if completeToolCalls, complete := streamedToolCalls.completeCalls(); complete {
 				// Deliver the held tail first: it can be the provider's last
@@ -1107,6 +1117,15 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				}
 				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 				return usage, nil
+			}
+			// The cut landed inside a call: the caller must retry. Record whether
+			// the provider actually delivered a usable call, because an in-band
+			// finish_reason="error" cut is treated as untrustworthy even when the
+			// argument JSON parses (2026-10-29 18:13-18:17, ch91/ch106/ch37 at the
+			// 900s wall). This line is the only evidence for revisiting that call:
+			// if the complete share turns out to be high, the close can be widened.
+			if completeCalls, complete := streamedToolCalls.completeCalls(); len(streamedToolCalls.order) > 0 {
+				common.SysLog(fmt.Sprintf("truncated stream tool calls cut: ch=%d tools=%d complete=%v complete_calls=%d reason=%s", info.ChannelId, len(streamedToolCalls.order), complete, completeCalls, undeliveredReason))
 			}
 		}
 		// A channel that only ever breaks this way never reaches the cooldown:
