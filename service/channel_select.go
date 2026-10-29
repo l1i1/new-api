@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/fitpolicy"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -235,7 +236,29 @@ func (p *RetryParam) HasSaturatedChannel() bool {
 // the requests that reach the selector with a pin but no requirement.
 func v4OfficialPin(param *RetryParam) bool {
 	return param != nil && param.Ctx != nil &&
-		common.GetContextKeyBool(param.Ctx, constant.ContextKeyV4OfficialPin)
+		common.GetContextKeyBool(param.Ctx, constant.ContextKeyV4OfficialPin) &&
+		!common.GetContextKeyBool(param.Ctx, constant.ContextKeyOfficialPinRelaxed)
+}
+
+// RelaxOfficialPinForAvailability lets the remaining attempts of a pinned
+// request fall back to the ordinary priority pool. The pin is the fidelity
+// promise, not a liveness requirement: when the official capacity cannot serve
+// and no sibling credential is left, keeping the pin only converts the outage
+// into the customer's error (operator policy 2026-10-29: 「pin 不能 pin 死…可用性和
+// 一致性取平衡，优先拟合，可用兜底」). The fit requirement itself stays in the
+// context, so the request log still records which rules pinned the request and
+// the relaxation is visible in the SysLog line.
+func RelaxOfficialPinForAvailability(c *gin.Context, reason string) {
+	if c == nil || common.GetContextKeyBool(c, constant.ContextKeyOfficialPinRelaxed) {
+		return
+	}
+	if !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
+		if _, ok := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement); !ok {
+			return
+		}
+	}
+	common.SetContextKey(c, constant.ContextKeyOfficialPinRelaxed, true)
+	common.SysLog(fmt.Sprintf("official pin relaxed for availability: %s (channel=%d)", reason, common.GetContextKeyInt(c, constant.ContextKeyChannelId)))
 }
 
 // videoRequestOnly reports whether this request carries a video part, which

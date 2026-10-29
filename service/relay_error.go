@@ -34,7 +34,51 @@ func RelayRequestContextDone(c *gin.Context) bool {
 
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
+//
+// The decision itself is pure routing policy; the side effects a retry needs run
+// here, after the verdict is known and only when the request keeps going: the
+// failed attempt's stickiness is dropped and a fidelity pin that cannot be
+// served is relaxed for the remaining attempts. Clearing earlier would let a
+// stop-verdict test mutate the affinity state the same function still has to
+// read (session_mode=strict would then look like an ordinary retry).
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
+	decision := decideRelayRetry(c, err, retryTimes)
+	if c == nil || err == nil {
+		return decision
+	}
+	if decision.Action != "retry" {
+		// A terminal answer leaves the next request to choose again: drop the
+		// binding so a client retry does not walk back into the failure, but keep
+		// this request's context untouched (strict-session contracts and the
+		// affinity transform still read it after the decision).
+		if dropsStickyRoutingAfterFailure(err) {
+			DropStickyRoutingAfterUpstreamFailure(c)
+		}
+		return decision
+	}
+	if dropsStickyRoutingAfterFailure(err) {
+		// Any failed upstream attempt broke the "this channel/key serves this
+		// conversation" hypothesis: drop both bindings so the retry does not walk
+		// back into the same capacity (2026-10-29: ch8 key #4 absorbed 61% of a
+		// token's prompt tokens and 33 of its 56 429s while sibling keys were idle).
+		DropStickyRoutingAfterUpstreamFailure(c)
+	}
+	// Fidelity pin vs availability (2026-10-29 operator policy: 「pin 不能 pin 死，
+	// 拟合渠道不可用可回退到普通渠道，可用性和一致性取平衡，优先拟合、可用兜底」).
+	// A non-verdict failure — rate limit, outage, transport — means the official
+	// capacity cannot serve right now. Credential rotation is the faithfulness-
+	// preserving first move and already ran as prefer-channel; when no sibling
+	// credential is left the remaining attempts fall back to the ordinary pool
+	// instead of turning the outage into the customer's answer. The fit
+	// requirement stays in the context, so the log still shows which rules pinned
+	// the request.
+	if shouldRelaxOfficialPinForAvailability(c, err) {
+		RelaxOfficialPinForAvailability(c, fmt.Sprintf("official capacity failure (%d) and no sibling credential left", err.StatusCode))
+	}
+	return decision
+}
+
+func decideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
@@ -44,15 +88,6 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// remaining attempt budget on attempts that fail instantly.
 	if RelayRequestContextDone(c) {
 		return PolicyDecision{Action: "stop", Reason: "request_context_done", Source: "system"}
-	}
-	// A capacity failure is a statement about the capacity that answered, not
-	// about the request: drop the conversation binding and the channel's
-	// last-successful-key binding before anything decides the retry, so the next
-	// attempt starts from capacity that can still serve (2026-10-29: ch8 key #4
-	// absorbed 61% of a token's prompt tokens and 33 of its 56 429s while the
-	// sibling keys were idle).
-	if err.StatusCode == http.StatusTooManyRequests || err.StatusCode == http.StatusPaymentRequired {
-		DropStickyRoutingAfterCapacityFailure(c)
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
@@ -359,6 +394,37 @@ var credentialExhaustedKeywords = []string{
 // the platform's own 403 with a routing error when no second official channel
 // exists. Upstream errors carry ErrorTypeOpenAIError/ErrorTypeClaudeError, so
 // the guard costs the real escape path nothing.
+// shouldRelaxOfficialPinForAvailability reports whether a pinned request must
+// give up the official-fit narrowing for its remaining attempts: a non-verdict
+// failure (the upstream could not answer at all) with no sibling credential left
+// to rotate to. Verdicts keep the contract; capacity outages take the fallback.
+func shouldRelaxOfficialPinForAvailability(c *gin.Context, err *types.NewAPIError) bool {
+	if c == nil || err == nil || err.StatusCode <= 0 {
+		return false
+	}
+	if !common.GetContextKeyBool(c, constant.ContextKeyV4OfficialPin) {
+		return false
+	}
+	if operation_setting.IsVerdictStatusCode(err.StatusCode) {
+		return false
+	}
+	return !anotherCredentialAvailable(c)
+}
+
+// dropsStickyRoutingAfterFailure reports whether this failure invalidates the
+// channel/key bindings recorded for the conversation. Every upstream verdict
+// does; a local validation error (no channel was contacted) does not, and the
+// caller of ClearCurrentChannelAffinityCache would be a no-op anyway.
+func dropsStickyRoutingAfterFailure(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode >= http.StatusBadRequest {
+		return true
+	}
+	return types.IsChannelError(err)
+}
+
 func isCredentialExhaustedFailure(err *types.NewAPIError) bool {
 	if err == nil {
 		return false

@@ -71,9 +71,10 @@ func TestDecideRelayRetryClearsMultiKeyAffinityOn429(t *testing.T) {
 	require.False(t, found, "a 429 must forget the pinned key so the retry can rotate")
 }
 
-// A 400 is a statement about the request, not about capacity: the binding has to
-// survive so the conversation keeps its prompt-cache key.
-func TestDecideRelayRetryKeepsMultiKeyAffinityOn400(t *testing.T) {
+// A 4xx from an upstream is frequently that upstream's own capability gap (one
+// upstream rejects a shape another serves), so it drops the key binding too: the
+// retry must be free to rotate, and the next success re-records the binding.
+func TestDecideRelayRetryClearsMultiKeyAffinityOn400(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(nil)
 	common.SetContextKey(ctx, constant.ContextKeyChannelIsMultiKey, true)
@@ -86,5 +87,5 @@ func TestDecideRelayRetryKeepsMultiKeyAffinityOn400(t *testing.T) {
 	_ = DecideRelayRetry(ctx, badRequest, 3)
 
 	_, found := GetLastSuccessfulMultiKeyFingerprint(9641, 9642)
-	require.True(t, found, "a 400 must not throw the credential binding away")
+	require.False(t, found, "an upstream 4xx must let the retry rotate credentials")
 }

@@ -106,6 +106,14 @@ const (
 	// behaviour is required for this request", so the flag and the requirement are
 	// written and cleared together.
 	ContextKeyV4OfficialPin ContextKey = "v4_official_pin"
+	// ContextKeyOfficialPinRelaxed records that a capacity failure relaxed the
+	// official-fit pin for the remaining attempts of this request. The pin keeps
+	// the fidelity contract, but it must not turn "the official capacity is out"
+	// into the customer's answer: once the pinned channel cannot serve and no
+	// sibling credential is left, the request falls back to the ordinary pool
+	// (operator policy 2026-10-29: 优先拟合、可用兜底). The flag is per request,
+	// so the log still shows which rules pinned it.
+	ContextKeyOfficialPinRelaxed ContextKey = "official_pin_relaxed"
 
 	// ContextKeyVideoRequest marks a request whose payload carries a video part.
 	// Channel selection then considers only channels that declared they can read

@@ -745,29 +745,37 @@ func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 	return meta.SkipRetry
 }
 
-// DropStickyRoutingAfterCapacityFailure clears the two stickiness layers that
-// would otherwise send the next attempt (or the next request) straight back to
-// the capacity that just refused it: the conversation's channel binding and the
-// channel's last-successful-key binding. Only capacity-class failures qualify
-// (429 rate limit, 402 credits): a 400 or a 5xx says nothing about which
-// capacity serves the next attempt, and dropping the binding there would throw
-// the prompt cache away for no reason.
+// DropStickyRoutingAfterUpstreamFailure clears the two stickiness layers that
+// would otherwise send the next attempt (or the next request) back to the
+// capacity that just failed: the conversation's channel binding and the
+// channel's last-successful-key binding.
 //
-// The fidelity pin is not touched: a pinned request still prefers official
-// behaviour, it just stops hammering one credential/provider while the siblings
-// have headroom.
-func DropStickyRoutingAfterCapacityFailure(c *gin.Context) {
+// Any failed upstream attempt invalidates the hypothesis those bindings encode
+// ("this channel/key serves this conversation well"). A 5xx says the upstream
+// is broken right now; a 4xx from an upstream is frequently its own capability
+// gap (one upstream rejects a shape another serves), and even a genuinely bad
+// request is retried across channels by the failover list. Keeping the binding
+// through a failure only walks the retry back into it. The cost is one lost
+// prompt-cache hit: the next success re-records both bindings
+// (switch_on_success for the channel, RecordMultiKeySuccess for the key).
+//
+// Local failures (validation answered before a channel was chosen) never reach
+// here with a channel id, so an invalid request cannot move a healthy binding.
+func DropStickyRoutingAfterUpstreamFailure(c *gin.Context) {
 	if c == nil {
 		return
 	}
-	if ClearCurrentChannelAffinityCache(c) {
-		common.SysLog("sticky routing cleared after capacity failure: channel affinity dropped")
+	// session_mode=off means the affinity layer never bound this request, so
+	// there is nothing to drop (and the request-scoped transform still reads the
+	// context).
+	if RequestPolicy(c).SessionMode != "off" && ClearCurrentChannelAffinityCache(c) {
+		common.SysLog("sticky routing cleared after upstream failure: channel affinity dropped")
 	}
 	if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
 		channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 		tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
 		if ClearLastSuccessfulMultiKeyFingerprint(channelID, tokenID) {
-			common.SysLog(fmt.Sprintf("sticky routing cleared after capacity failure: multi-key affinity dropped (channel=%d token=%d)", channelID, tokenID))
+			common.SysLog(fmt.Sprintf("sticky routing cleared after upstream failure: multi-key affinity dropped (channel=%d token=%d)", channelID, tokenID))
 		}
 	}
 }

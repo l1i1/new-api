@@ -74,6 +74,12 @@ func FitChannelFilterForRequest(c *gin.Context) *FitChannelFilter {
 	if c == nil {
 		return nil
 	}
+	// A capacity failure relaxed the pin: the remaining attempts may be served by
+	// the ordinary pool, so the narrowing must not re-constrain them (see
+	// service.RelaxOfficialPinForAvailability).
+	if common.GetContextKeyBool(c, constant.ContextKeyOfficialPinRelaxed) {
+		return nil
+	}
 	requirement, ok := common.GetContextKeyType[fitpolicy.Requirement](c, constant.ContextKeyFitRequirement)
 	if !ok || !requirement.HasOpinion() {
 		return nil
