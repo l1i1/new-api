@@ -121,6 +121,26 @@ func InitEnv() {
 	}
 	ChatContinuationRoundMaxElapsedSeconds = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_ROUND_MAX_ELAPSED_SECONDS", 1500)
 	ChatContinuationRotateChannels = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ROTATE_CHANNELS", true)
+	ChatToolBufferChannelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_TOOL_BUFFER_CHANNELS", "")
+	ChatToolBufferChannelIDs = nil
+	if ChatToolBufferChannelsRaw != "" {
+		ChatToolBufferChannelIDs = make(map[int]struct{})
+		for _, part := range strings.Split(ChatToolBufferChannelsRaw, ",") {
+			if id, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && id > 0 {
+				ChatToolBufferChannelIDs[id] = struct{}{}
+			}
+		}
+	}
+	ChatToolRepairChannelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_TOOL_REPAIR_CHANNELS", "")
+	ChatToolRepairChannelIDs = nil
+	if ChatToolRepairChannelsRaw != "" {
+		ChatToolRepairChannelIDs = make(map[int]struct{})
+		for _, part := range strings.Split(ChatToolRepairChannelsRaw, ",") {
+			if id, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && id > 0 {
+				ChatToolRepairChannelIDs[id] = struct{}{}
+			}
+		}
+	}
 	ChatContinuationOutputCapsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_OUTPUT_CAPS", ChatContinuationOutputCapsRaw)
 	ChatContinuationOutputCaps = nil
 	for _, part := range strings.Split(ChatContinuationOutputCapsRaw, ",") {

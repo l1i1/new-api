@@ -139,6 +139,11 @@ type ChatContinuationConfig struct {
 	PrefixReasoning string
 	// RoundChannel, when set, tracks the channel of the latest round.
 	RoundChannel *ContinuationRoundChannel
+	// Regenerate, when non-nil, re-runs the original request on a different
+	// channel to recover a tool call that was cut mid-argument. It is only
+	// offered for channels whose tool-repair switch is enabled, and the handler
+	// calls it at most once, only when no visible answer text was delivered.
+	Regenerate func(remainingTokens int) (*http.Response, error)
 	// Fallback, when non-nil, is used once after the same-channel sender fails to
 	// even start the round. It is expected to resume the same prefix on a
 	// different channel with a full rebind (selection, model mapping, credential,

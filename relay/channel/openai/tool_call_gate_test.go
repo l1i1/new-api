@@ -1,0 +1,236 @@
+package openai
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	rootcommon "github.com/QuantumNous/new-api/common"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+)
+
+// toolCallArguments extracts every tool-call argument document from a rendered
+// SSE body, so a test can prove the caller only ever saw complete JSON.
+func toolCallArguments(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					ToolCalls []struct {
+						Function struct {
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		for _, choice := range chunk.Choices {
+			for _, call := range choice.Delta.ToolCalls {
+				if call.Function.Arguments != "" {
+					out = append(out, call.Function.Arguments)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func enableToolBuffer(t *testing.T, channelID int, buffer, repair bool) {
+	t.Helper()
+	oldBuffer, oldRepair := rootcommon.ChatToolBufferChannelIDs, rootcommon.ChatToolRepairChannelIDs
+	t.Cleanup(func() {
+		rootcommon.ChatToolBufferChannelIDs, rootcommon.ChatToolRepairChannelIDs = oldBuffer, oldRepair
+	})
+	rootcommon.ChatToolBufferChannelIDs = map[int]struct{}{}
+	rootcommon.ChatToolRepairChannelIDs = map[int]struct{}{}
+	if buffer {
+		rootcommon.ChatToolBufferChannelIDs[channelID] = struct{}{}
+	}
+	if repair {
+		rootcommon.ChatToolRepairChannelIDs[channelID] = struct{}{}
+	}
+}
+
+// TestOaiStreamHandlerBuffersToolCallDeltas pins the buffering switch: the caller
+// never sees a fragment of the argument document, and the terminal frame is
+// preceded by exactly one consolidated call event carrying the complete JSON.
+func TestOaiStreamHandlerBuffersToolCallDeltas(t *testing.T) {
+	enableToolBuffer(t, 777, true, false)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"1+1\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 777
+	info.ChatContinuation.Abnormal = nil
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err != nil {
+		t.Fatalf("a complete buffered call set must succeed: %v", err)
+	}
+	if usage == nil || usage.CompletionTokens != 10 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	body := recorder.Body.String()
+	for _, args := range toolCallArguments(body) {
+		if !json.Valid([]byte(args)) {
+			t.Fatalf("a partial argument document reached the caller: %q", args)
+		}
+	}
+	if !strings.Contains(body, `calculator`) || !strings.Contains(body, `1+1`) {
+		t.Fatalf("the consolidated call is missing: %s", body)
+	}
+	if strings.Count(body, `"tool_calls":[{"function"`) != 1 {
+		t.Fatalf("want exactly one consolidated call event, body=%s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one terminal frame, body=%s", body)
+	}
+}
+
+// TestOaiStreamHandlerNeverForwardsHalfToolCall pins red line 4 on a cut: the
+// buffered fragment is dropped, no terminal frame is rendered and the caller gets
+// the truncated-stream error instead of a document it cannot execute.
+func TestOaiStreamHandlerNeverForwardsHalfToolCall(t *testing.T) {
+	enableToolBuffer(t, 778, true, false)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"1+"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 778
+	info.ChatContinuation.Abnormal = nil
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err == nil {
+		t.Fatal("a cut inside a call must fail, not close")
+	}
+	if !err.IsTruncatedStream() {
+		t.Fatalf("want a truncated-stream error, got %v", err)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, `"expr":"1+`) {
+		t.Fatalf("half a tool call reached the caller: %s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("no terminal frame may close an undelivered call: %s", body)
+	}
+}
+
+// TestOaiStreamHandlerRegeneratesCutToolCall pins the regeneration switch: with no
+// visible text delivered, the cut call is re-generated on another channel, its
+// complete call set is delivered and the round is billed.
+func TestOaiStreamHandlerRegeneratesCutToolCall(t *testing.T) {
+	enableToolBuffer(t, 779, true, true)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	regenerated := `{"id":"chat_2","object":"chat.completion","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_2","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"2+2\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 779
+	info.ChatContinuation.Abnormal = nil
+	info.ChatContinuation.Regenerate = func(remaining int) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(regenerated))}, nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err != nil {
+		t.Fatalf("a regenerated complete call must succeed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("want exactly one regeneration, got %d", calls)
+	}
+	if usage == nil || usage.CompletionTokens == 0 {
+		t.Fatalf("regenerated round must be billed: %+v", usage)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `2+2`) {
+		t.Fatalf("regenerated call missing: %s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one terminal frame, body=%s", body)
+	}
+}
+
+// TestOaiStreamHandlerDoesNotRegenerateAfterVisibleText pins the safety rule: once
+// answer text reached the caller, re-running the request would duplicate it, so
+// the cut stays an honest error.
+func TestOaiStreamHandlerDoesNotRegenerateAfterVisibleText(t *testing.T) {
+	enableToolBuffer(t, 780, true, true)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先说一句"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 780
+	info.ChatContinuation.Abnormal = nil
+	info.ChatContinuation.Regenerate = func(int) (*http.Response, error) {
+		calls++
+		return nil, io.EOF
+	}
+
+	if _, err := OaiStreamHandler(c, info, continuationSSEResponse(stream)); err == nil {
+		t.Fatal("a cut after visible text must fail")
+	}
+	if calls != 0 {
+		t.Fatalf("regeneration must not run after visible text, calls=%d", calls)
+	}
+}
+
+// TestToolCallGateLeavesTextUntouched is the control: text/reasoning events pass
+// through the gate unchanged when buffering is enabled.
+func TestToolCallGateLeavesTextUntouched(t *testing.T) {
+	enableToolBuffer(t, 781, true, false)
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 781
+	info.ToolCallBuffer = relaycommon.NewChatToolCallBuffer(true)
+	if _, handled := gateToolCallChunk(c, info, `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`); handled {
+		t.Fatal("text deltas must not be gated")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatal("the gate must not write anything by itself")
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal([]byte(`[]`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+}

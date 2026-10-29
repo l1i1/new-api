@@ -281,6 +281,13 @@ type RelayInfo struct {
 	RepairChannels     []int
 	RepairRounds       int
 	RepairFailedReason string
+	// ToolCallBuffer, when non-nil, holds tool-call deltas from a channel whose
+	// tool-call buffering is enabled, so a cut can never hand the caller half an
+	// arguments document. The handler delivers the consolidated calls or fails.
+	ToolCallBuffer *ChatToolCallBuffer
+	// ToolCallsDelivered records that the buffered call set has been written, so
+	// the gate stops holding events for this request.
+	ToolCallsDelivered bool
 	// ContinuationAudit, when non-nil, records a transparent continuation that
 	// repaired this response. The successful request's type=2 row carries it as
 	// admin_info.continuation, so the repair rate can be measured from /api/log/

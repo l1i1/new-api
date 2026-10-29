@@ -49,6 +49,12 @@ func writeStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, f
 	if data == "" {
 		return nil
 	}
+	if gated, handled := gateToolCallChunk(c, info, data); handled {
+		if gated == "" {
+			return nil
+		}
+		data = gated
+	}
 	// Channel-configured response rewrite, applied to every outgoing event
 	// before any other transformation so the parsed copy and the forwarded
 	// copy agree. A misbehaving document leaves the event untouched.
@@ -195,6 +201,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, "invalid response or response body")
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
+	// Tool-call buffering is decided per request from the serving channel, before
+	// any frame is written: a buffered channel either delivers every call with a
+	// complete argument document or none of them.
+	if info != nil && info.RelayFormat == types.RelayFormatOpenAI {
+		info.ToolCallBuffer = relaycommon.NewChatToolCallBuffer(common.ChatToolBufferChannelAllowed(info.ChannelId))
+	}
 
 	defer service.CloseResponseBodyGracefully(resp)
 
@@ -340,6 +352,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// truncated-close guard needs to know whether a cut landed after the
 				// last complete argument document or inside one.
 				streamedToolCalls.observe(streamResp.Choices)
+				// The buffered tool-call gate accumulates here, at read time: a chunk
+				// that the loop holds as the last event never reaches the writer, and
+				// the terminal decision must still see every fragment.
+				if info.ToolCallBuffer != nil && info.ToolCallBuffer.Enabled() {
+					info.ToolCallBuffer.Observe(streamResp.Choices)
+				}
 				if streamResp.Usage != nil {
 					currentHasUsage = true
 					currentHasChoices = len(streamResp.Choices) > 0
@@ -1149,7 +1167,22 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// incomplete call keeps the error.
 		if !finishFrameForwarded && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
 			!isAudioModel && info.RelayFormat == types.RelayFormatOpenAI {
-			if completeToolCalls, complete := streamedToolCalls.completeCalls(); complete {
+			// With buffering on, the caller has received no call fragment at all: the
+			// held set is delivered here only when every argument document is complete.
+			bufferedReady := true
+			if info.ToolCallBuffer != nil && info.ToolCallBuffer.Enabled() && !info.ToolCallBuffer.Empty() {
+				bufferedReady = flushBufferedToolCalls(c, info, responseId, createAt, model)
+				if !bufferedReady {
+					info.ToolCallBuffer.MarkInvalid()
+					// The switch allows one regeneration on another channel before the
+					// caller is told the call failed; it only runs when no visible answer
+					// text was delivered, so the regenerated calls cannot duplicate text.
+					if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
+						return finalUsage, nil
+					}
+				}
+			}
+			if completeToolCalls, complete := streamedToolCalls.completeCalls(); complete && bufferedReady {
 				// Deliver the held tail first: it can be the provider's last
 				// argument fragment, and the caller must hold it before the
 				// terminal frame closes the call.
@@ -1295,6 +1328,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// a customer complaint on 2026-10-29 20:48 (truncated_stream followed by
 	// prompt 41 / completion 54). The usage was already zeroed for settlement, so
 	// the only correct thing left to send is the end of the stream.
+	// A buffered tool-call set that did not validate never reached the caller: the
+	// terminal frame is still held, so the request can fail honestly instead of
+	// closing half a call. The switch allows one regeneration on another channel
+	// first, but only when no visible answer text was delivered.
+	if info.ToolCallBuffer != nil && info.ToolCallBuffer.Invalid() {
+		if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
+			return finalUsage, nil
+		}
+		common.SysLog(fmt.Sprintf("buffered tool calls unusable: ch=%d calls=%d", info.ChannelId, info.ToolCallBuffer.CallCount()))
+		return truncatedDeliveredFailure(c, info, usage, "tool_calls_incomplete")
+	}
 	suppressUsageFrames := info.UndeliveredReason != ""
 
 	if deferredTerminalData != "" && !finishFrameForwarded && !suppressUsageFrames && info.RelayFormat == types.RelayFormatOpenAI {

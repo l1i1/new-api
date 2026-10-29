@@ -245,6 +245,8 @@ func InitOptionMap() {
 	common.OptionMap[common.ChatContinuationOptionRoundMaxElapsedSeconds] = strconv.Itoa(common.ChatContinuationRoundMaxElapsedSeconds)
 	common.OptionMap[common.ChatContinuationOptionRotateChannels] = strconv.FormatBool(common.ChatContinuationRotateChannels)
 	common.OptionMap[common.ChatContinuationOptionOutputCaps] = common.ChatContinuationOutputCapsRaw
+	common.OptionMap[common.ChatContinuationOptionToolBufferChannels] = common.ChatToolBufferChannelsRaw
+	common.OptionMap[common.ChatContinuationOptionToolRepairChannels] = common.ChatToolRepairChannelsRaw
 
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()

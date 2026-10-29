@@ -25,6 +25,8 @@ const (
 	ChatContinuationOptionRoundMaxElapsedSeconds    = ChatContinuationOptionPrefix + "round_max_elapsed_seconds"
 	ChatContinuationOptionRotateChannels            = ChatContinuationOptionPrefix + "rotate_channels"
 	ChatContinuationOptionOutputCaps                = ChatContinuationOptionPrefix + "output_caps"
+	ChatContinuationOptionToolBufferChannels        = ChatContinuationOptionPrefix + "tool_buffer_channels"
+	ChatContinuationOptionToolRepairChannels        = ChatContinuationOptionPrefix + "tool_repair_channels"
 )
 
 // ChatContinuationMaxSteps is the number of extra upstream rounds the relay may
@@ -63,6 +65,44 @@ var ChatContinuationOutputCapsRaw = "32000,32768"
 // bool is "same channel", so the initializer makes rotation the default for any
 // code path that runs before the option/env defaults are applied.
 var ChatContinuationRotateChannels = true
+
+// ChatToolBufferChannelIDs lists the channels whose tool-call deltas are held
+// until the call is complete, so a cut can never deliver half an arguments
+// document (RELAY_CHAT_CONTINUATION_TOOL_BUFFER_CHANNELS, comma separated ids;
+// empty disables the gate everywhere).
+var ChatToolBufferChannelIDs map[int]struct{}
+
+// ChatToolBufferChannelsRaw keeps the comma separated form for the options table.
+var ChatToolBufferChannelsRaw string
+
+// ChatToolRepairChannelIDs lists the channels allowed to regenerate a cut tool
+// call on another channel (RELAY_CHAT_CONTINUATION_TOOL_REPAIR_CHANNELS; empty
+// disables regeneration everywhere). Scoped per channel because a regeneration
+// spends a second upstream generation and must be piloted.
+var ChatToolRepairChannelIDs map[int]struct{}
+
+// ChatToolRepairChannelsRaw keeps the comma separated form for the options table.
+var ChatToolRepairChannelsRaw string
+
+// ChatToolBufferChannelAllowed reports whether tool-call deltas are buffered for
+// one channel.
+func ChatToolBufferChannelAllowed(channelID int) bool {
+	if channelID <= 0 {
+		return false
+	}
+	_, ok := ChatToolBufferChannelIDs[channelID]
+	return ok
+}
+
+// ChatToolRepairChannelAllowed reports whether a cut tool call may be regenerated
+// on another channel for this channel.
+func ChatToolRepairChannelAllowed(channelID int) bool {
+	if channelID <= 0 {
+		return false
+	}
+	_, ok := ChatToolRepairChannelIDs[channelID]
+	return ok
+}
 
 // ChatContinuationChannelIDs is the channel whitelist for transparent chat
 // continuation (RELAY_CHAT_CONTINUATION_CHANNELS, comma separated ids).
@@ -169,6 +209,16 @@ func ValidateChatContinuationOption(key, value string) error {
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be true or false", key)
 		}
+	case ChatContinuationOptionToolBufferChannels, ChatContinuationOptionToolRepairChannels:
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if id, err := strconv.Atoi(part); err != nil || id <= 0 {
+				return fmt.Errorf("%s must be comma separated channel ids", key)
+			}
+		}
 	case ChatContinuationOptionChannels:
 		if value == "" {
 			return nil
@@ -234,6 +284,12 @@ func SetChatContinuationOption(key, value string) error {
 			}
 		}
 		ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionToolBufferChannels:
+		ChatToolBufferChannelsRaw = value
+		ChatToolBufferChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionToolRepairChannels:
+		ChatToolRepairChannelsRaw = value
+		ChatToolRepairChannelIDs = ParseChatContinuationChannelIDs(value)
 	case ChatContinuationOptionOutputCaps:
 		caps := []int{}
 		if value != "" {

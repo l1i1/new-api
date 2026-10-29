@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/lo"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
 	"github.com/gin-gonic/gin"
@@ -383,6 +384,36 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if steps > 0 {
 			cfg.Send = send(buildContent)
 			cfg.Fallback = fallback(buildContent)
+		}
+		// Regeneration hook for a tool call cut mid-argument: re-run the original
+		// request (not a continuation) on another whitelisted channel. The handler
+		// calls it at most once and only when the channel's tool-repair switch is
+		// on and no visible answer text reached the caller.
+		if crossChannel {
+			cfg.Regenerate = func(remainingTokens int) (*http.Response, error) {
+				buildRegenerate := func(base []byte, _ string, remaining int) ([]byte, error) {
+					out, err := sjson.SetBytes(base, "stream", false)
+					if err != nil {
+						return nil, err
+					}
+					out, err = sjson.DeleteBytes(out, "stream_options")
+					if err != nil {
+						return nil, err
+					}
+					if gjson.GetBytes(out, "max_completion_tokens").Exists() {
+						return sjson.SetBytes(out, "max_completion_tokens", remaining)
+					}
+					if gjson.GetBytes(out, "max_tokens").Exists() {
+						return sjson.SetBytes(out, "max_tokens", remaining)
+					}
+					return sjson.SetBytes(out, "max_tokens", remaining)
+				}
+				regenerate := crossChannelContinuationFallback(c, info, base, buildRegenerate, roundChannel, triedChannels)
+				if regenerate == nil {
+					return nil, nil
+				}
+				return regenerate("", remainingTokens)
+			}
 		}
 		// A channel whose prefill dialect needs a visible prefix cannot resume a
 		// cut that never produced one: Kimi's guide says the provider restarts
