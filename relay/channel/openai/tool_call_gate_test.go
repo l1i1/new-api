@@ -234,3 +234,41 @@ func TestToolCallGateLeavesTextUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestToolCallGateForwardsTextBesideACallFragment pins the review finding that a
+// chunk can carry text (or a terminal frame) together with a call fragment: only
+// the fragment may be held, otherwise the caller silently loses answer text.
+func TestToolCallGateForwardsTextBesideACallFragment(t *testing.T) {
+	enableToolBuffer(t, 782, true, false)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先说明：","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"1+1\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 782
+	info.ChatContinuation.Abnormal = nil
+
+	if _, err := OaiStreamHandler(c, info, continuationSSEResponse(stream)); err != nil {
+		t.Fatalf("buffered calls with text beside a fragment must succeed: %v", err)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "先说明：") {
+		t.Fatalf("text carried beside a call fragment was dropped: %s", body)
+	}
+	args := toolCallArguments(body)
+	if len(args) != 1 || !json.Valid([]byte(args[0])) {
+		t.Fatalf("want one complete call, got %v (body=%s)", args, body)
+	}
+	if strings.Count(body, `"delta":{"tool_calls"`) != 1 {
+		t.Fatalf("want one consolidated call event: %s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one terminal frame: %s", body)
+	}
+}

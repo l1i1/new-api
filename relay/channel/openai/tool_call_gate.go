@@ -8,6 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tidwall/sjson"
+
 	rootcommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
@@ -45,35 +47,56 @@ func gateToolCallChunk(c *gin.Context, info *relaycommon.RelayInfo, data string)
 			finish = *choice.FinishReason
 		}
 	}
-	if !hasCalls && finish == "" {
-		return data, false
+	// A chunk may carry text or reasoning next to a call fragment. Strip only the
+	// fragment: holding the whole event would silently drop the caller's text.
+	stripped := data
+	for index, choice := range chunk.Choices {
+		if len(choice.Delta.ToolCalls) > 0 {
+			stripped, _ = sjson.Delete(stripped, fmt.Sprintf("choices.%d.delta.tool_calls", index))
+		}
 	}
-	if finish == "" {
-		// Held: the caller must not see a fragment of the argument document.
-		return "", true
-	}
-	// Terminal event: deliver the complete call set first, or hold the terminal
-	// too when the set cannot be reconstructed (the handler then fails honestly
-	// instead of closing a call the caller cannot execute).
-	if info.ToolCallsDelivered {
-		return data, false
-	}
-	if err := info.ToolCallBuffer.Validate(); err != nil {
-		info.ToolCallBuffer.MarkInvalid()
-		return "", true
-	}
-	id := chunk.Id
-	if id == "" {
-		id = "chatcmpl-relay"
-	}
-	model := chunk.Model
-	created := chunk.Created
-	if consolidated := info.ToolCallBuffer.ConsolidatedChunk(id, created, model); consolidated != "" {
-		info.ToolCallsDelivered = true
-		if err := writeStreamData(c, info, consolidated, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-			logger.LogError(c, "error writing consolidated tool calls: "+err.Error())
+	forward := func(payload string) (string, bool) {
+		if payload == "" {
 			return "", true
 		}
+		return payload, true
+	}
+	if finish == "" {
+		if !hasCalls {
+			return data, false
+		}
+		// Call fragment without a terminal: hold it (the caller must never see half
+		// an argument document); any text the same chunk carried still goes out.
+		if stripped != data {
+			return stripped, true
+		}
+		return "", true
+	}
+	// Terminal event: deliver the complete call set first, whatever chunk carries it,
+	// or hold the terminal when the set cannot be reconstructed (the handler then
+	// fails honestly instead of closing a call the caller cannot execute).
+	if !info.ToolCallBuffer.Empty() {
+		if err := info.ToolCallBuffer.Validate(); err != nil {
+			info.ToolCallBuffer.MarkInvalid()
+			if hasCalls {
+				return forward(stripped)
+			}
+			return "", true
+		}
+		id := chunk.Id
+		if id == "" {
+			id = "chatcmpl-relay"
+		}
+		if consolidated := info.ToolCallBuffer.ConsolidatedChunk(id, chunk.Created, chunk.Model); consolidated != "" {
+			info.ToolCallsDelivered = true
+			if err := writeStreamData(c, info, consolidated, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				logger.LogError(c, "error writing consolidated tool calls: "+err.Error())
+				return "", true
+			}
+		}
+	}
+	if hasCalls {
+		return forward(stripped)
 	}
 	return data, false
 }
