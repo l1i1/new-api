@@ -1140,10 +1140,34 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// returns earlier, so reaching here means every continuation mode declined
 		// and the caller sees the cut. One line names the caller, the shape and the
 		// guard, which is what the 2026-10-28 gap investigation lacked.
+		skipReason := truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)
 		common.SysLog(fmt.Sprintf("truncated stream unrepaired: ch=%d shape=%s content=%d reasoning=%d tools=%d choices=%d clientMax=%d completion=%d reason=%s",
 			info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount,
-			info.ClientMaxTokens, usage.CompletionTokens,
-			truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)))
+			info.ClientMaxTokens, usage.CompletionTokens, skipReason))
+		// The caller's own output cap, spent entirely on thinking, is not a cut:
+		// the official endpoint answers this exact shape with a normal terminal
+		// frame carrying finish_reason=length and empty content (probed
+		// 2026-10-29 21:47: max_tokens=50, 47 reasoning chunks, 0 content, no
+		// error). Surfacing truncated_stream made the gateway stricter than the
+		// provider it mirrors and turned a by-design cap into a client-visible
+		// failure (2026-10-29 20:48 request …3qpGsABu, clientMax=50).
+		if skipReason == "client_budget_exhausted" && visibleContentChars == 0 && toolCount == 0 &&
+			len(streamFunctionCallNames) == 0 && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
+			!finishFrameForwarded && !deepSeekV4FitEnabled(info) &&
+			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+			common.SysLog(fmt.Sprintf("budget-capped thinking closed as length: ch=%d content=0 reasoning=%d completion=%d clientMax=%d",
+				info.ChannelId, reasoningTextBuilder.Len(), usage.CompletionTokens, info.ClientMaxTokens))
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				return usage, nil
+			}
+			info.StreamFinishReason = "length"
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", usage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, false)
+			return usage, nil
+		}
 		// The caller already holds the answer prefix. Turning a cut that could
 		// not be finished into a 502 throws that work away and forces a full
 		// fifteen-minute retry (2026-10-28 21:21-21:33: 25 customer requests),

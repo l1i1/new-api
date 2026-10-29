@@ -2221,3 +2221,35 @@ func TestOaiStreamHandlerHopsWhenContentRoundFailsWithoutContent(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "续写正文")
 	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
 }
+
+// TestOaiStreamHandlerClosesBudgetCappedThinkingAsLength pins the 2026-10-29
+// 20:48 shape (request …3qpGsABu): the caller set max_tokens=50, the model spent
+// the whole budget thinking and reached [DONE] with no terminal finish_reason.
+// The official endpoint answers this with finish_reason=length, empty content and
+// no error (probed live), so the gateway must not turn the caller's own cap into
+// a truncated_stream failure. The attempt is billable like any capped answer.
+func TestOaiStreamHandlerClosesBudgetCappedThinkingAsLength(t *testing.T) {
+	round := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"I'll respond in Chinese "},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"to the user asking about attention."},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":41,"completion_tokens":50,"total_tokens":91}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondContinuationRoundForTest()), nil
+	}, 1, 2)
+	info.ClientMaxTokens = 50
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(round))
+	require.Nil(t, err, "a client output cap is not a truncation")
+	require.NotNil(t, usage)
+	require.Equal(t, 0, calls, "no continuation: the budget is already spent")
+	require.Equal(t, 50, usage.CompletionTokens)
+	body := recorder.Body.String()
+	require.Contains(t, body, `"finish_reason":"length"`)
+	require.NotContains(t, body, "truncated_stream")
+}
