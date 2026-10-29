@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -408,5 +409,59 @@ func TestToolBufferClosesWallCutCallAsToolCalls(t *testing.T) {
 	}
 	if strings.Count(body, "我来查一下") != 1 {
 		t.Fatalf("the delivered preamble must appear once: %s", body)
+	}
+}
+
+// resetAfterReader returns its payload once and then fails like a dropped
+// upstream connection: the transport cut lands after the answer bytes.
+type resetAfterReader struct {
+	data string
+	done bool
+}
+
+func (r *resetAfterReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, errors.New("connection reset by peer")
+}
+
+// TestToolBufferSalvagesCallAfterTransportCut pins the 2026-10-30 05:38 class: the
+// provider drops the connection while a tool call is in progress, so the loop ends
+// through the transport-error branch before the normal close path. The buffered
+// call set is complete, so the answer must close as a real tool_calls completion
+// instead of a 502.
+func TestToolBufferSalvagesCallAfterTransportCut(t *testing.T) {
+	enableToolBuffer(t, 786, true, false)
+	payload := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"稍等"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Hangzhou\"}"}}]},"finish_reason":null}]}`,
+		``,
+	}, "\n") + "\n"
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 786
+	info.ChatContinuation.Abnormal = nil
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&resetAfterReader{data: payload}),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+	if err != nil {
+		t.Fatalf("a complete buffered call set survives a transport cut: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("usage missing")
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `\"city\":\"Hangzhou\"`) {
+		t.Fatalf("the complete call must be delivered: %s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one tool_calls terminal: %s", body)
 	}
 }

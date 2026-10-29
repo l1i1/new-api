@@ -165,9 +165,9 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if info.ToolCallsDelivered || terminalForwarded {
 		return nil, false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
-		// Fit-shape callers demand the official chunking; a synthesized consolidated
-		// call would break that contract, so those requests keep the honest error.
+	if continuationElapsedCapReached(info) {
+		// The repair wall clock already expired: a fresh generation would start after
+		// it and cannot finish inside the contract, so the honest error stays.
 		return nil, false
 	}
 	remaining := chatContinuationBudgetLeft(info, baseUsage)

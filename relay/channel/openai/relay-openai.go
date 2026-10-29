@@ -707,6 +707,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			// no finish_reason at all, which most clients read as success).
 			flushHeldAnswerChunk(c, info, lastStreamData)
 			deliveredChars := max(visibleContentChars, responseTextBuilder.Len())
+			// A transport cut can land while a tool call is in progress. The buffered
+			// call set may still be complete (the provider only lost the connection)
+			// or recoverable by regeneration, both of which are usable answers, so
+			// they are tried before the caller is handed a transport error
+			// (2026-10-30 05:38-05:53: 37 such cuts in 25 minutes, ch37/ch91, closed
+			// as 502 without any repair because the text modes exclude tool shapes).
+			if toolCount > 0 || len(streamFunctionCallNames) > 0 {
+				if info.ToolCallBuffer != nil && info.ToolCallBuffer.Enabled() && !info.ToolCallBuffer.Empty() && !info.ToolCallsDelivered {
+					if flushBufferedToolCalls(c, info, responseId, createAt, model) {
+						if completeCalls, complete := streamedToolCalls.completeCalls(); complete {
+							return closeTruncatedStreamAsToolCalls(c, info, responseId, createAt, model, systemFingerprint, usage, containStreamUsage, completeCalls, visibleContentChars, reasoningTextBuilder.Len()), nil
+						}
+					} else {
+						info.ToolCallBuffer.MarkInvalid()
+					}
+				}
+				if finalUsage, ok := regenerateToolCalls(c, info, usage, visibleContentChars, finishFrameForwarded, chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint}); ok {
+					return finalUsage, nil
+				}
+				common.RecordChannelFailure(info.ChannelId)
+			}
 			if deliveredChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 && streamChoiceCount <= 1 &&
 				info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
 				info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel &&
@@ -1247,33 +1268,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// argument fragment, and the caller must hold it before the
 				// terminal frame closes the call.
 				flushHeldAnswerChunk(c, info, lastStreamData)
-				info.StreamFinishReason = constant.FinishReasonToolCalls
-				info.ClosedAsToolCalls = true
-				if info.StreamStatus != nil {
-					info.StreamStatus.MarkRecovered()
-				}
-				common.SysLog(fmt.Sprintf("truncated stream closed as tool_calls: ch=%d tools=%d content=%d reasoning=%d", info.ChannelId, completeToolCalls, visibleContentChars, reasoningTextBuilder.Len()))
-				if c.Request != nil && c.Request.Context().Err() != nil {
-					// The caller is gone; the answer was generated and delivered up
-					// to the terminal frame, so it stays billable like any other
-					// client-gone stream.
-					return usage, nil
-				}
-				flushContinuationCoalescer(c, info)
-				helper.ExtendWriteDeadline(c)
-				sendChatContinuationTerminal(c, info, responseId, createAt, model, constant.FinishReasonToolCalls, usage)
-				helper.ExtendWriteDeadline(c)
-				// The normal terminal path forwards the provider's usage event.
-				// Here the provider never sent one, so render it when the caller
-				// asked for usage; HandleFinalResponse emits it only when the
-				// upstream usage was missing altogether.
-				if info.ShouldIncludeUsage && containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
-					response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
-					response.SetSystemFingerprint(systemFingerprint)
-					helper.ObjectData(c, response)
-				}
-				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
-				return usage, nil
+				return closeTruncatedStreamAsToolCalls(c, info, responseId, createAt, model, systemFingerprint, usage, containStreamUsage, completeToolCalls, visibleContentChars, reasoningTextBuilder.Len()), nil
 			}
 			// The cut landed inside a call: the caller must retry. Record whether
 			// the provider actually delivered a usable call, because an in-band
@@ -1667,6 +1662,41 @@ func flushHeldAnswerChunk(c *gin.Context, info *relaycommon.RelayInfo, pending s
 	if err := writeStreamData(c, info, payload, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 		logger.LogError(c, "error writing held answer tail: "+err.Error())
 	}
+}
+
+// closeTruncatedStreamAsToolCalls ends a stream whose model had already written
+// every tool call when the provider lost the terminal frame or the connection. The
+// caller holds a complete, executable answer, so it is closed as a real
+// tool_calls completion (billed) instead of a 502 for work that is done. Shared by
+// the after-loop close path and the transport-error salvage path so both render the
+// same single terminal frame.
+func closeTruncatedStreamAsToolCalls(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, systemFingerprint string, usage *dto.Usage, containStreamUsage bool, completeToolCalls, visibleContentChars, reasoningChars int) *dto.Usage {
+	info.StreamFinishReason = constant.FinishReasonToolCalls
+	info.ClosedAsToolCalls = true
+	if info.StreamStatus != nil {
+		info.StreamStatus.MarkRecovered()
+	}
+	common.SysLog(fmt.Sprintf("truncated stream closed as tool_calls: ch=%d tools=%d content=%d reasoning=%d", info.ChannelId, completeToolCalls, visibleContentChars, reasoningChars))
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		// The caller is gone; the answer was generated and delivered up to the
+		// terminal frame, so it stays billable like any other client-gone stream.
+		return usage
+	}
+	flushContinuationCoalescer(c, info)
+	helper.ExtendWriteDeadline(c)
+	sendChatContinuationTerminal(c, info, responseId, createAt, model, constant.FinishReasonToolCalls, usage)
+	helper.ExtendWriteDeadline(c)
+	// The normal terminal path forwards the provider's usage event. Here the
+	// provider never sent one, so render it when the caller asked for usage;
+	// HandleFinalResponse emits it only when the upstream usage was missing
+	// altogether.
+	if info.ShouldIncludeUsage && containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
+		response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+		response.SetSystemFingerprint(systemFingerprint)
+		helper.ObjectData(c, response)
+	}
+	HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	return usage
 }
 
 // truncatedDeliveredFailure ends a response whose answer prefix already reached
