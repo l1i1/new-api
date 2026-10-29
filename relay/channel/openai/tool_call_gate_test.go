@@ -367,3 +367,46 @@ func TestToolRegenerationSkipsSameChannelAfterWall(t *testing.T) {
 		t.Fatal("regenerated call missing")
 	}
 }
+
+// TestToolBufferClosesWallCutCallAsToolCalls pins the 900s-wall shape: content, a
+// complete call, then the provider terminal carrying finish_reason=error. The
+// terminal must be held so the buffered set closes as a real tool_calls answer
+// instead of the caller receiving an "error" terminal and a 502 (2026-10-30
+// 05:10-05:26 ch102/ch91, the dominant remaining failure).
+func TestToolBufferClosesWallCutCallAsToolCalls(t *testing.T) {
+	enableToolBuffer(t, 785, true, false)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"我来查一下"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Hangzhou\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 785
+	info.ChatContinuation.Abnormal = nil
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err != nil {
+		t.Fatalf("a complete buffered call set is a usable answer: %v", err)
+	}
+	if usage == nil || usage.CompletionTokens != 12 {
+		t.Fatalf("the closed answer is billed: %+v", usage)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, `"finish_reason":"error"`) {
+		t.Fatalf("the provider error terminal must not reach the caller: %s", body)
+	}
+	if strings.Count(body, `"finish_reason":"tool_calls"`) != 1 {
+		t.Fatalf("want one tool_calls terminal: %s", body)
+	}
+	if !strings.Contains(body, `\"city\":\"Hangzhou\"`) {
+		t.Fatalf("the complete call must be delivered: %s", body)
+	}
+	if strings.Count(body, "我来查一下") != 1 {
+		t.Fatalf("the delivered preamble must appear once: %s", body)
+	}
+}

@@ -1572,6 +1572,17 @@ func shouldDeferTerminalForRepair(info *relaycommon.RelayInfo, finishReason stri
 	if info == nil || info.ChatContinuation == nil || info.RelayFormat != types.RelayFormatOpenAI || isAudioModel {
 		return false
 	}
+	// A buffered call set can be reconstructed in full, so a provider terminal that
+	// arrives while calls are pending must be held: the close path validates the
+	// set and, when every argument document is complete, closes the answer as a
+	// real tool_calls completion. Forwarding the terminal first makes it final and
+	// turns the request into a 502 even though the caller holds an executable call
+	// set - the 900s-wall shape (2026-10-30 05:10-05:26 ch102/ch91: 100+ visible
+	// chars, a pending call and finish_reason=error, failed at the wall).
+	if finishReason != "" && relaycommon.IsAbnormalFinishReason(finishReason) &&
+		info.ToolCallBuffer != nil && info.ToolCallBuffer.Enabled() && !info.ToolCallBuffer.Empty() {
+		return true
+	}
 	if toolCount > 0 || len(functionCallNames) > 0 || choiceCount > 1 {
 		return false
 	}
