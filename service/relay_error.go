@@ -118,6 +118,10 @@ func decideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// same terminal reason as other failures, and before all configurable retry
 	// rules so a matching never-retry keyword always wins.
 	if IsNeverRetryUpstreamError(err) {
+		// A channel that wraps the rejection as 5xx must not make the client
+		// retry an unsendable request: answer with 400 and the upstream wording
+		// so the caller can act on it (see NormalizeRequestRejectionError).
+		NormalizeRequestRejectionError(err)
 		return PolicyDecision{Action: "stop", Reason: "request_rejected", Source: "system"}
 	}
 	code := err.StatusCode

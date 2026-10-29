@@ -3,10 +3,13 @@ package service
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,9 +62,12 @@ func TestIsNeverRetryUpstreamErrorIgnoresChannelAndTransientFailures(t *testing.
 		)), message)
 	}
 
-	// The same wording behind a 5xx may be a transient upstream fault, so the
-	// retry stays available.
-	require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
+	// The wording decides, not the wrapper (2026-10-29): one channel answers an
+	// over-length request as 400 and another wraps the same refusal as 502, so a
+	// 5xx carrying the text is a request rejection too (see
+	// TestNeverRetryMatchesContextOverflowBehindA5xx). A 5xx without the wording
+	// stays retryable, covered above.
+	require.True(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
 		errors.New("This model's maximum context length is 1048576 tokens."),
 		types.ErrorCodeBadResponseStatusCode,
 		http.StatusInternalServerError,
@@ -96,4 +102,63 @@ func TestIsNeverRetryUpstreamErrorFollowsOperatorKeywords(t *testing.T) {
 		types.ErrorCodeBadResponseStatusCode,
 		http.StatusBadRequest,
 	)))
+}
+
+// TestNeverRetryMatchesContextOverflowBehindA5xx pins the 2026-10-29 live shape:
+// one channel answered an over-length request as 400 while another wrapped the
+// same rejection as 502 with the Chinese wording. The 502 was retried to a
+// second channel (one useless hop per request, 64 requests in 15 minutes) and
+// the client then saw whichever message the last channel produced.
+func TestNeverRetryMatchesContextOverflowBehindA5xx(t *testing.T) {
+	wrapped := types.NewOpenAIError(
+		errors.New("The prompt is too long: 1270711, model maximum context length: 1048571"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+	)
+	require.True(t, IsNeverRetryUpstreamError(wrapped),
+		"the wording is request-level whatever status code the channel wraps it in")
+
+	// A transient 5xx carries no request-level wording and stays retryable.
+	require.False(t, IsNeverRetryUpstreamError(types.NewOpenAIError(
+		errors.New("服务繁忙，请稍后重试。"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+	)))
+}
+
+// TestNormalizeRequestRejectionErrorAnswers400 pins the client-visible mapping:
+// a wrapped 5xx rejection is answered as 400 (and keeps its wording), a 4xx
+// rejection is untouched.
+func TestNormalizeRequestRejectionErrorAnswers400(t *testing.T) {
+	wrapped := types.NewOpenAIError(
+		errors.New("上下文长度超过模型限制，请裁剪对话历史后重试。"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+	)
+	require.Same(t, wrapped, NormalizeRequestRejectionError(wrapped))
+	require.Equal(t, http.StatusBadRequest, wrapped.StatusCode)
+	require.Contains(t, wrapped.Error(), "上下文长度超过模型限制")
+
+	rejected := types.NewOpenAIError(
+		errors.New("The input token count exceeds the maximum number of tokens allowed"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	require.Equal(t, http.StatusBadRequest, NormalizeRequestRejectionError(rejected).StatusCode)
+}
+
+// TestDecideRelayRetryStopsAndRemapsWrappedContextOverflow pins the decision the
+// relay loop acts on: no channel hop, and the error the caller receives is 400.
+func TestDecideRelayRetryStopsAndRemapsWrappedContextOverflow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	wrapped := types.NewOpenAIError(
+		errors.New("The prompt is too long: 1270711, model maximum context length: 1048571"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadGateway,
+	)
+	decision := DecideRelayRetry(c, wrapped, 3)
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "request_rejected", Source: "system"}, decision)
+	assert.Equal(t, http.StatusBadRequest, wrapped.StatusCode,
+		"the client must get an actionable 400, not a 502 it will retry")
 }

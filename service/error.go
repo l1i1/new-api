@@ -282,17 +282,72 @@ func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) 
 		return
 	}
 	codeStr := strconv.Itoa(newApiErr.StatusCode)
-	if value, ok := statusCodeMapping[codeStr]; ok {
-		intCode, ok := parseStatusCodeMappingValue(value)
-		if !ok {
-			return
-		}
-		newApiErr.StatusCode = intCode
+	value, ok := statusCodeMapping[codeStr]
+	if !ok {
+		return
 	}
+	intCode, ok := parseStatusCodeMappingValue(value)
+	if !ok {
+		return
+	}
+	// A mapping may be conditioned on the error text, so a channel can relabel
+	// one upstream wording without touching its other answers in the same status
+	// class (2026-10-29: channel 91 wraps a context-window rejection as 502;
+	// mapping every 502 of that channel would relabel its real stream failures
+	// too). Unconditioned mappings keep their historical meaning.
+	if !statusCodeMappingConditionMatches(value, newApiErr.Error()) {
+		return
+	}
+	newApiErr.StatusCode = intCode
+}
+
+// statusCodeMappingConditionMatches evaluates the optional condition on a
+// mapping value. Shape:
+//
+//	{"502": {"to": 400, "when_message_contains": ["上下文长度超过模型限制"]}}
+//
+// Every listed fragment must appear in the error text (AND). A missing or empty
+// list keeps the mapping unconditional; an unparsable condition refuses the
+// mapping rather than guessing, because relabelling the wrong errors is worse
+// than not relabelling any.
+func statusCodeMappingConditionMatches(value any, message string) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return true
+	}
+	raw, hasCondition := object["when_message_contains"]
+	if !hasCondition {
+		return true
+	}
+	fragments, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	if len(fragments) == 0 {
+		return true
+	}
+	for _, fragment := range fragments {
+		text, ok := fragment.(string)
+		if !ok || text == "" {
+			return false
+		}
+		if !strings.Contains(message, text) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseStatusCodeMappingValue(value any) (int, bool) {
 	switch v := value.(type) {
+	case map[string]any:
+		// Conditioned form: {"to": 400, "when_message_contains": [...]}.
+		for _, key := range []string{"to", "status", "status_code"} {
+			if inner, ok := v[key]; ok {
+				return parseStatusCodeMappingValue(inner)
+			}
+		}
+		return 0, false
 	case string:
 		if v == "" {
 			return 0, false
