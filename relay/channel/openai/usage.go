@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/officialfit"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -160,6 +161,52 @@ func applyThinkingOffEmulation(info *relaycommon.RelayInfo, usage *dto.Usage) bo
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	return changed
+}
+
+// officialThinkingOffUsageJSON renders the usage object the official endpoint
+// sends for a thinking-off request: prompt, completion, total and an empty
+// prompt_tokens_details. An emulated answer must not expose the platform's
+// internal usage fields (input_tokens/output_tokens/cache-creation counters and
+// an all-zero completion_tokens_details), which is what serializing the full
+// dto.Usage would do.
+func officialThinkingOffUsageJSON(usage *dto.Usage) ([]byte, error) {
+	type officialUsage struct {
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails struct {
+			CacheWriteTokens int `json:"cache_write_tokens"`
+		} `json:"prompt_tokens_details"`
+	}
+	payload := officialUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+	return common.Marshal(payload)
+}
+
+// renderEmulatedFinalUsage sends the terminal usage frame in the official shape.
+// It reports false when the frame cannot be rebuilt, so the caller falls back to
+// the generic renderer rather than dropping the frame.
+func renderEmulatedFinalUsage(c *gin.Context, usage *dto.Usage, response *dto.ChatCompletionsStreamResponse) bool {
+	if c == nil || usage == nil || response == nil {
+		return false
+	}
+	body, err := common.Marshal(response)
+	if err != nil {
+		return false
+	}
+	usageJSON, err := officialThinkingOffUsageJSON(usage)
+	if err != nil {
+		return false
+	}
+	patched, ok := replaceTopLevelJSONValue(body, "usage", usageJSON)
+	if !ok {
+		return false
+	}
+	helper.StringData(c, string(patched))
+	return true
 }
 
 // omitZeroCompletionTokenDetails drops a completion_tokens_details object whose

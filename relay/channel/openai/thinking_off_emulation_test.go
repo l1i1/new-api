@@ -79,3 +79,13 @@ func TestOmitZeroCompletionTokenDetails(t *testing.T) {
 	kept := []byte(`{"usage":{"completion_tokens_details":{"reasoning_tokens":48}}}`)
 	require.Contains(t, string(omitZeroCompletionTokenDetailsFromBody(kept)), "completion_tokens_details")
 }
+
+// TestOfficialThinkingOffUsageJSONMatchesOfficialShape pins the wire shape of the
+// emulated terminal usage frame: the official endpoint sends exactly prompt,
+// completion, total and an empty prompt_tokens_details cache_write_tokens, and
+// the platform's struct would otherwise serialize a dozen keys.
+func TestOfficialThinkingOffUsageJSONMatchesOfficialShape(t *testing.T) {
+	raw, err := officialThinkingOffUsageJSON(&dto.Usage{PromptTokens: 19, CompletionTokens: 22, TotalTokens: 41})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"prompt_tokens":19,"completion_tokens":22,"total_tokens":41,"prompt_tokens_details":{"cache_write_tokens":0}}`, string(raw))
+}

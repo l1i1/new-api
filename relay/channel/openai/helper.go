@@ -408,7 +408,13 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 		if info.ShouldIncludeUsage && !containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
 			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
 			response.SetSystemFingerprint(systemFingerprint)
-			helper.ObjectData(c, response)
+			// An emulated thinking-off answer must look like the official one:
+			// the official terminal usage carries four keys, while the platform
+			// struct serializes a dozen (input_tokens/output_tokens, the
+			// cache-creation counters and an all-zero completion_tokens_details).
+			if !(thinkingOffEmulationActive(info) && renderEmulatedFinalUsage(c, usage, response)) {
+				helper.ObjectData(c, response)
+			}
 		}
 		helper.Done(c)
 
