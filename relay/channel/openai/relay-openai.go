@@ -1065,6 +1065,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				return usage, nil
 			}
 		}
+		// A channel that only ever breaks this way never reaches the cooldown:
+		// every other promotion point sits behind a repair attempt that a
+		// truncation does not have, so ch102 kept absorbing customer traffic for
+		// ten minutes while 88-98% of its answers were cut (2026-10-29). Record
+		// the failure here, the one place every unrepaired truncation passes
+		// through, so two cuts inside two minutes take the channel out of
+		// selection for a few minutes without touching its DB status.
+		common.RecordChannelFailure(info.ChannelId)
 		// Log the refusal reason before the usage is zeroed: a repaired truncation
 		// returns earlier, so reaching here means every continuation mode declined
 		// and the caller sees the cut. One line names the caller, the shape and the
