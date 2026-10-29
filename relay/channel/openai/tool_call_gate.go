@@ -126,7 +126,7 @@ func mergeRegeneratedUsage(base, regenerated *dto.Usage) *dto.Usage {
 // hook is wired.
 func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, visibleContentChars int, meta chatContinuationMeta) (*dto.Usage, bool) {
 	cfg := info.ChatContinuation
-	if cfg == nil || cfg.Regenerate == nil || !rootcommon.ChatToolRepairChannelAllowed(info.ChannelId) {
+	if cfg == nil || (cfg.RegenerateSame == nil && cfg.Regenerate == nil) || !rootcommon.ChatToolRepairChannelAllowed(info.ChannelId) {
 		return nil, false
 	}
 	if visibleContentChars > 0 || info.ToolCallsDelivered {
@@ -142,12 +142,42 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if remaining <= 0 {
 		return nil, false
 	}
-	resp, err := cfg.Regenerate(remaining)
+	// Retry ladder: the original channel first (prompt cache warm, no selection
+	// cost), then the cross-channel hop. A rung that returns an unusable call set
+	// hands over to the next one instead of failing the request outright.
+	rungs := []struct {
+		fn    func(int) (*http.Response, error)
+		label string
+	}{
+		{cfg.RegenerateSame, "same-channel"},
+		{cfg.Regenerate, "cross-channel"},
+	}
+	for _, rung := range rungs {
+		if rung.fn == nil {
+			continue
+		}
+		if finalUsage, ok := regenerateToolCallsFromRung(c, info, baseUsage, remaining, rung.fn, rung.label, meta); ok {
+			return finalUsage, true
+		}
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			break
+		}
+	}
+	return nil, false
+}
+
+// regenerateToolCallsFromRung runs one regeneration rung and, when its call set is
+// complete, delivers it as the answer. A failed rung returns false so the caller
+// can try the next retry priority.
+func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, remaining int, regenerate func(int) (*http.Response, error), label string, meta chatContinuationMeta) (*dto.Usage, bool) {
+	resp, err := regenerate(remaining)
 	if err != nil || resp == nil || resp.Body == nil {
+		rootcommon.SysLog(fmt.Sprintf("tool call regeneration rung failed: rung=%s ch=%d err=%v", label, info.ChannelId, err))
 		return nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		rootcommon.SysLog(fmt.Sprintf("tool call regeneration rung status %d: rung=%s ch=%d", resp.StatusCode, label, info.ChannelId))
 		return nil, false
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

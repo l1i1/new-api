@@ -381,33 +381,69 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		buildAnswer := func(base []byte, reasoning string, remainingTokens int) ([]byte, error) {
 			return openaichannel.BuildChatAnswerContinuationBody(base, reasoning, remainingTokens, cfg.PrefillMode)
 		}
+		// The instruction body is the second rung of the retry ladder: it is only
+		// wired when the channel has a native prefill dialect, because otherwise the
+		// preferred body already IS the instruction body.
+		buildContentInstruction := func(base []byte, partialContent string, remainingTokens int) ([]byte, error) {
+			return openaichannel.BuildChatContinuationBody(base, partialContent, cfg.PrefixReasoning, remainingTokens, "")
+		}
 		if steps > 0 {
 			cfg.Send = send(buildContent)
 			cfg.Fallback = fallback(buildContent)
+			if info.ChannelSetting.PrefillMode() != "" {
+				cfg.SendInstruction = send(buildContentInstruction)
+				cfg.FallbackInstruction = fallback(buildContentInstruction)
+			}
 		}
 		// Regeneration hook for a tool call cut mid-argument: re-run the original
 		// request (not a continuation) on another whitelisted channel. The handler
 		// calls it at most once and only when the channel's tool-repair switch is
 		// on and no visible answer text reached the caller.
+		buildRegenerate := func(base []byte, _ string, remaining int) ([]byte, error) {
+			out, err := sjson.SetBytes(base, "stream", false)
+			if err != nil {
+				return nil, err
+			}
+			out, err = sjson.DeleteBytes(out, "stream_options")
+			if err != nil {
+				return nil, err
+			}
+			if gjson.GetBytes(out, "max_completion_tokens").Exists() {
+				return sjson.SetBytes(out, "max_completion_tokens", remaining)
+			}
+			if gjson.GetBytes(out, "max_tokens").Exists() {
+				return sjson.SetBytes(out, "max_tokens", remaining)
+			}
+			return sjson.SetBytes(out, "max_tokens", remaining)
+		}
+		// Regeneration ladder for a tool call cut mid-argument: the original channel
+		// first (its prompt cache is warm), the cross-channel hop second. Both re-run
+		// the original request rather than a continuation body.
+		cfg.RegenerateSame = func(remainingTokens int) (*http.Response, error) {
+			if adaptorRef == nil {
+				return nil, nil
+			}
+			regenerateJSON, buildErr := buildRegenerate(base, "", remainingTokens)
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			body, bodyCloser, bodyErr := relaycommon.NewOutboundJSONBody(regenerateJSON)
+			if bodyErr != nil {
+				return nil, bodyErr
+			}
+			defer bodyCloser.Close()
+			respAny, requestErr := adaptorRef.DoRequest(c, info, body)
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			resp, ok := respAny.(*http.Response)
+			if !ok || resp == nil {
+				return nil, fmt.Errorf("regenerate: adaptor returned %T", respAny)
+			}
+			return resp, nil
+		}
 		if crossChannel {
 			cfg.Regenerate = func(remainingTokens int) (*http.Response, error) {
-				buildRegenerate := func(base []byte, _ string, remaining int) ([]byte, error) {
-					out, err := sjson.SetBytes(base, "stream", false)
-					if err != nil {
-						return nil, err
-					}
-					out, err = sjson.DeleteBytes(out, "stream_options")
-					if err != nil {
-						return nil, err
-					}
-					if gjson.GetBytes(out, "max_completion_tokens").Exists() {
-						return sjson.SetBytes(out, "max_completion_tokens", remaining)
-					}
-					if gjson.GetBytes(out, "max_tokens").Exists() {
-						return sjson.SetBytes(out, "max_tokens", remaining)
-					}
-					return sjson.SetBytes(out, "max_tokens", remaining)
-				}
 				regenerate := crossChannelContinuationFallback(c, info, base, buildRegenerate, roundChannel, triedChannels)
 				if regenerate == nil {
 					return nil, nil

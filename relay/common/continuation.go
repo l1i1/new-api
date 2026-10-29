@@ -128,6 +128,14 @@ type ChatContinuationConfig struct {
 	// that only sets the legacy key keeps its old round count.
 	MaxRounds int
 	Send      func(partialContent string, remainingTokens int) (*http.Response, error)
+	// SendInstruction is the instruction-style body for the SAME channel, offered
+	// only when the channel has a native prefill dialect. The retry ladder tries
+	// the original (native) body first and this one second, so a provider that
+	// rejects or ignores the prefilled assistant turn still gets one same-channel
+	// attempt before any channel is switched.
+	SendInstruction func(partialContent string, remainingTokens int) (*http.Response, error)
+	// FallbackInstruction is SendInstruction for a cross-channel sender.
+	FallbackInstruction func(partialContent string, remainingTokens int) (*http.Response, error)
 	// PrefillMode is the serving channel's native prefill dialect (empty means
 	// instruction-style continuation). The handler fills it in from the channel
 	// settings so the body builders can choose the native shape.
@@ -144,6 +152,11 @@ type ChatContinuationConfig struct {
 	// offered for channels whose tool-repair switch is enabled, and the handler
 	// calls it at most once, only when no visible answer text was delivered.
 	Regenerate func(remainingTokens int) (*http.Response, error)
+	// RegenerateSame, when non-nil, re-runs the original request on the ORIGINAL
+	// channel before any channel switch. The retry ladder is same-channel first
+	// (the prefix cache is already warm there) and cross-channel only after it
+	// fails, matching the continuation ladder.
+	RegenerateSame func(remainingTokens int) (*http.Response, error)
 	// Fallback, when non-nil, is used once after the same-channel sender fails to
 	// even start the round. It is expected to resume the same prefix on a
 	// different channel with a full rebind (selection, model mapping, credential,

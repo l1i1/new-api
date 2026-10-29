@@ -1069,6 +1069,52 @@ type chatContinuationMeta struct {
 // yet, and each round is judged by the same gates. The round budget, the elapsed
 // cap and the shared tried set bound the repair, so a dying channel cannot burn
 // it by being re-selected.
+// continuationContentSender is one rung of a resume round's retry ladder.
+type continuationContentSender struct {
+	fn    func(partialContent string, remainingTokens int) (*http.Response, error)
+	label string
+}
+
+// sendContentRoundLadder walks a round's senders in priority order: the original
+// (native prefill) body on the original channel, the instruction body on the same
+// channel, then the cross-channel rungs. The first rung that actually produces
+// output ends the round; a rung that returns nothing (refused, error, empty body)
+// is skipped so the next priority gets its chance. This is the ordering the
+// operator asked for: original before instruction, original channel before a
+// channel switch, and no priority skipped.
+func sendContentRoundLadder(c *gin.Context, info *relaycommon.RelayInfo, senders []continuationContentSender, meta chatContinuationMeta, content string, remaining int, attempts int) (contentRound, bool, error) {
+	round := contentRound{}
+	var lastErr error
+	for position, sender := range senders {
+		if sender.fn == nil {
+			continue
+		}
+		// Only the first rung inherits the bounded transient-retry budget: the
+		// alternate rungs are different requests, not retries of the same one.
+		rungAttempts := 1
+		if position == 0 {
+			rungAttempts = attempts
+		}
+		out, ok, err := sendContentRound(c, info, sender.fn, meta, content, remaining, sender.label, rungAttempts)
+		// A rung is productive when it said something: a delta, a terminal reason, a
+		// buffered tool call, or visible text. A bare [DONE] with no finish_reason is
+		// exactly what "this body shape was refused" looks like, so it must not stop
+		// the ladder - that is what makes the instruction fallback run.
+		if ok && (out.deltaSeen || out.finish != "" || out.content != "" || out.toolCalls > 0) {
+			return out, true, err
+		}
+		if err != nil {
+			lastErr = err
+			round.err = err
+		}
+		logger.LogWarn(c, sender.label+" continuation rung produced nothing, trying next retry priority")
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			break
+		}
+	}
+	return round, false, lastErr
+}
+
 func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, partial string, meta chatContinuationMeta) chatContinuationResult {
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
@@ -1094,13 +1140,48 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			result.failedReason = relaycommon.ContinuationFailureBudgetExhausted
 			break
 		}
-		sender, label := cfg.Send, "same-channel"
-		if (round == 0 && hopFirst) || round > 0 {
-			if rotate {
-				sender, label = cfg.Fallback, "cross-channel"
+		sameRungs := make([]continuationContentSender, 0, 2)
+		if cfg.Send != nil {
+			sameRungs = append(sameRungs, continuationContentSender{fn: cfg.Send, label: "same-channel"})
+		}
+		if cfg.SendInstruction != nil {
+			sameRungs = append(sameRungs, continuationContentSender{fn: cfg.SendInstruction, label: "same-channel-instruction"})
+		}
+		crossRungs := make([]continuationContentSender, 0, 2)
+		if rotate {
+			if cfg.Fallback != nil {
+				crossRungs = append(crossRungs, continuationContentSender{fn: cfg.Fallback, label: "cross-channel"})
+			}
+			if cfg.FallbackInstruction != nil {
+				crossRungs = append(crossRungs, continuationContentSender{fn: cfg.FallbackInstruction, label: "cross-channel-instruction"})
 			}
 		}
-		if sender == nil {
+		// Priority order: original channel (native body, then instruction body), then
+		// the channel switch (native, then instruction). A wall-triggered repair
+		// (>=600s) is the one documented exception: the channel that already burned a
+		// whole wall cannot finish inside it, so it starts on another channel and
+		// falls back to the original one only if the hop produces nothing.
+		var senders []continuationContentSender
+		switch {
+		case round == 0 && hopFirst:
+			// Wall-triggered repair: the channel that already burned a whole wall
+			// cannot finish inside it, so the cross-channel rungs run first.
+			senders = append(senders, crossRungs...)
+		case round == 0:
+			// Priority ladder: original channel first (native body, then instruction
+			// body), and only then the channel switch with the same two body forms.
+			senders = append(senders, sameRungs...)
+			senders = append(senders, crossRungs...)
+		case rotate:
+			// Rotation rounds are already the channel switch; a later round must not
+			// fall back to the original channel (it is in the tried set precisely
+			// because it cut the answer).
+			senders = append(senders, crossRungs...)
+		default:
+			// Rotation disabled: later rounds keep the legacy same-channel contract.
+			senders = append(senders, sameRungs...)
+		}
+		if len(senders) == 0 {
 			result.failedReason = relaycommon.ContinuationFailureNoCandidate
 			break
 		}
@@ -1111,7 +1192,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		if !rotate || (round == 0 && !hopFirst) {
 			attempts = chatContinuationRoundAttempts
 		}
-		roundOut, ok, err := sendContentRound(c, info, sender, meta, content, remaining, label, attempts)
+		roundOut, ok, err := sendContentRoundLadder(c, info, senders, meta, content, remaining, attempts)
 		if errors.Is(err, relaycommon.ErrNoContinuationCandidate) {
 			result.failedReason = relaycommon.ContinuationFailureNoCandidate
 			break
