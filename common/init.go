@@ -196,6 +196,12 @@ func initConstantEnv() {
 	// finished answer into a 502 (neurvibe ch48 sent a terminal tool_calls frame
 	// and then held the connection open until the 300s idle guard fired).
 	constant.StreamTerminalTailTimeout = GetEnvOrDefault("STREAM_TERMINAL_TAIL_TIMEOUT", 20)
+	if constant.StreamTerminalTailTimeout > 0 && constant.StreamTerminalTailTimeout >= constant.StreamingTimeout {
+		// The idle branch wins first when both deadlines are the same, so the
+		// tail close would never fire. Say so once at boot instead of letting an
+		// operator believe the safety net is armed.
+		SysLog(fmt.Sprintf("STREAM_TERMINAL_TAIL_TIMEOUT=%ds >= STREAMING_TIMEOUT=%ds: the terminal tail close can never fire", constant.StreamTerminalTailTimeout, constant.StreamingTimeout))
+	}
 	constant.DifyDebug = GetEnvOrDefaultBool("DIFY_DEBUG", true)
 	constant.MaxFileDownloadMB = GetEnvOrDefault("MAX_FILE_DOWNLOAD_MB", 64)
 	constant.StreamScannerMaxBufferMB = GetEnvOrDefault("STREAM_SCANNER_MAX_BUFFER_MB", 128)

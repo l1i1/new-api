@@ -3707,6 +3707,71 @@
      ]
     }
    ]
+  },
+  {
+   "id": "stream-terminal-tail-close",
+   "title": "终止帧后短尾窗收尾：上游发完正常 finish_reason 却不发 [DONE]/不关连接时，按正常结束收尾而不是 300s 空闲超时 502（STREAM_TERMINAL_TAIL_TIMEOUT，默认 20s，0 关闭；length 与 n>1 不纳入）",
+   "risk": "medium",
+   "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+   "files": [
+    "relay/helper/stream_scanner.go",
+    "relay/common/stream_status.go",
+    "relay/channel/openai/relay-openai.go",
+    "service/log_info_generate.go",
+    "constant/env.go"
+   ],
+   "anchors": [
+    {
+     "kind": "contains",
+     "file": "relay/helper/stream_scanner.go",
+     "contains": "TimeSinceTerminalFinish"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/common/stream_status.go",
+     "contains": "func (s *StreamStatus) MarkTerminalFinishSeen"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/channel/openai/relay-openai.go",
+     "contains": "MarkTerminalFinishSeen"
+    },
+    {
+     "kind": "contains",
+     "file": "service/log_info_generate.go",
+     "contains": "closed_after_terminal"
+    },
+    {
+     "kind": "contains",
+     "file": "constant/env.go",
+     "contains": "StreamTerminalTailTimeout"
+    }
+   ],
+   "tests": [
+    {
+     "file": "relay/helper/stream_scanner_test.go",
+     "names": [
+      "TestStreamScannerHandler_ClosesAfterTerminalFinish",
+      "TestStreamScannerHandler_TailGraceIgnoresKeepAlives",
+      "TestStreamScannerHandler_TailGraceDoesNotHideFailedResponse",
+      "TestStreamScannerHandler_NoTerminalFinishIsNotClosedEarly"
+     ]
+    },
+    {
+     "file": "relay/channel/openai/stream_toolcall_tail_test.go",
+     "names": [
+      "TestOaiStreamHandlerClosesTerminalStreamWhenProviderHangs",
+      "TestOaiStreamHandlerDoesNotTailCloseMultiChoice",
+      "TestOaiStreamHandlerDoesNotTailCloseLength"
+     ]
+    },
+    {
+     "file": "service/log_info_generate_test.go",
+     "names": [
+      "TestAppendStreamStatusMarksClosedAfterTerminal"
+     ]
+    }
+   ]
   }
  ]
 }

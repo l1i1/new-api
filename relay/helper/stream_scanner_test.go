@@ -561,11 +561,11 @@ func TestStreamScannerHandler_ClosesAfterTerminalFinish(t *testing.T) {
 	assert.True(t, info.StreamStatus.ClosedAfterTerminal())
 }
 
-// TestStreamScannerHandler_TailGraceDoesNotHideErrors keeps the tail close
-// honest: a stream that already recorded an error must still fail, even when a
-// terminal frame arrived, because the caller must not be billed for a broken
-// answer the relay papered over.
-func TestStreamScannerHandler_TailGraceDoesNotHideErrors(t *testing.T) {
+// TestStreamScannerHandler_TailGraceDoesNotHideFailedResponse keeps the tail
+// close honest: a stream the handler classified as a failed response (abnormal
+// finish_reason, in-band error frame) must still fail even when a terminal frame
+// arrived, because the caller must not be billed for a broken answer.
+func TestStreamScannerHandler_TailGraceDoesNotHideFailedResponse(t *testing.T) {
 	// Not parallel: modifies global constants.
 	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
 	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 2, 1
@@ -592,8 +592,141 @@ func TestStreamScannerHandler_TailGraceDoesNotHideErrors(t *testing.T) {
 		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
 			info.StreamFinishReason = "stop"
 			info.StreamStatus.MarkTerminalFinishSeen()
-			sr.Error(fmt.Errorf("upstream error frame"))
+			info.StreamStatus.MarkFailed("upstream_error", "upstream_error", http.StatusBadGateway)
 		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("timed out waiting for the idle timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.ClosedAfterTerminal())
+}
+
+// TestStreamScannerHandler_TailGraceSurvivesSoftErrors is the counterpart: one
+// chunk whose formatting rewrote badly is a soft error, not a failed response,
+// and must not push a complete answer back onto the 300s idle-timeout path.
+func TestStreamScannerHandler_TailGraceSurvivesSoftErrors(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 30, 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n")
+		time.Sleep(5 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			info.StreamFinishReason = "stop"
+			info.StreamStatus.MarkTerminalFinishSeen()
+			sr.Error(fmt.Errorf("format rewrite failed for one chunk"))
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("a soft error blocked the tail close")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.ClosedAfterTerminal())
+	assert.True(t, info.StreamStatus.HasErrors(), "the soft error itself is still recorded")
+}
+
+// TestStreamScannerHandler_TailGraceDisabled pins the documented escape hatch:
+// STREAM_TERMINAL_TAIL_TIMEOUT=0 restores the plain idle timeout.
+func TestStreamScannerHandler_TailGraceDisabled(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 1, 0
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n")
+		time.Sleep(3 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			info.StreamFinishReason = "stop"
+			info.StreamStatus.MarkTerminalFinishSeen()
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for the idle timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.ClosedAfterTerminal())
+}
+
+// TestStreamScannerHandler_NoTerminalFinishIsNotClosedEarly guards the
+// destructive half: without a terminal finish_reason the tail close must never
+// fire, or every silent stream would be cut short.
+func TestStreamScannerHandler_NoTerminalFinishIsNotClosedEarly(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 2, 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n")
+		time.Sleep(4 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 		close(done)
 	}()
 

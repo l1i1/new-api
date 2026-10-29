@@ -118,10 +118,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	if terminalTailGrace > 0 && terminalTailGrace < idlePollInterval {
 		idlePollInterval = terminalTailGrace
 	}
-	// lastReadAt is the last time the upstream produced a line; the scanner
-	// goroutine writes it and the idle loop reads it.
-	var lastReadAt atomic.Int64
-	lastReadAt.Store(time.Now().UnixNano())
+	// lastRead is the last time the upstream produced a line; the scanner
+	// goroutine writes it and the idle loop reads it. A time.Time from time.Now
+	// keeps its monotonic reading, so a wall-clock step cannot stretch or defeat
+	// either deadline (the ticker this replaced was monotonic too).
+	var lastRead atomic.Value // time.Time
+	lastRead.Store(time.Now())
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
@@ -288,7 +290,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			default:
 			}
 
-			lastReadAt.Store(time.Now().UnixNano())
+			lastRead.Store(time.Now())
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
@@ -354,7 +356,7 @@ waitLoop:
 	for {
 		select {
 		case <-ticker.C:
-			idle := time.Since(time.Unix(0, lastReadAt.Load()))
+			idle := time.Since(lastRead.Load().(time.Time))
 			// A terminal finish_reason already landed: the answer is complete, so
 			// the provider that keeps the connection open is not a stalled
 			// generation. Close it after the short tail grace as a normal end; the
@@ -362,7 +364,12 @@ waitLoop:
 			// and the normal path flushes the held terminal chunk, usage and
 			// [DONE] to the caller. The grace is measured from the terminal frame
 			// itself so trailing keep-alive comments cannot extend it.
-			if terminalTailGrace > 0 && !info.StreamStatus.HasErrors() {
+			//
+			// The gate is on a failed response, not on any recorded soft error: a
+			// single chunk whose formatting rewrote badly must not turn a complete
+			// answer back into the idle-timeout 502, and the plain EOF path bills
+			// such a stream as a success too.
+			if terminalTailGrace > 0 && !info.StreamStatus.ResponseFailed() {
 				if since := info.StreamStatus.TimeSinceTerminalFinish(); since >= terminalTailGrace {
 					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 					info.StreamStatus.MarkClosedAfterTerminal()

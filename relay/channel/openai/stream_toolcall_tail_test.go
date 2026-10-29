@@ -233,8 +233,80 @@ func TestOaiStreamHandlerClosesTerminalStreamWhenProviderHangs(t *testing.T) {
 
 	delivered := recorder.Body.String()
 	assert.Contains(t, delivered, `"finish_reason":"tool_calls"`, "the caller must receive the terminal frame")
+	assert.Equal(t, 1, strings.Count(delivered, `"finish_reason":"tool_calls"`), "exactly one terminal frame")
 	assert.Contains(t, delivered, `ls -l /app`, "the delivered tool call must reach the caller")
-	assert.Contains(t, delivered, `[DONE]`)
+	assert.Equal(t, 1, strings.Count(delivered, "data: [DONE]"), "exactly one [DONE]")
 	assert.NotContains(t, delivered, "truncated_stream")
 	assert.NotContains(t, delivered, "upstream stream terminated")
+}
+
+// TestOaiStreamHandlerDoesNotTailCloseMultiChoice pins the n>1 exclusion: choice
+// 0 can finish while another choice is still generating, so a terminal frame on
+// one choice must not end the response. The request keeps the old idle-timeout
+// path instead of being closed early with a truncated second choice.
+func TestOaiStreamHandlerDoesNotTailCloseMultiChoice(t *testing.T) {
+	c, info, _ := newMissingFinishTestContext(t)
+	oldTail, oldTimeout := constant.StreamTerminalTailTimeout, constant.StreamingTimeout
+	constant.StreamTerminalTailTimeout, constant.StreamingTimeout = 1, 2
+	t.Cleanup(func() {
+		constant.StreamTerminalTailTimeout, constant.StreamingTimeout = oldTail, oldTimeout
+	})
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	go func() {
+		_, _ = fmt.Fprint(pw, strings.Join([]string{
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"},{"index":1,"delta":{"content":"still generating"},"finish_reason":null}]}`,
+			``,
+		}, "\n"))
+		time.Sleep(5 * time.Second)
+	}()
+
+	started := time.Now()
+	_, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, err, "a multi-choice stream must keep the idle-timeout path")
+	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
+	assert.False(t, info.StreamStatus.ClosedAfterTerminal())
+	assert.GreaterOrEqual(t, time.Since(started), 2*time.Second)
+}
+
+// TestOaiStreamHandlerDoesNotTailCloseLength pins the second exclusion: a
+// provider can emit finish_reason=length and then keep streaming the answer it
+// was cut from (the shape recorded next to shouldDeferTerminalForRepair), so a
+// length frame is not final for the caller and must not arm the tail close.
+func TestOaiStreamHandlerDoesNotTailCloseLength(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	oldTail, oldTimeout := constant.StreamTerminalTailTimeout, constant.StreamingTimeout
+	constant.StreamTerminalTailTimeout, constant.StreamingTimeout = 1, 5
+	t.Cleanup(func() {
+		constant.StreamTerminalTailTimeout, constant.StreamingTimeout = oldTail, oldTimeout
+	})
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	go func() {
+		_, _ = fmt.Fprint(pw, `data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`+"\n")
+		// The provider resumes right after the length frame; the relay must keep
+		// reading instead of closing the completed-looking stream.
+		for i := 0; i < 12; i++ {
+			time.Sleep(250 * time.Millisecond)
+			_, _ = fmt.Fprintf(pw, "data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1710000000,\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"part%d \"},\"finish_reason\":null}]}\n", i)
+		}
+		_, _ = fmt.Fprint(pw, `data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n")
+		_, _ = fmt.Fprint(pw, "data: [DONE]\n\n")
+	}()
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	assert.False(t, info.StreamStatus.ClosedAfterTerminal(), "a length frame must not arm the tail close")
+	assert.Contains(t, recorder.Body.String(), "part11", "the provider's resumed content must be delivered")
 }

@@ -316,16 +316,22 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 							}
 							info.StreamStatus.MarkFailed("upstream_finish_reason", "upstream_error", http.StatusBadGateway)
 							info.StreamStatus.RecordError("upstream finish_reason=" + *choice.FinishReason)
-						} else if streamChoiceCount <= 1 {
+						} else if streamChoiceCount <= 1 && *choice.FinishReason != constant.FinishReasonLength {
 							// Normal terminal frame: the answer is complete even if the
 							// provider never closes the stream. The idle guard uses this
 							// to close the request after a short tail grace instead of
 							// failing it as a timeout (2026-10-29: neurvibe ch48 sent
 							// terminal tool_calls then held the connection).
 							//
-							// A multi-choice (n>1) stream is excluded: choice 0 can
-							// finish while another choice is still generating, and the
-							// tail close would silently truncate it.
+							// Two shapes are excluded because their terminal frame is not
+							// final for the caller:
+							//   - n>1: choice 0 can finish while another choice is still
+							//     generating, and the tail close would truncate it;
+							//   - finish_reason=length: providers resume after it (the
+							//     comment on shouldDeferTerminalForRepair records the
+							//     "length, then resumed content, then stop" shape
+							//     reproduced on 2026-10-29), and the repair branch holds
+							//     that frame back for exactly that reason.
 							info.StreamStatus.MarkTerminalFinishSeen()
 						}
 					}
