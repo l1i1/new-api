@@ -753,96 +753,30 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
-	// One deduper for the whole response: every resumed round is compared with
-	// the tail delivered so far, so a model that restarts from the same sentence
-	// after each cap cannot make the seam repeat.
-	seamDeduper := newSeamDeduper(partial)
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
 		remaining := chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial))
 		if remaining <= 0 {
 			break
 		}
-		var (
-			roundUsage     *dto.Usage
-			finish         string
-			roundContent   string
-			deltaSeen      bool
-			roundToolCalls int
-			roundTerminal  bool
-			roundErr       error
-		)
-		retryStarted := time.Now()
-		fallbackUsed := false
-		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
-			if attempt > 0 {
-				// The caller walked away while the previous attempt was in flight:
-				// retrying would only spend upstream capacity nobody can receive.
-				if c.Request != nil && c.Request.Context().Err() != nil {
-					break
-				}
-				if time.Since(retryStarted) > chatContinuationRetryBudget {
-					logger.LogWarn(c, "chat continuation retry budget exhausted")
-					break
-				}
-				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
-				helper.ExtendWriteDeadline(c)
-			}
-			resp, err := info.ChatContinuation.Send(content, remaining)
-			if err != nil {
-				// A send/build failure is not the transient upstream rejection this
-				// retry exists for. If a cross-channel fallback is configured, spend
-				// it once here: the channel itself is unreachable, so re-sending on it
-				// cannot help, while another channel may still resume the answer.
-				logger.LogWarn(c, "chat continuation request failed: "+err.Error())
-				if info.ChatContinuation.Fallback == nil || fallbackUsed {
-					break
-				}
-				fallbackUsed = true
-				logger.LogWarn(c, "chat continuation failed on its own channel; resuming on another channel")
-				resp, err = info.ChatContinuation.Fallback(content, remaining)
-				if err != nil {
-					logger.LogWarn(c, "cross-channel continuation failed: "+err.Error())
-					break
-				}
-			}
-			if resp == nil {
-				break
-			}
-			if resp.StatusCode != http.StatusOK {
-				_ = resp.Body.Close()
-				logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
-				continue
-			}
-			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta, seamDeduper)
-			_ = resp.Body.Close()
-			if roundErr != nil {
-				if deltaSeen {
-					logger.LogWarn(c, "chat continuation stream failed: "+roundErr.Error())
-					break
-				}
-				logger.LogWarn(c, "chat continuation stream failed before any delta, retrying: "+roundErr.Error())
-				continue
-			}
-			if !deltaSeen && roundContent == "" {
-				logger.LogWarn(c, fmt.Sprintf("chat continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
-				continue
-			}
-			break
-		}
-		if !deltaSeen && roundContent == "" {
+		// One deduper per round: every resumed round is compared with the tail
+		// delivered so far, so a model that restarts from the same sentence after
+		// each cap cannot make the seam repeat. A fresh one per round keeps a
+		// failed round's withheld prefix from leaking into the next attempt.
+		round, ok := runContentContinuationRound(c, info, meta, content, remaining)
+		if !ok {
 			break
 		}
 		result.rounds++
-		result.toolCalls += roundToolCalls
-		result.terminal = roundTerminal
-		if roundUsage != nil {
-			total = mergeContinuationUsage(total, roundUsage)
+		result.toolCalls += round.toolCalls
+		result.terminal = round.terminal
+		if round.usage != nil {
+			total = mergeContinuationUsage(total, round.usage)
 		}
-		if finish != "" {
-			result.finish = finish
+		if round.finish != "" {
+			result.finish = round.finish
 		}
-		content += roundContent
-		if roundErr != nil {
+		content += round.content
+		if round.err != nil {
 			break
 		}
 		if result.finish != "length" {
@@ -861,6 +795,138 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	// to start them).
 	common.RecordContinuationOutcome(continuationOutcomeChannel(info, info.ChatContinuation.RoundChannel), result.rounds > 0 && result.contentChars > 0)
 	return result
+}
+
+// contentRound is one output-cap resume round's outcome.
+type contentRound struct {
+	usage     *dto.Usage
+	finish    string
+	content   string
+	deltaSeen bool
+	toolCalls int
+	terminal  bool
+	err       error
+}
+
+// runContentContinuationRound runs one output-cap resume round: bounded
+// same-channel attempts while nothing new has reached the caller, then a single
+// cross-channel attempt when the round failed before forwarding any visible text.
+//
+// The hop mirrors runThinkingContinuationRound: a resume that only streamed
+// reasoning and died left the caller without new answer text, so another channel
+// may still finish the answer instead of a 502. Once visible text or part of a
+// tool call was forwarded the round is final - a second channel would duplicate
+// it.
+func runContentContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, meta chatContinuationMeta, content string, remaining int) (contentRound, bool) {
+	var last contentRound
+	retryStarted := time.Now()
+	fallbackUsed := false
+	for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
+		if attempt > 0 {
+			// The caller walked away while the previous attempt was in flight:
+			// retrying would only spend upstream capacity nobody can receive.
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				break
+			}
+			if time.Since(retryStarted) > chatContinuationRetryBudget {
+				logger.LogWarn(c, "chat continuation retry budget exhausted")
+				break
+			}
+			time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+			helper.ExtendWriteDeadline(c)
+		}
+		resp, err := info.ChatContinuation.Send(content, remaining)
+		if err != nil {
+			// A send/build failure is not the transient upstream rejection this
+			// retry exists for. If a cross-channel fallback is configured, spend
+			// it once here: the channel itself is unreachable, so re-sending on it
+			// cannot help, while another channel may still resume the answer.
+			logger.LogWarn(c, "chat continuation request failed: "+err.Error())
+			if info.ChatContinuation.Fallback == nil || fallbackUsed {
+				break
+			}
+			fallbackUsed = true
+			logger.LogWarn(c, "chat continuation failed on its own channel; resuming on another channel")
+			resp, err = info.ChatContinuation.Fallback(content, remaining)
+			if err != nil {
+				logger.LogWarn(c, "cross-channel continuation failed: "+err.Error())
+				break
+			}
+		}
+		if resp == nil {
+			break
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
+			continue
+		}
+		round := readContentRound(c, info, resp, meta, newSeamDeduper(content))
+		if round.content != "" || round.toolCalls > 0 {
+			if round.err != nil {
+				logger.LogWarn(c, "chat continuation stream failed after forwarding content: "+round.err.Error())
+			}
+			return round, true
+		}
+		if round.err != nil {
+			logger.LogWarn(c, "chat continuation stream failed before any content: "+round.err.Error())
+			last = round
+			break
+		}
+		if !round.deltaSeen && round.finish == "" {
+			logger.LogWarn(c, fmt.Sprintf("chat continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
+			continue
+		}
+		if round.finish == "" || relaycommon.IsAbnormalFinishReason(round.finish) {
+			logger.LogWarn(c, fmt.Sprintf("chat continuation round cut again with finish %q and no content", round.finish))
+			last = round
+			break
+		}
+		return round, true
+	}
+
+	// Before anything visible reached the caller, spend one cross-channel hop.
+	if info.ChatContinuation.Fallback == nil || fallbackUsed || last.content != "" || last.toolCalls > 0 {
+		return last, false
+	}
+	logger.LogWarn(c, "chat continuation forwarded no content; resuming on another channel")
+	resp, err := info.ChatContinuation.Fallback(content, remaining)
+	if err != nil {
+		logger.LogWarn(c, "cross-channel continuation failed: "+err.Error())
+		return last, false
+	}
+	if resp == nil {
+		return last, false
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		logger.LogWarn(c, fmt.Sprintf("cross-channel continuation upstream status %d", resp.StatusCode))
+		return last, false
+	}
+	round := readContentRound(c, info, resp, meta, newSeamDeduper(content))
+	if round.err != nil && round.content == "" {
+		logger.LogWarn(c, "cross-channel continuation failed: "+round.err.Error())
+		return last, false
+	}
+	if round.content == "" && !round.deltaSeen {
+		return last, false
+	}
+	return round, true
+}
+
+// readContentRound consumes one resume round and folds its result.
+func readContentRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) contentRound {
+	round := contentRound{}
+	defer resp.Body.Close()
+	usage, finish, emitted, deltaSeen, toolCalls, terminal, err := consumeChatContinuationRound(c, info, resp, meta, seam)
+	round.usage = usage
+	round.finish = finish
+	round.content = emitted
+	round.deltaSeen = deltaSeen
+	round.toolCalls = toolCalls
+	round.terminal = terminal
+	round.err = err
+	return round
 }
 
 // consumeChatContinuationRound forwards one continuation round's deltas and

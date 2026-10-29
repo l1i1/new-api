@@ -2180,3 +2180,44 @@ func TestOaiStreamHandlerDoesNotHopAfterForwardedContent(t *testing.T) {
 	require.Equal(t, 1, sameCalls)
 	require.Zero(t, fallbackCalls, "a forwarded answer prefix must not be resumed elsewhere")
 }
+
+// The output-cap resume has the same ch102-shaped gap as the reasoning resume:
+// a round that dies after streaming only reasoning left the caller without new
+// answer text, so another channel may still finish the answer.
+func TestOaiStreamHandlerHopsWhenContentRoundFailsWithoutContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"role":"assistant","content":"开头"}}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	dyingRound := strings.Join([]string{
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	recoveredRound := strings.Join([]string{
+		`data: {"id":"chat_3","choices":[{"index":0,"delta":{"content":"续写正文"},"finish_reason":null}]}`,
+		`data: {"id":"chat_3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":4,"total_tokens":34}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameCalls, fallbackCalls := 0, 0
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		sameCalls++
+		return continuationSSEResponse(dyingRound), nil
+	}, 2, 100)
+	info.ChatContinuation.Fallback = func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(recoveredRound), nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a resume that only streamed reasoning must be retried on another channel")
+	require.Equal(t, 1, sameCalls)
+	require.Equal(t, 1, fallbackCalls)
+	require.Contains(t, recorder.Body.String(), "续写正文")
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+}
