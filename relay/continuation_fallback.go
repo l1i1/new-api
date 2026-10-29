@@ -19,6 +19,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ErrNoContinuationCandidate is the sentinel a continuation sender returns when
+// the request has no channel left to rotate to. Callers end the rotation on it.
+var ErrNoContinuationCandidate = relaycommon.ErrNoContinuationCandidate
+
 // crossChannelContinuationFallback resumes a delivered answer on a different
 // channel when the channel that produced it cannot even start the next round.
 //
@@ -38,7 +42,7 @@ import (
 // -> credential/multi-key selection -> header/param overrides -> concurrency slot.
 // The live request info is restored before returning, so billing, request logs and
 // the caller-visible stream stay attributed to the channel that served the answer.
-func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, base []byte, build func([]byte, string, int) ([]byte, error), roundChannel *relaycommon.ContinuationRoundChannel) func(string, int) (*http.Response, error) {
+func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, base []byte, build func([]byte, string, int) ([]byte, error), roundChannel *relaycommon.ContinuationRoundChannel, tried *relaycommon.TriedChannels) func(string, int) (*http.Response, error) {
 	return func(partial string, remaining int) (*http.Response, error) {
 		if c == nil || info == nil || c.Request == nil || len(base) == 0 {
 			return nil, errors.New("cross-channel continuation unavailable")
@@ -47,7 +51,16 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 		if group == "" {
 			group = c.GetString("group")
 		}
+		// Every round rotates to a channel this request has not tried yet: the
+		// channel that just cut the answer is excluded, and so is every channel a
+		// previous round already ran on. Without this the selector re-picks a dying
+		// channel on round 2/3 and the round budget is spent for nothing.
 		excluded := map[int]struct{}{info.ChannelId: {}}
+		if tried != nil {
+			for _, channelID := range tried.IDs() {
+				excluded[channelID] = struct{}{}
+			}
+		}
 		var selected *model.Channel
 		for attempt := 0; attempt < 4; attempt++ {
 			// retry>0 skips the session-affinity branch of the selector: affinity
@@ -66,7 +79,7 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 			}
 			candidate, _, selectErr := service.SelectChannelForRequest(c, info.OriginModelName, param)
 			if selectErr != nil || candidate == nil {
-				return nil, fmt.Errorf("cross-channel continuation: no candidate channel: %v", selectErr)
+				return nil, fmt.Errorf("cross-channel continuation: %w (%v)", relaycommon.ErrNoContinuationCandidate, selectErr)
 			}
 			if _, seen := excluded[candidate.Id]; seen {
 				// Keep looking instead of aborting: one stale preferred candidate must
@@ -85,7 +98,13 @@ func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInf
 			break
 		}
 		if selected == nil {
-			return nil, errors.New("cross-channel continuation: no OpenAI-compatible candidate")
+			return nil, fmt.Errorf("cross-channel continuation: %w", relaycommon.ErrNoContinuationCandidate)
+		}
+		if tried != nil && !tried.Add(selected.Id) {
+			// The selector handed back a channel the request already tried (it can
+			// ignore the exclusion set through a preferred candidate); that is the end
+			// of the rotation, not a transient failure worth another round.
+			return nil, relaycommon.ErrNoContinuationCandidate
 		}
 		logger.LogWarn(c, fmt.Sprintf("chat continuation hopping to channel %d after channel %d failed to start the round", selected.Id, info.ChannelId))
 		resp, err := runContinuationRoundOnChannel(c, info, selected, base, build, partial, remaining)

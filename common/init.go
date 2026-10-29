@@ -115,6 +115,12 @@ func InitEnv() {
 	RelayStreamResponseHeaderTimeout = GetEnvOrDefault("RELAY_STREAM_RESPONSE_HEADER_TIMEOUT", 300)
 	RelayTransportRetryBudgetSeconds = GetEnvOrDefault("RELAY_TRANSPORT_RETRY_BUDGET_SECONDS", 600)
 	ChatContinuationMaxSteps = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_MAX_STEPS", 0)
+	ChatContinuationMaxRounds = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_MAX_ROUNDS", 3)
+	if _, set := os.LookupEnv("RELAY_CHAT_CONTINUATION_MAX_ROUNDS"); set {
+		ChatContinuationMaxRoundsSet = true
+	}
+	ChatContinuationRoundMaxElapsedSeconds = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_ROUND_MAX_ELAPSED_SECONDS", 1500)
+	ChatContinuationRotateChannels = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ROTATE_CHANNELS", true)
 	ChatContinuationChannelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_CHANNELS", "")
 	ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(ChatContinuationChannelsRaw)
 	ChatContinuationOnAbnormal = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ON_ABNORMAL", false)

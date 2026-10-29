@@ -106,3 +106,22 @@ func TestContinuationStepsForBufferedNonStreamRequest(t *testing.T) {
 	info.ChannelSetting.InternalStreamForNonStream = true
 	require.Equal(t, 2, ChatContinuationStepsForRequest(info), "buffered upstream stream can be resumed")
 }
+
+func TestTriedChannelsTracksEachChannelOnce(t *testing.T) {
+	tried := &TriedChannels{}
+	require.True(t, tried.Add(7), "first add records the channel")
+	require.False(t, tried.Add(7), "re-adding is a no-op")
+	require.True(t, tried.Add(9))
+	require.True(t, tried.Contains(7))
+	require.False(t, tried.Contains(11))
+	require.Equal(t, []int{7, 9}, tried.IDs(), "order is the order the rounds ran")
+
+	ids := tried.IDs()
+	ids[0] = 999
+	require.Equal(t, []int{7, 9}, tried.IDs(), "IDs returns a copy")
+
+	var nilTried *TriedChannels
+	require.False(t, nilTried.Add(3))
+	require.False(t, nilTried.Contains(3))
+	require.Nil(t, nilTried.IDs())
+}

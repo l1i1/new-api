@@ -302,11 +302,32 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		steps := relaycommon.ChatContinuationStepsForRequest(info)
 		abnormalSteps := relaycommon.ChatAbnormalContinuationStepsForRequest(info)
 		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
+		// The rotation-era round budget: one total cap for every repair mode, with
+		// the legacy per-mode step counts kept as the compatibility fallback.
+		maxRounds := common.ChatContinuationMaxRounds
+		if common.ChatContinuationMaxRoundsSet {
+			if maxRounds <= 0 {
+				// The rotation-era key is explicitly 0: transparent continuation is off.
+				steps, abnormalSteps, missingSteps = 0, 0, 0
+			}
+		} else {
+			// Key unset: the legacy per-mode step counts keep their old meaning.
+			maxRounds = steps
+			if abnormalSteps > maxRounds {
+				maxRounds = abnormalSteps
+			}
+			if missingSteps > maxRounds {
+				maxRounds = missingSteps
+			}
+		}
 		base := continuationBase
 		adaptorRef := adaptor
 		// Tracks the channel of the latest round so continuation-capability telemetry
 		// names the channel that actually resumed (cross-channel hops included).
 		roundChannel := &relaycommon.ContinuationRoundChannel{}
+		// One tried set per request: rounds rotate over channels this request has not
+		// been cut on, shared by the length, abnormal and missing repair modes.
+		triedChannels := &relaycommon.TriedChannels{}
 		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
 			// sendOnce replays the continuation body through one channel.
 			sendOnce := func(channelAdaptor relaychannel.Adaptor, partial string, remaining int) (*http.Response, error) {
@@ -332,6 +353,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			// Same-channel first: a resume on the channel that owns the prefix hits
 			// its prompt cache. The runner spends the single cross-channel fallback
 			// only when this sender cannot even start the round.
+			triedChannels.Add(info.ChannelId)
 			return func(partial string, remaining int) (*http.Response, error) {
 				resp, err := sendOnce(adaptorRef, partial, remaining)
 				if err == nil && resp != nil {
@@ -348,9 +370,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			if !crossChannel {
 				return nil
 			}
-			return crossChannelContinuationFallback(c, info, base, build, roundChannel)
+			return crossChannelContinuationFallback(c, info, base, build, roundChannel, triedChannels)
 		}
-		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, RoundChannel: roundChannel}
+		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, MaxRounds: maxRounds, RoundChannel: roundChannel, Tried: triedChannels}
 		if steps > 0 {
 			cfg.Send = send(openaichannel.BuildChatContinuationBody)
 			cfg.Fallback = fallback(openaichannel.BuildChatContinuationBody)
@@ -358,6 +380,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if abnormalSteps > 0 {
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
+				MaxRounds:         maxRounds,
+				Tried:             triedChannels,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
 				RoundChannel:      roundChannel,
 				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
@@ -368,6 +392,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if missingSteps > 0 {
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
+				MaxRounds:         maxRounds,
+				Tried:             triedChannels,
 				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
 				RoundChannel:      roundChannel,
 				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
