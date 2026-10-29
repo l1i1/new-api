@@ -279,6 +279,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
 	if err != nil {
 		newAPIError = relayValidationError(err)
+		recordLocalValidationError(c, newAPIError)
 		return
 	}
 
@@ -1190,7 +1191,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if !ctxDone && service.ShouldDisableChannel(err) && channelError.AutoBan {
 		gopool.Go(func() {
-			service.DisableChannel(channelError, err.ErrorWithStatusCode())
+			service.DisableChannelBecauseRelayError(channelError, err.ErrorWithStatusCode())
 		})
 	}
 
@@ -1815,4 +1816,69 @@ func relayValidationError(err error) *types.NewAPIError {
 		return validationErr
 	}
 	return types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
+}
+
+// recordLocalValidationError writes the error row for a request the local
+// validator rejected before a channel was ever selected.
+//
+// Without this row the rejection leaves no trace at all: processChannelError
+// never runs (there is no channel attempt), no consume row is written (nothing
+// was billed), and the gateway's request id therefore joins to nothing. That is
+// how a customer-quoted 400 id stayed unsearchable on 2026-10-29 while the
+// sibling id from the same request shape — rejected by a channel's upstream,
+// which does log — was found in seconds. Support needs both halves.
+//
+// The row deliberately copies the channel-failure rows' content shape
+// (masked `status_code=N, message`) so existing tooling parses it, and marks
+// itself as local — channel 0 plus error_source/local_validation in Other — so
+// a client-side rejection is not read as a channel fault.
+//
+// Volume: a locally rejected request used to be rejected per attempt once it
+// reached a channel, so this row replaces several rather than adding traffic.
+func recordLocalValidationError(c *gin.Context, err *types.NewAPIError) {
+	if c == nil || c.Request == nil || err == nil {
+		return
+	}
+	if !constant.ErrorLogEnabled || !types.IsRecordErrorLog(err) {
+		return
+	}
+	other := model.NewLogOther()
+	if c.Request.URL != nil {
+		other.SetPublic("request_path", c.Request.URL.Path)
+	}
+	other.SetPublic("error_type", err.GetErrorType())
+	other.SetPublic("error_code", err.GetErrorCode())
+	other.SetPublic("status_code", err.StatusCode)
+	other.SetPublic("error_source", "local")
+	other.SetPublic("local_validation", true)
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	useTimeSeconds := int(time.Since(startTime).Seconds())
+	model.RecordErrorLog(c, c.GetInt("id"), 0, localValidationModelName(c), c.GetString("token_name"),
+		err.MaskSensitiveErrorWithStatusCode(), c.GetInt("token_id"), useTimeSeconds,
+		common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+}
+
+// localValidationModelName recovers the model name from a rejected body.
+//
+// On this path the parsed request is nil (every validator returns nil, err) and
+// the distributor that normally sets "original_model" never runs, so the model
+// is only available from the cached body. A body that cannot be decoded leaves
+// the field empty: losing the model name is preferable to losing the row.
+func localValidationModelName(c *gin.Context) string {
+	if name := strings.TrimSpace(c.GetString("original_model")); name != "" {
+		return name
+	}
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := common.UnmarshalBodyReusable(c, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.Model)
 }

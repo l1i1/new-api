@@ -422,10 +422,12 @@ const (
 	MsgNotifyContentModerationSubject       = "notify.content_moderation.subject"
 	MsgNotifyContentModerationBody          = "notify.content_moderation.body"
 
-	MsgNotifyChannelDisabledSubject = "notify.channel.disabled_subject"
-	MsgNotifyChannelDisabledBody    = "notify.channel.disabled_body"
-	MsgNotifyChannelEnabledSubject  = "notify.channel.enabled_subject"
-	MsgNotifyChannelEnabledBody     = "notify.channel.enabled_body"
+	MsgNotifyChannelDisabledSubject    = "notify.channel.disabled_subject"
+	MsgNotifyChannelDisabledBody       = "notify.channel.disabled_body"
+	MsgNotifyChannelKeyDisabledSubject = "notify.channel.key_disabled_subject"
+	MsgNotifyChannelKeyDisabledBody    = "notify.channel.key_disabled_body"
+	MsgNotifyChannelEnabledSubject     = "notify.channel.enabled_subject"
+	MsgNotifyChannelEnabledBody        = "notify.channel.enabled_body"
 
 	MsgNotifyChannelTestSubject = "notify.channel_test.subject"
 	MsgNotifyChannelTestBody    = "notify.channel_test.body"

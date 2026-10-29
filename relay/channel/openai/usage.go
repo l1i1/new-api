@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -315,6 +316,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	if info == nil || usage == nil {
 		return
 	}
+	defer logInconsistentUpstreamCacheUsage(info, usage)
 
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:
@@ -447,4 +449,24 @@ func kimiK3ReasoningExempt(info *relaycommon.RelayInfo) bool {
 		model = info.GetUpstreamModelName()
 	}
 	return officialfit.FamilyOf(model) == officialfit.FamilyKimiK3
+}
+
+// logInconsistentUpstreamCacheUsage records the upstreams that report a prompt and
+// its cache hit as independent counters with incompatible values. The caller-facing
+// usage is normalized in dto.SanitizeClientUsage, but silently normalizing would hide
+// which provider is lying about its own accounting (2026-10-29: prompt 7, cache 512).
+func logInconsistentUpstreamCacheUsage(info *relaycommon.RelayInfo, usage *dto.Usage) {
+	if info == nil || usage == nil {
+		return
+	}
+	cached := usage.PromptTokensDetails.CachedTokens
+	if raw := usage.PromptCacheHitTokens; raw > cached {
+		cached = raw
+	}
+	if cached <= usage.PromptTokens {
+		return
+	}
+	common.SysLog(fmt.Sprintf("upstream usage inconsistent: ch=%d model=%s prompt=%d completion=%d cached=%d cacheHitRaw=%d (client view clamped)",
+		info.ChannelId, info.UpstreamModelName, usage.PromptTokens, usage.CompletionTokens,
+		usage.PromptTokensDetails.CachedTokens, usage.PromptCacheHitTokens))
 }

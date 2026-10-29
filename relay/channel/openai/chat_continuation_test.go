@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -781,7 +783,7 @@ func TestSendThinkingContinuationSuppressesUpstreamPinger(t *testing.T) {
 			return continuationSSEResponse("data: [DONE]\n\n"), nil
 		},
 	}
-	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, "思考", 100)
+	resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg.Send, "思考", 100)
 	require.Nil(t, err)
 	require.NotNil(t, resp)
 	_ = resp.Body.Close()
@@ -1070,4 +1072,1038 @@ func TestOaiStreamHandlerLengthThinkingContinuationPartialRoundEndsLength(t *tes
 	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "delivered content ends on a length terminal")
 	require.NotContains(t, body, `"finish_reason":"error"`)
 	require.Equal(t, 1, strings.Count(body, "[DONE]"))
+}
+
+// enableKimiK3OfficialFit makes the relay info look like a Kimi K3 caller whose
+// user enabled the official-fit Shape dimension — the production shape of user
+// 1 (admin) and user 3 (the customer), see MEMORY 2026-10-16/17 and 2026-10-28.
+// Before this work that setting silently disabled every continuation mode.
+func enableKimiK3OfficialFit(info *relaycommon.RelayInfo) {
+	info.OriginModelName = "kimi-k3.1-pro"
+	info.RelayMode = relayconstant.RelayModeChatCompletions
+	info.RelayFormat = types.RelayFormatOpenAI
+	info.ClientIncludeUsage = true
+	info.UserSetting = dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{
+		Profile: map[string]dto.OfficialFitProfile{
+			"kimi-k3": {Shape: true},
+		},
+	}}
+}
+
+func continuationDataPayloads(body string) []string {
+	payloads := make([]string, 0, 8)
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(line[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		payloads = append(payloads, payload)
+	}
+	return payloads
+}
+
+// assertKimiK3OfficialContinuationBody pins the official-form contract for a
+// transparently continued K3 stream: one terminal frame, one [DONE], the first
+// round's envelope everywhere, no repeated assistant role, no forwarded
+// top-level usage, the merged usage inside choices[0].usage of the terminal
+// chunk, and (only when the client asked) exactly one choices:[] usage-only
+// event whose usage is byte-identical to the terminal's.
+func assertKimiK3OfficialContinuationBody(t *testing.T, body string, wantCompletion int, wantUsageOnly bool) {
+	t.Helper()
+
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.Contains(t, body, `"id":"chat_1"`)
+	require.NotContains(t, body, `"id":"chat_2"`, "continuation deltas keep the first round's id")
+	require.Equal(t, 1, strings.Count(body, `"role":"assistant"`), "no repeated role delta")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+
+	officialTopLevel := map[string]struct{}{"id": {}, "object": {}, "created": {}, "model": {}, "choices": {}, "system_fingerprint": {}}
+	officialChoice := map[string]struct{}{"index": {}, "delta": {}, "finish_reason": {}, "usage": {}}
+	officialDelta := map[string]struct{}{"role": {}, "content": {}, "reasoning_content": {}, "tool_calls": {}}
+	officialUsage := map[string]struct{}{"prompt_tokens": {}, "completion_tokens": {}, "total_tokens": {}, "cached_tokens": {}, "completion_tokens_details": {}, "prompt_tokens_details": {}}
+
+	var terminal string
+	terminalCount := 0
+	usageOnlyCount := 0
+	var usageOnlyUsage string
+	for _, payload := range continuationDataPayloads(body) {
+		event := gjson.Parse(payload)
+		choices := event.Get("choices").Array()
+		if len(choices) == 0 {
+			require.True(t, event.Get("usage").Exists(), "an empty-choices event must be the usage-only event: %s", payload)
+			usageOnlyCount++
+			usageOnlyUsage = event.Get("usage").Raw
+			for key := range event.Map() {
+				if key == "usage" {
+					continue
+				}
+				_, ok := officialTopLevel[key]
+				require.True(t, ok, "unexpected top-level key %q in usage-only event: %s", key, payload)
+			}
+			continue
+		}
+		require.False(t, event.Get("usage").Exists(), "official K3 stream carries no top-level usage: %s", payload)
+		for key := range event.Map() {
+			_, ok := officialTopLevel[key]
+			require.True(t, ok, "unexpected top-level key %q in continuation chunk: %s", key, payload)
+		}
+		for _, choice := range choices {
+			for key := range choice.Map() {
+				_, ok := officialChoice[key]
+				require.True(t, ok, "unexpected choice key %q in continuation chunk: %s", key, payload)
+			}
+			delta := choice.Get("delta")
+			if delta.Exists() {
+				for key := range delta.Map() {
+					_, ok := officialDelta[key]
+					require.True(t, ok, "unexpected delta key %q in continuation chunk: %s", key, payload)
+				}
+			}
+			finish := choice.Get("finish_reason")
+			if finish.Type == gjson.String && finish.String() != "" {
+				terminal = payload
+				terminalCount++
+			}
+		}
+	}
+	require.Equal(t, 1, terminalCount, "exactly one terminal frame")
+	require.NotEmpty(t, terminal)
+
+	terminalUsage := gjson.Get(terminal, "choices.0.usage")
+	require.True(t, terminalUsage.Exists(), "official K3 terminal chunk carries usage inside choices[0]: %s", terminal)
+	for key := range terminalUsage.Map() {
+		_, ok := officialUsage[key]
+		require.True(t, ok, "unexpected usage key %q: %s", key, terminal)
+	}
+	require.Equal(t, int64(5), terminalUsage.Get("prompt_tokens").Int(), "input is billed once")
+	require.Equal(t, int64(wantCompletion), terminalUsage.Get("completion_tokens").Int(), "terminal carries the merged completion")
+	require.Equal(t, int64(5+wantCompletion), terminalUsage.Get("total_tokens").Int())
+
+	if wantUsageOnly {
+		require.Equal(t, 1, usageOnlyCount, "one choices:[] usage-only event when the client asked for usage")
+		require.Equal(t, terminalUsage.Raw, usageOnlyUsage, "usage-only event repeats the terminal usage verbatim")
+	} else {
+		require.Equal(t, 0, usageOnlyCount, "no usage-only event when the client did not ask")
+	}
+}
+
+// TestOaiStreamHandlerKimiK3FitLengthContinuationKeepsOfficialShape covers the
+// 32k-cap shape for a fit caller: the resumed segment and the merged usage must
+// stay inside the official K3 stream form.
+func TestOaiStreamHandlerKimiK3FitLengthContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"1、2、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"3、4、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 2, 20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "a fit caller must still be continued")
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.Empty(t, info.UndeliveredReason)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "1、2、")
+	require.Contains(t, body, "3、4、")
+	assertKimiK3OfficialContinuationBody(t, body, 4, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitAbnormalContinuationKeepsOfficialShape covers
+// the 900s cut-off shape for a fit caller (reasoning only, finish_reason=error).
+func TestOaiStreamHandlerKimiK3FitAbnormalContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.Equal(t, 5, usage.PromptTokens, "input is billed once")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+	require.False(t, info.StreamStatus.ResponseFailed())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "最终答案")
+	require.NotContains(t, body, `"finish_reason":"error"`, "the failed round's terminal frame is suppressed")
+	assertKimiK3OfficialContinuationBody(t, body, 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitMissingFinishContinuationKeepsOfficialShape
+// covers the 60s/600s silent-cut shape for a fit caller.
+func TestOaiStreamHandlerKimiK3FitMissingFinishContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newMissingContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	assertKimiK3OfficialContinuationBody(t, recorder.Body.String(), 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitLengthThinkingContinuationKeepsOfficialShape
+// covers the output cap landing while the model is still thinking.
+func TestOaiStreamHandlerKimiK3FitLengthThinkingContinuationKeepsOfficialShape(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考一"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"思考二"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"继续思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, 13, usage.CompletionTokens)
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"length"`, "the capped round's terminal frame is suppressed")
+	assertKimiK3OfficialContinuationBody(t, body, 13, true)
+}
+
+// TestOaiStreamHandlerKimiK3FitContinuationWithoutClientUsageAsk keeps the
+// official contract that the choices:[] usage-only event exists only when the
+// client's own stream_options asked for usage.
+func TestOaiStreamHandlerKimiK3FitContinuationWithoutClientUsageAsk(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"最终答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+	info.ClientIncludeUsage = false
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 13, usage.CompletionTokens)
+
+	assertKimiK3OfficialContinuationBody(t, recorder.Body.String(), 13, false)
+}
+
+// TestOaiStreamHandlerKimiK3FitContinuationFailureKeepsFailurePath keeps the
+// no-fit failure contract for a fit caller: a continuation round that never
+// produces a visible answer must not be reported as a delivered success.
+func TestOaiStreamHandlerKimiK3FitContinuationFailureKeepsFailurePath(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"思考"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	reasoningOnlyRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"还在想"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(reasoningOnlyRound), nil
+	}, 1, 100, 1<<20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, relaycommon.UndeliveredAbnormalFinish, info.UndeliveredReason)
+}
+
+// TestOaiStreamHandlerContinuesAnswerAfterAbnormalCutWithContent pins the 900s
+// wall hit mid-answer: the caller already received a partial answer, and the
+// gateway used to discard it and surface finish_reason=error. It must instead
+// continue the visible prefix, keep one terminal frame and bill the merged usage
+// exactly once.
+func TestOaiStreamHandlerContinuesAnswerAfterAbnormalCutWithContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	var gotPartial string
+	sender := func(partial string, remaining int) (*http.Response, error) {
+		gotPartial = partial
+		return continuationSSEResponse(secondRound), nil
+	}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta:        &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:           true,
+		RelayMode:          relayconstant.RelayModeChatCompletions,
+		RelayFormat:        types.RelayFormatOpenAI,
+		ShouldIncludeUsage: true,
+		DisablePing:        true,
+		ClientMaxTokens:    100,
+		ChatContinuation: &relaycommon.ChatContinuationConfig{
+			MaxSteps: 2,
+			Send:     sender,
+			Abnormal: &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: sender, MaxReasoningBytes: 1 << 20, MinReasoningChars: 1},
+		},
+	}
+	info.SetEstimatePromptTokens(5)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, `"finish_reason":"error"`, "the cut's terminal frame is suppressed")
+}
+
+// TestChatMissingVisibleContinuationCandidateGuards pins the guards on the
+// truncate-mid-answer repair: it may only run when a visible prefix exists, the
+// request can still be continued (budget, one choice, no tool calls) and the cut
+// was not the caller's own disconnect.
+func TestChatMissingVisibleContinuationCandidateGuards(t *testing.T) {
+	send := func(string, int) (*http.Response, error) { return nil, nil }
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+			IsStream:        true,
+			RelayFormat:     types.RelayFormatOpenAI,
+			ClientMaxTokens: 100,
+			StreamStatus:    relaycommon.NewStreamStatus(),
+			ChatContinuation: &relaycommon.ChatContinuationConfig{
+				MaxSteps: 1,
+				Send:     send,
+				Missing:  &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: send, MinReasoningChars: 1},
+			},
+		}
+	}
+
+	info := newInfo()
+	require.True(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 1, false),
+		"a visible prefix with budget left is repairable")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 0, 0, 1, false),
+		"thinking-only cuts belong to the reasoning resume")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 1, 1, false),
+		"a tool-call stream cannot be continued")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 2, false),
+		"multiple choices are not repairable")
+
+	require.False(t, chatMissingVisibleContinuationCandidate(info, &dto.Usage{}, 1200, 0, 1, true),
+		"a terminal frame means this is not the missing-finish shape")
+
+	flat := newInfo()
+	flat.StreamFinishReason = "length"
+	require.False(t, chatMissingVisibleContinuationCandidate(flat, &dto.Usage{}, 1200, 0, 1, false))
+
+	// An undeclared max_tokens is not an exhausted budget: the request simply has
+	// no client ceiling (2026-10-28 18:21: one kimi cut reached the caller as a 502
+	// because this guard read 0 as "no budget left" after 52 output tokens).
+	noBudget := newInfo()
+	noBudget.ClientMaxTokens = 0
+	require.True(t, chatMissingVisibleContinuationCandidate(noBudget, &dto.Usage{CompletionTokens: 100000}, 1200, 0, 1, false),
+		"an undeclared budget gets a per-round step instead of being refused")
+
+	spent := newInfo()
+	spent.ClientMaxTokens = 10
+	require.False(t, chatMissingVisibleContinuationCandidate(spent, &dto.Usage{CompletionTokens: 10}, 1200, 0, 1, false),
+		"no budget left to continue")
+
+	gone := newInfo()
+	gone.StreamStatus.EndReason = relaycommon.StreamEndReasonClientGone
+	require.False(t, chatMissingVisibleContinuationCandidate(gone, &dto.Usage{}, 1200, 0, 1, false),
+		"a client disconnect is not a truncation")
+
+	noMissing := newInfo()
+	noMissing.ChatContinuation.Missing = nil
+	require.False(t, chatMissingVisibleContinuationCandidate(noMissing, &dto.Usage{}, 1200, 0, 1, false))
+
+	noSender := newInfo()
+	noSender.ChatContinuation.Send = nil
+	require.False(t, chatMissingVisibleContinuationCandidate(noSender, &dto.Usage{}, 1200, 0, 1, false))
+
+	thinkingToContent := newInfo()
+	thinkingToContent.ChannelSetting.ThinkingToContent = true
+	require.False(t, chatMissingVisibleContinuationCandidate(thinkingToContent, &dto.Usage{}, 1200, 0, 1, false))
+}
+
+// TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent covers the
+// 2026-10-28 production shape: an upstream dies mid-answer with no terminal
+// finish_reason at all. The prefix already sent to the client must be continued
+// instead of surfacing a 502, with one terminal frame and merged usage.
+func TestOaiStreamHandlerContinuesAnswerAfterMissingCutWithContent(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var gotPartial string
+	c, info, recorder := newMissingContinuationTestContext(t, func(partial string, remaining int) (*http.Response, error) {
+		gotPartial = partial
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 100, 1<<20)
+	// 可见正文续写复用输出上限那条 runner，它走顶层 sender。
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Missing.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed")
+	require.True(t, info.StreamStatus.IsNormalEnd())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestTruncationRepairSkipReason pins the diagnostic reasons: each guard that
+// declines a repair must be named, so a new uncovered shape is identifiable from
+// one log line instead of a decision-matrix investigation.
+func TestTruncationRepairSkipReason(t *testing.T) {
+	send := func(string, int) (*http.Response, error) { return nil, nil }
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+			IsStream:        true,
+			RelayFormat:     types.RelayFormatOpenAI,
+			ClientMaxTokens: 100,
+			StreamStatus:    relaycommon.NewStreamStatus(),
+			ChatContinuation: &relaycommon.ChatContinuationConfig{
+				MaxSteps: 1,
+				Send:     send,
+				Missing:  &relaycommon.ChatAbnormalContinuationConfig{MaxSteps: 1, Send: send},
+			},
+		}
+	}
+
+	info := newInfo()
+	require.Equal(t, "", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 0, 1),
+		"a repairable shape has no skip reason")
+	require.Equal(t, "tool_calls_in_progress", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 1, 1))
+	require.Equal(t, "multiple_choices", truncationRepairSkipReason(info, &dto.Usage{}, 1200, 10, 0, 2))
+
+	folded := newInfo()
+	folded.ChannelSetting.ThinkingToContent = true
+	require.Equal(t, "reasoning_suppressed_or_folded", truncationRepairSkipReason(folded, &dto.Usage{}, 1200, 10, 0, 1))
+
+	spent := newInfo()
+	spent.ClientMaxTokens = 10
+	require.Equal(t, "client_budget_exhausted", truncationRepairSkipReason(spent, &dto.Usage{CompletionTokens: 10}, 1200, 10, 0, 1))
+
+	gone := newInfo()
+	gone.StreamStatus.EndReason = relaycommon.StreamEndReasonClientGone
+	require.Equal(t, "client_gone", truncationRepairSkipReason(gone, &dto.Usage{}, 1200, 10, 0, 1))
+
+	unconfigured := newInfo()
+	unconfigured.ChatContinuation = nil
+	require.Equal(t, "continuation_not_configured", truncationRepairSkipReason(unconfigured, &dto.Usage{}, 1200, 10, 0, 1))
+
+	noSender := newInfo()
+	noSender.ChatContinuation.Send = nil
+	require.Equal(t, "visible_continuation_disabled", truncationRepairSkipReason(noSender, &dto.Usage{}, 1200, 10, 0, 1))
+	require.Equal(t, "", truncationRepairSkipReason(noSender, &dto.Usage{}, 0, 10, 0, 1),
+		"a thinking-only cut uses the reasoning sender, which is still configured")
+
+	empty := newInfo()
+	require.Equal(t, "nothing_to_continue", truncationRepairSkipReason(empty, &dto.Usage{}, 0, 0, 0, 1))
+
+	notStream := newInfo()
+	notStream.IsStream = false
+	require.Equal(t, "unsupported_format", truncationRepairSkipReason(notStream, &dto.Usage{}, 1200, 10, 0, 1))
+}
+
+// TestChatContinuationBudgetSemantics pins the two budget readings: a declared
+// max_tokens stays a hard ceiling for the whole response, while an undeclared
+// one grants one round of the per-round step no matter how much the first round
+// already produced (output that predates the ceiling cannot exhaust it).
+func TestChatContinuationBudgetSemantics(t *testing.T) {
+	declared := &relaycommon.RelayInfo{ClientMaxTokens: 100}
+	require.Equal(t, 100, chatContinuationOutputBudget(declared))
+	require.Equal(t, 60, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 40}))
+	require.Equal(t, 0, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 100}))
+	require.Equal(t, 0, chatContinuationBudgetLeft(declared, &dto.Usage{CompletionTokens: 140}))
+
+	undeclared := &relaycommon.RelayInfo{}
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationOutputBudget(undeclared))
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationBudgetLeft(undeclared, &dto.Usage{CompletionTokens: 923}))
+	require.Equal(t, undeclaredClientOutputBudget, chatContinuationBudgetLeft(undeclared, nil))
+}
+
+// TestOaiStreamHandlerContinuesMissingCutWithContentWithoutDeclaredBudget is the
+// 2026-10-28 18:21 production shape: the client sent no max_tokens, the upstream
+// died mid-answer without a terminal frame, and the repair was refused because
+// ClientMaxTokens was 0. The answer must be continued and delivered as one
+// stream with one terminal frame.
+func TestOaiStreamHandlerContinuesMissingCutWithContentWithoutDeclaredBudget(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":3,"total_tokens":28}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	var gotPartial string
+	var gotRemaining int
+	c, info, recorder := newMissingContinuationTestContext(t, func(partial string, remaining int) (*http.Response, error) {
+		calls++
+		gotPartial = partial
+		gotRemaining = remaining
+		return continuationSSEResponse(secondRound), nil
+	}, 1, 0, 1<<20) // ClientMaxTokens 0 = the request declared no output budget
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Missing.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a repaired answer must not surface the cut as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "the cut must be repaired without a declared max_tokens")
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+	require.Equal(t, undeclaredClientOutputBudget, gotRemaining,
+		"an undeclared request spends one bounded round instead of zero")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerRetriesContinuationRoundWhenUpstreamRejectsResume pins the
+// 2026-10-28 21:21 shape: a 900s cut is followed by a resume request the
+// upstream rejects immediately (503). Retrying the round must recover the
+// answer instead of surfacing a 502 for the prefix already delivered.
+func TestOaiStreamHandlerRetriesContinuationRoundWhenUpstreamRejectsResume(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	sender := func(string, int) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+		}
+		return continuationSSEResponse(secondRound), nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a rejected resume request must be retried, not surfaced")
+	require.NotNil(t, usage)
+	require.Equal(t, 2, calls, "the round is retried once after the rejection")
+	require.Equal(t, 13, usage.CompletionTokens, "both rounds are billed once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated pins the
+// fallback: when every repair attempt fails, an answer whose prefix already
+// reached the caller is closed with finish_reason=length instead of a 502, so
+// the delivered work survives and the caller can continue. Usage stays unbilled.
+func TestOaiStreamHandlerClosesPartiallyDeliveredAnswerAsTruncated(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"已经发出的前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sender := func(string, int) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a delivered prefix must not be turned into a 502")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "已经发出的前半段", "the delivered prefix stays")
+	require.NotContains(t, body, "truncated_stream", "no error frame for a delivered prefix")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame pins the robustness
+// rule behind the retry work: a resumed round that forwards deltas and then
+// hits a clean EOF (no finish_reason, no [DONE]) is NOT a recovered answer. It
+// used to be reported as a "length" completion, billed, and its failure erased
+// from StreamStatus.
+func TestOaiStreamHandlerDoesNotBillRoundWithoutTerminalFrame(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	// A resume round that emits a delta and then closes with no terminal frame.
+	truncatedRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(truncatedRound), nil
+	}, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Abnormal.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an answer cut twice must not be billed")
+	require.NotEmpty(t, info.UndeliveredReason, "the cut stays classified as undelivered")
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"stop"`, "no clean answer was produced")
+}
+
+// TestOaiStreamHandlerKeepsErrorWhenResumeForwardsToolCalls pins the tool-call
+// rule across rounds: a resumed round that forwards half a tool call must keep
+// the error frame instead of being closed as a truncated success, because a
+// client would otherwise execute a truncated argument string.
+func TestOaiStreamHandlerKeepsErrorWhenResumeForwardsToolCalls(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"前半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	toolCallRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"q\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(toolCallRound), nil
+	}, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = info.ChatContinuation.Abnormal.Send
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err, "a half tool call must stay an error for the caller")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, `"finish_reason":"length"`,
+		"a half tool call must not be masked as a truncated success")
+}
+
+// TestOaiStreamHandlerContinuesAfterMidStreamError pins the 2026-10-28 22:55
+// shape: the upstream streamed a visible answer and then sent an in-band error.
+// The handler used to return the transport error before any repair path, so the
+// caller lost an answer it had already been reading.
+func TestOaiStreamHandlerContinuesAfterMidStreamError(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":null}]}`,
+		`data: {"error":{"message":"Upstream response stream ended before completion","type":"upstream_error"}}`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段答案"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	var gotPartial string
+	sender := func(partial string, remaining int) (*http.Response, error) {
+		calls++
+		gotPartial = partial
+		return continuationSSEResponse(secondRound), nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a delivered prefix must be repaired, not surfaced as an error")
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls)
+	require.Equal(t, "前半段答案", gotPartial, "the continuation replays the visible prefix")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段答案")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, "truncated_stream")
+}
+
+// TestOaiStreamHandlerClosesMidStreamErrorAsTruncated is the fallback for the
+// same shape when the repair itself fails: the caller gets the delivered answer
+// closed with finish_reason=length and no charge, not a raw transport error.
+func TestOaiStreamHandlerClosesMidStreamErrorAsTruncated(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"已经发出的"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"内容"},"finish_reason":null}]}`,
+		`data: {"error":{"message":"Upstream response stream ended before completion","type":"upstream_error"}}`,
+		``,
+	}, "\n")
+
+	sender := func(string, int) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+	}
+	c, info, recorder := newAbnormalContinuationTestContext(t, sender, 1, 128000, 1<<20)
+	info.ChatContinuation.MaxSteps = 1
+	info.ChatContinuation.Send = sender
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "no raw transport error may reach a caller that already read content")
+	require.NotNil(t, usage)
+	require.Zero(t, usage.TotalTokens, "an unrepairable cut stays unbilled")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, `"content":"已经发出的"`)
+	require.Contains(t, body, `"content":"内容"`, "the tail the loop still held must reach the caller")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "closed honestly as truncated")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOpenaiHandlerAbnormalFinishIsRetryable pins the non-streaming gap found on
+// 2026-10-28 22:54: an upstream answered finish_reason=error after 85s with zero
+// content, and the request ended as a customer-visible 502 because the error was
+// marked non-retryable. Nothing had been written to a non-streaming caller, so
+// another channel must be allowed to serve it.
+func TestOpenaiHandlerAbnormalFinishIsRetryable(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "kimi-k3.1-pro"},
+		IsStream:    false,
+		RelayFormat: types.RelayFormatOpenAI,
+	}
+	info.SetEstimatePromptTokens(5)
+
+	body := `{"id":"chat_1","object":"chat.completion","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"error"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	_, apiErr := OpenaiHandler(c, info, resp)
+	require.NotNil(t, apiErr)
+	require.False(t, types.IsSkipRetryError(apiErr), "a non-streaming abnormal finish must fall over to another channel")
+}
+
+// TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart pins
+// the cross-channel fallback contract: when the owning channel cannot even start
+// the resume round, the configured fallback is spent once and the answer is
+// stitched from the other channel (2026-10-28 ch77 kept answering "Upstream
+// completed without answer text", while other channels could still resume).
+func TestOaiStreamHandlerFallsBackToAnotherChannelWhenContinuationCannotStart(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	fallbackRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	sameChannelCalls := 0
+	sender := func(string, int) (*http.Response, error) {
+		sameChannelCalls++
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	fallbackCalls := 0
+	fallback := func(string, int) (*http.Response, error) {
+		fallbackCalls++
+		return continuationSSEResponse(fallbackRound), nil
+	}
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+	info.ChatContinuation.Fallback = fallback
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.GreaterOrEqual(t, sameChannelCalls, 1, "the owning channel is always tried first")
+	require.Equal(t, 1, fallbackCalls, "the cross-channel fallback is spent once")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+}
+
+// TestOaiStreamHandlerKeepsOneTerminalWhenFinishAndUsageAreSeparateChunks pins the
+// standard OpenAI shape (finish chunk followed by a usage-only chunk) that the
+// earlier fixtures missed: the provider terminal frame used to be forwarded before
+// the repair decided, so the caller received finish_reason=length, then resumed
+// content, then finish_reason=stop (2026-10-29 review, BLOCKER).
+func TestOaiStreamHandlerKeepsOneTerminalWhenFinishAndUsageAreSeparateChunks(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "后半段")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+	require.Zero(t, strings.Count(body, `"finish_reason":"length"`), "the provider terminal frame must be held, not forwarded")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"))
+}
+
+// TestOaiStreamHandlerDeliversHeldTailBeforeRepair pins the answer fragment the
+// stream loop still held when the early return happened: the continuation prompt
+// includes it, so dropping it left a silent hole in the caller's answer
+// (2026-10-29 review, BLOCKER).
+func TestOaiStreamHandlerDeliversHeldTailBeforeRepair(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"第一块"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"尾块"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"续写"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "第一块")
+	require.Contains(t, body, "尾块", "the held answer tail must reach the caller before the resumed round")
+	require.Contains(t, body, "续写")
+}
+
+// TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent pins the transport
+// fault shape (reset/timeout): the delivered prefix is resumed instead of leaving
+// the caller with a bare EOF and no terminal frame (2026-10-29 review, HIGH).
+func TestOaiStreamHandlerRepairsTransportFailureAfterVisibleContent(t *testing.T) {
+	firstRound := io.MultiReader(
+		strings.NewReader(strings.Join([]string{
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"第一块"},"finish_reason":null}]}`,
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"尾块"},"finish_reason":null}]}`,
+			``,
+		}, "\n")),
+		streamErrorReader{err: errors.New("connection reset by peer")},
+	)
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"续写"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return continuationSSEResponse(secondRound), nil }
+	c, info, recorder := newContinuationTestContext(t, sender, 1, 128000)
+
+	_, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(firstRound),
+	})
+	require.Nil(t, err, "a transport cut after delivered content must be repaired or closed, not failed")
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "尾块")
+	require.Contains(t, body, "续写")
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"stop"`), "one terminal frame")
+}
+
+// TestOaiStreamHandlerCreditsResumedRoundToItsChannel pins the capability telemetry
+// attribution: a round served by another channel must be credited to that channel,
+// not to the channel that failed to start it (2026-10-29 review, H5).
+func TestOaiStreamHandlerCreditsResumedRoundToItsChannel(t *testing.T) {
+	const hopChannelID = 986777
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"前半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{"content":"后半段"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	sender := func(string, int) (*http.Response, error) { return nil, errors.New("dial tcp: connection refused") }
+	c, info, _ := newContinuationTestContext(t, sender, 1, 128000)
+	tracker := &relaycommon.ContinuationRoundChannel{}
+	info.ChatContinuation.RoundChannel = tracker
+	info.ChatContinuation.Fallback = func(string, int) (*http.Response, error) {
+		tracker.Set(hopChannelID)
+		return continuationSSEResponse(secondRound), nil
+	}
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err)
+	stats := common.ContinuationCapabilitySnapshot()[hopChannelID]
+	require.GreaterOrEqual(t, stats.Successes, int64(1), "the hop channel that produced the text must be credited")
 }

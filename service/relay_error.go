@@ -425,7 +425,7 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	if ShouldDisableChannel(err) && channelError.AutoBan {
 		reason := err.MaskSensitiveErrorWithStatusCode()
 		gopool.Go(func() {
-			DisableChannel(channelError, reason)
+			DisableChannelBecauseRelayError(channelError, reason)
 		})
 	}
 

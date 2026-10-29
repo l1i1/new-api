@@ -9,6 +9,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -22,6 +24,88 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// continuationFallbackChannel picks a different channel for a continuation round.
+// The round that was cut is usually still bound to the channel that cut it (the
+// 900s wall is one upstream flow; a broken aggregator keeps erroring), so the one
+// permitted continuation step should not be spent on the same channel. Returns
+// nil when the pool offers no other candidate.
+func continuationFallbackChannel(c *gin.Context, info *relaycommon.RelayInfo) *model.Channel {
+	if c == nil || info == nil || c.Request == nil {
+		return nil
+	}
+	group := info.TokenGroup
+	if group == "" {
+		group = c.GetString("group")
+	}
+	previous := info.ChannelId
+	for attempt := 0; attempt < 3; attempt++ {
+		retry := attempt
+		selected, _, selectErr := service.SelectChannelForRequest(c, info.OriginModelName, &service.RetryParam{
+			Ctx:         c,
+			TokenGroup:  group,
+			ModelName:   info.OriginModelName,
+			RequestPath: c.Request.URL.Path,
+			Retry:       &retry,
+		})
+		if selectErr != nil || selected == nil {
+			return nil
+		}
+		if selected.Id != previous {
+			return selected
+		}
+	}
+	return nil
+}
+
+// adoptChannelForContinuation points the relay info at the fallback channel so the
+// continuation request, its billing and its request log all name the channel that
+// actually served it. Returns nil when the channel type has no adaptor.
+func adoptChannelForContinuation(info *relaycommon.RelayInfo, channel *model.Channel) relaychannel.Adaptor {
+	if info == nil || info.ChannelMeta == nil || channel == nil {
+		return nil
+	}
+	// GetAdaptor takes an API type, not a channel type (channel type 1 would
+	// resolve to the Claude adaptor), so map it first.
+	apiType, apiTypeOK := common.ChannelType2APIType(channel.Type)
+	if !apiTypeOK {
+		return nil
+	}
+	channelAdaptor := GetAdaptor(apiType)
+	if channelAdaptor == nil {
+		return nil
+	}
+	info.ChannelId = channel.Id
+	info.ChannelType = channel.Type
+	info.ChannelBaseUrl = channel.GetBaseURL()
+	info.ChannelSetting = channel.GetSetting()
+	info.ParamOverride = nil
+	info.ResponseOverride = nil
+	info.HeadersOverride = nil
+	// A multi-key channel must hand out one enabled key, not the raw Key field
+	// (that is the joined credential list, which is not a valid bearer token).
+	apiKey, keyIndex, keyErr := channel.GetNextEnabledKey()
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		return nil
+	}
+	info.ApiKey = apiKey
+	info.ChannelIsMultiKey = channel.ChannelInfo.IsMultiKey
+	info.ChannelMultiKeyIndex = keyIndex
+	if info.ChannelMeta != nil {
+		info.ChannelMeta.ApiType = apiType
+	}
+	return channelAdaptor
+}
+
+// restoreChannelMeta rolls the relay info back to the channel that owned it, used
+// when the fallback attempt itself fails and the request keeps its original
+// attribution.
+func restoreChannelMeta(previous relaycommon.ChannelMeta, info *relaycommon.RelayInfo) {
+	if info == nil || info.ChannelMeta == nil {
+		return
+	}
+	*info.ChannelMeta = previous
+}
 
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
@@ -220,8 +304,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
 		base := continuationBase
 		adaptorRef := adaptor
+		// Tracks the channel of the latest round so continuation-capability telemetry
+		// names the channel that actually resumed (cross-channel hops included).
+		roundChannel := &relaycommon.ContinuationRoundChannel{}
 		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
-			return func(partial string, remaining int) (*http.Response, error) {
+			// sendOnce replays the continuation body through one channel.
+			sendOnce := func(channelAdaptor relaychannel.Adaptor, partial string, remaining int) (*http.Response, error) {
 				continuationJSON, buildErr := build(base, partial, remaining)
 				if buildErr != nil {
 					return nil, buildErr
@@ -231,7 +319,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 					return nil, bodyErr
 				}
 				defer bodyCloser.Close()
-				respAny, requestErr := adaptorRef.DoRequest(c, info, body)
+				respAny, requestErr := channelAdaptor.DoRequest(c, info, body)
 				if requestErr != nil {
 					return nil, requestErr
 				}
@@ -241,15 +329,38 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				}
 				return resp, nil
 			}
+			// Same-channel first: a resume on the channel that owns the prefix hits
+			// its prompt cache. The runner spends the single cross-channel fallback
+			// only when this sender cannot even start the round.
+			return func(partial string, remaining int) (*http.Response, error) {
+				resp, err := sendOnce(adaptorRef, partial, remaining)
+				if err == nil && resp != nil {
+					roundChannel.Set(info.ChannelId)
+				}
+				return resp, err
+			}
 		}
-		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps}
+		// The cross-channel fallback replays the same OpenAI continuation body and
+		// parses an OpenAI stream, so it is only offered when this attempt's body is
+		// OpenAI-shaped. A converted (Claude/Gemini) attempt keeps same-channel only.
+		crossChannel := info.ApiType == constant.APITypeOpenAI
+		fallback := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
+			if !crossChannel {
+				return nil
+			}
+			return crossChannelContinuationFallback(c, info, base, build, roundChannel)
+		}
+		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, RoundChannel: roundChannel}
 		if steps > 0 {
 			cfg.Send = send(openaichannel.BuildChatContinuationBody)
+			cfg.Fallback = fallback(openaichannel.BuildChatContinuationBody)
 		}
 		if abnormalSteps > 0 {
 			cfg.Abnormal = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          abnormalSteps,
-				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				RoundChannel:      roundChannel,
+				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationAbnormalMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationAbnormalMinReasoningChars,
 			}
@@ -257,7 +368,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if missingSteps > 0 {
 			cfg.Missing = &relaycommon.ChatAbnormalContinuationConfig{
 				MaxSteps:          missingSteps,
-				Send:              send(openaichannel.BuildChatThinkingContinuationBody),
+				Send:              send(openaichannel.BuildChatAnswerContinuationBody),
+				RoundChannel:      roundChannel,
+				Fallback:          fallback(openaichannel.BuildChatAnswerContinuationBody),
 				MaxReasoningBytes: common.ChatContinuationMissingMaxReasoningBytes,
 				MinReasoningChars: common.ChatContinuationMissingMinReasoningChars,
 			}

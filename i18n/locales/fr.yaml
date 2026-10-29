@@ -362,6 +362,8 @@ notify.content_moderation.subject: "[{{.SystemName}}] Alerte de contrôle des ri
 notify.content_moderation.body: "Votre requête API a déclenché la politique de modération du contenu de la plateforme.\n\nCatégorie / score : {{.Category}} / {{.Score}}\nDéclenchements cumulés : {{.Count}} / {{.Threshold}}\n\nVeuillez vérifier le contenu de la requête."
 notify.channel.disabled_subject: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été désactivé"
 notify.channel.disabled_body: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été désactivé, raison : {{.Reason}}"
+notify.channel.key_disabled_subject: "Canal \"{{.ChannelName}}\" (#{{.ChannelId}}) : une clé désactivée"
+notify.channel.key_disabled_body: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a désactivé la clé n°{{.KeyPosition}} ; {{.EnabledKeyNum}}/{{.TotalKeyNum}} clés restent utilisables, le canal continue de servir. Raison : {{.Reason}}"
 notify.channel.enabled_subject: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été activé"
 notify.channel.enabled_body: "Le canal \"{{.ChannelName}}\" (#{{.ChannelId}}) a été activé"
 notify.channel_test.subject: "Test du canal terminé"

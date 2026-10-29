@@ -609,6 +609,15 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 	// priority) serve the request.
 	channels, videoEmptied := narrowVideoCandidates(channels, videoOnly, model)
 	channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
+	// Short cooldown is a preference inside the hard constraints, never a capability
+	// filter in front of them: applying it before the video/fit narrowing turned a
+	// transient hint into a 400 "video unsupported" and silently downgraded
+	// official-fit requests (2026-10-29 review, B1). Filtering after narrowing and
+	// keeping the narrowed set when every candidate is cooling preserves both
+	// semantics.
+	if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
+		channels = cooling
+	}
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
@@ -619,6 +628,9 @@ func GetRandomSatisfiedChannelPinnedWithFit(group string, model string, retry in
 		channels, normalizedEmptied = narrowVideoCandidates(channels, videoOnly, model)
 		videoEmptied = videoEmptied || normalizedEmptied
 		channels = preferOfficialFitChannels(channels, model, pinOfficial, fit)
+		if cooling := filterChannelIDsByCooldown(channels); len(cooling) > 0 {
+			channels = cooling
+		}
 	}
 
 	if len(channels) == 0 {
@@ -791,6 +803,21 @@ func selectChannelFromMetadata(group string, model string, retry int, metadata *
 		}
 	}
 	return nil, fmt.Errorf("no channel found, group: %s, model: %s, priority retry: %d", group, model, retry)
+}
+
+// filterChannelIDsByCooldown drops channels that recently failed in a way a
+// retry cannot fix, so traffic moves off a broken upstream until it expires.
+func filterChannelIDsByCooldown(channels []int) []int {
+	if len(channels) == 0 {
+		return channels
+	}
+	kept := make([]int, 0, len(channels))
+	for _, channelID := range channels {
+		if !common.ChannelInCooldown(channelID) {
+			kept = append(kept, channelID)
+		}
+	}
+	return kept
 }
 
 func filterChannelIDsByBlockedChannels(channels []int, blockedChannels map[int]struct{}) []int {

@@ -219,6 +219,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var lastStreamHasUsage bool
 	var lastStreamHasChoices bool
 	var lastStreamHasFinish bool
+	var lastStreamFinishReason string
+	// deferredTerminalData holds a provider terminal chunk that was NOT forwarded
+	// because the handler may still repair the answer. Sending a finish_reason to
+	// the caller is final: content that arrives afterwards corrupts the response
+	// (2026-10-29 review, reproduced: length finish -> resumed content -> stop).
+	// Every repair path renders its own single terminal frame; the normal path
+	// forwards this chunk just before finishing.
+	deferredTerminalData := ""
+	// finishFrameForwarded records that the provider's own terminal frame already
+	// reached the client, so the truncated close below must not synthesize a
+	// second one with a contradictory finish_reason.
+	finishFrameForwarded := false
 	var lastStreamWithoutUsage string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 	var deepSeekV4PendingFinalData string
@@ -239,6 +251,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var streamFinishSeen bool
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	// streamedToolCalls accumulates the tool calls of this attempt so a stream
+	// that dies without a terminal frame can still be closed as a tool_calls
+	// answer when every call it delivered is complete (see the salvage branch
+	// next to the truncated-close guard below).
+	var streamedToolCalls streamToolCallTracker
 	includeDeepSeekV4ReasoningUsage := !shouldSuppressReasoningContent(info)
 	isV4OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && deepSeekV4FitEnabled(info)
 	isK3OpenAIStream := info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info)
@@ -302,6 +319,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 						}
 					}
 				}
+				// Track every function-call fragment as the provider sent it: the
+				// truncated-close guard needs to know whether a cut landed after the
+				// last complete argument document or inside one.
+				streamedToolCalls.observe(streamResp.Choices)
 				if streamResp.Usage != nil {
 					currentHasUsage = true
 					currentHasChoices = len(streamResp.Choices) > 0
@@ -322,13 +343,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					}
 				}
 			}
+			// Count delivered answer text for every channel, not only the ones with
+			// continuation configured: the truncated-close guard below must see the
+			// answer a non-whitelisted channel already delivered (2026-10-28: ch14
+			// and ch77 cut after content but kept the error frame because this counter
+			// stayed zero).
+			for _, choice := range streamResp.Choices {
+				visibleContentChars += len(choice.Delta.GetContentString())
+			}
 			if info.ChatContinuation != nil && (info.ChatContinuation.Abnormal != nil || info.ChatContinuation.Missing != nil) {
 				limit := continuationReasoningLimit(info)
 				if limit <= 0 {
 					limit = 512 * 1024
 				}
 				for _, choice := range streamResp.Choices {
-					visibleContentChars += len(choice.Delta.GetContentString())
 					reasoning := choice.Delta.GetReasoningContent()
 					if reasoning == "" {
 						continue
@@ -422,33 +450,55 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// pending so clients receive only one cumulative event.
 				pendingUsageData = lastStreamData
 				if lastStreamHasChoices {
-					if lastStreamWithoutUsage != "" {
-						if err := HandleStreamFormat(c, info, lastStreamWithoutUsage, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-							common.SysLog("error handling stream format: " + err.Error())
-							sr.Error(err)
-						}
-					}
-					usageOnlyData, err := stripStreamChoicesData(lastStreamData)
-					if err != nil {
-						common.SysLog("error stripping stream choices; suppressing duplicate pending event: " + err.Error())
+					deferThis := false
+					if lastStreamHasFinish && shouldDeferTerminalForRepair(info, lastStreamFinishReason, toolCount, streamChoiceCount, isAudioModel, streamFunctionCallNames) {
+						deferredTerminalData = lastStreamData
 						pendingUsageData = ""
-					} else {
-						pendingUsageData = usageOnlyData
+						deferThis = true
+					}
+					if !deferThis {
+						if lastStreamWithoutUsage != "" {
+							if lastStreamHasFinish {
+								finishFrameForwarded = true
+							}
+							if err := HandleStreamFormat(c, info, lastStreamWithoutUsage, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+								common.SysLog("error handling stream format: " + err.Error())
+								sr.Error(err)
+							}
+						}
+						usageOnlyData, err := stripStreamChoicesData(lastStreamData)
+						if err != nil {
+							common.SysLog("error stripping stream choices; suppressing duplicate pending event: " + err.Error())
+							pendingUsageData = ""
+						} else {
+							pendingUsageData = usageOnlyData
+						}
 					}
 				}
 			} else {
 				streamData := lastStreamData
-				if info.RelayFormat == types.RelayFormatOpenAI {
-					patched, err := patchStreamUsageData(streamData, usage)
-					if err != nil {
-						common.SysLog("error patching stream usage; forwarding original event: " + err.Error())
+				deferThis := false
+				if lastStreamHasFinish {
+					if shouldDeferTerminalForRepair(info, lastStreamFinishReason, toolCount, streamChoiceCount, isAudioModel, streamFunctionCallNames) {
+						deferredTerminalData = lastStreamData
+						deferThis = true
 					} else {
-						streamData = patched
+						finishFrameForwarded = true
 					}
 				}
-				if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-					common.SysLog("error handling stream format: " + err.Error())
-					sr.Error(err)
+				if !deferThis {
+					if info.RelayFormat == types.RelayFormatOpenAI {
+						patched, err := patchStreamUsageData(streamData, usage)
+						if err != nil {
+							common.SysLog("error patching stream usage; forwarding original event: " + err.Error())
+						} else {
+							streamData = patched
+						}
+					}
+					if err := HandleStreamFormat(c, info, streamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+						common.SysLog("error handling stream format: " + err.Error())
+						sr.Error(err)
+					}
 				}
 			}
 
@@ -467,6 +517,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			lastStreamHasUsage = currentHasUsage
 			lastStreamHasChoices = currentHasChoices
 			lastStreamHasFinish = currentHasFinish
+			if currentHasFinish {
+				lastStreamFinishReason = info.StreamFinishReason
+			} else {
+				lastStreamFinishReason = ""
+			}
 			lastStreamWithoutUsage = currentWithoutUsage
 			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
 			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
@@ -476,6 +531,66 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	})
 	if streamErr != nil {
+		// An upstream that dies mid-stream after the answer already reached the
+		// caller is the same repair opportunity as an abnormal finish: the prefix
+		// is delivered, so replay it and continue instead of handing the caller a
+		// raw transport error over content it already read (2026-10-28 22:55:
+		// ch103 streamed 1263 chunks and then returned "Upstream response stream
+		// ended before completion"; every repair path was skipped because this
+		// branch returns before them).
+		deliveredChars := max(visibleContentChars, responseTextBuilder.Len())
+		if types.IsSkipRetryError(streamErr) {
+			// An in-band decision such as a content-policy rejection already wrote its
+			// error event and [DONE]: resuming it from another round would append data
+			// after the terminator and turn a refusal into a billed success
+			// (2026-10-29 review).
+			return usage, streamErr
+		}
+		// SendResponseCount proves bytes actually reached the caller: a repair that
+		// replays a prefix the caller never received would deliver an answer with a
+		// missing beginning, so only repair after at least one frame was written.
+		if deliveredChars > 0 && info.SendResponseCount > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
+			info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
+			info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel && !deepSeekV4FitEnabled(info) &&
+			streamChoiceCount <= 1 && (c.Request == nil || c.Request.Context().Err() == nil) &&
+			chatContinuationBudgetLeft(info, usage) > 0 {
+			// An upstream that breaks mid-answer after content is unreliable in a way
+			// a retry cannot fix; two such breaks inside two minutes cool the channel
+			// for a few minutes so it stops absorbing customer traffic (2026-10-28:
+			// ch77 kept returning "Upstream completed without answer text").
+			common.RecordChannelFailure(info.ChannelId)
+			common.SysLog(fmt.Sprintf("stream error after visible content, attempting continuation: ch=%d content=%d err=%s", info.ChannelId, deliveredChars, streamErr.Error()))
+			// The loop still holds the last chunk it read (it is forwarded only when
+			// the next chunk arrives). The continuation treats everything
+			// accumulated so far as the caller's prefix, so deliver that tail first
+			// or the merged answer would silently miss its last fragment.
+			flushHeldAnswerChunk(c, info, lastStreamData)
+			resetContinuationCoalescer(info)
+			result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				return result.usage, nil
+			}
+			if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
+				result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+				finalUsage := result.usage
+				relaycommon.ClampUsageToClientBudget(info, finalUsage)
+				info.StreamFinishReason = result.finish
+				if info.StreamStatus != nil {
+					info.StreamStatus.MarkRecovered()
+				}
+				markContinuationAudit(info, "stream-error", result.rounds, result.contentChars)
+				logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=stream-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+				flushContinuationCoalescer(c, info)
+				helper.ExtendWriteDeadline(c)
+				sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+				helper.ExtendWriteDeadline(c)
+				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+				return finalUsage, nil
+			}
+			// The repair did not produce a usable answer either: close honestly as
+			// a truncated answer rather than throwing the delivered prefix away.
+			return closeTruncatedDeliveredStream(c, info, usage, "stream_error_after_visible_content", responseId, createAt, model, systemFingerprint), nil
+		}
 		return usage, streamErr
 	}
 	// Flush merged text before anything terminal (finish_reason / usage) is
@@ -519,6 +634,50 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			(c.Request != nil && c.Request.Context().Err() != nil)
 		if !clientGone {
 			undeliveredReason := relaycommon.UndeliveredStreamPrefix + string(info.StreamStatus.EndReason)
+			// The transport died after the caller had already read answer text. The
+			// prefix is deliverable, so repair it like an in-band error instead of
+			// ending the stream with a bare EOF (2026-10-28: a reset left callers with
+			// no finish_reason at all, which most clients read as success).
+			flushHeldAnswerChunk(c, info, lastStreamData)
+			deliveredChars := max(visibleContentChars, responseTextBuilder.Len())
+			if deliveredChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 && streamChoiceCount <= 1 &&
+				info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
+				info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel &&
+				!deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) &&
+				(c.Request == nil || c.Request.Context().Err() == nil) &&
+				chatContinuationBudgetLeft(info, usage) > 0 {
+				common.RecordChannelFailure(info.ChannelId)
+				common.SysLog(fmt.Sprintf("stream transport failure after visible content, attempting continuation: ch=%d reason=%s content=%d", info.ChannelId, info.StreamStatus.EndReason, deliveredChars))
+				resetContinuationCoalescer(info)
+				result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					return result.usage, nil
+				}
+				if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
+					result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+					finalUsage := result.usage
+					relaycommon.ClampUsageToClientBudget(info, finalUsage)
+					info.StreamFinishReason = result.finish
+					if info.StreamStatus != nil {
+						info.StreamStatus.MarkRecovered()
+					}
+					markContinuationAudit(info, "transport-error", result.rounds, result.contentChars)
+					logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=transport-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+					flushContinuationCoalescer(c, info)
+					helper.ExtendWriteDeadline(c)
+					sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+					helper.ExtendWriteDeadline(c)
+					HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+					return finalUsage, nil
+				}
+				return closeTruncatedDeliveredStream(c, info, usage, "transport_error_after_visible_content", responseId, createAt, model, systemFingerprint), nil
+			}
+			if deliveredChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 && streamChoiceCount <= 1 &&
+				!deepSeekV4FitEnabled(info) && info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+				// No continuation is configured for this channel: close the delivered
+				// answer honestly instead of leaving the stream without a terminal frame.
+				return closeTruncatedDeliveredStream(c, info, usage, undeliveredReason, responseId, createAt, model, systemFingerprint), nil
+			}
 			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 			terminationErr := info.StreamStatus.EndError
@@ -608,28 +767,79 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// (see ClampUsageToClientBudget for why upstream accumulation happens).
 	relaycommon.ClampUsageToClientBudget(info, usage)
 
+	// Tool-call deltas forwarded by a resumed round: once the caller holds half a
+	// call, the answer must not be closed as a clean truncation.
+	continuationToolCalls := 0
+
 	// Transparent continuation for a provider-side output cap: the upstream ended
 	// the stream with finish_reason=length while the client still had budget left,
 	// so continue the same answer inside this same client stream instead of
 	// truncating it. The branch is inert unless the relay enabled continuation for
 	// this request (info.ChatContinuation != nil).
 	if !isAudioModel && chatContinuationCandidate(info, usage, responseTextBuilder.Len(), toolCount, streamChoiceCount) && len(streamFunctionCallNames) == 0 {
+		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		// A caller-side disconnect during the continuation rounds stays billable
 		// (same rule as client_gone on a normal stream): the provider already
 		// generated the merged usage.
-		if result.rounds > 0 {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.toolCalls == 0 &&
+			result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
+			markContinuationAudit(info, "length", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
+	// Abnormal cut after the answer already started (900s wall hit mid-answer):
+	// the caller is reading a partial answer, so resuming the thinking round is
+	// pointless and discarding the prefix (the old fallback) throws away tens of
+	// kilobytes of finished work. Continue the visible answer prefix instead, the
+	// same way an upstream length cap is repaired.
+	if streamAbnormalFinish != "" && !reasoningTruncated && visibleContentChars > 0 &&
+		info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
+		info.IsStream && info.RelayFormat == types.RelayFormatOpenAI &&
+		toolCount == 0 && streamChoiceCount <= 1 && len(streamFunctionCallNames) == 0 &&
+		!deepSeekV4FitEnabled(info) &&
+		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
+		chatContinuationBudgetLeft(info, usage) > 0 {
+		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-content")
+		flushHeldAnswerChunk(c, info, lastStreamData)
+		resetContinuationCoalescer(info)
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		continuationToolCalls += result.toolCalls
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			markContinuationAudit(info, "abnormal-content", result.rounds, result.contentChars)
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=abnormal-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -645,8 +855,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish != "" && !reasoningTruncated &&
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
 		len(streamFunctionCallNames) == 0 {
+		info.StreamCutDiagnostics.MarkRepairAttempted("abnormal-reasoning")
+		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			// The caller walked away mid-continuation: the provider already
 			// generated the observed usage (same rule as client_gone on a
@@ -657,17 +871,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "abnormal", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -681,6 +896,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			info.StreamStatus != nil && info.StreamStatus.ResponseFailed(), info.ClientMaxTokens, usage.CompletionTokens))
 	}
 
+	// Snapshot the cut diagnostics before any repair attempt mutates the state.
+	// The failed type=5 row carries them (admin_info.stream_cut), so an
+	// unrepaired cut is explainable from /api/log/ instead of from a container
+	// log line that is usually gone by the time the customer reports the id.
+	if streamAbnormalFinish != "" || !streamFinishSeen {
+		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
+			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
+			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
+	}
+
 	// Length-cap continuation during the thinking phase (32k cap, no visible
 	// answer yet): the prefix continuation has nothing to replay, so resume the
 	// thinking round from the captured reasoning instead of truncating.
@@ -688,8 +913,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		chatLengthThinkingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
 		len(streamFunctionCallNames) == 0 {
 		common.SysLog(fmt.Sprintf("length thinking continuation: ch=%d reasoning=%d clientMax=%d completion=%d", info.ChannelId, reasoningTextBuilder.Len(), info.ClientMaxTokens, usage.CompletionTokens))
+		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runLengthThinkingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
@@ -702,7 +929,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// is reported as "length" (an output-cap truncation) instead of falling
 		// through to the first round's terminal, which would contradict the
 		// streamed content and drop the continuation usage from the bill.
-		if result.rounds > 0 && result.contentChars > 0 {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal {
 			finish := result.finish
 			if finish == "" || relaycommon.IsAbnormalFinishReason(finish) {
 				finish = "length"
@@ -713,10 +940,53 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "length-thinking", result.rounds, result.contentChars)
 			common.SysLog(fmt.Sprintf("length thinking continuation delivered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, finish, finalUsage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+			return finalUsage, nil
+		}
+	}
+
+	// Missing-finish continuation after the answer already started: the upstream
+	// reached EOF/[DONE] with no terminal finish_reason at all, but the client is
+	// already reading a partial answer. The reasoning resume below refuses any
+	// visible content, and discarding the prefix would surface a 502 for work
+	// that can still be completed, so continue the visible prefix through the
+	// same transparent continuation used for a length cap and for an abnormal
+	// cut after the answer started.
+	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
+		streamMissingFinishMarksTruncation(info, isAudioModel) &&
+		chatMissingVisibleContinuationCandidate(info, usage, visibleContentChars, toolCount, streamChoiceCount, streamFinishSeen) &&
+		len(streamFunctionCallNames) == 0 {
+		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		info.StreamCutDiagnostics.MarkRepairAttempted("missing-content")
+		flushHeldAnswerChunk(c, info, lastStreamData)
+		resetContinuationCoalescer(info)
+		result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		continuationToolCalls += result.toolCalls
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			return finalUsage, nil
+		}
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+			finalUsage := result.usage
+			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			info.StreamFinishReason = result.finish
+			if info.StreamStatus != nil {
+				info.StreamStatus.MarkRecovered()
+			}
+			markContinuationAudit(info, "missing-content", result.rounds, result.contentChars)
+			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=missing-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -734,25 +1004,30 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		streamMissingFinishMarksTruncation(info, isAudioModel) &&
 		chatMissingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount, streamFinishSeen) &&
 		len(streamFunctionCallNames) == 0 {
+		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
+		info.StreamCutDiagnostics.MarkRepairAttempted("missing-reasoning")
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
+		info.StreamCutDiagnostics.MarkRepairOutcome(result.rounds, "round_incomplete")
+		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
-		if result.rounds > 0 && result.contentChars > 0 && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
+		if result.rounds > 0 && result.contentChars > 0 && result.terminal && result.finish != "" && !relaycommon.IsAbnormalFinishReason(result.finish) {
 			finalUsage := result.usage
 			relaycommon.ClampUsageToClientBudget(info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "missing", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
-			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, result.finish, finalUsage)
 			helper.ExtendWriteDeadline(c)
 			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
 			return finalUsage, nil
@@ -771,6 +1046,116 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		undeliveredReason = relaycommon.UndeliveredMissingFinish
 	}
 	if undeliveredReason != "" {
+		// A stream cut after the answer is already written is closed below. The
+		// tool-call shape needs its own close: the provider can lose only the
+		// terminal frame after the model finished every call, and the caller then
+		// holds a complete, executable answer (2026-10-29: neurvibe :8111 cut
+		// 88-98% of the kimi-k3.1-pro tool-call streams; 13 of 14 sampled cuts had
+		// complete argument JSON). Closing it as finish_reason=tool_calls keeps the
+		// delivered answer usable and billable instead of charging nothing and
+		// handing the caller an error for work that is done. A cut inside a call
+		// keeps the error frame: half an argument document is not executable.
+		if undeliveredReason == relaycommon.UndeliveredMissingFinish &&
+			!finishFrameForwarded && continuationToolCalls == 0 && streamChoiceCount <= 1 &&
+			!isAudioModel && info.RelayFormat == types.RelayFormatOpenAI {
+			if completeToolCalls, complete := streamedToolCalls.completeCalls(); complete {
+				// Deliver the held tail first: it can be the provider's last
+				// argument fragment, and the caller must hold it before the
+				// terminal frame closes the call.
+				flushHeldAnswerChunk(c, info, lastStreamData)
+				info.StreamFinishReason = constant.FinishReasonToolCalls
+				info.ClosedAsToolCalls = true
+				if info.StreamStatus != nil {
+					info.StreamStatus.MarkRecovered()
+				}
+				common.SysLog(fmt.Sprintf("truncated stream closed as tool_calls: ch=%d tools=%d content=%d reasoning=%d", info.ChannelId, completeToolCalls, visibleContentChars, reasoningTextBuilder.Len()))
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					// The caller is gone; the answer was generated and delivered up
+					// to the terminal frame, so it stays billable like any other
+					// client-gone stream.
+					return usage, nil
+				}
+				flushContinuationCoalescer(c, info)
+				helper.ExtendWriteDeadline(c)
+				sendChatContinuationTerminal(c, info, responseId, createAt, model, constant.FinishReasonToolCalls, usage)
+				helper.ExtendWriteDeadline(c)
+				// The normal terminal path forwards the provider's usage event.
+				// Here the provider never sent one, so render it when the caller
+				// asked for usage; HandleFinalResponse emits it only when the
+				// upstream usage was missing altogether.
+				if info.ShouldIncludeUsage && containStreamUsage && !deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) {
+					response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+					response.SetSystemFingerprint(systemFingerprint)
+					helper.ObjectData(c, response)
+				}
+				HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+				return usage, nil
+			}
+		}
+		// A channel that only ever breaks this way never reaches the cooldown:
+		// every other promotion point sits behind a repair attempt that a
+		// truncation does not have, so ch102 kept absorbing customer traffic for
+		// ten minutes while 88-98% of its answers were cut (2026-10-29). Record
+		// the failure here, the one place every unrepaired truncation passes
+		// through, so two cuts inside two minutes take the channel out of
+		// selection for a few minutes without touching its DB status.
+		common.RecordChannelFailure(info.ChannelId)
+		// Log the refusal reason before the usage is zeroed: a repaired truncation
+		// returns earlier, so reaching here means every continuation mode declined
+		// and the caller sees the cut. One line names the caller, the shape and the
+		// guard, which is what the 2026-10-28 gap investigation lacked.
+		common.SysLog(fmt.Sprintf("truncated stream unrepaired: ch=%d shape=%s content=%d reasoning=%d tools=%d choices=%d clientMax=%d completion=%d reason=%s",
+			info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount,
+			info.ClientMaxTokens, usage.CompletionTokens,
+			truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)))
+		// The caller already holds the answer prefix. Turning a cut that could
+		// not be finished into a 502 throws that work away and forces a full
+		// fifteen-minute retry (2026-10-28 21:21-21:33: 25 customer requests),
+		// so close the stream honestly as a truncated answer instead: one
+		// terminal frame with finish_reason=length, the prefix stays delivered,
+		// and the usage stays unbilled. A cut inside a tool call keeps the error
+		// frame - half a tool call is not a usable answer and the caller must
+		// retry - and so does a reasoning-only cut, which delivered no answer.
+		if visibleContentChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
+			continuationToolCalls == 0 && streamChoiceCount <= 1 && !finishFrameForwarded &&
+			!deepSeekV4FitEnabled(info) && info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+			flushHeldAnswerChunk(c, info, lastStreamData)
+			common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d shape=%s content=%d reasoning=%d", info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len()))
+			usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+			service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+			// Health and rate-limit sampling must not read this as a clean success:
+			// the caller received a truncated answer. The abnormal shape already
+			// recorded its failure when the upstream terminal arrived; the silent
+			// (no finish_reason at all) shape reaches here still unknown.
+			if info.StreamStatus != nil && undeliveredReason == relaycommon.UndeliveredMissingFinish {
+				info.StreamStatus.MarkFailed("upstream_missing_finish_reason", "upstream_error", http.StatusBadGateway)
+				info.StreamStatus.RecordError("upstream stream ended without a terminal finish_reason")
+			}
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				common.SysLog(fmt.Sprintf("partial answer terminal skipped, caller gone: ch=%d", info.ChannelId))
+				return usage, nil
+			}
+			info.StreamFinishReason = "length"
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", usage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, false)
+			return usage, nil
+		}
+		if deferredTerminalData != "" && !finishFrameForwarded {
+			// No repair is possible for this shape, so the provider's terminal frame
+			// is the honest end of the answer: release it now rather than leaving the
+			// caller without a finish_reason.
+			payload := deferredTerminalData
+			if patched, err := patchStreamUsageData(payload, usage); err == nil {
+				payload = patched
+			}
+			helper.ExtendWriteDeadline(c)
+			if err := writeStreamData(c, info, payload, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err == nil {
+				finishFrameForwarded = true
+			}
+		}
 		usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
 		service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
 	}
@@ -787,6 +1172,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			"type":    "upstream_error",
 			"code":    "truncated_stream",
 		}})
+	}
+
+	if deferredTerminalData != "" && !finishFrameForwarded && info.RelayFormat == types.RelayFormatOpenAI {
+		// The provider's terminal chunk was held for a repair that never ran; the
+		// answer ends here, so forward it as the single terminal frame.
+		payload := deferredTerminalData
+		if patched, err := patchStreamUsageData(payload, usage); err == nil {
+			payload = patched
+		}
+		helper.ExtendWriteDeadline(c)
+		if err := sendStreamData(c, info, payload, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+			logger.LogError(c, "error writing deferred terminal frame: "+err.Error())
+		}
+		finishFrameForwarded = true
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
@@ -906,6 +1305,127 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 // returns a zeroed usage for both the caller-facing terminal frames and the
 // settlement/log. The upstream-reported counts are preserved on the relay info
 // for the consume log's audit marker only.
+// shouldDeferTerminalForRepair reports whether a provider terminal chunk must be
+// held back instead of forwarded: the handler may still repair this answer, and a
+// finish_reason that already reached the caller is final - appending resumed
+// content afterwards corrupts the stream (2026-10-29 review, reproduced: length
+// finish, then resumed content, then stop). Only shapes a repair can use are
+// deferred; fit envelopes, audio, tool calls and multi-choice answers are final as
+// soon as the provider says so.
+func shouldDeferTerminalForRepair(info *relaycommon.RelayInfo, finishReason string, toolCount int, choiceCount int, isAudioModel bool, functionCallNames []string) bool {
+	if info == nil || info.ChatContinuation == nil || info.RelayFormat != types.RelayFormatOpenAI || isAudioModel {
+		return false
+	}
+	if toolCount > 0 || len(functionCallNames) > 0 || choiceCount > 1 {
+		return false
+	}
+	if kimiK3FitEnabled(info) || deepSeekV4FitEnabled(info) || finishReason == "" {
+		return false
+	}
+	if finishReason == constant.FinishReasonLength {
+		return info.ChatContinuation.Send != nil && info.ChatContinuation.MaxSteps > 0
+	}
+	return relaycommon.IsAbnormalFinishReason(finishReason) &&
+		info.ChatContinuation.Abnormal != nil && info.ChatContinuation.Abnormal.MaxSteps > 0
+}
+
+// markContinuationAudit records a transparent continuation that repaired this
+// response on the success log row (admin_info.continuation). The mode names
+// match the SysLog lines the same branch writes, so a log row and a container
+// log line can be joined; a caller reaches this only after the round delivered
+// visible content, which is the same condition the recovery branches require.
+func markContinuationAudit(info *relaycommon.RelayInfo, mode string, rounds, contentChars int) {
+	if info == nil || rounds <= 0 {
+		return
+	}
+	info.ContinuationAudit = &relaycommon.ContinuationAudit{Mode: mode, Rounds: rounds, ContentChars: contentChars}
+}
+
+// flushHeldAnswerChunk writes the answer text the stream loop was still holding
+// when the handler decided to finish early: every early return (repair, truncated
+// close, transport fault) happens before the normal terminal rendering, so without
+// this the caller loses the last fragment - and because the continuation prompt
+// includes that fragment, the merged answer would be missing exactly the piece the
+// model continued from (2026-10-29 review, reproduced: a held "尾块" never reached
+// the caller while the resumed round picked up after it).
+//
+// Only content/reasoning deltas are replayed: usage and finish_reason belong to the
+// terminal frame the handler renders itself. Coalesced deltas are flushed first so
+// text order is preserved.
+func flushHeldAnswerChunk(c *gin.Context, info *relaycommon.RelayInfo, pending string) {
+	if info == nil {
+		return
+	}
+	if info.StreamCoalescer.Enabled() {
+		for _, merged := range info.StreamCoalescer.Close() {
+			helper.ExtendWriteDeadline(c)
+			if err := writeStreamData(c, info, merged, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+				logger.LogError(c, "error writing coalesced stream event: "+err.Error())
+			}
+		}
+	}
+	if pending == "" {
+		return
+	}
+	payload := pending
+	if stripped, err := stripStreamUsageData(pending); err == nil {
+		payload = stripped
+	}
+	if stripped, err := stripStreamFinishData(payload); err == nil {
+		payload = stripped
+	}
+	var probe struct {
+		Choices []dto.ChatCompletionsStreamResponseChoice `json:"choices"`
+	}
+	if err := common.Unmarshal(common.StringToByteSlice(payload), &probe); err != nil {
+		return
+	}
+	// The held tail is not always text: a provider can lose the terminal frame
+	// right after the last argument fragment of a tool call, and the caller must
+	// hold that fragment before a synthesized terminal frame closes the call
+	// (2026-10-29 tool-call cuts). Forwarding it here is safe for the existing
+	// callers: every repair path that flushes a held tail refuses requests with
+	// tool calls, so only the new tool-call close reaches this branch with one.
+	hasAnswerPayload := false
+	for _, choice := range probe.Choices {
+		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" || len(choice.Delta.ToolCalls) > 0 {
+			hasAnswerPayload = true
+			break
+		}
+	}
+	if !hasAnswerPayload {
+		return
+	}
+	helper.ExtendWriteDeadline(c)
+	if err := writeStreamData(c, info, payload, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+		logger.LogError(c, "error writing held answer tail: "+err.Error())
+	}
+}
+
+// closeTruncatedDeliveredStream ends a response whose answer prefix already
+// reached the caller but cannot be completed: one terminal frame with
+// finish_reason=length, zero usage, explicit capture status. The caller keeps
+// the delivered answer and can continue or resend instead of receiving an error
+// for work that was already read.
+func closeTruncatedDeliveredStream(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage, reason, responseId string, createAt int64, model, systemFingerprint string) *dto.Usage {
+	common.SysLog(fmt.Sprintf("partial answer closed as truncated: ch=%d reason=%s", info.ChannelId, reason))
+	finalUsage := markUndeliveredStreamUsage(info, reason, usage)
+	service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+	if info.StreamStatus != nil {
+		info.StreamStatus.MarkFailed("upstream_stream_error", "upstream_error", http.StatusBadGateway)
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return finalUsage
+	}
+	info.StreamFinishReason = "length"
+	flushContinuationCoalescer(c, info)
+	helper.ExtendWriteDeadline(c)
+	sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", finalUsage)
+	helper.ExtendWriteDeadline(c)
+	HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, finalUsage, false)
+	return finalUsage
+}
+
 func markUndeliveredStreamUsage(info *relaycommon.RelayInfo, reason string, usage *dto.Usage) *dto.Usage {
 	if info != nil && usage != nil {
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
@@ -1057,10 +1577,20 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	// body must not be forwarded or settled as a success.
 	for _, choice := range simpleResponse.Choices {
 		if relaycommon.IsAbnormalFinishReason(choice.FinishReason) {
+			// A non-streaming upstream that reports an abnormal finish produced no
+			// usable answer at all: count it so a channel that keeps doing this cools
+			// down instead of being retried forever.
+			common.RecordChannelFailure(info.ChannelId)
+			// Nothing has been written to a non-streaming caller yet, so another
+			// channel can still serve this request: retry instead of surfacing the
+			// first upstream's abnormal finish. Retrying used to be suppressed here,
+			// so a single bad upstream answer ended the request after tens of
+			// seconds with zero content (2026-10-28 22:54, kimi-k3.1-pro, ch91,
+			// 85s, 0 tokens, customer-visible 502).
 			return &simpleResponse.Usage, types.NewOpenAIError(
 				fmt.Errorf("upstream returned finish_reason %q", choice.FinishReason),
 				types.ErrorCode("upstream_error"), http.StatusBadGateway,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithTruncatedStream())
+				types.ErrOptionWithTruncatedStream())
 		}
 	}
 
@@ -1324,4 +1854,37 @@ func missingReasoningLogprobsError() *types.NewAPIError {
 		types.ErrorCodeChannelUnsupportedFeature,
 		http.StatusBadGateway,
 	)
+}
+
+// buildStreamCutDiagnostics snapshots what an undelivered stream cut left
+// behind: the shape of the cut, the caller's remaining budget, and which repair
+// modes were configured for the request. This is what turns "the customer got a
+// 502 on request X" into an answer without container logs — see
+// relaycommon.StreamCutDiagnostics.
+func buildStreamCutDiagnostics(info *relaycommon.RelayInfo, usage *dto.Usage, visibleContentChars, reasoningChars int, reasoningTruncated bool, toolCount, choiceCount int, abnormalFinish string, missingFinish bool) *relaycommon.StreamCutDiagnostics {
+	if info == nil {
+		return nil
+	}
+	diag := &relaycommon.StreamCutDiagnostics{
+		FinishReason:        abnormalFinish,
+		MissingFinish:       missingFinish,
+		ReasoningTruncated:  reasoningTruncated,
+		VisibleContentChars: visibleContentChars,
+		ReasoningChars:      reasoningChars,
+		ToolCalls:           toolCount,
+		ChoiceCount:         choiceCount,
+		ClientMaxTokens:     info.ClientMaxTokens,
+	}
+	if usage != nil {
+		diag.CompletionTokens = usage.CompletionTokens
+	}
+	diag.BudgetLeft = chatContinuationBudgetLeft(info, usage)
+	if cfg := info.ChatContinuation; cfg != nil {
+		diag.ContinuationConfigured = cfg.Send != nil && cfg.MaxSteps > 0
+		diag.AbnormalConfigured = cfg.Abnormal != nil && cfg.Abnormal.Send != nil && cfg.Abnormal.MaxSteps > 0
+		diag.MissingConfigured = cfg.Missing != nil && cfg.Missing.Send != nil && cfg.Missing.MaxSteps > 0
+	}
+	diag.ThinkingToContent = info.ChannelSetting.ThinkingToContent
+	diag.ReasoningSuppressed = shouldSuppressReasoningContent(info)
+	return diag
 }

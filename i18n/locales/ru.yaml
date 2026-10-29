@@ -362,6 +362,8 @@ notify.content_moderation.subject: "[{{.SystemName}}] Уведомление о 
 notify.content_moderation.body: "Ваш API-запрос нарушил политику модерации контента платформы.\n\nКатегория / оценка: {{.Category}} / {{.Score}}\nВсего срабатываний: {{.Count}} / {{.Threshold}}\n\nПроверьте содержимое запроса."
 notify.channel.disabled_subject: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) отключён"
 notify.channel.disabled_body: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) отключён, причина: {{.Reason}}"
+notify.channel.key_disabled_subject: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}): отключён один ключ"
+notify.channel.key_disabled_body: "У канала \"{{.ChannelName}}\" (#{{.ChannelId}}) отключён ключ #{{.KeyPosition}}; доступны {{.EnabledKeyNum}}/{{.TotalKeyNum}} ключей, поэтому канал продолжает работу. Причина: {{.Reason}}"
 notify.channel.enabled_subject: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) включён"
 notify.channel.enabled_body: "Канал \"{{.ChannelName}}\" (#{{.ChannelId}}) включён"
 notify.channel_test.subject: "Тест канала завершён"

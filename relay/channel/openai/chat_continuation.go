@@ -20,6 +20,22 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// chatContinuationRoundAttempts bounds how many times a resume round may be
+// retried when it dies before forwarding a single delta. An upstream that has
+// just hit its own wall (the 900s cut) often rejects the follow-up request
+// immediately; without this retry the gateway abandoned a half-written answer
+// and surfaced a 502 for work already tens of kilobytes into the caller's
+// answer (2026-10-28 21:21-21:22, kimi-k3.1-pro). A round that already
+// forwarded deltas is never retried: the caller would see duplicates.
+const chatContinuationRoundAttempts = 3
+
+// chatContinuationRetryBackoff is the linear backoff between resume attempts.
+const chatContinuationRetryBackoff = 300 * time.Millisecond
+
+// chatContinuationRetryBudget bounds the wall time one round may spend retrying:
+// a slow-rejecting upstream must not stretch an already long request.
+const chatContinuationRetryBudget = 5 * time.Second
+
 // chatContinuationPrompt is the instruction appended after the truncated
 // assistant message. It is deliberately neutral so it fits both an answer that
 // was cut mid-sentence and a structured (for example numbered) output.
@@ -29,6 +45,50 @@ const chatContinuationPrompt = "上一条回复因输出长度限制被截断。
 // captured reasoning is replayed as the assistant body because upstreams
 // ignore reasoning_content in the message history (verified 2026-10-27).
 const chatThinkingContinuationPrompt = "上面是你在上一轮被上游截断的思考过程（当时还没有开始输出正文）。请从中断处继续思考，不要重复已经写过的内容，完成思考后直接给出最终答案。"
+
+// chatAnswerContinuationPrompt is used by the abnormal/missing modes, where the
+// previous round already burned the provider's whole wall (900s for these
+// channels) on thinking and produced no visible answer. Asking it to continue
+// thinking just walks into the same wall again, so the round must answer from
+// the captured trace instead.
+const chatAnswerContinuationPrompt = "上面是你上一轮被上游截断的思考过程。现在不要再继续思考，请立即基于上面的内容直接输出最终答案（可以简短），必须给出正文。"
+
+// BuildChatAnswerContinuationBody rebuilds a request that resumes a cut-off
+// round in answer mode: the captured reasoning goes into the assistant content
+// and the round runs with the cheapest thinking budget the upstream accepts, so
+// it produces the answer instead of spending another full wall on reasoning.
+func BuildChatAnswerContinuationBody(baseJSON []byte, reasoning string, remainingTokens int) ([]byte, error) {
+	out, err := buildChatContinuationBody(baseJSON, reasoning, chatAnswerContinuationPrompt, remainingTokens)
+	if err != nil {
+		return nil, err
+	}
+	if !gjson.GetBytes(out, "reasoning_effort").Exists() {
+		return out, nil
+	}
+	var modelName string
+	if request, ok := gjsonParseModel(baseJSON); ok {
+		modelName = request
+	}
+	effort := kimiK3AggregatorDisabledEffortFor(modelName)
+	if effort == "" {
+		return out, nil
+	}
+	patched, patchErr := sjson.SetBytes(out, "reasoning_effort", effort)
+	if patchErr != nil {
+		return nil, patchErr
+	}
+	return patched, nil
+}
+
+// gjsonParseModel returns the request's model name, used to pick the cheapest
+// thinking effort the upstream accepts.
+func gjsonParseModel(body []byte) (string, bool) {
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
 
 // BuildChatContinuationBody rebuilds the final upstream chat-completions body
 // into a continuation request: the original messages, the visible answer so
@@ -107,6 +167,81 @@ func buildChatContinuationBody(baseJSON []byte, partialContent, instruction stri
 	return out, nil
 }
 
+// undeclaredClientOutputBudget is the output budget one continuation round may
+// spend when the request declared no max_tokens at all (ClientMaxTokens == 0).
+//
+// Such a request has no client-side ceiling: max_tokens is optional, and the
+// real ceiling is the model's own output cap, which the gateway does not hold
+// per model. Refusing the repair outright was wrong in production: 2026-10-28
+// 18:21 one kimi-k3.1-pro cut reached the caller as a 502 purely because the
+// guard read ClientMaxTokens <= 0 as "budget exhausted" even though only 52
+// tokens had been produced. Bounding each round instead of the total keeps the
+// declared-budget contract intact (a declared request is still hard-capped) and
+// gives an undeclared one one bounded step per round, with the continuation
+// configuration's MaxSteps bounding the number of rounds. The value matches the
+// smallest output cap among the models this gateway serves, so a round can never
+// ask an upstream for more output than the model can produce.
+const undeclaredClientOutputBudget = 8192
+
+// chatContinuationOutputBudget is the output budget a continuation may use:
+// the declared max_tokens when there is one, otherwise the undeclared per-round
+// step budget.
+func chatContinuationOutputBudget(info *relaycommon.RelayInfo) int {
+	if info == nil {
+		return 0
+	}
+	if info.ClientMaxTokens > 0 {
+		return info.ClientMaxTokens
+	}
+	return undeclaredClientOutputBudget
+}
+
+// chatContinuationBudgetLeft is the output budget a continuation round may still
+// spend. A declared budget counts everything already produced against the
+// ceiling the client asked for; an undeclared request gets a fresh per-round
+// step, because output that was produced before the ceiling existed cannot have
+// exhausted it.
+// chatContinuationBudgetLeftWithContent bounds the next round by both the
+// provider-reported completion tokens and a local estimate of the text already
+// delivered. An upstream that ignores stream usage would otherwise let every round
+// reuse the same remaining budget: the answer could exceed the caller's max_tokens
+// while those extra tokens stayed unbilled (2026-10-29 review, H8).
+func chatContinuationBudgetLeftWithContent(info *relaycommon.RelayInfo, usage *dto.Usage, deliveredChars int) int {
+	remaining := chatContinuationBudgetLeft(info, usage)
+	if deliveredChars <= 0 || info == nil || info.ClientMaxTokens <= 0 {
+		return remaining
+	}
+	estimate := deliveredChars / 4
+	if usage != nil && int(usage.CompletionTokens) > estimate {
+		estimate = int(usage.CompletionTokens)
+	}
+	if byContent := info.ClientMaxTokens - estimate; byContent < remaining {
+		remaining = byContent
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining
+}
+
+func chatContinuationBudgetLeft(info *relaycommon.RelayInfo, usage *dto.Usage) int {
+	budget := chatContinuationOutputBudget(info)
+	if budget <= 0 {
+		return 0
+	}
+	if info.ClientMaxTokens <= 0 {
+		return budget
+	}
+	used := 0
+	if usage != nil {
+		used = usage.CompletionTokens
+	}
+	if used >= budget {
+		return 0
+	}
+	return budget - used
+}
+
 // chatContinuationCandidate decides whether the first round ended at an
 // upstream output cap while the client still had budget left.
 //
@@ -124,12 +259,16 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if strings.ToLower(strings.TrimSpace(info.StreamFinishReason)) != "length" {
 		return false
 	}
+	// An ordinary output-cap resume only spends a budget the caller declared. An
+	// undeclared request has no ceiling, so resuming a legitimate model cap would
+	// generate (and bill) unbounded rounds; the abnormal and missing cut shapes
+	// keep the per-round step for undeclared requests.
 	if contentChars <= 0 || info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
 		return false
 	}
@@ -154,7 +293,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -176,7 +315,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if !relaycommon.IsAbnormalFinishReason(info.StreamFinishReason) {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -197,7 +336,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -219,10 +358,110 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
+}
+
+// chatMissingVisibleContinuationCandidate decides whether a stream that ended at
+// EOF/[DONE] without any finish_reason can be resumed from the visible answer it
+// already delivered.
+//
+// This is the cut-mid-answer shape (2026-10-28: a degraded kimi-k3.1-pro
+// upstream truncated 1.4-2.4KB answers at 13-22s in production): the client is
+// already reading a partial answer, so the reasoning resume cannot repair it
+// (chatMissingContinuationCandidate refuses any visible content), and discarding
+// the prefix surfaces a 502 for work that can still be completed. The visible
+// prefix is continued through the same transparent continuation used for a
+// provider length cap and for an abnormal finish after the answer started.
+//
+// Guards mirror those paths: one choice, no tool calls, a client budget left, and
+// no client disconnect (that is the caller's own cancellation, not a truncation).
+func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, toolCalls, choiceCount int, streamFinishSeen bool) bool {
+	if info == nil || usage == nil || info.ChatContinuation == nil || info.ChatContinuation.Missing == nil {
+		return false
+	}
+	// The visible prefix is continued through the output-cap runner, which sends
+	// with the top-level sender; the Missing config is what opts this request and
+	// channel into truncation repair at all.
+	if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 || info.ChatContinuation.Missing.MaxSteps <= 0 {
+		return false
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+		return false
+	}
+	if deepSeekV4FitEnabled(info) {
+		return false
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return false
+	}
+	if streamFinishSeen || strings.TrimSpace(info.StreamFinishReason) != "" {
+		return false
+	}
+	if contentChars <= 0 {
+		return false
+	}
+	if info.StreamStatus == nil || info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return false
+	}
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
+		return false
+	}
+	return true
+}
+
+// truncationRepairSkipReason explains why a truncated stream reached the caller
+// instead of being repaired by one of the continuation modes. Every guard that
+// silently refuses a repair is named here so the one production shape that keeps
+// failing can be identified from a single log line instead of reverse-engineering
+// the decision matrix (2026-10-28: the missing-finish-with-content gap took an
+// hour to find because the only trace was "candidate=false").
+//
+// Returns "" when no guard is known to apply; the caller still logs the line, so
+// an unnamed skip shows up as an empty reason rather than disappearing.
+func truncationRepairSkipReason(info *relaycommon.RelayInfo, usage *dto.Usage, contentChars, reasoningChars, toolCalls, choiceCount int) string {
+	if info == nil {
+		return "no_relay_info"
+	}
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI {
+		return "unsupported_format"
+	}
+	if info.ChatContinuation == nil {
+		return "continuation_not_configured"
+	}
+	if toolCalls > 0 {
+		return "tool_calls_in_progress"
+	}
+	if choiceCount > 1 {
+		return "multiple_choices"
+	}
+	if deepSeekV4FitEnabled(info) {
+		return "deepseek_v4_fit_pin"
+	}
+	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
+		return "reasoning_suppressed_or_folded"
+	}
+	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
+		return "client_gone"
+	}
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
+		return "client_budget_exhausted"
+	}
+	if info.ChatContinuation.Missing == nil && info.ChatContinuation.Abnormal == nil {
+		return "continuation_not_configured"
+	}
+	if contentChars > 0 {
+		if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 {
+			return "visible_continuation_disabled"
+		}
+		return ""
+	}
+	if reasoningChars <= 0 {
+		return "nothing_to_continue"
+	}
+	return ""
 }
 
 // chatLengthThinkingContinuationCandidate decides whether a stream that hit the
@@ -241,7 +480,7 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
 		return false
 	}
-	if deepSeekV4FitEnabled(info) || kimiK3FitEnabled(info) {
+	if deepSeekV4FitEnabled(info) {
 		return false
 	}
 	if info.ChannelSetting.ThinkingToContent || shouldSuppressReasoningContent(info) {
@@ -260,7 +499,7 @@ func chatLengthThinkingContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if reasoningChars < minChars {
 		return false
 	}
-	if info.ClientMaxTokens <= 0 || usage.CompletionTokens >= info.ClientMaxTokens {
+	if chatContinuationBudgetLeft(info, usage) <= 0 {
 		return false
 	}
 	return true
@@ -291,26 +530,77 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 	result := chatContinuationResult{usage: total, finish: initialFinish}
 	contextText := reasoning
 	for step := 0; step < cfg.MaxSteps; step++ {
-		remaining := info.ClientMaxTokens - total.CompletionTokens
+		remaining := chatContinuationBudgetLeftWithContent(info, total, len(contextText)-len(reasoning))
 		if remaining <= 0 {
 			break
 		}
-		resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg, contextText, remaining)
-		if err != nil {
-			logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
-			break
-		}
-		if resp == nil {
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
+		var (
+			roundUsage     *dto.Usage
+			finish         string
+			roundContent   string
+			deltaSeen      bool
+			roundToolCalls int
+			roundTerminal  bool
+			roundErr       error
+		)
+		retryStarted := time.Now()
+		fallbackUsed := false
+		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
+			if attempt > 0 {
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					break
+				}
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "thinking continuation retry budget exhausted")
+					break
+				}
+				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
+			}
+			resp, err := sendThinkingContinuationWithKeepAlive(c, info, cfg.Send, contextText, remaining)
+			if err != nil {
+				logger.LogWarn(c, "thinking continuation request failed: "+err.Error())
+				if cfg.Fallback == nil || fallbackUsed {
+					break
+				}
+				fallbackUsed = true
+				logger.LogWarn(c, "thinking continuation failed on its own channel; resuming on another channel")
+				resp, err = sendThinkingContinuationWithKeepAlive(c, info, cfg.Fallback, contextText, remaining)
+				if err != nil {
+					logger.LogWarn(c, "cross-channel thinking continuation failed: "+err.Error())
+					break
+				}
+			}
+			if resp == nil {
+				break
+			}
+			if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
+				logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta, nil)
 			_ = resp.Body.Close()
-			logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d", resp.StatusCode))
+			if roundErr != nil {
+				if deltaSeen {
+					logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
+					break
+				}
+				logger.LogWarn(c, "thinking continuation stream failed before any delta, retrying: "+roundErr.Error())
+				continue
+			}
+			if !deltaSeen && roundContent == "" {
+				logger.LogWarn(c, fmt.Sprintf("thinking continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
-		_ = resp.Body.Close()
+		if !deltaSeen && roundContent == "" {
+			break
+		}
 		result.rounds++
+		result.toolCalls += roundToolCalls
+		result.terminal = roundTerminal
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
 		}
@@ -320,18 +610,29 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		contextText += roundContent
 		result.contentChars += len(roundContent)
 		if roundErr != nil {
-			logger.LogWarn(c, "thinking continuation stream failed: "+roundErr.Error())
 			break
 		}
-		if !deltaSeen {
-			break
-		}
-		if finish == "" || relaycommon.IsAbnormalFinishReason(finish) || finish != "length" {
+		if finish != "length" {
 			break
 		}
 	}
 	result.usage = total
+	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && result.contentChars > 0)
 	return result
+}
+
+// continuationOutcomeChannel names the channel a round outcome belongs to: the last
+// channel that actually served a round when tracked, otherwise the request channel.
+func continuationOutcomeChannel(info *relaycommon.RelayInfo, tracker *relaycommon.ContinuationRoundChannel) int {
+	if tracker != nil {
+		if last := tracker.Last(); last > 0 {
+			return last
+		}
+	}
+	if info == nil {
+		return 0
+	}
+	return info.ChannelId
 }
 
 func cloneUsage(in *dto.Usage) *dto.Usage {
@@ -358,6 +659,14 @@ type chatContinuationResult struct {
 	finish       string
 	rounds       int
 	contentChars int
+	// terminal reports whether the LAST round ended with a provider terminal
+	// frame. A round that forwards deltas then hits a clean EOF must not be
+	// reported as recovered: the caller would be billed for a twice-cut answer.
+	terminal bool
+	// toolCalls counts tool-call deltas forwarded by resumed rounds. A round that
+	// emits a tool call and dies has already sent half a call, so the answer must
+	// not be closed as a clean truncation.
+	toolCalls int
 }
 
 // chatContinuationMeta carries the first round's envelope fields. Continuation
@@ -379,27 +688,88 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
+	// One deduper for the whole response: every resumed round is compared with
+	// the tail delivered so far, so a model that restarts from the same sentence
+	// after each cap cannot make the seam repeat.
+	seamDeduper := newSeamDeduper(partial)
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
-		remaining := info.ClientMaxTokens - total.CompletionTokens
+		remaining := chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial))
 		if remaining <= 0 {
 			break
 		}
-		resp, err := info.ChatContinuation.Send(content, remaining)
-		if err != nil {
-			logger.LogWarn(c, "chat continuation request failed: "+err.Error())
-			break
-		}
-		if resp == nil {
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
+		var (
+			roundUsage     *dto.Usage
+			finish         string
+			roundContent   string
+			deltaSeen      bool
+			roundToolCalls int
+			roundTerminal  bool
+			roundErr       error
+		)
+		retryStarted := time.Now()
+		fallbackUsed := false
+		for attempt := 0; attempt < chatContinuationRoundAttempts; attempt++ {
+			if attempt > 0 {
+				// The caller walked away while the previous attempt was in flight:
+				// retrying would only spend upstream capacity nobody can receive.
+				if c.Request != nil && c.Request.Context().Err() != nil {
+					break
+				}
+				if time.Since(retryStarted) > chatContinuationRetryBudget {
+					logger.LogWarn(c, "chat continuation retry budget exhausted")
+					break
+				}
+				time.Sleep(time.Duration(attempt) * chatContinuationRetryBackoff)
+				helper.ExtendWriteDeadline(c)
+			}
+			resp, err := info.ChatContinuation.Send(content, remaining)
+			if err != nil {
+				// A send/build failure is not the transient upstream rejection this
+				// retry exists for. If a cross-channel fallback is configured, spend
+				// it once here: the channel itself is unreachable, so re-sending on it
+				// cannot help, while another channel may still resume the answer.
+				logger.LogWarn(c, "chat continuation request failed: "+err.Error())
+				if info.ChatContinuation.Fallback == nil || fallbackUsed {
+					break
+				}
+				fallbackUsed = true
+				logger.LogWarn(c, "chat continuation failed on its own channel; resuming on another channel")
+				resp, err = info.ChatContinuation.Fallback(content, remaining)
+				if err != nil {
+					logger.LogWarn(c, "cross-channel continuation failed: "+err.Error())
+					break
+				}
+			}
+			if resp == nil {
+				break
+			}
+			if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
+				logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta, seamDeduper)
 			_ = resp.Body.Close()
-			logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d", resp.StatusCode))
+			if roundErr != nil {
+				if deltaSeen {
+					logger.LogWarn(c, "chat continuation stream failed: "+roundErr.Error())
+					break
+				}
+				logger.LogWarn(c, "chat continuation stream failed before any delta, retrying: "+roundErr.Error())
+				continue
+			}
+			if !deltaSeen && roundContent == "" {
+				logger.LogWarn(c, fmt.Sprintf("chat continuation round produced no delta (attempt %d/%d), retrying", attempt+1, chatContinuationRoundAttempts))
+				continue
+			}
 			break
 		}
-		roundUsage, finish, roundContent, deltaSeen, roundErr := consumeChatContinuationRound(c, info, resp, meta)
-		_ = resp.Body.Close()
+		if !deltaSeen && roundContent == "" {
+			break
+		}
 		result.rounds++
+		result.toolCalls += roundToolCalls
+		result.terminal = roundTerminal
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
 		}
@@ -408,20 +778,23 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		}
 		content += roundContent
 		if roundErr != nil {
-			logger.LogWarn(c, "chat continuation stream failed: "+roundErr.Error())
 			break
 		}
 		if result.finish != "length" {
 			break
 		}
-		if !deltaSeen {
-			break
-		}
-		if total.CompletionTokens >= info.ClientMaxTokens {
+		if chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial)) <= 0 {
 			break
 		}
 	}
 	result.usage = total
+	if produced := len(content) - len(partial); produced > 0 {
+		result.contentChars = produced
+	}
+	// Capability telemetry: attribute the outcome to the channel that actually ran
+	// the rounds (a cross-channel hop would otherwise credit the channel that failed
+	// to start them).
+	common.RecordContinuationOutcome(continuationOutcomeChannel(info, info.ChatContinuation.RoundChannel), result.rounds > 0 && result.contentChars > 0)
 	return result
 }
 
@@ -429,13 +802,16 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 // returns that round's usage, terminal finish reason and visible content. The
 // terminal frame and usage events are not forwarded: the caller renders one
 // final frame with the merged usage.
-func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) (usage *dto.Usage, finish string, content string, deltaSeen bool, err error) {
+func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, sawTerminal bool, err error) {
 	if resp == nil || resp.Body == nil {
-		return nil, "", "", false, fmt.Errorf("continuation response has no body")
+		return nil, "", "", false, 0, false, fmt.Errorf("continuation response has no body")
 	}
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
-	var builder strings.Builder
+	// delivered is the visible text this round actually handed the client: the
+	// seam deduper may drop a repeated prefix, and the caller uses this text as
+	// the assistant prefix of the next round and as the billed answer.
+	var delivered strings.Builder
 	toolSeen := make(map[string]struct{})
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -447,6 +823,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			continue
 		}
 		if data == "[DONE]" {
+			sawTerminal = true
 			break
 		}
 		var chunk dto.ChatCompletionsStreamResponse
@@ -460,14 +837,28 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			usage = dto.MergeUsage(usage, chunk.Usage)
 		}
 		forward := false
+		// seamText holds the content to forward per choice position after seam
+		// de-duplication; a choice whose delta had content but no entry here is
+		// withheld (a held prefix, or a fully stripped duplicate).
+		seamText := make(map[int]string, len(chunk.Choices))
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finish = *choice.FinishReason
 			}
 			delta := choice.Delta
 			if delta.Content != nil && *delta.Content != "" {
-				builder.WriteString(*delta.Content)
-				forward = true
+				text := *delta.Content
+				if seam != nil {
+					emit, ready := seam.feed(text)
+					if ready && emit != "" {
+						seamText[choice.Index] = emit
+						delivered.WriteString(emit)
+						forward = true
+					}
+				} else {
+					delivered.WriteString(text)
+					forward = true
+				}
 			}
 			if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 				forward = true
@@ -512,6 +903,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 			if len(delta.ToolCalls) > 0 {
 				forward = true
+				toolCalls++
 			}
 		}
 		if !forward {
@@ -521,6 +913,21 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		forwardData, stripErr := stripStreamUsageData(data)
 		if stripErr != nil {
 			forwardData = data
+		}
+		if seam != nil {
+			// The chunk may carry reasoning or tool calls next to the text, so the
+			// decision has to be applied to the forwarded copy rather than by
+			// dropping the whole chunk.
+			for i, choice := range chunk.Choices {
+				if choice.Delta.Content == nil || *choice.Delta.Content == "" {
+					continue
+				}
+				if text, ok := seamText[i]; ok {
+					forwardData, _ = sjson.Set(forwardData, fmt.Sprintf("choices.%d.delta.content", i), text)
+				} else {
+					forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.delta.content", i))
+				}
+			}
 		}
 		// A chunk may carry both a delta and a terminal finish_reason; forward
 		// only the delta and let the synthetic terminal frame be the sole
@@ -534,15 +941,38 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 		}
 		forwardData = rewriteContinuationChunkMeta(forwardData, meta)
+		// A Kimi K3 official-fit caller must not see the aggregator's chunk
+		// shape just because this delta came from a continuation round: run the
+		// same per-event fit the ordinary path applies, so the resumed segment
+		// stays indistinguishable from one continuous official stream (key set,
+		// empty-field stripping, reasoning delta normalization). The fit is
+		// skipped for every other caller, whose frames stay byte-identical.
+		if kimiK3FitEnabled(info) {
+			forwardData = FitKimiK3StreamEventForAdapters(c, info, forwardData, nil, false)
+			if forwardData == "" {
+				continue
+			}
+		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
-			return usage, finish, builder.String(), deltaSeen, sendErr
+			return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		return usage, finish, builder.String(), deltaSeen, scanErr
+		return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, scanErr
 	}
-	return usage, finish, builder.String(), deltaSeen, nil
+	if seam != nil {
+		// The round can end before the lookahead filled up; the held text still
+		// has to reach the client, at most seamMaxLookahead characters once.
+		if tail, ready := seam.finish(); ready && tail != "" {
+			if sendErr := sendContinuationTextChunk(c, info, meta, tail); sendErr != nil {
+				return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
+			}
+			delivered.WriteString(tail)
+			deltaSeen = true
+		}
+	}
+	return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, nil
 }
 
 // rewriteContinuationChunkMeta normalizes one continuation delta to the first
@@ -596,11 +1026,53 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 	}
 }
 
+// sendContinuationTextChunk forwards one synthesized content delta. It is used
+// only for the seam deduper's held prefix when a resumed round ends before the
+// lookahead filled up, so the text reaches the client in the same shape as any
+// other continuation delta (first-round id/created/model, K3 fit applied when the
+// caller is a fit-shaped one) instead of being dropped.
+func sendContinuationTextChunk(c *gin.Context, info *relaycommon.RelayInfo, meta chatContinuationMeta, text string) error {
+	if text == "" {
+		return nil
+	}
+	payload, err := common.Marshal(map[string]any{
+		"id":      meta.ID,
+		"object":  "chat.completion.chunk",
+		"created": meta.Created,
+		"model":   meta.Model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{"content": text},
+			"finish_reason": nil,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	data := rewriteContinuationChunkMeta(string(payload), meta)
+	if kimiK3FitEnabled(info) {
+		data = FitKimiK3StreamEventForAdapters(c, info, data, nil, false)
+		if data == "" {
+			return nil
+		}
+	}
+	helper.ExtendWriteDeadline(c)
+	return sendStreamData(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+}
+
 // sendChatContinuationTerminal renders the single terminal frame for a
 // transparently continued response. Usage is emitted separately by
 // HandleFinalResponse so the client sees exactly one terminal frame and at most
 // one usage event, matching an ordinary stream.
-func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string) {
+//
+// A Kimi K3 official-fit caller must keep the official stream shape: the
+// terminal chunk carries the merged usage inside choices[0].usage and, when the
+// client asked for stream usage, is followed by the choices:[] usage-only event.
+// The generic frame below would leak the platform's internal usage shape and,
+// because HandleFinalResponse suppresses its generic usage frame under the fit,
+// leave the caller with no usage at all. So the fit owns both terminal frames
+// for those callers; every other caller keeps the exact bytes it saw before.
+func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, responseId string, createAt int64, model, finish string, usage *dto.Usage) {
 	helper.ExtendWriteDeadline(c)
 	if finish == "" {
 		finish = "length"
@@ -613,6 +1085,27 @@ func sendChatContinuationTerminal(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if model == "" && info != nil {
 		model = info.UpstreamModelName
+	}
+	if info != nil && kimiK3FitEnabled(info) {
+		// The fit caller sees the official envelope order, and the fit moves the
+		// merged usage into choices[0].usage (append keeps it last, where the
+		// official endpoint puts it). A marshal failure falls through to the
+		// generic frame rather than losing the terminal marker entirely.
+		idJSON, idErr := common.Marshal(responseId)
+		modelJSON, modelErr := common.Marshal(model)
+		finishJSON, finishErr := common.Marshal(finish)
+		if idErr == nil && modelErr == nil && finishErr == nil {
+			terminalData := fmt.Sprintf(`{"id":%s,"object":"chat.completion.chunk","created":%d,"model":%s,"choices":[{"index":0,"delta":{},"finish_reason":%s}]}`, idJSON, createAt, modelJSON, finishJSON)
+			if fitted := FitKimiK3StreamEventForAdapters(c, info, terminalData, usage, true); fitted != "" {
+				terminalData = fitted
+			}
+			_ = sendStreamData(c, info, terminalData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			if usageOnly := FitKimiK3StreamUsageOnlyChunk(info, terminalData); usageOnly != "" {
+				helper.ExtendWriteDeadline(c)
+				_ = sendStreamData(c, info, usageOnly, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			return
+		}
 	}
 	payload := map[string]any{
 		"id":      responseId,
@@ -714,7 +1207,7 @@ type thinkingContinuationSendResult struct {
 	err  error
 }
 
-func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, cfg *relaycommon.ChatAbnormalContinuationConfig, content string, remaining int) (*http.Response, error) {
+func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.RelayInfo, send func(string, int) (*http.Response, error), content string, remaining int) (*http.Response, error) {
 	result := make(chan thinkingContinuationSendResult, 1)
 	helper.ExtendWriteDeadline(c)
 	allowPing := info == nil || !info.DisablePing
@@ -727,7 +1220,7 @@ func sendThinkingContinuationWithKeepAlive(c *gin.Context, info *relaycommon.Rel
 		info.DisablePing = true
 	}
 	go func() {
-		resp, err := cfg.Send(content, remaining)
+		resp, err := send(content, remaining)
 		result <- thinkingContinuationSendResult{resp: resp, err: err}
 	}()
 	ticker := time.NewTicker(thinkingContinuationPingInterval)

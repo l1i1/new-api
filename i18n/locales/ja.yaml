@@ -362,6 +362,8 @@ notify.content_moderation.subject: "[{{.SystemName}}] リスク管理のお知�
 notify.content_moderation.body: "API リクエストがプラットフォームのコンテンツモデレーションポリシーに抵触しました。\n\nカテゴリ / スコア：{{.Category}} / {{.Score}}\n累計検知回数：{{.Count}} / {{.Threshold}}\n\nリクエスト内容を確認してください。"
 notify.channel.disabled_subject: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が無効化されました"
 notify.channel.disabled_body: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が無効化されました。理由：{{.Reason}}"
+notify.channel.key_disabled_subject: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）のキーを1つ無効化しました"
+notify.channel.key_disabled_body: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）のキー #{{.KeyPosition}} を無効化しました。残り {{.EnabledKeyNum}}/{{.TotalKeyNum}} 個のキーが使用できるため、チャネルは稼働を続けます。理由：{{.Reason}}"
 notify.channel.enabled_subject: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が有効化されました"
 notify.channel.enabled_body: "チャネル「{{.ChannelName}}」（#{{.ChannelId}}）が有効化されました"
 notify.channel_test.subject: "チャネルテストが完了しました"

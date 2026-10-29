@@ -459,6 +459,11 @@ func GenerateStopResponse(id string, createAt int64, model string, finishReason 
 }
 
 func GenerateFinalUsageResponse(id string, createAt int64, model string, usage dto.Usage) *dto.ChatCompletionsStreamResponse {
+	// Render a normalized copy: upstreams that report prompt_tokens and
+	// prompt_cache_hit_tokens independently can hand us incompatible numbers
+	// (prompt 7 with cache 512), and forwarding both makes every client compute a
+	// >100% cache-hit ratio. Settlement keeps the original object.
+	usage = dto.SanitizeClientUsage(usage)
 	return &dto.ChatCompletionsStreamResponse{
 		Id:                id,
 		Object:            "chat.completion.chunk",

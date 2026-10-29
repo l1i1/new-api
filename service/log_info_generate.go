@@ -213,6 +213,23 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if relayInfo.ConversionDiagnosticsTruncated() {
 			other.SetAdmin("conversion_diagnostics_truncated", true)
 		}
+		// A stream that ended without a usable terminal result keeps its cut
+		// diagnostics on the failure row: the numbers (budget left, visible
+		// content, which repair modes were configured) are what separate "no
+		// repair was possible by design" from "a repair ran and still failed".
+		if relayInfo.StreamCutDiagnostics != nil {
+			other.SetAdmin("stream_cut", relayInfo.StreamCutDiagnostics)
+		}
+		// The successful side of the same story: a response the repair path
+		// actually stitched, and a cut tool-call stream closed as a complete
+		// answer. Admin-only, so recovery rates and their shapes are measurable
+		// from /api/log/ instead of from log lines that rotate away.
+		if relayInfo.ContinuationAudit != nil {
+			other.SetAdmin("continuation", relayInfo.ContinuationAudit)
+		}
+		if relayInfo.ClosedAsToolCalls {
+			other.SetAdmin("closed_as_tool_calls", true)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)

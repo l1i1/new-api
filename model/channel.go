@@ -836,7 +836,14 @@ func CleanupChannelPollingLocks() {
 	})
 }
 
-func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason string) {
+// handlerMultiKeyUpdate applies one status change to a multi-key channel.
+//
+// A change attributed to a specific key (usingKey non-empty) only touches that
+// key's entry, and it reports false when the key is not part of this channel:
+// the caller must then leave the channel untouched instead of falling back to a
+// channel-wide change, which would disable every other key because of an
+// error that was never attributed to the channel.
+func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason string) bool {
 	keys := channel.GetKeys()
 	if len(keys) == 0 {
 		channel.Status = status
@@ -850,15 +857,21 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 		}
 		if keyIndex < 0 {
 			if usingKey != "" {
-				common.SysLog(fmt.Sprintf("failed to update multi-key status: channel_id=%d, using key not found", channel.Id))
-				return
+				// The key is not part of this channel any more (rotation raced a
+				// key edit, or a replica still held an old key). Log a short
+				// fingerprint so the case stays diagnosable without writing any
+				// part of the secret.
+				fingerprint := ChannelCredentialFingerprint(usingKey)
+				common.SysLog(fmt.Sprintf("multi-key status change skipped: channel_id=%d, using key not found (fingerprint=%s, key_len=%d, keys=%d, bearer_prefix=%t)",
+					channel.Id, fingerprint[:8], len(usingKey), len(keys), strings.HasPrefix(usingKey, "Bearer ")))
+				return false
 			}
 			channel.Status = status
 			info := channel.GetOtherInfo()
 			info["status_reason"] = reason
 			info["status_time"] = common.GetTimestamp()
 			channel.SetOtherInfo(info)
-			return
+			return true
 		}
 		// Keep the in-memory durable credential mirror in sync with the legacy
 		// status map. Runtime key selection treats Credential.Status as the
@@ -911,6 +924,41 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 			}
 		}
 	}
+	return true
+}
+
+// channelStatusState is the part of a channel that a status change can move:
+// the channel status itself plus the per-key status map. Comparing a snapshot
+// before and after the change is what makes UpdateChannelStatus's return value
+// honest -- it must mean "something changed", not "the call was made", because
+// the relay auto-ban path notifies the root user whenever it sees true.
+type channelStatusState struct {
+	status int
+	keys   map[int]int
+}
+
+func captureChannelStatusState(channel *Channel) channelStatusState {
+	state := channelStatusState{status: channel.Status}
+	if len(channel.ChannelInfo.MultiKeyStatusList) > 0 {
+		state.keys = make(map[int]int, len(channel.ChannelInfo.MultiKeyStatusList))
+		for position, status := range channel.ChannelInfo.MultiKeyStatusList {
+			state.keys[position] = status
+		}
+	}
+	return state
+}
+
+func (s channelStatusState) equal(other channelStatusState) bool {
+	if s.status != other.status || len(s.keys) != len(other.keys) {
+		return false
+	}
+	for position, status := range s.keys {
+		otherStatus, ok := other.keys[position]
+		if !ok || otherStatus != status {
+			return false
+		}
+	}
+	return true
 }
 
 func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
@@ -954,6 +1002,7 @@ func updateChannelStatus(channelId int, usingKey string, status int, reason stri
 	pollingLock.Lock()
 	defer pollingLock.Unlock()
 
+	changed := false
 	if common.MemoryCacheEnabled {
 		channelCache, _ := CacheGetChannel(channelId)
 		if channelCache == nil {
@@ -961,19 +1010,21 @@ func updateChannelStatus(channelId int, usingKey string, status int, reason stri
 		}
 		if channelCache.ChannelInfo.IsMultiKey {
 			beforeStatus := channelCache.Status
-			// 如果是多Key模式，更新缓存中的状态
-			handlerMultiKeyUpdate(channelCache, usingKey, status, reason)
+			beforeState := captureChannelStatusState(channelCache)
+			if !handlerMultiKeyUpdate(channelCache, usingKey, status, reason) {
+				return false
+			}
+			changed = !beforeState.equal(captureChannelStatusState(channelCache))
 			if beforeStatus != channelCache.Status {
 				CacheUpdateChannelStatus(channelId, channelCache.Status)
 			}
-			//CacheUpdateChannel(channelCache)
-			//return true
 		} else {
 			// 如果缓存渠道存在，且状态已是目标状态，直接返回
 			if channelCache.Status == status {
 				return false
 			}
 			CacheUpdateChannelStatus(channelId, status)
+			changed = true
 		}
 	}
 
@@ -988,40 +1039,52 @@ func updateChannelStatus(channelId int, usingKey string, status int, reason stri
 	}()
 	channel, err := GetChannelById(channelId, true)
 	if err != nil {
-		return false
-	} else {
-		// A manual channel operation must replace the exhaustion reason even
-		// when the status value is already manually disabled.
-		overridesKeyExhaustion := channel.ChannelInfo.IsMultiKey && usingKey == "" &&
-			status == common.ChannelStatusManuallyDisabled && reason != ChannelStatusReasonAllKeysDisabled &&
-			channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled
-		if channel.Status == status && !overridesKeyExhaustion {
-			return false
-		}
+		return changed
+	}
+	// A manual channel operation must replace the exhaustion reason even
+	// when the status value is already manually disabled.
+	overridesKeyExhaustion := channel.ChannelInfo.IsMultiKey && usingKey == "" &&
+		status == common.ChannelStatusManuallyDisabled && reason != ChannelStatusReasonAllKeysDisabled &&
+		channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled
+	// A key-scoped update must still run when the channel status already equals
+	// the target: enabling one key of an enabled channel (or disabling a second
+	// key of an already disabled one) has to reach the key map.
+	if usingKey == "" && channel.Status == status && !overridesKeyExhaustion {
+		return changed
+	}
 
-		if channel.ChannelInfo.IsMultiKey {
-			beforeStatus := channel.Status
-			handlerMultiKeyUpdate(channel, usingKey, status, reason)
-			if beforeStatus != channel.Status {
-				shouldUpdateAbilities = true
-			}
-		} else {
-			info := channel.GetOtherInfo()
-			info["status_reason"] = reason
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
-			channel.Status = status
+	beforeState := captureChannelStatusState(channel)
+	if channel.ChannelInfo.IsMultiKey {
+		if !handlerMultiKeyUpdate(channel, usingKey, status, reason) {
+			return changed
+		}
+		if beforeState.status != channel.Status {
 			shouldUpdateAbilities = true
 		}
-		err = channel.saveStatusState()
-		if err != nil {
-			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
-			return false
-		}
-		if channel.ChannelInfo.IsMultiKey && usingKey != "" {
-			if syncErr := SyncChannelCredentialStatusForLegacyKey(DB, channel.Id, usingKey, status, reason); syncErr != nil {
-				common.SysLog(fmt.Sprintf("failed to sync credential status: channel_id=%d, error=%v", channel.Id, syncErr))
-			}
+	} else {
+		info := channel.GetOtherInfo()
+		info["status_reason"] = reason
+		info["status_time"] = common.GetTimestamp()
+		channel.SetOtherInfo(info)
+		channel.Status = status
+		shouldUpdateAbilities = true
+	}
+	if !beforeState.equal(captureChannelStatusState(channel)) {
+		changed = true
+	}
+	if !changed {
+		// Nothing moved: persisting (and publishing, and notifying the root
+		// user) would report a change that never happened.
+		return false
+	}
+	err = channel.saveStatusState()
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
+		return false
+	}
+	if channel.ChannelInfo.IsMultiKey && usingKey != "" {
+		if syncErr := SyncChannelCredentialStatusForLegacyKey(DB, channel.Id, usingKey, status, reason); syncErr != nil {
+			common.SysLog(fmt.Sprintf("failed to sync credential status: channel_id=%d, error=%v", channel.Id, syncErr))
 		}
 	}
 	return true
