@@ -121,6 +121,13 @@ func InitEnv() {
 	}
 	ChatContinuationRoundMaxElapsedSeconds = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_ROUND_MAX_ELAPSED_SECONDS", 1500)
 	ChatContinuationRotateChannels = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ROTATE_CHANNELS", true)
+	ChatContinuationOutputCapsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_OUTPUT_CAPS", ChatContinuationOutputCapsRaw)
+	ChatContinuationOutputCaps = nil
+	for _, part := range strings.Split(ChatContinuationOutputCapsRaw, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && n > 0 {
+			ChatContinuationOutputCaps = append(ChatContinuationOutputCaps, n)
+		}
+	}
 	ChatContinuationChannelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_CHANNELS", "")
 	ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(ChatContinuationChannelsRaw)
 	ChatContinuationOnAbnormal = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ON_ABNORMAL", false)

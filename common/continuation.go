@@ -24,6 +24,7 @@ const (
 	ChatContinuationOptionMaxRounds                 = ChatContinuationOptionPrefix + "max_rounds"
 	ChatContinuationOptionRoundMaxElapsedSeconds    = ChatContinuationOptionPrefix + "round_max_elapsed_seconds"
 	ChatContinuationOptionRotateChannels            = ChatContinuationOptionPrefix + "rotate_channels"
+	ChatContinuationOptionOutputCaps                = ChatContinuationOptionPrefix + "output_caps"
 )
 
 // ChatContinuationMaxSteps is the number of extra upstream rounds the relay may
@@ -46,6 +47,16 @@ var ChatContinuationMaxRoundsSet bool
 // ChatContinuationRoundMaxElapsedSeconds bounds the wall clock a repair may spend,
 // counted from the request start (default 1500s).
 var ChatContinuationRoundMaxElapsedSeconds int
+
+// ChatContinuationOutputCaps lists the provider output-token caps whose streams
+// are known to end without a terminal finish_reason. A stream that stops exactly
+// at one of these caps after only reasoning is a by-design truncation, not a
+// channel failure (2026-10-30: ch102 ended at 32000 with [DONE] and no
+// finish_reason; the official endpoint answers that shape with length).
+var ChatContinuationOutputCaps = []int{32000, 32768}
+
+// ChatContinuationOutputCapsRaw keeps the comma separated form for the options table.
+var ChatContinuationOutputCapsRaw = "32000,32768"
 
 // ChatContinuationRotateChannels makes rounds 2..N rotate to channels that have
 // not been tried. Disabling it restores same-channel rounds. The zero value of a
@@ -140,6 +151,16 @@ func ValidateChatContinuationOption(key, value string) error {
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be true or false", key)
 		}
+	case ChatContinuationOptionOutputCaps:
+		if value == "" {
+			return nil
+		}
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if n, err := strconv.Atoi(part); err != nil || n <= 0 {
+				return fmt.Errorf("%s must be comma separated positive token counts", key)
+			}
+		}
 	case ChatContinuationOptionMaxRounds, ChatContinuationOptionRoundMaxElapsedSeconds:
 		if n, err := strconv.Atoi(value); err != nil || n < 0 {
 			return fmt.Errorf("%s must be an integer >= 0", key)
@@ -213,6 +234,20 @@ func SetChatContinuationOption(key, value string) error {
 			}
 		}
 		ChatContinuationChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionOutputCaps:
+		caps := []int{}
+		if value != "" {
+			for _, part := range strings.Split(value, ",") {
+				part = strings.TrimSpace(part)
+				n, err := strconv.Atoi(part)
+				if err != nil || n <= 0 {
+					return fmt.Errorf("%s must be comma separated positive token counts", key)
+				}
+				caps = append(caps, n)
+			}
+		}
+		ChatContinuationOutputCapsRaw = value
+		ChatContinuationOutputCaps = caps
 	case ChatContinuationOptionRotateChannels:
 		v, err := parseBool()
 		if err != nil {

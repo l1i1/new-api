@@ -563,6 +563,25 @@ func continuationRoundLimit(cfgRounds, cfgSteps int) int {
 	return cfgSteps
 }
 
+// continuationProviderOutputCap reports the provider output cap this usage hit,
+// or 0 when it did not land on one. A stream that stops exactly at a configured
+// cap after only reasoning is a by-design truncation: the provider ended the
+// stream without saying finish_reason=length (2026-10-30 ch102: 32000 completion
+// tokens, [DONE], no terminal frame), and the official endpoint answers that
+// shape with a normal length completion.
+func continuationProviderOutputCap(usage *dto.Usage) int {
+	if usage == nil || usage.CompletionTokens <= 0 {
+		return 0
+	}
+	completion := int(usage.CompletionTokens)
+	for _, cap := range rootcommon.ChatContinuationOutputCaps {
+		if cap > 0 && completion >= cap {
+			return cap
+		}
+	}
+	return 0
+}
+
 // continuationRoundChannelID names the channel that served the latest round.
 func continuationRoundChannelID(info *relaycommon.RelayInfo, tracker *relaycommon.ContinuationRoundChannel) int {
 	if tracker != nil {

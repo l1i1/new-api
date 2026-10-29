@@ -2363,3 +2363,54 @@ func TestOaiStreamHandlerKeepsSameChannelFirstBeforeWall(t *testing.T) {
 	require.Equal(t, 0, crossChannelCalls)
 	require.Contains(t, recorder.Body.String(), "答卷")
 }
+
+// TestOaiStreamHandlerClosesProviderOutputCapAsLength pins the 2026-10-30 ch102
+// shape: the provider stopped exactly at its output cap after only reasoning and
+// ended the stream cleanly without a terminal finish_reason. That is a by-design
+// truncation (the official endpoint answers it with length and empty content),
+// not a channel failure, so it must not become a 502.
+func TestOaiStreamHandlerClosesProviderOutputCapAsLength(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":32000,"total_tokens":32005}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return nil, fmt.Errorf("must not resume a by-design cap")
+	}, 1, 64000, 1<<20)
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.Nil(t, err, "a provider output cap is a length completion, not an error")
+	require.NotNil(t, usage)
+	require.Zero(t, calls, "no repair round is spent on a by-design cap")
+	require.Equal(t, 32000, usage.CompletionTokens)
+	require.Contains(t, info.StreamFinishReason, "length")
+
+	body := recorder.Body.String()
+	require.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`), "one honest length terminal")
+	require.Equal(t, 1, strings.Count(body, "[DONE]"), "one [DONE]")
+	require.NotContains(t, body, "truncated_stream", "no error frame for a by-design cap")
+}
+
+// TestOaiStreamHandlerKeepsMissingFinishBelowOutputCapAsError makes sure the cap
+// rule is narrow: a reasoning-only cut that stops below every configured cap is
+// still a channel failure the caller should see (and can retry).
+func TestOaiStreamHandlerKeepsMissingFinishBelowOutputCapAsError(t *testing.T) {
+	firstRound := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"reasoning_content":"` + strings.Repeat("思考", 300) + `"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":5,"completion_tokens":9909,"total_tokens":9914}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, _ := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, fmt.Errorf("upstream refused the resume")
+	}, 1, 64000, 1<<20)
+
+	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
+	require.NotNil(t, err, "a cut below every known cap keeps the failure semantics")
+}

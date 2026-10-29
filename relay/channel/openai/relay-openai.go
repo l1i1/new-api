@@ -931,6 +931,32 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
 	}
 
+	// Provider output cap reached during the thinking phase without a stated
+	// finish_reason: the upstream stopped at a known output cap (ch102: 32000)
+	// and ended the stream cleanly, which is a by-design truncation rather than a
+	// channel failure. The official endpoint answers this shape with a normal
+	// length completion and empty content, so do the same instead of spending a
+	// repair round and surfacing a 502 the caller cannot act on.
+	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
+		visibleContentChars == 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 &&
+		continuationToolCalls == 0 && streamChoiceCount <= 1 && !isAudioModel &&
+		info.RelayFormat == types.RelayFormatOpenAI {
+		if cap := continuationProviderOutputCap(usage); cap > 0 {
+			common.SysLog(fmt.Sprintf("provider output cap closed as length: ch=%d completion=%d cap=%d reasoning=%d clientMax=%d",
+				info.ChannelId, usage.CompletionTokens, cap, reasoningTextBuilder.Len(), info.ClientMaxTokens))
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				return usage, nil
+			}
+			info.StreamFinishReason = "length"
+			flushContinuationCoalescer(c, info)
+			helper.ExtendWriteDeadline(c)
+			sendChatContinuationTerminal(c, info, responseId, createAt, model, "length", usage)
+			helper.ExtendWriteDeadline(c)
+			HandleFinalResponse(c, info, "", responseId, createAt, model, systemFingerprint, usage, false)
+			return usage, nil
+		}
+	}
+
 	// Length-cap continuation during the thinking phase (32k cap, no visible
 	// answer yet): the prefix continuation has nothing to replay, so resume the
 	// thinking round from the captured reasoning instead of truncating.

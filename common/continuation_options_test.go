@@ -53,3 +53,21 @@ func TestChatContinuationOptionsParseRotationKeys(t *testing.T) {
 		require.Equal(t, want, key)
 	}
 }
+
+// TestChatContinuationOutputCapsOption pins the provider-cap list: it is the
+// discriminator between "the model hit its output cap" and "the channel died",
+// so a malformed value must be rejected and a valid one must round-trip.
+func TestChatContinuationOutputCapsOption(t *testing.T) {
+	oldCaps, oldRaw := ChatContinuationOutputCaps, ChatContinuationOutputCapsRaw
+	t.Cleanup(func() { ChatContinuationOutputCaps, ChatContinuationOutputCapsRaw = oldCaps, oldRaw })
+
+	require.Error(t, SetChatContinuationOption(ChatContinuationOptionOutputCaps, "32000,abc"))
+	require.Error(t, SetChatContinuationOption(ChatContinuationOptionOutputCaps, "-1"))
+
+	require.NoError(t, SetChatContinuationOption(ChatContinuationOptionOutputCaps, "32000, 32768"))
+	require.Equal(t, []int{32000, 32768}, ChatContinuationOutputCaps)
+	require.Equal(t, "32000, 32768", ChatContinuationOutputCapsRaw)
+
+	require.NoError(t, SetChatContinuationOption(ChatContinuationOptionOutputCaps, ""))
+	require.Empty(t, ChatContinuationOutputCaps, "an empty list disables the cap rule")
+}
