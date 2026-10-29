@@ -578,6 +578,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				if info.StreamStatus != nil {
 					info.StreamStatus.MarkRecovered()
 				}
+				markContinuationAudit(info, "stream-error", result.rounds, result.contentChars)
 				logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=stream-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 				flushContinuationCoalescer(c, info)
 				helper.ExtendWriteDeadline(c)
@@ -660,6 +661,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					if info.StreamStatus != nil {
 						info.StreamStatus.MarkRecovered()
 					}
+					markContinuationAudit(info, "transport-error", result.rounds, result.contentChars)
 					logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=transport-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 					flushContinuationCoalescer(c, info)
 					helper.ExtendWriteDeadline(c)
@@ -790,6 +792,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
+			markContinuationAudit(info, "length", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -832,6 +835,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "abnormal-content", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=abnormal-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -874,6 +878,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "abnormal", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -935,6 +940,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "length-thinking", result.rounds, result.contentChars)
 			common.SysLog(fmt.Sprintf("length thinking continuation delivered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -976,6 +982,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "missing-content", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=missing-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1016,6 +1023,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
+			markContinuationAudit(info, "missing", result.rounds, result.contentChars)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1056,6 +1064,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				// terminal frame closes the call.
 				flushHeldAnswerChunk(c, info, lastStreamData)
 				info.StreamFinishReason = constant.FinishReasonToolCalls
+				info.ClosedAsToolCalls = true
 				if info.StreamStatus != nil {
 					info.StreamStatus.MarkRecovered()
 				}
@@ -1318,6 +1327,18 @@ func shouldDeferTerminalForRepair(info *relaycommon.RelayInfo, finishReason stri
 	}
 	return relaycommon.IsAbnormalFinishReason(finishReason) &&
 		info.ChatContinuation.Abnormal != nil && info.ChatContinuation.Abnormal.MaxSteps > 0
+}
+
+// markContinuationAudit records a transparent continuation that repaired this
+// response on the success log row (admin_info.continuation). The mode names
+// match the SysLog lines the same branch writes, so a log row and a container
+// log line can be joined; a caller reaches this only after the round delivered
+// visible content, which is the same condition the recovery branches require.
+func markContinuationAudit(info *relaycommon.RelayInfo, mode string, rounds, contentChars int) {
+	if info == nil || rounds <= 0 {
+		return
+	}
+	info.ContinuationAudit = &relaycommon.ContinuationAudit{Mode: mode, Rounds: rounds, ContentChars: contentChars}
 }
 
 // flushHeldAnswerChunk writes the answer text the stream loop was still holding

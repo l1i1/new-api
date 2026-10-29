@@ -120,6 +120,7 @@ func TestOaiStreamHandlerClosesMissingFinishToolCallStreamAsToolCalls(t *testing
 	require.NotNil(t, usage)
 	assert.NotZero(t, usage.TotalTokens, "the delivered answer stays billable")
 	assert.Equal(t, "tool_calls", info.StreamFinishReason)
+	assert.True(t, info.ClosedAsToolCalls, "the success row must carry the closure marker")
 	assert.Empty(t, info.UndeliveredReason, "the answer was delivered, so nothing stays undelivered")
 	require.NotNil(t, info.StreamStatus)
 	assert.False(t, info.StreamStatus.ResponseFailed())

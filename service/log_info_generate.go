@@ -220,6 +220,16 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if relayInfo.StreamCutDiagnostics != nil {
 			other.SetAdmin("stream_cut", relayInfo.StreamCutDiagnostics)
 		}
+		// The successful side of the same story: a response the repair path
+		// actually stitched, and a cut tool-call stream closed as a complete
+		// answer. Admin-only, so recovery rates and their shapes are measurable
+		// from /api/log/ instead of from log lines that rotate away.
+		if relayInfo.ContinuationAudit != nil {
+			other.SetAdmin("continuation", relayInfo.ContinuationAudit)
+		}
+		if relayInfo.ClosedAsToolCalls {
+			other.SetAdmin("closed_as_tool_calls", true)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)

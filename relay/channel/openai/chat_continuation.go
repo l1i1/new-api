@@ -579,7 +579,7 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 				logger.LogWarn(c, fmt.Sprintf("thinking continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
 				continue
 			}
-			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta)
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta, nil)
 			_ = resp.Body.Close()
 			if roundErr != nil {
 				if deltaSeen {
@@ -688,6 +688,10 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	total := cloneUsage(baseUsage)
 	result := chatContinuationResult{usage: total, finish: "length"}
 	content := partial
+	// One deduper for the whole response: every resumed round is compared with
+	// the tail delivered so far, so a model that restarts from the same sentence
+	// after each cap cannot make the seam repeat.
+	seamDeduper := newSeamDeduper(partial)
 	for step := 0; step < info.ChatContinuation.MaxSteps; step++ {
 		remaining := chatContinuationBudgetLeftWithContent(info, total, len(content)-len(partial))
 		if remaining <= 0 {
@@ -744,7 +748,7 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 				logger.LogWarn(c, fmt.Sprintf("chat continuation upstream status %d (attempt %d/%d)", resp.StatusCode, attempt+1, chatContinuationRoundAttempts))
 				continue
 			}
-			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta)
+			roundUsage, finish, roundContent, deltaSeen, roundToolCalls, roundTerminal, roundErr = consumeChatContinuationRound(c, info, resp, meta, seamDeduper)
 			_ = resp.Body.Close()
 			if roundErr != nil {
 				if deltaSeen {
@@ -798,13 +802,16 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 // returns that round's usage, terminal finish reason and visible content. The
 // terminal frame and usage events are not forwarded: the caller renders one
 // final frame with the merged usage.
-func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, sawTerminal bool, err error) {
+func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, meta chatContinuationMeta, seam *seamDeduper) (usage *dto.Usage, finish string, content string, deltaSeen bool, toolCalls int, sawTerminal bool, err error) {
 	if resp == nil || resp.Body == nil {
 		return nil, "", "", false, 0, false, fmt.Errorf("continuation response has no body")
 	}
 	scanner := helper.NewStreamScanner(resp.Body)
 	scanner.Split(bufio.ScanLines)
-	var builder strings.Builder
+	// delivered is the visible text this round actually handed the client: the
+	// seam deduper may drop a repeated prefix, and the caller uses this text as
+	// the assistant prefix of the next round and as the billed answer.
+	var delivered strings.Builder
 	toolSeen := make(map[string]struct{})
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -830,14 +837,28 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			usage = dto.MergeUsage(usage, chunk.Usage)
 		}
 		forward := false
+		// seamText holds the content to forward per choice position after seam
+		// de-duplication; a choice whose delta had content but no entry here is
+		// withheld (a held prefix, or a fully stripped duplicate).
+		seamText := make(map[int]string, len(chunk.Choices))
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finish = *choice.FinishReason
 			}
 			delta := choice.Delta
 			if delta.Content != nil && *delta.Content != "" {
-				builder.WriteString(*delta.Content)
-				forward = true
+				text := *delta.Content
+				if seam != nil {
+					emit, ready := seam.feed(text)
+					if ready && emit != "" {
+						seamText[choice.Index] = emit
+						delivered.WriteString(emit)
+						forward = true
+					}
+				} else {
+					delivered.WriteString(text)
+					forward = true
+				}
 			}
 			if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
 				forward = true
@@ -893,6 +914,21 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		if stripErr != nil {
 			forwardData = data
 		}
+		if seam != nil {
+			// The chunk may carry reasoning or tool calls next to the text, so the
+			// decision has to be applied to the forwarded copy rather than by
+			// dropping the whole chunk.
+			for i, choice := range chunk.Choices {
+				if choice.Delta.Content == nil || *choice.Delta.Content == "" {
+					continue
+				}
+				if text, ok := seamText[i]; ok {
+					forwardData, _ = sjson.Set(forwardData, fmt.Sprintf("choices.%d.delta.content", i), text)
+				} else {
+					forwardData, _ = sjson.Delete(forwardData, fmt.Sprintf("choices.%d.delta.content", i))
+				}
+			}
+		}
 		// A chunk may carry both a delta and a terminal finish_reason; forward
 		// only the delta and let the synthetic terminal frame be the sole
 		// finish marker.
@@ -919,13 +955,24 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 		}
 		helper.ExtendWriteDeadline(c)
 		if sendErr := sendStreamData(c, info, forwardData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); sendErr != nil {
-			return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, sendErr
+			return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, scanErr
+		return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, scanErr
 	}
-	return usage, finish, builder.String(), deltaSeen, toolCalls, sawTerminal, nil
+	if seam != nil {
+		// The round can end before the lookahead filled up; the held text still
+		// has to reach the client, at most seamMaxLookahead characters once.
+		if tail, ready := seam.finish(); ready && tail != "" {
+			if sendErr := sendContinuationTextChunk(c, info, meta, tail); sendErr != nil {
+				return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, sendErr
+			}
+			delivered.WriteString(tail)
+			deltaSeen = true
+		}
+	}
+	return usage, finish, delivered.String(), deltaSeen, toolCalls, sawTerminal, nil
 }
 
 // rewriteContinuationChunkMeta normalizes one continuation delta to the first
@@ -977,6 +1024,40 @@ func flushContinuationCoalescer(c *gin.Context, info *relaycommon.RelayInfo) {
 			logger.LogError(c, "error writing coalesced continuation event: "+err.Error())
 		}
 	}
+}
+
+// sendContinuationTextChunk forwards one synthesized content delta. It is used
+// only for the seam deduper's held prefix when a resumed round ends before the
+// lookahead filled up, so the text reaches the client in the same shape as any
+// other continuation delta (first-round id/created/model, K3 fit applied when the
+// caller is a fit-shaped one) instead of being dropped.
+func sendContinuationTextChunk(c *gin.Context, info *relaycommon.RelayInfo, meta chatContinuationMeta, text string) error {
+	if text == "" {
+		return nil
+	}
+	payload, err := common.Marshal(map[string]any{
+		"id":      meta.ID,
+		"object":  "chat.completion.chunk",
+		"created": meta.Created,
+		"model":   meta.Model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{"content": text},
+			"finish_reason": nil,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	data := rewriteContinuationChunkMeta(string(payload), meta)
+	if kimiK3FitEnabled(info) {
+		data = FitKimiK3StreamEventForAdapters(c, info, data, nil, false)
+		if data == "" {
+			return nil
+		}
+	}
+	helper.ExtendWriteDeadline(c)
+	return sendStreamData(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 }
 
 // sendChatContinuationTerminal renders the single terminal frame for a

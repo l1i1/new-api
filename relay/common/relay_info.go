@@ -272,6 +272,17 @@ type RelayInfo struct {
 	// cut can be diagnosed from /api/log/ instead of from a container log line
 	// that is usually gone by the time the customer reports the request id.
 	StreamCutDiagnostics *StreamCutDiagnostics
+	// ContinuationAudit, when non-nil, records a transparent continuation that
+	// repaired this response. The successful request's type=2 row carries it as
+	// admin_info.continuation, so the repair rate can be measured from /api/log/
+	// instead of from container log lines, which rotate away and die with the
+	// instance. Mode names match the handler's SysLog lines so the two views can
+	// be joined.
+	ContinuationAudit *ContinuationAudit
+	// ClosedAsToolCalls records that a cut stream was closed as a complete
+	// tool_calls answer instead of failing the request. The success row carries
+	// it as admin_info.closed_as_tool_calls (admin-only).
+	ClosedAsToolCalls bool
 	// PerformanceOutputTokens is captured by settlement and sampled once at
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64
@@ -1397,4 +1408,16 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil
+}
+
+// ContinuationAudit records one repaired response for the success log row.
+type ContinuationAudit struct {
+	// Mode names the repair branch (length, missing-content, abnormal-content,
+	// abnormal, missing, length-thinking, stream-error, transport-error).
+	Mode string `json:"mode,omitempty"`
+	// Rounds is how many continuation rounds were stitched into this response.
+	Rounds int `json:"rounds"`
+	// ContentChars is how much visible text the resumed rounds delivered after
+	// the seam (0 for a thinking-only resume).
+	ContentChars int `json:"content_chars,omitempty"`
 }

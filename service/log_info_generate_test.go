@@ -132,3 +132,42 @@ func TestAppendRelayLogAdminInfoCarriesStreamCutDiagnostics(t *testing.T) {
 	_, ok = adminInfo2["stream_cut"]
 	assert.False(t, ok)
 }
+
+// TestAppendRelayLogAdminInfoCarriesContinuationAudit pins the success-side
+// counterpart of the stream_cut diagnostics: a response the repair path stitched
+// and a cut tool-call stream closed as a complete answer must both be visible on
+// the successful row, so recovery can be counted from /api/log/ instead of from
+// container log lines that rotate away.
+func TestAppendRelayLogAdminInfoCarriesContinuationAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	info := &relaycommon.RelayInfo{
+		ContinuationAudit: &relaycommon.ContinuationAudit{Mode: "length", Rounds: 2, ContentChars: 4096},
+		ClosedAsToolCalls: true,
+	}
+	other := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, info, other)
+
+	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	audit, ok := adminInfo["continuation"].(*relaycommon.ContinuationAudit)
+	require.True(t, ok, "a repaired response must carry its continuation audit")
+	assert.Equal(t, "length", audit.Mode)
+	assert.Equal(t, 2, audit.Rounds)
+	assert.Equal(t, 4096, audit.ContentChars)
+	closed, ok := adminInfo["closed_as_tool_calls"].(bool)
+	require.True(t, ok, "a closed cut must carry the closure marker")
+	assert.True(t, closed)
+
+	// An ordinary response stays byte-identical: no marker is written.
+	plain := &relaycommon.RelayInfo{}
+	otherPlain := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, plain, otherPlain)
+	adminPlain, ok := otherPlain.Snapshot()["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasAudit := adminPlain["continuation"]
+	_, hasClosed := adminPlain["closed_as_tool_calls"]
+	assert.False(t, hasAudit)
+	assert.False(t, hasClosed)
+}
