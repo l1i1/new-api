@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -99,11 +100,33 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	ctx, cancel := context.WithCancel(context.Background())
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
+	if streamingTimeout <= 0 {
+		streamingTimeout = 300 * time.Second
+	}
+	// terminalTailGrace ends a stream shortly after a terminal finish_reason when
+	// the provider keeps the connection open without [DONE]. A completed answer
+	// must not be failed by the idle guard just because the transport never
+	// closed. 0 disables it.
+	terminalTailGrace := time.Duration(constant.StreamTerminalTailTimeout) * time.Second
+	// The idle guard now watches two deadlines, so it polls instead of sleeping
+	// for the whole streaming timeout. One tick per second per live stream is
+	// negligible next to the token traffic it reads.
+	idlePollInterval := time.Second
+	if streamingTimeout < idlePollInterval {
+		idlePollInterval = streamingTimeout
+	}
+	if terminalTailGrace > 0 && terminalTailGrace < idlePollInterval {
+		idlePollInterval = terminalTailGrace
+	}
+	// lastReadAt is the last time the upstream produced a line; the scanner
+	// goroutine writes it and the idle loop reads it.
+	var lastReadAt atomic.Int64
+	lastReadAt.Store(time.Now().UnixNano())
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
 		scanner     = NewStreamScanner(resp.Body)
-		ticker      = time.NewTicker(streamingTimeout)
+		ticker      = time.NewTicker(idlePollInterval)
 		pingTicker  *time.Ticker
 		writeMutex  sync.Mutex     // Mutex to protect concurrent writes
 		wg          sync.WaitGroup // 用于等待所有 goroutine 退出
@@ -265,7 +288,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			default:
 			}
 
-			ticker.Reset(streamingTimeout)
+			lastReadAt.Store(time.Now().UnixNano())
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
@@ -305,6 +328,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				// The cancelled request context is what closed the upstream body,
 				// so this read error is the caller leaving, not a stalled upstream.
 				logger.LogInfo(c, "stream scanner stopped by client disconnect: "+err.Error())
+			} else if info.StreamStatus.ClosedAfterTerminal() {
+				// The idle guard closed this body itself after the terminal frame:
+				// the read error is our own cleanup, not an upstream failure, and
+				// must not look like one in the error stream.
+				logger.LogInfo(c, "stream scanner stopped after the relay closed a completed stream: "+err.Error())
 			} else {
 				logger.LogError(c, "scanner error: "+err.Error())
 			}
@@ -321,18 +349,46 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	if c.Request != nil {
 		clientGone = c.Request.Context().Done()
 	}
-	select {
-	case <-ticker.C:
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
-	case <-stopChan:
-		// EndReason already set by the goroutine that triggered stopChan
-	case <-clientGone:
-		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
-		// 避免为已放弃的请求继续消费上游 token。
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+	closedAfterTerminal := false
+waitLoop:
+	for {
+		select {
+		case <-ticker.C:
+			idle := time.Since(time.Unix(0, lastReadAt.Load()))
+			// A terminal finish_reason already landed: the answer is complete, so
+			// the provider that keeps the connection open is not a stalled
+			// generation. Close it after the short tail grace as a normal end; the
+			// EOF->done promotion below turns the provisional reason into `done`
+			// and the normal path flushes the held terminal chunk, usage and
+			// [DONE] to the caller. The grace is measured from the terminal frame
+			// itself so trailing keep-alive comments cannot extend it.
+			if terminalTailGrace > 0 && !info.StreamStatus.HasErrors() {
+				if since := info.StreamStatus.TimeSinceTerminalFinish(); since >= terminalTailGrace {
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+					info.StreamStatus.MarkClosedAfterTerminal()
+					closedAfterTerminal = true
+					break waitLoop
+				}
+			}
+			if idle >= streamingTimeout {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+				break waitLoop
+			}
+		case <-stopChan:
+			// EndReason already set by the goroutine that triggered stopChan
+			break waitLoop
+		case <-clientGone:
+			// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
+			// 避免为已放弃的请求继续消费上游 token。
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+			break waitLoop
+		}
 	}
 
 	cleanup()
+	if closedAfterTerminal {
+		common.SysLog(fmt.Sprintf("stream closed after terminal finish without [DONE]: ch=%d finish=%s received=%d", info.ChannelId, info.StreamFinishReason, info.ReceivedResponseCount))
+	}
 	// Some OpenAI-compatible upstreams close immediately after their terminal
 	// finish chunk and omit the optional [DONE] marker. The scanner marks EOF
 	// provisionally; after queued chunks are drained, a non-empty finish reason

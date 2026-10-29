@@ -1,6 +1,13 @@
 package constant
 
 var StreamingTimeout int
+
+// StreamTerminalTailTimeout is the grace period after a terminal finish_reason
+// arrived: a provider that emitted the terminal chunk but never sent [DONE] or
+// closed the connection already produced a complete answer, so the relay stops
+// waiting for the transport and closes the stream as a success after this many
+// seconds. 0 disables the early close (the plain idle timeout then applies).
+var StreamTerminalTailTimeout int
 var DifyDebug bool
 var MaxFileDownloadMB int
 var StreamScannerMaxBufferMB int

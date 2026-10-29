@@ -508,6 +508,167 @@ func TestStreamScannerHandler_StreamStatus_Timeout(t *testing.T) {
 	assert.False(t, info.StreamStatus.IsNormalEnd())
 }
 
+// TestStreamScannerHandler_ClosesAfterTerminalFinish covers the 2026-10-29
+// neurvibe ch48 shape: the upstream sent a terminal finish_reason and then kept
+// the SSE connection open without [DONE] or EOF. The answer was complete, so the
+// stream must end as a success after the short tail grace instead of being
+// failed by the idle timeout, which used to hand the caller a 502 minutes later.
+func TestStreamScannerHandler_ClosesAfterTerminalFinish(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 30, 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n")
+		// The provider then holds the connection open: no [DONE], no EOF.
+		time.Sleep(5 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			// The relay handler parses the terminal frame and records both facts;
+			// see relay-openai.go's finish_reason block.
+			info.StreamFinishReason = "tool_calls"
+			info.StreamStatus.MarkTerminalFinishSeen()
+			info.StreamStatus.MarkCompleted()
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the terminal stream was not closed after the tail grace")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.False(t, info.StreamStatus.HasErrors())
+	assert.True(t, info.StreamStatus.ClosedAfterTerminal())
+}
+
+// TestStreamScannerHandler_TailGraceDoesNotHideErrors keeps the tail close
+// honest: a stream that already recorded an error must still fail, even when a
+// terminal frame arrived, because the caller must not be billed for a broken
+// answer the relay papered over.
+func TestStreamScannerHandler_TailGraceDoesNotHideErrors(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 2, 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n")
+		time.Sleep(4 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			info.StreamFinishReason = "stop"
+			info.StreamStatus.MarkTerminalFinishSeen()
+			sr.Error(fmt.Errorf("upstream error frame"))
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("timed out waiting for the idle timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.ClosedAfterTerminal())
+}
+
+// TestStreamScannerHandler_TailGraceIgnoresKeepAlives pins the clock the tail
+// grace uses. A provider that holds the connection open after its terminal frame
+// may keep writing SSE comments; those lines must not extend the grace, or the
+// fix would only help a completely silent hanger and still fail these requests
+// at the 300s idle timeout.
+func TestStreamScannerHandler_TailGraceIgnoresKeepAlives(t *testing.T) {
+	// Not parallel: modifies global constants.
+	oldTimeout, oldTail := constant.StreamingTimeout, constant.StreamTerminalTailTimeout
+	constant.StreamingTimeout, constant.StreamTerminalTailTimeout = 30, 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout, constant.StreamTerminalTailTimeout = oldTimeout, oldTail
+	})
+
+	pr, pw := io.Pipe()
+	stopWrites := make(chan struct{})
+	t.Cleanup(func() { close(stopWrites) })
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n")
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := fmt.Fprint(pw, ": keep-alive\n"); err != nil {
+					return
+				}
+			case <-stopWrites:
+				return
+			}
+		}
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			info.StreamFinishReason = "tool_calls"
+			info.StreamStatus.MarkTerminalFinishSeen()
+			info.StreamStatus.MarkCompleted()
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("keep-alive comments extended the tail grace past the idle timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.ClosedAfterTerminal())
+	assert.False(t, info.StreamStatus.HasErrors())
+}
+
 func TestStreamScannerHandler_StreamStatus_SoftErrors(t *testing.T) {
 	t.Parallel()
 

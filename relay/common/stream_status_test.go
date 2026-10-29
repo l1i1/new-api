@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -191,4 +192,50 @@ func TestStreamStatus_Summary_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus
 	assert.Equal(t, "StreamStatus<nil>", s.Summary())
+}
+
+// TestStreamStatus_TerminalFinishThenTailClose covers the two facts the idle
+// guard needs to end a completed-but-unclosed stream: whether a terminal
+// finish_reason arrived and whether the relay closed it itself.
+func TestStreamStatus_TerminalFinishThenTailClose(t *testing.T) {
+	t.Parallel()
+
+	var nilStatus *StreamStatus
+	assert.False(t, nilStatus.TerminalFinishSeen())
+	assert.False(t, nilStatus.ClosedAfterTerminal())
+
+	s := NewStreamStatus()
+	assert.False(t, s.TerminalFinishSeen())
+	assert.False(t, s.ClosedAfterTerminal())
+
+	s.MarkTerminalFinishSeen()
+	s.MarkClosedAfterTerminal()
+	s.SetEndReason(StreamEndReasonDone, nil)
+
+	assert.True(t, s.TerminalFinishSeen())
+	assert.True(t, s.ClosedAfterTerminal())
+	assert.True(t, s.IsNormalEnd())
+	assert.Contains(t, s.Summary(), "closed_after_terminal=true")
+}
+
+// TestStreamStatus_TimeSinceTerminalFinish pins the tail-grace clock: it is
+// anchored to the terminal frame, not to whatever the last line read was.
+func TestStreamStatus_TimeSinceTerminalFinish(t *testing.T) {
+	t.Parallel()
+
+	var nilStatus *StreamStatus
+	assert.Zero(t, nilStatus.TimeSinceTerminalFinish())
+
+	s := NewStreamStatus()
+	assert.Zero(t, s.TimeSinceTerminalFinish(), "no terminal frame yet")
+
+	s.MarkTerminalFinishSeen()
+	since := s.TimeSinceTerminalFinish()
+	assert.Positive(t, since)
+	assert.True(t, since < time.Minute)
+
+	// Re-marking must not move the clock forward.
+	before := s.TimeSinceTerminalFinish()
+	s.MarkTerminalFinishSeen()
+	assert.GreaterOrEqual(t, s.TimeSinceTerminalFinish(), before)
 }

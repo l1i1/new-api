@@ -80,6 +80,47 @@ func TestAppendStreamStatusLeavesOrdinaryErrorsUnchanged(t *testing.T) {
 	require.Equal(t, []string{message}, errors)
 }
 
+// TestAppendStreamStatusMarksClosedAfterTerminal keeps the tail close countable
+// from /api/log/ alone: when the provider sent a terminal finish_reason and then
+// kept the stream open, the success row has to say the relay closed it, not the
+// transport (2026-10-29 neurvibe ch48; without the marker the only record would
+// be a container log line that rotates away).
+func TestAppendStreamStatusMarksClosedAfterTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	info := &relaycommon.RelayInfo{
+		IsStream:           true,
+		StreamStatus:       relaycommon.NewStreamStatus(),
+		StreamFinishReason: "tool_calls",
+	}
+	info.StreamStatus.MarkTerminalFinishSeen()
+	info.StreamStatus.MarkClosedAfterTerminal()
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+
+	other := model.NewLogOther()
+	appendStreamStatus(c, info, other)
+
+	streamStatus, ok := other.Snapshot()["stream_status"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "ok", streamStatus["status"])
+	assert.Equal(t, "done", streamStatus["end_reason"])
+	assert.Equal(t, true, streamStatus["closed_after_terminal"])
+
+	// An ordinary stream must not carry the marker.
+	plain := &relaycommon.RelayInfo{
+		IsStream:           true,
+		StreamStatus:       relaycommon.NewStreamStatus(),
+		StreamFinishReason: "stop",
+	}
+	plain.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+	plainOther := model.NewLogOther()
+	appendStreamStatus(c, plain, plainOther)
+	plainStatus, ok := plainOther.Snapshot()["stream_status"].(map[string]interface{})
+	require.True(t, ok)
+	assert.NotContains(t, plainStatus, "closed_after_terminal")
+}
+
 // TestAppendRelayLogAdminInfoCarriesStreamCutDiagnostics keeps the promise that
 // makes an unrepaired stream cut explainable from /api/log/: the failure row has
 // to carry the budget and configuration the repair path saw. Without it the only

@@ -384,6 +384,12 @@ func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, othe
 	if outcome := ss.ResponseOutcome(); outcome != "" {
 		streamInfo["response_status"] = outcome
 	}
+	if ss.ClosedAfterTerminal() {
+		// The provider sent a terminal finish_reason and then kept the connection
+		// open; the relay closed the completed answer after the tail grace. Public
+		// so the tail path can be counted from /api/log/ without container logs.
+		streamInfo["closed_after_terminal"] = true
+	}
 	if ss.EndError != nil {
 		streamInfo["end_error"] = streamErrorMessage(ctx, ss.EndError.Error())
 	}

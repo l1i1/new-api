@@ -55,6 +55,19 @@ type StreamStatus struct {
 	errorStatus      int
 	incompleteReason string
 	expectsTerminal  bool
+
+	// terminalFinishSeen records that the provider sent a terminal finish_reason
+	// that means the generation itself completed, so the answer the caller is
+	// holding is executable. It says nothing about the transport: a provider can
+	// emit the terminal chunk and then hold the SSE connection open without
+	// [DONE] (neurvibe ch48, 2026-10-29), which used to end as an idle timeout
+	// 502 after the answer had already been generated.
+	terminalFinishSeen bool
+	terminalFinishAt   time.Time
+	// closedAfterTerminal records that the relay ended such a stream itself
+	// after the tail grace instead of waiting for the idle timeout, so the
+	// production logs can count how often the tail path fires.
+	closedAfterTerminal bool
 }
 
 // StreamOutcome holds classification facts only; upstream messages never
@@ -238,6 +251,74 @@ func (s *StreamStatus) TotalErrorCount() int {
 	return s.ErrorCount
 }
 
+// MarkTerminalFinishSeen records that the provider closed the generation with a
+// finish_reason that means the answer is complete. The idle guard uses it to
+// stop waiting for a transport that will not produce anything else.
+//
+// The timestamp is what the tail grace is measured against, not the last line
+// read: a provider that keeps sending keep-alive comments after its terminal
+// frame is exactly the shape this path exists for, and a line-triggered clock
+// would let it sit until the full idle timeout.
+func (s *StreamStatus) MarkTerminalFinishSeen() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalFinishSeen {
+		return
+	}
+	s.terminalFinishSeen = true
+	s.terminalFinishAt = time.Now()
+}
+
+func (s *StreamStatus) TerminalFinishSeen() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminalFinishSeen
+}
+
+// TimeSinceTerminalFinish reports how long ago the terminal finish_reason
+// arrived, or 0 when none arrived (or the clock is somehow in the future).
+func (s *StreamStatus) TimeSinceTerminalFinish() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.terminalFinishSeen || s.terminalFinishAt.IsZero() {
+		return 0
+	}
+	elapsed := time.Since(s.terminalFinishAt)
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
+// MarkClosedAfterTerminal records that the relay closed a stream whose terminal
+// finish_reason had already arrived, instead of failing it as an idle timeout.
+func (s *StreamStatus) MarkClosedAfterTerminal() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closedAfterTerminal = true
+}
+
+func (s *StreamStatus) ClosedAfterTerminal() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closedAfterTerminal
+}
+
 func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
@@ -259,6 +340,9 @@ func (s *StreamStatus) Summary() string {
 	s.mu.Lock()
 	if s.ErrorCount > 0 {
 		fmt.Fprintf(b, " soft_errors=%d", s.ErrorCount)
+	}
+	if s.closedAfterTerminal {
+		b.WriteString(" closed_after_terminal=true")
 	}
 	s.mu.Unlock()
 	return b.String()

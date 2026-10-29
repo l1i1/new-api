@@ -1,11 +1,14 @@
 package openai
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -183,4 +186,55 @@ func TestOaiStreamHandlerKeepsAbnormalFinishWithCompleteToolCallsAsError(t *test
 	assert.Equal(t, http.StatusBadGateway, err.StatusCode)
 	require.NotNil(t, usage)
 	assert.Zero(t, usage.TotalTokens)
+}
+
+// TestOaiStreamHandlerClosesTerminalStreamWhenProviderHangs pins the 2026-10-29
+// neurvibe ch48 shape end to end: the upstream delivered the whole tool call and
+// its terminal finish_reason, then held the SSE connection open without [DONE]
+// or EOF. The answer is complete, so the handler must close the caller's stream
+// after the tail grace, hand over the terminal frame and [DONE], and settle the
+// usage — not wait for the idle timeout and return "upstream stream terminated".
+func TestOaiStreamHandlerClosesTerminalStreamWhenProviderHangs(t *testing.T) {
+	oldTail := constant.StreamTerminalTailTimeout
+	constant.StreamTerminalTailTimeout = 1
+	t.Cleanup(func() { constant.StreamTerminalTailTimeout = oldTail })
+
+	c, info, recorder := newMissingFinishTestContext(t)
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	go func() {
+		_, _ = fmt.Fprint(pw, strings.Join([]string{
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"bash_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls -l /app\"}"}}]},"finish_reason":null}]}`,
+			`data: {"id":"chat_1","object":"chat.completion.chunk","created":1710000000,"model":"kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			``,
+		}, "\n"))
+		// The provider then holds the connection open: no [DONE], no EOF. The
+		// relay must not sit here until the idle timeout.
+		time.Sleep(5 * time.Second)
+	}()
+
+	started := time.Now()
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+	elapsed := time.Since(started)
+
+	require.Nil(t, err, "a completed answer must not be failed because the transport stayed open")
+	require.NotNil(t, usage)
+	assert.NotZero(t, usage.TotalTokens, "the delivered tool call stays billable")
+	assert.Equal(t, "tool_calls", info.StreamFinishReason)
+	require.NotNil(t, info.StreamStatus)
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.True(t, info.StreamStatus.ClosedAfterTerminal())
+	assert.Empty(t, info.UndeliveredReason)
+	assert.Less(t, elapsed, 4*time.Second, "the tail grace must end the stream long before the idle timeout")
+
+	delivered := recorder.Body.String()
+	assert.Contains(t, delivered, `"finish_reason":"tool_calls"`, "the caller must receive the terminal frame")
+	assert.Contains(t, delivered, `ls -l /app`, "the delivered tool call must reach the caller")
+	assert.Contains(t, delivered, `[DONE]`)
+	assert.NotContains(t, delivered, "truncated_stream")
+	assert.NotContains(t, delivered, "upstream stream terminated")
 }

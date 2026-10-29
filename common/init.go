@@ -190,6 +190,12 @@ func positiveUserSessionEnv(name string, fallback int) int {
 
 func initConstantEnv() {
 	constant.StreamingTimeout = GetEnvOrDefault("STREAMING_TIMEOUT", 300)
+	// The tail grace is short on purpose: once the provider sent a terminal
+	// finish_reason the answer is complete, and the only thing still missing is
+	// an optional [DONE]/usage frame. Waiting the full idle timeout there turns a
+	// finished answer into a 502 (neurvibe ch48 sent a terminal tool_calls frame
+	// and then held the connection open until the 300s idle guard fired).
+	constant.StreamTerminalTailTimeout = GetEnvOrDefault("STREAM_TERMINAL_TAIL_TIMEOUT", 20)
 	constant.DifyDebug = GetEnvOrDefaultBool("DIFY_DEBUG", true)
 	constant.MaxFileDownloadMB = GetEnvOrDefault("MAX_FILE_DOWNLOAD_MB", 64)
 	constant.StreamScannerMaxBufferMB = GetEnvOrDefault("STREAM_SCANNER_MAX_BUFFER_MB", 128)
