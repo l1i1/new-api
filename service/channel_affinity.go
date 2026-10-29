@@ -745,6 +745,33 @@ func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 	return meta.SkipRetry
 }
 
+// DropStickyRoutingAfterCapacityFailure clears the two stickiness layers that
+// would otherwise send the next attempt (or the next request) straight back to
+// the capacity that just refused it: the conversation's channel binding and the
+// channel's last-successful-key binding. Only capacity-class failures qualify
+// (429 rate limit, 402 credits): a 400 or a 5xx says nothing about which
+// capacity serves the next attempt, and dropping the binding there would throw
+// the prompt cache away for no reason.
+//
+// The fidelity pin is not touched: a pinned request still prefers official
+// behaviour, it just stops hammering one credential/provider while the siblings
+// have headroom.
+func DropStickyRoutingAfterCapacityFailure(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	if ClearCurrentChannelAffinityCache(c) {
+		common.SysLog("sticky routing cleared after capacity failure: channel affinity dropped")
+	}
+	if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
+		channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+		tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+		if ClearLastSuccessfulMultiKeyFingerprint(channelID, tokenID) {
+			common.SysLog(fmt.Sprintf("sticky routing cleared after capacity failure: multi-key affinity dropped (channel=%d token=%d)", channelID, tokenID))
+		}
+	}
+}
+
 func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	if c == nil {
 		return false

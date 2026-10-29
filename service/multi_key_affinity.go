@@ -79,6 +79,29 @@ func GetLastSuccessfulMultiKeyFingerprint(channelID, tokenID int) (string, bool)
 	return fingerprint, found
 }
 
+// ClearLastSuccessfulMultiKeyFingerprint forgets which key of this channel last
+// served this token. The next selection then picks again instead of starting
+// from the key that just answered a capacity failure (429 TPM/rate limit): with
+// affinity mode a single hot conversation otherwise pins one credential and
+// drains its quota while the sibling keys sit idle (2026-10-29: ch8 key #4
+// carried 61% of the token's prompt tokens and took 33 of 56 429s while three
+// enabled keys kept 70%+ headroom).
+func ClearLastSuccessfulMultiKeyFingerprint(channelID, tokenID int) bool {
+	key := multiKeySuccessCacheKey(channelID, tokenID)
+	if key == "" {
+		return false
+	}
+	cache := getMultiKeySuccessCache()
+	deleted := false
+	if result, err := cache.DeleteMany([]string{key}); err != nil {
+		common.SysError(fmt.Sprintf("multi-key affinity clear failed: channel_id=%d token_id=%d err=%v", channelID, tokenID, err))
+	} else if len(result) > 0 {
+		deleted = true
+	}
+	getMultiKeySuccessFallback().Delete(cache.FullKey(key))
+	return deleted
+}
+
 // RecordMultiKeySuccess remembers the key that completed the current request.
 // The request-local guard avoids duplicate writes from multiple success paths.
 func RecordMultiKeySuccess(c *gin.Context) {

@@ -45,6 +45,15 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if RelayRequestContextDone(c) {
 		return PolicyDecision{Action: "stop", Reason: "request_context_done", Source: "system"}
 	}
+	// A capacity failure is a statement about the capacity that answered, not
+	// about the request: drop the conversation binding and the channel's
+	// last-successful-key binding before anything decides the retry, so the next
+	// attempt starts from capacity that can still serve (2026-10-29: ch8 key #4
+	// absorbed 61% of a token's prompt tokens and 33 of its 56 429s while the
+	// sibling keys were idle).
+	if err.StatusCode == http.StatusTooManyRequests || err.StatusCode == http.StatusPaymentRequired {
+		DropStickyRoutingAfterCapacityFailure(c)
+	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {
