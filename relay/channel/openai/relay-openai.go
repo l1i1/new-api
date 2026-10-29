@@ -1233,8 +1233,15 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			"code":    "truncated_stream",
 		}})
 	}
+	// Once the caller has been told the answer failed, it must not also receive
+	// a usage frame: "error frame, then tokens" reads as a failed generation that
+	// was still billed, is impossible to reconcile from the client side, and drew
+	// a customer complaint on 2026-10-29 20:48 (truncated_stream followed by
+	// prompt 41 / completion 54). The usage was already zeroed for settlement, so
+	// the only correct thing left to send is the end of the stream.
+	suppressUsageFrames := info.UndeliveredReason != ""
 
-	if deferredTerminalData != "" && !finishFrameForwarded && info.RelayFormat == types.RelayFormatOpenAI {
+	if deferredTerminalData != "" && !finishFrameForwarded && !suppressUsageFrames && info.RelayFormat == types.RelayFormatOpenAI {
 		// The provider's terminal chunk was held for a repair that never ran; the
 		// answer ends here, so forward it as the single terminal frame.
 		payload := deferredTerminalData
@@ -1248,7 +1255,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		finishFrameForwarded = true
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
+	if !suppressUsageFrames && info.RelayFormat == types.RelayFormatOpenAI {
 		switch {
 		case isV4OpenAIStream:
 			// Official DeepSeek V4 emits usage inside the final chunk that
@@ -1331,7 +1338,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.UpstreamReasoningTokens = usage.CompletionTokenDetails.ReasoningTokens
 	}
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	if suppressUsageFrames {
+		// The error frame already ended the caller's answer; only close the SSE
+		// stream here. No usage event, no fabricated terminal choice.
+		helper.Done(c)
+	} else {
+		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	}
 
 	if streamAbnormalFinish != "" {
 		// The client has received the provider's own terminal frame, but the

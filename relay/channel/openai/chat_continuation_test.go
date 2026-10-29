@@ -2253,3 +2253,32 @@ func TestOaiStreamHandlerClosesBudgetCappedThinkingAsLength(t *testing.T) {
 	require.Contains(t, body, `"finish_reason":"length"`)
 	require.NotContains(t, body, "truncated_stream")
 }
+
+// TestOaiStreamHandlerDoesNotSendUsageAfterErrorFrame pins the 2026-10-29 20:48
+// customer complaint: a truncated stream answered with `truncated_stream` and
+// then a usage frame (prompt 41 / completion 54), which reads as "the answer
+// failed but you were charged anyway". Once the caller is told the generation
+// failed, the only frame that may follow is the end of the stream.
+func TestOaiStreamHandlerDoesNotSendUsageAfterErrorFrame(t *testing.T) {
+	round := strings.Join([]string{
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{"reasoning_content":"thinking but never answering"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":41,"completion_tokens":54,"total_tokens":95}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return continuationSSEResponse(secondContinuationRoundForTest()), nil
+	}, 0, 2000)
+	info.ShouldIncludeUsage = true
+	info.ClientIncludeUsage = true
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(round))
+	require.NotNil(t, usage)
+	require.Zero(t, usage.CompletionTokens, "an undelivered answer settles at zero")
+	require.NotNil(t, err, "the caller must still get a failure for settlement")
+	body := recorder.Body.String()
+	require.Contains(t, body, `"code":"truncated_stream"`)
+	require.NotContains(t, body, `"usage"`, "no usage frame may follow the error frame")
+	require.Contains(t, body, "[DONE]")
+}
