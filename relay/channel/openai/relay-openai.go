@@ -355,7 +355,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 						}
 					}
 					if service.ValidUsage(streamResp.Usage) {
-						usage = dto.MergeUsage(usage, streamResp.Usage)
+						usage = mergeUsageForChannel(info, usage, streamResp.Usage)
 						containStreamUsage = true
 					}
 				}
@@ -727,7 +727,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 		err := common.Unmarshal([]byte(secondLastStreamData), &streamResp)
 		if err == nil && streamResp.Usage != nil && service.ValidUsage(streamResp.Usage) {
-			usage = dto.MergeUsage(usage, streamResp.Usage)
+			usage = mergeUsageForChannel(info, usage, streamResp.Usage)
 			containStreamUsage = true
 
 			if common.DebugEnabled {
@@ -759,7 +759,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if err == nil && streamResp.Usage != nil &&
 			streamResp.Usage.PromptTokens > 0 &&
 			(streamResp.Usage.CompletionTokens > 0 || streamResp.Usage.TotalTokens > 0) {
-			usage = dto.MergeUsageNonZero(usage, streamResp.Usage)
+			usage = mergeUsageForChannel(info, usage, streamResp.Usage)
 			containStreamUsage = true
 			usageFrame = secondLastStreamData
 
@@ -1686,6 +1686,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		usageModified = true
 	}
 	if patchZeroCompletionUsage(c, info, &simpleResponse.Usage, responseTextBuilder.String(), toolCount) {
+		usageModified = true
+	}
+	// Thinking-off emulation: the upstream kept thinking, so the billed and
+	// displayed usage must lose the preamble and the reasoning tokens (the
+	// reasoning itself was already stripped from the body above).
+	if applyThinkingOffEmulation(info, &simpleResponse.Usage) {
 		usageModified = true
 	}
 

@@ -52,7 +52,13 @@ func shouldSuppressReasoningContent(info *relaycommon.RelayInfo) bool {
 	// for tokens it cannot see, which is exactly the failure this work removed.
 	// When the upstream really stops thinking the official shape follows on its
 	// own (no reasoning_content, no reasoning tokens).
-	if kimiK3ReasoningExempt(info) {
+	// Kimi K3 is exempt from response-side stripping because the disable-thinking
+	// intent is made real on the request side and the upstream honours it. A
+	// channel that is known NOT to honour it (reseller, thinking_off_emulation)
+	// opts back into stripping: the reasoning deltas it emits are not something
+	// the caller asked for, and applyThinkingOffEmulation keeps the billed usage
+	// in step with the hidden tokens.
+	if kimiK3ReasoningExempt(info) && !thinkingOffEmulationActive(info) {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
@@ -69,6 +75,109 @@ func shouldSuppressReasoningContent(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
+}
+
+// thinkingOffEmulationActive reports whether this request is answered by a
+// channel that emulates the official thinking-off contract. The upstream keeps
+// thinking regardless of the disable flag, so the gateway removes the preamble
+// from the prompt count and the reasoning tokens from the completion count, and
+// hides reasoning_content from the caller (see ChannelSettings.
+// ThinkingOffEmulation).
+func thinkingOffEmulationActive(info *relaycommon.RelayInfo) bool {
+	if info == nil || !info.ChannelSetting.ThinkingOffEmulation {
+		return false
+	}
+	request, ok := info.Request.(*dto.GeneralOpenAIRequest)
+	if !ok || request == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(info.GetReasoningEffort()), "none") {
+		return true
+	}
+	if len(request.THINKING) == 0 {
+		return false
+	}
+	var thinking struct {
+		Type string `json:"type"`
+	}
+	if err := common.Unmarshal(request.THINKING, &thinking); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(thinking.Type), "disabled")
+}
+
+// thinkingOffPromptOffset computes how many prompt tokens the upstream added for
+// its thinking preamble on this request. Measured 2026-10-29: a fixed 68
+// (ch91/102/37/105) or 69 (ch106) regardless of input length, +3 per message
+// beyond the first, and +37 on ch106 when tools are present.
+func thinkingOffPromptOffset(info *relaycommon.RelayInfo) int {
+	if info == nil {
+		return 0
+	}
+	offset := info.ChannelSetting.ThinkingOffPromptOffset
+	request, ok := info.Request.(*dto.GeneralOpenAIRequest)
+	if !ok || request == nil {
+		return offset
+	}
+	if extra := info.ChannelSetting.ThinkingOffPromptOffsetPerMessage; extra > 0 && len(request.Messages) > 1 {
+		offset += extra * (len(request.Messages) - 1)
+	}
+	if extra := info.ChannelSetting.ThinkingOffPromptOffsetTools; extra > 0 && len(request.Tools) > 0 {
+		offset += extra
+	}
+	return offset
+}
+
+// applyThinkingOffEmulation rewrites one usage snapshot to the official
+// thinking-off shape: prompt minus the preamble, completion minus the reasoning
+// tokens, and no completion token details (the official usage carries none when
+// the model was not asked to think). Snapshots are cumulative, so subtracting the
+// same constant from every snapshot is idempotent under the fill-only merge the
+// stream handler uses.
+func applyThinkingOffEmulation(info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	if usage == nil || !thinkingOffEmulationActive(info) {
+		return false
+	}
+	changed := false
+	if offset := thinkingOffPromptOffset(info); offset > 0 && usage.PromptTokens > 0 {
+		if usage.PromptTokens > offset {
+			usage.PromptTokens -= offset
+		} else {
+			usage.PromptTokens = 1
+		}
+		changed = true
+	}
+	if rt := usage.CompletionTokenDetails.ReasoningTokens; rt > 0 {
+		if usage.CompletionTokens > rt {
+			usage.CompletionTokens -= rt
+		} else {
+			usage.CompletionTokens = 0
+		}
+		changed = true
+	}
+	if changed {
+		usage.CompletionTokenDetails = dto.OutputTokenDetails{}
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return changed
+}
+
+// mergeUsageForChannel merges one upstream usage snapshot into the accumulated
+// usage, applying the thinking-off emulation to the snapshot first. Subtracting
+// the preamble from every cumulative snapshot is idempotent under MergeUsage
+// (the latest snapshot wins and zero fields fall back to the previous value).
+func mergeUsageForChannel(info *relaycommon.RelayInfo, previous, next *dto.Usage) *dto.Usage {
+	if next == nil {
+		return dto.MergeUsage(previous, next)
+	}
+	if applyThinkingOffEmulation(info, next) {
+		// The snapshot was rewritten in place; the caller owns the pointer only
+		// for the duration of the merge, but streams reuse the chunk struct, so
+		// keep a copy to avoid rewriting a chunk that is also rendered.
+		adjusted := *next
+		return dto.MergeUsage(previous, &adjusted)
+	}
+	return dto.MergeUsage(previous, next)
 }
 
 func stripReasoningContentFromTextResponse(response *dto.OpenAITextResponse) {

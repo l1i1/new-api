@@ -84,7 +84,7 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			info.ObserveResponseModel(chunk.Model)
 		}
 		if chunk.Usage != nil && service.ValidUsage(chunk.Usage) {
-			usage = dto.MergeUsage(usage, chunk.Usage)
+			usage = mergeUsageForChannel(info, usage, chunk.Usage)
 		}
 		accumulator.ProcessChunk(&chunk)
 	}
@@ -300,7 +300,7 @@ func continueBufferedChatAnswer(c *gin.Context, info *relaycommon.RelayInfo, acc
 		if sendErr != nil || resp == nil {
 			break
 		}
-		roundText, roundUsage, finish := readBufferedContinuationRound(c, resp)
+		roundText, roundUsage, finish := readBufferedContinuationRound(c, info, resp)
 		if roundUsage != nil {
 			total = mergeContinuationUsage(total, roundUsage)
 		}
@@ -335,7 +335,7 @@ func continueBufferedChatAnswer(c *gin.Context, info *relaycommon.RelayInfo, acc
 // usage and its terminal finish reason. Provider-specific in-stream error
 // payloads end the round without text: the caller keeps whatever previous rounds
 // produced and falls back to the ordinary error path when nothing was produced.
-func readBufferedContinuationRound(c *gin.Context, resp *http.Response) (string, *dto.Usage, string) {
+func readBufferedContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (string, *dto.Usage, string) {
 	defer service.CloseResponseBodyGracefully(resp)
 
 	var sb strings.Builder
@@ -364,7 +364,7 @@ func readBufferedContinuationRound(c *gin.Context, resp *http.Response) (string,
 			break
 		}
 		if chunk.Usage != nil && service.ValidUsage(chunk.Usage) {
-			usage = dto.MergeUsage(usage, chunk.Usage)
+			usage = mergeUsageForChannel(info, usage, chunk.Usage)
 		}
 		for _, choice := range chunk.Choices {
 			if text := choice.Delta.GetContentString(); text != "" {

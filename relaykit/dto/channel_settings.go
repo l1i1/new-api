@@ -36,6 +36,28 @@ type ChannelSettings struct {
 	// keeps working. Opt-in per channel so a deployment can pilot it on one
 	// upstream and roll back by clearing the flag.
 	InternalStreamForNonStream bool   `json:"internal_stream_for_nonstream,omitempty"`
+	// ThinkingOffEmulation makes this channel bill and answer like the official
+	// endpoint when the caller asked for thinking-off but the upstream cannot
+	// honour it. Upstreams of this kind (every reseller measured 2026-10-29)
+	// ignore `thinking.type=disabled` and keep thinking: they prepend a fixed
+	// thinking preamble to the prompt (measured +68 tokens on
+	// ch91/102/37/105, +69 on ch106, independent of input length, +3 per extra
+	// message, +37 on ch106 with tools) and report the thinking tokens as
+	// completion. With emulation on, the gateway strips reasoning_content,
+	// removes the preamble from the prompt count and the reasoning tokens from
+	// the completion count, so the caller sees and pays what the official
+	// endpoint would have produced. The difference is absorbed by the platform
+	// (operator decision 2026-10-29: 「确认按官方口径计费」).
+	ThinkingOffEmulation bool `json:"thinking_off_emulation,omitempty"`
+	// ThinkingOffPromptOffset is the fixed preamble the upstream adds to the
+	// prompt count for a thinking-disabled request (measured per channel).
+	ThinkingOffPromptOffset int `json:"thinking_off_prompt_offset,omitempty"`
+	// ThinkingOffPromptOffsetPerMessage is the additional preamble per message
+	// beyond the first (measured ~3).
+	ThinkingOffPromptOffsetPerMessage int `json:"thinking_off_prompt_offset_per_message,omitempty"`
+	// ThinkingOffPromptOffsetTools is the additional preamble the upstream adds
+	// when the request carries tools (measured 37 on ch106, 0 elsewhere).
+	ThinkingOffPromptOffsetTools int `json:"thinking_off_prompt_offset_tools,omitempty"`
 	SystemPrompt               string `json:"system_prompt,omitempty"`
 	SystemPromptOverride       bool   `json:"system_prompt_override,omitempty"`
 	// TaskExtendPluginKeys lists the task plugins a New API channel (type 60)

@@ -965,7 +965,7 @@ func consumeChatContinuationRound(c *gin.Context, info *relaycommon.RelayInfo, r
 			// Usage events inside one round are cumulative snapshots, not
 			// increments: merge fill-only so a repeated terminal/usage snapshot
 			// cannot double-count the round.
-			usage = dto.MergeUsage(usage, chunk.Usage)
+			usage = mergeUsageForChannel(info, usage, chunk.Usage)
 		}
 		forward := false
 		// seamText holds the content to forward per choice position after seam
