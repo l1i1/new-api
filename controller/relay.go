@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1863,6 +1864,126 @@ func recordLocalValidationError(c *gin.Context, err *types.NewAPIError) {
 	model.RecordErrorLog(c, c.GetInt("id"), 0, localValidationModelName(c), c.GetString("token_name"),
 		err.MaskSensitiveErrorWithStatusCode(), c.GetInt("token_id"), useTimeSeconds,
 		common.GetContextKeyBool(c, constant.ContextKeyIsStream), c.GetString("group"), other)
+	captureLocalValidationRejection(c, err)
+}
+
+// captureLocalValidationRejection stores a capture of a request the local
+// contract validators rejected before any channel was chosen.
+//
+// The response middleware only covers requests that reach an upstream: a local
+// rejection answers before the distributor runs, so request_capture never saw
+// it. On 2026-10-30 that left ~81k `unsupported image url: [image/jpeg]`
+// rejections with no request body to inspect — the operator could see the
+// verdict but not what the client actually sent. The hook reuses the same
+// rule/status/budget machinery as the middleware, so the on-disk budget and
+// the redaction rules stay exactly as configured.
+func captureLocalValidationRejection(c *gin.Context, err *types.NewAPIError) {
+	if c == nil || c.Request == nil || err == nil {
+		return
+	}
+	setting := operation_setting.GetRequestCaptureSetting()
+	if setting == nil || !setting.Enabled || len(setting.Rules) == 0 {
+		return
+	}
+	path := ""
+	if c.Request.URL != nil {
+		path = c.Request.URL.Path
+	}
+	tokenID := c.GetInt("token_id")
+	userID := c.GetInt("id")
+	model := localValidationModelName(c)
+	rule := service.MatchRequestCaptureRule(tokenID, userID, model, path)
+	if rule == nil || !service.CaptureStatusAllowed(rule, err.StatusCode) {
+		return
+	}
+	payload := buildLocalValidationCapturePayload(c, err, rule, setting, model, path, tokenID, userID)
+	if payload == nil {
+		return
+	}
+	budgetCtx, cancelBudget := context.WithTimeout(context.Background(), 3*time.Second)
+	allowed := service.CaptureBudgetAllows(budgetCtx, rule)
+	cancelBudget()
+	if !allowed {
+		return
+	}
+	gopool.Go(func() {
+		sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if enqueueErr := service.EnqueueRequestCapture(sendCtx, payload); enqueueErr != nil {
+			logger.LogWarn(sendCtx, fmt.Sprintf("local-validation capture enqueue failed for rule %q: %v", rule.Name, enqueueErr))
+		}
+	})
+}
+
+// buildLocalValidationCapturePayload assembles the payload the middleware would
+// have assembled. It returns nil when the rule asks for a request body and no
+// body survived the earlier reads, because a capture without the payload under
+// investigation has no diagnostic value.
+func buildLocalValidationCapturePayload(c *gin.Context, err *types.NewAPIError, rule *operation_setting.RequestCaptureRule, setting *operation_setting.RequestCaptureSetting, model, path string, tokenID, userID int) *service.RequestCapturePayload {
+	payload := &service.RequestCapturePayload{
+		CapturedAt:     time.Now().Unix(),
+		RequestID:      c.GetString(common.RequestIdKey),
+		RuleName:       rule.Name,
+		TokenID:        tokenID,
+		UserID:         userID,
+		Model:          model,
+		Path:           path,
+		ChannelID:      0,
+		Node:           common.NodeName,
+		Version:        common.Version,
+		ResponseStatus: err.StatusCode,
+		ResponseBody:   err.MaskSensitiveErrorWithStatusCode(),
+	}
+	if rule.Include.RequestHeaders {
+		payload.RequestHeaders = localValidationCaptureHeaders(c, rule)
+	}
+	if rule.Include.RequestBody {
+		body, truncated := localValidationCaptureBody(c, setting.EffectiveMaxBytes())
+		if len(body) == 0 {
+			return nil
+		}
+		payload.RequestBody = string(body)
+		payload.RequestTruncated = truncated
+	}
+	return payload
+}
+
+func localValidationCaptureBody(c *gin.Context, limit int) ([]byte, bool) {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil || storage == nil {
+		return nil, false
+	}
+	body, err := storage.Bytes()
+	if err != nil || len(body) == 0 {
+		return nil, false
+	}
+	if limit > 0 && len(body) > limit {
+		return body[:limit], true
+	}
+	return body, false
+}
+
+// localValidationCaptureHeaders mirrors the middleware's redaction set. It is a
+// copy on purpose: the middleware helper is unexported and the two callers must
+// never diverge on which credential carriers get redacted.
+func localValidationCaptureHeaders(c *gin.Context, rule *operation_setting.RequestCaptureRule) map[string]string {
+	out := map[string]string{}
+	redact := map[string]bool{
+		"authorization": true, "x-api-key": true, "api-key": true,
+		"x-goog-api-key": true, "mj-api-secret": true, "cookie": true,
+		"sec-websocket-protocol": true,
+	}
+	for _, h := range rule.RedactHeaders {
+		redact[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	for name, values := range c.Request.Header {
+		if redact[strings.ToLower(name)] {
+			out[name] = "[redacted]"
+			continue
+		}
+		out[name] = strings.Join(values, ", ")
+	}
+	return out
 }
 
 // localValidationModelName recovers the model name from a rejected body.
