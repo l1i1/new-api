@@ -71,3 +71,27 @@ func TestChatContinuationOutputCapsOption(t *testing.T) {
 	require.NoError(t, SetChatContinuationOption(ChatContinuationOptionOutputCaps, ""))
 	require.Empty(t, ChatContinuationOutputCaps, "an empty list disables the cap rule")
 }
+
+func TestChatCacheEstimateModelAllowed(t *testing.T) {
+	old := ChatCacheEstimateModels
+	ChatCacheEstimateModels = parseChatCacheEstimateModels("kimi-k3, GLM-5")
+	t.Cleanup(func() { ChatCacheEstimateModels = old })
+
+	for _, model := range []string{"kimi-k3.1-pro", "kimi-k3", "KIMI-K3.1-pro", " kimi-k3.1-pro "} {
+		if !ChatCacheEstimateModelAllowed(model) {
+			t.Fatalf("%q should be covered by the kimi-k3 prefix", model)
+		}
+	}
+	for _, model := range []string{"", "kimi-k2", "deepseek-v4.1-flash", "qwen-max"} {
+		if ChatCacheEstimateModelAllowed(model) {
+			t.Fatalf("%q must not be covered", model)
+		}
+	}
+	if !ChatCacheEstimateModelAllowed("glm-5.3") {
+		// "GLM-5" case-insensitive prefix covers glm-5.3.
+		t.Fatal("prefix matching must be case-insensitive")
+	}
+	if got := parseChatCacheEstimateModels(""); len(got) != 0 {
+		t.Fatalf("empty option disables the estimate, got %v", got)
+	}
+}

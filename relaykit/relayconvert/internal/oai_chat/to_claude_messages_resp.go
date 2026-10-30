@@ -11,6 +11,19 @@ import (
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 )
 
+// estimateCacheCreation fills the cache-write bucket for implicit-cache upstreams
+// when the host enabled the estimate for this model. Reporting-side only: it mutates
+// the Claude-shaped view the client receives, never the billing usage.
+func estimateCacheCreation(info convmeta.Meta, usage *dto.ClaudeUsage) {
+	if usage == nil {
+		return
+	}
+	if !convmeta.OptionsOf(info).EstimateImplicitCacheCreation {
+		return
+	}
+	sharedclaude.FillEstimatedCacheCreation(usage)
+}
+
 func generateStopBlock(index int) *dto.ClaudeResponse {
 	return &dto.ClaudeResponse{
 		Type:  "content_block_stop",
@@ -216,6 +229,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 		// Some OpenAI-compatible upstreams end with a usage-only SSE chunk.
 		oaiUsage := clientVisibleClaudeStreamUsage(state, openAIResponse.Usage)
 		if oaiUsage != nil {
+			estimateCacheCreation(info, oaiUsage)
 			appendStopOpenBlocks()
 			stopReason := stopReasonOpenAI2Claude(state.FinishReason)
 			if stopReason == "" {
@@ -398,6 +412,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 				// can carry both usage and the final stop reason.
 				return claudeResponses
 			}
+			estimateCacheCreation(info, oaiUsage)
 			appendStopOpenBlocks()
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type:  "message_delta",
@@ -432,10 +447,12 @@ func FinalizeStreamResponseOpenAI2Claude(info convmeta.Meta) []*dto.ClaudeRespon
 	}
 	responses := startPendingToolBlocks(state)
 	responses = append(responses, stopOpenBlocks(state)...)
+	finalUsage := clientVisibleClaudeStreamUsage(state, nil)
+	estimateCacheCreation(info, finalUsage)
 	responses = append(responses,
 		&dto.ClaudeResponse{
 			Type:  "message_delta",
-			Usage: clientVisibleClaudeStreamUsage(state, nil),
+			Usage: finalUsage,
 			Delta: &dto.ClaudeMediaMessage{
 				StopReason: kitutil.GetPointer[string](stopReason),
 			},
@@ -494,6 +511,7 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info convmeta
 	claudeResponse.Content = contents
 	claudeResponse.StopReason = stopReason
 	claudeResponse.Usage = buildClaudeUsageFromOpenAIUsage(&openAIResponse.Usage)
+	estimateCacheCreation(info, claudeResponse.Usage)
 
 	return claudeResponse
 }

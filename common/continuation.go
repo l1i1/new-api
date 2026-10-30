@@ -27,6 +27,7 @@ const (
 	ChatContinuationOptionOutputCaps                = ChatContinuationOptionPrefix + "output_caps"
 	ChatContinuationOptionToolBufferChannels        = ChatContinuationOptionPrefix + "tool_buffer_channels"
 	ChatContinuationOptionToolRepairChannels        = ChatContinuationOptionPrefix + "tool_repair_channels"
+	ChatContinuationOptionCacheEstimateModels       = ChatContinuationOptionPrefix + "cache_estimate_models"
 )
 
 // ChatContinuationMaxSteps is the number of extra upstream rounds the relay may
@@ -83,6 +84,44 @@ var ChatToolRepairChannelIDs map[int]struct{}
 
 // ChatToolRepairChannelsRaw keeps the comma separated form for the options table.
 var ChatToolRepairChannelsRaw string
+
+// ChatCacheEstimateModels lists the model-name prefixes whose Claude-protocol
+// responses carry an estimated cache_creation_input_tokens when the upstream only
+// reports cache hits (implicit prefix cache, e.g. Kimi prompt caching). The estimate
+// is reporting-side only: billing usage keeps its counts, so the invoice total does
+// not change. Empty disables the estimate everywhere.
+var ChatCacheEstimateModels = []string{"kimi-k3"}
+
+// ChatCacheEstimateModelsRaw keeps the comma separated form for the options table.
+var ChatCacheEstimateModelsRaw = "kimi-k3"
+
+// ChatCacheEstimateModelAllowed reports whether the cache-write estimate applies to
+// one model name (prefix match, case-insensitive).
+func ChatCacheEstimateModelAllowed(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return false
+	}
+	for _, prefix := range ChatCacheEstimateModels {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix != "" && strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseChatCacheEstimateModels splits the option value into model prefixes.
+func parseChatCacheEstimateModels(value string) []string {
+	models := make([]string, 0, 4)
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			models = append(models, part)
+		}
+	}
+	return models
+}
 
 // ChatToolBufferChannelAllowed reports whether tool-call deltas are buffered for
 // one channel.
@@ -209,6 +248,13 @@ func ValidateChatContinuationOption(key, value string) error {
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be true or false", key)
 		}
+	case ChatContinuationOptionCacheEstimateModels:
+		// Comma separated model-name prefixes; an empty list disables the estimate.
+		for _, part := range strings.Split(value, ",") {
+			if strings.ContainsAny(strings.TrimSpace(part), " \t\n") {
+				return fmt.Errorf("%s must be comma separated model names", key)
+			}
+		}
 	case ChatContinuationOptionToolBufferChannels, ChatContinuationOptionToolRepairChannels:
 		for _, part := range strings.Split(value, ",") {
 			part = strings.TrimSpace(part)
@@ -290,6 +336,9 @@ func SetChatContinuationOption(key, value string) error {
 	case ChatContinuationOptionToolRepairChannels:
 		ChatToolRepairChannelsRaw = value
 		ChatToolRepairChannelIDs = ParseChatContinuationChannelIDs(value)
+	case ChatContinuationOptionCacheEstimateModels:
+		ChatCacheEstimateModelsRaw = value
+		ChatCacheEstimateModels = parseChatCacheEstimateModels(value)
 	case ChatContinuationOptionOutputCaps:
 		caps := []int{}
 		if value != "" {

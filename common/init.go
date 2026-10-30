@@ -121,6 +121,8 @@ func InitEnv() {
 	}
 	ChatContinuationRoundMaxElapsedSeconds = GetEnvOrDefault("RELAY_CHAT_CONTINUATION_ROUND_MAX_ELAPSED_SECONDS", 1500)
 	ChatContinuationRotateChannels = GetEnvOrDefaultBool("RELAY_CHAT_CONTINUATION_ROTATE_CHANNELS", true)
+	ChatCacheEstimateModelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_CACHE_ESTIMATE_MODELS", ChatCacheEstimateModelsRaw)
+	ChatCacheEstimateModels = parseChatCacheEstimateModels(ChatCacheEstimateModelsRaw)
 	ChatToolBufferChannelsRaw = GetEnvOrDefaultString("RELAY_CHAT_CONTINUATION_TOOL_BUFFER_CHANNELS", "")
 	ChatToolBufferChannelIDs = nil
 	if ChatToolBufferChannelsRaw != "" {

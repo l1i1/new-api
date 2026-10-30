@@ -422,3 +422,92 @@ func TestNormalizeCacheCreationSplit(t *testing.T) {
 func ptr[T any](value T) *T {
 	return &value
 }
+
+// TestResponseOpenAI2ClaudeEstimatesCacheCreation pins the report-only estimate for
+// an implicit-cache upstream that returns only the hit count (Kimi prompt caching,
+// 2026-10-30 customer report): the OpenAI usage stays the billing source of truth,
+// while the Claude view splits the missed tokens into written blocks and the
+// sub-block uncached remainder, so read + write + uncached still equals prompt.
+func TestResponseOpenAI2ClaudeEstimatesCacheCreation(t *testing.T) {
+	chatResponse := func() *dto.OpenAITextResponse {
+		return &dto.OpenAITextResponse{
+			Id:    "chatcmpl_1",
+			Model: "kimi-k3.1-pro",
+			Choices: []dto.OpenAITextResponseChoice{
+				{Message: dto.Message{Role: "assistant", Content: "answer"}, FinishReason: "stop"},
+			},
+			Usage: dto.Usage{
+				PromptTokens:     1000,
+				CompletionTokens: 7,
+				TotalTokens:      1007,
+				PromptTokensDetails: dto.InputTokenDetails{
+					CachedTokens: 200,
+				},
+			},
+		}
+	}
+	enabled := &convmeta.Values{Options: &convmeta.Options{EstimateImplicitCacheCreation: true}}
+
+	resp := ResponseOpenAI2Claude(chatResponse(), enabled)
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, 200, resp.Usage.CacheReadInputTokens, "the reported hit count travels unchanged")
+	assert.Equal(t, 768, resp.Usage.CacheCreationInputTokens, "800 missed tokens are 3 whole 256 blocks")
+	assert.Equal(t, 32, resp.Usage.InputTokens, "the block remainder stays uncached input")
+	assert.Equal(t, 1000, resp.Usage.InputTokens+resp.Usage.CacheCreationInputTokens+resp.Usage.CacheReadInputTokens,
+		"the official invariant read+write+uncached=prompt must hold exactly")
+
+	// The billing sidecar is untouched: the invoice is unchanged and the client's
+	// arithmetic on the official price list reproduces it.
+	require.NotNil(t, resp.Usage.BillingUsage)
+	require.NotNil(t, resp.Usage.BillingUsage.OpenAIUsage)
+	assert.Equal(t, 1000, resp.Usage.BillingUsage.OpenAIUsage.PromptTokens)
+
+	off := ResponseOpenAI2Claude(chatResponse(), &convmeta.Values{})
+	require.NotNil(t, off.Usage)
+	assert.Zero(t, off.Usage.CacheCreationInputTokens, "the estimate is opt-in per model")
+	assert.Equal(t, 800, off.Usage.InputTokens)
+}
+
+// TestStreamResponseOpenAI2ClaudeEstimatesCacheCreationInFinalUsage pins the
+// streaming shape: the authoritative usage arrives on the terminal message_delta,
+// so that is where the estimate is applied (message_start still carries the
+// pre-stream estimate and cannot know the split).
+func TestStreamResponseOpenAI2ClaudeEstimatesCacheCreationInFinalUsage(t *testing.T) {
+	info := &convmeta.Values{
+		SendResponseCount: 1,
+		Options:           &convmeta.Options{EstimateImplicitCacheCreation: true},
+		ClaudeConvertInfo: &convmeta.ClaudeConvertInfo{LastMessagesType: convmeta.LastMessageTypeNone},
+	}
+	finish := "stop"
+	responses := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Id:    "chatcmpl_1",
+		Model: "kimi-k3.1-pro",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{Content: ptr("ok")},
+				FinishReason: &finish,
+			},
+		},
+		Usage: &dto.Usage{
+			PromptTokens:     1000,
+			CompletionTokens: 2,
+			TotalTokens:      1002,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens: 200,
+			},
+		},
+	}, info)
+
+	var delta *dto.ClaudeResponse
+	for _, resp := range responses {
+		if resp != nil && resp.Type == "message_delta" {
+			delta = resp
+		}
+	}
+	require.NotNil(t, delta, "the stream must end with a usage-bearing message_delta")
+	require.NotNil(t, delta.Usage)
+	assert.Equal(t, 200, delta.Usage.CacheReadInputTokens)
+	assert.Equal(t, 768, delta.Usage.CacheCreationInputTokens)
+	assert.Equal(t, 32, delta.Usage.InputTokens)
+	assert.Equal(t, 1000, delta.Usage.InputTokens+delta.Usage.CacheCreationInputTokens+delta.Usage.CacheReadInputTokens)
+}

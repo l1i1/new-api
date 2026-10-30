@@ -1093,7 +1093,11 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 			SupportsImagine:                       model_setting.IsGeminiModelSupportImagine,
 			SafetySetting:                         model_setting.GetGeminiSafetySetting,
 		},
-		OpenRouterDialect:      info != nil && info.GetChannelType() == constant.ChannelTypeOpenRouter,
+		OpenRouterDialect: info != nil && info.GetChannelType() == constant.ChannelTypeOpenRouter,
+		// Estimated cache-write reporting for implicit-cache upstreams that only
+		// return the hit count (Kimi prompt caching). Reporting-side only.
+		EstimateImplicitCacheCreation: info != nil && (common.ChatCacheEstimateModelAllowed(info.GetUpstreamModelName()) ||
+			common.ChatCacheEstimateModelAllowed(info.GetOriginModelName())),
 		PreserveThinkingSuffix: model_setting.ShouldPreserveThinkingSuffix,
 		PreserveEffortTail:     model_setting.ShouldPreserveEffortTail,
 	}

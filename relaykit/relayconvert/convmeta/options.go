@@ -31,6 +31,12 @@ type Options struct {
 	// PreserveEffortTail reports real model IDs whose names already end in an
 	// effort-like token (for example qwen-max). Nil means "never preserve".
 	PreserveEffortTail func(modelName string) bool
+
+	// EstimateImplicitCacheCreation asks the Claude-response converters to fill
+	// cache_creation_input_tokens for an upstream that only reports cache hits
+	// (implicit prefix cache). Reporting-side only: the billing usage keeps its
+	// counts, so the invoice total is unchanged. The host enables it per model.
+	EstimateImplicitCacheCreation bool
 }
 
 type ClaudeOptions struct {

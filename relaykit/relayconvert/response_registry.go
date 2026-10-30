@@ -14,6 +14,7 @@ import (
 	geminichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/gemini_chat"
 	oaichat "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_chat"
 	oairesponses "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/oai_responses"
+	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/toolconv"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -917,12 +918,16 @@ func convertOAIResponsesResponseToOAIChat(_ context.Context, _ convmeta.Meta, re
 	return ResponsesResponseToChatCompletionsResponse(responsesResponse, id)
 }
 
-func convertOAIResponsesResponseToClaudeMessages(_ context.Context, _ convmeta.Meta, response any) (any, *dto.Usage, error) {
+func convertOAIResponsesResponseToClaudeMessages(_ context.Context, info convmeta.Meta, response any) (any, *dto.Usage, error) {
 	responsesResponse, err := asOAIResponsesResponse(response)
 	if err != nil {
 		return nil, nil, err
 	}
-	return oairesponses.ResponsesResponseToClaudeMessagesResponse(responsesResponse)
+	claudeResponse, usage, err := oairesponses.ResponsesResponseToClaudeMessagesResponse(responsesResponse)
+	if err == nil && claudeResponse != nil && convmeta.OptionsOf(info).EstimateImplicitCacheCreation {
+		sharedclaude.FillEstimatedCacheCreation(claudeResponse.Usage)
+	}
+	return claudeResponse, usage, err
 }
 
 func newOAIChatToOAIResponsesStreamState(options ResponseStreamOptions) any {
