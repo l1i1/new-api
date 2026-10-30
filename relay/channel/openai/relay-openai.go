@@ -707,6 +707,30 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			// no finish_reason at all, which most clients read as success).
 			flushHeldAnswerChunk(c, info, lastStreamData)
 			deliveredChars := max(visibleContentChars, responseTextBuilder.Len())
+			// A transport that dies before a single byte of the answer reached the
+			// caller is safe to retry on another channel: nothing is committed, so the
+			// caller can still receive a complete answer from a healthy channel. This is
+			// the same principle as a clean zero-output cut, except the cut arrives
+			// through the transport path (2026-10-30 08:55-09:25: 27 ch102
+			// scanner_error EOFs in 30 minutes, each closed as 502 with no retry
+			// because a received-but-unwritten frame counted as a commitment).
+			if deliveredChars == 0 && visibleContentChars == 0 && reasoningTextBuilder.Len() == 0 &&
+				toolCount == 0 && len(streamFunctionCallNames) == 0 && len(streamedToolCalls.order) == 0 &&
+				info.SendResponseCount == 0 && (c.Writer == nil || !c.Writer.Written()) &&
+				helper.ResponseCommitStateOf(c) != helper.ResponsePayloadWritten &&
+				info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel {
+				common.SysLog(fmt.Sprintf("zero-output transport cut returns for a channel retry: ch=%d reason=%s", info.ChannelId, info.StreamStatus.EndReason))
+				usage = markUndeliveredStreamUsage(info, undeliveredReason, usage)
+				service.MarkCaptureAbnormalStatus(c, http.StatusBadGateway)
+				cutErr := info.StreamStatus.EndError
+				if cutErr == nil {
+					cutErr = fmt.Errorf("upstream stream terminated: %s", info.StreamStatus.EndReason)
+				}
+				return usage, types.NewOpenAIError(
+					cutErr,
+					types.ErrorCode("server_error"), http.StatusBadGateway,
+					types.ErrOptionWithTruncatedStream())
+			}
 			// A transport cut can land while a tool call is in progress. The buffered
 			// call set may still be complete (the provider only lost the connection)
 			// or recoverable by regeneration, both of which are usable answers, so

@@ -338,3 +338,25 @@ func TestOaiStreamHandlerFlushesHeldRoleFrameBeforeContent(t *testing.T) {
 	require.Greater(t, contentAt, roleAt, "the role frame must precede the content")
 	require.Contains(t, out, `"finish_reason":"stop"`)
 }
+
+// TestOaiStreamHandlerReturnsZeroOutputTransportCutForRetry pins the transport
+// counterpart of the zero-output cut: the connection dies after only framing
+// frames, so no answer byte reached the caller and another channel may serve the
+// request. 2026-10-30 08:55-09:25: 27 such ch102 cuts in 30 minutes were closed as
+// 502 because a received-but-unwritten frame counted as a commitment.
+func TestOaiStreamHandlerReturnsZeroOutputTransportCutForRetry(t *testing.T) {
+	c, info, recorder := newMissingFinishTestContext(t)
+	body := `data: {"id":"chat_1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n"
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&resetAfterReader{data: body}),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+
+	require.NotNil(t, usage)
+	require.NotNil(t, err, "a transport cut before any output is still a failure of this attempt")
+	require.True(t, err.IsTruncatedStream())
+	require.False(t, types.IsSkipRetryError(err), "nothing reached the caller, so another channel may serve the request")
+	require.Zero(t, usage.CompletionTokens, "an undelivered attempt is not billed")
+	require.NotContains(t, recorder.Body.String(), "[DONE]", "the stream must not be closed before the retry decision")
+}
