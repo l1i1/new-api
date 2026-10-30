@@ -397,6 +397,9 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			if err := applyGlm53ToolChoiceNone(c, textRequest); err != nil {
 				return nil, err
 			}
+			if err := applyKimiK3ToolChoiceNone(c, textRequest); err != nil {
+				return nil, err
+			}
 		}
 		mapDeepSeekV4ReasoningEffort(textRequest)
 		// For FIM (Fill-in-the-middle) requests with prefix/suffix, messages is optional
@@ -2016,14 +2019,20 @@ func glm53OrphanToolMessage(messages []dto.Message) bool {
 // user's fit profile, like every other family contract rule. Clean both the
 // typed request and its replay body: OpenAI-compatible pass-through attempts
 // read the body instead of marshaling the DTO, including on channel retries.
-func applyGlm53ToolChoiceNone(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
-	if request == nil || !isGlm53Model(request.Model) {
-		return nil
-	}
-	strategy, ok := request.ToolChoice.(string)
-	if !ok || !strings.EqualFold(strings.TrimSpace(strategy), "none") {
-		return nil
-	}
+// toolChoiceStrategyIsNone reports an explicit tool_choice="none" strategy string.
+// The object form ({"type":"none"}) is not the OpenAI strategy value: the observed
+// endpoints read it as the "specified" class, so it is left alone here.
+func toolChoiceStrategyIsNone(choice any) bool {
+	strategy, ok := choice.(string)
+	return ok && strings.EqualFold(strings.TrimSpace(strategy), "none")
+}
+
+// withholdToolDeclarations drops every tool declaration from both the stored
+// request body and the parsed DTO. A caller that sends tool_choice="none" has
+// forbidden tool calls; withholding the declarations is the only way to make an
+// upstream that ignores the strategy honour it, and it keeps the forwarded body
+// free of the removed fields for passthrough attempts.
+func withholdToolDeclarations(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return err
@@ -2074,6 +2083,28 @@ func applyGlm53ToolChoiceNone(c *gin.Context, request *dto.GeneralOpenAIRequest)
 		request.Messages[i].Tools = nil
 	}
 	return nil
+}
+
+func applyGlm53ToolChoiceNone(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !isGlm53Model(request.Model) || !toolChoiceStrategyIsNone(request.ToolChoice) {
+		return nil
+	}
+	return withholdToolDeclarations(c, request)
+}
+
+// applyKimiK3ToolChoiceNone honours an explicit tool_choice="none" for the Kimi K3
+// family. The official endpoint honours it (live probe 2026-10-30: with tools
+// declared and tool_choice="none" it answers in text and emits no tool call), but
+// the aggregator channels the priority pool also uses ignore the strategy and call
+// the tool anyway — the same request answered with
+// finish_reason="tool_calls" and a get_weather call. Withholding the declarations
+// makes every channel produce the official outcome instead of leaking a call the
+// caller forbade.
+func applyKimiK3ToolChoiceNone(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !isKimiK3Model(request.Model) || !toolChoiceStrategyIsNone(request.ToolChoice) {
+		return nil
+	}
+	return withholdToolDeclarations(c, request)
 }
 
 // IsStrictGlmValidationMessage reports whether an error belongs to the GLM

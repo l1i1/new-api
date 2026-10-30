@@ -215,7 +215,15 @@ func TestGlm53ToolChoiceNoneWithholdsToolDeclarations(t *testing.T) {
 		{name: "absent", model: "glm-5.3-flash", profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "empty string", model: "glm-5.3-flash", choice: `""`, profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "DeepSeek with validation enabled", model: "deepseek-v4-flash", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}},
-		{name: "Kimi with validation enabled", model: "kimi-k3", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, temperature: "1"},
+		// The official endpoint honours tool_choice="none" (live probe 2026-10-30: text
+		// answer, no tool call), but the aggregator channels ignore the strategy and call
+		// the tool anyway, so the declarations are withheld to reproduce the official
+		// outcome on every channel.
+		{name: "Kimi with validation enabled", model: "kimi-k3", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, wantClear: true, temperature: "1"},
+		{name: "Kimi 3.1 with validation enabled", model: "kimi-k3.1-pro", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, wantClear: true, temperature: "1"},
+		{name: "Kimi streaming request", model: "kimi-k3.1-pro", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}, wantClear: true, stream: true, temperature: "1"},
+		{name: "Kimi auto keeps declarations", model: "kimi-k3.1-pro", choice: `"auto"`, profile: dto.OfficialFitProfile{Validate: true}, temperature: "1"},
+		{name: "Kimi required keeps declarations", model: "kimi-k3.1-pro", choice: `"required"`, profile: dto.OfficialFitProfile{Validate: true}, temperature: "1"},
 		{name: "GLM 5.2 with wildcard validation enabled", model: "glm-5.2", choice: `"none"`, profile: dto.OfficialFitProfile{Validate: true}},
 		{name: "authenticated user without fit", model: "glm-5.3-flash", choice: `"none"`, noFit: true},
 		{name: "profile present but validation disabled", model: "glm-5.3-flash", choice: `"none"`},
