@@ -1140,7 +1140,21 @@ const (
 	// 2026-10-26: image inputs must carry inline data (a data: URL after
 	// conversion); a public http(s) URL answers 400 with this text on both the
 	// Anthropic and the OpenAI-compatible endpoint.
-	kimiK3UnsupportedImageURLPrefix  = "Invalid request: unsupported image url: "
+	kimiK3UnsupportedImageURLPrefix = "Invalid request: unsupported image url: "
+	// Video-source contract, live-probed against the official K3 chat endpoint
+	// on 2026-10-30:
+	//   - a part whose type is `video_base64` answers 400 with the invalid-part
+	//     text below (the endpoint has no such part type),
+	//   - a `video_url` whose value is a bare base64 string (no `data:` prefix)
+	//     answers 400 "Invalid request: unsupported video url: <value>".
+	// Only an inline data URI is accepted. Mirroring both locally keeps the
+	// official verdict and text while sparing the request an upstream attempt:
+	// on 2026-10-30 the customer's bare-base64 video batch was routed to an
+	// aggregator that hung for 300s per attempt and answered 500.
+	kimiK3InvalidPartTypePrefix      = "Invalid request: the message at position "
+	kimiK3InvalidPartTypeMiddle      = " with role '"
+	kimiK3InvalidPartTypeSuffix      = "' contains an invalid part type: "
+	kimiK3UnsupportedVideoURLPrefix  = "Invalid request: unsupported video url: "
 	kimiK3ToolChoiceSpecifiedMessage = "tool_choice 'specified' is incompatible with thinking enabled"
 	kimiK3ToolChoiceRequiredMessage  = "Invalid request: tool_choice 'required' requires at least one tool"
 	// The unknown-strategy text interrupts the value with the endpoint's own
@@ -1302,6 +1316,9 @@ func validateKimiK3OfficialFields(request *dto.GeneralOpenAIRequest) error {
 	if err := validateKimiK3ImageSources(request); err != nil {
 		return err
 	}
+	if err := validateKimiK3VideoSources(request); err != nil {
+		return err
+	}
 	if len(request.Messages) == 0 && request.Prefix == nil && request.Suffix == nil {
 		return kimiK3Error(kimiK3MessagesEmptyMessage)
 	}
@@ -1402,6 +1419,52 @@ func validateKimiK3ImageSources(request *dto.GeneralOpenAIRequest) error {
 				continue
 			}
 			return kimiK3Error(kimiK3UnsupportedImageURLPrefix + url)
+		}
+	}
+	return nil
+}
+
+// validateKimiK3VideoSources reproduces the official K3 video-source contract:
+// a video part must be `video_url` carrying an inline data URI. A bare base64
+// value and the `video_base64` part type are both rejected with the endpoint's
+// own texts (live-probed 2026-10-30), so the platform answers the same 400
+// instead of forwarding a shape no channel can serve.
+func validateKimiK3VideoSources(request *dto.GeneralOpenAIRequest) error {
+	if request == nil {
+		return nil
+	}
+	for i := range request.Messages {
+		message := request.Messages[i]
+		parts, ok := message.Content.([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range parts {
+			part, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			partType, _ := part["type"].(string)
+			switch strings.TrimSpace(partType) {
+			case dto.ContentTypeVideoUrl:
+				// Both spellings reach us: a bare url string (Aliyun) and an
+				// object ({"url": ...}, Moonshot). Neither is a data URI here.
+				var value string
+				switch v := part["video_url"].(type) {
+				case string:
+					value = v
+				case map[string]any:
+					value, _ = v["url"].(string)
+				}
+				value = strings.TrimSpace(value)
+				if value == "" || strings.HasPrefix(value, "data:") {
+					continue
+				}
+				return kimiK3Error(kimiK3UnsupportedVideoURLPrefix + value)
+			case "video_base64":
+				return kimiK3Error(kimiK3InvalidPartTypePrefix + strconv.Itoa(i) +
+					kimiK3InvalidPartTypeMiddle + message.Role + kimiK3InvalidPartTypeSuffix + partType)
+			}
 		}
 	}
 	return nil
