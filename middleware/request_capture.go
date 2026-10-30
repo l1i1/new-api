@@ -108,7 +108,12 @@ func RequestCaptureMiddleware() gin.HandlerFunc {
 		// records the real failure status in the context, and the rule's status filter must see it
 		// or the abnormal-traffic rule would silently skip exactly the requests it exists for.
 		effectiveStatus := captureEffectiveStatus(c, writer.status)
-		if !service.CaptureStatusAllowed(rule, effectiveStatus) {
+		// Re-select the rule with the status: a broad failure rule shape-matches every
+		// status by model/path, and asking it about its own filter would hide a narrower
+		// rule that exists for exactly this status (2026-10-30, kimi-400-probe kimi-200-sample).
+		if statusRule := service.MatchRequestCaptureRuleForStatus(tokenID, userID, model, path, effectiveStatus); statusRule != nil {
+			rule = statusRule
+		} else {
 			return
 		}
 		budgetCtx, cancelBudget := context.WithTimeout(context.Background(), 3*time.Second)

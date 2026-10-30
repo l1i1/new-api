@@ -1892,8 +1892,8 @@ func captureLocalValidationRejection(c *gin.Context, err *types.NewAPIError) {
 	tokenID := c.GetInt("token_id")
 	userID := c.GetInt("id")
 	model := localValidationModelName(c)
-	rule := service.MatchRequestCaptureRule(tokenID, userID, model, path)
-	if rule == nil || !service.CaptureStatusAllowed(rule, err.StatusCode) {
+	rule := service.MatchRequestCaptureRuleForStatus(tokenID, userID, model, path, err.StatusCode)
+	if rule == nil {
 		return
 	}
 	payload := buildLocalValidationCapturePayload(c, err, rule, setting, model, path, tokenID, userID)

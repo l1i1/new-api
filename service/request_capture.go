@@ -191,6 +191,47 @@ func MatchRequestCaptureRule(tokenID, userID int, model, path string) *operation
 	return nil
 }
 
+// MatchRequestCaptureRuleForStatus is MatchRequestCaptureRule plus the rule's own status filter.
+//
+// The status filter has to take part in rule SELECTION, not be applied to whatever the shape match
+// returned: a rule that watches failures (500-599) still shape-matches a 400 by model and path, so
+// first-match-wins returns it and the status-specific rule that exists for exactly that status is
+// never reached. 2026-10-30: `kimi-400-probe` (400-499) and `kimi-200-sample` (200-299) never stored
+// anything because `kimi-finish-error` (500-599) shadowed both, and 81k locally rejected image
+// requests left no body to inspect.
+//
+// Callers that only decide whether to tee the response keep using MatchRequestCaptureRule; a caller
+// that reaches this function already knows the status.
+func MatchRequestCaptureRuleForStatus(tokenID, userID int, model, path string, status int) *operation_setting.RequestCaptureRule {
+	setting := operation_setting.GetRequestCaptureSetting()
+	if setting == nil || !setting.Enabled {
+		return nil
+	}
+	for i := range setting.Rules {
+		rule := &setting.Rules[i]
+		if !rule.Enabled || strings.TrimSpace(rule.Name) == "" {
+			continue
+		}
+		if len(rule.TokenIDs) > 0 && !captureContainsInt(rule.TokenIDs, tokenID) {
+			continue
+		}
+		if len(rule.UserIDs) > 0 && !captureContainsInt(rule.UserIDs, userID) {
+			continue
+		}
+		if !captureMatchesAny(rule.ModelRegex, model) {
+			continue
+		}
+		if !captureMatchesAny(rule.PathRegex, path) {
+			continue
+		}
+		if !CaptureStatusAllowed(rule, status) {
+			continue
+		}
+		return rule
+	}
+	return nil
+}
+
 // CaptureBudgetAllows counts this capture against the rule's window and reports whether the rule may
 // still take it. The count lives in Redis rather than in process memory because the fleet serves the
 // same traffic from several nodes, and a limit of twenty that each node applies separately is a

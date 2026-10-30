@@ -308,3 +308,21 @@ func TestDeleteRequestCaptureRemovesOneOrEverything(t *testing.T) {
 	_, err = DeleteRequestCapture(setting, "../outside.json")
 	require.Error(t, err)
 }
+
+// TestMatchRequestCaptureRuleForStatusDoesNotLetABroaderRuleShadowIt pins the 2026-10-30 bug.
+func TestMatchRequestCaptureRuleForStatusDoesNotLetABroaderRuleShadowIt(t *testing.T) {
+	enableCapture(t, operation_setting.RequestCaptureSetting{
+		Enabled: true,
+		Rules: []operation_setting.RequestCaptureRule{
+			{Name: "errors-500", Enabled: true, ModelRegex: []string{"kimi-k3"}, ResponseStatusIn: "500-599"},
+			{Name: "probe-400", Enabled: true, ModelRegex: []string{"kimi-k3"}, ResponseStatusIn: "400-499"},
+		},
+	})
+
+	require.Equal(t, "errors-500", MatchRequestCaptureRule(7, 1, "kimi-k3.1-pro", "/v1/chat/completions").Name,
+		"the shape match still returns the first rule, which is why it cannot be trusted for storage")
+	require.Equal(t, "probe-400", MatchRequestCaptureRuleForStatus(7, 1, "kimi-k3.1-pro", "/v1/chat/completions", 400).Name)
+	require.Equal(t, "errors-500", MatchRequestCaptureRuleForStatus(7, 1, "kimi-k3.1-pro", "/v1/chat/completions", 502).Name)
+	require.Nil(t, MatchRequestCaptureRuleForStatus(7, 1, "kimi-k3.1-pro", "/v1/chat/completions", 200),
+		"a status no rule admits must not borrow an unrelated rule")
+}
