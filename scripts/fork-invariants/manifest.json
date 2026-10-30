@@ -3826,6 +3826,82 @@
      ]
     }
    ]
+  },
+  {
+   "id": "reasoning-cut-to-content-escalation",
+   "title": "reasoning 续写轮「已交付正文后被截」时升级交给 content 续写（重放前缀 + seam 去重 + 可换渠道），交接失败才回 502 零计费；避免客户已读到部分答案仍收到 502",
+   "risk": "high",
+   "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+   "files": [
+    "relay/channel/openai/chat_continuation.go",
+    "relay/common/relay_info.go"
+   ],
+   "anchors": [
+    {
+     "kind": "contains",
+     "file": "relay/channel/openai/chat_continuation.go",
+     "contains": "func escalateReasoningCutToContent"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/channel/openai/chat_continuation.go",
+     "contains": "reasoning repair hand-off failed"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/common/relay_info.go",
+     "contains": "SkipContinuationOutcomeRecord"
+    }
+   ],
+   "tests": [
+    {
+     "file": "relay/channel/openai/chat_continuation_escalation_test.go",
+     "names": [
+      "TestOaiStreamHandlerEscalatesReasoningCutToContent",
+      "TestOaiStreamHandlerEscalationFailureStaysHonest",
+      "TestOaiStreamHandlerEscalationKeepsToolCallAnswer"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "transport-retry-budget-hot-option",
+   "title": "传输失败重试预算做成 DB 热选项：general_setting.transport_retry_budget_seconds 覆盖 RELAY_TRANSPORT_RETRY_BUDGET_SECONDS（启动默认 600→1800s），并 clamp 到 24h，让首字预算 420s 时重试配额能吃满；0 = 沿用 env",
+   "risk": "medium",
+   "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+   "files": [
+    "setting/operation_setting/general_setting.go",
+    "service/relay_error.go",
+    "common/init.go",
+    ".env.example",
+    "docs/stream-timeouts.md"
+   ],
+   "anchors": [
+    {
+     "kind": "contains",
+     "file": "setting/operation_setting/general_setting.go",
+     "contains": "TransportRetryBudgetSeconds"
+    },
+    {
+     "kind": "contains",
+     "file": "service/relay_error.go",
+     "contains": "GetGeneralSetting().TransportRetryBudgetSeconds"
+    },
+    {
+     "kind": "contains",
+     "file": "service/relay_error.go",
+     "contains": "maxTransportRetryBudgetSeconds"
+    }
+   ],
+   "tests": [
+    {
+     "file": "service/relay_error_test.go",
+     "names": [
+      "TestDecideRelayRetryTransportBudgetRuntimeOverride",
+      "TestDecideRelayRetryTransportBudgetExhausted"
+     ]
+    }
+   ]
   }
  ]
 }

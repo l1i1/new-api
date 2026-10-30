@@ -75,6 +75,13 @@ git ls-tree -r -z <ref>   # 逐路径比 blob hash；不要用"看 diff"代替
 
 ## 5. 路由与可靠性
 
+> **2026-10-31（.145）续写交接与重试预算**
+>
+> - **reasoning 续写交接**：reasoning 修复（abnormal/missing）一旦向客户交付了可见正文后被截，不再直接 502，而是把已交付前缀交给 content 续写（重放前缀 + seam 去重 + 可换未试渠道）；交接也失败才保持「诚实 502 + 零计费 + 不合成 finish_reason」。此前该形态（10 分钟 17/21 条 `round_incomplete`）只能 502，客户已读到的正文作废。
+> - **传输失败重试预算可热调**：`RELAY_TRANSPORT_RETRY_BUDGET_SECONDS` 新增 DB 覆盖 `general_setting.transport_retry_budget_seconds`（0 = 沿用 env），启动默认 600s → 1800s，并 clamp 到 24h。原因：首字预算 420s 时 600s 预算只够一次换道，第二条渠道会被预算提前掐断（ch105 300s 挂起即此形态）。
+> - manifest id：`reasoning-cut-to-content-escalation`、`transport-retry-budget-hot-option`。
+
+
 | 改造 | 关键文件 | 检测 |
 | --- | --- | --- |
 | affinity 绑定必须先过约束过滤，视频请求不记录绑定（否则会话黏性把视频请求钉在读不了视频的渠道上） | `middleware/distributor.go` | `middleware/distributor_video_affinity_test.go`、`middleware/distributor_affinity_test.go` |

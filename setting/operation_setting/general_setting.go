@@ -50,6 +50,13 @@ type GeneralSetting struct {
 	// 环境变量（默认 300）。与上一个字段分开是因为两者代价不同：首字预算只影响
 	// 换道前的等待，空闲超时还决定「流中途静默」多久判定为死流。
 	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds"`
+	// 传输失败重试预算（秒）覆盖 RELAY_TRANSPORT_RETRY_BUDGET_SECONDS：一次请求
+	// 在 do_request_failed（上游接受请求后既不回首字也不给响应）这类传输失败上
+	// 最多能烧掉的墙钟时长。它决定「首字预算 × 可尝试次数」能否真正用满重试配额：
+	// 首字预算 420s 时，600s 预算只容得下一次重试，第二条渠道会被预算提前掐断。
+	// 0 = 沿用启动时读到的环境变量（默认 1800，约 4 次首字等待）。与首字/空闲超时
+	// 分开，是因为它限制的是「整条重试链的时间」，不是单次尝试的等待。
+	TransportRetryBudgetSeconds int `json:"transport_retry_budget_seconds"`
 }
 
 // 默认配置

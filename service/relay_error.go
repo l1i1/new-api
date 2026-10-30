@@ -84,6 +84,11 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	return decision
 }
 
+// maxTransportRetryBudgetSeconds bounds the operator-tunable transport retry
+// budget to one day: the value is writable at runtime and a nonsensical one must
+// not overflow time.Duration.
+const maxTransportRetryBudgetSeconds = 24 * 60 * 60
+
 func decideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
@@ -159,7 +164,20 @@ func decideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		// timeout of wall clock. The budget is measured from the first attempt
 		// selection (the policy state is created there), so it bounds this failure
 		// class only; a request that is actually streaming keeps its own budget.
-		if budget := time.Duration(common.RelayTransportRetryBudgetSeconds) * time.Second; budget > 0 {
+		budgetSeconds := common.RelayTransportRetryBudgetSeconds
+		if override := operation_setting.GetGeneralSetting().TransportRetryBudgetSeconds; override > 0 {
+			// The operator can widen this at runtime: the first-byte budget times
+			// the attempt count is the real wall clock a silent-upstream chain may
+			// burn, and the boot-time value cannot be changed without replacing the
+			// instances (same rationale as the streaming timeouts).
+			budgetSeconds = override
+		}
+		if budgetSeconds > maxTransportRetryBudgetSeconds {
+			// Clamp like the stream-timeout knobs: the value is runtime-writable, and an
+			// absurd one overflows int64 nanoseconds into a tiny (or negative) duration.
+			budgetSeconds = maxTransportRetryBudgetSeconds
+		}
+		if budget := time.Duration(budgetSeconds) * time.Second; budget > 0 {
 			if elapsed := time.Since(RequestPolicy(c).StartedAt); elapsed >= budget {
 				return PolicyDecision{Action: "stop", Reason: "transport_retry_budget_exhausted", Source: "system"}
 			}

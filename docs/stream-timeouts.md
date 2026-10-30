@@ -9,12 +9,16 @@
 | --- | --- | --- | --- | --- | --- |
 | 流式首字预算 | `RELAY_STREAM_RESPONSE_HEADER_TIMEOUT` | 300s | `general_setting.stream_first_byte_timeout_seconds` | 只作用于**流式**尝试（`is_stream=true`）的响应头等待；非流式仍用 `RELAY_RESPONSE_HEADER_TIMEOUT`（默认 3600s） | 传输失败（`do_request_failed`）→ 按重试策略换道 |
 | 流式空闲看门狗 | `STREAMING_TIMEOUT` | 300s | `general_setting.stream_idle_timeout_seconds` | 响应头已到之后的 SSE 读循环：**任何**一行数据都会重置时钟，所以它覆盖「首帧迟迟不来」与「流中途静默」 | `stream_status.end_reason=timeout` → 502（未提交正文时才可换道） |
+| 传输失败重试预算 | `RELAY_TRANSPORT_RETRY_BUDGET_SECONDS` | 1800s | `general_setting.transport_retry_budget_seconds` | 一次请求在 `do_request_failed` 这类「上游接了请求却不给响应」的失败上允许烧掉的**整条重试链**墙钟时长（成功开始流式后不受影响） | 到点后不再换道，返回最后一次失败 |
 
 两端点：
 
 - 首字预算是 `http.Transport.ResponseHeaderTimeout`，按**每次尝试**计；一次请求最多在
-  `RELAY_TRANSPORT_RETRY_BUDGET_SECONDS`（默认 600s）里消耗这类失败的总时长。把首字预算调到
-  420s 后，600s 预算内仍容得下一次重试（第二跳最多再等 420s，最坏总计约 14 分钟）。
+  `RELAY_TRANSPORT_RETRY_BUDGET_SECONDS`（默认 1800s）里消耗这类失败的总时长。首字预算 420s +
+  1800s 预算 ⇒ 约 4 次换道机会（旧默认 600s 在 420s 首字下只够一次，第二条渠道会被预算提前掐断，
+  2026-10-30 的 ch105 300s 挂起正是这种「重试配额没吃满」）。
+  注意它只是**上限**：真正能试几次还受 `RetryTimes` 与 EdgeOne 的源站响应超时（约 600s）约束，
+  调大前先确认客户端与中间层的超时不会先把请求切断。
 - 空闲看门狗在流内，`STREAM_TERMINAL_TAIL_TIMEOUT`（默认 20s，0 关闭）会在收到正常
   `finish_reason` 后提前收尾，所以「上游发完终帧却挂住连接」不会等满看门狗。尾窗若被配置到
   ≥ 空闲预算，会按预算的一半生效（否则空闲分支先命中，尾窗永远走不到）。

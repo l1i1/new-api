@@ -900,11 +900,36 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 			break
 		}
 		if roundOut.content != "" && roundOut.finish != "length" {
-			// Visible text already reached the caller and this round died on top of it:
-			// the cut is final. A reasoning repair must never continue on another
-			// channel with a half-delivered answer (the caller would read it twice);
-			// the caller closes the response honestly instead.
-			result.failedReason = relaycommon.ContinuationFailureRoundIncomplete
+			// Visible text already reached the caller and this round died on top of it.
+			// The reasoning resume must not hop again (the caller would read the same
+			// text twice), but the content continuation exists for exactly this shape:
+			// it replays the delivered prefix as the assistant message and seam-dedupes
+			// the tail, so another channel can finish the answer instead of the caller
+			// receiving a 502 for text it has already read.
+			esc, ok := escalateReasoningCutToContent(c, info, total, visible, reasoning, meta)
+			// Bookkeeping is copied on both outcomes: a failed hand-off still
+			// delivered text and spent rounds, and the 502 row must name them
+			// instead of reporting only the reasoning rounds.
+			result.rounds += esc.rounds
+			result.channels = append(result.channels, esc.channels...)
+			result.contentChars += esc.contentChars
+			result.toolCalls += esc.toolCalls
+			result.toolCallsDelivered = result.toolCallsDelivered || esc.toolCallsDelivered
+			if ok {
+				result.finish = esc.finish
+				result.terminal = esc.terminal
+				total = esc.usage
+				result.failedReason = ""
+				recovered = true
+				break
+			}
+			if esc.failedReason != "" {
+				result.failedReason = esc.failedReason
+			} else {
+				result.failedReason = relaycommon.ContinuationFailureRoundIncomplete
+			}
+			// No synthetic finish: the caller closes the response honestly.
+			common.SysLog(fmt.Sprintf("reasoning repair hand-off failed: ch=%d delivered=%d rounds=%d reason=%s", info.ChannelId, len(visible), esc.rounds, result.failedReason))
 			break
 		}
 		if roundOut.err != nil {
@@ -928,8 +953,53 @@ func runThinkingContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUs
 		}
 	}
 	result.usage = total
-	common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && (result.contentChars > 0 || result.toolCallsDelivered))
+	if !info.SkipContinuationOutcomeRecord {
+		common.RecordContinuationOutcome(continuationOutcomeChannel(info, cfg.RoundChannel), result.rounds > 0 && (result.contentChars > 0 || result.toolCallsDelivered))
+	}
 	return result
+}
+
+// escalateReasoningCutToContent hands a reasoning repair that delivered visible
+// text and then died to the content continuation.
+//
+// The two repair runners carry different contracts. A reasoning resume replays
+// the captured thinking, so once it has delivered visible text a second hop would
+// make the caller read that text twice and it must stop. The content runner
+// replays the whole delivered prefix as the assistant message and runs the seam
+// deduper, which is exactly what a visible-prefix cut needs (2026-10-30: the
+// abnormal-reasoning repair on ch106 delivered a partial answer, the ch102 round
+// cut on top of it and the caller got a 502 for text it had already received).
+// Handing over keeps the "no synthetic finish" rule: the recovery either finishes
+// the answer from a real upstream round or the caller still gets the honest 502.
+func escalateReasoningCutToContent(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, visible, reasoning string, meta chatContinuationMeta) (chatContinuationResult, bool) {
+	if c == nil || info == nil || info.ChatContinuation == nil || strings.TrimSpace(visible) == "" {
+		return chatContinuationResult{}, false
+	}
+	cfg := info.ChatContinuation
+	if cfg.Send == nil || cfg.MaxSteps <= 0 {
+		// Reachability guard: the content body builder is wired with the visible-content
+		// continuation switch (relay_chat_continuation_max_steps). A deployment that
+		// only enables the reasoning repair therefore cannot hand off — say so instead
+		// of silently returning the pre-patch 502.
+		common.SysLog("reasoning repair hand-off skipped: visible-content continuation is disabled (relay_chat_continuation_max_steps=0)")
+		return chatContinuationResult{}, false
+	}
+	if strings.TrimSpace(reasoning) != "" {
+		// Same contract as the other visible-prefix call sites: a prefill channel
+		// resumes with the captured thinking beside the prefix.
+		cfg.PrefixReasoning = reasoning
+	}
+	// The outer reasoning runner records the merged outcome for this request; letting
+	// the nested content runner record too would double-count one request in the
+	// per-channel success rate that feeds the continuation whitelist.
+	previous := info.SkipContinuationOutcomeRecord
+	info.SkipContinuationOutcomeRecord = true
+	esc := runChatContinuation(c, info, baseUsage, visible, meta)
+	info.SkipContinuationOutcomeRecord = previous
+	if !continuationResultUsable(esc) {
+		return esc, false
+	}
+	return esc, true
 }
 
 // sendThinkingRound spends one sender on one reasoning-resume round.
@@ -1200,8 +1270,12 @@ func runChatContinuation(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		switch {
 		case round == 0 && hopFirst:
 			// Wall-triggered repair: the channel that already burned a whole wall
-			// cannot finish inside it, so the cross-channel rungs run first.
+			// cannot finish inside it, so the cross-channel rungs run first. When
+			// rotation has no candidate (single-channel whitelist, rotation off, or
+			// every other channel already tried) the same-channel rungs are the only
+			// remaining repair, so they stay on the ladder as the last resort.
 			senders = append(senders, crossRungs...)
+			senders = append(senders, sameRungs...)
 		case round == 0:
 			// Priority ladder: original channel first (native body, then instruction
 			// body), and only then the channel switch with the same two body forms.

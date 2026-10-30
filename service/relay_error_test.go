@@ -790,3 +790,30 @@ func TestOrganizationConcurrencyLimitIsChannelWide(t *testing.T) {
 	err := types.NewOpenAIError(errors.New(msg), types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
 	require.True(t, shouldRelaxOfficialPinForAvailability(c, err))
 }
+
+// TestDecideRelayRetryTransportBudgetRuntimeOverride pins the operator knob: the
+// DB option (general_setting.transport_retry_budget_seconds) must widen the
+// wall-clock bound at runtime, so a 420s first-byte budget can spend the retry
+// quota on more than one channel without a container restart.
+func TestDecideRelayRetryTransportBudgetRuntimeOverride(t *testing.T) {
+	previous := common.RelayTransportRetryBudgetSeconds
+	common.RelayTransportRetryBudgetSeconds = 600
+	t.Cleanup(func() { common.RelayTransportRetryBudgetSeconds = previous })
+
+	setting := operation_setting.GetGeneralSetting()
+	previousOverride := setting.TransportRetryBudgetSeconds
+	setting.TransportRetryBudgetSeconds = 3000
+	t.Cleanup(func() { setting.TransportRetryBudgetSeconds = previousOverride })
+
+	transportErr := types.NewError(errors.New("net/http: timeout awaiting response headers"), types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+
+	// 11 minutes exceeds the boot-time 600s budget but fits the 3000s override.
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	RequestPolicy(c).StartedAt = time.Now().Add(-11 * time.Minute)
+	assert.Equal(t, PolicyDecision{Action: "retry", Reason: "transport_error", Source: "system"}, DecideRelayRetry(c, transportErr, 3))
+
+	// Beyond the override the budget still stops the chain.
+	over, _ := gin.CreateTestContext(httptest.NewRecorder())
+	RequestPolicy(over).StartedAt = time.Now().Add(-51 * time.Minute)
+	assert.Equal(t, PolicyDecision{Action: "stop", Reason: "transport_retry_budget_exhausted", Source: "system"}, DecideRelayRetry(over, transportErr, 3))
+}

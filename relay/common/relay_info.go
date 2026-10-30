@@ -122,6 +122,13 @@ type RelayInfo struct {
 	RequestURLPath     string
 	RequestHeaders     map[string]string
 	ShouldIncludeUsage bool
+	// SkipContinuationOutcomeRecord suppresses the per-channel continuation
+	// success-rate row for a nested runner: when a reasoning repair hands a
+	// delivered prefix to the content continuation, the outer repair records the
+	// merged outcome for the request, and recording the inner one as well would
+	// count the same request twice in the whitelist statistics.
+	SkipContinuationOutcomeRecord bool
+
 	// ClientIncludeUsage is the client's own stream_options.include_usage,
 	// captured before FORCE_STREAM_OPTION rewrites the outgoing request. The two
 	// differ in the case that matters to official-fit response shaping: the flag
