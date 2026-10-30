@@ -198,6 +198,11 @@ type RelayInfo struct {
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
 	ResponseOverrideAudit                 []string
+	// UsageCorrectionApplied records that this response's usage already had the
+	// channel's usage_correction subtracted. A response can pass the client-usage
+	// finalizer more than once (the normal stream close, then a repaired
+	// continuation close), and the correction must be idempotent for it.
+	UsageCorrectionApplied bool
 
 	PriceData hosttypes.PriceData
 

@@ -197,6 +197,41 @@ func continuationReasoningLimit(info *relaycommon.RelayInfo) int {
 	return limit
 }
 
+// finalizeClientUsage clamps the output count to the request budget and then
+// applies the channel's usage_correction (see relay/common/response_override.go).
+// Both steps run before the terminal/usage frames are rendered so the caller,
+// the consume log and the settlement carry the same numbers.
+func finalizeClientUsage(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	clamped := relaycommon.ClampUsageToClientBudget(info, usage)
+	applyResponseUsageCorrection(c, info, usage)
+	return clamped
+}
+
+// applyResponseUsageCorrection subtracts the prompt tokens an upstream injects
+// on its own side (a framing message it prepends because it rejects a
+// user-first conversation) from the usage the caller and the settlement see,
+// when the channel's response_override carries a matching usage_correction. The
+// stored client request feeds the conditions, so the rule describes what the
+// caller asked for, not the upstream-bound body.
+func applyResponseUsageCorrection(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) {
+	if c == nil || info == nil || usage == nil {
+		return
+	}
+	if len(info.ChannelMeta.ResponseOverride) == 0 {
+		return
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		relaycommon.ApplyResponseUsageCorrection(nil, info, usage)
+		return
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		body = nil
+	}
+	relaycommon.ApplyResponseUsageCorrection(body, info, usage)
+}
+
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -655,7 +690,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			if continuationResultUsable(result) {
 				finalUsage := result.usage
-				relaycommon.ClampUsageToClientBudget(info, finalUsage)
+				finalizeClientUsage(c, info, finalUsage)
 				info.StreamFinishReason = result.finish
 				if info.StreamStatus != nil {
 					info.StreamStatus.MarkRecovered()
@@ -702,7 +737,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// usage is settled and recorded: aggregator continuation retries can
 		// accumulate several internal rounds into one usage, and max_tokens is
 		// a hard request-side invariant.
-		relaycommon.ClampUsageToClientBudget(info, usage)
+		finalizeClientUsage(c, info, usage)
 
 		// The transport did not end normally. Two cases are deliberately
 		// separated:
@@ -787,7 +822,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				}
 				if continuationResultUsable(result) {
 					finalUsage := result.usage
-					relaycommon.ClampUsageToClientBudget(info, finalUsage)
+					finalizeClientUsage(c, info, finalUsage)
 					info.StreamFinishReason = result.finish
 					if info.StreamStatus != nil {
 						info.StreamStatus.MarkRecovered()
@@ -896,7 +931,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// Cap the output count before the terminal/usage frames are rendered, so
 	// the client, the consume log and the settlement all carry the same number
 	// (see ClampUsageToClientBudget for why upstream accumulation happens).
-	relaycommon.ClampUsageToClientBudget(info, usage)
+	finalizeClientUsage(c, info, usage)
 
 	// Tool-call deltas forwarded by a resumed round: once the caller holds half a
 	// call, the answer must not be closed as a clean truncation.
@@ -930,7 +965,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// generated the merged usage.
 		if continuationResultUsable(result) {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
@@ -986,13 +1021,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
@@ -1042,13 +1077,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			// normal stream), so keep it billable and do not synthesize an
 			// error nobody can receive.
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
@@ -1128,7 +1163,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
@@ -1143,7 +1178,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			// is fabricated for a round that only delivered text and died.
 			finish := result.finish
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
@@ -1191,13 +1226,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
@@ -1242,13 +1277,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		continuationToolCalls += result.toolCalls
 		if c.Request != nil && c.Request.Context().Err() != nil {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
 			finalUsage := result.usage
-			relaycommon.ClampUsageToClientBudget(info, finalUsage)
+			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
@@ -2039,7 +2074,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	// Cap the output count before the body is rendered for the client and
 	// before the caller settles it: the displayed usage, the consume log and
 	// the invoice must agree, and no legitimate answer can exceed max_tokens.
-	if relaycommon.ClampUsageToClientBudget(info, &simpleResponse.Usage) {
+	if finalizeClientUsage(c, info, &simpleResponse.Usage) {
 		usageModified = true
 	}
 
