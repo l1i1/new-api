@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/streammerge"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/tidwall/sjson"
 
 	"github.com/gin-gonic/gin"
 )
@@ -593,6 +594,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})
+	// Snapshot the cut shape BEFORE any repair branch runs. Two repair branches
+	// below (stream error after visible content, abnormal finish after visible
+	// content) return through truncatedDeliveredFailure when their own resume round
+	// dies, and that return happens before the later snapshot - which is why half
+	// of the production type=5 rows carrying this message had no
+	// admin_info.stream_cut at all (2026-10-30: 635 of 1304 rows in a 3h window).
+	// Repair markers are mirrored on RelayInfo, so a repair that starts after this
+	// point still lands in the same struct; the later snapshot refreshes the
+	// numbers with the final usage.
+	if streamErr != nil || streamAbnormalFinish != "" || !streamFinishSeen {
+		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
+			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
+			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
+	}
 	if streamErr != nil {
 		// An upstream that dies mid-stream after the answer already reached the
 		// caller is the same repair opportunity as an abnormal finish: the prefix
@@ -939,12 +954,20 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish != "" && !reasoningTruncated && visibleContentChars > 0 &&
 		info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
 		info.IsStream && info.RelayFormat == types.RelayFormatOpenAI &&
-		toolCount == 0 && streamChoiceCount <= 1 && len(streamFunctionCallNames) == 0 &&
+		(toolCount == 0 || bufferedToolCallDiscardable(info, toolCount)) &&
+		streamChoiceCount <= 1 && (len(streamFunctionCallNames) == 0 || bufferedToolCallDiscardable(info, len(streamFunctionCallNames))) &&
 		!deepSeekV4FitEnabled(info) &&
 		!info.ChannelSetting.ThinkingToContent && !shouldSuppressReasoningContent(info) &&
 		chatContinuationBudgetLeft(info, usage) > 0 {
-		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		common.SysLog(fmt.Sprintf("abnormal continuation from visible content: ch=%d content=%d tools=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, toolCount, info.ClientMaxTokens, usage.CompletionTokens))
 		markRepairAttempted(info, "abnormal-content")
+		// A wall cut usually lands while the model is writing a tool call. The call
+		// fragment is still held by the tool-call buffer, so the caller has seen only
+		// the preamble: drop the fragment and resume the answer instead of failing a
+		// request that already spent twenty minutes (2026-10-30: 41 of 55 sampled
+		// tool-call 502s cut at 1200-1209s, 100% of their regenerations failed).
+		// The resumed round may deliver the complete calls itself.
+		discardBufferedToolCallFragment(info)
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		if info.ChatContinuation != nil {
@@ -993,8 +1016,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// terminal frame and no continuation could repair it.
 	if streamAbnormalFinish != "" && !reasoningTruncated &&
 		chatAbnormalContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount) &&
-		len(streamFunctionCallNames) == 0 {
+		(len(streamFunctionCallNames) == 0 || bufferedToolCallDiscardable(info, len(streamFunctionCallNames))) {
 		markRepairAttempted(info, "abnormal-reasoning")
+		discardBufferedToolCallFragment(info)
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		result := runAbnormalChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
@@ -1145,9 +1169,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
 		streamMissingFinishMarksTruncation(info, isAudioModel) &&
 		chatMissingVisibleContinuationCandidate(info, usage, visibleContentChars, toolCount, streamChoiceCount, streamFinishSeen) &&
-		len(streamFunctionCallNames) == 0 {
-		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, info.ClientMaxTokens, usage.CompletionTokens))
+		(len(streamFunctionCallNames) == 0 || bufferedToolCallDiscardable(info, len(streamFunctionCallNames))) {
+		common.SysLog(fmt.Sprintf("missing continuation from visible content: ch=%d content=%d tools=%d clientMax=%d completion=%d", info.ChannelId, visibleContentChars, toolCount, info.ClientMaxTokens, usage.CompletionTokens))
 		markRepairAttempted(info, "missing-content")
+		discardBufferedToolCallFragment(info)
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		if info.ChatContinuation != nil {
@@ -1198,10 +1223,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if streamAbnormalFinish == "" && !streamFinishSeen && !reasoningTruncated &&
 		streamMissingFinishMarksTruncation(info, isAudioModel) &&
 		chatMissingContinuationCandidate(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount, streamFinishSeen) &&
-		len(streamFunctionCallNames) == 0 {
+		(len(streamFunctionCallNames) == 0 || bufferedToolCallDiscardable(info, len(streamFunctionCallNames))) {
 		flushHeldAnswerChunk(c, info, lastStreamData)
 		resetContinuationCoalescer(info)
 		markRepairAttempted(info, "missing-reasoning")
+		discardBufferedToolCallFragment(info)
 		result := runMissingChatContinuation(c, info, usage, reasoningTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 		recordContinuationRepair(info, result)
 		if result.rounds > 0 && result.contentChars > 0 && !continuationResultUsable(result) {
@@ -1317,9 +1343,25 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// and the caller sees the cut. One line names the caller, the shape and the
 		// guard, which is what the 2026-10-28 gap investigation lacked.
 		skipReason := truncationRepairSkipReason(info, usage, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount)
+		// A repair that ran and failed is not an idle gateway. The guard list above
+		// only names guards that *refused* a repair, so a repair that started and
+		// lost used to log an empty reason and read like a missing guard (2026-10-30:
+		// the content=20300 row that had run two missing-content rounds looked
+		// unrepaired-by-design). Name the attempt for the log only: the branches
+		// below still key off skipReason.
+		logReason := skipReason
+		if logReason == "" && info.RepairAttempted {
+			logReason = "repair_failed"
+			if info.RepairMode != "" {
+				logReason += ":" + info.RepairMode
+			}
+			if info.RepairFailedReason != "" {
+				logReason += "/" + info.RepairFailedReason
+			}
+		}
 		common.SysLog(fmt.Sprintf("truncated stream unrepaired: ch=%d shape=%s content=%d reasoning=%d tools=%d choices=%d clientMax=%d completion=%d reason=%s",
 			info.ChannelId, undeliveredReason, visibleContentChars, reasoningTextBuilder.Len(), toolCount, streamChoiceCount,
-			info.ClientMaxTokens, usage.CompletionTokens, skipReason))
+			info.ClientMaxTokens, usage.CompletionTokens, logReason))
 		// The caller's own output cap, spent entirely on thinking, is not a cut:
 		// the official endpoint answers this exact shape with a normal terminal
 		// frame carrying finish_reason=length and empty content (probed
@@ -1665,6 +1707,22 @@ func flushHeldAnswerChunk(c *gin.Context, info *relaycommon.RelayInfo, pending s
 	}
 	if err := common.Unmarshal(common.StringToByteSlice(payload), &probe); err != nil {
 		return
+	}
+	// A repair that deliberately dropped a held tool-call fragment must not release
+	// it through this flush: the caller must never receive half an arguments
+	// document, which is the one thing the tool-call buffer exists to prevent
+	// (2026-10-30: the wall-cut repair drops the fragment and resumes the answer;
+	// the held tail can be the last argument fragment itself when the provider dies
+	// without a terminal frame).
+	if info.ToolCallFragmentDiscarded {
+		for index, choice := range probe.Choices {
+			if len(choice.Delta.ToolCalls) > 0 {
+				payload, _ = sjson.Delete(payload, fmt.Sprintf("choices.%d.delta.tool_calls", index))
+			}
+		}
+		if err := common.Unmarshal(common.StringToByteSlice(payload), &probe); err != nil {
+			return
+		}
 	}
 	// The held tail is not always text: a provider can lose the terminal frame
 	// right after the last argument fragment of a tool call, and the caller must
@@ -2196,6 +2254,54 @@ func markRepairAttempted(info *relaycommon.RelayInfo, mode string) {
 	info.RepairMode = mode
 	if info.StreamCutDiagnostics != nil {
 		info.StreamCutDiagnostics.MarkRepairAttempted(mode)
+	}
+}
+
+// bufferedToolCallDiscardable reports whether the tool-call fragment this stream
+// produced was held back by the channel's tool-call buffer and therefore never
+// reached the caller. Such a fragment can be dropped and the answer resumed: the
+// caller has seen only the preamble text, and a resumed round that emits the call
+// delivers a complete, validated set. A channel without buffering has already
+// streamed the fragment to the caller, so it cannot be retracted.
+func bufferedToolCallDiscardable(info *relaycommon.RelayInfo, toolCount int) bool {
+	if info == nil || toolCount <= 0 || info.ToolCallsDelivered {
+		return false
+	}
+	return info.ToolCallBuffer != nil && info.ToolCallBuffer.Enabled() && !info.ToolCallBuffer.Empty()
+}
+
+// discardBufferedToolCallFragment drops a held call fragment before a repair
+// resumes the answer. Invalidating (rather than delivering) the buffer is what
+// keeps the caller from ever seeing half an arguments document, and the flag
+// stops the tail classifier from spending a full regeneration after this repair.
+func discardBufferedToolCallFragment(info *relaycommon.RelayInfo) {
+	if !bufferedToolCallDiscardable(info, 1) {
+		return
+	}
+	info.ToolCallBuffer.MarkInvalid()
+	info.ToolCallFragmentDiscarded = true
+}
+
+// recordToolRepairOutcome carries a regeneration attempt into the cut
+// diagnostics. Regeneration used to leave no trace at all, so the rows it failed
+// looked like "no repair attempted" (2026-10-30: 389 such rows in a 3h window),
+// and the only evidence lived in container log lines that rotate away with the
+// instance.
+func recordToolRepairOutcome(info *relaycommon.RelayInfo, rungs int, reason string) {
+	if info == nil {
+		return
+	}
+	info.RepairAttempted = true
+	if info.RepairMode == "" {
+		info.RepairMode = "tool-repair"
+	}
+	info.RepairRounds = rungs
+	if reason != "" {
+		info.RepairFailedReason = reason
+	}
+	if info.StreamCutDiagnostics != nil {
+		info.StreamCutDiagnostics.MarkRepairAttempted("tool-repair")
+		info.StreamCutDiagnostics.MarkRepairOutcome(rungs, reason)
 	}
 }
 

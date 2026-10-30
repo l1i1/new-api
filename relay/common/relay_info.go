@@ -288,6 +288,14 @@ type RelayInfo struct {
 	// ToolCallsDelivered records that the buffered call set has been written, so
 	// the gate stops holding events for this request.
 	ToolCallsDelivered bool
+	// ToolCallFragmentDiscarded records that a repair dropped a held, undelivered
+	// tool-call fragment and resumed the answer instead. The caller never received
+	// the fragment, so dropping it cannot corrupt an answer; the flag stops the
+	// tail classifier from spending a full regeneration on the same request after
+	// that repair failed (2026-10-30: the wall-cut tool-call shape, where the
+	// regeneration re-runs the whole 20-minute request and never even returns
+	// response headers).
+	ToolCallFragmentDiscarded bool
 	// ContinuationAudit, when non-nil, records a transparent continuation that
 	// repaired this response. The successful request's type=2 row carries it as
 	// admin_info.continuation, so the repair rate can be measured from /api/log/

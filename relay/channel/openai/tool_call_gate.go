@@ -165,6 +165,13 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if info.ToolCallsDelivered || terminalForwarded {
 		return nil, false
 	}
+	if info.ToolCallFragmentDiscarded {
+		// A repair already dropped this fragment and resumed the answer; that resume
+		// failed and its outcome is already recorded. Regenerating now would spend
+		// another full upstream wall on a request that is already past the one it hit
+		// (2026-10-30: 0 of 17 wall-cut regenerations produced a usable call set).
+		return nil, false
+	}
 	if continuationElapsedCapReached(info) {
 		// The repair wall clock already expired: a fresh generation would start after
 		// it and cannot finish inside the contract, so the honest error stays.
@@ -174,6 +181,10 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	if remaining <= 0 {
 		return nil, false
 	}
+	// From here on a regeneration is really attempted: record it so a failed row
+	// never reads as "no repair attempted" again.
+	markRepairAttempted(info, "tool-repair")
+	rungs := 0
 	// Retry ladder: the original channel first (prompt cache warm, no selection
 	// cost), then the cross-channel hop. A rung that returns an unusable call set
 	// hands over to the next one instead of failing the request outright.
@@ -186,14 +197,17 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	// Same-channel rung: the prompt cache there is warm, but a request that already
 	// spent a whole upstream wall is not sent back into the wall.
 	if cfg.RegenerateSame != nil && (info.StartTime.IsZero() || time.Since(info.StartTime) < continuationHopFirstAfter) {
+		rungs++
 		if finalUsage, ok, _ := regenerateToolCallsFromRung(c, info, baseUsage, remaining, cfg.RegenerateSame, "same-channel", meta); ok {
 			// The original channel cut this answer mid-call; the next request in the
 			// conversation must not be pinned back to it just because the call was
 			// recovered elsewhere. The next success re-records the binding.
+			recordToolRepairOutcome(info, rungs, "")
 			service.DropStickyRoutingAfterUpstreamFailure(c)
 			return finalUsage, true
 		}
 		if c.Request != nil && c.Request.Context().Err() != nil {
+			recordToolRepairOutcome(info, rungs, "tool_repair_client_gone")
 			return nil, false
 		}
 	}
@@ -209,16 +223,20 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 		if continuationElapsedCapReached(info) {
 			break
 		}
+		rungs++
 		finalUsage, ok, retryable := regenerateToolCallsFromRung(c, info, baseUsage, remaining, cfg.Regenerate, "cross-channel", meta)
 		if ok {
+			recordToolRepairOutcome(info, rungs, "")
 			service.DropStickyRoutingAfterUpstreamFailure(c)
 			return finalUsage, true
 		}
 		if !retryable {
-			break
+			recordToolRepairOutcome(info, rungs, "tool_repair_rejected")
+			return nil, false
 		}
 		if c.Request != nil && c.Request.Context().Err() != nil {
-			break
+			recordToolRepairOutcome(info, rungs, "tool_repair_client_gone")
+			return nil, false
 		}
 		if cfg.Tried != nil && cfg.RoundChannel != nil {
 			if failed := cfg.RoundChannel.Last(); failed != 0 {
@@ -226,6 +244,7 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			}
 		}
 	}
+	recordToolRepairOutcome(info, rungs, "tool_repair_failed")
 	return nil, false
 }
 

@@ -386,6 +386,18 @@ func chatContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Usage, co
 	return true
 }
 
+// toolCallsBlockContinuation reports whether the tool-call fragment observed on
+// this stream makes a continuation impossible. A fragment held by the channel's
+// tool-call buffer never reached the caller, so a repair may drop it and resume
+// the answer (the resumed round can deliver the complete call set); only a call
+// the caller already received is final.
+func toolCallsBlockContinuation(info *relaycommon.RelayInfo, toolCalls int) bool {
+	if toolCalls <= 0 {
+		return false
+	}
+	return !bufferedToolCallDiscardable(info, toolCalls)
+}
+
 // chatAbnormalContinuationCandidate decides whether a stream that died with an
 // abnormal finish_reason can be resumed from its captured reasoning. It is the
 // 900s cut-off shape: no visible content, a large reasoning trace, an abnormal
@@ -398,7 +410,7 @@ func chatAbnormalContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.U
 	if cfg.Send == nil || cfg.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCallsBlockContinuation(info, toolCalls) || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) {
@@ -441,7 +453,7 @@ func chatMissingContinuationCandidate(info *relaycommon.RelayInfo, usage *dto.Us
 	if cfg.Send == nil || cfg.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCallsBlockContinuation(info, toolCalls) || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) {
@@ -496,7 +508,7 @@ func chatMissingVisibleContinuationCandidate(info *relaycommon.RelayInfo, usage 
 	if info.ChatContinuation.Send == nil || info.ChatContinuation.MaxSteps <= 0 || info.ChatContinuation.Missing.MaxSteps <= 0 {
 		return false
 	}
-	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCalls > 0 || choiceCount > 1 {
+	if !info.IsStream || info.RelayFormat != types.RelayFormatOpenAI || toolCallsBlockContinuation(info, toolCalls) || choiceCount > 1 {
 		return false
 	}
 	if deepSeekV4FitEnabled(info) {
@@ -539,7 +551,7 @@ func truncationRepairSkipReason(info *relaycommon.RelayInfo, usage *dto.Usage, c
 	if info.ChatContinuation == nil {
 		return "continuation_not_configured"
 	}
-	if toolCalls > 0 {
+	if toolCallsBlockContinuation(info, toolCalls) {
 		return "tool_calls_in_progress"
 	}
 	if choiceCount > 1 {
@@ -628,6 +640,16 @@ func runLengthThinkingChatContinuation(c *gin.Context, info *relaycommon.RelayIn
 // repair when the hot option is unset.
 const continuationRoundMaxElapsedDefaultSeconds = 1500
 
+// continuationPostCutToolCallGraceSeconds is the extra wall clock a repair gets
+// when it resumes a request that was cut at the provider's stream wall while a
+// tool call was being written. Such a request spent the whole round budget on
+// thinking before the wall (2026-10-30: cuts at 1200-1209s with ~20k completion
+// tokens and ~70k reasoning characters), so a start-anchored budget leaves only
+// seconds for the resumed round - the round could never deliver the call. The
+// grace applies only to that shape, which never repaired at all before, so an
+// ordinary cut keeps the original budget exactly.
+const continuationPostCutToolCallGraceSeconds = 600
+
 // continuationElapsedCapReached reports whether this request has spent enough
 // wall clock that another continuation round is not worth starting. The cap is
 // counted from the request start (not from the cut), so three rounds on three
@@ -640,7 +662,11 @@ func continuationElapsedCapReached(info *relaycommon.RelayInfo) bool {
 	if seconds <= 0 {
 		seconds = continuationRoundMaxElapsedDefaultSeconds
 	}
-	return time.Since(info.StartTime) > time.Duration(seconds)*time.Second
+	limit := time.Duration(seconds) * time.Second
+	if info.ToolCallFragmentDiscarded {
+		limit += continuationPostCutToolCallGraceSeconds * time.Second
+	}
+	return time.Since(info.StartTime) > limit
 }
 
 // continuationRotationEnabled reports whether later rounds may rotate to another
