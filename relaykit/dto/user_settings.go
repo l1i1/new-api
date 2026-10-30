@@ -64,6 +64,13 @@ type OfficialFitProfile struct {
 	// 因此它既不是「整族收窄」，也不等于「送往官方端点」——通过实测的转售渠道即可承接，
 	// 官方端点常常是零流量。字段名保留 route 以免迁移已存配置。
 	Route bool `json:"route,omitempty"` // 保真路由：形状分歧的请求收窄到官方行为渠道，priority 仍决定具体渠道
+	// ForcingToolChoiceStrict answers the "specified" rejection for the forcing
+	// tool_choice strategies while thinking is enabled. The live endpoint accepts a
+	// string "required" there (probed 2026-10-30 on k3.1-pro and k3, every thinking
+	// control), so it is off by default; the official-fidelity suite owner reads the
+	// forcing class as illegal in that state and asks for the rejection, so the
+	// stricter reading is opt-in per profile instead of a platform-wide rule.
+	ForcingToolChoiceStrict bool `json:"forcing_tool_choice_strict,omitempty"`
 }
 
 // OfficialFitProfileFor returns the most specific profile matching model.

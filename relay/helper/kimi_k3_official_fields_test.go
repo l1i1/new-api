@@ -1,15 +1,21 @@
 package helper
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	coreconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/officialfit"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -587,3 +593,66 @@ func TestStrictFitContentTypeByFamily(t *testing.T) {
 func boolPtr(value bool) *bool { return &value }
 
 func intPtr(v int) *int { return &v }
+
+// TestKimiK3StrictForcingToolChoice pins the opt-in profile flag: the live endpoint
+// accepts a string "required" while thinking is enabled (probed 2026-10-30), so the
+// platform default stays permissive and only a profile that asks for the stricter
+// official-fidelity reading answers the "specified" rejection.
+func TestKimiK3StrictForcingToolChoice(t *testing.T) {
+	tools := []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "get_weather"}}}
+	cases := []struct {
+		name    string
+		request *dto.GeneralOpenAIRequest
+		wantErr bool
+	}{
+		{name: "required while thinking is on", request: &dto.GeneralOpenAIRequest{Model: "kimi-k3.1-pro",
+			ToolChoice: "required", Tools: tools}, wantErr: true},
+		{name: "required with explicit thinking enabled", request: &dto.GeneralOpenAIRequest{Model: "kimi-k3.1-pro",
+			THINKING: json.RawMessage(`{"type":"enabled"}`), ToolChoice: "required", Tools: tools}, wantErr: true},
+		{name: "required while thinking is off", request: &dto.GeneralOpenAIRequest{Model: "kimi-k3.1-pro",
+			THINKING: json.RawMessage(`{"type":"disabled"}`), ToolChoice: "required", Tools: tools}},
+		{name: "auto is never rejected", request: &dto.GeneralOpenAIRequest{Model: "kimi-k3.1-pro",
+			ToolChoice: "auto", Tools: tools}},
+		{name: "none is never rejected", request: &dto.GeneralOpenAIRequest{Model: "kimi-k3.1-pro",
+			ToolChoice: "none", Tools: tools}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateKimiK3StrictForcingToolChoice(testCase.request)
+			if testCase.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), kimiK3ToolChoiceSpecifiedMessage)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestKimiK3StrictForcingToolChoiceCallSite pins the call site: the gate applies the
+// rule only when the profile carries the flag, so a profile without it keeps the
+// endpoint's own permissive answer.
+func TestKimiK3StrictForcingToolChoiceCallSite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"model":"kimi-k3.1-pro","max_tokens":256,
+	  "messages":[{"role":"user","content":"北京今天天气怎么样？请使用工具。"}],
+	  "tools":[{"type":"function","function":{"name":"get_weather",
+	    "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
+	  "tool_choice":"required","stream":false}`
+	ctx := func(profile dto.OfficialFitProfile) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		common.SetContextKey(c, coreconstant.ContextKeyUserSetting, dto.UserSetting{
+			OfficialFit: &dto.OfficialFitConfig{Profile: map[string]dto.OfficialFitProfile{"kimi-k3": profile}},
+		})
+		t.Cleanup(func() { common.CleanupBodyStorage(c) })
+		return c
+	}
+	_, err := GetAndValidateTextRequest(ctx(dto.OfficialFitProfile{Validate: true}), relayconstant.RelayModeChatCompletions)
+	require.NoError(t, err, "the platform default keeps the endpoint's permissive answer")
+
+	_, err = GetAndValidateTextRequest(ctx(dto.OfficialFitProfile{Validate: true, ForcingToolChoiceStrict: true}), relayconstant.RelayModeChatCompletions)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), kimiK3ToolChoiceSpecifiedMessage)
+}

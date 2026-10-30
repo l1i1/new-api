@@ -387,6 +387,11 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 			if err := validateKimiK3OfficialFields(textRequest); err != nil {
 				return nil, err
 			}
+			if profile.ForcingToolChoiceStrict {
+				if err := validateKimiK3StrictForcingToolChoice(textRequest); err != nil {
+					return nil, err
+				}
+			}
 			if err := validateGlm53OfficialFields(textRequest); err != nil {
 				return nil, err
 			}
@@ -1592,6 +1597,26 @@ func validateKimiK3ToolChoice(request *dto.GeneralOpenAIRequest) error {
 		// endpoint renders for every other unexpected shape, so they keep it.
 		return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
 	}
+}
+
+// validateKimiK3StrictForcingToolChoice answers the "specified" rejection for a
+// forcing tool_choice strategy while thinking is enabled. The live endpoint accepts
+// the string "required" in that state (probed 2026-10-30: 200 and a real tool call
+// on k3.1-pro and k3, with the default state and with every thinking control), so
+// this rule is opt-in through the profile's ForcingToolChoiceStrict flag: the
+// official-fidelity suite owner reads the forcing class as illegal there.
+func validateKimiK3StrictForcingToolChoice(request *dto.GeneralOpenAIRequest) error {
+	if request == nil || !isKimiK3Model(request.Model) {
+		return nil
+	}
+	strategy, ok := request.ToolChoice.(string)
+	if !ok || !strings.EqualFold(strings.TrimSpace(strategy), "required") {
+		return nil
+	}
+	if !kimiK3ThinkingEnabled(request) {
+		return nil
+	}
+	return kimiK3Error(kimiK3ToolChoiceSpecifiedMessage)
 }
 
 // kimiK3DynamicToolCount counts tools declared on messages, which participate
