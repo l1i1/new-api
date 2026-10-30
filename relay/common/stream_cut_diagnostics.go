@@ -20,6 +20,17 @@ type StreamCutDiagnostics struct {
 	ReasoningChars      int    `json:"reasoning_chars"`
 	ToolCalls           int    `json:"tool_calls,omitempty"`
 	ChoiceCount         int    `json:"choice_count"`
+	// What the upstream stream itself wrote, recorded only when the cut carried
+	// no answer payload at all. The counters above cannot tell an upstream that
+	// sent nothing from one that sent a JSON error object with HTTP 200 or an
+	// edge page: every one of those reads as zero. On 2026-10-30 a row that said
+	// only "upstream stream ended without a terminal finish_reason" reached six
+	// upstreams (official included) with zero events each and could not be
+	// explained from /api/log/. UpstreamBytes is the full byte count (0 = the
+	// upstream closed without writing anything); UpstreamHead is a bounded,
+	// control-character-flattened prefix with a trailing marker when truncated.
+	UpstreamHead  string `json:"upstream_head,omitempty"`
+	UpstreamBytes int64  `json:"upstream_bytes,omitempty"`
 
 	// The caller's output budget versus what the provider already produced. A
 	// non-positive BudgetLeft by itself disables every continuation mode, which

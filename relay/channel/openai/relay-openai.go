@@ -244,6 +244,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.ToolCallBuffer = relaycommon.NewChatToolCallBuffer(common.ChatToolBufferChannelAllowed(info.ChannelId))
 	}
 
+	// Keep the first bytes the upstream wrote. A cut that delivered no answer
+	// payload reads as zero counters whether the upstream sent nothing at all,
+	// answered with a JSON error object behind HTTP 200, or closed the socket
+	// mid-frame; only the bytes tell those apart (2026-10-30: six upstreams,
+	// official included, ended the same request with zero events each).
+	streamHead := newStreamHeadTee(streamHeadCaptureLimit)
+	resp.Body = streamHead.wrap(resp.Body)
+
 	defer service.CloseResponseBodyGracefully(resp)
 
 	model := info.UpstreamModelName
@@ -642,6 +650,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
 			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
 			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
+		attachStreamHead(info.StreamCutDiagnostics, streamHead)
 	}
 	if streamErr != nil {
 		// An upstream that dies mid-stream after the answer already reached the
@@ -1114,6 +1123,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.StreamCutDiagnostics = buildStreamCutDiagnostics(info, usage,
 			visibleContentChars, reasoningTextBuilder.Len(), reasoningTruncated,
 			toolCount, streamChoiceCount, streamAbnormalFinish, streamAbnormalFinish == "" && !streamFinishSeen)
+		attachStreamHead(info.StreamCutDiagnostics, streamHead)
 	}
 
 	// Provider output cap reached during the thinking phase without a stated
