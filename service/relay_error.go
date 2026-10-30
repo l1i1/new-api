@@ -73,7 +73,13 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// requirement stays in the context, so the log still shows which rules pinned
 	// the request.
 	if shouldRelaxOfficialPinForAvailability(c, err) {
-		RelaxOfficialPinForAvailability(c, fmt.Sprintf("official capacity failure (%d) and no sibling credential left", err.StatusCode))
+		reason := fmt.Sprintf("official capacity failure (%d)", err.StatusCode)
+		if !IsEngineOverloadFailure(err.Error()) {
+			// A credential-scoped failure only relaxes once rotation is spent;
+			// a channel-wide one (overload, concurrency cap) relaxes at once.
+			reason += " and no sibling credential left"
+		}
+		RelaxOfficialPinForAvailability(c, reason)
 	}
 	return decision
 }
@@ -417,6 +423,20 @@ func IsEngineOverloadFailure(message string) bool {
 		"temporarily unavailable",
 		"server overloaded",
 		"overloaded, please try again",
+		// An account/organization concurrency cap (Moonshot official:
+		// "request reached max organization concurrency: 50") refuses every
+		// credential of that account the same way. Rotating sibling keys only
+		// walks the retry into the same wall, so treat it as channel-wide: the
+		// retry excludes the channel and a fidelity pin steps aside at once
+		// (operator policy 2026-10-30: availability over fidelity when the
+		// official capacity cannot serve; 「可用性优先兜底」).
+		//
+		// Only the organization-scoped phrasing is matched: a generic
+		// "concurrency limit" can describe a single credential's cap, where
+		// rotating the channel's sibling keys is exactly the right move, so
+		// classifying it as channel-wide would drop a healthy channel.
+		"max organization concurrency",
+		"organization concurrency",
 	} {
 		if strings.Contains(msg, keyword) {
 			return true
