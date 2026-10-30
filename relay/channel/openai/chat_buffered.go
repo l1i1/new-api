@@ -186,6 +186,12 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		// The caller dereferences the typed pointer, so never hand back a nil.
 		usage = &dto.Usage{}
 	}
+	// A non-streaming caller of an internal-stream channel reaches this
+	// assembler instead of OpenaiHandler, so the client-usage finalizer (budget
+	// clamp + the channel's usage_correction) must run here too: the caller, the
+	// consume log and the settlement have to carry the same numbers.
+	finalizeClientUsage(c, info, &final.Usage)
+	*usage = final.Usage
 
 	// A channel that cannot disable thinking answered a thinking-off request:
 	// hide the reasoning it produced and give the body the official shape (no
@@ -199,6 +205,11 @@ func OaiChatBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	if thinkingOffEmulationActive(info) {
 		responseBody = omitZeroCompletionTokenDetailsFromBody(responseBody)
+	}
+	if info.RelayFormat == types.RelayFormatOpenAI && kimiK3FitEnabled(info) {
+		// The assembled body is the client's only copy of the response on this
+		// route, so the K3 official-shape rewrite has to run here as well.
+		responseBody = FitKimiK3TextResponseBodyForAdapters(c, info, responseBody, &final.Usage)
 	}
 	// The upstream answered with SSE; a non-streaming client must not inherit that
 	// content type, and IOCopyBytesGracefully copies upstream headers verbatim.

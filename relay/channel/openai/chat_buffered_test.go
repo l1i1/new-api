@@ -1,13 +1,17 @@
 package openai
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	atomcommon "github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
@@ -238,4 +242,60 @@ func TestOaiChatBufferedStreamHandlerKeepsCutAsErrorWithoutContinuation(t *testi
 	_, err := OaiChatBufferedStreamHandler(ctx, info, sseResponse(cut))
 	require.NotNil(t, err)
 	require.False(t, types.IsSkipRetryError(err), "a short cut is still retryable")
+}
+
+// bufferedClientRequest attaches the caller's request body so the response-side
+// rules that read it (usage_correction conditions) see the client shape.
+func bufferedClientRequest(t *testing.T, ctx *gin.Context, body string) {
+	t.Helper()
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	t.Cleanup(func() { atomcommon.CleanupBodyStorage(ctx) })
+}
+
+// TestOaiChatBufferedHandlerAppliesUsageCorrection pins the production gap found
+// on 2026-10-30: channels with internal_stream_for_nonstream serve a non-streaming
+// client through this assembler (not OpenaiHandler), so the channel's
+// usage_correction was silently skipped — the caller kept seeing the upstream's
+// injected +2 prompt tokens while the same request as a stream was corrected.
+func TestOaiChatBufferedHandlerAppliesUsageCorrection(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	bufferedClientRequest(t, ctx, `{"model":"kimi-k3.1-pro","messages":[{"role":"user","content":"Hi"}]}`)
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"usage_correction":{"prompt_tokens_delta":-2,
+		"conditions":[{"path":"messages.0.role","mode":"full","value":"user"}]}}`), &document))
+	info.ChannelMeta.ResponseOverride = document
+
+	sse := "data: {\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":88,\"completion_tokens\":4,\"total_tokens\":92}}\n\n" +
+		"data: [DONE]\n\n"
+
+	usage, apiErr := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 86, usage.PromptTokens, "the returned usage must carry the corrected count")
+	require.Equal(t, 86+4, usage.TotalTokens)
+	require.Contains(t, recorder.Body.String(), `"prompt_tokens":86`, "the client body must carry the corrected count")
+}
+
+// TestOaiChatBufferedHandlerAppliesK3OfficialShape pins the same routing gap for
+// the K3 official-shape fit: a non-streaming client of an internal-stream channel
+// must not receive the aggregator's usage extensions.
+func TestOaiChatBufferedHandlerAppliesK3OfficialShape(t *testing.T) {
+	ctx, recorder, info := bufferedStreamContext(t)
+	info.RelayMode = relayconstant.RelayModeChatCompletions
+	info.OriginModelName = "kimi-k3.1-pro"
+	info.UserSetting = dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{
+		Profile: map[string]dto.OfficialFitProfile{"kimi-k3": {Shape: true}},
+	}}
+
+	sse := "data: {\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":88,\"completion_tokens\":4,\"total_tokens\":92,\"prompt_tokens_details\":{\"cached_tokens\":0,\"text_tokens\":0,\"audio_tokens\":0,\"image_tokens\":0},\"claude_cache_creation_5_m_tokens\":0}}\n\n" +
+		"data: [DONE]\n\n"
+
+	_, apiErr := OaiChatBufferedStreamHandler(ctx, info, sseResponse(sse))
+	require.Nil(t, apiErr)
+	body := recorder.Body.String()
+	require.NotContains(t, body, "claude_cache_creation", "aggregator usage extensions must not reach the client")
+	require.Contains(t, body, `"cache_write_tokens"`, "official usage shape must be emitted")
 }
