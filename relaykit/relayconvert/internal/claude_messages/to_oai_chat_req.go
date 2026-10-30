@@ -180,10 +180,21 @@ func ClaudeMessagesRequestToOpenAIChat(ctx context.Context, claudeRequest dto.Cl
 				}
 				switch mediaMsg.Type {
 				case "text", "input_text":
+					// Explicit prompt-cache breakpoints are an OpenRouter/Anthropic-surface
+					// extension. A plain OpenAI-compatible upstream rejects the field
+					// outright - Kimi aggregators answer 400 "Invalid parameter:
+					// 'cache_control' (explicit cache breakpoints) is not supported for
+					// kimi-k3.1-pro; prompt cache is applied automatically" (2026-10-30
+					// 09:37-10:46 cdp /v1/messages rows against ch102, which the retry
+					// cascade then spent on other channels for nothing). Keep the field
+					// only for the dialect that documents it: implicit caching does not
+					// need a breakpoint, so dropping it changes no cache behaviour there.
 					message := dto.MediaContent{
-						Type:         "text",
-						Text:         mediaMsg.GetText(),
-						CacheControl: mediaMsg.CacheControl,
+						Type: "text",
+						Text: mediaMsg.GetText(),
+					}
+					if isOpenRouter {
+						message.CacheControl = mediaMsg.CacheControl
 					}
 					mediaMessages = append(mediaMessages, message)
 				case "image":

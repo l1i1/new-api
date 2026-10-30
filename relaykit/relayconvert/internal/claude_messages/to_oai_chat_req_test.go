@@ -2,6 +2,7 @@ package claudemessages
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -184,4 +185,50 @@ func TestClaudeMessagesRequestToOpenAIChatUserImageSources(t *testing.T) {
 	require.Len(t, base64Parts, 2)
 	require.NotNil(t, base64Parts[0].GetImageMedia())
 	assert.Equal(t, "data:image/png;base64,"+imageData, base64Parts[0].GetImageMedia().Url)
+}
+
+// TestClaudeMessagesRequestToOpenAIChatDropsExplicitCacheBreakpoints pins the
+// 2026-10-30 customer-visible 400: a Claude request carrying cache_control
+// breakpoints was converted into an OpenAI chat payload that kept the field, and
+// the Kimi aggregator upstream rejected the whole request ("'cache_control'
+// (explicit cache breakpoints) is not supported ...; prompt cache is applied
+// automatically"). Only the OpenRouter dialect documents the field, so only that
+// dialect may receive it.
+func TestClaudeMessagesRequestToOpenAIChatDropsExplicitCacheBreakpoints(t *testing.T) {
+	breakpoint := json.RawMessage(`{"type":"ephemeral"}`)
+	maxTokens := uint(64)
+	claudeReq := dto.ClaudeRequest{
+		Model:     "kimi-k3.1-pro",
+		MaxTokens: &maxTokens,
+		Messages: []dto.ClaudeMessage{
+			{
+				Role: "user",
+				Content: []dto.ClaudeMediaMessage{
+					{Type: "text", Text: lo.ToPtr("cached prefix"), CacheControl: breakpoint},
+					{Type: "text", Text: lo.ToPtr("question")},
+				},
+			},
+		},
+	}
+
+	convert := func(openRouter bool) string {
+		req, err := ClaudeMessagesRequestToOpenAIChat(context.Background(), claudeReq, &convmeta.Values{
+			OriginModelName:   "kimi-k3.1-pro",
+			UpstreamModelName: "kimi-k3.1-pro",
+			Options:           &convmeta.Options{OpenRouterDialect: openRouter},
+		})
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 1)
+		encoded, err := json.Marshal(req.Messages[0].Content)
+		require.NoError(t, err)
+		return string(encoded)
+	}
+
+	plain := convert(false)
+	require.NotContains(t, plain, "cache_control", "a plain OpenAI upstream rejects the field; the request must not carry it")
+	require.Contains(t, plain, "cached prefix", "the text itself still travels")
+	require.Contains(t, plain, "question")
+
+	openRouter := convert(true)
+	require.Contains(t, openRouter, "cache_control", "the OpenRouter dialect documents and accepts the breakpoint")
 }
