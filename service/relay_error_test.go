@@ -771,3 +771,22 @@ func TestEngineOverloadRelaxesOfficialPin(t *testing.T) {
 		types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
 	require.True(t, shouldRelaxOfficialPinForAvailability(c, err))
 }
+
+// An organization concurrency cap is channel-wide: the account refuses every
+// credential identically, so rotating sibling keys only walks the retry into the
+// same wall. Operator policy 2026-10-30 (「可用性优先兜底」): treat it like an
+// engine overload — exclude the channel, release the pin at once, let the
+// ordinary pool serve.
+func TestOrganizationConcurrencyLimitIsChannelWide(t *testing.T) {
+	msg := "status_code=429, Your account org-37af7c6850d74943a694e6c173b7c73d<ak-fd> request reached max organization concurrency: 50, please try again after 1 seconds"
+	require.True(t, IsEngineOverloadFailure(msg))
+	// An org-scoped TPM rate limit stays credential-scoped on purpose: a sibling
+	// credential of another organization can still succeed there.
+	require.False(t, IsEngineOverloadFailure(
+		"Your account org-x / proj-y <ak-z> request reached organization TPM rate limit, current: 1, limit: 2"))
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(c, constant.ContextKeyV4OfficialPin, true)
+	err := types.NewOpenAIError(errors.New(msg), types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
+	require.True(t, shouldRelaxOfficialPinForAvailability(c, err))
+}
