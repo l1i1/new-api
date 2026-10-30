@@ -36,6 +36,39 @@ import (
 // leaves the request untouched, and the existing per-family validation or the
 // upstream answers it. Message-level dynamic tools are not filtered: they are a
 // K3 extension, and allowed_tools does not define how it references them.
+
+// allowedToolEntryName extracts the function name from one allowed_tools entry.
+// Besides the classic {"type":"function","function":{"name":"x"}} reference, the
+// suites send the flattened {"type":"function","name":"x"} and the bare name
+// string; all three name the same declaration, so accept them instead of letting
+// an unparsed reference fall through to the "specified" rejection.
+func allowedToolEntryName(entry any) (string, bool) {
+	reference, ok := entry.(map[string]any)
+	if !ok {
+		name, ok := entry.(string)
+		if !ok {
+			return "", false
+		}
+		name = strings.TrimSpace(name)
+		return name, name != ""
+	}
+	if entryType, ok := reference["type"].(string); ok && entryType != "function" {
+		return "", false
+	}
+	if function, ok := reference["function"].(map[string]any); ok {
+		if name, ok := function["name"].(string); ok {
+			name = strings.TrimSpace(name)
+			return name, name != ""
+		}
+		return "", false
+	}
+	if name, ok := reference["name"].(string); ok {
+		name = strings.TrimSpace(name)
+		return name, name != ""
+	}
+	return "", false
+}
+
 func normalizeAllowedToolsToolChoice(request *dto.GeneralOpenAIRequest) {
 	if request == nil {
 		return
@@ -47,33 +80,29 @@ func normalizeAllowedToolsToolChoice(request *dto.GeneralOpenAIRequest) {
 	if choiceType, _ := choice["type"].(string); choiceType != "allowed_tools" {
 		return
 	}
-	allowed, ok := choice["allowed_tools"].(map[string]any)
-	if !ok {
-		return
+	// Two container spellings reach us: the nested one
+	// {"allowed_tools":{"mode":...,"tools":[...]}} and the flattened one the
+	// OpenAI-compatible suites use, with mode/tools beside the type. The flattened
+	// form used to fall through to the per-family validator, which classifies any
+	// object choice as the forced "specified" class and answered
+	// "tool_choice 'specified' is incompatible with thinking enabled" for a bounded
+	// choice (2026-10-30 customer report).
+	container := choice
+	if nested, ok := choice["allowed_tools"].(map[string]any); ok {
+		container = nested
 	}
-	mode, _ := allowed["mode"].(string)
+	mode, _ := container["mode"].(string)
 	if mode != "auto" && mode != "required" {
 		return
 	}
-	entries, ok := allowed["tools"].([]any)
+	entries, ok := container["tools"].([]any)
 	if !ok {
 		return
 	}
 	names := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		reference, ok := entry.(map[string]any)
+		name, ok := allowedToolEntryName(entry)
 		if !ok {
-			return
-		}
-		if entryType, _ := reference["type"].(string); entryType != "function" {
-			return
-		}
-		function, ok := reference["function"].(map[string]any)
-		if !ok {
-			return
-		}
-		name, _ := function["name"].(string)
-		if name = strings.TrimSpace(name); name == "" {
 			return
 		}
 		names[name] = struct{}{}

@@ -121,6 +121,36 @@ func TestNormalizeAllowedToolsToolChoice(t *testing.T) {
 			wantChoice: "auto",
 		},
 		{
+			// The customer suite's spelling (2026-10-30): flattened container and
+			// {"type":"function","name":...} references.
+			name: "flattened container with flattened entries",
+			body: `{
+			  "messages": [{"role": "user", "content": "hi"}],
+			  "tools": [
+			    {"type": "function", "function": {"name": "get_weather"}},
+			    {"type": "function", "function": {"name": "get_time"}}
+			  ],
+			  "tool_choice": {"type": "allowed_tools", "mode": "auto",
+			    "tools": [{"type": "function", "name": "get_weather"}]}
+			}`,
+			wantNames:  []string{"get_weather"},
+			wantChoice: "auto",
+		},
+		{
+			name: "flattened container with required mode",
+			body: `{
+			  "messages": [{"role": "user", "content": "hi"}],
+			  "tools": [
+			    {"type": "function", "function": {"name": "get_weather"}},
+			    {"type": "function", "function": {"name": "get_time"}}
+			  ],
+			  "tool_choice": {"type": "allowed_tools", "mode": "required",
+			    "tools": [{"name": "get_time"}, "get_weather"]}
+			}`,
+			wantNames:  []string{"get_weather", "get_time"},
+			wantChoice: "required",
+		},
+		{
 			name: "non-function allowed entry is left alone",
 			body: `{
 			  "messages": [{"role": "user", "content": "hi"}],
@@ -244,6 +274,30 @@ func TestGetAndValidateTextRequestNormalizesAllowedTools(t *testing.T) {
 	  "tools": [{"type": "function", "function": {"name": "get_weather"}}],
 	  "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
 	}`
+
+	// The 2026-10-30 customer suite spelling: flattened container, flattened
+	// function references, thinking on. It must reach the upstream as a bounded
+	// "auto" choice with only the allowed declaration, not answer the K3
+	// "specified" 400.
+	customerSuite := `{
+	  "model": "kimi-k3.1-pro",
+	  "max_tokens": 256,
+	  "stream": false,
+	  "messages": [{"role": "user", "content": "北京今天天气怎么样？请按需使用工具。"}],
+	  "tools": [
+	    {"type": "function", "function": {"name": "get_weather", "description": "查询城市天气",
+	      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
+	    {"type": "function", "function": {"name": "get_time", "description": "查询城市时间",
+	      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+	  ],
+	  "tool_choice": {"type": "allowed_tools", "mode": "auto",
+	    "tools": [{"type": "function", "name": "get_weather"}]}
+	}`
+	flattened, err := GetAndValidateTextRequest(newKimiK3FitContext(t, customerSuite), relayconstant.RelayModeChatCompletions)
+	require.NoError(t, err, "a bounded allowed_tools choice must not be read as the forced specified class")
+	assert.Equal(t, "auto", flattened.ToolChoice)
+	require.Len(t, flattened.Tools, 1)
+	assert.Equal(t, "get_weather", flattened.Tools[0].Function.Name)
 	_, err = GetAndValidateTextRequest(newKimiK3FitContext(t, forcing), relayconstant.RelayModeChatCompletions)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), kimiK3ToolChoiceSpecifiedMessage)
