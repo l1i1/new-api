@@ -183,25 +183,10 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 	// just hit it, because that channel will hit the same wall again - the retry
 	// would burn the caller's remaining patience and then fail anyway
 	// (2026-10-30 03:15 ch91 900s cut shape).
-	rungs := make([]struct {
-		fn    func(int) (*http.Response, error)
-		label string
-	}, 0, 2)
+	// Same-channel rung: the prompt cache there is warm, but a request that already
+	// spent a whole upstream wall is not sent back into the wall.
 	if cfg.RegenerateSame != nil && (info.StartTime.IsZero() || time.Since(info.StartTime) < continuationHopFirstAfter) {
-		rungs = append(rungs, struct {
-			fn    func(int) (*http.Response, error)
-			label string
-		}{cfg.RegenerateSame, "same-channel"})
-	}
-	rungs = append(rungs, struct {
-		fn    func(int) (*http.Response, error)
-		label string
-	}{cfg.Regenerate, "cross-channel"})
-	for _, rung := range rungs {
-		if rung.fn == nil {
-			continue
-		}
-		if finalUsage, ok := regenerateToolCallsFromRung(c, info, baseUsage, remaining, rung.fn, rung.label, meta); ok {
+		if finalUsage, ok, _ := regenerateToolCallsFromRung(c, info, baseUsage, remaining, cfg.RegenerateSame, "same-channel", meta); ok {
 			// The original channel cut this answer mid-call; the next request in the
 			// conversation must not be pinned back to it just because the call was
 			// recovered elsewhere. The next success re-records the binding.
@@ -209,7 +194,36 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 			return finalUsage, true
 		}
 		if c.Request != nil && c.Request.Context().Err() != nil {
+			return nil, false
+		}
+	}
+	// Cross-channel rung. The hop selector only records a channel as "tried" once a
+	// round actually reached it, so a transport failure (the usual outcome for these
+	// wall-cut regenerations: "do request failed", status 524, header timeout) leaves
+	// the failed channel selectable; the next attempt would land on it again unless
+	// the failed channel is excluded explicitly. One attempt per cut wasted the whole
+	// repair on a single flaky hop (2026-10-30 09:10-09:16: 16 of 17 regenerations
+	// failed on the first hop and the request closed as 502).
+	const maxCrossChannelAttempts = 3
+	for attempt := 0; cfg.Regenerate != nil && attempt < maxCrossChannelAttempts; attempt++ {
+		if continuationElapsedCapReached(info) {
 			break
+		}
+		finalUsage, ok, retryable := regenerateToolCallsFromRung(c, info, baseUsage, remaining, cfg.Regenerate, "cross-channel", meta)
+		if ok {
+			service.DropStickyRoutingAfterUpstreamFailure(c)
+			return finalUsage, true
+		}
+		if !retryable {
+			break
+		}
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			break
+		}
+		if cfg.Tried != nil && cfg.RoundChannel != nil {
+			if failed := cfg.RoundChannel.Last(); failed != 0 {
+				cfg.Tried.Add(failed)
+			}
 		}
 	}
 	return nil, false
@@ -218,20 +232,33 @@ func regenerateToolCalls(c *gin.Context, info *relaycommon.RelayInfo, baseUsage 
 // regenerateToolCallsFromRung runs one regeneration rung and, when its call set is
 // complete, delivers it as the answer. A failed rung returns false so the caller
 // can try the next retry priority.
-func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, remaining int, regenerate func(int) (*http.Response, error), label string, meta chatContinuationMeta) (*dto.Usage, bool) {
+func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, baseUsage *dto.Usage, remaining int, regenerate func(int) (*http.Response, error), label string, meta chatContinuationMeta) (*dto.Usage, bool, bool) {
+	// The regenerated request is rebuilt as a NON-streaming body, but the relay info
+	// still carries the original stream flag, so the adaptor applies the tighter
+	// streaming response-header budget (RELAY_STREAM_RESPONSE_HEADER_TIMEOUT) to a
+	// call that may legitimately return headers only after the generation. For a
+	// 49k-token wall-cut request that budget expires and the whole repair is lost to
+	// "net/http: timeout awaiting response headers" (2026-10-30 09:07-09:12 ch37).
+	// Flip the flag for the call so the non-streaming budget applies, then restore
+	// it: everything after this point must see the original request shape again.
+	wasStream := info.IsStream
+	info.IsStream = false
 	resp, err := regenerate(remaining)
+	info.IsStream = wasStream
 	if err != nil || resp == nil || resp.Body == nil {
 		rootcommon.SysLog(fmt.Sprintf("tool call regeneration rung failed: rung=%s ch=%d err=%v", label, info.ChannelId, err))
-		return nil, false
+		return nil, false, true
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		rootcommon.SysLog(fmt.Sprintf("tool call regeneration rung status %d: rung=%s ch=%d", resp.StatusCode, label, info.ChannelId))
-		return nil, false
+		// 5xx/429 are hop failures another channel can serve; a 4xx is the request
+		// itself and would fail on every channel.
+		return nil, false, resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil || len(raw) == 0 {
-		return nil, false
+		return nil, false, true
 	}
 	var payload struct {
 		ID      string `json:"id"`
@@ -254,11 +281,13 @@ func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, ba
 		Usage *dto.Usage `json:"usage"`
 	}
 	if err := rootcommon.Unmarshal(raw, &payload); err != nil || len(payload.Choices) == 0 {
-		return nil, false
+		return nil, false, true
 	}
 	choice := payload.Choices[0]
 	if strings.TrimSpace(choice.Message.Content) != "" || len(choice.Message.ToolCalls) == 0 {
-		return nil, false
+		// The hop answered with text or without calls: another channel would answer
+		// the same way, so this is not a transient hop failure.
+		return nil, false, false
 	}
 	buffer := relaycommon.NewChatToolCallBuffer(true)
 	deltas := make([]dto.ToolCallResponse, 0, len(choice.Message.ToolCalls))
@@ -277,7 +306,7 @@ func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, ba
 	buffer.Observe([]dto.ChatCompletionsStreamResponseChoice{{Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ToolCalls: deltas}}})
 	if err := buffer.Validate(); err != nil {
 		rootcommon.SysLog(fmt.Sprintf("tool call regeneration produced an unusable call set: ch=%d err=%v", info.ChannelId, err))
-		return nil, false
+		return nil, false, false
 	}
 	id := payload.ID
 	if id == "" {
@@ -293,16 +322,16 @@ func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, ba
 	}
 	consolidated := buffer.ConsolidatedChunk(id, created, model)
 	if consolidated == "" {
-		return nil, false
+		return nil, false, false
 	}
 	info.ToolCallsDelivered = true
 	if err := writeStreamData(c, info, consolidated, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	finalUsage := baseUsage
 	if payload.Usage != nil {
 		if !service.ValidUsage(payload.Usage) {
-			return nil, false
+			return nil, false, false
 		}
 		finalUsage = mergeRegeneratedUsage(baseUsage, payload.Usage)
 	}
@@ -316,5 +345,5 @@ func regenerateToolCallsFromRung(c *gin.Context, info *relaycommon.RelayInfo, ba
 	helper.ExtendWriteDeadline(c)
 	HandleFinalResponse(c, info, "", meta.ID, meta.Created, meta.Model, meta.SystemFingerprint, finalUsage, false)
 	rootcommon.SysLog(fmt.Sprintf("tool call regenerated on another channel: ch=%d calls=%d prompt=%d completion=%d", info.ChannelId, len(choice.Message.ToolCalls), finalUsage.PromptTokens, finalUsage.CompletionTokens))
-	return finalUsage, true
+	return finalUsage, true, false
 }

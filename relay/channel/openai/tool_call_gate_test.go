@@ -465,3 +465,68 @@ func TestToolBufferSalvagesCallAfterTransportCut(t *testing.T) {
 		t.Fatalf("want one tool_calls terminal: %s", body)
 	}
 }
+
+// TestToolRegenerationRetriesAnotherChannelAfterTransportFailure pins the
+// 2026-10-30 09:10-09:16 finding: the hop selector only marks a channel as tried
+// once a round reached it, so a transport failure left the failed channel
+// selectable and one bad hop ended the repair (16 of 17 regenerations failed).
+// The ladder now retries the cross-channel rung, excluding the failed channel, and
+// the regenerated request runs with the non-stream flag so the non-streaming
+// response-header budget applies instead of the tighter streaming one.
+func TestToolRegenerationRetriesAnotherChannelAfterTransportFailure(t *testing.T) {
+	enableToolBuffer(t, 787, true, true)
+	stream := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"先查"},"finish_reason":null}]}`,
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"9"}}]},"finish_reason":null}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	regenerated := `{"id":"chat_9","created":9,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_9","type":"function","function":{"name":"calculator","arguments":"{\"expr\":\"9+9\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`
+
+	roundChannel := &relaycommon.ContinuationRoundChannel{}
+	tried := &relaycommon.TriedChannels{}
+	attempts := 0
+	var streamFlags []bool
+	c, info, recorder := newAbnormalContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		return nil, http.ErrHandlerTimeout
+	}, 1, 64000, 1<<20)
+	info.ChannelId = 787
+	info.ChatContinuation.Abnormal = nil
+	info.ChatContinuation.RoundChannel = roundChannel
+	info.ChatContinuation.Tried = tried
+	info.ChatContinuation.Regenerate = func(int) (*http.Response, error) {
+		attempts++
+		streamFlags = append(streamFlags, info.IsStream)
+		if attempts == 1 {
+			roundChannel.Set(901)
+			return nil, errors.New("do request failed: timeout awaiting response headers")
+		}
+		roundChannel.Set(902)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(regenerated))}, nil
+	}
+
+	usage, err := OaiStreamHandler(c, info, continuationSSEResponse(stream))
+	if err != nil {
+		t.Fatalf("a second hop must recover the call: %v", err)
+	}
+	if usage == nil || usage.CompletionTokens != 3 {
+		t.Fatalf("the recovered call is billed once: %+v", usage)
+	}
+	if attempts != 2 {
+		t.Fatalf("want two cross-channel attempts, got %d", attempts)
+	}
+	if !tried.Contains(901) {
+		t.Fatal("the channel that failed at transport must be excluded from the next hop")
+	}
+	for i, flag := range streamFlags {
+		if flag {
+			t.Fatalf("regenerated request %d ran with the streaming flag; the non-stream budget must apply", i)
+		}
+	}
+	if info.IsStream != true {
+		t.Fatal("the original streaming flag must be restored after the rung")
+	}
+	if !strings.Contains(recorder.Body.String(), `9+9`) {
+		t.Fatalf("the recovered call must be delivered: %s", recorder.Body.String())
+	}
+}
