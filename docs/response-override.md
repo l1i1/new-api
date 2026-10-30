@@ -56,3 +56,31 @@ Route 的语义（2026-10-03 定稿）是"能做到拟合官方的渠道按优�
 ## 与路由的闭环
 
 配置 `response_override` → 探测套件走的就是这条改写后的链路 → 实测通过 → 该渠道获得该形状的资格 → 按优先级承接。反之，改写没能真正拟合（探测仍发散）就继续顺延到下一优先级渠道——判据始终是实测，不是配置声明。
+
+## 例外：上游自注 framing 的计量修正（`usage_correction`）
+
+上面"只做形态、不碰计量"的约束有一个刻意的、只能**减**的例外：有些上游会在生成前自己插一条消息（2026-10-30 实测：某 Kimi 供应商不接受 `messages[0].role == "user"`，会插入一条空格系统消息、把调用方的消息挪到第二条），然后把这条 framing 计入 `prompt_tokens`。同一条请求官方报 86、经该渠道报 88，差异恒定为 2（跨 1.3 万 token 的 prompt 仍然只差 2）。
+
+这类 token 不是调用方生成的，计进客户账目不诚实，但网关无法阻止上游插入。`response_override` 因此接受一个 `usage_correction` 块：
+
+```json
+{
+  "usage_correction": {
+    "prompt_tokens_delta": -2,
+    "conditions": [
+      {"path": "messages.0.role", "mode": "full", "value": "user"},
+      {"path": "model", "mode": "full", "value": "kimi-k3.1-pro"}
+    ],
+    "logic": "AND",
+    "apply_to_billing": true
+  }
+}
+```
+
+- `prompt_tokens_delta` **必须是负数**：写时校验拒绝正数或 0——这条规则只能扣掉"上游自己加的"，绝不能用来隐藏调用方真实产生的 token。
+- `conditions` 复用同一套条件语言，但条件路径读的是**调用方的请求体**（即 `messages[0].role` 描述的是客户发来的形态，不是发往上游的改写后形态）。空条件表示该渠道所有响应都修正。
+- `apply_to_billing` 默认 `true`：客户看到的用量、消费日志、结算口径一起扣，三者始终一致；显式设 `false` 才只修客户端视图。
+- 运行时还有两道保险：扣到 0 为止（不出负账），且每个响应只扣一次（同一响应可能经过两次收尾，如流式续写）。
+- 与形态改写共用同一个渠道字段、同一套缓存与配置纪元广播：改配置约 2 秒全舰队生效，无需发版。审计行形如 `usage_correction: prompt_tokens -2 (billing=true)`，与 `ro` 数组一起进请求日志。
+
+适用于 OpenAI 兼容聊天路径（非流式整体响应与流式收尾）；规则未配置时零开销。
