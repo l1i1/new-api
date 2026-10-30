@@ -464,3 +464,34 @@ func TestFitKimiK3StreamEventKeepsRealToolCalls(t *testing.T) {
 		t.Errorf("a real tool call must be kept: %s", patched)
 	}
 }
+
+// TestKimiK3FitFallsBackToTheRequestModel pins the 2026-10-30 production gap: the
+// distributor does not publish the original model on the chat route, so the gate
+// read an empty name and skipped the official shape — a /v1/chat/completions K3
+// answer then carried the aggregator's usage extensions while the same request as
+// a stream carried the official shape. The gate must fall back to the parsed
+// request's model instead of treating an empty field as "not a K3 request".
+func TestKimiK3FitFallsBackToTheRequestModel(t *testing.T) {
+	base := func(model string) *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			Request:     &dto.GeneralOpenAIRequest{Model: model},
+			RelayMode:   relayconstant.RelayModeChatCompletions,
+			RelayFormat: types.RelayFormatOpenAI,
+			UserSetting: dto.UserSetting{OfficialFit: &dto.OfficialFitConfig{
+				Profile: map[string]dto.OfficialFitProfile{"kimi-k3": {Shape: true}},
+			}},
+		}
+	}
+	if info := base("kimi-k3.1-pro"); !kimiK3FitEnabled(info) {
+		t.Fatal("an empty OriginModelName must fall back to the request model, not disable the fit")
+	}
+	if info := base("glm-5.3"); kimiK3FitEnabled(info) {
+		t.Fatal("the fallback must not enable the K3 fit for another family")
+	}
+	// An explicitly published origin model still wins over the request field.
+	info := base("glm-5.3")
+	info.OriginModelName = "kimi-k3"
+	if !kimiK3FitEnabled(info) {
+		t.Fatal("a populated OriginModelName must keep working")
+	}
+}

@@ -108,11 +108,41 @@ func kimiK3FitEnabled(info *relaycommon.RelayInfo) bool {
 	if info == nil || info.RelayMode != relayconstant.RelayModeChatCompletions || info.RelayFormat != types.RelayFormatOpenAI {
 		return false
 	}
-	if officialfit.FamilyOf(info.OriginModelName) != officialfit.FamilyKimiK3 {
+	model := fitModelName(info)
+	if officialfit.FamilyOf(model) != officialfit.FamilyKimiK3 {
 		return false
 	}
-	profile, ok := info.UserSetting.OfficialFitProfileFor(info.OriginModelName)
+	profile, ok := info.UserSetting.OfficialFitProfileFor(model)
 	return ok && profile.Shape
+}
+
+// fitModelName is the client-facing model name a fit profile is keyed on. The
+// distributor does not publish the original model into the request context on
+// every route (2026-10-30: the Claude path has it, a plain
+// /v1/chat/completions request reaches the channel handler with
+// info.OriginModelName empty), and an empty name made every fit profile lookup
+// miss — the K3 non-stream body then shipped the aggregator's usage extensions
+// while the official-shape rewrite the client contract asks for never ran. Fall
+// back to the parsed request's own model name instead of reading "not a K3
+// request" out of an empty field.
+func fitModelName(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(info.OriginModelName); name != "" {
+		return name
+	}
+	switch request := info.Request.(type) {
+	case *dto.GeneralOpenAIRequest:
+		if request != nil {
+			return strings.TrimSpace(request.Model)
+		}
+	case *dto.OpenAIResponsesRequest:
+		if request != nil {
+			return strings.TrimSpace(request.Model)
+		}
+	}
+	return ""
 }
 
 // FitKimiK3TextResponseBodyForAdapters exposes the K3 non-stream body fit to
