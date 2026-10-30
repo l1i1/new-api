@@ -897,3 +897,86 @@ func TestNewStreamScannerCallerLimit(t *testing.T) {
 	assert.Equal(t, "data: ok", scanner.Text())
 	require.NoError(t, scanner.Err())
 }
+
+// TestStreamDeadlines pins the resolution order and the guards around the idle
+// budget: the operator option wins over the boot-time environment value, 0 and
+// negative option values fall back, a value that would overflow time.Duration is
+// clamped, and a terminal-tail grace is never allowed to sit at or above the
+// budget (the idle branch would win first and the tail close would never fire).
+func TestStreamDeadlines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		option    int
+		env       int
+		tail      int
+		wantIdle  time.Duration
+		wantGrace time.Duration
+	}{
+		{name: "env only", option: 0, env: 300, tail: 20, wantIdle: 300 * time.Second, wantGrace: 20 * time.Second},
+		{name: "option wins", option: 420, env: 300, tail: 20, wantIdle: 420 * time.Second, wantGrace: 20 * time.Second},
+		{name: "option zero falls back", option: 0, env: 240, tail: 20, wantIdle: 240 * time.Second, wantGrace: 20 * time.Second},
+		{name: "negative option falls back", option: -5, env: 240, tail: 20, wantIdle: 240 * time.Second, wantGrace: 20 * time.Second},
+		{name: "nothing configured", option: 0, env: 0, tail: 20, wantIdle: 300 * time.Second, wantGrace: 20 * time.Second},
+		{name: "tail at budget is halved", option: 100, env: 300, tail: 100, wantIdle: 100 * time.Second, wantGrace: 50 * time.Second},
+		{name: "tail above budget is halved", option: 20, env: 300, tail: 20, wantIdle: 20 * time.Second, wantGrace: 10 * time.Second},
+		{name: "tail disabled", option: 420, env: 300, tail: 0, wantIdle: 420 * time.Second, wantGrace: 0},
+		{name: "absurd option is clamped", option: 1 << 40, env: 300, tail: 20, wantIdle: 24 * time.Hour, wantGrace: 20 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idle, grace := streamDeadlines(tc.option, tc.env, tc.tail)
+			assert.Equal(t, tc.wantIdle, idle)
+			assert.Equal(t, tc.wantGrace, grace)
+		})
+	}
+}
+
+// TestStreamScannerHandler_OptionOverridesIdleTimeout proves the option actually
+// reaches the live idle guard: the environment value stays generous (30s) while
+// the option asks for one second, so the stream must be cut by the option. The
+// operator writes it through /api/option/ to raise the first-token budget for a
+// slow upstream, so a value that never reached the guard would silently keep the
+// old ceiling.
+func TestStreamScannerHandler_OptionOverridesIdleTimeout(t *testing.T) {
+	// Not parallel: modifies global settings.
+	oldTimeout := constant.StreamingTimeout
+	oldOption := operation_setting.GetGeneralSetting().StreamIdleTimeoutSeconds
+	constant.StreamingTimeout = 30
+	operation_setting.GetGeneralSetting().StreamIdleTimeoutSeconds = 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldTimeout
+		operation_setting.GetGeneralSetting().StreamIdleTimeoutSeconds = oldOption
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		fmt.Fprint(pw, "data: {\"id\":1}\n")
+		time.Sleep(2 * time.Second)
+		pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the option-driven stream timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.IsNormalEnd())
+}

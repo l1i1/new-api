@@ -3772,6 +3772,60 @@
      ]
     }
    ]
+  },
+  {
+   "id": "stream-timeouts-hot-options",
+   "title": "流式首字/空闲超时做成 DB 热选项：general_setting.stream_first_byte_timeout_seconds 覆盖流式响应头（首字节）预算 RELAY_STREAM_RESPONSE_HEADER_TIMEOUT，stream_idle_timeout_seconds 覆盖 SSE 空闲看门狗 STREAMING_TIMEOUT；0 = 沿用启动时 env，写一次 ≤SYNC_FREQUENCY 生效、无需发版",
+   "risk": "medium",
+   "source": "FORK-CHANGES.md › 5. 路由与可靠性",
+   "files": [
+    "setting/operation_setting/general_setting.go",
+    "relay/channel/api_request.go",
+    "relay/helper/stream_scanner.go",
+    "docs/stream-timeouts.md"
+   ],
+   "anchors": [
+    {
+     "kind": "contains",
+     "file": "setting/operation_setting/general_setting.go",
+     "contains": "stream_first_byte_timeout_seconds"
+    },
+    {
+     "kind": "contains",
+     "file": "setting/operation_setting/general_setting.go",
+     "contains": "stream_idle_timeout_seconds"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/channel/api_request.go",
+     "contains": "GetGeneralSetting().StreamFirstByteTimeoutSeconds"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/helper/stream_scanner.go",
+     "contains": "GetGeneralSetting().StreamIdleTimeoutSeconds"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/helper/stream_scanner.go",
+     "contains": "func streamDeadlines"
+    }
+   ],
+   "tests": [
+    {
+     "file": "relay/channel/api_request_stream_timeout_test.go",
+     "names": [
+      "TestRelayStreamResponseHeaderTimeoutOptionOverride"
+     ]
+    },
+    {
+     "file": "relay/helper/stream_scanner_test.go",
+     "names": [
+      "TestStreamDeadlines",
+      "TestStreamScannerHandler_OptionOverridesIdleTimeout"
+     ]
+    }
+   ]
   }
  ]
 }

@@ -53,6 +53,66 @@ func NewStreamScanner(reader io.Reader, maxBytes ...int) *bufio.Scanner {
 	return scanner
 }
 
+const (
+	// defaultStreamingTimeout is the idle guard used when neither the option nor
+	// the environment sets one (STREAMING_TIMEOUT defaults to 300 at boot).
+	defaultStreamingTimeout = 300 * time.Second
+	// maxStreamIdleTimeoutSeconds bounds an operator-configured idle budget. The
+	// clamp happens on the integer seconds, before the time.Duration conversion:
+	// seconds beyond ~292 years overflow int64 nanoseconds and wrap into an
+	// arbitrary (possibly tiny) duration, which would fail every stream on the
+	// first tick instead of only the stuck ones. A day is already far past any
+	// legitimate first-token budget.
+	maxStreamIdleTimeoutSeconds = int64(24 * 60 * 60)
+)
+
+// streamTimeoutSeconds converts a setting in seconds (option or environment)
+// into a duration, clamping to maxStreamIdleTimeoutSeconds so an absurd value
+// cannot overflow. <= 0 means "not configured".
+func streamTimeoutSeconds(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	if int64(seconds) > maxStreamIdleTimeoutSeconds {
+		seconds = int(maxStreamIdleTimeoutSeconds)
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// streamDeadlines resolves the idle guard and the terminal-tail grace for one
+// stream.
+//
+// STREAMING_TIMEOUT and STREAM_TERMINAL_TAIL_TIMEOUT are environment variables
+// read once at boot. The operator-facing
+// general_setting.stream_idle_timeout_seconds option overrides the idle budget
+// without a release (the option sync loop applies it within SYNC_FREQUENCY
+// seconds, and an admin write also notifies the fleet through the config epoch).
+// That matters because upstream first-token latency moves with the upstream's
+// own load: the same route can stall for minutes during a resource crunch and
+// answer promptly afterwards, while container environment variables can only be
+// changed by replacing the instances. 0 keeps the boot-time value. See
+// docs/stream-timeouts.md.
+//
+// The tail grace must stay strictly below the idle budget: both deadlines are
+// evaluated on the same tick and the idle branch is checked after the tail
+// branch, so a grace at or above the idle budget would never be reached. Halving
+// it keeps a real safety net instead of leaving an operator to believe one is
+// armed (the boot wiring logs the same warning for the environment variables).
+func streamDeadlines(optionSeconds, envSeconds, tailSeconds int) (idle time.Duration, tailGrace time.Duration) {
+	idle = streamTimeoutSeconds(envSeconds)
+	if optionSeconds > 0 {
+		idle = streamTimeoutSeconds(optionSeconds)
+	}
+	if idle <= 0 {
+		idle = defaultStreamingTimeout
+	}
+	tailGrace = streamTimeoutSeconds(tailSeconds)
+	if tailGrace > 0 && tailGrace >= idle {
+		tailGrace = idle / 2
+	}
+	return idle, tailGrace
+}
+
 func copyCodexSSEHeaders(c *gin.Context, resp *http.Response) {
 	if c == nil || c.Writer == nil || resp == nil {
 		return
@@ -99,15 +159,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
-	if streamingTimeout <= 0 {
-		streamingTimeout = 300 * time.Second
-	}
-	// terminalTailGrace ends a stream shortly after a terminal finish_reason when
-	// the provider keeps the connection open without [DONE]. A completed answer
-	// must not be failed by the idle guard just because the transport never
-	// closed. 0 disables it.
-	terminalTailGrace := time.Duration(constant.StreamTerminalTailTimeout) * time.Second
+	streamingTimeout, terminalTailGrace := streamDeadlines(
+		operation_setting.GetGeneralSetting().StreamIdleTimeoutSeconds,
+		constant.StreamingTimeout,
+		constant.StreamTerminalTailTimeout,
+	)
 	// The idle guard now watches two deadlines, so it polls instead of sleeping
 	// for the whole streaming timeout. One tick per second per live stream is
 	// negligible next to the token traffic it reads.

@@ -623,14 +623,26 @@ func nonStreamKeepAliveApplies(info *common.RelayInfo, settings *operation_setti
 // non-streaming attempts keep the general budget because an adaptor may
 // legitimately return headers only after the whole generation. 0 means "use the
 // shared default client".
+//
+// The operator-facing general_setting.stream_first_byte_timeout_seconds option
+// overrides the boot-time environment value without a restart (the option sync
+// loop installs it within SYNC_FREQUENCY seconds, and the config epoch notifies
+// the fleet right after an admin write). It exists because an upstream's time to
+// first byte moves with its own load: the same route can need minutes during a
+// resource crunch and seconds afterwards, while container environment variables
+// cannot be changed without replacing the instances. See docs/stream-timeouts.md.
 func relayStreamResponseHeaderTimeout(info *common.RelayInfo) int {
 	if info == nil || !info.IsStream {
 		return 0
 	}
-	if common2.RelayStreamResponseHeaderTimeout <= 0 {
+	budget := common2.RelayStreamResponseHeaderTimeout
+	if override := operation_setting.GetGeneralSetting().StreamFirstByteTimeoutSeconds; override > 0 {
+		budget = override
+	}
+	if budget <= 0 {
 		return 0
 	}
-	return common2.RelayStreamResponseHeaderTimeout
+	return budget
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {

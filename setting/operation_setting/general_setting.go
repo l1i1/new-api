@@ -39,6 +39,17 @@ type GeneralSetting struct {
 	CustomCurrencySymbol string `json:"custom_currency_symbol"`
 	// 自定义货币与美元汇率（1 USD = X Custom）
 	CustomCurrencyExchangeRate float64 `json:"custom_currency_exchange_rate"`
+	// 流式首字超时（秒）覆盖 RELAY_STREAM_RESPONSE_HEADER_TIMEOUT：流式尝试
+	// 等待上游响应头/首字节的预算。上游接受请求后迟迟不开流，到点即按传输失败
+	// 处理并换道重试。0 = 沿用启动时读到的环境变量（默认 300）。做成 DB 选项是
+	// 因为上游首字延迟会随资源状况变化，运维需要在故障当晚调大、恢复后收紧，
+	// 而容器环境变量不可热改（ECI 需换实例）。见 docs/stream-timeouts.md。
+	StreamFirstByteTimeoutSeconds int `json:"stream_first_byte_timeout_seconds"`
+	// 流式空闲超时（秒）覆盖 STREAMING_TIMEOUT：SSE 逐行重置的空闲看门狗
+	// （也是「响应头已到但迟迟没有第一个数据帧」的兜底）。0 = 沿用启动时读到的
+	// 环境变量（默认 300）。与上一个字段分开是因为两者代价不同：首字预算只影响
+	// 换道前的等待，空闲超时还决定「流中途静默」多久判定为死流。
+	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds"`
 }
 
 // 默认配置
