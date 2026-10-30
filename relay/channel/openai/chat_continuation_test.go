@@ -2416,3 +2416,47 @@ func TestOaiStreamHandlerKeepsMissingFinishBelowOutputCapAsError(t *testing.T) {
 	_, err := OaiStreamHandler(c, info, continuationSSEResponse(firstRound))
 	require.NotNil(t, err, "a cut below every known cap keeps the failure semantics")
 }
+
+// TestOaiStreamHandlerKimiK3FitTransportCutKeepsOfficialShape covers the shape
+// that still failed for the customer after the tool-call work landed: the
+// upstream drops the connection at its ~900s wall after content with no terminal
+// frame (2026-10-30 09:06 request ...HrJCXfzi, ch91, 920s, 502). The transport
+// repair used to exclude fit callers even though the continuation layer renders
+// K3 official-shape deltas and terminal frames; a fit caller must be resumed like
+// any other, not failed.
+func TestOaiStreamHandlerKimiK3FitTransportCutKeepsOfficialShape(t *testing.T) {
+	firstRoundPayload := strings.Join([]string{
+		`data: {"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"1、2、"},"finish_reason":null}]}`,
+		``,
+	}, "\n") + "\n"
+	secondRound := strings.Join([]string{
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"content":"3、4、"},"finish_reason":null}]}`,
+		`data: {"id":"chat_2","object":"chat.completion.chunk","created":2,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	calls := 0
+	c, info, recorder := newContinuationTestContext(t, func(string, int) (*http.Response, error) {
+		calls++
+		return continuationSSEResponse(secondRound), nil
+	}, 2, 20)
+	enableKimiK3OfficialFit(info)
+
+	usage, err := OaiStreamHandler(c, info, &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&resetAfterReader{data: firstRoundPayload}),
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	})
+	require.Nil(t, err, "a fit caller's transport cut must be resumed, not failed")
+	require.NotNil(t, usage)
+	require.Equal(t, 1, calls, "the continuation round ran")
+	require.Greater(t, usage.CompletionTokens, 2, "the resumed segment is billed")
+	require.Greater(t, usage.PromptTokens, 0)
+	require.Empty(t, info.UndeliveredReason)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "1、2、")
+	require.Contains(t, body, "3、4、")
+	assertKimiK3OfficialContinuationBody(t, body, usage.CompletionTokens, true)
+}

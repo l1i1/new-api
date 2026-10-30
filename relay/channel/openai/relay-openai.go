@@ -755,7 +755,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if deliveredChars > 0 && toolCount == 0 && len(streamFunctionCallNames) == 0 && streamChoiceCount <= 1 &&
 				info.ChatContinuation != nil && info.ChatContinuation.Send != nil &&
 				info.RelayFormat == types.RelayFormatOpenAI && !isAudioModel &&
-				!deepSeekV4FitEnabled(info) && !kimiK3FitEnabled(info) &&
+				!deepSeekV4FitEnabled(info) &&
 				(c.Request == nil || c.Request.Context().Err() == nil) &&
 				chatContinuationBudgetLeft(info, usage) > 0 {
 				common.RecordChannelFailure(info.ChannelId)
