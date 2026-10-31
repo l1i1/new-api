@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -24,6 +25,40 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// chatContinuationConfigured reports whether a transparent-continuation runner is
+// enabled for this request's channel, i.e. whether the outbound body snapshot
+// could ever be needed.
+func chatContinuationConfigured(info *relaycommon.RelayInfo) bool {
+	return relaycommon.ChatContinuationStepsForRequest(info) > 0 ||
+		relaycommon.ChatAbnormalContinuationStepsForRequest(info) > 0 ||
+		relaycommon.ChatMissingContinuationStepsForRequest(info) > 0
+}
+
+// lazyOutboundBodySnapshot reads the outbound JSON body back on demand instead
+// of copying it up front. The snapshot is only needed when the upstream answer
+// is cut and a repair round has to replay the request; a normal request never
+// touches it. NewReader returns an independent cursor, so materialising after
+// the first attempt already consumed the body is safe.
+func lazyOutboundBodySnapshot(body common.ReplayableBody) func() ([]byte, error) {
+	var (
+		once sync.Once
+		data []byte
+		err  error
+	)
+	return func() ([]byte, error) {
+		once.Do(func() {
+			reader, readErr := body.NewReader()
+			if readErr != nil {
+				err = readErr
+				return
+			}
+			defer func() { _ = reader.Close() }()
+			data, err = io.ReadAll(reader)
+		})
+		return data, err
+	}
+}
 
 // continuationFallbackChannel picks a different channel for a continuation round.
 // The round that was cut is usually still bound to the channel that cut it (the
@@ -216,10 +251,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		info.RelayFormat == types.RelayFormatOpenAI
 
 	var requestBody io.Reader
-	// continuationBase is the final upstream body snapshot used to build
-	// transparent continuation rounds for an output-capped stream. Nil unless
-	// the feature is enabled and this channel is whitelisted.
-	var continuationBase []byte
+	// continuationBase materialises the final upstream body snapshot that
+	// transparent continuation rounds are built from. It stays nil unless the
+	// feature is enabled and this channel is whitelisted, and even then the bytes
+	// are only read when a round actually fires: the body can be 10-19MB, the
+	// storage behind it is disk-backed above the configured threshold, and a copy
+	// held for the whole request (and for every retry attempt) was a measurable
+	// part of the 2026-11-01 master OOM.
+	var continuationBase func() ([]byte, error)
 
 	if passThroughRequestBody {
 		requestBody, err = getPassThroughRequestBody(c, info)
@@ -278,12 +317,6 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
-		if relaycommon.ChatContinuationStepsForRequest(info) > 0 ||
-			relaycommon.ChatAbnormalContinuationStepsForRequest(info) > 0 ||
-			relaycommon.ChatMissingContinuationStepsForRequest(info) > 0 {
-			continuationBase = append([]byte(nil), jsonData...)
-		}
-
 		body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -291,6 +324,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		defer closer.Close()
 		jsonData = nil
 		requestBody = body
+		if chatContinuationConfigured(info) {
+			continuationBase = lazyOutboundBodySnapshot(body)
+		}
 	}
 
 	// A provider-side output cap can end a chat stream with finish_reason=length
@@ -298,7 +334,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	// channel, hand the stream handler a sender that replays the same final
 	// upstream body with the visible answer prefix plus the continuation
 	// instruction, so the handler can stitch the rounds into one client response.
-	if len(continuationBase) > 0 {
+	if continuationBase != nil {
 		steps := relaycommon.ChatContinuationStepsForRequest(info)
 		abnormalSteps := relaycommon.ChatAbnormalContinuationStepsForRequest(info)
 		missingSteps := relaycommon.ChatMissingContinuationStepsForRequest(info)
@@ -320,7 +356,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				maxRounds = missingSteps
 			}
 		}
-		base := continuationBase
+		loadBase := continuationBase
 		adaptorRef := adaptor
 		// Tracks the channel of the latest round so continuation-capability telemetry
 		// names the channel that actually resumed (cross-channel hops included).
@@ -331,6 +367,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		send := func(build func([]byte, string, int) ([]byte, error)) func(string, int) (*http.Response, error) {
 			// sendOnce replays the continuation body through one channel.
 			sendOnce := func(channelAdaptor relaychannel.Adaptor, partial string, remaining int) (*http.Response, error) {
+				base, baseErr := loadBase()
+				if baseErr != nil {
+					return nil, baseErr
+				}
 				continuationJSON, buildErr := build(base, partial, remaining)
 				if buildErr != nil {
 					return nil, buildErr
@@ -370,7 +410,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			if !crossChannel {
 				return nil
 			}
-			return crossChannelContinuationFallback(c, info, base, build, roundChannel, triedChannels)
+			return crossChannelContinuationFallback(c, info, loadBase, build, roundChannel, triedChannels)
 		}
 		cfg := &relaycommon.ChatContinuationConfig{MaxSteps: steps, MaxRounds: maxRounds, RoundChannel: roundChannel, Tried: triedChannels}
 		if steps > 0 {

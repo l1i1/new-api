@@ -42,9 +42,18 @@ var ErrNoContinuationCandidate = relaycommon.ErrNoContinuationCandidate
 // -> credential/multi-key selection -> header/param overrides -> concurrency slot.
 // The live request info is restored before returning, so billing, request logs and
 // the caller-visible stream stay attributed to the channel that served the answer.
-func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, base []byte, build func([]byte, string, int) ([]byte, error), roundChannel *relaycommon.ContinuationRoundChannel, tried *relaycommon.TriedChannels) func(string, int) (*http.Response, error) {
+// loadBase materialises the outbound body snapshot; it is called on the round,
+// never during setup, so a request that is never cut never pays for it.
+func crossChannelContinuationFallback(c *gin.Context, info *relaycommon.RelayInfo, loadBase func() ([]byte, error), build func([]byte, string, int) ([]byte, error), roundChannel *relaycommon.ContinuationRoundChannel, tried *relaycommon.TriedChannels) func(string, int) (*http.Response, error) {
 	return func(partial string, remaining int) (*http.Response, error) {
-		if c == nil || info == nil || c.Request == nil || len(base) == 0 {
+		if c == nil || info == nil || c.Request == nil {
+			return nil, errors.New("cross-channel continuation unavailable")
+		}
+		base, baseErr := loadBase()
+		if baseErr != nil {
+			return nil, baseErr
+		}
+		if len(base) == 0 {
 			return nil, errors.New("cross-channel continuation unavailable")
 		}
 		group := info.TokenGroup
