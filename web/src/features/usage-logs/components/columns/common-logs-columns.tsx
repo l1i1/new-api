@@ -420,128 +420,141 @@ export function useCommonLogsColumns(
               typeof multiKeyIndex === 'number' &&
               Number.isFinite(multiKeyIndex)
 
+            // The fit-capability pin (official-fit narrowing) is a routing
+            // fact: it explains why this channel was chosen, so it belongs next
+            // to the channel badge rather than in the Details cell.
+            const observability = buildLogObservability(other, t)
+            const fit = observability?.fit
+
             return (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <div className='flex max-w-[160px] flex-col gap-0.5' />
-                    }
-                  >
-                    <div className='relative inline-flex w-fit items-center gap-1'>
-                      <StatusBadge
-                        label={channelIdDisplay}
-                        autoColor={String(log.channel)}
-                        copyText={String(log.channel)}
-                        size='sm'
-                        showDot={false}
-                        className='font-mono'
-                      />
-                      {showMultiKeyIndex && (
+              <div className='flex max-w-[180px] items-center gap-1'>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <div className='flex max-w-[160px] flex-col gap-0.5' />
+                      }
+                    >
+                      <div className='relative inline-flex w-fit items-center gap-1'>
                         <StatusBadge
-                          label={String(multiKeyIndex)}
+                          label={channelIdDisplay}
+                          autoColor={String(log.channel)}
+                          copyText={String(log.channel)}
                           size='sm'
                           showDot={false}
-                          copyable={false}
-                          variant='neutral'
-                          className='h-5 min-w-5 justify-center rounded-full px-1 font-mono text-xs'
-                          aria-label={`${t('Key')} ${multiKeyIndex}`}
+                          className='font-mono'
                         />
-                      )}
-                      {hasRetryChain && (
-                        <Popover>
-                          <PopoverTrigger
-                            render={
-                              <button
-                                type='button'
-                                className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                                aria-label={t('Retry Chain')}
-                                onClick={(e) => e.stopPropagation()}
+                        {showMultiKeyIndex && (
+                          <StatusBadge
+                            label={String(multiKeyIndex)}
+                            size='sm'
+                            showDot={false}
+                            copyable={false}
+                            variant='neutral'
+                            className='h-5 min-w-5 justify-center rounded-full px-1 font-mono text-xs'
+                            aria-label={`${t('Key')} ${multiKeyIndex}`}
+                          />
+                        )}
+                        {hasRetryChain && (
+                          <Popover>
+                            <PopoverTrigger
+                              render={
+                                <button
+                                  type='button'
+                                  className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
+                                  aria-label={t('Retry Chain')}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              }
+                            >
+                              <GitBranch
+                                className='size-3.5 text-amber-500'
+                                aria-hidden='true'
                               />
-                            }
+                            </PopoverTrigger>
+                            <PopoverContent
+                              side='top'
+                              align='start'
+                              className='w-64 text-xs'
+                            >
+                              <div className='flex flex-col gap-1'>
+                                <p className='font-medium'>
+                                  {t('Retry Chain')}
+                                </p>
+                                <p className='text-muted-foreground font-mono break-all'>
+                                  {channelChain}
+                                </p>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                        )}
+                        {affinity && (
+                          <button
+                            type='button'
+                            className='absolute -top-1 -right-1 leading-none text-amber-500'
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setAffinityTarget({
+                                rule_name: affinity.rule_name || '',
+                                using_group:
+                                  affinity.using_group ||
+                                  affinity.selected_group ||
+                                  '',
+                                key_hint: affinity.key_hint || '',
+                                key_fp: affinity.key_fp || '',
+                              })
+                              setAffinityDialogOpen(true)
+                            }}
                           >
-                            <GitBranch
-                              className='size-3.5 text-amber-500'
-                              aria-hidden='true'
-                            />
-                          </PopoverTrigger>
-                          <PopoverContent
-                            side='top'
-                            align='start'
-                            className='w-64 text-xs'
-                          >
-                            <div className='flex flex-col gap-1'>
-                              <p className='font-medium'>{t('Retry Chain')}</p>
-                              <p className='text-muted-foreground font-mono break-all'>
-                                {channelChain}
-                              </p>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
+                            <Sparkles className='size-3 fill-current' />
+                          </button>
+                        )}
+                      </div>
+                      {log.channel_name && (
+                        <span className='text-muted-foreground/70 truncate [font-family:var(--font-body)] !text-xs'>
+                          {channelName}
+                        </span>
                       )}
-                      {affinity && (
-                        <button
-                          type='button'
-                          className='absolute -top-1 -right-1 leading-none text-amber-500'
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setAffinityTarget({
-                              rule_name: affinity.rule_name || '',
-                              using_group:
-                                affinity.using_group ||
-                                affinity.selected_group ||
-                                '',
-                              key_hint: affinity.key_hint || '',
-                              key_fp: affinity.key_fp || '',
-                            })
-                            setAffinityDialogOpen(true)
-                          }}
-                        >
-                          <Sparkles className='size-3 fill-current' />
-                        </button>
-                      )}
-                    </div>
-                    {log.channel_name && (
-                      <span className='text-muted-foreground/70 truncate [font-family:var(--font-body)] !text-xs'>
-                        {channelName}
-                      </span>
-                    )}
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <div className='space-y-1'>
-                      <p>
-                        {sensitiveVisible ? channelDisplay : channelIdDisplay}
-                      </p>
-                      {channelChain && (
-                        <p className='text-muted-foreground text-xs'>
-                          {t('Chain')}: {channelChain}
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <div className='space-y-1'>
+                        <p>
+                          {sensitiveVisible ? channelDisplay : channelIdDisplay}
                         </p>
-                      )}
-                      {showMultiKeyIndex && (
-                        <p className='text-muted-foreground text-xs'>
-                          {t('Key')}: {multiKeyIndex}
-                        </p>
-                      )}
-                      {affinity && (
-                        <div className='border-t pt-1 text-xs'>
-                          <p className='font-medium'>{t('Channel Affinity')}</p>
-                          <p>
-                            {t('Rule')}: {affinity.rule_name || '-'}
+                        {channelChain && (
+                          <p className='text-muted-foreground text-xs'>
+                            {t('Chain')}: {channelChain}
                           </p>
-                          <p>
-                            {t('Group')}:{' '}
-                            {sensitiveVisible
-                              ? affinity.using_group ||
-                                affinity.selected_group ||
-                                '-'
-                              : '••••'}
+                        )}
+                        {showMultiKeyIndex && (
+                          <p className='text-muted-foreground text-xs'>
+                            {t('Key')}: {multiKeyIndex}
                           </p>
-                        </div>
-                      )}
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+                        )}
+                        {affinity && (
+                          <div className='border-t pt-1 text-xs'>
+                            <p className='font-medium'>
+                              {t('Channel Affinity')}
+                            </p>
+                            <p>
+                              {t('Rule')}: {affinity.rule_name || '-'}
+                            </p>
+                            <p>
+                              {t('Group')}:{' '}
+                              {sensitiveVisible
+                                ? affinity.using_group ||
+                                  affinity.selected_group ||
+                                  '-'
+                                : '••••'}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                {fit?.family && <FitPinPopover fit={fit} />}
+              </div>
             )
           },
         },
@@ -889,13 +902,10 @@ export function useCommonLogsColumns(
             ? buildLogObservability(other, t)
             : undefined
         const nodeName = observability?.nodeName
-        const fit = observability?.fit
         const payload = isAdmin
           ? buildObservabilityPayload(other?.admin_info?.body_bytes, t)
           : undefined
-        const hasAdminMeta = Boolean(
-          nodeName || fit?.family || payload?.compact
-        )
+        const hasAdminMeta = Boolean(nodeName || payload?.compact)
 
         return (
           <>
@@ -954,7 +964,6 @@ export function useCommonLogsColumns(
                       </Tooltip>
                     </TooltipProvider>
                   )}
-                  {fit?.family && <FitPinPopover fit={fit} />}
                 </div>
               )}
             </div>

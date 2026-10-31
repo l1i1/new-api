@@ -29,6 +29,7 @@ import type { UsageLog } from '../../data/schema'
 import type { LogOtherData } from '../../types'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { DetailsDialog } from '../dialogs/details-dialog'
+import { UsageLogsProvider } from '../usage-logs-provider'
 
 const otherWithObservability: LogOtherData = {
   admin_info: {
@@ -95,30 +96,33 @@ function Cells(props: {
   })
   return (
     <QueryClientProvider client={queryClient}>
-      {props.ids.map((id) => {
-        const cell = row.getAllCells().find((item) => item.column.id === id)
-        if (!cell) return null
-        return (
-          <div key={id}>
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </div>
-        )
-      })}
+      <UsageLogsProvider>
+        {props.ids.map((id) => {
+          const cell = row.getAllCells().find((item) => item.column.id === id)
+          if (!cell) return null
+          return (
+            <div key={id}>
+              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+            </div>
+          )
+        })}
+      </UsageLogsProvider>
     </QueryClientProvider>
   )
 }
 
-const observabilityCellIds = ['content', 'is_stream']
+const observabilityCellIds = ['channel', 'content', 'is_stream']
 
-test('the Details cell carries node, fit pin and payload sizes for admins', () => {
+test('the channel cell carries the fit pin; the Details cell the node and payload', () => {
   render(
     <Cells other={otherWithObservability} isAdmin ids={observabilityCellIds} />
   )
 
-  // Node, payload sizes and the fit pin are rendered inside the Details cell
-  // instead of dedicated columns; the details dialog keeps the full breakdown.
-  expect(screen.getByText('i-2ze0abcdef')).toBeVisible()
+  // The fit-capability pin is a routing fact, so it sits with the channel boot;
+  // the serving node and payload sizes live in the Details cell behind the
+  // full breakdown in the details dialog.
   expect(screen.getByRole('button', { name: 'Fit Pin' })).toBeVisible()
+  expect(screen.getByText('i-2ze0abcdef')).toBeVisible()
   expect(screen.getByText('1.2 KB → 55.5 KB')).toBeVisible()
   expect(screen.getByText('Continued ×2')).toBeVisible()
 })
@@ -133,7 +137,7 @@ test('non-admin Details cells omit the relay observability facts', () => {
   expect(screen.queryByText('1.2 KB → 55.5 KB')).toBeNull()
 })
 
-test('the Details cell renders no observability meta when the log has none', () => {
+test('the channel and Details cells render no observability meta without data', () => {
   render(<Cells other={{}} isAdmin ids={observabilityCellIds} />)
 
   expect(screen.queryByText('Continued ×2')).toBeNull()
