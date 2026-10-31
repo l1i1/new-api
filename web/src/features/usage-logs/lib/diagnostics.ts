@@ -267,20 +267,21 @@ export function buildConversionSection(
   return { label: t('Conversion diagnostics'), rows }
 }
 
-/** Param-override / response-override audit lines ("po"/"ro"). */
+/**
+ * Response-override audit lines ("ro"): the response-body rewrite the client's
+ * copy went through. Param overrides ("po") already have a dedicated section
+ * in the dialog, so they are deliberately not repeated here.
+ */
 export function buildOverridesSection(
   other: LogOtherData | null | undefined,
   t: DiagnosticTranslate
 ): DiagnosticSection | undefined {
+  const lines = other?.ro
+  if (!Array.isArray(lines)) return undefined
   const rows: DiagnosticRow[] = []
-  for (const [field, label] of [
-    ['po', t('Param overrides')],
-    ['ro', t('Response overrides')],
-  ] as const) {
-    const lines = other?.[field]
-    if (!Array.isArray(lines)) continue
-    for (const line of lines) {
-      if (hasText(line)) rows.push({ label, value: line })
+  for (const line of lines) {
+    if (hasText(line)) {
+      rows.push({ label: t('Response overrides'), value: line })
     }
   }
   if (rows.length === 0) return undefined

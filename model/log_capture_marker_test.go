@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 package model
 
 import (
+	"context"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -50,7 +51,7 @@ func TestAttachLogCaptureMarkerMergesAdminInfoIntoTheRow(t *testing.T) {
 		Other:     `{"admin_info":{"node_name":"new-api-ml000"},"model_ratio":1}`,
 	}).Error)
 
-	require.NoError(t, AttachLogCaptureMarker("req-capture-1", map[string]any{
+	require.NoError(t, AttachLogCaptureMarker(context.Background(), "req-capture-1", map[string]any{
 		"rule":        "kimi-200-sample",
 		"file":        "2026-10-31/120000-kimi-200-sample-req-capture-1.json",
 		"captured_at": 1793440000,
@@ -86,7 +87,7 @@ func TestAttachLogCaptureMarkerIgnoresAnUnknownRequest(t *testing.T) {
 		common.SetLogDatabaseType(previousType)
 	})
 
-	require.NoError(t, AttachLogCaptureMarker("missing", map[string]any{"rule": "r"}))
-	require.NoError(t, AttachLogCaptureMarker("", map[string]any{"rule": "r"}))
-	require.NoError(t, AttachLogCaptureMarker("missing", nil))
+	require.NoError(t, AttachLogCaptureMarker(context.Background(), "missing", map[string]any{"rule": "r"}))
+	require.NoError(t, AttachLogCaptureMarker(context.Background(), "", map[string]any{"rule": "r"}))
+	require.NoError(t, AttachLogCaptureMarker(context.Background(), "missing", nil))
 }

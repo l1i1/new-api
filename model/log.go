@@ -156,15 +156,18 @@ func FormatRootLogs(logs []*Log) {
 // ClickHouse log storage has no row updates here (mutations are asynchronous),
 // so the marker is skipped there rather than risking a write that silently does
 // nothing visible.
-func AttachLogCaptureMarker(requestID string, marker map[string]any) error {
+func AttachLogCaptureMarker(ctx context.Context, requestID string, marker map[string]any) error {
 	if LOG_DB == nil || requestID == "" || len(marker) == 0 {
 		return nil
 	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var log Log
-	if err := LOG_DB.Where("request_id = ?", requestID).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
+	if err := LOG_DB.WithContext(ctx).Where("request_id = ?", requestID).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
 		return err
 	}
 	if log.Id == 0 {
@@ -186,7 +189,7 @@ func AttachLogCaptureMarker(requestID string, marker map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return LOG_DB.Model(&Log{}).Where("id = ?", log.Id).Update("other", string(encoded)).Error
+	return LOG_DB.WithContext(ctx).Model(&Log{}).Where("id = ?", log.Id).Update("other", string(encoded)).Error
 }
 
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {

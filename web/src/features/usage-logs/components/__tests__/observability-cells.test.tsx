@@ -246,8 +246,8 @@ test('details dialog shows the admin observability section', () => {
   expect(rowValue('Repair channels')).toBe('106 → 105')
   expect(screen.getByText('Request capture')).toBeVisible()
   expect(rowValue('Capture rule')).toBe('kimi-200-sample')
-  expect(screen.getByText('Overrides')).toBeVisible()
-  expect(rowValue('Param overrides')).toBe('reasoning_effort: set max')
+  // Param overrides keep their own dedicated section; this one only adds the
+  // response-side rewrite.
   expect(rowValue('Response overrides')).toBe(
     'choices[0].message.content: rewritten'
   )

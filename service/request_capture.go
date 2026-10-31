@@ -553,7 +553,9 @@ func attachCaptureMarker(setting *operation_setting.RequestCaptureSetting, paylo
 	if payload.ResponseStatus != 0 {
 		marker["status"] = payload.ResponseStatus
 	}
-	if err := model.AttachLogCaptureMarker(payload.RequestID, marker); err != nil {
+	attachCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := model.AttachLogCaptureMarker(attachCtx, payload.RequestID, marker); err != nil {
 		logger.LogWarn(context.Background(), fmt.Sprintf("request capture marker attach failed for request %s: %v", payload.RequestID, err))
 	}
 }

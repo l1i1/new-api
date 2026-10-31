@@ -136,7 +136,7 @@ test('conversion diagnostics list each lossy detail and the truncation flag', ()
   expect(buildConversionSection([], false, t)).toBeUndefined()
 })
 
-test('override audit renders po and ro lines', () => {
+test('override audit renders only ro lines (po has its own section)', () => {
   const section = buildOverridesSection(
     {
       po: ['reasoning_effort: set max'],
@@ -146,12 +146,12 @@ test('override audit renders po and ro lines', () => {
   )
   expect(section?.label).toBe('Overrides')
   expect(section?.rows).toEqual([
-    { label: 'Param overrides', value: 'reasoning_effort: set max' },
     {
       label: 'Response overrides',
       value: 'choices[0].message.content: rewritten',
     },
   ])
+  expect(buildOverridesSection({ po: ['ignored'] }, t)).toBeUndefined()
   expect(buildOverridesSection({}, t)).toBeUndefined()
 })
 
