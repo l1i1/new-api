@@ -511,6 +511,51 @@ if [ -r "$ENV_OVERRIDES_FILE" ]; then
   log "applied $overrides_applied env override(s) from $ENV_OVERRIDES_FILE"
 fi
 
+# Memory ceiling for the master container. On 2026-11-01 the Go process grew to
+# 6.1GB of this host's 7.5GB while relaying 10-19MB client bodies - the same body
+# was held in several full copies (capture peek, billing-expr read, JSON decode,
+# TextHelper, response marshal) - and the kernel OOM killer took it twice
+# (2026-10-31 17:43 and 23:56), the second time while the entry nginx shared the
+# host. A cgroup limit keeps one runaway process from dragging the entry tier
+# down with it; GOMEMLIMIT makes Go collect before it reaches the ceiling.
+#
+# Both are derived from THIS host's MemTotal at start time rather than pinned to
+# a size, because the master ECS is the only node whose footprint includes the
+# entry nginx and the co-located sidecars: a fixed number would be wrong on the
+# next host size and would silently leave too little (or too much) for them. The
+# ceiling keeps 22% of RAM for nginx/sidecars/kernel; GOMEMLIMIT sits at 85% of
+# the ceiling so Go collects with headroom left. MASTER_MEMORY_LIMIT (docker
+# size, e.g. 6g) and MASTER_GOMEMLIMIT (Go size, e.g. 5GiB) still override, and
+# MASTER_MEMORY_LIMIT=0 runs without a cgroup limit.
+mem_total_kb="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo)"
+if [ -z "${mem_total_kb:-}" ] || ! [ "$mem_total_kb" -gt 0 ] 2>/dev/null; then
+  err "cannot read MemTotal from /proc/meminfo; refusing to guess a memory ceiling"
+  exit 3
+fi
+mem_total_bytes=$(( mem_total_kb * 1024 ))
+mast_ceiling_bytes=$(( mem_total_bytes * 78 / 100 ))
+if [ -z "${MASTER_GOMEMLIMIT:-}" ]; then
+  MASTER_GOMEMLIMIT="$(( mast_ceiling_bytes * 85 / 100 ))"
+fi
+if [ -z "${MASTER_MEMORY_LIMIT:-}" ]; then
+  MASTER_MEMORY_LIMIT="$(( mast_ceiling_bytes / 1024 / 1024 ))m"
+fi
+log "memory ceiling: host ${mem_total_kb}kB, container limit ${MASTER_MEMORY_LIMIT:-none}, GOMEMLIMIT ${MASTER_GOMEMLIMIT}"
+memory_opts=()
+if [ -n "${MASTER_MEMORY_LIMIT:-}" ] && [ "$MASTER_MEMORY_LIMIT" != "0" ]; then
+  memory_opts=(--memory "$MASTER_MEMORY_LIMIT")
+fi
+if [ -n "${MASTER_GOMEMLIMIT:-}" ] && [ "$MASTER_GOMEMLIMIT" != "0" ]; then
+  gomemlimit_replaced=0
+  for _i in "${!envs[@]}"; do
+    if [[ "${envs[$_i]}" == "-e" && "${envs[$(( _i + 1 ))]}" == "GOMEMLIMIT="* ]]; then
+      envs[$(( _i + 1 ))]="GOMEMLIMIT=$MASTER_GOMEMLIMIT"
+      gomemlimit_replaced=1
+    fi
+  done
+  (( gomemlimit_replaced == 1 )) || { envs+=("-e"); envs+=("GOMEMLIMIT=$MASTER_GOMEMLIMIT"); }
+fi
+
 ports=()
 while IFS=' ' read -r host_ip host_port proto_port; do
   [ -n "$host_port" ] || continue
@@ -557,7 +602,7 @@ if ! docker pull "$IMAGE_REF"; then
 fi
 
 if ! docker run -d --name "$GREEN" --restart "$restart" \
-  "${ports[@]}" "${binds[@]}" --log-driver "$log_driver" "${log_opts[@]}" "${envs[@]}" "$IMAGE_REF" >/dev/null; then
+  "${ports[@]}" "${binds[@]}" --log-driver "$log_driver" "${log_opts[@]}" "${memory_opts[@]}" "${envs[@]}" "$IMAGE_REF" >/dev/null; then
   err "could not start the green container; blue keeps serving"
   docker rm -f "$GREEN" >/dev/null 2>&1 || true
   exit 3
