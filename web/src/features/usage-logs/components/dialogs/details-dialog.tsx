@@ -41,6 +41,7 @@ import {
   Route,
   Settings2,
   AlertTriangle,
+  Activity,
   Headphones,
   Monitor,
   Cloud,
@@ -83,6 +84,7 @@ import {
   getReasoningEffortVariant,
   renderAuditContent,
 } from '../../lib/format'
+import { buildLogObservability } from '../../lib/observability'
 import { buildQuotaAuditOperation } from '../../lib/quota-audit-operation'
 import {
   getLogTypeConfig,
@@ -634,6 +636,13 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.log.type !== 6 &&
     (other?.request_path || conversionChain.length > 0)
 
+  // Relay observability (node, fit pin, payload sizes, continuation). Admin
+  // only: the backend strips admin_info for non-admins, and the section is
+  // hidden here as defence in depth.
+  const observability = props.isAdmin
+    ? buildLogObservability(other, t)
+    : undefined
+
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
@@ -819,6 +828,46 @@ export function DetailsDialog(props: DetailsDialogProps) {
             <PolicyDecisionRecord events={adminInfo.request_policy} />
           </DetailSection>
         ) : null}
+        {/* Observability (admin only): node, fit pin, payload sizes, continuation */}
+        {props.isAdmin && observability && (
+          <DetailSection
+            label={t('Observability')}
+            icon={<Activity className='size-3.5' aria-hidden='true' />}
+          >
+            {observability.nodeName && (
+              <DetailRow
+                label={t('Node')}
+                value={observability.nodeName}
+                mono
+              />
+            )}
+            {observability.fit?.rows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+            {observability.payload?.rows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+            {observability.continuation?.detailRows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
+
         {props.isAdmin && other?.admin_info?.quota_saturation && (
           <DetailSection
             icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}

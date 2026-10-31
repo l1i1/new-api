@@ -114,6 +114,41 @@ export interface ToolSurchargeItem {
   price: number
 }
 
+/**
+ * Relay payload sizes in bytes. The backend omits any key that is unknown or
+ * zero, so a missing key never means "zero bytes" — it means "not measured".
+ */
+export interface LogBodyBytes {
+  /** Client request body bytes, decompressed. */
+  request?: number
+  /** Final upstream request body bytes of the last attempt. */
+  upstream_request?: number
+  /** Bytes written back to the client. */
+  response?: number
+}
+
+/** Transparent continuation (续写) audit, written only when >= 1 round ran. */
+export interface LogContinuation {
+  /** Raw mode ids: length, length-thinking, abnormal, missing. Never translated. */
+  modes?: string[]
+  rounds?: number
+  max_steps?: number
+  finish?: string
+  extra_completion_tokens?: number
+}
+
+/**
+ * Fit-capability pin of the channel that served the request. Public scope
+ * (written by appendFitRequirementInfo), not admin-only.
+ */
+export interface LogFitInfo {
+  family?: string
+  marks?: string[]
+  rules?: string[]
+  policy?: number | string
+  baseline?: string
+}
+
 export interface LogOtherData {
   admin_info?: {
     request_policy?: PolicyEvent[]
@@ -147,7 +182,13 @@ export interface LogOtherData {
     // Reject / intercept reason (admin only)
     reject_reason?: string
     task_plugin?: TaskPluginInfo
+    // Relay payload sizes (admin only). Absent on non-relay and legacy logs.
+    body_bytes?: LogBodyBytes
+    // Transparent continuation audit (admin only). Absent when no round ran.
+    continuation?: LogContinuation
   }
+  // Fit-capability pin of the serving channel (public scope).
+  fit?: LogFitInfo
   root_info?: {
     task_plugin?: TaskPluginRuntimeInfo
     upstream_task_id?: string

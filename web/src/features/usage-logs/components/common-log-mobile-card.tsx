@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Cell } from '@tanstack/react-table'
-import { ChevronRight, KeyRound } from 'lucide-react'
+import { ChevronRight, KeyRound, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -33,12 +33,14 @@ import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
 import type { UsageLog } from '../data/schema'
 import { formatModelName, parseLogOther } from '../lib/format'
+import { buildLogObservability } from '../lib/observability'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
 import { ModelBadge, ResponseModelDetails } from './model-badge'
+import { ContinuationBadge } from './observability-badges'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
@@ -140,6 +142,20 @@ export function CommonLogMobileCard<TData>(props: {
       log.completion_tokens > 0 ||
       cacheRead > 0 ||
       cacheWrite > 0)
+  // Relay observability follows the same column-presence gating as the other
+  // admin-only mobile fields: the node and payload columns only exist for
+  // admins, so their presence means the admin view is active.
+  const observability = buildLogObservability(other, t)
+  const nodeName = props.cells.has('node') ? observability?.nodeName : undefined
+  const fitFamily = props.cells.has('node')
+    ? observability?.fit?.family
+    : undefined
+  const payload = props.cells.has('body_bytes')
+    ? observability?.payload
+    : undefined
+  const continuation = props.cells.has('node')
+    ? observability?.continuation
+    : undefined
 
   return (
     <div className='min-w-0 space-y-2.5 text-sm leading-5'>
@@ -201,6 +217,12 @@ export function CommonLogMobileCard<TData>(props: {
                       : null
                   }
                   streamStatus={other?.stream_status}
+                />
+              )}
+              {continuation && (
+                <ContinuationBadge
+                  continuation={continuation}
+                  className='min-h-5'
                 />
               )}
               {props.cells.has('use_time') && (
@@ -310,6 +332,35 @@ export function CommonLogMobileCard<TData>(props: {
           {cacheWrite > 0 && (
             <span>
               {t('Cache')} ↑ {cacheWrite.toLocaleString()}
+            </span>
+          )}
+        </div>
+      )}
+      {(nodeName || payload) && (
+        <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs [overflow-wrap:anywhere]'>
+          {nodeName && (
+            <span className='flex min-w-0 items-center gap-1'>
+              {t('Node')}
+              <span className='text-foreground min-w-0 truncate font-mono'>
+                {nodeName}
+              </span>
+              {fitFamily && (
+                <>
+                  <ShieldCheck
+                    className='size-3 shrink-0 text-emerald-600 dark:text-emerald-400'
+                    aria-label={t('Fit Pin')}
+                  />
+                  <span className='text-foreground font-mono'>{fitFamily}</span>
+                </>
+              )}
+            </span>
+          )}
+          {payload?.compact && (
+            <span>
+              {t('Payload')}{' '}
+              <span className='text-foreground font-mono tabular-nums'>
+                {payload.compact}
+              </span>
             </span>
           )}
         </div>
