@@ -57,8 +57,9 @@
 请求被能力匹配收窄（pin）到官方行为的渠道。
 
 前端：`web/src/features/usage-logs/lib/observability.ts`（纯展示模型 + 单测）、
-`components/columns/common-logs-columns.tsx`（节点名 / 报文大小 / fit pin 收在「详情」
-单元格的副行里，Stream 列里是 `Continued ×N`）、`components/dialogs/details-dialog.tsx`
+`components/columns/common-logs-columns.tsx`（节点名 / 报文大小收在「详情」
+单元格的副行里，fit pin 挂在「渠道」单元格旁，Stream 列里是 `Continued ×N`）、
+`components/dialogs/details-dialog.tsx`
 （Observability 详情段，含三段报文的完整数字）、`components/common-log-mobile-card.tsx`
 （移动端）。不单独占列是刻意的：表格宽度不被这两类信息撑开，点开详情仍能看到全量。
 
