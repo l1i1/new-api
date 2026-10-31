@@ -60,7 +60,7 @@
 ## 2. 每节点负载（`/system-info`）
 
 每个 relay 节点在既有的 30 秒实例心跳里多报一段 `info.extra.traffic`，前端在实例表
-里显示 RPM / TPM / 入出流量三列。
+里显示 RPM / TPM / 入出流量 / **带宽** 四列。
 
 ```jsonc
 "extra": {
@@ -94,6 +94,10 @@
   也生效），与 `rpm` 的样本集合略有差异：未交付/零计费的请求 token 记 0，但请求仍计入 rpm。
 - `request_bytes` / `response_bytes` 是应用层负载字节（解压后的请求体、写出的响应体），
   不是 TCP/压缩后字节，也不含 HTTP 头。
+- **带宽不单独上报**：前端按 `request_bytes / window_seconds`、`response_bytes / window_seconds`
+  推导出该统计周期内的平均入/出带宽（cell 显示 `↓ 2 KB/s ↑ 74.3 KB/s`，tooltip 给精确值
+  并附 bits/s，因为"带宽"通常以 bit 计）。窗口缺失/为 0 时显示 `-`，不猜测 60 秒，避免把
+  别的窗口标错。这样带宽与流量永远同源，不会出现两个字段各自漂移的问题。
 - 进程重启后累计值归零；滚动窗口在重启后自然从 0 开始。节点名来自 `common.NodeName`，
   建议每个 ECI 实例配唯一的 `NODE_NAME`，否则用主机名（可读性差，且实例替换后会留下
   stale 实例行，用页面上的 "Delete stale" 清理）。
@@ -110,7 +114,9 @@ curl -s 'https://<console>/api/log/?p=1&page_size=1' -H "Authorization: Bearer $
 
 # 每节点滚动负载
 curl -s 'https://<console>/api/system-info/instances' -H "Authorization: Bearer $ADMIN" \
-  | jq '.data[] | {node_name, traffic: .info.extra.traffic}'
+  | jq '.data[] | {node_name, traffic: .info.extra.traffic,
+                  inbound_bps: (.info.extra.traffic.request_bytes / .info.extra.traffic.window_seconds),
+                  outbound_bps: (.info.extra.traffic.response_bytes / .info.extra.traffic.window_seconds)}'
 ```
 
 本地端到端回归脚本（假上游 + SQLite + 一条触发续写的流式请求）：`/tmp/obs-e2e`（不入库）。

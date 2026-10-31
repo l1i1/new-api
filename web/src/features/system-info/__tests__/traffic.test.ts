@@ -20,10 +20,13 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildTrafficCell,
+  formatBandwidth,
   formatBytes,
   formatCompactNumber,
+  formatExactBandwidth,
   formatExactBytes,
   formatInteger,
+  toBandwidth,
 } from '../lib/traffic'
 import type { TrafficSnapshot } from '../types'
 
@@ -166,6 +169,8 @@ describe('buildTrafficCell', () => {
     expect(cell.inbound).toBe('0 B')
     expect(cell.outbound).toBe('0 B')
     expect(cell.windowSeconds).toBe(60)
+    expect(cell.inboundBandwidth).toBe('0 B/s')
+    expect(cell.outboundBandwidth).toBe('0 B/s')
   })
 
   it('formats a busy node for the three columns and the tooltips', () => {
@@ -182,6 +187,10 @@ describe('buildTrafficCell', () => {
     expect(cell.requestBytesValue).toBe(123456)
     expect(cell.responseBytesValue).toBe(4567890)
     expect(cell.windowSeconds).toBe(60)
+    expect(cell.inboundBandwidth).toBe('2 KB/s')
+    expect(cell.outboundBandwidth).toBe('74.3 KB/s')
+    expect(cell.inboundBandwidthValue).toBeCloseTo(2057.6, 3)
+    expect(cell.outboundBandwidthValue).toBeCloseTo(76131.5, 3)
   })
 
   it('formats millions and boundary counts compactly', () => {
@@ -208,6 +217,8 @@ describe('buildTrafficCell', () => {
     expect(cell.inbound).toBe('-')
     expect(cell.outbound).toBe('-')
     expect(cell.windowSeconds).toBe(60)
+    expect(cell.inboundBandwidth).toBe('-')
+    expect(cell.outboundBandwidth).toBe('-')
   })
 
   it('treats malformed and negative counters as unknown', () => {
@@ -240,5 +251,55 @@ describe('buildTrafficCell', () => {
     expect(cell.tpm).toBe('-')
     expect(cell.inbound).toBe('2 KB')
     expect(cell.outbound).toBe('-')
+  })
+})
+
+describe('toBandwidth', () => {
+  it.each([
+    [null, 60, null],
+    [600, null, null],
+    [600, 0, null],
+    [600, -5, null],
+    [0, 60, 0],
+    [600, 60, 10],
+    [123456, 60, 2057.6],
+    [2048, 2, 1024],
+  ])('turns (%s bytes, %s s) into %s B/s', (bytes, window, expected) => {
+    expect(toBandwidth(bytes, window)).toBe(expected)
+  })
+})
+
+describe('formatBandwidth', () => {
+  const cases: Array<[number | null | undefined, string]> = [
+    [undefined, '-'],
+    [null, '-'],
+    [Number.NaN, '-'],
+    [Number.POSITIVE_INFINITY, '-'],
+    [-1, '-'],
+    [0, '0 B/s'],
+    [3, '3 B/s'],
+    [10, '10 B/s'],
+    [1024, '1 KB/s'],
+    [1536, '1.5 KB/s'],
+    [2057.6, '2 KB/s'],
+    [74.35 * 1024, '74.4 KB/s'],
+    [4.5 * 1024 ** 2, '4.5 MB/s'],
+  ]
+
+  it.each(cases)('formats %s as %s', (value, expected) => {
+    expect(formatBandwidth(value, LOCALES)).toBe(expected)
+  })
+})
+
+describe('formatExactBandwidth', () => {
+  it.each([
+    [undefined, '-'],
+    [null, '-'],
+    [-1, '-'],
+    [0, '0 B/s (0 bps)'],
+    [10, '10 B/s (80 bps)'],
+    [2057.6, '2,058 B/s (16,464 bps)'],
+  ])('formats %s as %s', (value, expected) => {
+    expect(formatExactBandwidth(value, LOCALES)).toBe(expected)
   })
 })

@@ -112,6 +112,66 @@ export function formatExactBytes(
   return `${formatInteger(bytes, locales)} B`
 }
 
+/**
+ * Average bytes per second over an explicit statistics window.
+ * `null` when the byte counter or the window is unknown/zero: a rate without a
+ * window cannot be derived, and guessing 60 s would silently mislabel a
+ * differently-sized window (the heartbeat is the only source of that fact).
+ */
+export function toBandwidth(
+  bytes: number | null,
+  windowSeconds: number | null
+): number | null {
+  if (bytes === null || windowSeconds === null || windowSeconds <= 0) {
+    return null
+  }
+  return bytes / windowSeconds
+}
+
+/**
+ * Human-readable average bandwidth (1024-based, per second) for a table line:
+ * `0 B/s`, `3 B/s`, `25.6 KB/s`, `4.4 MB/s`. `-` when unknown.
+ */
+export function formatBandwidth(
+  value: number | null | undefined,
+  locales?: Intl.LocalesArgument
+): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return '-'
+  }
+  if (value === 0) return '0 B/s'
+
+  const index = Math.min(
+    Math.floor(Math.log(value) / Math.log(1024)),
+    BYTE_UNITS.length - 1
+  )
+  const scaled = value / 1024 ** index
+  const digits = index === 0 && scaled >= 10 ? 0 : 1
+  const text = new Intl.NumberFormat(locales, {
+    maximumFractionDigits: digits,
+  }).format(scaled)
+  return `${trimTrailingZero(text)} ${BYTE_UNITS[index]}/s`
+}
+
+/**
+ * Exact bandwidth for tooltips: `1,234 B/s (9,872 bps)`.
+ * Bits per second are shown because "bandwidth" is usually quoted in bits,
+ * while the heartbeat counts payload bytes.
+ */
+export function formatExactBandwidth(
+  value: number | null | undefined,
+  locales?: Intl.LocalesArgument
+): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return '-'
+  }
+  const bytesPerSecond = Math.round(value)
+  return `${formatInteger(bytesPerSecond, locales)} B/s (${formatInteger(
+    bytesPerSecond * 8,
+    locales
+  )} bps)`
+}
+
 export type TrafficCellModel = {
   /** True when the heartbeat actually carried traffic counters (even if zero). */
   hasTraffic: boolean
@@ -125,6 +185,11 @@ export type TrafficCellModel = {
   responseBytesValue: number | null
   inbound: string
   outbound: string
+  /** Average inbound/outbound bandwidth over the stats window (bytes/s). */
+  inboundBandwidthValue: number | null
+  outboundBandwidthValue: number | null
+  inboundBandwidth: string
+  outboundBandwidth: string
   windowSeconds: number | null
 }
 
@@ -140,6 +205,10 @@ const ABSENT_TRAFFIC_CELL: TrafficCellModel = {
   responseBytesValue: null,
   inbound: '-',
   outbound: '-',
+  inboundBandwidthValue: null,
+  outboundBandwidthValue: null,
+  inboundBandwidth: '-',
+  outboundBandwidth: '-',
   windowSeconds: null,
 }
 
@@ -160,6 +229,10 @@ export function buildTrafficCell(
   const completionTokens = toCount(traffic.completion_tpm)
   const requestBytes = toCount(traffic.request_bytes)
   const responseBytes = toCount(traffic.response_bytes)
+
+  const windowSeconds = toCount(traffic.window_seconds)
+  const inboundBandwidth = toBandwidth(requestBytes, windowSeconds)
+  const outboundBandwidth = toBandwidth(responseBytes, windowSeconds)
 
   const hasTraffic = [
     rpm,
@@ -183,6 +256,10 @@ export function buildTrafficCell(
     responseBytesValue: responseBytes,
     inbound: formatBytes(requestBytes, locales),
     outbound: formatBytes(responseBytes, locales),
-    windowSeconds: toCount(traffic.window_seconds),
+    inboundBandwidthValue: inboundBandwidth,
+    outboundBandwidthValue: outboundBandwidth,
+    inboundBandwidth: formatBandwidth(inboundBandwidth, locales),
+    outboundBandwidth: formatBandwidth(outboundBandwidth, locales),
+    windowSeconds,
   }
 }

@@ -68,6 +68,7 @@ import {
 } from '../api'
 import {
   buildTrafficCell,
+  formatExactBandwidth,
   formatBytes,
   formatCompactNumber,
   formatExactBytes,
@@ -300,6 +301,28 @@ function TrafficTooltip(props: { cell: TrafficCellModel }) {
   )
 }
 
+function BandwidthTooltip(props: { cell: TrafficCellModel }) {
+  const { t, i18n } = useTranslation()
+  const locales = toIntlLocale(i18n.language)
+  return (
+    <div className='space-y-1 text-xs'>
+      <div className='grid grid-cols-[auto_1fr] gap-x-3 gap-y-1'>
+        <span className='text-muted-foreground'>{t('Inbound')}</span>
+        <span className='font-mono'>
+          {formatExactBandwidth(props.cell.inboundBandwidthValue, locales)}
+        </span>
+        <span className='text-muted-foreground'>{t('Outbound')}</span>
+        <span className='font-mono'>
+          {formatExactBandwidth(props.cell.outboundBandwidthValue, locales)}
+        </span>
+      </div>
+      <p className='text-muted-foreground'>
+        {t('Average bandwidth over the rolling window')}
+      </p>
+    </div>
+  )
+}
+
 type SystemInstancesTableProps = {
   instances: SystemInstance[]
   deletingNodeName: string | null
@@ -312,7 +335,7 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
 
   return (
     <div className='overflow-x-auto rounded-md border'>
-      <Table className='min-w-[1540px]'>
+      <Table className='min-w-[1660px]'>
         <TableHeader>
           <TableRow className='bg-muted/40 hover:bg-muted/40'>
             <TableHead className='h-9 min-w-[240px] px-4 text-xs'>
@@ -333,6 +356,9 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
             <TableHead className='h-9 w-[110px] text-xs'>{t('TPM')}</TableHead>
             <TableHead className='h-9 w-[120px] text-xs'>
               {t('Traffic')}
+            </TableHead>
+            <TableHead className='h-9 w-[120px] text-xs'>
+              {t('Bandwidth')}
             </TableHead>
             <TableHead className='h-9 w-[100px] text-xs'>
               {t('Version')}
@@ -565,6 +591,45 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
                       trafficCell.requestBytesValue !== null ||
                       trafficCell.responseBytesValue !== null ? (
                         <TrafficTooltip cell={trafficCell} />
+                      ) : undefined
+                    }
+                  />
+                </TableCell>
+                <TableCell className='py-2.5 align-middle'>
+                  <MetricCell
+                    content={
+                      trafficCell.inboundBandwidth === '-' &&
+                      trafficCell.outboundBandwidth === '-' ? (
+                        <span className='font-mono text-[11px] tabular-nums'>
+                          -
+                        </span>
+                      ) : (
+                        <span className='block font-mono text-[11px] leading-tight tabular-nums'>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↓
+                            </span>{' '}
+                            {trafficCell.inboundBandwidth}
+                          </span>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↑
+                            </span>{' '}
+                            {trafficCell.outboundBandwidth}
+                          </span>
+                        </span>
+                      )
+                    }
+                    tooltip={
+                      trafficCell.inboundBandwidthValue !== null ||
+                      trafficCell.outboundBandwidthValue !== null ? (
+                        <BandwidthTooltip cell={trafficCell} />
                       ) : undefined
                     }
                   />

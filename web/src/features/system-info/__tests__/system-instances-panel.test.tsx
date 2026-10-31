@@ -64,7 +64,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('renders RPM, TPM and Traffic columns between Storage and Version', async () => {
+it('renders RPM, TPM, Traffic and Bandwidth columns between Storage and Version', async () => {
   await renderPanel([instance('edge-a')])
   expect(
     screen.getAllByRole('columnheader').map((cell) => cell.textContent)
@@ -78,6 +78,7 @@ it('renders RPM, TPM and Traffic columns between Storage and Version', async () 
     'RPM',
     'TPM',
     'Traffic',
+    'Bandwidth',
     'Version',
     'Runtime',
     'Started',
@@ -114,6 +115,9 @@ it('renders heartbeat traffic values and dashes when traffic is absent', async (
   expect(within(busyRow).getByText('4.6k')).toBeVisible()
   expect(within(busyRow).getByText(/120\.6 KB/)).toBeVisible()
   expect(within(busyRow).getByText(/4\.4 MB/)).toBeVisible()
+  // 123456 B / 60 s ≈ 2 KB/s, 4567890 B / 60 s ≈ 74.3 KB/s
+  expect(within(busyRow).getByText(/2 KB\/s/)).toBeVisible()
+  expect(within(busyRow).getByText(/74\.3 KB\/s/)).toBeVisible()
 
   const idleRow = screen.getByText('edge-b').closest('tr')
   expect(idleRow).not.toBeNull()
