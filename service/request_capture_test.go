@@ -7,8 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // enableCapture installs a capture setting for one test and restores the previous one, so the package
@@ -325,4 +329,45 @@ func TestMatchRequestCaptureRuleForStatusDoesNotLetABroaderRuleShadowIt(t *testi
 	require.Equal(t, "errors-500", MatchRequestCaptureRuleForStatus(7, 1, "kimi-k3.1-pro", "/v1/chat/completions", 502).Name)
 	require.Nil(t, MatchRequestCaptureRuleForStatus(7, 1, "kimi-k3.1-pro", "/v1/chat/completions", 200),
 		"a status no rule admits must not borrow an unrelated rule")
+}
+
+// TestAttachCaptureMarkerRecordsTheStoredFile covers the glue between the
+// master's capture writer and the usage-log row: after a payload is written to
+// disk, the matching log row gains admin_info.capture so an operator can find
+// the file from /api/log/ alone. The row is written earlier in the request, so
+// this path is a read-modify-write keyed by request_id.
+func TestAttachCaptureMarkerRecordsTheStoredFile(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+
+	previousLogDB := model.LOG_DB
+	model.LOG_DB = db
+	t.Cleanup(func() { model.LOG_DB = previousLogDB })
+
+	require.NoError(t, db.Create(&model.Log{
+		Type:      model.LogTypeError,
+		CreatedAt: 100,
+		RequestId: "req-capture-service-1",
+		Other:     `{"admin_info":{"node_name":"new-api-ml000"}}`,
+	}).Error)
+
+	attachCaptureMarker(nil, &RequestCapturePayload{
+		RequestID:      "req-capture-service-1",
+		RuleName:       "kimi-400-probe",
+		CapturedAt:     1793440000,
+		ResponseStatus: 400,
+	}, "/var/lib/new-api/request-captures/2026-10-31/120000-kimi-400-probe-req.json")
+
+	var stored model.Log
+	require.NoError(t, db.Where("request_id = ?", "req-capture-service-1").First(&stored).Error)
+	other := map[string]any{}
+	require.NoError(t, common.UnmarshalJsonStr(stored.Other, &other))
+	adminInfo, ok := other["admin_info"].(map[string]any)
+	require.True(t, ok)
+	capture, ok := adminInfo["capture"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "kimi-400-probe", capture["rule"])
+	require.EqualValues(t, 400, capture["status"])
+	require.Equal(t, "new-api-ml000", adminInfo["node_name"])
 }
