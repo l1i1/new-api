@@ -11,7 +11,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.RelayInfo) (billingexpr.RequestInput, error) {
+// ResolveIncomingBillingExprRequestInput freezes the request view a tiered
+// expression is priced against. needsBody says whether the compiled expression
+// actually reads the payload (a param(...) call); when it does not, the body is
+// deliberately left nil instead of materialized.
+//
+// This matters for the large-body traffic the gateway now relays: the raw body
+// may be 10-19MB and, with the disk-backed body storage enabled, it lives on
+// disk precisely so it is never pulled into the heap. An expression that only
+// prices tokens (p/c/cr/cc) has no use for those bytes, and storage.Bytes()
+// would read the whole file back into memory for every request.
+func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.RelayInfo, needsBody bool) (billingexpr.RequestInput, error) {
 	if info != nil && info.BillingRequestInput != nil {
 		input := cloneRequestInput(*info.BillingRequestInput)
 		merged := cloneStringMap(info.RequestHeaders)
@@ -23,6 +33,9 @@ func ResolveIncomingBillingExprRequestInput(c *gin.Context, info *relaycommon.Re
 	input := billingexpr.RequestInput{}
 	if info != nil {
 		input.Headers = cloneStringMap(info.RequestHeaders)
+	}
+	if !needsBody {
+		return input, nil
 	}
 
 	bodyBytes, err := readIncomingBillingExprBody(c)

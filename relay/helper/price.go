@@ -368,11 +368,17 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		estimatedCompletionTokens = defaultTieredPreConsumeMaxTokens
 	}
 
-	requestInput, err := ResolveIncomingBillingExprRequestInput(c, info)
+	// One lookup serves both decisions below: whether the expression reads the
+	// request payload at all (param(...)), and whether it needs the image count.
+	// A nil map means the expression did not compile; keep the conservative
+	// behaviour of materializing the body so the failure surfaces where it did
+	// before this optimisation.
+	usedVars := billingexpr.UsedVarsByHash(exprStr, exprHash)
+	requestInput, err := ResolveIncomingBillingExprRequestInput(c, info, usedVars == nil || usedVars["param"])
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
-	if billingexpr.UsedVarsByHash(exprStr, exprHash)["image_count"] {
+	if usedVars["image_count"] {
 		requestInput, err = ResolveImageBillingRequestInput(c, info, requestInput)
 		if err != nil {
 			return hosttypes.PriceData{}, err
