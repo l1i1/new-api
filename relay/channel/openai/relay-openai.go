@@ -686,6 +686,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 			result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 			if c.Request != nil && c.Request.Context().Err() != nil {
+				markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 				return result.usage, nil
 			}
 			if continuationResultUsable(result) {
@@ -695,7 +696,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				if info.StreamStatus != nil {
 					info.StreamStatus.MarkRecovered()
 				}
-				markContinuationAudit(info, "stream-error", result.rounds, result.contentChars)
+				markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 				logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=stream-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 				flushContinuationCoalescer(c, info)
 				helper.ExtendWriteDeadline(c)
@@ -818,6 +819,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				}
 				result := runChatContinuation(c, info, usage, responseTextBuilder.String(), chatContinuationMeta{ID: responseId, Created: createAt, Model: model, SystemFingerprint: systemFingerprint})
 				if c.Request != nil && c.Request.Context().Err() != nil {
+					markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 					return result.usage, nil
 				}
 				if continuationResultUsable(result) {
@@ -827,7 +829,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 					if info.StreamStatus != nil {
 						info.StreamStatus.MarkRecovered()
 					}
-					markContinuationAudit(info, "transport-error", result.rounds, result.contentChars)
+					markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 					logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=transport-error rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 					flushContinuationCoalescer(c, info)
 					helper.ExtendWriteDeadline(c)
@@ -970,7 +972,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkCompleted()
 			}
-			markContinuationAudit(info, "length", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=length rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1023,6 +1025,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			finalUsage := result.usage
 			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
+			markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
@@ -1032,7 +1035,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			markContinuationAudit(info, "abnormal-content", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=abnormal-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1079,6 +1082,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			finalUsage := result.usage
 			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
+			markContinuationAudit(info, continuationModeAbnormal, result, result.finish, usage.CompletionTokens)
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
@@ -1088,7 +1092,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			markContinuationAudit(info, "abnormal", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeAbnormal, result, result.finish, usage.CompletionTokens)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=abnormal rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1165,6 +1169,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			finalUsage := result.usage
 			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
+			markContinuationAudit(info, continuationModeLengthThinking, result, result.finish, usage.CompletionTokens)
 			return finalUsage, nil
 		}
 		// Once a continuation round forwarded visible content the client is
@@ -1183,7 +1188,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			markContinuationAudit(info, "length-thinking", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeLengthThinking, result, result.finish, usage.CompletionTokens)
 			common.SysLog(fmt.Sprintf("length thinking continuation delivered: rounds=%d finish=%s prompt=%d completion=%d", result.rounds, finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1228,6 +1233,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			finalUsage := result.usage
 			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
+			markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
@@ -1237,7 +1243,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			markContinuationAudit(info, "missing-content", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeLength, result, result.finish, usage.CompletionTokens)
 			logger.LogInfo(c, fmt.Sprintf("chat continuation recovered: mode=missing-content rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1279,6 +1285,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			finalUsage := result.usage
 			finalizeClientUsage(c, info, finalUsage)
 			info.StreamFinishReason = result.finish
+			markContinuationAudit(info, continuationModeMissing, result, result.finish, usage.CompletionTokens)
 			return finalUsage, nil
 		}
 		if continuationResultUsable(result) {
@@ -1288,7 +1295,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if info.StreamStatus != nil {
 				info.StreamStatus.MarkRecovered()
 			}
-			markContinuationAudit(info, "missing", result.rounds, result.contentChars)
+			markContinuationAudit(info, continuationModeMissing, result, result.finish, usage.CompletionTokens)
 			logger.LogInfo(c, fmt.Sprintf("thinking continuation recovered: mode=missing rounds=%d finish=%s prompt=%d completion=%d", result.rounds, result.finish, finalUsage.PromptTokens, finalUsage.CompletionTokens))
 			flushContinuationCoalescer(c, info)
 			helper.ExtendWriteDeadline(c)
@@ -1692,16 +1699,58 @@ func shouldDeferTerminalForRepair(info *relaycommon.RelayInfo, finishReason stri
 		info.ChatContinuation.Abnormal != nil && info.ChatContinuation.Abnormal.MaxSteps > 0
 }
 
-// markContinuationAudit records a transparent continuation that repaired this
-// response on the success log row (admin_info.continuation). The mode names
-// match the SysLog lines the same branch writes, so a log row and a container
-// log line can be joined; a caller reaches this only after the round delivered
-// visible content, which is the same condition the recovery branches require.
-func markContinuationAudit(info *relaycommon.RelayInfo, mode string, rounds, contentChars int) {
-	if info == nil || rounds <= 0 {
+// Continuation mode ids written to admin_info.continuation. They name the
+// continuation runner that produced the merged usage, not the cut that started
+// it: every visible-content repair goes through runChatContinuation (the
+// output-cap resume), so its mode is "length" even when a transport error or an
+// abnormal/missing finish triggered it. The raw ids are part of the observability
+// data contract and are displayed verbatim by the console.
+const (
+	continuationModeLength         = "length"
+	continuationModeLengthThinking = "length-thinking"
+	continuationModeAbnormal       = "abnormal"
+	continuationModeMissing        = "missing"
+)
+
+// continuationAuditMaxSteps returns the round budget configured for the runner
+// that just wrote the audit. The thinking runners carry their own sub-configs;
+// length-thinking deliberately shares Abnormal because that is the sender it
+// replays the reasoning through.
+func continuationAuditMaxSteps(info *relaycommon.RelayInfo, mode string) int {
+	if info == nil || info.ChatContinuation == nil {
+		return 0
+	}
+	switch mode {
+	case continuationModeLengthThinking, continuationModeAbnormal:
+		if cfg := info.ChatContinuation.Abnormal; cfg != nil {
+			return cfg.MaxSteps
+		}
+		return 0
+	case continuationModeMissing:
+		if cfg := info.ChatContinuation.Missing; cfg != nil {
+			return cfg.MaxSteps
+		}
+		return 0
+	default:
+		return info.ChatContinuation.MaxSteps
+	}
+}
+
+// markContinuationAudit records a transparent continuation that produced this
+// response's final (merged) usage, for admin_info.continuation on the consume
+// (type=2) and error (type=5) rows. It is called both on the recovered success
+// paths and on the client-gone early returns, because the provider already
+// generated the merged usage in both cases. It only mutates RelayInfo, so it
+// cannot change the wire response.
+func markContinuationAudit(info *relaycommon.RelayInfo, mode string, result chatContinuationResult, deliveredFinish string, firstRoundCompletion int) {
+	if info == nil || result.rounds <= 0 || result.usage == nil {
 		return
 	}
-	info.ContinuationAudit = &relaycommon.ContinuationAudit{Mode: mode, Rounds: rounds, ContentChars: contentChars}
+	if info.ChatContinuationAudit == nil {
+		info.ChatContinuationAudit = &relaycommon.ChatContinuationAudit{}
+	}
+	info.ChatContinuationAudit.Record(mode, continuationAuditMaxSteps(info, mode), result.rounds,
+		deliveredFinish, firstRoundCompletion, result.usage.CompletionTokens)
 }
 
 // flushHeldAnswerChunk writes the answer text the stream loop was still holding

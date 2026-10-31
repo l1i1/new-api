@@ -66,6 +66,14 @@ import {
   deleteStaleSystemInstances,
   listSystemInstances,
 } from '../api'
+import {
+  buildTrafficCell,
+  formatExactBandwidth,
+  formatBytes,
+  formatCompactNumber,
+  formatExactBytes,
+  type TrafficCellModel,
+} from '../lib/traffic'
 import type { SystemInstance, SystemInstanceStatus } from '../types'
 
 const INSTANCE_POLL_INTERVAL_MS = 30_000
@@ -118,22 +126,6 @@ function formatPercent(value?: number) {
   return `${new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 1,
   }).format(value)}%`
-}
-
-function formatBytes(bytes?: number): string {
-  if (typeof bytes !== 'number' || Number.isNaN(bytes)) return '-'
-  if (bytes === 0) return '0 B'
-  if (bytes < 0) return `-${formatBytes(-bytes)}`
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
-  )
-  const value = bytes / 1024 ** index
-  return `${new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: index === 0 ? 0 : 1,
-  }).format(value)} ${units[index]}`
 }
 
 function ringColorClass(percent: number | null) {
@@ -227,6 +219,110 @@ function ResourceCell(props: ResourceCellProps) {
   )
 }
 
+type MetricCellProps = {
+  content: ReactNode
+  tooltip?: ReactNode
+}
+
+function MetricCell(props: MetricCellProps) {
+  if (!props.tooltip) return props.content
+
+  return (
+    <TooltipProvider delay={100}>
+      <Tooltip>
+        <TooltipTrigger className='block w-full rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none'>
+          {props.content}
+        </TooltipTrigger>
+        <TooltipContent className='max-w-80'>{props.tooltip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+function TrafficWindowNote(props: { windowSeconds: number | null }) {
+  const { t } = useTranslation()
+  if (props.windowSeconds === null) return null
+  return (
+    <p className='text-muted-foreground'>{t('Rolling 60-second window')}</p>
+  )
+}
+
+function RpmTooltip(props: { cell: TrafficCellModel }) {
+  const { t } = useTranslation()
+  return (
+    <div className='space-y-1 text-xs'>
+      <div className='grid grid-cols-[auto_1fr] gap-x-3 gap-y-1'>
+        <span className='text-muted-foreground'>
+          {t('Requests per minute')}
+        </span>
+        <span className='font-mono'>{props.cell.rpm}</span>
+      </div>
+      <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />
+    </div>
+  )
+}
+
+function TpmTooltip(props: { cell: TrafficCellModel }) {
+  const { t } = useTranslation()
+  return (
+    <div className='space-y-1 text-xs'>
+      <div className='grid grid-cols-[auto_1fr] gap-x-3 gap-y-1'>
+        <span className='text-muted-foreground'>{t('Prompt')}</span>
+        <span className='font-mono'>
+          {formatCompactNumber(props.cell.promptTokensValue)}
+        </span>
+        <span className='text-muted-foreground'>{t('Completion')}</span>
+        <span className='font-mono'>
+          {formatCompactNumber(props.cell.completionTokensValue)}
+        </span>
+      </div>
+      <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />
+    </div>
+  )
+}
+
+function TrafficTooltip(props: { cell: TrafficCellModel }) {
+  const { t, i18n } = useTranslation()
+  const locales = toIntlLocale(i18n.language)
+  return (
+    <div className='space-y-1 text-xs'>
+      <div className='grid grid-cols-[auto_1fr] gap-x-3 gap-y-1'>
+        <span className='text-muted-foreground'>{t('Inbound')}</span>
+        <span className='font-mono'>
+          {formatExactBytes(props.cell.requestBytesValue, locales)}
+        </span>
+        <span className='text-muted-foreground'>{t('Outbound')}</span>
+        <span className='font-mono'>
+          {formatExactBytes(props.cell.responseBytesValue, locales)}
+        </span>
+      </div>
+      <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />
+    </div>
+  )
+}
+
+function BandwidthTooltip(props: { cell: TrafficCellModel }) {
+  const { t, i18n } = useTranslation()
+  const locales = toIntlLocale(i18n.language)
+  return (
+    <div className='space-y-1 text-xs'>
+      <div className='grid grid-cols-[auto_1fr] gap-x-3 gap-y-1'>
+        <span className='text-muted-foreground'>{t('Inbound')}</span>
+        <span className='font-mono'>
+          {formatExactBandwidth(props.cell.inboundBandwidthValue, locales)}
+        </span>
+        <span className='text-muted-foreground'>{t('Outbound')}</span>
+        <span className='font-mono'>
+          {formatExactBandwidth(props.cell.outboundBandwidthValue, locales)}
+        </span>
+      </div>
+      <p className='text-muted-foreground'>
+        {t('Average bandwidth over the rolling window')}
+      </p>
+    </div>
+  )
+}
+
 type SystemInstancesTableProps = {
   instances: SystemInstance[]
   deletingNodeName: string | null
@@ -239,7 +335,7 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
 
   return (
     <div className='overflow-x-auto rounded-md border'>
-      <Table className='min-w-[1230px]'>
+      <Table className='min-w-[1660px]'>
         <TableHeader>
           <TableRow className='bg-muted/40 hover:bg-muted/40'>
             <TableHead className='h-9 min-w-[240px] px-4 text-xs'>
@@ -255,6 +351,14 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
             </TableHead>
             <TableHead className='h-9 w-[96px] text-xs'>
               {t('Storage')}
+            </TableHead>
+            <TableHead className='h-9 w-[80px] text-xs'>{t('RPM')}</TableHead>
+            <TableHead className='h-9 w-[110px] text-xs'>{t('TPM')}</TableHead>
+            <TableHead className='h-9 w-[120px] text-xs'>
+              {t('Traffic')}
+            </TableHead>
+            <TableHead className='h-9 w-[120px] text-xs'>
+              {t('Bandwidth')}
             </TableHead>
             <TableHead className='h-9 w-[100px] text-xs'>
               {t('Version')}
@@ -279,6 +383,10 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
               instance.info?.node?.should_configure_manually === true
             const resources = instance.info?.resources
             const storage = resources?.storage
+            const trafficCell = buildTrafficCell(
+              instance.info?.extra?.traffic,
+              toIntlLocale(i18n.language)
+            )
             const isDeletingThisInstance =
               props.isDeletingInstance &&
               props.deletingNodeName === instance.node_name
@@ -416,6 +524,112 @@ function SystemInstancesList(props: SystemInstancesTableProps) {
                             </span>
                           </div>
                         </div>
+                      ) : undefined
+                    }
+                  />
+                </TableCell>
+                <TableCell className='py-2.5 align-middle'>
+                  <MetricCell
+                    content={
+                      <span className='font-mono text-[11px] tabular-nums'>
+                        {trafficCell.rpm}
+                      </span>
+                    }
+                    tooltip={
+                      trafficCell.rpmValue !== null ? (
+                        <RpmTooltip cell={trafficCell} />
+                      ) : undefined
+                    }
+                  />
+                </TableCell>
+                <TableCell className='py-2.5 align-middle'>
+                  <MetricCell
+                    content={
+                      <span className='font-mono text-[11px] tabular-nums'>
+                        {trafficCell.tpm}
+                      </span>
+                    }
+                    tooltip={
+                      trafficCell.tpmValue !== null ? (
+                        <TpmTooltip cell={trafficCell} />
+                      ) : undefined
+                    }
+                  />
+                </TableCell>
+                <TableCell className='py-2.5 align-middle'>
+                  <MetricCell
+                    content={
+                      trafficCell.inbound === '-' &&
+                      trafficCell.outbound === '-' ? (
+                        <span className='font-mono text-[11px] tabular-nums'>
+                          -
+                        </span>
+                      ) : (
+                        <span className='block font-mono text-[11px] leading-tight tabular-nums'>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↓
+                            </span>{' '}
+                            {trafficCell.inbound}
+                          </span>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↑
+                            </span>{' '}
+                            {trafficCell.outbound}
+                          </span>
+                        </span>
+                      )
+                    }
+                    tooltip={
+                      trafficCell.requestBytesValue !== null ||
+                      trafficCell.responseBytesValue !== null ? (
+                        <TrafficTooltip cell={trafficCell} />
+                      ) : undefined
+                    }
+                  />
+                </TableCell>
+                <TableCell className='py-2.5 align-middle'>
+                  <MetricCell
+                    content={
+                      trafficCell.inboundBandwidth === '-' &&
+                      trafficCell.outboundBandwidth === '-' ? (
+                        <span className='font-mono text-[11px] tabular-nums'>
+                          -
+                        </span>
+                      ) : (
+                        <span className='block font-mono text-[11px] leading-tight tabular-nums'>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↓
+                            </span>{' '}
+                            {trafficCell.inboundBandwidth}
+                          </span>
+                          <span className='block'>
+                            <span
+                              className='text-muted-foreground'
+                              aria-hidden='true'
+                            >
+                              ↑
+                            </span>{' '}
+                            {trafficCell.outboundBandwidth}
+                          </span>
+                        </span>
+                      )
+                    }
+                    tooltip={
+                      trafficCell.inboundBandwidthValue !== null ||
+                      trafficCell.outboundBandwidthValue !== null ? (
+                        <BandwidthTooltip cell={trafficCell} />
                       ) : undefined
                     }
                   />
@@ -642,6 +856,11 @@ export function SystemInstancesPanel() {
                 <p className='text-muted-foreground mt-0.5 text-xs'>
                   {t(
                     'Nodes reporting from this deployment and their latest heartbeat.'
+                  )}
+                </p>
+                <p className='text-muted-foreground mt-0.5 text-xs'>
+                  {t(
+                    "Requests and tokens are rolling 60-second values reported by each node's heartbeat."
                   )}
                 </p>
               </div>

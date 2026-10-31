@@ -18,6 +18,30 @@ For commercial licensing, please contact support@quantumnous.com
 */
 export type SystemInstanceStatus = 'online' | 'stale'
 
+/**
+ * Per-node traffic counters reported through the heartbeat's `info.extra.traffic`.
+ *
+ * The rate fields (`rpm`, `tpm`, `prompt_tpm`, `completion_tpm`, `request_bytes`,
+ * `response_bytes`) are sums over the most recent `window_seconds` one-second
+ * buckets. The `*_total` fields are cumulative since the process started.
+ * Heartbeats from nodes running an older build omit the whole object.
+ */
+export type TrafficSnapshot = {
+  window_seconds: number
+  rpm: number
+  tpm: number
+  prompt_tpm: number
+  completion_tpm: number
+  request_bytes: number
+  response_bytes: number
+  requests_total: number
+  prompt_tokens_total: number
+  completion_tokens_total: number
+  tokens_total: number
+  request_bytes_total: number
+  response_bytes_total: number
+}
+
 export type SystemInstanceInfo = {
   schema_version?: number
   node?: {
@@ -59,6 +83,9 @@ export type SystemInstanceInfo = {
       [key: string]: unknown
     }
     [key: string]: unknown
+  }
+  extra?: {
+    traffic?: TrafficSnapshot
   }
   [key: string]: unknown
 }

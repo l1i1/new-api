@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"testing"
 
 	rootcommon "github.com/QuantumNous/new-api/common"
@@ -175,4 +176,71 @@ func TestMaxRoundsAloneEnablesContinuation(t *testing.T) {
 	require.Equal(t, 0, ChatContinuationStepsForRequest(info), "legacy max_steps=0 keeps the feature off")
 	require.Equal(t, 1, ChatAbnormalContinuationStepsForRequest(info))
 	require.Equal(t, 1, ChatMissingContinuationStepsForRequest(info))
+}
+
+// TestChatContinuationAuditRecord pins the accumulation rules behind
+// admin_info.continuation: one run records its mode, budget, delivered finish
+// and only the completion tokens the continuation itself added; a second mode is
+// appended (the caller owns the goroutine, so no lock is taken); duplicate modes
+// stay deduplicated; a non-positive round count records nothing.
+func TestChatContinuationAuditRecord(t *testing.T) {
+	var nilAudit *ChatContinuationAudit
+	nilAudit.Record("length", 2, 1, "stop", 100, 130) // nil receiver is a no-op
+
+	audit := &ChatContinuationAudit{}
+	audit.Record("length", 2, 1, "stop", 100, 130)
+	require.Equal(t, []string{"length"}, audit.Modes)
+	require.Equal(t, 1, audit.Rounds)
+	require.Equal(t, 2, audit.MaxSteps)
+	require.Equal(t, "stop", audit.Finish)
+	require.Equal(t, 30, audit.ExtraCompletionTokens, "only the continuation's completion tokens are extra")
+
+	// A second mode appends; rounds/tokens accumulate and the budget keeps the
+	// largest configured value. The delivered finish follows the last run.
+	audit.Record("abnormal", 3, 1, "length", 130, 150)
+	require.Equal(t, []string{"length", "abnormal"}, audit.Modes)
+	require.Equal(t, 2, audit.Rounds)
+	require.Equal(t, 3, audit.MaxSteps)
+	require.Equal(t, "length", audit.Finish)
+	require.Equal(t, 50, audit.ExtraCompletionTokens)
+
+	// Recording the same mode again accumulates without duplicating it, and an
+	// empty finish never overwrites the last delivered one.
+	audit.Record("length", 1, 2, "", 150, 170)
+	require.Equal(t, []string{"length", "abnormal"}, audit.Modes)
+	require.Equal(t, 4, audit.Rounds)
+	require.Equal(t, 3, audit.MaxSteps)
+	require.Equal(t, "length", audit.Finish)
+	require.Equal(t, 70, audit.ExtraCompletionTokens)
+
+	// No rounds consumed: nothing is recorded at all.
+	before := *audit
+	audit.Record("missing", 5, 0, "stop", 200, 300)
+	require.Equal(t, before.Modes, audit.Modes)
+	require.Equal(t, before.Rounds, audit.Rounds)
+	require.Equal(t, before.MaxSteps, audit.MaxSteps)
+	require.Equal(t, before.Finish, audit.Finish)
+	require.Equal(t, before.ExtraCompletionTokens, audit.ExtraCompletionTokens)
+
+	// The wire shape is the console contract; pin the key names and values.
+	encoded, err := json.Marshal(audit)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, []any{"length", "abnormal"}, decoded["modes"])
+	require.EqualValues(t, 4, decoded["rounds"])
+	require.EqualValues(t, 3, decoded["max_steps"])
+	require.Equal(t, "length", decoded["finish"])
+	require.EqualValues(t, 70, decoded["extra_completion_tokens"])
+	require.Len(t, decoded, 5)
+
+	// A run whose merged count is not larger adds no extra tokens (a
+	// continuation can never shrink completion), but the run itself is still
+	// recorded: the mode, its rounds and the delivered finish.
+	audit.Record("missing", 5, 1, "stop", 300, 290)
+	require.Equal(t, []string{"length", "abnormal", "missing"}, audit.Modes)
+	require.Equal(t, 5, audit.Rounds)
+	require.Equal(t, 5, audit.MaxSteps)
+	require.Equal(t, "stop", audit.Finish)
+	require.Equal(t, 70, audit.ExtraCompletionTokens)
 }

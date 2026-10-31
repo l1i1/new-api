@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/nodemetrics"
 
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -88,9 +89,27 @@ func ReportCurrentSystemInstance() error {
 		identity.ManuallyConfigured = false
 		identity.ShouldConfigureManually = true
 	}
-	systemStatus := common.GetSystemStatus()
-	diskInfo := common.GetDiskSpaceInfo()
-	info := SystemInstanceInfo{
+	info := buildSystemInstanceInfo(
+		identity,
+		hostname,
+		common.GetSystemStatus(),
+		common.GetDiskSpaceInfo(),
+		time.Now(),
+	)
+	return model.UpsertSystemInstance(identity.Name, info, common.StartTime, common.GetTimestamp())
+}
+
+// buildSystemInstanceInfo assembles the heartbeat payload. It performs no I/O
+// and takes the snapshot time explicitly, so the reported shape (including
+// info.extra.traffic) is testable without a database.
+func buildSystemInstanceInfo(
+	identity common.NodeIdentity,
+	hostname string,
+	systemStatus common.SystemStatus,
+	diskInfo common.DiskSpaceInfo,
+	now time.Time,
+) SystemInstanceInfo {
+	return SystemInstanceInfo{
 		SchemaVersion: 1,
 		Node:          identity,
 		Role: SystemInstanceRoleInfo{
@@ -119,8 +138,10 @@ func ReportCurrentSystemInstance() error {
 				UsedPercent: diskInfo.UsedPercent,
 			},
 		},
+		Extra: map[string]any{
+			"traffic": nodemetrics.Snapshot(now),
+		},
 	}
-	return model.UpsertSystemInstance(identity.Name, info, common.StartTime, common.GetTimestamp())
 }
 
 func reportSystemInstanceWithLog() {

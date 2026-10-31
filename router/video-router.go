@@ -12,6 +12,7 @@ func SetVideoRouter(router *gin.Engine) {
 	videoSharedRouter.Use(middleware.RouteTag("relay"))
 	videoSharedRouter.Use(middleware.TokenAuth())
 	videoSharedRouter.Use(middleware.SystemPerformanceCheck())
+	videoSharedRouter.Use(middleware.NodeMetrics())
 	videoSharedRouter.POST(
 		"/video/generations",
 		middleware.PinTaskPluginEndpoint(),
@@ -28,7 +29,8 @@ func SetVideoRouter(router *gin.Engine) {
 	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute(), middleware.UserModelRateLimit(), middleware.GroupModelRateLimit())
 	{
 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
-		videoV1Router.POST("/videos/:video_id/remix", controller.RelayTask)
+		// 只有提交型路由计入节点 RPM/流量；同组的 GET fetch 会被客户端轮询，不计。
+		videoV1Router.POST("/videos/:video_id/remix", middleware.NodeMetrics(), controller.RelayTask)
 	}
 	// POST /v1/videos, GET /v1/videos/:task_id and GET /v1/videos/:task_id/content
 	// are registered by the task-plugin protocol router (openai_video operations).
@@ -37,8 +39,9 @@ func SetVideoRouter(router *gin.Engine) {
 	klingV1Router.Use(middleware.RouteTag("relay"))
 	klingV1Router.Use(middleware.KlingRequestConvert(), middleware.TokenAuth(), middleware.Distribute(), middleware.UserModelRateLimit(), middleware.GroupModelRateLimit())
 	{
-		klingV1Router.POST("/videos/text2video", controller.RelayTask)
-		klingV1Router.POST("/videos/image2video", controller.RelayTask)
+		// 只有提交型路由计入节点 RPM/流量；同组的 GET fetch 会被客户端轮询，不计。
+		klingV1Router.POST("/videos/text2video", middleware.NodeMetrics(), controller.RelayTask)
+		klingV1Router.POST("/videos/image2video", middleware.NodeMetrics(), controller.RelayTask)
 		klingV1Router.GET("/videos/text2video/:task_id", controller.RelayTaskFetch)
 		klingV1Router.GET("/videos/image2video/:task_id", controller.RelayTaskFetch)
 	}
@@ -47,6 +50,7 @@ func SetVideoRouter(router *gin.Engine) {
 	jimengOfficialGroup := router.Group("jimeng")
 	jimengOfficialGroup.Use(middleware.RouteTag("relay"))
 	jimengOfficialGroup.Use(middleware.JimengRequestConvert(), middleware.TokenAuth(), middleware.Distribute(), middleware.UserModelRateLimit(), middleware.GroupModelRateLimit())
+	jimengOfficialGroup.Use(middleware.NodeMetrics())
 	{
 		// Maps to: /?Action=CVSync2AsyncSubmitTask&Version=2022-08-31 and /?Action=CVSync2AsyncGetResult&Version=2022-08-31
 		jimengOfficialGroup.POST("/", controller.RelayTask)

@@ -3902,6 +3902,134 @@
      ]
     }
    ]
+  },
+  {
+   "id": "observability-request-log-node-payload-continuation-and-node-traffic-1",
+   "title": "可观测性：请求日志（consume/error）的 admin_info 记录处理节点、报文大小（客户端/上游/响应）与透明续写轮数；system-info 实例心跳 extra.traffic 上报每节点滚动 60 秒 rpm/tpm/流量",
+   "risk": "medium",
+   "source": "FORK-CHANGES.md › 8. 运营、合作方与部署",
+   "files": [
+    "service/log_info_generate.go",
+    "relay/common/continuation.go",
+    "relay/common/relay_info.go",
+    "relay/channel/api_request.go",
+    "pkg/nodemetrics/metrics.go",
+    "middleware/node_metrics.go",
+    "service/system_instance.go",
+    "router/relay-router.go",
+    "web/src/features/usage-logs/lib/observability.ts",
+    "web/src/features/system-info/lib/traffic.ts"
+   ],
+   "anchors": [
+    {
+     "kind": "contains",
+     "file": "service/log_info_generate.go",
+     "contains": "appendRelayObservabilityAdminInfo"
+    },
+    {
+     "kind": "contains",
+     "file": "service/log_info_generate.go",
+     "contains": "body_bytes"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/common/continuation.go",
+     "contains": "ChatContinuationAudit"
+    },
+    {
+     "kind": "contains",
+     "file": "relay/channel/api_request.go",
+     "contains": "UpstreamRequestBytes"
+    },
+    {
+     "kind": "contains",
+     "file": "middleware/node_metrics.go",
+     "contains": "func NodeMetrics()"
+    },
+    {
+     "kind": "contains",
+     "file": "pkg/nodemetrics/metrics.go",
+     "contains": "window_seconds"
+    },
+    {
+     "kind": "contains",
+     "file": "service/system_instance.go",
+     "contains": "nodemetrics.Snapshot"
+    },
+    {
+     "kind": "contains",
+     "file": "web/src/features/usage-logs/lib/observability.ts",
+     "contains": "buildLogObservability"
+    },
+    {
+     "kind": "contains",
+     "file": "web/src/features/system-info/lib/traffic.ts",
+     "contains": "buildTrafficCell"
+    }
+   ],
+   "tests": [
+    {
+     "file": "service/log_info_generate_test.go",
+     "names": [
+      "TestAppendRelayLogAdminInfoWritesNodeBodyBytesAndContinuation",
+      "TestAppendRelayLogAdminInfoBodyBytesFallbackAndOmission",
+      "TestAppendRelayLogAdminInfoCarriesContinuationAudit"
+     ]
+    },
+    {
+     "file": "relay/common/continuation_test.go",
+     "names": [
+      "TestChatContinuationAuditRecord"
+     ]
+    },
+    {
+     "file": "relay/channel/api_request_body_bytes_test.go",
+     "names": [
+      "TestDoRequestCapturesUpstreamRequestBytes"
+     ]
+    },
+    {
+     "file": "pkg/nodemetrics/metrics_test.go",
+     "names": [
+      "TestWindowSums",
+      "TestBucketRollover",
+      "TestPackageLevelHelpers"
+     ]
+    },
+    {
+     "file": "middleware/node_metrics_test.go",
+     "names": [
+      "TestNodeMetricsRecordsCachedBodyAndWriterSizes",
+      "TestNodeMetricsFallsBackToContentLength"
+     ]
+    },
+    {
+     "file": "model/log_nodemetrics_test.go",
+     "names": [
+      "TestRecordConsumeLogCountsTokensWhenLoggingDisabled"
+     ]
+    },
+    {
+     "file": "service/system_instance_test.go",
+     "names": [
+      "TestBuildSystemInstanceInfoReportsTrafficExtra"
+     ]
+    },
+    {
+     "file": "web/src/features/usage-logs/lib/__tests__/observability.test.ts",
+     "names": [
+      "builds the full display model",
+      "keeps unknown mode ids raw"
+     ]
+    },
+    {
+     "file": "web/src/features/system-info/__tests__/traffic.test.ts",
+     "names": [
+      "reports absent traffic as dashes instead of zeros",
+      "formats a busy node for the three columns and the tooltips"
+     ]
+    }
+   ]
   }
  ]
 }

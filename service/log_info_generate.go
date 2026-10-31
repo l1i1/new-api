@@ -196,10 +196,93 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+// appendRelayObservabilityAdminInfo records the per-request observability
+// fields the console needs to explain a row: which gateway node served it, how
+// large its payloads were, and whether transparent continuation (续写) repaired
+// it.
+//
+// It runs for both consume (type=2) and error (type=5) logs because it is called
+// from AppendRelayLogAdminInfo. node_name and continuation do not depend on the
+// gin context, so they are written even if a caller passes a nil context; the
+// size readings are best-effort and only use data already in memory.
+func appendRelayObservabilityAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if other == nil {
+		return
+	}
+	if common.NodeName != "" {
+		other.SetAdmin("node_name", common.NodeName)
+	}
+	if sizes := relayBodyBytes(ctx, relayInfo); len(sizes) > 0 {
+		other.SetAdmin("body_bytes", sizes)
+	}
+	// Present only when at least one continuation round ran: Record() refuses
+	// rounds <= 0, so a non-nil audit with zero rounds means nothing repaired
+	// this request and stays off the log.
+	if relayInfo != nil && relayInfo.ChatContinuationAudit != nil && relayInfo.ChatContinuationAudit.Rounds > 0 {
+		other.SetAdmin("continuation", relayInfo.ChatContinuationAudit)
+	}
+}
+
+// relayBodyBytes collects admin_info.body_bytes from data already held in
+// memory. Any 0/unknown size is omitted, and the whole object is omitted when
+// nothing is known (older requests, non-body relays) so the log of an ordinary
+// request does not grow an empty marker.
+func relayBodyBytes(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) map[string]int64 {
+	if ctx == nil {
+		return nil
+	}
+	sizes := make(map[string]int64, 3)
+	if requestBytes := cachedRequestBytes(ctx); requestBytes > 0 {
+		sizes["request"] = requestBytes
+	}
+	if relayInfo != nil && relayInfo.UpstreamRequestBytes > 0 {
+		sizes["upstream_request"] = relayInfo.UpstreamRequestBytes
+	}
+	if responseBytes := writtenResponseBytes(ctx); responseBytes > 0 {
+		sizes["response"] = responseBytes
+	}
+	return sizes
+}
+
+// cachedRequestBytes reports the client request body size from the cached body
+// storage (decompressed). It deliberately never creates a storage nor reads the
+// body: log generation runs on both success and failure paths and must stay
+// cheap. ContentLength is only a fallback for requests that were never buffered.
+func cachedRequestBytes(ctx *gin.Context) int64 {
+	if storage, exists := ctx.Get(common.KeyBodyStorage); exists && storage != nil {
+		if bodyStorage, ok := storage.(common.BodyStorage); ok && bodyStorage != nil {
+			if size := bodyStorage.Size(); size > 0 {
+				return size
+			}
+		}
+	}
+	if ctx.Request != nil && ctx.Request.ContentLength > 0 {
+		return ctx.Request.ContentLength
+	}
+	return 0
+}
+
+// writtenResponseBytes reports how many bytes gin has written to the client.
+// Size() is -1 for a header-only response (e.g. 204/304), which counts as
+// unknown rather than as a negative payload.
+func writtenResponseBytes(ctx *gin.Context) int64 {
+	if ctx.Writer == nil {
+		return 0
+	}
+	if size := ctx.Writer.Size(); size > 0 {
+		return int64(size)
+	}
+	return 0
+}
+
 // AppendRelayLogAdminInfo records relay routing and conversion diagnostics in
 // the admin-only scope shared by successful and failed request logs.
 func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
-	if ctx == nil || other == nil {
+	if other == nil {
+		return
+	}
+	appendRelayObservabilityAdminInfo(ctx, relayInfo, other)
+	if ctx == nil {
 		return
 	}
 	other.SetAdmin("use_channel", ctx.GetStringSlice("use_channel"))
@@ -220,13 +303,11 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if relayInfo.StreamCutDiagnostics != nil {
 			other.SetAdmin("stream_cut", relayInfo.StreamCutDiagnostics)
 		}
-		// The successful side of the same story: a response the repair path
-		// actually stitched, and a cut tool-call stream closed as a complete
-		// answer. Admin-only, so recovery rates and their shapes are measurable
-		// from /api/log/ instead of from log lines that rotate away.
-		if relayInfo.ContinuationAudit != nil {
-			other.SetAdmin("continuation", relayInfo.ContinuationAudit)
-		}
+		// A cut tool-call stream that was closed as a complete answer carries
+		// the closure marker (the repaired-response counterpart,
+		// admin_info.continuation, is written by the observability helper above),
+		// so recovery shapes are measurable from /api/log/ instead of log lines
+		// that rotate away.
 		if relayInfo.ClosedAsToolCalls {
 			other.SetAdmin("closed_as_tool_calls", true)
 		}

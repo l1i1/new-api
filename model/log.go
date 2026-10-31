@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/pkg/nodemetrics"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -342,6 +343,9 @@ type RecordConsumeLogParams struct {
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	// 节点级 TPM 统计：即使消费日志被关闭也要计入结算 token；请求数只由
+	// middleware.NodeMetrics 统计，这里不重复计数。
+	nodemetrics.RecordTokens(params.PromptTokens, params.CompletionTokens)
 	if !common.LogConsumeEnabled {
 		return
 	}

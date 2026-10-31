@@ -67,6 +67,10 @@ import {
   renderAuditContent,
 } from '../../lib/format'
 import {
+  buildLogObservability,
+  buildObservabilityPayload,
+} from '../../lib/observability'
+import {
   isDisplayableLogType,
   isTimingLogType,
   getLogTypeConfig,
@@ -76,6 +80,7 @@ import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
+import { ContinuationBadge, FitPinPopover } from '../observability-badges'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -541,6 +546,50 @@ export function useCommonLogsColumns(
           },
         },
         {
+          id: 'node',
+          header: t('Node'),
+          accessorFn: (row) =>
+            parseLogOther(row.other)?.admin_info?.node_name ?? '',
+          cell: function NodeCell({ row }) {
+            const log = row.original
+            if (!isDisplayableLogType(log.type)) return null
+
+            const observability = buildLogObservability(
+              parseLogOther(log.other),
+              t
+            )
+            const nodeName = observability?.nodeName
+            const fit = observability?.fit
+            if (!nodeName && !fit) return null
+
+            return (
+              <div className='flex max-w-[180px] items-center gap-1'>
+                {nodeName && (
+                  <TooltipProvider delay={300}>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <span className='max-w-[150px] truncate font-mono text-xs' />
+                        }
+                      >
+                        {nodeName}
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side='top'
+                        className='max-w-xs font-mono break-all'
+                      >
+                        {nodeName}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+                {fit?.family && <FitPinPopover fit={fit} />}
+              </div>
+            )
+          },
+          size: 160,
+        },
+        {
           id: 'user',
           header: t('User'),
           accessorFn: (row) => row.username,
@@ -703,15 +752,24 @@ export function useCommonLogsColumns(
             useTime > 0 && log.completion_tokens > 0
               ? log.completion_tokens / useTime
               : null
+          // Continuation is relay audit data (admin-only, like the channel cell).
+          const continuation = isAdmin
+            ? buildLogObservability(other, t)?.continuation
+            : undefined
 
           return (
-            <StreamTpsCell
-              isStream={log.is_stream}
-              isTask={other?.is_task === true}
-              isSyncTask={other?.task_sync === true}
-              tokensPerSecond={tokensPerSecond}
-              streamStatus={other?.stream_status}
-            />
+            <div className='flex flex-col items-start gap-1'>
+              <StreamTpsCell
+                isStream={log.is_stream}
+                isTask={other?.is_task === true}
+                isSyncTask={other?.task_sync === true}
+                tokensPerSecond={tokensPerSecond}
+                streamStatus={other?.stream_status}
+              />
+              {continuation && (
+                <ContinuationBadge continuation={continuation} withTooltip />
+              )}
+            </div>
           )
         },
         meta: { label: t('Stream') },
@@ -801,95 +859,146 @@ export function useCommonLogsColumns(
             />
           )
         },
-      },
-
-      {
-        accessorKey: 'content',
-        header: t('Details'),
-        cell: function DetailsCell({ row }) {
-          const { t } = useTranslation()
-          const [dialogOpen, setDialogOpen] = useState(false)
-          const log = row.original
-          const other = parseLogOther(log.other)
-
-          const pricingData = usePricingData(
-            log.type === 2 &&
-              other?.is_task === true &&
-              other.billing_mode === 'tiered_expr'
-          )
-          const usageSchema = pluginUsageSchema(
-            pricingData.models.find(
-              (model) => model.model_name === log.model_name
-            ),
-            other?.admin_info?.task_plugin?.key
-          )
-          const segments = buildDetailSegments(
-            log,
-            other,
-            t,
-            language,
-            isAdmin,
-            usageSchema
-          )
-          const primary = segments[0]
-          const hasMore = segments.length > 1
-          let primaryTextClass = 'text-foreground'
-          if (primary?.muted) {
-            primaryTextClass = 'text-muted-foreground/60'
-          } else if (primary?.danger) {
-            primaryTextClass = 'text-red-600 dark:text-red-400'
-          }
-          let detailPreview = (
-            <span className='text-muted-foreground/40'>—</span>
-          )
-          if (primary) {
-            detailPreview = (
-              <span
-                className={cn(
-                  'truncate leading-snug group-hover:underline',
-                  primaryTextClass
-                )}
-              >
-                {primary.text}
-                {hasMore && (
-                  <span className='text-muted-foreground/40 ml-0.5'>
-                    +{segments.length - 1}
-                  </span>
-                )}
-              </span>
-            )
-          } else if (log.content) {
-            detailPreview = (
-              <span className='text-muted-foreground truncate group-hover:underline'>
-                {log.content}
-              </span>
-            )
-          }
-
-          return (
-            <>
-              <button
-                type='button'
-                className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
-                onClick={() => setDialogOpen(true)}
-                title={t('Click to view full details')}
-              >
-                {detailPreview}
-              </button>
-              <DetailsDialog
-                log={log}
-                isAdmin={isAdmin}
-                isRoot={isRoot}
-                open={dialogOpen}
-                onOpenChange={setDialogOpen}
-              />
-            </>
-          )
-        },
-        size: 180,
-        maxSize: 200,
       }
     )
+
+    // Relay payload sizes are written to admin_info, so the column follows the
+    // same admin-only gating as the channel and node columns.
+    if (isAdmin) {
+      columns.push({
+        id: 'body_bytes',
+        header: t('Payload'),
+        accessorFn: (row) => {
+          const bytes = parseLogOther(row.other)?.admin_info?.body_bytes
+          return bytes?.response ?? bytes?.request ?? 0
+        },
+        cell: function PayloadCell({ row }) {
+          const log = row.original
+          if (!isDisplayableLogType(log.type)) return null
+
+          const other = parseLogOther(log.other)
+          const payload = buildObservabilityPayload(
+            other?.admin_info?.body_bytes,
+            t
+          )
+          if (!payload?.compact) return null
+
+          return (
+            <TooltipProvider delay={300}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className='font-mono text-xs whitespace-nowrap tabular-nums' />
+                  }
+                >
+                  {payload.compact}
+                </TooltipTrigger>
+                <TooltipContent side='top'>
+                  <div className='space-y-0.5 text-xs'>
+                    {payload.rows.map((detail) => (
+                      <p key={detail.label}>
+                        <span className='text-muted-foreground'>
+                          {detail.label}:{' '}
+                        </span>
+                        <span className='font-mono tabular-nums'>
+                          {detail.value}
+                        </span>
+                      </p>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )
+        },
+        size: 130,
+      })
+    }
+
+    columns.push({
+      accessorKey: 'content',
+      header: t('Details'),
+      cell: function DetailsCell({ row }) {
+        const { t } = useTranslation()
+        const [dialogOpen, setDialogOpen] = useState(false)
+        const log = row.original
+        const other = parseLogOther(log.other)
+
+        const pricingData = usePricingData(
+          log.type === 2 &&
+            other?.is_task === true &&
+            other.billing_mode === 'tiered_expr'
+        )
+        const usageSchema = pluginUsageSchema(
+          pricingData.models.find(
+            (model) => model.model_name === log.model_name
+          ),
+          other?.admin_info?.task_plugin?.key
+        )
+        const segments = buildDetailSegments(
+          log,
+          other,
+          t,
+          language,
+          isAdmin,
+          usageSchema
+        )
+        const primary = segments[0]
+        const hasMore = segments.length > 1
+        let primaryTextClass = 'text-foreground'
+        if (primary?.muted) {
+          primaryTextClass = 'text-muted-foreground/60'
+        } else if (primary?.danger) {
+          primaryTextClass = 'text-red-600 dark:text-red-400'
+        }
+        let detailPreview = <span className='text-muted-foreground/40'>—</span>
+        if (primary) {
+          detailPreview = (
+            <span
+              className={cn(
+                'truncate leading-snug group-hover:underline',
+                primaryTextClass
+              )}
+            >
+              {primary.text}
+              {hasMore && (
+                <span className='text-muted-foreground/40 ml-0.5'>
+                  +{segments.length - 1}
+                </span>
+              )}
+            </span>
+          )
+        } else if (log.content) {
+          detailPreview = (
+            <span className='text-muted-foreground truncate group-hover:underline'>
+              {log.content}
+            </span>
+          )
+        }
+
+        return (
+          <>
+            <button
+              type='button'
+              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+              onClick={() => setDialogOpen(true)}
+              title={t('Click to view full details')}
+            >
+              {detailPreview}
+            </button>
+            <DetailsDialog
+              log={log}
+              isAdmin={isAdmin}
+              isRoot={isRoot}
+              open={dialogOpen}
+              onOpenChange={setDialogOpen}
+            />
+          </>
+        )
+      },
+      size: 180,
+      maxSize: 200,
+    })
 
     return columns
     // Log formatters read currency settings from the store.

@@ -200,6 +200,12 @@ type RelayInfo struct {
 	ObservedInputTokens                   int64
 	ObservedCacheReadTokens               int64
 	ObservedCacheWriteTokens              int64
+
+	// UpstreamRequestBytes is the outbound body size of the last upstream
+	// attempt, captured by doRequest from http.Request.ContentLength (each retry
+	// overwrites it). It lands on admin_info.body_bytes.upstream_request; 0
+	// means unknown (a streamed/multipart body may carry no ContentLength).
+	UpstreamRequestBytes int64
 	LastError                             *types.NewAPIError
 	RuntimeHeadersOverride                map[string]any
 	UseRuntimeHeadersOverride             bool
@@ -308,13 +314,12 @@ type RelayInfo struct {
 	// regeneration re-runs the whole 20-minute request and never even returns
 	// response headers).
 	ToolCallFragmentDiscarded bool
-	// ContinuationAudit, when non-nil, records a transparent continuation that
-	// repaired this response. The successful request's type=2 row carries it as
-	// admin_info.continuation, so the repair rate can be measured from /api/log/
-	// instead of from container log lines, which rotate away and die with the
-	// instance. Mode names match the handler's SysLog lines so the two views can
-	// be joined.
-	ContinuationAudit *ContinuationAudit
+	// ChatContinuationAudit, when non-nil, records the transparent continuation
+	// (续写) that repaired this response. Both the consume (type=2) and error
+	// (type=5) rows carry it as admin_info.continuation, so the repair rate and
+	// its token cost can be measured from /api/log/ instead of from container
+	// log lines, which rotate away and die with the instance.
+	ChatContinuationAudit *ChatContinuationAudit
 	// ClosedAsToolCalls records that a cut stream was closed as a complete
 	// tool_calls answer instead of failing the request. The success row carries
 	// it as admin_info.closed_as_tool_calls (admin-only).
@@ -1450,14 +1455,3 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 	return jsonDataAfter, nil
 }
 
-// ContinuationAudit records one repaired response for the success log row.
-type ContinuationAudit struct {
-	// Mode names the repair branch (length, missing-content, abnormal-content,
-	// abnormal, missing, length-thinking, stream-error, transport-error).
-	Mode string `json:"mode,omitempty"`
-	// Rounds is how many continuation rounds were stitched into this response.
-	Rounds int `json:"rounds"`
-	// ContentChars is how much visible text the resumed rounds delivered after
-	// the seam (0 for a thinking-only resume).
-	ContentChars int `json:"content_chars,omitempty"`
-}
