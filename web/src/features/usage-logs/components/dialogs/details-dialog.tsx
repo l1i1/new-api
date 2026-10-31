@@ -71,6 +71,15 @@ import { cn } from '@/lib/utils'
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
 import {
+  buildBillingAuditSections,
+  buildCaptureSection,
+  buildConversionSection,
+  buildOverridesSection,
+  buildReasoningSection,
+  buildStreamClosureRows,
+  buildStreamCutSection,
+} from '../../lib/diagnostics'
+import {
   parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
@@ -643,6 +652,31 @@ export function DetailsDialog(props: DetailsDialogProps) {
     ? buildLogObservability(other, t)
     : undefined
 
+  // Admin-only diagnostics that live outside the observability block: cut
+  // diagnostics (why a stream died), billing-audit markers, conversion loss,
+  // override audits, reasoning observations and the request-capture marker.
+  const streamCutSection = props.isAdmin
+    ? buildStreamCutSection(adminInfo?.stream_cut, t)
+    : undefined
+  const billingSections = props.isAdmin
+    ? buildBillingAuditSections(adminInfo, t)
+    : []
+  const conversionSection = props.isAdmin
+    ? buildConversionSection(
+        adminInfo?.conversion_diagnostics,
+        adminInfo?.conversion_diagnostics_truncated,
+        t
+      )
+    : undefined
+  const overridesSection = buildOverridesSection(other, t)
+  const reasoningSection = buildReasoningSection(other, t)
+  const captureSection = props.isAdmin
+    ? buildCaptureSection(adminInfo?.capture, t)
+    : undefined
+  const streamClosureRows = props.isAdmin
+    ? buildStreamClosureRows(other, adminInfo?.closed_as_tool_calls, t)
+    : []
+
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
@@ -858,6 +892,124 @@ export function DetailsDialog(props: DetailsDialogProps) {
               />
             ))}
             {observability.continuation?.detailRows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+            {streamClosureRows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+            {adminInfo?.billing_model && (
+              <DetailRow
+                label={t('Actual billing model')}
+                value={adminInfo.billing_model}
+                mono
+              />
+            )}
+            {adminInfo?.last_upstream_error && (
+              <DetailRow
+                label={t('Last upstream error')}
+                value={adminInfo.last_upstream_error}
+                mono
+              />
+            )}
+          </DetailSection>
+        )}
+
+        {/* Stream cut diagnostics (admin only): why a stream died unrepaired */}
+        {streamCutSection && (
+          <DetailSection
+            label={streamCutSection.label}
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            variant='danger'
+          >
+            {streamCutSection.rows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
+
+        {/* Billing-audit markers (admin only) */}
+        {billingSections.map((section) => (
+          <DetailSection
+            key={section.label}
+            label={section.label}
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            variant={section.variant === 'danger' ? 'danger' : undefined}
+          >
+            {section.rows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        ))}
+
+        {/* Request-capture sampling marker (admin only) */}
+        {captureSection && (
+          <DetailSection
+            label={captureSection.label}
+            icon={<Activity className='size-3.5' aria-hidden='true' />}
+          >
+            {captureSection.rows.map((row) => (
+              <DetailRow
+                key={row.label}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
+
+        {/* Lossy conversion diagnostics (admin only) */}
+        {conversionSection && (
+          <DetailSection label={conversionSection.label}>
+            {conversionSection.rows.map((row) => (
+              <DetailRow
+                key={`${row.label}-${row.value}`}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
+
+        {/* Param/response override audit */}
+        {overridesSection && (
+          <DetailSection label={overridesSection.label}>
+            {overridesSection.rows.map((row) => (
+              <DetailRow
+                key={`${row.label}-${row.value}`}
+                label={row.label}
+                value={row.value}
+                mono
+              />
+            ))}
+          </DetailSection>
+        )}
+
+        {/* Reasoning observability */}
+        {reasoningSection && (
+          <DetailSection label={reasoningSection.label}>
+            {reasoningSection.rows.map((row) => (
               <DetailRow
                 key={row.label}
                 label={row.label}

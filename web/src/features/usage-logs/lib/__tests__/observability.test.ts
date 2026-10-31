@@ -120,12 +120,14 @@ describe('buildLogObservability', () => {
     expect(model?.continuation?.badge).toBe('Continued ×2')
     expect(model?.continuation?.tooltipRows).toEqual([
       { label: 'Continuation Rounds', value: '2' },
+      { label: 'Max steps', value: '2' },
       { label: 'Continuation Mode', value: 'length' },
       { label: 'Finish', value: 'stop' },
       { label: 'Extra Completion Tokens', value: '4,096' },
     ])
     expect(model?.continuation?.detailRows).toEqual([
       { label: 'Continuation Rounds', value: '2' },
+      { label: 'Max steps', value: '2' },
       { label: 'Continuation', value: 'length' },
       { label: 'Finish', value: 'stop' },
       { label: 'Continuation Tokens', value: '4,096' },

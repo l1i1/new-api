@@ -240,6 +240,9 @@ export function buildObservabilityContinuation(
     label: t('Continuation Rounds'),
     value: formatCount(rounds),
   })
+  if (maxSteps != null) {
+    tooltipRows.push({ label: t('Max steps'), value: formatCount(maxSteps) })
+  }
   if (modes.length > 0) {
     tooltipRows.push({
       label: t('Continuation Mode'),
@@ -261,6 +264,9 @@ export function buildObservabilityContinuation(
     label: t('Continuation Rounds'),
     value: formatCount(rounds),
   })
+  if (maxSteps != null) {
+    detailRows.push({ label: t('Max steps'), value: formatCount(maxSteps) })
+  }
   if (modes.length > 0) {
     detailRows.push({ label: t('Continuation'), value: modes.join(', ') })
   }

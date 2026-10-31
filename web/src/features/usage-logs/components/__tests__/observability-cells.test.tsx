@@ -39,8 +39,38 @@ const otherWithObservability: LogOtherData = {
       modes: ['length'],
       rounds: 2,
       finish: 'stop',
+      max_steps: 2,
       extra_completion_tokens: 4096,
     },
+    stream_cut: {
+      finish_reason: 'length',
+      visible_content_chars: 0,
+      reasoning_chars: 120,
+      client_max_tokens: 64000,
+      completion_tokens: 300,
+      budget_left: 63700,
+      continuation_configured: true,
+      repair_attempted: true,
+      repair_mode: 'abnormal',
+      repair_rounds: 2,
+      repair_failed_reason: 'round_incomplete',
+      repair_channels: [106, 105],
+    },
+    closed_as_tool_calls: true,
+    billing_model: 'kimi-k3-billing',
+    last_upstream_error: 'upstream: stream ended unexpectedly',
+    capture: {
+      rule: 'kimi-200-sample',
+      file: '2026-10-31/120000-kimi-200-sample-req-1.json',
+    },
+  },
+  po: ['reasoning_effort: set max'],
+  ro: ['choices[0].message.content: rewritten'],
+  thinking_type: 'disabled',
+  upstream_reasoning_tokens: 1024,
+  stream_status: {
+    closed_after_terminal: true,
+    end_reason: 'terminal_tail_grace',
   },
   fit: {
     family: 'kimi-k3',
@@ -200,8 +230,30 @@ test('details dialog shows the admin observability section', () => {
   expect(rowValue('Upstream Request Body')).toBe('1.2 KB')
   expect(rowValue('Response Body')).toBe('55.5 KB')
   expect(rowValue('Continuation Rounds')).toBe('2')
+  expect(rowValue('Max steps')).toBe('2')
   expect(rowValue('Continuation')).toBe('length')
   expect(rowValue('Continuation Tokens')).toBe('4,096')
+  expect(rowValue('Closed after terminal finish')).toBe('Yes')
+  expect(rowValue('Closed as tool calls')).toBe('Yes')
+  expect(rowValue('Actual billing model')).toBe('kimi-k3-billing')
+  expect(rowValue('Last upstream error')).toBe(
+    'upstream: stream ended unexpectedly'
+  )
+  // Stream-cut diagnostics, capture marker, override and reasoning audits.
+  expect(screen.getByText('Stream cut diagnostics')).toBeVisible()
+  expect(rowValue('Cut shape')).toBe('finish_reason=length')
+  expect(rowValue('Repair')).toBe('abnormal · 2× · round_incomplete')
+  expect(rowValue('Repair channels')).toBe('106 → 105')
+  expect(screen.getByText('Request capture')).toBeVisible()
+  expect(rowValue('Capture rule')).toBe('kimi-200-sample')
+  expect(screen.getByText('Overrides')).toBeVisible()
+  expect(rowValue('Param overrides')).toBe('reasoning_effort: set max')
+  expect(rowValue('Response overrides')).toBe(
+    'choices[0].message.content: rewritten'
+  )
+  expect(screen.getByText('Reasoning')).toBeVisible()
+  expect(rowValue('Thinking type')).toBe('disabled')
+  expect(rowValue('Upstream reasoning tokens')).toBe('1,024')
   queryClient.clear()
 })
 

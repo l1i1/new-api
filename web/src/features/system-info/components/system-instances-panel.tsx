@@ -242,8 +242,14 @@ function MetricCell(props: MetricCellProps) {
 function TrafficWindowNote(props: { windowSeconds: number | null }) {
   const { t } = useTranslation()
   if (props.windowSeconds === null) return null
+  // The window length is reported by the node itself; only the default 60 s
+  // window gets the short fixed label.
   return (
-    <p className='text-muted-foreground'>{t('Rolling 60-second window')}</p>
+    <p className='text-muted-foreground'>
+      {props.windowSeconds === 60
+        ? t('Rolling 60-second window')
+        : `${t('Rolling window')}: ${props.windowSeconds}s`}
+    </p>
   )
 }
 
@@ -256,6 +262,8 @@ function RpmTooltip(props: { cell: TrafficCellModel }) {
           {t('Requests per minute')}
         </span>
         <span className='font-mono'>{props.cell.rpm}</span>
+        <span className='text-muted-foreground'>{t('Requests (total)')}</span>
+        <span className='font-mono'>{props.cell.requestsTotal}</span>
       </div>
       <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />
     </div>
@@ -275,6 +283,8 @@ function TpmTooltip(props: { cell: TrafficCellModel }) {
         <span className='font-mono'>
           {formatCompactNumber(props.cell.completionTokensValue)}
         </span>
+        <span className='text-muted-foreground'>{t('Tokens (total)')}</span>
+        <span className='font-mono'>{props.cell.tokensTotal}</span>
       </div>
       <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />
     </div>
@@ -294,6 +304,18 @@ function TrafficTooltip(props: { cell: TrafficCellModel }) {
         <span className='text-muted-foreground'>{t('Outbound')}</span>
         <span className='font-mono'>
           {formatExactBytes(props.cell.responseBytesValue, locales)}
+        </span>
+        <span className='text-muted-foreground'>
+          {t('Request bytes (total)')}
+        </span>
+        <span className='font-mono'>
+          {formatExactBytes(props.cell.requestBytesTotalValue, locales)}
+        </span>
+        <span className='text-muted-foreground'>
+          {t('Response bytes (total)')}
+        </span>
+        <span className='font-mono'>
+          {formatExactBytes(props.cell.responseBytesTotalValue, locales)}
         </span>
       </div>
       <TrafficWindowNote windowSeconds={props.cell.windowSeconds} />

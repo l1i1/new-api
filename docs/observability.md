@@ -58,10 +58,11 @@
 
 前端：`web/src/features/usage-logs/lib/observability.ts`（纯展示模型 + 单测）、
 `components/columns/common-logs-columns.tsx`（节点名 / 报文大小收在「详情」
-单元格的副行里，fit pin 挂在「渠道」单元格旁，Stream 列里是 `Continued ×N`）、
-`components/dialogs/details-dialog.tsx`
-（Observability 详情段，含三段报文的完整数字）、`components/common-log-mobile-card.tsx`
-（移动端）。不单独占列是刻意的：表格宽度不被这两类信息撑开，点开详情仍能看到全量。
+单元格的副行里；fit pin 排在「渠道」单元格的**重试链 / 亲和图标之后**；Stream 列里
+`Continued ×N` 紧跟「流」字）、`components/dialogs/details-dialog.tsx`
+（Observability 详情段，含三段报文与 `max_steps` 的完整数字）、
+`components/common-log-mobile-card.tsx`（移动端）。不单独占列是刻意的：表格宽度不被
+这两类信息撑开，点开详情仍能看到全量。
 
 ## 2. 每节点负载（`/system-info`）
 
@@ -102,7 +103,9 @@
   不是 TCP/压缩后字节，也不含 HTTP 头。
 - **带宽不单独上报**：前端按 `request_bytes / window_seconds`、`response_bytes / window_seconds`
   推导出该统计周期内的平均入/出带宽（cell 显示 `↓ 2 KB/s ↑ 74.3 KB/s`，tooltip 给精确值
-  并附 bits/s，因为"带宽"通常以 bit 计）。窗口缺失/为 0 时显示 `-`，不猜测 60 秒，避免把
+  并附 bits/s，因为"带宽"通常以 bit 计）。RPM / TPM / 流量三个 tooltip 同时给出节点
+  **进程累计值**（`requests_total` / `tokens_total` / `*_bytes_total`），窗口长度文案取心跳
+  上报的 `window_seconds`（默认 60 秒时仍用旧文案）。窗口缺失/为 0 时显示 `-`，不猜测 60 秒，避免把
   别的窗口标错。这样带宽与流量永远同源，不会出现两个字段各自漂移的问题。
 - 进程重启后累计值归零；滚动窗口在重启后自然从 0 开始。节点名来自 `common.NodeName`，
   建议每个 ECI 实例配唯一的 `NODE_NAME`，否则用主机名（可读性差，且实例替换后会留下
@@ -111,7 +114,46 @@
 前端：`web/src/features/system-info/lib/traffic.ts`（格式化 + 单测）、
 `components/system-instances-panel.tsx`。
 
-## 3. 验证方法
+## 3. 诊断字段的展示
+
+以下字段在更早的版本就已写进 `other`（`admin_info` 或公开区），但控制台此前不展示；
+2026-10-31 起在**日志详情弹窗**（管理员可见）里成段显示，纯前端改动、不改写入契约。
+
+| 字段 | 写入方 | 展示位置 |
+| --- | --- | --- |
+| `admin_info.stream_cut` | `relay/common.StreamCutDiagnostics` | 错误行详情「切流诊断」（红色分区） |
+| `admin_info.closed_as_tool_calls` | relay 工具调用收尾 | Observability 段「按完整工具调用闭合」 |
+| `admin_info.billing_model` | 计费模型映射 | Observability 段「实际计费模型」 |
+| `admin_info.last_upstream_error` | `controller/relay.go`（masked） | Observability 段「上次上游错误」 |
+| `stream_status.closed_after_terminal` | `appendStreamStatus` | Observability 段「终帧后静默关闭」 |
+| `continuation.max_steps` | 续写审计 | Observability 段「最大步数」 |
+| `admin_info.billing_anomaly` / `undelivered` / `usage_deviation` | 计费审计（`AuditMap`） | 独立计费审计分区：kind/field/value/threshold/action/raw、未交付原因与上游 token |
+| `admin_info.conversion_diagnostics`（+`_truncated`） | 协议转换诊断 | 「转换诊断」段：severity/from→to/path/code/message |
+| `other.po` / `other.ro` | 参数覆盖 / 响应改写审计 | 「覆盖审计」段 |
+| `other.thinking_type` / `reasoning_content_seen` / `upstream_reasoning_tokens` | 思考观测 | 「推理」段 |
+
+`stream_cut` 是断流复盘的主要证据：`finish_reason`/`missing_finish`、可见与思考字符数、
+`tool_calls`、`client_max_tokens`/`completion_tokens`/`budget_left`（非正的
+`budget_left` 直接说明续写在设计上就不可能）、三种续写是否配置，以及
+`repair_attempted`/`repair_mode`/`repair_rounds`/`repair_failed_reason`/`repair_channels`
+（修复真正跑过但没有交付可用结果时才存在）。
+
+### 请求捕获取样标记（request_capture）
+
+目标请求被 `request_capture` 采样并落盘后，日志行会多一个
+`admin_info.capture = { rule, file, captured_at, status? }`：
+
+- 写入时机在**文件真正写完之后**，由 master 的 capture writer
+  （`service.drainRequestCaptureQueue` → `attachCaptureMarker` →
+  `model.AttachLogCaptureMarker`）对 `request_id` 做一次窄范围读改写，因此日志行先落库、
+  标记后补上，不需要把 capture 决策挪到请求路径前面（它的状态过滤本来就要等响应）。
+- 只有**规则命中、状态过滤与预算都通过、且文件写成功**才会有该字段；字段缺失表示
+  "没被取样"，而不是"未记录"。
+- `LOG_SQL_DSN` 指向 ClickHouse 时会跳过该标记（日志表没有同步行更新），行为与未标记一致。
+- 前端在详情弹窗显示「请求取样」段（取样规则 / 取样文件），便于从日志直接定位磁盘上的
+  请求副本；capture 目录只有 master 有，所以标记由 master 写、任何节点都能读。
+
+## 4. 验证方法
 
 ```bash
 # 单条请求的日志字段（管理员 token）

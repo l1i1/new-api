@@ -183,6 +183,15 @@ export type TrafficCellModel = {
   completionTokensValue: number | null
   requestBytesValue: number | null
   responseBytesValue: number | null
+  /** Process-lifetime totals behind the rolling window (reset on node restart). */
+  requestsTotalValue: number | null
+  requestsTotal: string
+  tokensTotalValue: number | null
+  tokensTotal: string
+  requestBytesTotalValue: number | null
+  requestBytesTotal: string
+  responseBytesTotalValue: number | null
+  responseBytesTotal: string
   inbound: string
   outbound: string
   /** Average inbound/outbound bandwidth over the stats window (bytes/s). */
@@ -203,6 +212,14 @@ const ABSENT_TRAFFIC_CELL: TrafficCellModel = {
   completionTokensValue: null,
   requestBytesValue: null,
   responseBytesValue: null,
+  requestsTotalValue: null,
+  requestsTotal: '-',
+  tokensTotalValue: null,
+  tokensTotal: '-',
+  requestBytesTotalValue: null,
+  requestBytesTotal: '-',
+  responseBytesTotalValue: null,
+  responseBytesTotal: '-',
   inbound: '-',
   outbound: '-',
   inboundBandwidthValue: null,
@@ -229,6 +246,10 @@ export function buildTrafficCell(
   const completionTokens = toCount(traffic.completion_tpm)
   const requestBytes = toCount(traffic.request_bytes)
   const responseBytes = toCount(traffic.response_bytes)
+  const requestsTotal = toCount(traffic.requests_total)
+  const tokensTotal = toCount(traffic.tokens_total)
+  const requestBytesTotal = toCount(traffic.request_bytes_total)
+  const responseBytesTotal = toCount(traffic.response_bytes_total)
 
   const windowSeconds = toCount(traffic.window_seconds)
   const inboundBandwidth = toBandwidth(requestBytes, windowSeconds)
@@ -254,6 +275,14 @@ export function buildTrafficCell(
     completionTokensValue: completionTokens,
     requestBytesValue: requestBytes,
     responseBytesValue: responseBytes,
+    requestsTotalValue: requestsTotal,
+    requestsTotal: formatInteger(requestsTotal, locales),
+    tokensTotalValue: tokensTotal,
+    tokensTotal: formatCompactNumber(tokensTotal),
+    requestBytesTotalValue: requestBytesTotal,
+    requestBytesTotal: formatBytes(requestBytesTotal, locales),
+    responseBytesTotalValue: responseBytesTotal,
+    responseBytesTotal: formatBytes(responseBytesTotal, locales),
     inbound: formatBytes(requestBytes, locales),
     outbound: formatBytes(responseBytes, locales),
     inboundBandwidthValue: inboundBandwidth,

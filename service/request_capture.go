@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
@@ -529,6 +530,34 @@ func StartRequestCaptureWriter(ctx context.Context) {
 	}()
 }
 
+// attachCaptureMarker records on the request's usage-log row that this request
+// was sampled by request_capture and where the file landed, so an operator can
+// tell from /api/log/ alone whether the body is on disk. It runs on the master
+// right after the write, off the request path; a missing row (log retention,
+// clickhouse storage) is not an error.
+func attachCaptureMarker(setting *operation_setting.RequestCaptureSetting, payload *RequestCapturePayload, written string) {
+	if payload == nil || payload.RequestID == "" {
+		return
+	}
+	file := written
+	if setting != nil {
+		if rel, err := filepath.Rel(setting.EffectiveDirectory(), written); err == nil {
+			file = rel
+		}
+	}
+	marker := map[string]any{
+		"rule":        payload.RuleName,
+		"file":        file,
+		"captured_at": payload.CapturedAt,
+	}
+	if payload.ResponseStatus != 0 {
+		marker["status"] = payload.ResponseStatus
+	}
+	if err := model.AttachLogCaptureMarker(payload.RequestID, marker); err != nil {
+		logger.LogWarn(context.Background(), fmt.Sprintf("request capture marker attach failed for request %s: %v", payload.RequestID, err))
+	}
+}
+
 func drainRequestCaptureQueue(ctx context.Context) {
 	if !common.RedisEnabled || common.RDB == nil {
 		return
@@ -548,12 +577,14 @@ func drainRequestCaptureQueue(ctx context.Context) {
 			logger.LogWarn(ctx, fmt.Sprintf("request capture payload undecodable: %v", err))
 			continue
 		}
-		if _, err := WriteRequestCapture(setting, &payload); err != nil {
+		written, err := WriteRequestCapture(setting, &payload)
+		if err != nil {
 			logger.LogWarn(ctx, fmt.Sprintf("request capture write failed: %v", err))
 			// Put it back at the head so a transient disk problem does not lose the capture, and
 			// stop this tick to avoid spinning on the same failure.
 			_ = common.RDB.LPush(ctx, key, raw).Err()
 			return
 		}
+		attachCaptureMarker(setting, &payload, written)
 	}
 }

@@ -149,6 +149,66 @@ export interface LogFitInfo {
   baseline?: string
 }
 
+/** Cut diagnostics attached to a failed stream row (admin_info.stream_cut). */
+export interface LogStreamCut {
+  finish_reason?: string
+  missing_finish?: boolean
+  reasoning_truncated?: boolean
+  visible_content_chars?: number
+  reasoning_chars?: number
+  tool_calls?: number
+  choice_count?: number
+  client_max_tokens?: number
+  completion_tokens?: number
+  budget_left?: number
+  continuation_configured?: boolean
+  abnormal_configured?: boolean
+  missing_configured?: boolean
+  thinking_to_content?: boolean
+  reasoning_suppressed?: boolean
+  repair_attempted?: boolean
+  repair_mode?: string
+  repair_rounds?: number
+  repair_failed_reason?: string
+  repair_channels?: number[]
+}
+
+/** One lossy detail the request/response conversion had to drop. */
+export interface LogConversionDiagnostic {
+  code?: string
+  path?: string
+  message?: string
+  severity?: 'warning' | 'error' | string
+  from?: string
+  to?: string
+}
+
+/**
+ * Billing-audit marker: the settlement was zeroed (billing_anomaly,
+ * undelivered) or flagged (usage_deviation). The keys are the backend's
+ * AuditMap contract; unknown extra keys are ignored by the renderer.
+ */
+export interface LogBillingMarker {
+  kind?: string
+  field?: string
+  value?: number
+  threshold?: number
+  action?: string
+  reason?: string
+  raw?: Record<string, number>
+  upstream_prompt_tokens?: number
+  upstream_completion_tokens?: number
+  [key: string]: unknown
+}
+
+/** request_capture sampling marker: the request matched a capture rule and a file was stored. */
+export interface LogRequestCapture {
+  rule?: string
+  file?: string
+  captured_at?: number
+  status?: number
+}
+
 export interface LogOtherData {
   admin_info?: {
     request_policy?: PolicyEvent[]
@@ -186,9 +246,32 @@ export interface LogOtherData {
     body_bytes?: LogBodyBytes
     // Transparent continuation audit (admin only). Absent when no round ran.
     continuation?: LogContinuation
+    // A cut tool-call stream that was closed as a complete tool_calls answer.
+    closed_as_tool_calls?: boolean
+    // Model actually used for billing when it differs from the requested model.
+    billing_model?: string
+    // Masked upstream error text kept on a failed attempt row.
+    last_upstream_error?: string
+    // request_capture sampling: present only when a capture file was stored.
+    capture?: LogRequestCapture
+    // Cut diagnostics for a stream that ended without a usable terminal result.
+    stream_cut?: LogStreamCut
+    // Lossy request/response conversion details (admin only).
+    conversion_diagnostics?: LogConversionDiagnostic[]
+    conversion_diagnostics_truncated?: boolean
+    // Billing-audit markers (admin only).
+    billing_anomaly?: LogBillingMarker
+    undelivered?: LogBillingMarker
+    usage_deviation?: LogBillingMarker
+    // Ollama prompt-cache observation (admin only, opaque payload).
+    ollama_prompt_cache?: Record<string, unknown>
   }
   // Fit-capability pin of the serving channel (public scope).
   fit?: LogFitInfo
+  // Reasoning observability (public scope).
+  thinking_type?: string
+  reasoning_content_seen?: boolean
+  upstream_reasoning_tokens?: number
   root_info?: {
     task_plugin?: TaskPluginRuntimeInfo
     upstream_task_id?: string
@@ -278,13 +361,16 @@ export interface LogOtherData {
   image_generation_call_price?: number
   image_generation_call_count?: number
   is_system_prompt_overwritten?: boolean
+  // Param-override / response-override audit lines.
   po?: string[]
+  ro?: string[]
   billing_source?: string
   group?: string
   stream_status?: {
     status?: string
     response_status?: 'completed' | 'failed' | 'incomplete' | 'cancelled'
     end_reason?: string
+    closed_after_terminal?: boolean
     error_count?: number
     end_error?: string
     errors?: string[]

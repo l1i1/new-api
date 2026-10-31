@@ -147,6 +147,48 @@ func FormatRootLogs(logs []*Log) {
 	}
 }
 
+// AttachLogCaptureMarker merges admin_info.capture into the log row carrying
+// requestID. The request-capture middleware decides after the relay handler has
+// already written that row (its status filter needs the response), so the
+// sampling marker is attached by a narrow read-modify-write once the capture
+// file is actually stored on the master.
+//
+// ClickHouse log storage has no row updates here (mutations are asynchronous),
+// so the marker is skipped there rather than risking a write that silently does
+// nothing visible.
+func AttachLogCaptureMarker(requestID string, marker map[string]any) error {
+	if LOG_DB == nil || requestID == "" || len(marker) == 0 {
+		return nil
+	}
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return nil
+	}
+	var log Log
+	if err := LOG_DB.Where("request_id = ?", requestID).Order("id DESC").Limit(1).Find(&log).Error; err != nil {
+		return err
+	}
+	if log.Id == 0 {
+		return nil
+	}
+	otherMap := map[string]any{}
+	if trimmed := strings.TrimSpace(log.Other); trimmed != "" {
+		if err := common.UnmarshalJsonStr(trimmed, &otherMap); err != nil {
+			return err
+		}
+	}
+	adminInfo, _ := otherMap[logOtherAdminInfoKey].(map[string]any)
+	if adminInfo == nil {
+		adminInfo = map[string]any{}
+		otherMap[logOtherAdminInfoKey] = adminInfo
+	}
+	adminInfo["capture"] = marker
+	encoded, err := common.Marshal(otherMap)
+	if err != nil {
+		return err
+	}
+	return LOG_DB.Model(&Log{}).Where("id = ?", log.Id).Update("other", string(encoded)).Error
+}
+
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	order := "id desc"
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
