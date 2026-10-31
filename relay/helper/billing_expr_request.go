@@ -106,9 +106,10 @@ func cloneRequestInput(src billingexpr.RequestInput) billingexpr.RequestInput {
 		count := *src.ImageCount
 		input.ImageCount = &count
 	}
-	if len(src.Body) > 0 {
-		input.Body = append([]byte(nil), src.Body...)
-	}
+	// The body is read-only for every consumer (the expression evaluator only
+	// runs gjson over it), so share the slice instead of copying it: a chat body
+	// can be 10-19MB and this runs once per price lookup, including retries.
+	input.Body = src.Body
 	return input
 }
 
