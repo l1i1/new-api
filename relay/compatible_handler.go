@@ -463,6 +463,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			if adaptorRef == nil {
 				return nil, nil
 			}
+			base, baseErr := loadBase()
+			if baseErr != nil {
+				return nil, baseErr
+			}
 			regenerateJSON, buildErr := buildRegenerate(base, "", remainingTokens)
 			if buildErr != nil {
 				return nil, buildErr
@@ -484,7 +488,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		if crossChannel {
 			cfg.Regenerate = func(remainingTokens int) (*http.Response, error) {
-				regenerate := crossChannelContinuationFallback(c, info, base, buildRegenerate, roundChannel, triedChannels)
+				regenerate := crossChannelContinuationFallback(c, info, loadBase, buildRegenerate, roundChannel, triedChannels)
 				if regenerate == nil {
 					return nil, nil
 				}
