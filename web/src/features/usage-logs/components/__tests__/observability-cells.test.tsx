@@ -89,8 +89,12 @@ function Cells(props: {
     getCoreRowModel: getCoreRowModel(),
   })
   const row = table.getRowModel().rows[0]
+  // The Details cell reads billing/status data through react-query.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   return (
-    <>
+    <QueryClientProvider client={queryClient}>
       {props.ids.map((id) => {
         const cell = row.getAllCells().find((item) => item.column.id === id)
         if (!cell) return null
@@ -100,24 +104,36 @@ function Cells(props: {
           </div>
         )
       })}
-    </>
+    </QueryClientProvider>
   )
 }
 
-const observabilityCellIds = ['node', 'body_bytes', 'is_stream']
+const observabilityCellIds = ['content', 'is_stream']
 
-test('admin cells expose node, fit pin, payload sizes and continuation', () => {
+test('the Details cell carries node, fit pin and payload sizes for admins', () => {
   render(
     <Cells other={otherWithObservability} isAdmin ids={observabilityCellIds} />
   )
 
+  // Node, payload sizes and the fit pin are rendered inside the Details cell
+  // instead of dedicated columns; the details dialog keeps the full breakdown.
   expect(screen.getByText('i-2ze0abcdef')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Fit Pin' })).toBeVisible()
   expect(screen.getByText('1.2 KB → 55.5 KB')).toBeVisible()
   expect(screen.getByText('Continued ×2')).toBeVisible()
 })
 
-test('admin cells render nothing when the log has no relay observability', () => {
+test('non-admin Details cells omit the relay observability facts', () => {
+  render(
+    <Cells other={otherWithObservability} isAdmin={false} ids={['content']} />
+  )
+
+  expect(screen.queryByText('i-2ze0abcdef')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Fit Pin' })).toBeNull()
+  expect(screen.queryByText('1.2 KB → 55.5 KB')).toBeNull()
+})
+
+test('the Details cell renders no observability meta when the log has none', () => {
   render(<Cells other={{}} isAdmin ids={observabilityCellIds} />)
 
   expect(screen.queryByText('Continued ×2')).toBeNull()

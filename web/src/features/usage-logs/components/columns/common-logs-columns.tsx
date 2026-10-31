@@ -546,50 +546,6 @@ export function useCommonLogsColumns(
           },
         },
         {
-          id: 'node',
-          header: t('Node'),
-          accessorFn: (row) =>
-            parseLogOther(row.other)?.admin_info?.node_name ?? '',
-          cell: function NodeCell({ row }) {
-            const log = row.original
-            if (!isDisplayableLogType(log.type)) return null
-
-            const observability = buildLogObservability(
-              parseLogOther(log.other),
-              t
-            )
-            const nodeName = observability?.nodeName
-            const fit = observability?.fit
-            if (!nodeName && !fit) return null
-
-            return (
-              <div className='flex max-w-[180px] items-center gap-1'>
-                {nodeName && (
-                  <TooltipProvider delay={300}>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <span className='max-w-[150px] truncate font-mono text-xs' />
-                        }
-                      >
-                        {nodeName}
-                      </TooltipTrigger>
-                      <TooltipContent
-                        side='top'
-                        className='max-w-xs font-mono break-all'
-                      >
-                        {nodeName}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-                {fit?.family && <FitPinPopover fit={fit} />}
-              </div>
-            )
-          },
-          size: 160,
-        },
-        {
           id: 'user',
           header: t('User'),
           accessorFn: (row) => row.username,
@@ -862,59 +818,6 @@ export function useCommonLogsColumns(
       }
     )
 
-    // Relay payload sizes are written to admin_info, so the column follows the
-    // same admin-only gating as the channel and node columns.
-    if (isAdmin) {
-      columns.push({
-        id: 'body_bytes',
-        header: t('Payload'),
-        accessorFn: (row) => {
-          const bytes = parseLogOther(row.other)?.admin_info?.body_bytes
-          return bytes?.response ?? bytes?.request ?? 0
-        },
-        cell: function PayloadCell({ row }) {
-          const log = row.original
-          if (!isDisplayableLogType(log.type)) return null
-
-          const other = parseLogOther(log.other)
-          const payload = buildObservabilityPayload(
-            other?.admin_info?.body_bytes,
-            t
-          )
-          if (!payload?.compact) return null
-
-          return (
-            <TooltipProvider delay={300}>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span className='font-mono text-xs whitespace-nowrap tabular-nums' />
-                  }
-                >
-                  {payload.compact}
-                </TooltipTrigger>
-                <TooltipContent side='top'>
-                  <div className='space-y-0.5 text-xs'>
-                    {payload.rows.map((detail) => (
-                      <p key={detail.label}>
-                        <span className='text-muted-foreground'>
-                          {detail.label}:{' '}
-                        </span>
-                        <span className='font-mono tabular-nums'>
-                          {detail.value}
-                        </span>
-                      </p>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )
-        },
-        size: 130,
-      })
-    }
-
     columns.push({
       accessorKey: 'content',
       header: t('Details'),
@@ -976,16 +879,85 @@ export function useCommonLogsColumns(
           )
         }
 
+        // Node, payload sizes and the fit pin live in this Details cell rather
+        // than in dedicated columns: the table keeps its width, and the
+        // admin-only relay facts sit next to the decision text they explain.
+        // The full breakdown (request/upstream/response bytes, fit marks) stays
+        // in the details dialog behind the same click.
+        const observability =
+          isAdmin && isDisplayableLogType(log.type)
+            ? buildLogObservability(other, t)
+            : undefined
+        const nodeName = observability?.nodeName
+        const fit = observability?.fit
+        const payload = isAdmin
+          ? buildObservabilityPayload(other?.admin_info?.body_bytes, t)
+          : undefined
+        const hasAdminMeta = Boolean(
+          nodeName || fit?.family || payload?.compact
+        )
+
         return (
           <>
-            <button
-              type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
-              onClick={() => setDialogOpen(true)}
-              title={t('Click to view full details')}
-            >
-              {detailPreview}
-            </button>
+            <div className='flex max-w-[240px] flex-col gap-0.5'>
+              <button
+                type='button'
+                className='group flex max-w-[240px] items-center gap-1 text-left text-xs'
+                onClick={() => setDialogOpen(true)}
+                title={t('Click to view full details')}
+              >
+                {detailPreview}
+              </button>
+              {hasAdminMeta && (
+                <div className='text-muted-foreground/70 flex max-w-full items-center gap-1.5 font-mono text-[11px] leading-tight'>
+                  {nodeName && (
+                    <TooltipProvider delay={300}>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={<span className='max-w-[96px] truncate' />}
+                        >
+                          {nodeName}
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side='top'
+                          className='max-w-xs font-mono break-all'
+                        >
+                          {nodeName}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                  {payload?.compact && (
+                    <TooltipProvider delay={300}>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span className='whitespace-nowrap tabular-nums' />
+                          }
+                        >
+                          {payload.compact}
+                        </TooltipTrigger>
+                        <TooltipContent side='top'>
+                          <div className='space-y-0.5 text-xs'>
+                            {payload.rows.map((detail) => (
+                              <p key={detail.label}>
+                                <span className='text-muted-foreground'>
+                                  {detail.label}:{' '}
+                                </span>
+                                <span className='font-mono tabular-nums'>
+                                  {detail.value}
+                                </span>
+                              </p>
+                            ))}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                  {fit?.family && <FitPinPopover fit={fit} />}
+                </div>
+              )}
+            </div>
             <DetailsDialog
               log={log}
               isAdmin={isAdmin}
@@ -996,8 +968,8 @@ export function useCommonLogsColumns(
           </>
         )
       },
-      size: 180,
-      maxSize: 200,
+      size: 200,
+      maxSize: 240,
     })
 
     return columns

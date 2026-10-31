@@ -49,6 +49,8 @@ interface UsageLogsMobileListProps<TData> {
   emptyTitle?: string
   emptyDescription?: string
   logCategory: LogCategory
+  /** Admin view: the relay observability fields are admin-only. */
+  isAdmin?: boolean
 }
 
 function UsageLogsMobileSkeleton(props: { separate: boolean }) {
@@ -242,6 +244,7 @@ export function UsageLogsMobileList<TData>({
   emptyTitle,
   emptyDescription,
   logCategory,
+  isAdmin = false,
 }: UsageLogsMobileListProps<TData>) {
   const { t } = useTranslation()
 
@@ -304,6 +307,7 @@ export function UsageLogsMobileList<TData>({
               <CommonLogMobileCard
                 log={row.original as UsageLog}
                 cells={cells}
+                isAdmin={isAdmin}
               />
             )}
             {logCategory === 'task' && <TaskLogsCard cells={cells} />}

@@ -63,6 +63,8 @@ type LogField = {
 export function CommonLogMobileCard<TData>(props: {
   log: UsageLog
   cells: Map<string, Cell<TData, unknown>>
+  /** Admin view: the relay observability fields are admin-only. */
+  isAdmin?: boolean
 }) {
   const { t } = useTranslation()
   const context = useUsageLogsContext()
@@ -142,20 +144,16 @@ export function CommonLogMobileCard<TData>(props: {
       log.completion_tokens > 0 ||
       cacheRead > 0 ||
       cacheWrite > 0)
-  // Relay observability follows the same column-presence gating as the other
-  // admin-only mobile fields: the node and payload columns only exist for
-  // admins, so their presence means the admin view is active.
-  const observability = buildLogObservability(other, t)
-  const nodeName = props.cells.has('node') ? observability?.nodeName : undefined
-  const fitFamily = props.cells.has('node')
-    ? observability?.fit?.family
-    : undefined
-  const payload = props.cells.has('body_bytes')
-    ? observability?.payload
-    : undefined
-  const continuation = props.cells.has('node')
-    ? observability?.continuation
-    : undefined
+  // Relay observability (serving node, fit pin, payload sizes, continuation) is
+  // admin-only. The desktop table folds it into the Details cell instead of
+  // dedicated columns, so the mobile card keys off the admin view flag rather
+  // than column presence.
+  const observability =
+    props.isAdmin === true ? buildLogObservability(other, t) : undefined
+  const nodeName = observability?.nodeName
+  const fitFamily = observability?.fit?.family
+  const payload = observability?.payload
+  const continuation = observability?.continuation
 
   return (
     <div className='min-w-0 space-y-2.5 text-sm leading-5'>

@@ -248,6 +248,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
           table={table}
           isLoading={isLoadingData}
           logCategory={logCategory}
+          isAdmin={isAdmin}
         />
       }
       toolbar={
