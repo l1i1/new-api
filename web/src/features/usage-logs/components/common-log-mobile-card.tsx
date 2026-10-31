@@ -295,6 +295,17 @@ export function CommonLogMobileCard<TData>(props: {
                 ) : (
                   <span className='min-w-0 py-1.5'>••••</span>
                 )}
+                {id === 'channel' && fitFamily && (
+                  <span className='text-muted-foreground flex shrink-0 items-center gap-1 text-xs'>
+                    <ShieldCheck
+                      className='size-3 text-emerald-600 dark:text-emerald-400'
+                      aria-label={t('Fit Pin')}
+                    />
+                    <span className='text-foreground font-mono'>
+                      {fitFamily}
+                    </span>
+                  </span>
+                )}
               </div>
             )
           })}
@@ -342,15 +353,6 @@ export function CommonLogMobileCard<TData>(props: {
               <span className='text-foreground min-w-0 truncate font-mono'>
                 {nodeName}
               </span>
-              {fitFamily && (
-                <>
-                  <ShieldCheck
-                    className='size-3 shrink-0 text-emerald-600 dark:text-emerald-400'
-                    aria-label={t('Fit Pin')}
-                  />
-                  <span className='text-foreground font-mono'>{fitFamily}</span>
-                </>
-              )}
             </span>
           )}
           {payload?.compact && (
