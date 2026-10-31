@@ -727,18 +727,21 @@ export function useCommonLogsColumns(
             : undefined
 
           return (
-            <div className='flex flex-col items-start gap-1'>
-              <StreamTpsCell
-                isStream={log.is_stream}
-                isTask={other?.is_task === true}
-                isSyncTask={other?.task_sync === true}
-                tokensPerSecond={tokensPerSecond}
-                streamStatus={other?.stream_status}
-              />
-              {continuation && (
-                <ContinuationBadge continuation={continuation} withTooltip />
-              )}
-            </div>
+            <StreamTpsCell
+              isStream={log.is_stream}
+              isTask={other?.is_task === true}
+              isSyncTask={other?.task_sync === true}
+              tokensPerSecond={tokensPerSecond}
+              streamStatus={other?.stream_status}
+              // The continuation badge sits inline right after the stream
+              // label, so "streamed" and "streamed by continuation" read as one
+              // fact instead of two stacked lines.
+              trailing={
+                continuation ? (
+                  <ContinuationBadge continuation={continuation} withTooltip />
+                ) : undefined
+              }
+            />
           )
         },
         meta: { label: t('Stream') },

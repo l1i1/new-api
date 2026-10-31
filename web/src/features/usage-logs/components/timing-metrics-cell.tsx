@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { CircleAlert } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -165,6 +166,8 @@ interface StreamTpsCellProps {
   isSyncTask?: boolean
   tokensPerSecond?: number | null
   streamStatus?: LogOtherData['stream_status']
+  /** Rendered inline after the stream label, e.g. the continuation badge. */
+  trailing?: ReactNode
   className?: string
 }
 
@@ -196,6 +199,7 @@ export function StreamTpsCell(props: StreamTpsCellProps) {
         )}
       >
         {streamLabel}
+        {props.trailing}
         {showStreamError && (
           <TooltipProvider>
             <Tooltip>
