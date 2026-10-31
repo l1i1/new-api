@@ -3,11 +3,13 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -174,17 +176,121 @@ func TestAppendRelayLogAdminInfoCarriesStreamCutDiagnostics(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestAppendRelayLogAdminInfoCarriesContinuationAudit pins the success-side
-// counterpart of the stream_cut diagnostics: a response the repair path stitched
-// and a cut tool-call stream closed as a complete answer must both be visible on
-// the successful row, so recovery can be counted from /api/log/ instead of from
-// container log lines that rotate away.
+// adminInfoFromJSON renders a LogOther through its wire format and returns the
+// admin_info object as generic JSON values. The console reads these exact keys,
+// so the tests assert on the marshalled shape rather than on Go structs.
+func adminInfoFromJSON(t *testing.T, other *model.LogOther) map[string]any {
+	t.Helper()
+	encoded, err := other.MarshalJSON()
+	require.NoError(t, err)
+	var decoded map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	adminRaw, ok := decoded["admin_info"]
+	require.True(t, ok, "admin_info must be present")
+	var admin map[string]any
+	require.NoError(t, json.Unmarshal(adminRaw, &admin))
+	return admin
+}
+
+// TestAppendRelayLogAdminInfoWritesNodeBodyBytesAndContinuation pins the
+// observability fields the /usage-logs/common page reads: which node served the
+// request, the three payload sizes, and the compact continuation summary. All
+// three come from data already in memory (no body reads during log writing).
+func TestAppendRelayLogAdminInfoWritesNodeBodyBytesAndContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldNodeName := common.NodeName
+	common.NodeName = "i-2ze0obstest"
+	t.Cleanup(func() { common.NodeName = oldNodeName })
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`)
+	storage, err := common.CreateBodyStorage(body)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+	c.Set(common.KeyBodyStorage, storage)
+	written, err := c.Writer.WriteString("response-body")
+	require.NoError(t, err)
+	require.Equal(t, len("response-body"), written)
+
+	info := &relaycommon.RelayInfo{
+		UpstreamRequestBytes: int64(len(body) + 16),
+		ChatContinuationAudit: &relaycommon.ChatContinuationAudit{
+			Modes:                 []string{"length"},
+			Rounds:                2,
+			MaxSteps:              2,
+			Finish:                "stop",
+			ExtraCompletionTokens: 4096,
+		},
+	}
+	other := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, info, other)
+
+	admin := adminInfoFromJSON(t, other)
+	assert.Equal(t, "i-2ze0obstest", admin["node_name"])
+
+	bodyBytes, ok := admin["body_bytes"].(map[string]any)
+	require.True(t, ok, "known sizes must be recorded")
+	assert.Len(t, bodyBytes, 3)
+	assert.EqualValues(t, len(body), bodyBytes["request"], "cached (decompressed) client body size")
+	assert.EqualValues(t, len(body)+16, bodyBytes["upstream_request"], "last upstream attempt body size")
+	assert.EqualValues(t, len("response-body"), bodyBytes["response"], "bytes written to the client")
+
+	continuation, ok := admin["continuation"].(map[string]any)
+	require.True(t, ok, "a repaired response must carry its continuation audit")
+	assert.Len(t, continuation, 5, "exactly the contract keys, nothing else")
+	assert.Equal(t, []any{"length"}, continuation["modes"])
+	assert.EqualValues(t, 2, continuation["rounds"])
+	assert.EqualValues(t, 2, continuation["max_steps"])
+	assert.Equal(t, "stop", continuation["finish"])
+	assert.EqualValues(t, 4096, continuation["extra_completion_tokens"])
+	assert.NotContains(t, continuation, "mode", "the legacy single-mode key must not be emitted")
+	assert.NotContains(t, continuation, "content_chars")
+}
+
+// TestAppendRelayLogAdminInfoBodyBytesFallbackAndOmission pins the cheap/safe
+// half of the body_bytes contract: ContentLength is the fallback when no cached
+// storage exists (the size readings never create one), each 0/unknown size is
+// omitted individually, and an ordinary request does not grow an empty object.
+func TestAppendRelayLogAdminInfoBodyBytesFallbackAndOmission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := `{"model":"kimi-k3"}`
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	require.NotZero(t, c.Request.ContentLength)
+
+	other := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, &relaycommon.RelayInfo{UpstreamRequestBytes: 777}, other)
+	admin := adminInfoFromJSON(t, other)
+	bodyBytes, ok := admin["body_bytes"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, len(body), bodyBytes["request"], "ContentLength fallback when nothing was buffered")
+	assert.EqualValues(t, 777, bodyBytes["upstream_request"])
+	assert.NotContains(t, bodyBytes, "response", "nothing written means unknown, not zero")
+
+	// No payload information at all: omit the object entirely.
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	other2 := model.NewLogOther()
+	AppendRelayLogAdminInfo(c2, &relaycommon.RelayInfo{}, other2)
+	admin2 := adminInfoFromJSON(t, other2)
+	assert.NotContains(t, admin2, "body_bytes")
+	assert.NotContains(t, admin2, "continuation")
+}
+
+// TestAppendRelayLogAdminInfoCarriesContinuationAudit pins the consume-log side
+// of a repaired response: the merged continuation reaches admin_info.continuation
+// with the contract shape, and an ordinary (or zero-round) response stays clean.
 func TestAppendRelayLogAdminInfoCarriesContinuationAudit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 
 	info := &relaycommon.RelayInfo{
-		ContinuationAudit: &relaycommon.ContinuationAudit{Mode: "length", Rounds: 2, ContentChars: 4096},
+		ChatContinuationAudit: &relaycommon.ChatContinuationAudit{
+			Modes:                 []string{"length"},
+			Rounds:                2,
+			MaxSteps:              3,
+			Finish:                "stop",
+			ExtraCompletionTokens: 4096,
+		},
 		ClosedAsToolCalls: true,
 	}
 	other := model.NewLogOther()
@@ -192,16 +298,18 @@ func TestAppendRelayLogAdminInfoCarriesContinuationAudit(t *testing.T) {
 
 	adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 	require.True(t, ok)
-	audit, ok := adminInfo["continuation"].(*relaycommon.ContinuationAudit)
+	audit, ok := adminInfo["continuation"].(*relaycommon.ChatContinuationAudit)
 	require.True(t, ok, "a repaired response must carry its continuation audit")
-	assert.Equal(t, "length", audit.Mode)
+	assert.Equal(t, []string{"length"}, audit.Modes)
 	assert.Equal(t, 2, audit.Rounds)
-	assert.Equal(t, 4096, audit.ContentChars)
+	assert.Equal(t, 3, audit.MaxSteps)
+	assert.Equal(t, "stop", audit.Finish)
+	assert.Equal(t, 4096, audit.ExtraCompletionTokens)
 	closed, ok := adminInfo["closed_as_tool_calls"].(bool)
 	require.True(t, ok, "a closed cut must carry the closure marker")
 	assert.True(t, closed)
 
-	// An ordinary response stays byte-identical: no marker is written.
+	// An ordinary response stays clean: no continuation marker is written.
 	plain := &relaycommon.RelayInfo{}
 	otherPlain := model.NewLogOther()
 	AppendRelayLogAdminInfo(c, plain, otherPlain)
@@ -211,4 +319,36 @@ func TestAppendRelayLogAdminInfoCarriesContinuationAudit(t *testing.T) {
 	_, hasClosed := adminPlain["closed_as_tool_calls"]
 	assert.False(t, hasAudit)
 	assert.False(t, hasClosed)
+
+	// A non-nil audit with zero rounds must not be advertised either.
+	zero := &relaycommon.RelayInfo{ChatContinuationAudit: &relaycommon.ChatContinuationAudit{}}
+	otherZero := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, zero, otherZero)
+	adminZero, ok := otherZero.Snapshot()["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasZeroAudit := adminZero["continuation"]
+	assert.False(t, hasZeroAudit)
+}
+
+// TestAppendRelayLogAdminInfoIsNilSafe keeps log generation panic-free on the
+// paths that have no gin context: the context-free fields are still recorded,
+// and nothing reads a nil request/writer.
+func TestAppendRelayLogAdminInfoIsNilSafe(t *testing.T) {
+	other := model.NewLogOther()
+	AppendRelayLogAdminInfo(nil, &relaycommon.RelayInfo{
+		ChatContinuationAudit: &relaycommon.ChatContinuationAudit{
+			Modes:    []string{"missing"},
+			Rounds:   1,
+			MaxSteps: 1,
+			Finish:   "stop",
+		},
+	}, other)
+	admin := adminInfoFromJSON(t, other)
+	require.Contains(t, admin, "continuation")
+	assert.NotContains(t, admin, "body_bytes")
+	assert.NotContains(t, admin, "use_channel")
+
+	// No context, no relay info, no log object at all: no panic.
+	AppendRelayLogAdminInfo(nil, nil, nil)
+	AppendRelayLogAdminInfo(nil, nil, model.NewLogOther())
 }

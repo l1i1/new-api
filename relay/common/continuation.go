@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 
 	rootcommon "github.com/QuantumNous/new-api/common"
@@ -47,6 +48,65 @@ func (c *ContinuationRoundChannel) Last() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.id
+}
+
+// ChatContinuationAudit records the transparent continuation (续写) that
+// repaired one client response for the request log. It is written as
+// admin_info.continuation on both the consume (type=2) and error (type=5) rows,
+// so the repair rate and the tokens it cost can be measured from /api/log/
+// instead of from container log lines, which rotate away and die with the
+// instance.
+//
+// The JSON fields are an external contract shared with the console
+// (/usage-logs/common) — do not rename them.
+type ChatContinuationAudit struct {
+	// Modes lists the continuation runners that ran, in first-recorded order.
+	// Raw ids from the observability data contract — "length" (output-cap
+	// resume of visible content), "length-thinking" (output cap during
+	// thinking), "abnormal" (900s cut) and "missing" (EOF/[DONE] without a
+	// finish_reason). They are displayed verbatim, never translated.
+	Modes []string `json:"modes"`
+	// Rounds is how many continuation rounds were consumed.
+	Rounds int `json:"rounds"`
+	// MaxSteps is the round budget configured for the runner(s) that ran.
+	MaxSteps int `json:"max_steps"`
+	// Finish is the finish_reason finally delivered to the client (empty when
+	// the client went away before a terminal frame).
+	Finish string `json:"finish,omitempty"`
+	// ExtraCompletionTokens is the completion tokens produced by the
+	// continuation rounds only: the merged final count minus the first round's.
+	ExtraCompletionTokens int `json:"extra_completion_tokens"`
+}
+
+// Record folds one continuation outcome into the audit.
+//
+// No lock by design: the relay handler owns the request goroutine and calls
+// this only where a continuation result becomes the request's final usage, so
+// the audit is written and later read by that one goroutine (the same holds for
+// the other RelayInfo audit fields). Callers must not share a RelayInfo's audit
+// across goroutines.
+//
+// firstRoundCompletion and finalCompletion are the completion token counts
+// before and after the continuation rounds merged their usage; their difference
+// is the cost the continuation itself added. Recording the same mode twice
+// keeps Modes deduplicated while still accumulating rounds and tokens.
+func (a *ChatContinuationAudit) Record(mode string, maxSteps, rounds int, finish string, firstRoundCompletion, finalCompletion int) {
+	if a == nil || rounds <= 0 {
+		return
+	}
+	if mode != "" && !slices.Contains(a.Modes, mode) {
+		a.Modes = append(a.Modes, mode)
+	}
+	a.Rounds += rounds
+	if maxSteps > a.MaxSteps {
+		a.MaxSteps = maxSteps
+	}
+	if finish != "" {
+		a.Finish = finish
+	}
+	if extra := finalCompletion - firstRoundCompletion; extra > 0 {
+		a.ExtraCompletionTokens += extra
+	}
 }
 
 // Continuation repair failure reasons recorded in the cut diagnostics. They

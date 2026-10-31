@@ -700,6 +700,15 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		)
 	}
 
+	// Record how large this attempt's outbound body is, for
+	// admin_info.body_bytes.upstream_request on the request log. The consume /
+	// error log reads the value after the final attempt, so a retry overwrites
+	// the earlier attempt's size. ContentLength is 0 for streamed or multipart
+	// bodies; that only leaves the metric unknown, it never blocks the request.
+	if req != nil && req.ContentLength > 0 {
+		info.UpstreamRequestBytes = req.ContentLength
+	}
+
 	resp, err := relayClient.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())

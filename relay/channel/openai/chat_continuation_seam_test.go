@@ -85,10 +85,13 @@ func TestOaiStreamHandlerStripsRepeatedContinuationSeam(t *testing.T) {
 	assert.Contains(t, delivered, " over the lazy dog.")
 	assert.Equal(t, 1, strings.Count(delivered, `"finish_reason":"stop"`))
 	assert.Equal(t, 1, strings.Count(delivered, "[DONE]"))
-	require.NotNil(t, info.ContinuationAudit, "the success row must carry the continuation audit")
-	assert.Equal(t, "length", info.ContinuationAudit.Mode)
-	assert.Equal(t, 1, info.ContinuationAudit.Rounds)
-	assert.NotZero(t, info.ContinuationAudit.ContentChars)
+	require.NotNil(t, info.ChatContinuationAudit, "the log row must carry the continuation audit")
+	assert.Equal(t, []string{"length"}, info.ChatContinuationAudit.Modes)
+	assert.Equal(t, 1, info.ChatContinuationAudit.Rounds)
+	assert.Equal(t, 2, info.ChatContinuationAudit.MaxSteps)
+	assert.Equal(t, "stop", info.ChatContinuationAudit.Finish)
+	assert.Equal(t, 8, info.ChatContinuationAudit.ExtraCompletionTokens,
+		"only the resumed round's completion tokens are extra")
 }
 
 // TestSeamDeduperDropsFromTheStartRestart pins the rotation hazard found in
