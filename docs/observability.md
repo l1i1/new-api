@@ -31,19 +31,23 @@
     "rounds": 2,                // 实际用掉的续写轮数
     "max_steps": 2,             // 该模式配置的预算（每个 runner 自己的 MaxSteps）
     "finish": "stop",           // 拼装后最终送给客户端的 finish_reason
-    "extra_completion_tokens": 4096  // 续写轮额外产生的 completion（未 clamp 前）
+    "extra_completion_tokens": 4096  // 续写轮额外产生的 completion（合并 usage 与本轮首轮之差）
   }
 }
 ```
 
-续写模式 id 与产生它的 runner 对应关系：
+续写模式 id 按 **runner** 归类（不是按截断形状）：
 
-| id | 触发形状 | runner |
+| id | 含义 | runner |
 | --- | --- | --- |
-| `length` | 上游 `finish_reason=length` 且客户端预算还有余量、已有可见正文 | `runChatContinuation` |
-| `length-thinking` | 同上但只有思考、没有可见正文（32k 在思考阶段撞顶） | `runLengthThinkingChatContinuation` |
+| `length` | 任何"续写可见正文"的修复：输出上限（32k）、流内错误、传输中断、异常/缺失 finish 后正文已开始等形状都走这里 | `runChatContinuation` |
+| `length-thinking` | 思考阶段撞上输出上限、还没有可见正文（32k 在思考阶段撞顶） | `runLengthThinkingChatContinuation` |
 | `abnormal` | 上游异常 finish（如 900s 的 `finish_reason=error`）、只有思考 | `runAbnormalChatContinuation` |
 | `missing` | 上游 EOF/`[DONE]` 但没有终帧 finish_reason、只有思考 | `runMissingChatContinuation` |
+
+更细的截断形状（`stream-error`、`transport-error`、`abnormal-content`、`missing-content`）
+只出现在容器 SysLog 的 `mode=` 里，用于和日志行对账；`admin_info.continuation.modes` 只记
+上表的 runner id。
 
 审计在 `relay/channel/openai/relay-openai.go` 里每个"把合并后的 usage 返回给结算"
 的分支写入，包括客户端中途离开仍保留计费的早返回，因此 `rounds>0` 与账单口径一致。

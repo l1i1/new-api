@@ -8,6 +8,50 @@
     {
       "path": "relay/channel/openai/relay_openai_stream_usage_test.go",
       "reason": "2026-10-12 merge 26998b80e: 上游侧提交 0d1f999d1/baf4273c1（失败尝试的状态码不再污染客户响应）有意取代了本 fork 分支快照里的旧写法——旧代码在流内错误处直接 c.Status(streamErr.StatusCode) 写客户 writer，换道重试成功后的首帧会把这一跳的 5xx 当作客户响应状态发出（cdp 2026-10-12 20:29 投诉形态：客户收到 502+完整正文，我方记成功）。新写法不再写 writer，终局失败时由 controller/relay.go 的错误 defer 统一写出，错误本身仍带 StatusCode。测试同步改为断言 err.StatusCode 且 c.Writer.Written()==false / recorder.Code==200。行为已移入上游侧实现，故登记为已确认取代。"
+    },
+    {
+      "path": "relay/channel/openai/chat_continuation_seam_test.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the seam test now asserts the merged ChatContinuationAudit shape (modes/rounds/max_steps/finish/extra tokens) instead of the removed ContinuationAudit{mode,rounds,content_chars}; production behaviour (seam dedupe) is unchanged."
+    },
+    {
+      "path": "router/relay-router.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: relay routes are re-registered with middleware.NodeMetrics() on model-serving routes only (the feature adds per-node RPM/TPM/bytes); every .145 route and handler is still present, plus /mj,/suno,/tasks,/video groups now carry the counter inline where a group mixes submit with polled GET."
+    },
+    {
+      "path": "router/task-plugin-protocol-router.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the three model-serving create operations gained middleware.NodeMetrics(); retrieve/content paths deliberately stay uncounted."
+    },
+    {
+      "path": "router/task-router.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: task submit gained middleware.NodeMetrics(); read/content groups deliberately stay uncounted so client polling cannot inflate node RPM."
+    },
+    {
+      "path": "router/video-router.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: video submit routes gained middleware.NodeMetrics() inline; polled fetches are unchanged and uncounted."
+    },
+    {
+      "path": "service/log_info_generate.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the old success-row writer of admin_info.continuation (legacy 3-field shape) is replaced by appendRelayObservabilityAdminInfo, which writes node_name/body_bytes/continuation for both consume and error rows from the new audit; stream_cut/closed_as_tool_calls and every other .145 diagnostic are retained verbatim."
+    },
+    {
+      "path": "service/log_info_generate_test.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the continuation-audit test now asserts the new admin_info shape; the stream-cut and cyber-policy tests are unchanged."
+    },
+    {
+      "path": "service/system_instance.go",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: ReportCurrentSystemInstance is split so the heartbeat payload is built by a pure buildSystemInstanceInfo (testable) and gains extra.traffic from pkg/nodemetrics; every .145 field (node/role/runtime/host/cpu/memory/storage) is still reported."
+    },
+    {
+      "path": "web/src/features/system-info/components/system-instances-panel.tsx",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the instances table gained RPM/TPM/Traffic/Bandwidth columns and the traffic tooltips; existing columns (status/role/cpu/memory/storage/version/runtime/started/last-seen/actions) are unchanged."
+    },
+    {
+      "path": "web/src/features/usage-logs/components/columns/common-logs-columns.tsx",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: admin-only Node and Payload columns plus the continuation badge were added around the existing column set; the Details column block was moved, not removed."
+    },
+    {
+      "path": "web/src/features/usage-logs/components/common-log-mobile-card.tsx",
+      "reason": "release/146 (2026-10-31) merges the observability feature branch (cut from tokeness/main) onto the .145 line. The second-parent version of this path intentionally supersedes the first-parent snapshot for that merge: the mobile card gained admin-only node/payload/continuation lines next to the existing fields."
     }
   ]
 }
